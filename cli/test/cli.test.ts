@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { stripVTControlCharacters } from "node:util";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import { AuthError } from "alchemy/Auth";
 import { EXIT, main, VERSION, type CliDependencies } from "../scotty";
@@ -862,6 +863,103 @@ describe("configuration and transport", () => {
     expect(config.token).not.toBe("secret");
   });
 
+  test("init presents a bounded interactive review and progress receipt", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    let promptLabel = "";
+    let createCalls = 0;
+    let releaseCreate!: () => void;
+    const createGate = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    const h = harness({
+      home,
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      prompt: (label) => {
+        promptLabel = label;
+        return "home";
+      },
+      fetch: acceptingSandboxSyncFetch(),
+      planCreateInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: false,
+        fingerprint: "interactive-plan",
+        changes: [{ id: "Scotty-home/Worker", action: "create" }],
+      }),
+      createInstallation: async (input) => {
+        createCalls++;
+        await createGate;
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          previewBase: input.previewBase,
+          previewZoneId: input.previewZoneId,
+          evidenceEnabled: input.evidenceEnabled,
+          host: "https://scotty-home-worker.example.workers.dev",
+        };
+      },
+    });
+
+    const running = main(["init", "--name", "home", ...HATCH_INIT_ARGS], h.deps);
+    for (let attempt = 0; attempt < 100 && createCalls === 0; attempt++) await Bun.sleep(5);
+    const inFlightOutput = stripVTControlCharacters(h.stdout.join("")).replaceAll("\r", "");
+    releaseCreate();
+
+    expect(inFlightOutput).toContain("Creating Cloudflare resources");
+    expect(await running).toBe(EXIT.OK);
+
+    const output = stripVTControlCharacters(h.stdout.join("")).replaceAll("\r", "");
+    expect(output).toContain("Scotty init");
+    expect(output).toContain("Installation review");
+    expect(output).toContain("scotty-home-worker");
+    expect(output).toContain("preview.scotty.example");
+    expect(output).toContain("Installation plan ready");
+    expect(output).toContain("Cloudflare resources created");
+    expect(output).toContain("Sandbox capabilities synchronized");
+    expect(output).toContain("Run `scotty owner recover` next");
+    expect(promptLabel).toBe("Create home? Type home: ");
+    expect(createCalls).toBe(1);
+  });
+
+  test("init cancellation stops before resource creation", async () => {
+    const home = await temporaryDirectory();
+    let createCalls = 0;
+    const h = harness({
+      home,
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      prompt: () => "no",
+      planCreateInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: false,
+        fingerprint: "interactive-plan",
+        changes: [{ id: "Scotty-home/Worker", action: "create" }],
+      }),
+      createInstallation: async () => {
+        createCalls++;
+        nodeAssert.fail("create must not run");
+      },
+    });
+
+    expect(await main(["init", "--name", "home", ...HATCH_INIT_ARGS], h.deps)).toBe(EXIT.USAGE);
+    expect(h.error().error).toMatchObject({
+      code: "cancelled",
+      hint: "No resources were changed.",
+    });
+    expect(createCalls).toBe(0);
+  });
+
   test("init synchronizes the configured TOML bundle and directs browser activation", async () => {
     const home = await temporaryDirectory();
     const skillRoot = await temporaryDirectory();
@@ -1088,6 +1186,7 @@ describe("configuration and transport", () => {
     let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
     const h = harness({
       home,
+      stdoutIsTTY: true,
       fetch: acceptingSandboxSyncFetch(),
       planCreateInstallation: async (input) => {
         expect(input).toMatchObject({
@@ -1135,6 +1234,7 @@ describe("configuration and transport", () => {
           "--preview-zone-id",
           "0123456789abcdef0123456789abcdef",
           "--yes",
+          "--json",
         ],
         h.deps,
       ),

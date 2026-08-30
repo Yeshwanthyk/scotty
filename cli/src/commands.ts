@@ -1,5 +1,5 @@
 import { isAbsolute, join } from "node:path";
-import { Clock, Console, Effect, FileSystem, Option, Predicate, Ref, Result } from "effect";
+import { Clock, Console, Effect, Exit, FileSystem, Option, Predicate, Ref, Result } from "effect";
 import {
   Argument,
   CliConfig,
@@ -89,6 +89,7 @@ import { runRunnerSupervisor } from "./runner-link";
 import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { setupRunner } from "./runner-setup";
 import { requestJson } from "./transport";
+import { makeInitUi, makeSilentInitUi, type InitPhase } from "./init-ui";
 import {
   decodeInstallationPreviewConfiguration,
   makeInstallationTopology,
@@ -147,6 +148,17 @@ const flushCapturedOutput = (
   for (const value of stdout) stdoutWriter(value.endsWith("\n") ? value : `${value}\n`);
   for (const value of stderr) stderrWriter(value.endsWith("\n") ? value : `${value}\n`);
 };
+
+const finishInitPhase = (
+  phase: InitPhase,
+  exit: Exit.Exit<unknown, unknown>,
+  success: string,
+  failure: string,
+): Effect.Effect<void> =>
+  Effect.sync(() => {
+    if (Exit.isSuccess(exit)) phase.succeed(success);
+    else phase.fail(failure);
+  });
 
 const validateSessionId = (id: string): Effect.Effect<string, CliError> =>
   SESSION_ID_PATTERN.test(id) ? Effect.succeed(id) : Effect.fail(usage("Invalid session ID"));
@@ -600,6 +612,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ({ name, previewBase, previewZoneId, profile, yes }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
+        const initUi = autoJson ? makeSilentInitUi() : makeInitUi(runtime.stdout);
+        initUi.start();
         if (options.host || options.tokenFile)
           return yield* usage("init does not accept --host or --token-file");
         const installationName = yield* requireInstallationName("init", name);
@@ -645,7 +659,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 `Verify Cloudflare state before removing ${journalPath} or retrying scotty init; the journal was preserved and init will not retry automatically.`,
                 EXIT.GENERIC,
               );
-            yield* ensureDocker();
+            const dockerPhase = initUi.phase("Checking Docker");
+            yield* ensureDocker().pipe(
+              Effect.onExit((exit) =>
+                finishInitPhase(dockerPhase, exit, "Docker is ready", "Docker check failed"),
+              ),
+            );
             const creator = yield* InstallationCreator;
             const deploymentTarget = {
               installationName,
@@ -654,7 +673,19 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               previewZoneId: preview.zoneId,
               evidenceEnabled,
             };
-            const plan = yield* creator.plan(deploymentTarget);
+            const planPhase = initUi.phase("Planning installation");
+            const plan = yield* creator
+              .plan(deploymentTarget)
+              .pipe(
+                Effect.onExit((exit) =>
+                  finishInitPhase(
+                    planPhase,
+                    exit,
+                    "Installation plan ready",
+                    "Installation planning failed",
+                  ),
+                ),
+              );
             const topology = makeInstallationTopology(installationName, preview, true);
             yield* validateInitPlan(
               existingJournal,
@@ -670,22 +701,18 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                   "init requires --yes in non-interactive use",
                   "Run scotty init interactively to review the account and resources, or retry with --yes.",
                 );
-              runtime.stdout(
-                [
-                  `Installation: ${installationName}`,
-                  `Profile: ${profile}`,
-                  `Account: ${plan.accountId}`,
-                  `Worker: ${topology.workerName}`,
-                  `Runner Worker: ${topology.runnerWorkerName}`,
-                  `Container: ${topology.containerName}`,
-                  `KV: ${topology.kvTitle}`,
-                  `R2: ${topology.backupBucketName}`,
-                  `Preview base: ${preview.base}`,
-                  `Preview zone: ${preview.zoneId}`,
-                  "Hatch and Evidence: enabled",
-                  "",
-                ].join("\n"),
-              );
+              initUi.review({
+                installationName,
+                profile,
+                accountId: plan.accountId,
+                workerName: topology.workerName,
+                runnerWorkerName: topology.runnerWorkerName,
+                containerName: topology.containerName,
+                kvTitle: topology.kvTitle,
+                backupBucketName: topology.backupBucketName,
+                previewBase: preview.base,
+                previewZoneId: preview.zoneId,
+              });
               const answer = runtime.prompt(
                 `Create ${installationName}? Type ${installationName}: `,
               );
@@ -728,18 +755,30 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               journalPath,
               `${JSON.stringify({ ...journal, phase: "apply_started" }, null, 2)}\n`,
             );
-            if (!autoJson)
-              runtime.stdout(
-                `${Option.isSome(existingJournal) ? "Resuming" : "Creating"} installation ${installationName} in account ${plan.accountId}...\n`,
+            const createPhase = initUi.phase(
+              Option.isSome(existingJournal)
+                ? "Resuming Cloudflare resource creation"
+                : "Creating Cloudflare resources",
+            );
+            const deployed = yield* creator
+              .create({
+                ...deploymentTarget,
+                token,
+                credentialWrappingKey: wrappingKey,
+                expectedAccountId: plan.accountId,
+                expectedPlanFingerprint: plan.fingerprint,
+                mode: Option.isSome(existingJournal) ? "resume" : "fresh",
+              })
+              .pipe(
+                Effect.onExit((exit) =>
+                  finishInitPhase(
+                    createPhase,
+                    exit,
+                    "Cloudflare resources created",
+                    "Cloudflare resource creation failed",
+                  ),
+                ),
               );
-            const deployed = yield* creator.create({
-              ...deploymentTarget,
-              token,
-              credentialWrappingKey: wrappingKey,
-              expectedAccountId: plan.accountId,
-              expectedPlanFingerprint: plan.fingerprint,
-              mode: Option.isSome(existingJournal) ? "resume" : "fresh",
-            });
             const host = yield* Effect.fromResult(normalizeHost(deployed.host));
             const configPath = managedInstallationPath(runtime.home);
             yield* secureWrite(
@@ -771,9 +810,20 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               host,
               rootTokenRotated: true,
             };
-            yield* synchronizeInstallationSandbox(runtime.home, runtime.cwd, { host, token });
+            const syncPhase = initUi.phase("Synchronizing sandbox capabilities");
+            yield* synchronizeInstallationSandbox(runtime.home, runtime.cwd, { host, token }).pipe(
+              Effect.onExit((exit) =>
+                finishInitPhase(
+                  syncPhase,
+                  exit,
+                  "Sandbox capabilities synchronized",
+                  "Sandbox capability synchronization failed",
+                ),
+              ),
+            );
             if (autoJson) outputJson(runtime.stdout, result);
             else {
+              initUi.complete();
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
               runtime.stdout(
                 "Scotty is deployed and synchronized. Browser access is not active yet.\nRun `scotty owner recover` next to activate it.\n",
