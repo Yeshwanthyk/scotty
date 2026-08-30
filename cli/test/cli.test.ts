@@ -124,6 +124,24 @@ const HATCH_INIT_ARGS = [
   "0123456789abcdef0123456789abcdef",
 ] as const;
 
+const managedConfig = () => ({
+  installationName: "home",
+  profile: "default",
+  stackName: "Scotty-home",
+  stage: "production",
+  accountId: "0123456789abcdef0123456789abcdef",
+  workerName: "scotty-home-worker",
+  runnerWorkerName: "scotty-home-runner",
+  containerName: "scotty-home-sandbox",
+  kvTitle: "scotty-home-sessions",
+  backupBucketName: "scotty-home-backups",
+  previewBase: "preview.scotty.example",
+  previewZoneId: "0123456789abcdef0123456789abcdef",
+  evidenceEnabled: true as const,
+  host: "https://worker.example",
+  token: "root-secret",
+});
+
 function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
   let revision = 0;
   let activeDigest: string | null = null;
@@ -131,12 +149,12 @@ function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
     const request = new Request(input, init);
     const url = new URL(request.url);
     if (url.pathname === "/api/sandbox/configuration")
-      return Response.json({ schemaVersion: 1, revision, activeDigest });
+      return Response.json({ revision, activeDigest });
     const match = url.pathname.match(/^\/api\/sandbox\/bundles\/([0-9a-f]{64})$/u);
     if (match && request.method === "PUT") {
       revision += 1;
       activeDigest = match[1] ?? null;
-      return Response.json({ schemaVersion: 1, revision, activeDigest });
+      return Response.json({ revision, activeDigest });
     }
     return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
   };
@@ -475,7 +493,6 @@ describe("configuration and transport", () => {
     await writeFile(
       pendingUpPath(home, host, body),
       `${JSON.stringify({
-        version: 1,
         key: staleKey,
         createdAt: new Date().toISOString(),
       })}\n`,
@@ -696,7 +713,6 @@ describe("configuration and transport", () => {
     await writeFile(
       join(home, ".scotty", "init-home.json"),
       JSON.stringify({
-        version: 1,
         operation: "init",
         phase: "apply_started",
         installationName: "home",
@@ -739,14 +755,13 @@ describe("configuration and transport", () => {
         const request = new Request(input, init);
         const url = new URL(request.url);
         if (url.pathname === "/api/sandbox/configuration")
-          return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+          return Response.json({ revision: 0, activeDigest: null });
         const match = url.pathname.match(/^\/api\/sandbox\/bundles\/([0-9a-f]{64})$/u);
         if (match && request.method === "PUT") {
           putCount++;
           putAuthorization = request.headers.get("authorization");
           putOrigin = url.origin;
           return Response.json({
-            schemaVersion: 1,
             revision: 1,
             activeDigest: match[1],
           });
@@ -806,7 +821,6 @@ describe("configuration and transport", () => {
     expect(commands.some(([command]) => command === "gh")).toBe(false);
     expect((await stat(managedInstallationPath(home))).mode & 0o777).toBe(0o600);
     expect(config).toEqual({
-      version: 3,
       installationName: "home",
       profile: "personal",
       stackName: "Scotty-home",
@@ -859,7 +873,6 @@ describe("configuration and transport", () => {
         const url = new URL(request.url);
         if (url.pathname === "/api/sandbox/configuration")
           return Response.json({
-            schemaVersion: 1,
             revision: uploadedDigest === undefined ? 0 : 1,
             activeDigest: uploadedDigest ?? null,
           });
@@ -867,7 +880,6 @@ describe("configuration and transport", () => {
         if (match && request.method === "PUT") {
           uploadedDigest = match[1];
           return Response.json({
-            schemaVersion: 1,
             revision: 1,
             activeDigest: uploadedDigest,
           });
@@ -919,12 +931,10 @@ describe("configuration and transport", () => {
         const url = new URL(request.url);
         if (url.pathname === "/api/sandbox/configuration")
           return Response.json({
-            schemaVersion: 1,
             revision: 1,
             activeDigest: uploadedDigest,
           });
-        if (url.pathname === "/api/credentials/sync")
-          return Response.json({ version: 1, credentials: [] });
+        if (url.pathname === "/api/credentials/sync") return Response.json({ credentials: [] });
         if (url.pathname.startsWith("/api/sandbox/bundles/")) secondPutCount++;
         return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
       },
@@ -1122,7 +1132,6 @@ describe("configuration and transport", () => {
     });
     const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(config).toMatchObject({
-      version: 3,
       previewBase: "preview.scotty.example",
       previewZoneId: "0123456789abcdef0123456789abcdef",
       evidenceEnabled: true,
@@ -1226,7 +1235,6 @@ describe("configuration and transport", () => {
       ),
     ).toBe(EXIT.OK);
     expect(JSON.parse(await readFile(managedInstallationPath(home), "utf8"))).toMatchObject({
-      version: 3,
       previewBase: enabledResult.previewBase,
       previewZoneId: enabledResult.previewZoneId,
       evidenceEnabled: true,
@@ -1240,23 +1248,20 @@ describe("configuration and transport", () => {
       evidenceEnabled: true,
     });
     expect(JSON.parse(await readFile(managedInstallationPath(home), "utf8"))).toMatchObject({
-      version: 3,
       evidenceEnabled: true,
     });
   });
 
-  test("rejects evidence opt-in stored under an older config version", async () => {
+  test("rejects an incomplete managed preview and evidence configuration", async () => {
     const home = await temporaryDirectory();
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 2,
         installationName: "home",
         profile: "default",
         accountId: "0123456789abcdef0123456789abcdef",
         previewBase: "preview.scotty.example",
         previewZoneId: "0123456789abcdef0123456789abcdef",
-        evidenceEnabled: true,
         token: "root-secret",
       }),
       { mode: 0o600 },
@@ -1337,22 +1342,22 @@ describe("configuration and transport", () => {
     expect(requests).toHaveLength(1);
   });
 
-  test("recover inspects, confirms, rotates only the token, and stores a private mapping", async () => {
+  test("recover inspects, confirms, and rotates only the token", async () => {
     const home = await temporaryDirectory();
     const inspected: Array<Parameters<NonNullable<CliDependencies["inspectInstallation"]>>[0]> = [];
     const recovered: Array<Parameters<NonNullable<CliDependencies["recoverInstallation"]>>[0]> = [];
     const result = {
       installationName: "home",
       profile: "default",
-      stackName: "Legacy",
+      stackName: "Scotty-home",
       stage: "production",
       accountId: "0123456789abcdef0123456789abcdef",
-      workerName: "legacy-worker",
-      runnerWorkerName: "legacy-runner",
-      containerName: "legacy-container",
-      kvTitle: "legacy-sessions",
-      backupBucketName: "legacy-backups",
-      host: "https://legacy-worker.example.workers.dev",
+      workerName: "scotty-home-worker",
+      runnerWorkerName: "scotty-home-runner",
+      containerName: "scotty-home-sandbox",
+      kvTitle: "scotty-home-sessions",
+      backupBucketName: "scotty-home-backups",
+      host: "https://scotty-home-worker.example.workers.dev",
     } as const;
     const h = harness({
       home,
@@ -1365,34 +1370,26 @@ describe("configuration and transport", () => {
         return result;
       },
     });
-    expect(
-      await main(
-        ["recover", "--name", "home", "--adoption-manifest", "/private/adoption.json", "--yes"],
-        h.deps,
-      ),
-    ).toBe(EXIT.OK);
+    expect(await main(["recover", "--name", "home", "--yes"], h.deps)).toBe(EXIT.OK);
     expect(inspected).toEqual([
       {
         installationName: "home",
         profile: "default",
-        adoptionManifestPath: "/private/adoption.json",
       },
     ]);
     expect(recovered).toHaveLength(1);
     expect(recovered[0]).toMatchObject({
       installationName: "home",
       profile: "default",
-      adoptionManifestPath: "/private/adoption.json",
       expectedAccountId: "0123456789abcdef0123456789abcdef",
-      expectedWorkerName: "legacy-worker",
-      expectedRunnerWorkerName: "legacy-runner",
-      expectedContainerName: "legacy-container",
-      expectedKvTitle: "legacy-sessions",
-      expectedBackupBucketName: "legacy-backups",
+      expectedWorkerName: "scotty-home-worker",
+      expectedRunnerWorkerName: "scotty-home-runner",
+      expectedContainerName: "scotty-home-sandbox",
+      expectedKvTitle: "scotty-home-sessions",
+      expectedBackupBucketName: "scotty-home-backups",
     });
     expect(recovered[0]?.token).toMatch(/^[0-9a-f]{64}$/u);
     const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
-    expect(config.adoptionManifestPath).toBe("/private/adoption.json");
     expect(config.token).toBe(recovered[0]?.token);
     expect(h.stdout.join("")).not.toContain(config.token);
   });
@@ -1403,7 +1400,7 @@ describe("configuration and transport", () => {
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "personal",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -1421,12 +1418,11 @@ describe("configuration and transport", () => {
         const req = new Request(input, init);
         const url = new URL(req.url);
         if (url.pathname === "/api/sandbox/configuration")
-          return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+          return Response.json({ revision: 0, activeDigest: null });
         if (url.pathname.startsWith("/api/sandbox/bundles/") && req.method === "PUT") {
           putAuthorization = req.headers.get("authorization");
           putOrigin = url.origin;
           return Response.json({
-            schemaVersion: 1,
             revision: 1,
             activeDigest: url.pathname.split("/").at(-1),
           });
@@ -1464,6 +1460,9 @@ describe("configuration and transport", () => {
       profile: "personal",
       expectedAccountId: "0123456789abcdef0123456789abcdef",
       expectedPlanFingerprint: "plan-1",
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+      evidenceEnabled: true,
     });
     expect(request).not.toHaveProperty("token");
     const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
@@ -1480,7 +1479,7 @@ describe("configuration and transport", () => {
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "personal",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -1540,7 +1539,7 @@ describe("configuration and transport", () => {
     await writeFile(
       pointerPath,
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "personal",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -1613,7 +1612,7 @@ describe("configuration and transport", () => {
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "default",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -1631,12 +1630,11 @@ describe("configuration and transport", () => {
         const request = new Request(input, init);
         const url = new URL(request.url);
         if (url.pathname === "/api/sandbox/configuration")
-          return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+          return Response.json({ revision: 0, activeDigest: null });
         if (url.pathname.startsWith("/api/sandbox/bundles/") && request.method === "PUT") {
           putCount++;
           putAuthorization = request.headers.get("authorization");
           return Response.json({
-            schemaVersion: 1,
             revision: 1,
             activeDigest: url.pathname.split("/").at(-1),
           });
@@ -1672,7 +1670,7 @@ describe("configuration and transport", () => {
     const home = await temporaryDirectory();
     const pointerPath = managedInstallationPath(home);
     const pointerText = `${JSON.stringify({
-      version: 1,
+      ...managedConfig(),
       installationName: "home",
       profile: "default",
       accountId: "0123456789abcdef0123456789abcdef",
@@ -1727,7 +1725,7 @@ describe("configuration and transport", () => {
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "default",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -1823,7 +1821,7 @@ describe("configuration and transport", () => {
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "personal",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -1867,7 +1865,7 @@ describe("configuration and transport", () => {
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "default",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -1925,7 +1923,7 @@ describe("configuration and transport", () => {
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "personal",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -2003,7 +2001,7 @@ describe("configuration and transport", () => {
     await writeFile(
       configPath,
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "personal",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -2037,6 +2035,11 @@ describe("configuration and transport", () => {
       expectedContainerName: "scotty-home-sandbox",
       expectedKvTitle: "scotty-home-sessions",
       expectedBackupBucketName: "scotty-home-backups",
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+      evidenceEnabled: true,
+      expectedPreviewBase: "preview.scotty.example",
+      expectedPreviewZoneId: "0123456789abcdef0123456789abcdef",
     });
     expect(await Bun.file(configPath).exists()).toBe(false);
     expect(h.json()).toEqual({
@@ -2054,7 +2057,7 @@ describe("configuration and transport", () => {
     await writeFile(
       configPath,
       JSON.stringify({
-        version: 2,
+        ...managedConfig(),
         installationName: "home",
         profile: "default",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -2094,7 +2097,7 @@ describe("configuration and transport", () => {
     await writeFile(
       configPath,
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "clean-room",
         profile: "clean-room",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -2171,7 +2174,7 @@ describe("configuration and transport", () => {
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "default",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -2216,7 +2219,7 @@ describe("configuration and transport", () => {
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
-        version: 1,
+        ...managedConfig(),
         installationName: "home",
         profile: "personal",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -2303,6 +2306,7 @@ describe("configuration and transport", () => {
       projectedAt: "2026-07-20T12:01:01Z",
       agentState: "working",
       lastAgentEventAt: "2026-07-20T12:00:59Z",
+      sandboxBundle: { digest: null },
       ageSeconds: 60,
       capRemainingSeconds: 14340,
       operation: { kind: "snapshot", nonce: "internal" },
@@ -2328,6 +2332,7 @@ describe("configuration and transport", () => {
         projectedAt: "2026-07-20T12:01:01Z",
         agentState: "working",
         lastAgentEventAt: "2026-07-20T12:00:59Z",
+        sandboxBundle: { digest: null },
       },
     ]);
     expect(h.stdout.join("")).not.toContain("must-not-leak");
@@ -2350,6 +2355,7 @@ describe("configuration and transport", () => {
       projectedAt: null,
       codexThreadId: 42,
       failure: { code: 9, message: null, recoverable: "yes", secret: "must-not-leak" },
+      sandboxBundle: { digest: null },
       secret: "must-not-leak",
     };
     const h = harness({ fetch: async () => Response.json([session]) });
@@ -2370,6 +2376,7 @@ describe("configuration and transport", () => {
         ageSeconds: 60,
         capRemainingSeconds: 14340,
         failure: { code: "unknown", message: "Session failed", recoverable: false },
+        sandboxBundle: { digest: null },
       },
     ]);
     expect(h.stdout.join("")).not.toContain("must-not-leak");
@@ -2423,14 +2430,12 @@ describe("Credential sync commands", () => {
         const request = new Request(input, init);
         requests.push(request);
         const pathname = new URL(request.url).pathname;
-        if (pathname === "/api/credentials/sync")
-          return Response.json({ version: 1, credentials: [] });
+        if (pathname === "/api/credentials/sync") return Response.json({ credentials: [] });
         if (
           pathname === "/api/sandbox/configuration" ||
           pathname.startsWith("/api/sandbox/bundles/")
         )
           return Response.json({
-            schemaVersion: 1,
             revision: 0,
             activeDigest:
               pathname === "/api/sandbox/configuration" ? null : pathname.split("/").pop(),
@@ -2541,7 +2546,6 @@ describe("commands and schemas", () => {
 
   test("inspect emits stable bounded JSON and human summaries from the passive snapshot", async () => {
     const snapshot = {
-      version: 1,
       epoch: "epoch-1",
       baseSequence: 5,
       sequence: 5,
@@ -2621,7 +2625,6 @@ describe("commands and schemas", () => {
     const sourceMarker = "source-session-must-not-leave-the-container";
     const requests: Request[] = [];
     const snapshot = {
-      version: 1,
       epoch: "epoch-1",
       baseSequence: 1,
       sequence: 1,

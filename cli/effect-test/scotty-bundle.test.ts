@@ -169,7 +169,6 @@ describe("TOML bundle preparation", () => {
           { kind: "skill", name: "release-notes" },
           { kind: "tool", name: "hello" },
         ]);
-        assert.strictEqual(first.manifest.schemaVersion, 2);
         assert.strictEqual(Result.isSuccess(validateSandboxArchive(first.archive)), true);
         const packageItem = first.manifest.items.find((item) => item.kind === "package");
         assert.ok(packageItem !== undefined);
@@ -325,8 +324,7 @@ describe("TOML bundle preparation", () => {
         const { loaded } = yield* fixture(root);
         const ordinary = join(loaded.resolvedRoots.tools[0]!, "ordinary.ts");
         yield* Effect.promise(() => writeFile(ordinary, "token = 'not a path rule'\n"));
-        const safe = yield* buildFixtureBundle(loaded);
-        assert.strictEqual(safe.manifest.schemaVersion, 2);
+        yield* buildFixtureBundle(loaded);
         yield* Effect.promise(() => rm(ordinary));
         yield* Effect.promise(() =>
           writeFile(join(loaded.resolvedRoots.tools[0]!, ".env.local"), "not a secret"),

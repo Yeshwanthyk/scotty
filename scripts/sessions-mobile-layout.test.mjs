@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 
 const sessionsStyles = await readFile(
-  new URL("../worker/public/sessions.css", import.meta.url),
+  new URL("../worker/public/sessions/styles.css", import.meta.url),
   "utf8",
 );
 

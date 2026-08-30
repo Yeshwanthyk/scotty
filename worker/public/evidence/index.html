@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#01060c" />
+    <meta name="referrer" content="same-origin" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
+    <title>Scotty evidence</title>
+    <link rel="stylesheet" href="/sessions/styles.css" />
+    <link rel="stylesheet" href="/shared/styles.css" />
+    <link rel="stylesheet" href="/evidence/styles.css" />
+  </head>
+  <body class="scotty-ui app-page evidence-page">
+    <header class="masthead">
+      <div class="masthead-inner">
+        <a class="identity" href="/sessions" aria-label="Scotty sessions">
+          <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
+          <span class="wordmark">SCOTTY</span>
+        </a>
+        <nav class="masthead-nav" aria-label="Evidence navigation">
+          <a class="button" id="session-link" href="/sessions">Session</a>
+          <a class="button" id="evidence-list-link" href="/sessions">All evidence</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <div class="page-heading">
+        <div>
+          <h1 id="page-title">Evidence</h1>
+          <p class="subtitle" id="page-subtitle">Loading verified browser checkpoints…</p>
+        </div>
+        <div class="evidence-status" id="job-status" hidden></div>
+      </div>
+
+      <div class="notice" id="notice" role="alert" hidden>
+        <span id="notice-text"></span>
+        <button class="button" id="retry" type="button">Retry</button>
+      </div>
+
+      <section id="content" aria-busy="true" aria-live="polite">
+        <div class="state"><strong>Loading evidence</strong>Contacting Scotty…</div>
+      </section>
+    </main>
+
+    <script type="module" src="/evidence/index.js"></script>
+  </body>
+</html>

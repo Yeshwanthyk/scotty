@@ -210,7 +210,7 @@ export interface ScottyHatchManagerOptions {
   readonly killTimeoutMillis?: number;
 }
 
-export interface ScottyHatchResultV1 {
+export interface ScottyHatchResult {
   readonly version: 1;
   readonly operation: "ensure" | "status" | "close";
   readonly reference?: string;
@@ -600,7 +600,7 @@ function ensureAuthorityBody(input: EnsureInput, workingDirectory: string): stri
   return body;
 }
 
-function processProjection(owned: OwnedProcess | undefined): ScottyHatchResultV1["process"] {
+function processProjection(owned: OwnedProcess | undefined): ScottyHatchResult["process"] {
   if (owned === undefined) return { status: "not_owned", stdoutTail: "", stderrTail: "" };
   return {
     status: processExited(owned.child) ? "stopped" : "running",
@@ -634,7 +634,7 @@ export class ScottyHatchManager {
     this.#killTimeoutMillis = options.killTimeoutMillis ?? 1_000;
   }
 
-  run(value: unknown, signal?: AbortSignal): Promise<ScottyHatchResultV1> {
+  run(value: unknown, signal?: AbortSignal): Promise<ScottyHatchResult> {
     return this.#exclusive(async () => {
       const input = checkedInput(value);
       if (input.operation === "status") return this.#status(signal);
@@ -670,7 +670,7 @@ export class ScottyHatchManager {
     }
   }
 
-  async #ensure(input: EnsureInput, signal?: AbortSignal): Promise<ScottyHatchResultV1> {
+  async #ensure(input: EnsureInput, signal?: AbortSignal): Promise<ScottyHatchResult> {
     const workspaceRoot = await this.#workspaceRoot;
     const workingDirectory = await resolveWorkingDirectory(workspaceRoot, input.cwd);
     const [command, ...args] = input.argv;
@@ -804,12 +804,12 @@ export class ScottyHatchManager {
     return owned;
   }
 
-  async #status(signal?: AbortSignal): Promise<ScottyHatchResultV1> {
+  async #status(signal?: AbortSignal): Promise<ScottyHatchResult> {
     const status = await requestAuthority("status", undefined, signal, this.#authorityTransport);
     return this.#result("status", status, this.#owned);
   }
 
-  async #close(signal?: AbortSignal): Promise<ScottyHatchResultV1> {
+  async #close(signal?: AbortSignal): Promise<ScottyHatchResult> {
     const status = await requestAuthority("close", undefined, signal, this.#authorityTransport);
     if (
       status.status === "configured" &&
@@ -849,12 +849,12 @@ export class ScottyHatchManager {
   }
 
   #result(
-    operation: ScottyHatchResultV1["operation"],
+    operation: ScottyHatchResult["operation"],
     authoritative: HatchStatus,
     owned: OwnedProcess | undefined,
-  ): ScottyHatchResultV1 {
+  ): ScottyHatchResult {
     const hatch = safeStatus(authoritative);
-    const result: ScottyHatchResultV1 = {
+    const result: ScottyHatchResult = {
       version: 1,
       operation,
       ...(statusReference(hatch) === undefined ? {} : { reference: statusReference(hatch) }),
@@ -867,7 +867,7 @@ export class ScottyHatchManager {
   }
 }
 
-function renderResult(result: ScottyHatchResultV1): string {
+function renderResult(result: ScottyHatchResult): string {
   if (result.reference === undefined) return "Hatch is not configured.";
   const status =
     result.hatch.status === "configured" ? result.hatch.observedStatus : "not_configured";

@@ -13,7 +13,7 @@ import noInlineSchemaCompile from "./oxlint-plugin-scotty/rules/no-inline-schema
 import noInstanceofError from "./oxlint-plugin-scotty/rules/no-instanceof-error.js";
 import noInstanceofTaggedError from "./oxlint-plugin-scotty/rules/no-instanceof-tagged-error.js";
 import noJsonParse from "./oxlint-plugin-scotty/rules/no-json-parse.js";
-import noLegacyBrowserRpcPath from "./oxlint-plugin-scotty/rules/no-legacy-browser-rpc-path.js";
+import noBrowserRpcPath from "./oxlint-plugin-scotty/rules/no-browser-rpc-path.js";
 import noManualTagCheck from "./oxlint-plugin-scotty/rules/no-manual-tag-check.js";
 import noMatchOrelse from "./oxlint-plugin-scotty/rules/no-match-orelse.js";
 import noPromiseCatch from "./oxlint-plugin-scotty/rules/no-promise-catch.js";
@@ -55,7 +55,7 @@ export default {
     "no-instanceof-error": noInstanceofError,
     "no-instanceof-tagged-error": noInstanceofTaggedError,
     "no-json-parse": noJsonParse,
-    "no-legacy-browser-rpc-path": noLegacyBrowserRpcPath,
+    "no-browser-rpc-path": noBrowserRpcPath,
     "no-manual-tag-check": noManualTagCheck,
     "no-match-orelse": noMatchOrelse,
     "no-promise-catch": noPromiseCatch,

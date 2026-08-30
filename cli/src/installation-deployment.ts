@@ -39,12 +39,9 @@ import {
   expectedCloudflareStackApproval,
 } from "../../infra/cloudflare-stack.ts";
 import {
-  adoptionMatchesInstallation,
   CLOUDFLARE_STAGE,
-  decodeAdoptionManifestJson,
   decodeInstallationPreviewConfiguration,
   makeInstallationTopology,
-  type AdoptionManifest,
   type InstallationPreviewConfiguration,
 } from "../../infra/installation.ts";
 import {
@@ -81,6 +78,7 @@ type DurableObjectBinding = Extract<WorkerBinding, { readonly type: "durable_obj
 type KvBinding = Extract<WorkerBinding, { readonly type: "kv_namespace" }>;
 type R2Binding = Extract<WorkerBinding, { readonly type: "r2_bucket" }>;
 type PlainTextBinding = Extract<WorkerBinding, { readonly type: "plain_text" }>;
+type InstallationTopology = ReturnType<typeof makeInstallationTopology>;
 
 const isDurableObjectBinding = (binding: WorkerBinding): binding is DurableObjectBinding =>
   binding.type === "durable_object_namespace";
@@ -89,6 +87,99 @@ const isKvBinding = (binding: WorkerBinding): binding is KvBinding =>
 const isR2Binding = (binding: WorkerBinding): binding is R2Binding => binding.type === "r2_bucket";
 const isPlainTextBinding = (binding: WorkerBinding): binding is PlainTextBinding =>
   binding.type === "plain_text";
+
+const requiredInstallationBindings = (
+  bindings: ReadonlyArray<WorkerBinding>,
+  installation: InstallationTopology,
+) => {
+  const bindingNames = new Set(bindings.map((binding) => binding.name));
+  const requiredNames = [
+    "AUTH",
+    "RUNNER_REGISTRY",
+    "RUNNERS",
+    "SANDBOX",
+    "SANDBOX_CONFIG",
+    "CREDENTIALS",
+    "SESSIONS",
+    "BACKUP_BUCKET",
+    "ARTIFACT_BUCKET",
+    "SANDBOX_BUNDLE_BUCKET",
+  ];
+  const sandbox = bindings
+    .filter(isDurableObjectBinding)
+    .find((binding) => binding.name === "SANDBOX");
+  const sessions = bindings.filter(isKvBinding).find((binding) => binding.name === "SESSIONS");
+  const backup = bindings.filter(isR2Binding).find((binding) => binding.name === "BACKUP_BUCKET");
+  const artifacts = bindings
+    .filter(isR2Binding)
+    .find((binding) => binding.name === "ARTIFACT_BUCKET");
+  const bundles = bindings
+    .filter(isR2Binding)
+    .find((binding) => binding.name === "SANDBOX_BUNDLE_BUCKET");
+  const preview = bindings
+    .filter(isPlainTextBinding)
+    .find((binding) => binding.name === "SCOTTY_PREVIEW_BASE");
+  const evidence = bindings
+    .filter(isPlainTextBinding)
+    .find((binding) => binding.name === "SCOTTY_EVIDENCE_ENABLED");
+  const valid =
+    requiredNames.every((name) => bindingNames.has(name)) &&
+    sandbox?.namespaceId !== undefined &&
+    sessions?.namespaceId !== undefined &&
+    backup?.bucketName === installation.backupBucketName &&
+    artifacts?.bucketName === installation.artifactBucketName &&
+    bundles?.bucketName === installation.sandboxBundleBucketName &&
+    (installation.preview === undefined
+      ? preview === undefined
+      : preview?.text === installation.preview.base) &&
+    (installation.evidenceEnabled === true ? evidence?.text === "true" : evidence === undefined);
+  return valid ? { sandbox, sessions } : undefined;
+};
+
+const verifyInstallationPreview = Effect.fnUntraced(function* (installation: InstallationTopology) {
+  if (installation.preview === undefined) return;
+  const records = Array.from(
+    yield* DNS.listRecords
+      .items({
+        zoneId: installation.preview.zoneId,
+        name: { exact: `*.${installation.preview.base}` },
+        type: "AAAA",
+      })
+      .pipe(Stream.runCollect),
+  );
+  const routes = Array.from(
+    yield* Workers.listRoutes.items({ zoneId: installation.preview.zoneId }).pipe(
+      Stream.filter((route) => route.pattern === `*.${installation.preview?.base}/*`),
+      Stream.runCollect,
+    ),
+  );
+  if (
+    records.length !== 1 ||
+    records[0]?.name !== `*.${installation.preview.base}` ||
+    records[0].type !== "AAAA" ||
+    records[0].content !== "100::" ||
+    records[0].proxied !== true ||
+    routes.length !== 1 ||
+    routes[0]?.script !== installation.workerName
+  )
+    return yield* new InstallationDeploymentError({
+      message: "The evidence preview DNS or Worker Route has drifted.",
+    });
+});
+
+const uninstallTargetMatches = (
+  accountId: string,
+  installation: InstallationTopology,
+  request: InstallationUninstallRequest,
+): boolean =>
+  accountId === request.expectedAccountId &&
+  installation.workerName === request.expectedWorkerName &&
+  installation.runnerWorkerName === request.expectedRunnerWorkerName &&
+  installation.containerName === request.expectedContainerName &&
+  installation.kvTitle === request.expectedKvTitle &&
+  installation.backupBucketName === request.expectedBackupBucketName &&
+  installation.preview?.base === request.expectedPreviewBase &&
+  installation.preview?.zoneId === request.expectedPreviewZoneId;
 
 export class InstallationDeploymentError extends Data.TaggedError("InstallationDeploymentError")<{
   readonly message: string;
@@ -271,22 +362,6 @@ const prepareInstallationContainerContext = async (root: string): Promise<void> 
   await prepareContainerContext(root, { inputs: CONTAINER_INPUTS });
 };
 
-const readAdoptionManifest = async (
-  path: string | undefined,
-  installationName: string,
-): Promise<AdoptionManifest | undefined> => {
-  if (!path) return undefined;
-  const text = await Bun.file(path).text();
-  const decoded = decodeAdoptionManifestJson(text);
-  if (Option.isNone(decoded) || !adoptionMatchesInstallation(decoded.value, installationName)) {
-    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise file adapter rejects invalid machine-local adoption input before Cloudflare access
-    throw new InstallationDeploymentError({
-      message: "Adoption manifest is invalid or names a different installation.",
-    });
-  }
-  return decoded.value;
-};
-
 const alchemyRuntimeLayer = Layer.provideMerge(
   Layer.mergeAll(LoggingCli, AlchemyContextLive),
   Layer.mergeAll(
@@ -447,14 +522,9 @@ const previewConfiguration = (
   return decoded.value;
 };
 
-const makeStack = (
-  request: InstallationDeployRequest,
-  adoption: AdoptionManifest | undefined,
-  prebuiltWorkers: boolean,
-) => {
+const makeStack = (request: InstallationDeployRequest, prebuiltWorkers: boolean) => {
   const installation = makeInstallationTopology(
     request.installationName,
-    adoption,
     previewConfiguration(request),
     request.evidenceEnabled === true,
   );
@@ -471,7 +541,7 @@ const makeStack = (
       resourceConfirmation: expectedCloudflareResourceConfirmation(installation),
       approval: expectedCloudflareStackApproval(installation),
       prebuiltWorkers,
-    }).pipe(Alchemy.AdoptPolicy.adopt(adoption !== undefined)),
+    }),
   );
   return { installation, stack };
 };
@@ -553,10 +623,9 @@ const fingerprintPlan = Effect.fnUntraced(function* (
 const planWithProfile = async (
   request: InstallationDeployRequest,
   root: string,
-  adoption: AdoptionManifest | undefined,
   prebuiltWorkers: boolean,
 ): Promise<InstallationPlan> => {
-  const { stack } = makeStack(request, adoption, prebuiltWorkers);
+  const { stack } = makeStack(request, prebuiltWorkers);
   return runWithProfile(request.profile, root, () =>
     provideAlchemy(
       evalStack(
@@ -577,11 +646,10 @@ const planWithProfile = async (
 const deployWithProfile = async (
   request: InstallationApplyRequest,
   root: string,
-  adoption: AdoptionManifest | undefined,
   prebuiltWorkers: boolean,
   credentialWrappingKey?: string,
 ): Promise<InstallationResult> => {
-  const { installation, stack } = makeStack(request, adoption, prebuiltWorkers);
+  const { installation, stack } = makeStack(request, prebuiltWorkers);
   return runWithProfile(
     request.profile,
     root,
@@ -767,13 +835,11 @@ const uploadCredentialWrappingKeyWithProfile = async (
 const inspectWithProfile = async (
   request: InstallationInspectRequest,
   root: string,
-  adoption: AdoptionManifest | undefined,
   token?: string,
   expectedAccountId?: string,
 ): Promise<InstallationResult> => {
   const installation = makeInstallationTopology(
     request.installationName,
-    adoption,
     previewConfiguration(request),
     request.evidenceEnabled === true,
   );
@@ -795,57 +861,12 @@ const inspectWithProfile = async (
           scriptName: installation.workerName,
         });
         const bindings = workerSettings.bindings ?? [];
-        const bindingNames = new Set(bindings.map((binding) => binding.name));
-        const requiredBindings = [
-          "AUTH",
-          "RUNNER_REGISTRY",
-          "RUNNERS",
-          "SANDBOX",
-          "SANDBOX_CONFIG",
-          "CREDENTIALS",
-          "SESSIONS",
-          "BACKUP_BUCKET",
-          "ARTIFACT_BUCKET",
-          "SANDBOX_BUNDLE_BUCKET",
-        ];
-        const sandboxBinding = bindings
-          .filter(isDurableObjectBinding)
-          .find((binding) => binding.name === "SANDBOX");
-        const sessionsBinding = bindings
-          .filter(isKvBinding)
-          .find((binding) => binding.name === "SESSIONS");
-        const backupBinding = bindings
-          .filter(isR2Binding)
-          .find((binding) => binding.name === "BACKUP_BUCKET");
-        const artifactBinding = bindings
-          .filter(isR2Binding)
-          .find((binding) => binding.name === "ARTIFACT_BUCKET");
-        const sandboxBundleBinding = bindings
-          .filter(isR2Binding)
-          .find((binding) => binding.name === "SANDBOX_BUNDLE_BUCKET");
-        const previewBaseBinding = bindings
-          .filter(isPlainTextBinding)
-          .find((binding) => binding.name === "SCOTTY_PREVIEW_BASE");
-        const evidenceEnabledBinding = bindings
-          .filter(isPlainTextBinding)
-          .find((binding) => binding.name === "SCOTTY_EVIDENCE_ENABLED");
-        if (
-          requiredBindings.some((name) => !bindingNames.has(name)) ||
-          sandboxBinding?.namespaceId === undefined ||
-          sessionsBinding?.namespaceId === undefined ||
-          backupBinding?.bucketName !== installation.backupBucketName ||
-          artifactBinding?.bucketName !== installation.artifactBucketName ||
-          sandboxBundleBinding?.bucketName !== installation.sandboxBundleBucketName ||
-          (installation.preview === undefined
-            ? previewBaseBinding !== undefined
-            : previewBaseBinding?.text !== installation.preview.base) ||
-          (installation.evidenceEnabled === true
-            ? evidenceEnabledBinding?.text !== "true"
-            : evidenceEnabledBinding !== undefined)
-        )
+        const requiredBindings = requiredInstallationBindings(bindings, installation);
+        if (requiredBindings === undefined)
           return yield* new InstallationDeploymentError({
             message: "The named Worker does not have the required Scotty bindings.",
           });
+        const { sandbox: sandboxBinding, sessions: sessionsBinding } = requiredBindings;
         yield* Workers.getScriptScriptAndVersionSetting({
           accountId,
           scriptName: installation.runnerWorkerName,
@@ -878,35 +899,7 @@ const inspectWithProfile = async (
           accountId,
           bucketName: installation.sandboxBundleBucketName,
         }).pipe(Effect.asVoid);
-        if (installation.preview !== undefined) {
-          const records = Array.from(
-            yield* DNS.listRecords
-              .items({
-                zoneId: installation.preview.zoneId,
-                name: { exact: `*.${installation.preview.base}` },
-                type: "AAAA",
-              })
-              .pipe(Stream.runCollect),
-          );
-          const routes = Array.from(
-            yield* Workers.listRoutes.items({ zoneId: installation.preview.zoneId }).pipe(
-              Stream.filter((route) => route.pattern === `*.${installation.preview?.base}/*`),
-              Stream.runCollect,
-            ),
-          );
-          if (
-            records.length !== 1 ||
-            records[0]?.name !== `*.${installation.preview.base}` ||
-            records[0].type !== "AAAA" ||
-            records[0].content !== "100::" ||
-            records[0].proxied !== true ||
-            routes.length !== 1 ||
-            routes[0]?.script !== installation.workerName
-          )
-            return yield* new InstallationDeploymentError({
-              message: "The evidence preview DNS or Worker Route has drifted.",
-            });
-        }
+        yield* verifyInstallationPreview(installation);
         const scriptSubdomain = yield* Workers.getScriptSubdomain({
           accountId,
           scriptName: installation.workerName,
@@ -963,13 +956,8 @@ export async function planInstallation(
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
   try {
-    const adoption = await readAdoptionManifest(
-      request.adoptionManifestPath,
-      request.installationName,
-    );
     const installation = makeInstallationTopology(
       request.installationName,
-      adoption,
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
@@ -977,7 +965,7 @@ export async function planInstallation(
       scriptName: installation.workerName,
     });
     await prepareInstallationDeployment(deployment, installation);
-    return await planWithProfile(request, deployment.root, adoption, deployment.prebuiltWorkers);
+    return await planWithProfile(request, deployment.root, deployment.prebuiltWorkers);
   } finally {
     await deployment.cleanup();
   }
@@ -989,13 +977,8 @@ export async function deployInstallation(
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
   try {
-    const adoption = await readAdoptionManifest(
-      request.adoptionManifestPath,
-      request.installationName,
-    );
     const installation = makeInstallationTopology(
       request.installationName,
-      adoption,
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
@@ -1004,7 +987,7 @@ export async function deployInstallation(
       scriptName: installation.workerName,
     });
     await prepareInstallationDeployment(deployment, installation);
-    return await deployWithProfile(request, deployment.root, adoption, deployment.prebuiltWorkers);
+    return await deployWithProfile(request, deployment.root, deployment.prebuiltWorkers);
   } finally {
     await deployment.cleanup();
   }
@@ -1018,12 +1001,11 @@ export async function planCreateInstallation(
   try {
     const installation = makeInstallationTopology(
       request.installationName,
-      undefined,
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
     await prepareInstallationDeployment(deployment, installation);
-    return await planWithProfile(request, deployment.root, undefined, deployment.prebuiltWorkers);
+    return await planWithProfile(request, deployment.root, deployment.prebuiltWorkers);
   } finally {
     await deployment.cleanup();
   }
@@ -1045,17 +1027,11 @@ export async function createInstallation(
     };
     const installation = makeInstallationTopology(
       request.installationName,
-      undefined,
       previewConfiguration(deployRequest),
       request.evidenceEnabled === true,
     );
     await prepareInstallationDeployment(deployment, installation);
-    const plan = await planWithProfile(
-      deployRequest,
-      deployment.root,
-      undefined,
-      deployment.prebuiltWorkers,
-    );
+    const plan = await planWithProfile(deployRequest, deployment.root, deployment.prebuiltWorkers);
     if (
       plan.accountId !== request.expectedAccountId ||
       plan.fingerprint !== request.expectedPlanFingerprint
@@ -1101,7 +1077,6 @@ export async function createInstallation(
       deployed = await inspectWithProfile(
         request,
         deployment.root,
-        undefined,
         request.token,
         request.expectedAccountId,
       );
@@ -1113,7 +1088,6 @@ export async function createInstallation(
           expectedPlanFingerprint: plan.fingerprint,
         },
         deployment.root,
-        undefined,
         deployment.prebuiltWorkers,
         request.credentialWrappingKey,
       );
@@ -1124,13 +1098,7 @@ export async function createInstallation(
       });
     }
     if (plan.changes.length > 0)
-      await inspectWithProfile(
-        request,
-        deployment.root,
-        undefined,
-        request.token,
-        request.expectedAccountId,
-      );
+      await inspectWithProfile(request, deployment.root, request.token, request.expectedAccountId);
     return deployed;
   } finally {
     await deployment.cleanup();
@@ -1143,18 +1111,13 @@ export async function uninstallInstallation(
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
   try {
-    const adoption = await readAdoptionManifest(
-      request.adoptionManifestPath,
-      request.installationName,
-    );
     const installation = makeInstallationTopology(
       request.installationName,
-      adoption,
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
     await prepareInstallationDeployment(deployment, installation);
-    const { stack } = makeStack(request, adoption, deployment.prebuiltWorkers);
+    const { stack } = makeStack(request, deployment.prebuiltWorkers);
     return await runWithProfile(request.profile, deployment.root, () =>
       provideAlchemy(
         evalStack(
@@ -1163,16 +1126,7 @@ export async function uninstallInstallation(
             Effect.gen(function* () {
               const environment = yield* Cloudflare.CloudflareEnvironment;
               const { accountId } = yield* environment;
-              if (
-                accountId !== request.expectedAccountId ||
-                installation.workerName !== request.expectedWorkerName ||
-                installation.runnerWorkerName !== request.expectedRunnerWorkerName ||
-                installation.containerName !== request.expectedContainerName ||
-                installation.kvTitle !== request.expectedKvTitle ||
-                installation.backupBucketName !== request.expectedBackupBucketName ||
-                installation.preview?.base !== request.expectedPreviewBase ||
-                installation.preview?.zoneId !== request.expectedPreviewZoneId
-              )
+              if (!uninstallTargetMatches(accountId, installation, request))
                 return yield* new InstallationDeploymentError({
                   message: "The uninstall target no longer matches the saved installation.",
                 });
@@ -1320,11 +1274,7 @@ export async function inspectInstallation(
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone inspection must remove its extracted payload on every exit
   try {
-    const adoption = await readAdoptionManifest(
-      request.adoptionManifestPath,
-      request.installationName,
-    );
-    return await inspectWithProfile(request, deployment.root, adoption);
+    return await inspectWithProfile(request, deployment.root);
   } finally {
     await deployment.cleanup();
   }
@@ -1336,13 +1286,8 @@ export async function recoverInstallation(
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone recovery must remove its extracted payload on every exit
   try {
-    const adoption = await readAdoptionManifest(
-      request.adoptionManifestPath,
-      request.installationName,
-    );
     const installation = makeInstallationTopology(
       request.installationName,
-      adoption,
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
@@ -1363,7 +1308,6 @@ export async function recoverInstallation(
     return await inspectWithProfile(
       request,
       deployment.root,
-      adoption,
       request.token,
       request.expectedAccountId,
     );

@@ -222,8 +222,8 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
     const credentials = path.join(sessionRoot, "credentials");
     const codexHome = path.join(credentials, "codex");
     return {
-      container: `scotty-runner-v1-${encoded}`,
-      resourceId: `runner-v1:${sessionId}`,
+      container: `scotty-runner-${encoded}`,
+      resourceId: `runner:${sessionId}`,
       sessionRoot,
       workspace: path.join(sessionRoot, "workspace"),
       credentials,

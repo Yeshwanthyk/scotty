@@ -50,7 +50,7 @@ The deployed canary checks the externally observable credential boundary describ
 
 ## Run against a disposable deployment
 
-The deployed canary uses `spikes/infra/full-stack-canary.run.ts`, which creates a complete
+The deployed canary uses `e2e/canary/full-stack-canary.run.ts`, which creates a complete
 stage-isolated Worker, Sandbox, Credential Registry, Auth Durable Objects, Container application,
 KV namespace, and R2 buckets with destroy-on-cleanup policies. The stage must be
 `scotty-e2e-<32 lowercase hex>` and requires exact stage-scoped deploy and cleanup approvals.
@@ -65,7 +65,7 @@ export CREDENTIAL_WRAPPING_KEY="$(node -e 'process.stdout.write(require("node:cr
 export SCOTTY_E2E_CREDENTIAL_WRAPPING_KEY="$CREDENTIAL_WRAPPING_KEY"
 export SCOTTY_E2E_APPROVE_DEPLOY="deploy:$stage"
 export SCOTTY_E2E_APPROVE_CLEANUP="destroy:$stage:disposable"
-npx alchemy deploy spikes/infra/full-stack-canary.run.ts --stage "$stage" --yes
+npx alchemy deploy e2e/canary/full-stack-canary.run.ts --stage "$stage" --yes
 ```
 
 Use the `workerName` and `workerUrl` printed by Alchemy. Publish disposable credentials through the
@@ -148,8 +148,8 @@ tests remain the at-rest proof. Every `__e2e` route requires the exact random ca
 and root bearer. After it passes, prove a second plan is a no-op, then destroy the entire stage:
 
 ```sh
-npx alchemy plan spikes/infra/full-stack-canary.run.ts --stage "$stage"
-npx alchemy destroy spikes/infra/full-stack-canary.run.ts --stage "$stage" --yes
+npx alchemy plan e2e/canary/full-stack-canary.run.ts --stage "$stage"
+npx alchemy destroy e2e/canary/full-stack-canary.run.ts --stage "$stage" --yes
 ```
 
 The cleanup hook retries `vaporize` and deletes the test-created remote branch if any assertion

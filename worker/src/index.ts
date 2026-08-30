@@ -1,24 +1,28 @@
 import { getSandbox } from "@cloudflare/sandbox";
 import {
-  decodePiConsoleCommandV1Promise,
+  decodePiConsoleCommandPromise,
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_PUBLIC_PATH_SEGMENT,
   PI_CONSOLE_PROXY_PREFIX,
 } from "../../protocol/pi-console";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
-import type { Bindings } from "./bindings";
-import { readBoundedBytes, readBoundedUtf8Body } from "./bounded-http";
-import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
-import { decodeEvidenceIdentifier, evidenceShowcaseProjection } from "./evidence-contracts";
-import { handleEvidencePreviewRequest } from "./evidence-preview";
+import type { Bindings } from "./shared/bindings";
+import { readBoundedBytes, readBoundedUtf8Body } from "./shared/bounded-http";
+import { decodeJsonValue } from "./shared/json";
+import {
+  ArtifactStore,
+  artifactStoreLayer,
+  r2ArtifactStoreCapabilities,
+} from "./evidence/artifact-store";
+import { decodeEvidenceIdentifier, evidenceShowcaseProjection } from "./evidence/contracts";
+import { handleEvidencePreviewRequest } from "./evidence/preview";
 import { hatchOrigin } from "./hatch/contracts";
 import { handleHatchRequest, hatchPreviewFormAction } from "./hatch/gateway";
-import { ContainerProxy } from "./container-session-egress";
+import { ContainerProxy } from "./egress/session";
 import {
   badRequest,
   conflict,
-  decodeJsonValue,
   ApiErrorCodeSchema,
   parseAuthClientId,
   parseCreateInput,
@@ -30,11 +34,11 @@ import {
   ScottyError,
   wrongState,
   type CreateSessionInput,
-} from "./contracts";
-import type { CreateIdempotencyMetadata } from "./create-idempotency";
+} from "./session/contracts";
+import type { CreateIdempotencyMetadata } from "./session/create-idempotency";
 import { Effect, Layer, Option, Predicate, Redacted, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
-import { sha256Hex } from "./digest";
+import { sha256Hex } from "./shared/digest";
 import {
   authRegistry,
   browserLabel,
@@ -50,13 +54,13 @@ import {
   requireOwnerPrincipal,
   setClientAuthCookie,
   unwrapAuthRpc,
-} from "./auth";
-import { ScottyAuthRegistry } from "./auth-object";
+} from "./auth/request";
+import { ScottyAuthRegistry } from "./auth/object";
 import {
   kvSessionProjectionStorage,
   listSessionProjections,
   sessionProjectionLayer,
-} from "./session-projection";
+} from "./session/projection";
 import {
   forgetRepoProjection,
   kvRepoProjectionStorage,
@@ -64,54 +68,54 @@ import {
   rebuildRepoProjection,
   repoProjectionMatches,
   repoProjectionLayer,
-} from "./repo-projection";
+} from "./repos/projection";
 import {
   decodeRepositoryRegistryRequest,
   type RepositoryRegistryEntry,
 } from "../../protocol/repository";
-import { RepoVerifier, repoVerifierLayer } from "./repo-verifier";
+import { RepoVerifier, repoVerifierLayer } from "./repos/verifier";
 import {
   kvStatsProjectionStorage,
   readStats,
   recordWorkspaceCreation,
   statsProjectionLayer,
-} from "./stats-projection";
+} from "./projections/stats";
 import {
   RunnerControlActionSchema,
   type RunnerControlAction,
   type RunnerControlStatus,
-} from "./runner-control";
+} from "./runner/control";
 import {
   ScottyRunnerRegistry,
   type RunnerRegistryRpcResult,
   type ScottyRunnerRegistryStub,
-} from "./runner-registry-object";
-import { validateSandboxArchive } from "./sandbox-archive";
+} from "./runner/registry-object";
+import { validateSandboxArchive } from "./sandbox/archive";
 import {
   SandboxBundleStore,
   SANDBOX_BUNDLE_MAX_GZIP_BYTES,
   sandboxBundleStoreLayer,
   r2SandboxBundleCapabilities,
-} from "./sandbox-bundle-store";
+} from "./sandbox/bundle-store";
 import {
   ScottySandboxConfig,
   SANDBOX_CONFIG_OBJECT_NAME,
   type SandboxConfigRpcResult,
   type ScottySandboxConfigStub,
-} from "./sandbox-config-object";
-import { inspectPassiveSession, steerPassiveSession } from "./passive-session";
-import { Sandbox as ScottySandbox } from "./session";
+} from "./sandbox/config-object";
+import { inspectPassiveSession, steerPassiveSession } from "./session/passive";
+import { Sandbox as ScottySandbox } from "./session/object";
 import {
   CREDENTIAL_REGISTRY_OBJECT_NAME,
   ScottyCredentialRegistry,
   type CredentialRegistryRpcResult,
   type ScottyCredentialRegistryStub,
-} from "./credential-object";
+} from "./credentials/object";
 import {
   CREDENTIAL_REGISTRY_SYNC_MAX_BODY_BYTES,
   decodeCredentialRegistryDesiredSyncInputResult,
   decodeCredentialRegistryResolvedCredentialResult,
-} from "./credential-contracts";
+} from "./credentials/contracts";
 
 export {
   ContainerProxy,
@@ -630,9 +634,7 @@ app.delete("/api/repos/:owner/:name", async (c) => {
   await Effect.runPromise(
     forgetRepoProjection(repo).pipe(Effect.provide(projectionLayers(c.env)), Effect.scoped),
   );
-  // `forgotten` is the legacy browser acknowledgement; keep it while exposing
-  // the authority's actual no-op/removal result to newer clients.
-  return c.json({ repo, removed, forgotten: true });
+  return c.json({ repo, removed });
 });
 
 app.get("/api/sessions", async (c) => {
@@ -790,7 +792,7 @@ app.get("/s/:id/showcase/:beforeJobId/:afterJobId", async (c) => {
   ]);
   if (evidenceShowcaseProjection(id, before, after) === undefined)
     throw wrongState("warm", "evidence", "Evidence runs do not form a matched Showcase");
-  return authAsset(c.env, c.req.raw, "/showcase.html");
+  return authAsset(c.env, c.req.raw, "/showcase/index.html");
 });
 
 app.get("/s/:id/evidence/:jobId/frames/:frame", async (c) => {
@@ -941,7 +943,7 @@ app.all(`/s/:id/${PI_CONSOLE_PUBLIC_PATH_SEGMENT}/:action`, async (c) => {
     if (text === undefined) throw badRequest("Console command body is too large");
     const json = decodeJsonValue(text);
     if (Option.isNone(json)) throw badRequest("Console command body must be valid JSON");
-    const decoded = await decodePiConsoleCommandV1Promise(json.value).then(
+    const decoded = await decodePiConsoleCommandPromise(json.value).then(
       (value) => Result.succeed(value),
       () => Result.fail(undefined),
     );
@@ -977,14 +979,14 @@ app.get("/sessions", async (c) => {
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return secureAsset(c.env, c.req.raw, "/sessions.html");
+  return secureAsset(c.env, c.req.raw, "/sessions/index.html");
 });
 
 app.get("/stats", async (c) => {
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return secureAsset(c.env, c.req.raw, "/stats.html");
+  return secureAsset(c.env, c.req.raw, "/stats/index.html");
 });
 
 app.get("/devices", async (c) => {
@@ -992,7 +994,7 @@ app.get("/devices", async (c) => {
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   requireOwnerPrincipal(principal);
   refreshClientAuthCookie(c, principal);
-  return authAsset(c.env, c.req.raw, "/devices.html");
+  return authAsset(c.env, c.req.raw, "/auth/devices.html");
 });
 
 app.get("/providers", async (c) => {
@@ -1000,12 +1002,12 @@ app.get("/providers", async (c) => {
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   requireOwnerPrincipal(principal);
   refreshClientAuthCookie(c, principal);
-  return authAsset(c.env, c.req.raw, "/providers.html");
+  return authAsset(c.env, c.req.raw, "/auth/providers.html");
 });
 
-app.get("/pair", (c) => authAsset(c.env, c.req.raw, "/pair.html"));
-app.get("/owner-transfer", (c) => authAsset(c.env, c.req.raw, "/owner-transfer.html"));
-app.get("/recover", (c) => authAsset(c.env, c.req.raw, "/recover.html"));
+app.get("/pair", (c) => authAsset(c.env, c.req.raw, "/auth/pair.html"));
+app.get("/owner-transfer", (c) => authAsset(c.env, c.req.raw, "/auth/owner-transfer.html"));
+app.get("/recover", (c) => authAsset(c.env, c.req.raw, "/auth/recover.html"));
 
 app.get("/", (c) => c.redirect("/sessions", 302));
 
@@ -1329,7 +1331,7 @@ async function serveScottySessionPage(
     return Response.redirect(new URL("/sessions", request.url).toString(), 302);
   if (session.provider === "runner")
     return Response.redirect(new URL("/sessions", request.url).toString(), 302);
-  return secureAsset(env, request, "/session.html", true);
+  return secureAsset(env, request, "/session/index.html", true);
 }
 
 async function serveScottySessionSubpath(
@@ -1404,7 +1406,7 @@ async function verifyRepository(
   repo: string,
 ): Promise<{ readonly exists: true; readonly defaultBranch: string } | { readonly exists: false }> {
   const registry = credentialRegistry(env);
-  const resolved = await registry.resolveGithubCliCredential({ version: 1, repository: repo });
+  const resolved = await registry.resolveGithubCliCredential({ repository: repo });
   if (!resolved.ok) {
     console.error("GitHub credential resolution failed", { reason: resolved.error.reason });
     throw new ScottyError("upstream", "Repository verification failed", {
@@ -1597,7 +1599,7 @@ async function secureAsset(
 }
 
 async function evidenceAsset(env: Bindings, request: Request): Promise<Response> {
-  const asset = await authAsset(env, request, "/evidence.html");
+  const asset = await authAsset(env, request, "/evidence/index.html");
   const headers = new Headers(asset.headers);
   headers.set("cache-control", "private, no-store");
   return new Response(asset.body, { status: asset.status, headers });

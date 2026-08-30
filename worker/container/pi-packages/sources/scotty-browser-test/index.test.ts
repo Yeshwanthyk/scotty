@@ -3,7 +3,7 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import scottyBrowserTest, {
-  BrowserEvidenceJobV2Parameters,
+  BrowserEvidenceJobParameters,
   runScottyBrowserTest,
   SCOTTY_BROWSER_TEST_MAX_BYTES,
   SCOTTY_BROWSER_TEST_ROUTE,
@@ -37,7 +37,7 @@ const result = () => ({
 });
 
 test("exposes only the bounded BrowserEvidenceJob v2 input", () => {
-  assert.equal(Check(BrowserEvidenceJobV2Parameters, job()), true);
+  assert.equal(Check(BrowserEvidenceJobParameters, job()), true);
   assert.doesNotThrow(() => serializeBrowserEvidenceJob(job()));
 
   for (const field of [
@@ -50,13 +50,13 @@ test("exposes only the bounded BrowserEvidenceJob v2 input", () => {
     "credential",
   ]) {
     const input = { ...job(), [field]: "forbidden" };
-    assert.equal(Check(BrowserEvidenceJobV2Parameters, input), false, field);
+    assert.equal(Check(BrowserEvidenceJobParameters, input), false, field);
     assert.throws(() => serializeBrowserEvidenceJob(input), /does not match/u);
   }
 
   for (const port of [1_023, 3_000, 43_117, 65_536]) {
     const input = { ...job(), port };
-    assert.equal(Check(BrowserEvidenceJobV2Parameters, input), false, String(port));
+    assert.equal(Check(BrowserEvidenceJobParameters, input), false, String(port));
   }
 });
 
@@ -88,7 +88,7 @@ test("enforces every string and array bound plus the 64 KiB request cap", () => 
     steps: [{ ...job().steps[0], action: { kind: "goto" as const, path: `/${"p".repeat(2_048)}` } }],
   };
   for (const input of [tooManySteps, tooManyAssertions, longName, longLocator, longPath]) {
-    assert.equal(Check(BrowserEvidenceJobV2Parameters, input), false);
+    assert.equal(Check(BrowserEvidenceJobParameters, input), false);
   }
 
   const maximumStep = {
@@ -111,7 +111,7 @@ test("enforces every string and array bound plus the 64 KiB request cap", () => 
     steps: Array.from({ length: 12 }, () => maximumStep),
     capture: { screenshots: "after-each-step" as const, video: true },
   };
-  assert.equal(Check(BrowserEvidenceJobV2Parameters, validButOversize), true);
+  assert.equal(Check(BrowserEvidenceJobParameters, validButOversize), true);
   assert.ok(Buffer.byteLength(JSON.stringify(validButOversize), "utf8") > SCOTTY_BROWSER_TEST_MAX_BYTES);
   assert.throws(() => serializeBrowserEvidenceJob(validButOversize), /64 KiB/u);
 });

@@ -243,8 +243,7 @@ describe("Effect command tree", () => {
         requests.push(request);
         if (request.method === "POST") bodies.push(JSON.parse(await request.clone().text()));
         if (request.method === "POST") return Response.json(entry);
-        if (request.method === "DELETE")
-          return Response.json({ repo: entry.repo, removed: true, forgotten: true });
+        if (request.method === "DELETE") return Response.json({ repo: entry.repo, removed: true });
         return Response.json([entry]);
       };
       const shared = {
@@ -272,7 +271,6 @@ describe("Effect command tree", () => {
       assert.deepStrictEqual(JSON.parse(removedJson.stdout.join("")), {
         repo: entry.repo,
         removed: true,
-        forgotten: true,
       });
       assert.deepStrictEqual(
         requests.map((request) => ({

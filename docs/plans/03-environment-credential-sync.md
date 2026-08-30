@@ -100,7 +100,7 @@ The Session grant may persist the non-secret target name, but never source-machi
 
 **Behavior:** Add the granted target/value to the existing agent startup environment without serializing it into request files, shell scripts, logs, or command arguments. If the baseline can only establish environment through a generated shell file, use a mode-0600 adapter-owned file outside backup scope and source it without echoing; record that boundary in the handoff.
 
-**Likely baseline files:** `worker/src/container-auth.ts` and the existing Sandbox runtime/start boundary only.
+**Likely baseline files:** `worker/src/sandbox/auth.ts` and the existing Sandbox runtime/start boundary only.
 
 **Complete when:** an unchanged fixture tool observes the target variable and returns a non-secret proof derived from it, while a neighboring undeclared variable is absent.
 

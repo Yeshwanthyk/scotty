@@ -4,9 +4,9 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Check } from "typebox/value";
 import {
-  BrowserEvidenceJobV2Parameters,
+  BrowserEvidenceJobParameters,
   SCOTTY_BROWSER_TEST_MAX_BYTES,
-  type BrowserEvidenceJobV2,
+  type BrowserEvidenceJob,
 } from "./index.ts";
 
 const ACTION_TIMEOUT_MILLIS = 5_000;
@@ -19,9 +19,9 @@ const MAX_VIDEO_BYTES = 25 * 1_024 * 1_024;
 const PNG_SIGNATURE = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const WEBM_SIGNATURE = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3]);
 
-type EvidenceAssertionKind = BrowserEvidenceJobV2["steps"][number]["expect"][number]["kind"];
+type EvidenceAssertionKind = BrowserEvidenceJob["steps"][number]["expect"][number]["kind"];
 type EvidenceLocator = Exclude<
-  BrowserEvidenceJobV2["steps"][number]["expect"][number],
+  BrowserEvidenceJob["steps"][number]["expect"][number],
   { readonly kind: "urlPath" }
 >["locator"];
 
@@ -54,7 +54,7 @@ export interface RunnerStep {
   readonly frame: RunnerFrame;
 }
 
-export interface RunnerManifestV1 {
+export interface RunnerManifest {
   readonly version: 1;
   readonly status: RunnerStatus;
   readonly completedSteps: number;
@@ -114,7 +114,7 @@ export interface RunnerContext {
 export interface RunnerBrowser {
   readonly newContext: (options: {
     readonly serviceWorkers: "block";
-    readonly viewport: BrowserEvidenceJobV2["viewport"];
+    readonly viewport: BrowserEvidenceJob["viewport"];
   }) => Promise<RunnerContext>;
   readonly close: () => Promise<void>;
 }
@@ -132,14 +132,14 @@ export interface BrowserTestRuntime {
   readonly now: () => number;
   readonly sleep: (millis: number) => Promise<void>;
   readonly prepareOutput: (outputDirectory: string) => Promise<void>;
-  readonly startDisplay: (viewport: BrowserEvidenceJobV2["viewport"]) => Promise<RunnerDisplay>;
+  readonly startDisplay: (viewport: BrowserEvidenceJob["viewport"]) => Promise<RunnerDisplay>;
   readonly launchBrowser: (
     display: string,
-    viewport: BrowserEvidenceJobV2["viewport"],
+    viewport: BrowserEvidenceJob["viewport"],
   ) => Promise<RunnerBrowser>;
   readonly startRecorder: (
     display: string,
-    viewport: BrowserEvidenceJobV2["viewport"],
+    viewport: BrowserEvidenceJob["viewport"],
     path: string,
   ) => Promise<RunnerRecorder>;
   readonly validateArtifact: (
@@ -251,7 +251,7 @@ const stopProcess = async (
 };
 
 const startNodeDisplay = async (
-  viewport: BrowserEvidenceJobV2["viewport"],
+  viewport: BrowserEvidenceJob["viewport"],
 ): Promise<RunnerDisplay> => {
   const displayNumber = 100 + (process.pid % 900);
   const name = `:${displayNumber}`;
@@ -280,7 +280,7 @@ const startNodeDisplay = async (
 
 const launchNodeBrowser = async (
   display: string,
-  viewport: BrowserEvidenceJobV2["viewport"],
+  viewport: BrowserEvidenceJob["viewport"],
 ): Promise<RunnerBrowser> => {
   const { chromium } = await import("playwright-core");
   const server = await chromium.launchServer({
@@ -363,7 +363,7 @@ const launchNodeBrowser = async (
 
 const startNodeRecorder = async (
   display: string,
-  viewport: BrowserEvidenceJobV2["viewport"],
+  viewport: BrowserEvidenceJob["viewport"],
   path: string,
 ): Promise<RunnerRecorder> => {
   const process_ = managedProcess("ffmpeg", [
@@ -468,7 +468,7 @@ const locatorFor = (page: RunnerPage, locator: EvidenceLocator): RunnerLocator =
 const executeAction = async (
   page: RunnerPage,
   origin: string,
-  action: BrowserEvidenceJobV2["steps"][number]["action"],
+  action: BrowserEvidenceJob["steps"][number]["action"],
   step: number,
 ): Promise<void> => {
   try {
@@ -497,7 +497,7 @@ const executeAction = async (
 const executeAssertion = async (
   page: RunnerPage,
   origin: string,
-  assertion: BrowserEvidenceJobV2["steps"][number]["expect"][number],
+  assertion: BrowserEvidenceJob["steps"][number]["expect"][number],
   step: number,
   deadlineMillis: number,
   runtime: BrowserTestRuntime,
@@ -535,7 +535,7 @@ const executeAssertion = async (
 const failureManifest = (
   steps: readonly RunnerStep[],
   failure: BrowserTestFailure,
-): RunnerManifestV1 => ({
+): RunnerManifest => ({
   version: 1,
   status: failure.status,
   completedSteps: steps.length,
@@ -552,10 +552,10 @@ const normalizeFailure = (error: unknown, step?: number): BrowserTestFailure =>
     : new BrowserTestFailure("interrupted", "interrupted", step);
 
 export async function runBrowserEvidenceJob(
-  job: BrowserEvidenceJobV2,
+  job: BrowserEvidenceJob,
   outputDirectory: string,
   runtime: BrowserTestRuntime = nodeBrowserTestRuntime,
-): Promise<RunnerManifestV1> {
+): Promise<RunnerManifest> {
   const output = resolve(outputDirectory);
   const origin = `http://127.0.0.1:${job.port}`;
   const startedAtMillis = runtime.now();
@@ -693,14 +693,14 @@ export async function runBrowserEvidenceJob(
   };
 }
 
-export function serializeRunnerManifest(manifest: RunnerManifestV1): string {
+export function serializeRunnerManifest(manifest: RunnerManifest): string {
   const encoded = JSON.stringify(manifest);
   if (Buffer.byteLength(encoded, "utf8") > SCOTTY_BROWSER_TEST_MAX_BYTES)
     throw new BrowserTestFailure("interrupted", "interrupted");
   return encoded;
 }
 
-const decodeJobFile = async (path: string): Promise<BrowserEvidenceJobV2> => {
+const decodeJobFile = async (path: string): Promise<BrowserEvidenceJob> => {
   const metadata = await stat(path);
   if (!metadata.isFile() || metadata.size <= 0 || metadata.size > SCOTTY_BROWSER_TEST_MAX_BYTES)
     throw new BrowserTestFailure("unsupported", "unsupported");
@@ -717,7 +717,7 @@ const decodeJobFile = async (path: string): Promise<BrowserEvidenceJobV2> => {
   } catch {
     throw new BrowserTestFailure("unsupported", "unsupported");
   }
-  if (!Check(BrowserEvidenceJobV2Parameters, value))
+  if (!Check(BrowserEvidenceJobParameters, value))
     throw new BrowserTestFailure("unsupported", "unsupported");
   return value;
 };
@@ -725,7 +725,7 @@ const decodeJobFile = async (path: string): Promise<BrowserEvidenceJobV2> => {
 export async function runBrowserTestCli(
   arguments_: readonly string[],
   runtime: BrowserTestRuntime = nodeBrowserTestRuntime,
-): Promise<RunnerManifestV1> {
+): Promise<RunnerManifest> {
   if (arguments_.length !== 2 || arguments_[0] === undefined || arguments_[1] === undefined)
     return failureManifest([], new BrowserTestFailure("unsupported", "unsupported"));
   try {

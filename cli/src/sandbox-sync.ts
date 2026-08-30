@@ -17,7 +17,6 @@ import {
 import { type ApiRequestTarget, apiRequest, decodeJson, requestJson } from "./transport";
 
 export const SandboxRemoteConfigStatusSchema = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   activeDigest: Schema.NullOr(SandboxDigestSchema),
 });
@@ -44,7 +43,6 @@ export type ScottyCredentialSyncMaterial =
     };
 
 const CredentialRegistrySyncResultSchema = Schema.Struct({
-  version: Schema.Literal(1),
   credentials: Schema.Array(CredentialRedactedMetadataSchema),
 });
 const decodeCredentialRegistrySyncResult = Schema.decodeUnknownEffect(
@@ -191,7 +189,6 @@ export const synchronizeCredentialRegistry = Effect.fnUntraced(function* (input:
   const value = yield* requestJson(input.target, "/api/credentials/sync", {
     method: "POST",
     body: JSON.stringify({
-      version: 1,
       credentials: input.credentials,
     }),
   }).pipe(Effect.mapError(mapCredentialTransportError));

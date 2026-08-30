@@ -125,13 +125,12 @@ Use the recount, not this table, as execution truth. If the target findings chan
 ### 3. Run focused characterization
 
 ```sh
-npx vitest run worker/test/scotty-pi-protocol.test.mjs
+npx vitest run worker/test/protocol/scotty-pi-protocol.test.mjs
 node --test scripts/pi-session-supervisor.test.mjs
 npx vitest run \
-  worker/test/container-auth.test.ts \
-  worker/test/session-auth-reseed.test.ts \
-  worker/test/pi-console-protocol.test.ts \
-  worker/test/session-worklog.test.ts
+  worker/test/sandbox/container-auth.test.ts \
+  worker/test/protocol/pi-console-protocol.test.ts \
+  worker/test/session/session-worklog.test.ts
 ```
 
 The first two are the direct protocol/supervisor proof. The surrounding tests protect Container process ownership, token/sentinel handling, Worker-facing console records, and worklog behavior.
@@ -247,12 +246,11 @@ This is local proof through the production Worker configuration, actual CLI entr
 
 ### Existing proof
 
-- `worker/test/scotty-pi-protocol.test.mjs`
+- `worker/test/protocol/scotty-pi-protocol.test.mjs`
 - `scripts/pi-session-supervisor.test.mjs`
-- `worker/test/container-auth.test.ts`
-- `worker/test/session-auth-reseed.test.ts`
-- `worker/test/pi-console-protocol.test.ts`
-- `worker/test/session-worklog.test.ts`
+- `worker/test/sandbox/container-auth.test.ts`
+- `worker/test/protocol/pi-console-protocol.test.ts`
+- `worker/test/session/session-worklog.test.ts`
 
 ## Implementation chunks
 
@@ -274,7 +272,7 @@ This is local proof through the production Worker configuration, actual CLI entr
 **Completion check:**
 
 ```sh
-npx vitest run worker/test/scotty-pi-protocol.test.mjs
+npx vitest run worker/test/protocol/scotty-pi-protocol.test.mjs
 node --test scripts/pi-session-supervisor.test.mjs
 ```
 
@@ -300,9 +298,9 @@ node --test scripts/pi-session-supervisor.test.mjs
 **Completion check:**
 
 ```sh
-npx vitest run worker/test/scotty-pi-protocol.test.mjs
+npx vitest run worker/test/protocol/scotty-pi-protocol.test.mjs
 node --test scripts/pi-session-supervisor.test.mjs
-npx vitest run worker/test/pi-console-protocol.test.ts worker/test/session-worklog.test.ts
+npx vitest run worker/test/protocol/pi-console-protocol.test.ts worker/test/session/session-worklog.test.ts
 ```
 
 **Risk:** Reordering a mutation around an awaited RPC can change replay, pending-UI, overlap, or shutdown behavior. Preserve current ordering first; simplify only after the focused proof stays green.
@@ -326,7 +324,6 @@ npx vitest run worker/test/pi-console-protocol.test.ts worker/test/session-workl
 
 ```sh
 node --test scripts/pi-session-supervisor.test.mjs
-npx vitest run worker/test/container-auth.test.ts worker/test/session-auth-reseed.test.ts
 ./node_modules/.bin/oxlint --disable-nested-config \
   worker/container/scotty-pi-protocol.mjs \
   worker/container/scotty-pi-session.mjs
@@ -343,13 +340,12 @@ Run formatting before lint so diagnostics refer to final lines:
 ```sh
 npm run fmt
 npm run lint:skills
-npx vitest run worker/test/scotty-pi-protocol.test.mjs
+npx vitest run worker/test/protocol/scotty-pi-protocol.test.mjs
 node --test scripts/pi-session-supervisor.test.mjs
 npx vitest run \
-  worker/test/container-auth.test.ts \
-  worker/test/session-auth-reseed.test.ts \
-  worker/test/pi-console-protocol.test.ts \
-  worker/test/session-worklog.test.ts
+  worker/test/sandbox/container-auth.test.ts \
+  worker/test/protocol/pi-console-protocol.test.ts \
+  worker/test/session/session-worklog.test.ts
 npm run typecheck:worker
 npm run knip:check
 ./node_modules/.bin/oxlint --disable-nested-config \
@@ -408,7 +404,7 @@ git status --short
 git diff -- \
   worker/container/scotty-pi-protocol.mjs \
   worker/container/scotty-pi-session.mjs \
-  worker/test/scotty-pi-protocol.test.mjs \
+  worker/test/protocol/scotty-pi-protocol.test.mjs \
   scripts/pi-session-supervisor.test.mjs
 git add worker/container/scotty-pi-protocol.mjs worker/container/scotty-pi-session.mjs
 # Add either test file only if a real touched contract required characterization.

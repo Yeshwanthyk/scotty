@@ -55,6 +55,46 @@ export type ApiRequestTarget =
   | { readonly host: string; readonly token: string }
   | { readonly host: "https://scotty.internal"; readonly token?: never };
 
+const requestHeaders = (target: ApiRequestTarget, init: RequestInit, method: string): Headers => {
+  const headers = new Headers(init.headers);
+  if (target.token !== undefined) headers.set("authorization", `Bearer ${target.token}`);
+  headers.set("accept", "application/json, application/x-tar, application/octet-stream");
+  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  if (method !== "GET" && !headers.has("idempotency-key"))
+    headers.set("idempotency-key", crypto.randomUUID());
+  return headers;
+};
+
+const responseError = (
+  target: ApiRequestTarget,
+  response: Response,
+  bytes: Uint8Array,
+): CliError => {
+  const json = decodeJsonValue(new TextDecoder().decode(bytes));
+  const envelope = Option.isSome(json) ? decodeErrorEnvelope(json.value) : Option.none();
+  const fields =
+    Option.isSome(envelope) && envelope.value.error !== undefined
+      ? decodeErrorFields(envelope.value.error)
+      : Option.none();
+  const code = Option.isSome(fields)
+    ? (Option.getOrUndefined(decodeString(fields.value.code)) ?? `http_${response.status}`)
+    : `http_${response.status}`;
+  const message =
+    (Option.isSome(fields)
+      ? Option.getOrUndefined(decodeString(fields.value.message))
+      : undefined) ?? `Request failed with HTTP ${response.status}`;
+  const hint =
+    (Option.isSome(fields) ? Option.getOrUndefined(decodeString(fields.value.hint)) : undefined) ??
+    "Check the session state and Worker logs.";
+  const secrets = target.token === undefined ? [] : [target.token];
+  return new CliError(
+    redact(code, secrets),
+    redact(message, secrets),
+    redact(hint, secrets),
+    statusExit(response.status, code),
+  );
+};
+
 export const apiRequest = Effect.fnUntraced(function* (
   target: ApiRequestTarget,
   path: string,
@@ -63,43 +103,14 @@ export const apiRequest = Effect.fnUntraced(function* (
   const transport = yield* HttpTransport;
   const method = init.method || "GET";
   const timeout = method === "GET" ? DEFAULT_REQUEST_TIMEOUT_MS : MUTATION_REQUEST_TIMEOUT_MS;
-  const headers = new Headers(init.headers);
-  if (target.token !== undefined) headers.set("authorization", `Bearer ${target.token}`);
-  headers.set("accept", "application/json, application/x-tar, application/octet-stream");
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  if (method !== "GET" && !headers.has("idempotency-key"))
-    headers.set("idempotency-key", crypto.randomUUID());
+  const headers = requestHeaders(target, init, method);
   const responseOption = yield* transport
     .fetch(`${target.host}${path}`, { ...init, headers })
     .pipe(Effect.timeoutOption(timeout));
   if (Option.isNone(responseOption)) return yield* timeoutError();
   const response = responseOption.value;
   const bytes = yield* readLimited(response);
-  if (!response.ok) {
-    const json = decodeJsonValue(new TextDecoder().decode(bytes));
-    const envelope = Option.isSome(json) ? decodeErrorEnvelope(json.value) : Option.none();
-    const fields =
-      Option.isSome(envelope) && envelope.value.error !== undefined
-        ? decodeErrorFields(envelope.value.error)
-        : Option.none();
-    const code = Option.isSome(fields)
-      ? (Option.getOrUndefined(decodeString(fields.value.code)) ?? `http_${response.status}`)
-      : `http_${response.status}`;
-    const message =
-      (Option.isSome(fields)
-        ? Option.getOrUndefined(decodeString(fields.value.message))
-        : undefined) ?? `Request failed with HTTP ${response.status}`;
-    const hint =
-      (Option.isSome(fields)
-        ? Option.getOrUndefined(decodeString(fields.value.hint))
-        : undefined) ?? "Check the session state and Worker logs.";
-    return yield* new CliError(
-      redact(code, target.token === undefined ? [] : [target.token]),
-      redact(message, target.token === undefined ? [] : [target.token]),
-      redact(hint, target.token === undefined ? [] : [target.token]),
-      statusExit(response.status, code),
-    );
-  }
+  if (!response.ok) return yield* responseError(target, response, bytes);
   return { response, bytes };
 });
 

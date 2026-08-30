@@ -74,7 +74,6 @@ export const RepositoryRegistryEntrySchema = Schema.Struct({
 export type RepositoryRegistryEntry = typeof RepositoryRegistryEntrySchema.Type;
 
 export const RepositoryRegistryAuthoritySchema = Schema.Struct({
-  version: Schema.Literal(1),
   entries: Schema.Array(RepositoryRegistryEntrySchema),
 });
 export type RepositoryRegistryAuthority = typeof RepositoryRegistryAuthoritySchema.Type;
@@ -85,11 +84,9 @@ export const RepositoryRegistryUpsertInputSchema = Schema.Struct({
 });
 export type RepositoryRegistryUpsertInput = typeof RepositoryRegistryUpsertInputSchema.Type;
 
-/** Legacy projection-removal acknowledgement retained for the browser composer. */
 export const RepositoryRegistryRemovalResponseSchema = Schema.Struct({
   repo: RepositoryIdentitySchema,
   removed: Schema.Boolean,
-  forgotten: Schema.Boolean,
 });
 
 export const decodeRepositoryRegistryEntry = Schema.decodeUnknownOption(

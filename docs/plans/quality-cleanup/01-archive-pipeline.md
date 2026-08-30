@@ -33,20 +33,20 @@ Production files:
 
 - `cli/src/sandbox-archive.ts`
 - `cli/src/sandbox-walk.ts`
-- `worker/src/sandbox-archive.ts`
+- `worker/src/sandbox/archive.ts`
 
 Focused tests:
 
 - `cli/effect-test/sandbox-bundle.test.ts`
 - `cli/effect-test/scotty-bundle.test.ts`
 - `cli/effect-test/sandbox-sync.test.ts`
-- `worker/test/sandbox-archive.test.ts`
-- the existing sandbox-bundle upload case in `worker/test/routes.test.ts`
+- `worker/test/sandbox/sandbox-archive.test.ts`
+- the existing sandbox-bundle upload case in `worker/test/integration/routes.test.ts`
 - the existing `sandbox add` and `sandbox sync` cases in `cli/test/cli.test.ts`
 
 Direct callers are evidence, not refactor scope: `cli/src/sandbox-prepare.ts`,
 `cli/src/scotty-bundle.ts`, `cli/src/sandbox-sync.ts`, `worker/src/index.ts`, and
-`worker/src/sandbox-bundle-materializer.ts`.
+`worker/src/sandbox/bundle-materializer.ts`.
 
 Do not redesign manifests, storage, synchronization, materialization, session creation, or CLI
 commands. Add or adjust a characterization only when a helper move touches an already-live contract.
@@ -62,8 +62,8 @@ snapshot, `npm run lint` reports 64 complexity findings. The scoped findings are
 | `cli/src/sandbox-walk.ts` — `walkSandboxTree`          |         23 |
 | `cli/src/sandbox-archive.ts` — `parseSandboxTar`       |         28 |
 | `cli/src/sandbox-archive.ts` — `expectedV2Files`       |         30 |
-| `worker/src/sandbox-archive.ts` — `parseSandboxTar`    |         30 |
-| `worker/src/sandbox-archive.ts` — `validateV2Manifest` |         30 |
+| `worker/src/sandbox/archive.ts` — `parseSandboxTar`    |         30 |
+| `worker/src/sandbox/archive.ts` — `validateV2Manifest` |         30 |
 
 A fresh implementation session must not assume that snapshot is still HEAD. Before editing:
 
@@ -272,10 +272,10 @@ archive findings are gone and no replacement finding appears.
 **Behavior:** Preserve upload-time and materialization-time validation, Worker-only limits, returned
 `manifestJson`/`members`, and public error classification.
 
-**Files and symbols:** `worker/src/sandbox-archive.ts`, `worker/test/sandbox-archive.test.ts`, and the
-focused upload case in `worker/test/routes.test.ts`;
+**Files and symbols:** `worker/src/sandbox/archive.ts`, `worker/test/sandbox/sandbox-archive.test.ts`, and the
+focused upload case in `worker/test/integration/routes.test.ts`;
 start at `parseSandboxTar`, `validateV2Manifest`, and `validateSandboxArchive`. Use
-`worker/src/index.ts` and `worker/src/sandbox-bundle-materializer.ts` only to verify unchanged callers
+`worker/src/index.ts` and `worker/src/sandbox/bundle-materializer.ts` only to verify unchanged callers
 and mappings.
 
 **Mechanism:** Apply the same phase boundaries as Chunk 2 with Worker-local helpers and
@@ -298,8 +298,8 @@ npx vitest run \
   cli/effect-test/sandbox-bundle.test.ts \
   cli/effect-test/scotty-bundle.test.ts \
   cli/effect-test/sandbox-sync.test.ts \
-  worker/test/sandbox-archive.test.ts
-npx vitest run worker/test/routes.test.ts --testNamePattern 'reads and uploads sandbox bundles'
+  worker/test/sandbox/sandbox-archive.test.ts
+npx vitest run worker/test/integration/routes.test.ts --testNamePattern 'reads and uploads sandbox bundles'
 (cd cli && bun test test/cli.test.ts --test-name-pattern 'sandbox add,|sandbox add persists|sandbox add rejects|sandbox add allows|sandbox sync uploads')
 npm run typecheck:cli
 npm run typecheck:worker
@@ -313,7 +313,7 @@ npm run lint:skills
 npx oxlint --disable-nested-config --deny-warnings \
   cli/src/sandbox-archive.ts \
   cli/src/sandbox-walk.ts \
-  worker/src/sandbox-archive.ts
+  worker/src/sandbox/archive.ts
 ```
 
 Then run the exact second lab flow from the starting-proof section.

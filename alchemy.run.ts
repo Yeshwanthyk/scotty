@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -9,12 +8,9 @@ import {
   expectedCloudflareStackApproval,
 } from "./infra/cloudflare-stack.ts";
 import {
-  adoptionMatchesInstallation,
-  decodeAdoptionManifestJson,
   decodeInstallationPreviewConfiguration,
   makeInstallationTopology,
   parseInstallationName,
-  type AdoptionManifest,
   type InstallationPreviewConfiguration,
 } from "./infra/installation.ts";
 
@@ -33,17 +29,6 @@ if (Option.isNone(parseInstallationName(installationName))) {
   throw new Error("SCOTTY_INSTALLATION_NAME must be a 2-32 character lowercase name.");
 }
 
-const adoptionPath = process.env.SCOTTY_ADOPTION_MANIFEST?.trim();
-let adoption: AdoptionManifest | undefined;
-if (adoptionPath) {
-  const decoded = decodeAdoptionManifestJson(readFileSync(adoptionPath, "utf8"));
-  if (Option.isNone(decoded) || !adoptionMatchesInstallation(decoded.value, installationName)) {
-    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects invalid machine-local adoption metadata
-    throw new Error("SCOTTY_ADOPTION_MANIFEST is invalid or names a different installation.");
-  }
-  adoption = decoded.value;
-}
-
 const previewBase = required("SCOTTY_PREVIEW_BASE");
 const previewZoneId = required("SCOTTY_PREVIEW_ZONE_ID");
 const decodedPreview = decodeInstallationPreviewConfiguration({
@@ -58,7 +43,7 @@ if (Option.isNone(decodedPreview)) {
 }
 const preview: InstallationPreviewConfiguration = decodedPreview.value;
 
-const installation = makeInstallationTopology(installationName, adoption, preview, true);
+const installation = makeInstallationTopology(installationName, preview, true);
 
 export default Alchemy.Stack(
   installation.stackName,

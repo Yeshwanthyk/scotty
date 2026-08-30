@@ -43,13 +43,13 @@ Default to one ticket per fresh session.
 
 | Ticket | Outcome                                                                                                              | Primary files                                                                                   | Depends on |
 | ------ | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- |
-| Q1     | One clear archive validation/building pipeline across CLI and Worker without changing archive bytes or public errors | `cli/src/{archive,sandbox-archive,sandbox-walk}.ts`, `worker/src/sandbox-archive.ts`            | Baseline   |
+| Q1     | One clear archive validation/building pipeline across CLI and Worker without changing archive bytes or public errors | `cli/src/{archive,sandbox-archive,sandbox-walk}.ts`, `worker/src/sandbox/archive.ts`            | Baseline   |
 | Q2     | Smaller Worker authentication and egress decision seams while preserving authority and credential isolation          | `worker/src/{auth-registry,container-session-egress,egress}.ts`                                 | Baseline   |
 | Q3     | Separate Pi wire decoding, session transition, and host I/O in the container without changing protocol records       | `worker/container/scotty-pi-{protocol,session}.mjs`                                             | Baseline   |
 | Q4     | Decompose CLI command and installation orchestration around existing services and public JSON/exit contracts         | `cli/src/{commands,dependencies,installation-deployment,runner-operation-journal,transport}.ts` | Q1         |
 | Q5     | Make TUI and browser projections explicit consumers of the stabilized protocol; preserve rendered behavior           | `tui/src/**`, affected `worker/public/*.js` projection/view modules                             | Q3         |
 | Q6     | Simplify production deployment planning and settlement proof without changing deployment authority                   | `scripts/deploy-production.mjs`, `infra/installation.ts`, `scripts/check-pi-packages.mjs`       | Q1, Q2, Q4 |
-| Q7     | Remove remaining complexity in tests, fixtures, and research spikes after production seams settle                    | affected `worker/test/**`, `cli/effect-test/**`, `desktop/fixtures/**`, `spikes/infra/**`       | Q5, Q6     |
+| Q7     | Remove remaining complexity in tests, fixtures, canaries, and infrastructure proofs after production seams settle    | affected `worker/test/**`, `cli/effect-test/**`, `infra/test/**`, `e2e/canary/**`               | Q5, Q6     |
 
 A ticket may finish with more than one commit only when a mechanical move must be proven separately
 from a behavior-preserving simplification. It must still end in the same session and stop.

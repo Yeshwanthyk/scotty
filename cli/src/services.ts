@@ -59,7 +59,6 @@ export interface CliDependencies {
 export interface InstallationDeployRequest {
   readonly installationName: string;
   readonly profile: string;
-  readonly adoptionManifestPath?: string;
   readonly previewBase?: string;
   readonly previewZoneId?: string;
   readonly evidenceEnabled?: true;
@@ -81,7 +80,6 @@ export interface InstallationApplyRequest extends InstallationDeployRequest {
 export interface InstallationInspectRequest {
   readonly installationName: string;
   readonly profile: string;
-  readonly adoptionManifestPath?: string;
   readonly previewBase?: string;
   readonly previewZoneId?: string;
   readonly evidenceEnabled?: true;

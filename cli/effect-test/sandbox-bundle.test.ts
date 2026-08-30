@@ -66,7 +66,7 @@ const directoryMember = (path: string): TarMember => ({
   bytes: new Uint8Array(),
 });
 
-const v2FileItem = (filePath = "hello") => {
+const fileItem = (filePath = "hello") => {
   const bytes = encoder.encode("hello\n");
   const file = {
     path: filePath,
@@ -83,9 +83,9 @@ const v2FileItem = (filePath = "hello") => {
   };
 };
 
-const v2Archive = (items: ReadonlyArray<unknown>, members: ReadonlyArray<TarMember>) =>
+const itemArchive = (items: ReadonlyArray<unknown>, members: ReadonlyArray<TarMember>) =>
   createDeterministicTarGz([
-    fileMember("manifest.json", `${JSON.stringify({ schemaVersion: 2, items })}\n`),
+    fileMember("manifest.json", `${JSON.stringify({ items })}\n`),
     ...members,
   ]);
 
@@ -109,19 +109,17 @@ const patchHeader = (tar: Uint8Array, patch: (header: Uint8Array) => void): Uint
 
 describe("sandbox archive validation", () => {
   it("accepts a deterministic round-trip archive", () => {
-    const built = createDeterministicTarGz([
-      fileMember("manifest.json", '{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
-    ]);
+    const built = createDeterministicTarGz([fileMember("manifest.json", '{"items":[]}\n')]);
     const validated = succeeded(validateSandboxArchive(built.archive));
     assert.strictEqual(validated.digest, built.digest);
   });
 
-  it("validates v2 item identity, paths, digests, and shapes", () => {
-    const item = v2FileItem();
-    const valid = v2Archive([item], [fileMember("tools/hello", "hello\n")]);
-    assert.strictEqual(succeeded(validateSandboxArchive(valid.archive)).manifest.schemaVersion, 2);
+  it("validates item identity, paths, digests, and shapes", () => {
+    const item = fileItem();
+    const valid = itemArchive([item], [fileMember("tools/hello", "hello\n")]);
+    assert.deepEqual(succeeded(validateSandboxArchive(valid.archive)).manifest.items, [item]);
 
-    const duplicateItem = v2Archive([item, item], [fileMember("tools/hello", "hello\n")]);
+    const duplicateItem = itemArchive([item, item], [fileMember("tools/hello", "hello\n")]);
     assert.include(
       failed(validateSandboxArchive(duplicateItem.archive)).message,
       "duplicate bundle",
@@ -134,20 +132,20 @@ describe("sandbox archive validation", () => {
       files: [record, record],
       digest: itemContentDigest([record, record]),
     };
-    const duplicatePath = v2Archive(
+    const duplicatePath = itemArchive(
       [duplicatePathItem],
       [directoryMember("tools/hello"), fileMember("tools/hello/hello", "hello\n")],
     );
     assert.include(failed(validateSandboxArchive(duplicatePath.archive)).message, "duplicate file");
 
-    const wrongDigest = v2Archive(
+    const wrongDigest = itemArchive(
       [{ ...item, digest: "0".repeat(64) }],
       [fileMember("tools/hello", "hello\n")],
     );
     assert.include(failed(validateSandboxArchive(wrongDigest.archive)).message, "item digest");
 
-    const wrongShape = v2FileItem("other");
-    const incoherent = v2Archive([wrongShape], [fileMember("tools/other", "hello\n")]);
+    const wrongShape = fileItem("other");
+    const incoherent = itemArchive([wrongShape], [fileMember("tools/other", "hello\n")]);
     assert.include(failed(validateSandboxArchive(incoherent.archive)).message, "does not match");
   });
 
@@ -248,7 +246,7 @@ describe("sandbox archive validation", () => {
         validateSandboxArchive(
           gzipDeterministic(
             encodeUstarArchive([
-              fileMember("manifest.json", '{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
+              fileMember("manifest.json", '{"items":"invalid"}\n'),
               fileMember("skills/extra/SKILL.md", "stowaway"),
             ]),
           ),
@@ -265,12 +263,12 @@ describe("sandbox archive validation", () => {
                 "manifest.json",
                 `${JSON.stringify(
                   {
-                    schemaVersion: 1,
-                    skills: [
+                    items: [
                       {
+                        kind: "skill",
                         name: "release-notes",
+                        shape: "directory",
                         digest: "0".repeat(64),
-                        hasExecutableContent: false,
                         files: [
                           {
                             path: "SKILL.md",
@@ -281,7 +279,6 @@ describe("sandbox archive validation", () => {
                         ],
                       },
                     ],
-                    piPackages: [],
                   },
                   null,
                   2,

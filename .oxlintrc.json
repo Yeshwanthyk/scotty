@@ -16,7 +16,7 @@
     "reportUnusedDisableDirectives": "error"
   },
   "rules": {
-    "complexity": ["error", { "max": 70 }],
+    "complexity": ["error", { "max": 20 }],
     "typescript/no-explicit-any": "error",
     "no-debugger": "error",
     "scotty/no-conditional-tests": "error",
@@ -48,18 +48,14 @@
         "scripts/scotty-lab.ts",
         "infra/**/*.ts",
         "protocol/**/*.ts",
-        "worker/src/artifact-store.ts",
-        "worker/src/evidence-store.ts",
-        "worker/src/evidence-workflow.ts",
-        "worker/src/repo-verifier.ts",
+        "worker/src/evidence/artifact-store.ts",
+        "worker/src/evidence/store.ts",
+        "worker/src/evidence/workflow.ts",
+        "worker/src/repos/verifier.ts",
         "worker/src/**/*.ts",
         "alchemy.run.ts",
-        "spikes/infra/full-stack-canary.run.ts",
-        "spikes/infra/full-stack-canary.ts",
-        "spikes/infra/local-secret-source.ts",
-        "spikes/infra/sandbox-sdk-canary.ts",
-        "spikes/infra/write-only-secret-cloudflare.ts",
-        "spikes/infra/write-only-secret.ts"
+        "e2e/canary/full-stack-canary.run.ts",
+        "e2e/canary/full-stack-canary.ts"
       ],
       "rules": {
         "scotty/no-direct-do-storage": "error",
@@ -98,13 +94,13 @@
       },
       "rules": {
         "scotty/no-browser-persistence": "error",
-        "scotty/no-legacy-browser-rpc-path": "error",
+        "scotty/no-browser-rpc-path": "error",
         "scotty/no-promise-catch": "off",
         "scotty/no-unsafe-dom-html-sink": "error"
       }
     },
     {
-      "files": ["worker/src/session.ts"],
+      "files": ["worker/src/session/object.ts"],
       "rules": {
         "scotty/no-raw-error-throw": "error",
         "scotty/no-try-catch-or-throw": "error"
@@ -122,7 +118,7 @@
       }
     },
     {
-      "files": ["worker/src/auth.ts"],
+      "files": ["worker/src/auth/request.ts"],
       "rules": {
         "scotty/no-raw-wall-clock": "off",
         "scotty/no-try-catch-or-throw": "off"

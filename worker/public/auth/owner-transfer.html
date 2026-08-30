@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#01060c" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
+    <link rel="apple-touch-icon" href="/brand/scotty-mark-128.png" />
+    <link rel="stylesheet" href="/shared/styles.css" />
+    <link rel="stylesheet" href="/auth/styles.css" />
+    <title>Make this device primary</title>
+  </head>
+  <body class="scotty-ui auth-flow-page">
+    <main class="auth-card" id="card" data-state="ready">
+      <div class="auth-lockup">
+        <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
+        <span>SCOTTY / OWNER TRANSFER</span>
+      </div>
+      <section class="auth-form">
+        <h1>Make this device primary</h1>
+        <p>
+          Only the browser this transfer was created for can accept it. Scotty will rotate this
+          browser's credential and revoke the old primary device.
+        </p>
+        <div class="auth-warning">
+          Accept only if you started this transfer from your current primary device.
+        </div>
+        <button class="button button-primary auth-submit" id="accept" type="button">
+          Accept ownership
+        </button>
+        <div class="auth-status" id="status" role="status" aria-live="polite"></div>
+      </section>
+      <section class="auth-success">
+        <img class="auth-art" src="/brand/scotty-complete.png" alt="" />
+        <h1>This is now the primary device</h1>
+        <p>The previous primary credential has been revoked.</p>
+        <a class="button button-primary auth-submit" href="/sessions">Open sessions</a>
+      </section>
+    </main>
+    <script type="module" src="/auth/owner-transfer.js"></script>
+  </body>
+</html>

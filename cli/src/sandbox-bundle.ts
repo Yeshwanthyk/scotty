@@ -10,10 +10,6 @@ export const SkillNameSchema = Schema.String.check(
 export const PiPackageNameSchema = Schema.String.check(
   Schema.isPattern(/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u),
 );
-export const GitCommitSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u));
-export const GitRepositorySchema = Schema.NonEmptyString;
-
-export const SANDBOX_BUNDLE_SCHEMA_VERSION = 2 as const;
 
 export const SANDBOX_MAX_FILE_BYTES = 8_388_608;
 export const SANDBOX_MAX_SKILL_BYTES = 4_194_304;
@@ -82,21 +78,6 @@ export const SandboxFileRecordSchema = Schema.Struct({
   modeClass: SandboxFileModeClassSchema,
   digest: SandboxDigestSchema,
 });
-export const SandboxSkillManifestSchema = Schema.Struct({
-  name: SkillNameSchema,
-  digest: SandboxDigestSchema,
-  hasExecutableContent: Schema.Boolean,
-  files: Schema.Array(SandboxFileRecordSchema),
-});
-export const SandboxPiPackageManifestSchema = Schema.Struct({
-  name: PiPackageNameSchema,
-  repository: GitRepositorySchema,
-  requestedRef: Schema.NonEmptyString,
-  commit: GitCommitSchema,
-  lockDigest: Schema.NullOr(SandboxDigestSchema),
-  digest: SandboxDigestSchema,
-  files: Schema.Array(SandboxFileRecordSchema),
-});
 export const SandboxBundleItemKindSchema = Schema.Literals([
   "skill",
   "package",
@@ -131,23 +112,11 @@ export const SandboxBundleItemManifestSchema = Schema.Union([
     ...SandboxBundleItemContentSchema,
   }),
 ]);
-export const SandboxBundleManifestV1Schema = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
-  skills: Schema.Array(SandboxSkillManifestSchema),
-  piPackages: Schema.Array(SandboxPiPackageManifestSchema),
-});
-export const SandboxBundleManifestV2Schema = Schema.Struct({
-  schemaVersion: Schema.Literal(SANDBOX_BUNDLE_SCHEMA_VERSION),
+export const SandboxBundleManifestSchema = Schema.Struct({
   items: Schema.Array(SandboxBundleItemManifestSchema),
 });
-export const SandboxBundleManifestSchema = Schema.Union([
-  SandboxBundleManifestV1Schema,
-  SandboxBundleManifestV2Schema,
-]);
 export type SandboxFileModeClass = typeof SandboxFileModeClassSchema.Type;
 export type SandboxFileRecord = typeof SandboxFileRecordSchema.Type;
-export type SandboxSkillManifest = typeof SandboxSkillManifestSchema.Type;
-export type SandboxPiPackageManifest = typeof SandboxPiPackageManifestSchema.Type;
 export type SandboxBundleItemKind = typeof SandboxBundleItemKindSchema.Type;
 export type SandboxBundleItemManifest = typeof SandboxBundleItemManifestSchema.Type;
 export type SandboxBundleManifest = typeof SandboxBundleManifestSchema.Type;

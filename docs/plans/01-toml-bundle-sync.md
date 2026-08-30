@@ -100,7 +100,7 @@ Use one small TOML parser and immediately Schema-decode its output. Remove the l
 
 **Behavior:** Add only the bootstrap mapping necessary for the existing runner/Pi process to see all three categories at fixed destinations. Do not add a daemon, runner protocol, image abstraction, or active-session refresh.
 
-**Likely baseline files:** `worker/src/container-auth.ts` and the existing bundle materializer only if their current mapping lacks one category.
+**Likely baseline files:** `worker/src/sandbox/auth.ts` and the existing bundle materializer only if their current mapping lacks one category.
 
 **Complete when:** a newly created deployed Session can invoke one fixture skill, execute one fixture tool, and load one fixture extension from its pinned digest.
 

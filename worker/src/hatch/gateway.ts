@@ -1,10 +1,10 @@
 // Native Worker host adapter for the isolated Hatch policy. Evidence preview admission remains in
 // evidence-preview.ts and never shares Hatch cookies, permits, accounting, or handoff behavior.
 import { getSandbox, proxyToSandbox } from "@cloudflare/sandbox";
-import type { Bindings } from "../bindings";
-import { authRegistry } from "../auth";
-import { readBoundedUtf8Body } from "../bounded-http";
-import { sha256Hex } from "../digest";
+import type { Bindings } from "../shared/bindings";
+import { authRegistry } from "../auth/request";
+import { readBoundedUtf8Body } from "../shared/bounded-http";
+import { sha256Hex } from "../shared/digest";
 import {
   HATCH_COOKIE,
   HATCH_HANDOFF_PATH,
@@ -13,8 +13,8 @@ import {
   HATCH_PRIVATE_REQUEST_HEADER,
   HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
   HATCH_PRIVATE_WEBSOCKET_HEADER,
-  type HatchRequestAdmissionV1,
-  type HatchWebSocketAdmissionV1,
+  type HatchGatewayAdmission,
+  type HatchWebSocketAdmission,
 } from "./contracts";
 import {
   HATCH_MAX_HEADER_BYTES,
@@ -347,7 +347,7 @@ const proxyHatchWebSocket = async (
     host,
     origin: request.headers.get("origin") ?? "",
     cookieSecret: prepared.cookieSecret,
-  } satisfies HatchWebSocketAdmissionV1;
+  } satisfies HatchWebSocketAdmission;
   const permit = await sandbox.admitScottyHatchWebSocket(admission).then(
     (value) => value,
     () => undefined,
@@ -397,7 +397,7 @@ const proxyHatchHttp = async (
     ...route,
     cookieSecret: prepared.cookieSecret,
     ingressBytes: prepared.reservedIngressBytes,
-  } satisfies HatchRequestAdmissionV1;
+  } satisfies HatchGatewayAdmission;
   const permit = await sandbox.admitScottyHatchRequest(admission).then(
     (value) => value,
     () => undefined,

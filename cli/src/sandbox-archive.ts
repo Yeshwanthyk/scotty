@@ -248,26 +248,10 @@ const parentDirectories = (path: string): ReadonlyArray<string> => {
 const expectedFiles = (
   manifest: SandboxBundleManifest,
   members: ReadonlyMap<string, ParsedTarMember>,
-): Result.Result<Map<string, ExpectedSandboxFile>, ReturnType<typeof sandboxArchiveInvalid>> => {
-  if (manifest.schemaVersion === 2)
-    return expectedV2Files(manifest, members).pipe(Result.map(({ files }) => files));
-  const expected = new Map<string, ExpectedSandboxFile>();
-  for (const skill of manifest.skills)
-    for (const file of skill.files)
-      expected.set(`skills/${skill.name}/${file.path}`, {
-        size: file.size,
-        digest: file.digest,
-      });
-  for (const item of manifest.piPackages)
-    for (const file of item.files)
-      expected.set(`pi-packages/${item.name}/${file.path}`, {
-        size: file.size,
-        digest: file.digest,
-      });
-  return Result.succeed(expected);
-};
+): Result.Result<Map<string, ExpectedSandboxFile>, ReturnType<typeof sandboxArchiveInvalid>> =>
+  expectedManifestFiles(manifest, members).pipe(Result.map(({ files }) => files));
 
-const collectExpectedV2Item = (
+const collectExpectedItem = (
   item: SandboxBundleItemManifest,
   members: ReadonlyMap<string, ParsedTarMember>,
   expected: Map<string, ExpectedSandboxFile>,
@@ -311,7 +295,7 @@ const collectExpectedV2Item = (
   return Result.succeed(undefined);
 };
 
-const validateV2Member = (
+const validateManifestMember = (
   path: string,
   member: ParsedTarMember,
   directories: ReadonlySet<string>,
@@ -329,8 +313,8 @@ const validateV2Member = (
   return Result.succeed(undefined);
 };
 
-const expectedV2Files = (
-  manifest: Extract<SandboxBundleManifest, { readonly schemaVersion: 2 }>,
+const expectedManifestFiles = (
+  manifest: SandboxBundleManifest,
   members: ReadonlyMap<string, ParsedTarMember>,
 ): Result.Result<
   { readonly files: Map<string, ExpectedSandboxFile>; readonly directories: ReadonlySet<string> },
@@ -340,11 +324,11 @@ const expectedV2Files = (
   const directories = new Set<string>();
   const seenItems = new Set<string>();
   for (const item of manifest.items) {
-    const result = collectExpectedV2Item(item, members, expected, directories, seenItems);
+    const result = collectExpectedItem(item, members, expected, directories, seenItems);
     if (Result.isFailure(result)) return Result.fail(result.failure);
   }
   for (const [path, member] of members) {
-    const result = validateV2Member(path, member, directories, members);
+    const result = validateManifestMember(path, member, directories, members);
     if (Result.isFailure(result)) return Result.fail(result.failure);
   }
   return Result.succeed({ files: expected, directories });

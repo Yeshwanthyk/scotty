@@ -20,14 +20,14 @@ const sampleBuilt = (): BuiltSandboxBundle => {
       path: "manifest.json",
       type: "file",
       modeClass: "regular",
-      bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
+      bytes: new TextEncoder().encode('{"items":[]}\n'),
     },
   ]);
   return {
     digest: built.digest,
     bytes: built.archive.byteLength,
     fileCount: 1,
-    manifest: { schemaVersion: 1, skills: [], piPackages: [] },
+    manifest: { items: [] },
     archive: built.archive,
   };
 };
@@ -46,7 +46,6 @@ describe("sandbox sync transport", () => {
             const url = new URL(request.url);
             if (url.pathname === "/api/sandbox/configuration")
               return Response.json({
-                schemaVersion: 1,
                 revision: 2,
                 activeDigest: built.digest,
               });
@@ -73,7 +72,7 @@ describe("sandbox sync transport", () => {
             const request = new Request(input, init);
             const url = new URL(request.url);
             if (url.pathname === "/api/sandbox/configuration")
-              return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+              return Response.json({ revision: 0, activeDigest: null });
             return Response.json(
               {
                 error: {
@@ -126,10 +125,9 @@ describe("sandbox sync transport", () => {
           Effect.sync(() => {
             const request = new Request(input, init);
             const url = new URL(request.url);
-            if (url.pathname === "/api/credentials/sync")
-              return Response.json({ version: 1, credentials: [] });
+            if (url.pathname === "/api/credentials/sync") return Response.json({ credentials: [] });
             if (url.pathname === "/api/sandbox/configuration")
-              return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+              return Response.json({ revision: 0, activeDigest: null });
             return Response.json(
               { error: { code: "conflict", message: "provider detail", hint: "provider hint" } },
               { status: 409 },

@@ -1,7 +1,7 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import { PREBUILT_RUNNER_WORKER_ENTRY } from "../../cli/src/prebuilt-worker-bundles.ts";
-import ScottyRunnerLive, { ScottyRunner } from "./runner-object.ts";
+import ScottyRunnerLive, { ScottyRunner } from "./runner/object.ts";
 
 export const SCOTTY_RUNNER_WORKER_NAME = "scotty-runner";
 

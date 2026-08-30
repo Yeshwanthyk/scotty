@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#01060c" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
+    <link rel="apple-touch-icon" href="/brand/scotty-mark-128.png" />
+    <link rel="stylesheet" href="/shared/styles.css" />
+    <link rel="stylesheet" href="/stats/styles.css" />
+    <title>Scotty stats</title>
+  </head>
+  <body class="scotty-ui app-page stats-page">
+    <header class="masthead">
+      <div class="masthead-inner">
+        <a class="identity" href="/sessions" aria-label="Scotty sessions">
+          <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
+          <span class="wordmark">SCOTTY</span>
+        </a>
+        <div class="masthead-actions">
+          <nav class="masthead-nav" aria-label="Primary navigation">
+            <a class="button" href="/sessions">Sessions</a>
+            <a class="button" id="providers" href="/providers" hidden>Providers</a>
+            <a class="button" id="devices" href="/devices" hidden>Devices</a>
+          </nav>
+          <details class="mobile-utilities">
+            <summary aria-label="Open primary navigation">•••</summary>
+            <nav aria-label="Primary navigation">
+              <a href="/sessions">Sessions</a>
+              <a id="providers-mobile" href="/providers" hidden>Providers</a>
+              <a id="devices-mobile" href="/devices" hidden>Devices</a>
+            </nav>
+          </details>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <div class="page-heading">
+        <div>
+          <h1>Stats</h1>
+          <p class="tracking" id="tracking">Loading tracking history…</p>
+        </div>
+      </div>
+
+      <p class="visually-hidden" id="load-status" role="status" aria-live="polite">
+        Loading workspace stats…
+      </p>
+
+      <section class="overall" id="overall-stats" aria-label="Overall stats" aria-busy="true">
+        <div class="metric">
+          <span class="metric-label">Workspaces created</span>
+          <strong class="metric-value is-loading" data-stat="workspaces-created">—</strong>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Projects</span>
+          <strong class="metric-value is-loading" data-stat="projects">—</strong>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Warm now</span>
+          <strong class="metric-value is-loading" data-stat="warm-now">—</strong>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Sleeping now</span>
+          <strong class="metric-value is-loading" data-stat="sleeping-now">—</strong>
+        </div>
+      </section>
+
+      <section class="projects-section" aria-labelledby="projects-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="projects-heading">By project</h2>
+            <p>Repository identity groups creation history with current workspace status.</p>
+          </div>
+        </div>
+        <div id="project-content" aria-live="polite" aria-busy="true">
+          <div class="project-skeleton" aria-hidden="true"><span></span><span></span></div>
+          <div class="project-skeleton" aria-hidden="true"><span></span><span></span></div>
+        </div>
+        <ul class="project-list" id="projects"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/stats/index.js"></script>
+  </body>
+</html>

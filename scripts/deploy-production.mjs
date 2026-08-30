@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -257,6 +256,109 @@ export function assertSettledContainerBaseline(snapshot) {
   }
 }
 
+function containerRolloutConverged(before, current, rollout) {
+  const health = current.application.health;
+  const rolloutHealth = rollout.health;
+  const applicationReadyInstances = health.active + health.healthy;
+  const rolloutReadyInstances = health.active + rolloutHealth.healthy;
+  return (
+    rollout.currentVersion === before.application.version &&
+    rollout.targetVersion > rollout.currentVersion &&
+    current.application.version === rollout.targetVersion &&
+    current.application.activeRolloutId === null &&
+    rollout.progress.totalInstances > 0 &&
+    rollout.progress.updatedInstances === rollout.progress.totalInstances &&
+    rolloutReadyInstances === rollout.progress.totalInstances &&
+    rolloutHealth.failed === 0 &&
+    rolloutHealth.scheduling === 0 &&
+    rolloutHealth.starting === 0 &&
+    applicationReadyInstances === rollout.progress.totalInstances &&
+    health.assigned === 0 &&
+    health.stopped === 0 &&
+    health.failed === 0 &&
+    health.scheduling === 0 &&
+    health.starting === 0
+  );
+}
+
+function assessNewContainerRollout(before, current, containerAction, rollout) {
+  if (containerAction === "noop")
+    return {
+      status: "failed",
+      message: "Alchemy reported a Container no-op but an unexpected rollout appeared.",
+    };
+  if (["pending", "progressing"].includes(rollout.status))
+    return { status: "waiting", message: `Container rollout is ${rollout.status}.` };
+  if (rollout.status !== "completed")
+    return { status: "failed", message: `Container rollout finished as ${rollout.status}.` };
+  if (!containerRolloutConverged(before, current, rollout))
+    return {
+      status: "waiting",
+      message: "Container rollout is completed but its target version or health has not converged.",
+    };
+  return {
+    status: "settled",
+    outcome: "rollout",
+    message: `Container rollout completed at version ${rollout.targetVersion}.`,
+  };
+}
+
+function assessNoNewContainerRollout(before, current, containerAction, quietMs) {
+  const applicationChanged =
+    current.application.configurationDigest !== before.application.configurationDigest ||
+    current.application.version !== before.application.version ||
+    current.application.activeRolloutId !== before.application.activeRolloutId;
+  if (containerAction === "unknown") {
+    if (current.application.activeRolloutId !== null)
+      return {
+        status: "waiting",
+        message: "Container application has an active rollout that is still propagating.",
+      };
+    if (quietMs < CONTAINER_ROLLOUT_ABSENCE_QUIET_MS)
+      return {
+        status: "waiting",
+        message: "Proving that the failed Alchemy deployment created no Container rollout.",
+      };
+    return {
+      status: "settled",
+      outcome: applicationChanged ? "failed-deploy-application-only" : "failed-deploy-no-rollout",
+      message: applicationChanged
+        ? "The failed Alchemy deployment changed Container application state but created no rollout."
+        : "The failed Alchemy deployment created no Container rollout.",
+    };
+  }
+  if (applicationChanged)
+    return {
+      status: "waiting",
+      message: "Container application changed while the rollout resource is still propagating.",
+    };
+  if (containerAction === "noop")
+    return {
+      status: "settled",
+      outcome: "noop",
+      message: `Alchemy reported a Container no-op at version ${current.application.version}.`,
+    };
+  if (
+    containerAction === "updated" &&
+    current.application.updatedAt !== before.application.updatedAt
+  ) {
+    if (quietMs < CONTAINER_ROLLOUT_ABSENCE_QUIET_MS)
+      return {
+        status: "waiting",
+        message: "Proving that the Container application update created no rollout.",
+      };
+    return {
+      status: "settled",
+      outcome: "application-only",
+      message: `Container application metadata updated without a rollout at version ${current.application.version}.`,
+    };
+  }
+  return {
+    status: "waiting",
+    message: "Waiting for the Container application update or rollout resource to appear.",
+  };
+}
+
 export function assessContainerSettlement(before, current, containerAction, { quietMs = 0 } = {}) {
   if (
     current.application.id !== before.application.id ||
@@ -283,120 +385,9 @@ export function assessContainerSettlement(before, current, containerAction, { qu
     };
   }
   const rollout = newRollouts[0];
-  if (rollout) {
-    if (containerAction === "noop") {
-      return {
-        status: "failed",
-        message: "Alchemy reported a Container no-op but an unexpected rollout appeared.",
-      };
-    }
-    if (["pending", "progressing"].includes(rollout.status)) {
-      return {
-        status: "waiting",
-        message: `Container rollout is ${rollout.status}.`,
-      };
-    }
-    if (rollout.status !== "completed") {
-      return {
-        status: "failed",
-        message: `Container rollout finished as ${rollout.status}.`,
-      };
-    }
-    const health = current.application.health;
-    const rolloutHealth = rollout.health;
-    // Cloudflare reports running session instances as application `active`, outside both
-    // `healthy` buckets. They are converged only when the rollout also updated every instance.
-    const applicationReadyInstances = health.active + health.healthy;
-    const rolloutReadyInstances = health.active + rolloutHealth.healthy;
-    const rolloutComplete =
-      rollout.currentVersion === before.application.version &&
-      rollout.targetVersion > rollout.currentVersion &&
-      current.application.version === rollout.targetVersion &&
-      current.application.activeRolloutId === null &&
-      rollout.progress.totalInstances > 0 &&
-      rollout.progress.updatedInstances === rollout.progress.totalInstances &&
-      rolloutReadyInstances === rollout.progress.totalInstances &&
-      rolloutHealth.failed === 0 &&
-      rolloutHealth.scheduling === 0 &&
-      rolloutHealth.starting === 0 &&
-      applicationReadyInstances === rollout.progress.totalInstances &&
-      health.assigned === 0 &&
-      health.stopped === 0 &&
-      health.failed === 0 &&
-      health.scheduling === 0 &&
-      health.starting === 0;
-    if (!rolloutComplete) {
-      return {
-        status: "waiting",
-        message:
-          "Container rollout is completed but its target version or health has not converged.",
-      };
-    }
-    return {
-      status: "settled",
-      outcome: "rollout",
-      message: `Container rollout completed at version ${rollout.targetVersion}.`,
-    };
-  }
-
-  const applicationChanged =
-    current.application.configurationDigest !== before.application.configurationDigest ||
-    current.application.version !== before.application.version ||
-    current.application.activeRolloutId !== before.application.activeRolloutId;
-  if (containerAction === "unknown") {
-    if (current.application.activeRolloutId !== null) {
-      return {
-        status: "waiting",
-        message: "Container application has an active rollout that is still propagating.",
-      };
-    }
-    if (quietMs < CONTAINER_ROLLOUT_ABSENCE_QUIET_MS) {
-      return {
-        status: "waiting",
-        message: "Proving that the failed Alchemy deployment created no Container rollout.",
-      };
-    }
-    return {
-      status: "settled",
-      outcome: applicationChanged ? "failed-deploy-application-only" : "failed-deploy-no-rollout",
-      message: applicationChanged
-        ? "The failed Alchemy deployment changed Container application state but created no rollout."
-        : "The failed Alchemy deployment created no Container rollout.",
-    };
-  }
-  if (applicationChanged) {
-    return {
-      status: "waiting",
-      message: "Container application changed while the rollout resource is still propagating.",
-    };
-  }
-  if (containerAction === "noop") {
-    return {
-      status: "settled",
-      outcome: "noop",
-      message: `Alchemy reported a Container no-op at version ${current.application.version}.`,
-    };
-  }
-  if (
-    containerAction === "updated" &&
-    current.application.updatedAt !== before.application.updatedAt
-  ) {
-    if (quietMs < CONTAINER_ROLLOUT_ABSENCE_QUIET_MS) {
-      return {
-        status: "waiting",
-        message: "Proving that the Container application update created no rollout.",
-      };
-    }
-    return {
-      status: "settled",
-      outcome: "application-only",
-      message: `Container application metadata updated without a rollout at version ${current.application.version}.`,
-    };
-  }
-  return {
-    status: "waiting",
-    message: "Waiting for the Container application update or rollout resource to appear.",
-  };
+  return rollout
+    ? assessNewContainerRollout(before, current, containerAction, rollout)
+    : assessNoNewContainerRollout(before, current, containerAction, quietMs);
 }
 
 function terminateProcessTree(child, signal) {
@@ -791,60 +782,61 @@ export function assertProductionCredentialWrappingKeyBinding(output) {
   }
 }
 
-export function resolveProductionTopology(environment = process.env) {
+function productionInstallationName(environment) {
   const installationName = environment.SCOTTY_INSTALLATION_NAME?.trim();
-  if (!installationName || !/^[a-z][a-z0-9-]{0,30}[a-z0-9]$/u.test(installationName)) {
+  if (!installationName || !/^[a-z][a-z0-9-]{0,30}[a-z0-9]$/u.test(installationName))
     throw new Error(
       "Set SCOTTY_INSTALLATION_NAME to a 2-32 character lowercase installation name.",
     );
-  }
-  const prefix = `scotty-${installationName}`;
-  const adoptionPath = environment.SCOTTY_ADOPTION_MANIFEST?.trim();
-  const adoption = adoptionPath ? JSON.parse(readFileSync(adoptionPath, "utf8")) : undefined;
-  if (adoption && adoption.installationName !== installationName) {
-    throw new Error("SCOTTY_ADOPTION_MANIFEST names a different installation.");
-  }
-  const environmentPreviewBase = environment.SCOTTY_PREVIEW_BASE?.trim();
-  const environmentPreviewZoneId = environment.SCOTTY_PREVIEW_ZONE_ID?.trim();
-  const hasEnvironmentPreview =
-    environmentPreviewBase !== undefined || environmentPreviewZoneId !== undefined;
-  const previewBase = hasEnvironmentPreview ? environmentPreviewBase : adoption?.preview?.base;
-  const previewZoneId = hasEnvironmentPreview
-    ? environmentPreviewZoneId
-    : adoption?.preview?.zoneId;
-  if (environment.SCOTTY_EVIDENCE_ENABLED !== undefined) {
+  return installationName;
+}
+
+function productionPreview(environment) {
+  if (environment.SCOTTY_EVIDENCE_ENABLED !== undefined)
     throw new Error(
       "SCOTTY_EVIDENCE_ENABLED is no longer configurable; production Evidence is always enabled.",
     );
-  }
-  if (
+  const environmentBase = environment.SCOTTY_PREVIEW_BASE?.trim();
+  const environmentZoneId = environment.SCOTTY_PREVIEW_ZONE_ID?.trim();
+  const previewBase = environmentBase;
+  const previewZoneId = environmentZoneId;
+  const invalid =
     (previewBase === undefined) !== (previewZoneId === undefined) ||
     (previewBase !== undefined &&
       !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(
         previewBase,
       )) ||
-    (previewZoneId !== undefined && !/^[0-9a-f]{32}$/u.test(previewZoneId))
-  ) {
+    (previewZoneId !== undefined && !/^[0-9a-f]{32}$/u.test(previewZoneId));
+  if (invalid)
     throw new Error(
       "SCOTTY_PREVIEW_BASE and SCOTTY_PREVIEW_ZONE_ID must both name the explicit preview topology.",
     );
-  }
-  if (previewBase === undefined) {
+  if (previewBase === undefined)
     throw new Error(
       "Production deployment requires an explicit Hatch and Evidence preview topology.",
     );
-  }
+  return { previewBase, previewZoneId };
+}
+
+function productionResourceNames(prefix) {
+  return {
+    workerName: `${prefix}-worker`,
+    runnerWorkerName: `${prefix}-runner`,
+    containerName: `${prefix}-sandbox`,
+    kvTitle: `${prefix}-sessions`,
+    backupBucketName: `${prefix}-backups`,
+    artifactBucketName: `${prefix}-artifacts`,
+    sandboxBundleBucketName: `${prefix}-sandbox-bundles`,
+  };
+}
+
+export function resolveProductionTopology(environment = process.env) {
+  const installationName = productionInstallationName(environment);
+  const prefix = `scotty-${installationName}`;
+  const { previewBase, previewZoneId } = productionPreview(environment);
   return {
     installationName,
-    adoptionPath,
-    workerName: adoption?.resources?.workerName ?? `${prefix}-worker`,
-    runnerWorkerName: adoption?.resources?.runnerWorkerName ?? `${prefix}-runner`,
-    containerName: adoption?.resources?.containerName ?? `${prefix}-sandbox`,
-    kvTitle: adoption?.resources?.kvTitle ?? `${prefix}-sessions`,
-    backupBucketName: adoption?.resources?.backupBucketName ?? `${prefix}-backups`,
-    artifactBucketName: adoption?.resources?.artifactBucketName ?? `${prefix}-artifacts`,
-    sandboxBundleBucketName:
-      adoption?.resources?.sandboxBundleBucketName ?? `${prefix}-sandbox-bundles`,
+    ...productionResourceNames(prefix),
     previewBase,
     previewZoneId,
     evidenceEnabled: true,
@@ -872,59 +864,32 @@ const deployedBinding = (version, name) => {
     : undefined;
 };
 
-export async function auditProductionHatchEvidenceTopology(
-  topology,
-  environment,
-  { execute = runCommand, request = fetch } = {},
-) {
-  let deploymentOutput;
+async function deployedWorkerJson(execute, environment, commandArguments, failure) {
   try {
-    deploymentOutput = await execute(
-      "npx",
-      [
-        "--no-install",
-        "wrangler",
-        "deployments",
-        "status",
-        "--name",
-        topology.workerName,
-        "--json",
-      ],
-      { env: environment, capture: true, allowAfterSignal: true, timeoutMs: 60_000 },
-    );
+    const output = await execute("npx", commandArguments, {
+      env: environment,
+      capture: true,
+      allowAfterSignal: true,
+      timeoutMs: 60_000,
+    });
+    return parseJsonObject(output);
   } catch {
-    throw new Error("Could not read the deployed Worker version for the topology audit.");
+    throw new Error(failure);
   }
-  const deployment = parseJsonObject(deploymentOutput);
+}
+
+function activeProductionVersion(deployment) {
   const versions = deployment?.versions;
   const activeVersion =
     Array.isArray(versions) && versions.length === 1 && versions[0]?.percentage === 100
       ? versions[0]?.version_id
       : undefined;
-  if (typeof activeVersion !== "string" || activeVersion.length === 0) {
+  if (typeof activeVersion !== "string" || activeVersion.length === 0)
     throw new Error("Production Worker does not have one unambiguous 100% active version.");
-  }
+  return activeVersion;
+}
 
-  let versionOutput;
-  try {
-    versionOutput = await execute(
-      "npx",
-      [
-        "--no-install",
-        "wrangler",
-        "versions",
-        "view",
-        activeVersion,
-        "--name",
-        topology.workerName,
-        "--json",
-      ],
-      { env: environment, capture: true, allowAfterSignal: true, timeoutMs: 60_000 },
-    );
-  } catch {
-    throw new Error("Could not read the active Worker bindings for the topology audit.");
-  }
-  const version = parseJsonObject(versionOutput);
+function assertHatchEvidenceBindings(version, topology) {
   const evidence = deployedBinding(version, "SCOTTY_EVIDENCE_ENABLED");
   const preview = deployedBinding(version, "SCOTTY_PREVIEW_BASE");
   const artifactBucket = deployedBinding(version, "ARTIFACT_BUCKET");
@@ -938,13 +903,14 @@ export async function auditProductionHatchEvidenceTopology(
     artifactBucket.bucket_name !== topology.artifactBucketName ||
     sandboxBundleBucket?.type !== "r2_bucket" ||
     sandboxBundleBucket.bucket_name !== topology.sandboxBundleBucketName
-  ) {
+  )
     throw new Error("The active Worker is missing required Hatch or Evidence bindings.");
-  }
+}
 
+async function assertPreviewDenyRoute(request, previewBase) {
   let response;
   try {
-    response = await request(`https://scotty-topology-probe.${topology.previewBase}/`, {
+    response = await request(`https://scotty-topology-probe.${previewBase}/`, {
       redirect: "manual",
       signal: AbortSignal.timeout(30_000),
     });
@@ -955,9 +921,39 @@ export async function auditProductionHatchEvidenceTopology(
     response.status !== 404 ||
     response.headers.get("cache-control") !== "no-store" ||
     response.headers.get("x-robots-tag") !== "noindex, nofollow, noarchive"
-  ) {
+  )
     throw new Error("The wildcard preview request did not reach Scotty's deny-by-default route.");
-  }
+}
+
+export async function auditProductionHatchEvidenceTopology(
+  topology,
+  environment,
+  { execute = runCommand, request = fetch } = {},
+) {
+  const deployment = await deployedWorkerJson(
+    execute,
+    environment,
+    ["--no-install", "wrangler", "deployments", "status", "--name", topology.workerName, "--json"],
+    "Could not read the deployed Worker version for the topology audit.",
+  );
+  const activeVersion = activeProductionVersion(deployment);
+  const version = await deployedWorkerJson(
+    execute,
+    environment,
+    [
+      "--no-install",
+      "wrangler",
+      "versions",
+      "view",
+      activeVersion,
+      "--name",
+      topology.workerName,
+      "--json",
+    ],
+    "Could not read the active Worker bindings for the topology audit.",
+  );
+  assertHatchEvidenceBindings(version, topology);
+  await assertPreviewDenyRoute(request, topology.previewBase);
   process.stdout.write("Production Hatch and Evidence topology audit passed.\n");
 }
 
@@ -982,7 +978,6 @@ function productionEnvironment(environment = process.env) {
     ...sanitizedLocalEnvironment(environment),
     ALCHEMY_TELEMETRY_DISABLED: "1",
     SCOTTY_INSTALLATION_NAME: topology.installationName,
-    ...(topology.adoptionPath ? { SCOTTY_ADOPTION_MANIFEST: topology.adoptionPath } : {}),
     SCOTTY_PREVIEW_BASE: topology.previewBase,
     SCOTTY_PREVIEW_ZONE_ID: topology.previewZoneId,
     SCOTTY_EVIDENCE_ENABLED: "true",

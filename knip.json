@@ -9,14 +9,12 @@
         "e2e/scripts/**/*.mjs",
         "e2e/tests/*.test.mjs",
         "protocol/*.ts",
-        "spikes/**/*.test.ts",
-        "spikes/infra/*.run.ts",
-        "spikes/infra/*-exec.ts",
-        "spikes/infra/*-sync.ts",
-        "spikes/infra/full-stack-canary-worker.ts",
-        "spikes/infra/sandbox-sdk-canary-worker.ts"
+        "infra/test/**/*.test.ts",
+        "e2e/canary/*.test.ts",
+        "e2e/canary/*.run.ts",
+        "e2e/canary/full-stack-canary-worker.ts"
       ],
-      "project": ["cli/**/*.ts", "infra/**/*.ts", "protocol/**/*.ts"],
+      "project": ["cli/**/*.ts", "e2e/canary/**/*.ts", "infra/**/*.ts", "protocol/**/*.ts"],
       "ignoreDependencies": ["cloudflare", "@alchemy.run/cloudflare-runtime"]
     },
     "worker": {
@@ -24,5 +22,5 @@
       "project": ["src/**/*.ts"]
     }
   },
-  "ignore": ["worker/public/**", "worker/container/**"]
+  "ignore": ["worker/container/**"]
 }

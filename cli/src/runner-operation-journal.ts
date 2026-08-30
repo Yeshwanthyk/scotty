@@ -11,7 +11,6 @@ const RECEIPT_DIRECTORY_MODE = 0o700;
 const RECEIPT_FILE_MODE = 0o600;
 
 const ReceiptIdentityFields = {
-  version: Schema.Literal(1),
   operationId: Schema.NonEmptyString,
   sessionId: Schema.NonEmptyString,
 };
@@ -263,6 +262,47 @@ export const makeRunnerOperationJournal = Effect.fnUntraced(function* (root: str
     return { _tag: "NoRecoveryFence" } as const;
   });
 
+  const prepareFresh = Effect.fnUntraced(function* (
+    operation: RunnerOperation,
+    intentSha256: string,
+    startedPath: string,
+    operationDirectory: string,
+  ) {
+    const recoveryState: RecoveryFenceState = yield* recoveryFenceState(operation.sessionId);
+    if (
+      Predicate.isTagged(recoveryState, "ActiveRecoveryFence") &&
+      recoveryState.fence.operationId === operation.operationId
+    )
+      return recoveryState.fence.intentSha256 === intentSha256
+        ? ({ _tag: "OperationUnknown" } as const)
+        : ({ _tag: "OperationConflict" } as const);
+    if (
+      !Predicate.isTagged(recoveryState, "NoRecoveryFence") &&
+      !Predicate.isTagged(operation, "InspectRuntime") &&
+      !Predicate.isTagged(operation, "StopRuntime")
+    )
+      return { _tag: "RecoveryRequired" } as const;
+    if (Predicate.isTagged(operation, "ExecRuntime")) {
+      const { fencePath, sessionDirectory } = recoveryCoordinates(operation.sessionId);
+      yield* ensureRecoveryDirectory(sessionDirectory);
+      const fence: RecoveryFence = {
+        operationId: operation.operationId,
+        sessionId: operation.sessionId,
+        status: "recovery_required",
+        intentSha256,
+      };
+      yield* writeAtomic(fencePath, encodeRecoveryFence(fence), sessionDirectory);
+    }
+    const started: StartedReceipt = {
+      operationId: operation.operationId,
+      sessionId: operation.sessionId,
+      status: "started",
+      intentSha256,
+    };
+    yield* writeAtomic(startedPath, encodeStartedReceipt(started), operationDirectory);
+    return { _tag: "ExecuteOperation" } as const;
+  });
+
   const prepare = Effect.fnUntraced(function* (operation: RunnerOperation) {
     const { completedPath, operationDirectory, sessionDirectory, startedPath } =
       coordinates(operation);
@@ -274,47 +314,8 @@ export const makeRunnerOperationJournal = Effect.fnUntraced(function* (root: str
     ]);
 
     const intentSha256 = sha256(encodeRunnerOperation(operation));
-    if (!startedExists && !completedExists) {
-      const recoveryState: RecoveryFenceState = yield* recoveryFenceState(operation.sessionId);
-      if (
-        Predicate.isTagged(recoveryState, "ActiveRecoveryFence") &&
-        recoveryState.fence.operationId === operation.operationId
-      ) {
-        return recoveryState.fence.intentSha256 === intentSha256
-          ? ({ _tag: "OperationUnknown" } as const)
-          : ({ _tag: "OperationConflict" } as const);
-      }
-      if (
-        !Predicate.isTagged(recoveryState, "NoRecoveryFence") &&
-        !Predicate.isTagged(operation, "InspectRuntime") &&
-        !Predicate.isTagged(operation, "StopRuntime")
-      ) {
-        return { _tag: "RecoveryRequired" } as const;
-      }
-      if (Predicate.isTagged(operation, "ExecRuntime")) {
-        const { fencePath, sessionDirectory: recoverySessionDirectory } = recoveryCoordinates(
-          operation.sessionId,
-        );
-        yield* ensureRecoveryDirectory(recoverySessionDirectory);
-        const fence: RecoveryFence = {
-          version: 1,
-          operationId: operation.operationId,
-          sessionId: operation.sessionId,
-          status: "recovery_required",
-          intentSha256,
-        };
-        yield* writeAtomic(fencePath, encodeRecoveryFence(fence), recoverySessionDirectory);
-      }
-      const started: StartedReceipt = {
-        version: 1,
-        operationId: operation.operationId,
-        sessionId: operation.sessionId,
-        status: "started",
-        intentSha256,
-      };
-      yield* writeAtomic(startedPath, encodeStartedReceipt(started), operationDirectory);
-      return { _tag: "ExecuteOperation" } as const;
-    }
+    if (!startedExists && !completedExists)
+      return yield* prepareFresh(operation, intentSha256, startedPath, operationDirectory);
 
     if (!startedExists) {
       return { _tag: "OperationUnknown" } as const;
@@ -367,7 +368,6 @@ export const makeRunnerOperationJournal = Effect.fnUntraced(function* (root: str
   ) {
     const { completedPath, operationDirectory } = coordinates(operation);
     const completed: CompletedReceipt = {
-      version: 1,
       operationId: operation.operationId,
       sessionId: operation.sessionId,
       status: "completed",

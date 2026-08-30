@@ -13,7 +13,6 @@ import {
 
 const open = (overrides: Partial<HttpOpen> = {}): HttpOpen => ({
   _tag: "HttpOpen",
-  version: 2,
   streamId: "stream-1",
   sessionId: "session-1",
   runtimeId: "runtime-1",
@@ -36,7 +35,6 @@ describe("runner protocol v2 HTTP frames", () => {
     Effect.gen(function* () {
       const requestData = {
         _tag: "HttpData" as const,
-        version: 2 as const,
         streamId: "stream-1",
         direction: "request" as const,
         data: "AQID",
@@ -49,7 +47,6 @@ describe("runner protocol v2 HTTP frames", () => {
 
       const response = {
         _tag: "HttpResponse" as const,
-        version: 2 as const,
         streamId: "stream-1",
         status: 200,
         statusText: "OK",
@@ -65,7 +62,6 @@ describe("runner protocol v2 HTTP frames", () => {
     Effect.gen(function* () {
       const frame = {
         _tag: "HttpData",
-        version: 2,
         streamId: "stream-1",
         direction: "request",
       };
@@ -80,20 +76,19 @@ describe("runner protocol v2 HTTP frames", () => {
 
   it.effect("rejects invalid open and response bounds", () =>
     Effect.gen(function* () {
-      const runtimeId = `runner-v1:${"a".repeat(64)}`;
+      const runtimeId = `runner:${"a".repeat(64)}`;
       assert.deepStrictEqual(
         yield* decodeRunnerRequestText(encodeRunnerRequest(open({ runtimeId }))),
         open({ runtimeId }),
       );
-      yield* rejects(decodeRunnerRequestText, open({ runtimeId: "runner-v1:bad/runtime" }));
-      yield* rejects(decodeRunnerRequestText, open({ runtimeId: "runner-v1.runtime" }));
+      yield* rejects(decodeRunnerRequestText, open({ runtimeId: "runner:bad/runtime" }));
+      yield* rejects(decodeRunnerRequestText, open({ runtimeId: "runner.invalid" }));
       yield* rejects(decodeRunnerRequestText, open({ headers: Array(129).fill(["x", "y"]) }));
       yield* rejects(decodeRunnerRequestText, open({ headers: [["x", "y".repeat(65_536)]] }));
       yield* rejects(decodeRunnerRequestText, open({ method: "NOT A METHOD" }));
       yield* rejects(decodeRunnerRequestText, open({ target: "x".repeat(16 * 1024 + 1) }));
       yield* rejects(decodeRunnerReplyText, {
         _tag: "HttpResponse",
-        version: 2,
         streamId: "stream-1",
         status: 99,
         statusText: "bad",
@@ -107,7 +102,6 @@ describe("runner protocol v2 HTTP frames", () => {
     Effect.gen(function* () {
       const data = {
         _tag: "HttpData",
-        version: 2,
         streamId: "stream-1",
         data: "AQ==",
       };

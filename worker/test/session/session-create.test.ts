@@ -1,0 +1,1004 @@
+import { assert, describe, it } from "@effect/vitest";
+import { Effect } from "effect";
+import { createDeterministicTarGz } from "../../../cli/src/sandbox-archive";
+import type { CredentialGrant } from "../../../protocol/credentials";
+import { ScottyError } from "../../src/session/contracts";
+import { InitialSessionStorageFailure } from "../../src/session/store";
+import { RepoVerifierFailure } from "../../src/repos/verifier";
+import {
+  CREATE_IDEMPOTENCY,
+  CREATE_INPUT,
+  createSessionHarness,
+  injectedHarnessFailure,
+  type HarnessFailureStage,
+  type HarnessOptions,
+  SESSION_ID,
+  sessionHarnessKeys,
+} from "../support/session-harness";
+import { makeSessionRecord } from "../support";
+
+type ProjectedManagedPiAuth = {
+  readonly "openai-codex": { readonly expires: number; readonly refresh: string };
+};
+
+const PI_EXPIRES = 1_795_000_123_456;
+
+const PI_GRANT: CredentialGrant = {
+  name: "openai",
+  kind: "pi-auth",
+  versionRef: "version-a",
+  handleSlots: [
+    { provider: "openai", slot: "api-key" },
+    { provider: "openai-codex", slot: "access" },
+  ],
+  expires: PI_EXPIRES,
+};
+
+const GITHUB_GRANT: CredentialGrant = {
+  name: "github",
+  kind: "github-cli",
+  versionRef: "version-github",
+  handleSlots: [{ provider: "github", slot: "git-https" }],
+};
+
+const VALID_GRANTS = [PI_GRANT, GITHUB_GRANT] as const;
+
+const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
+  {
+    path: "manifest.json",
+    type: "file",
+    modeClass: "regular",
+    bytes: new TextEncoder().encode('{"items":[]}\n'),
+  },
+]).digest;
+
+const rejection = (operation: Promise<unknown>): Promise<unknown> =>
+  operation.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+
+const assertUpstreamFailure = async (operation: Promise<unknown>): Promise<void> => {
+  const error = await rejection(operation);
+  assert.ok(error instanceof ScottyError);
+  assert.strictEqual(error.code, "upstream");
+};
+
+const workspaceResetCommands = (commands: ReadonlyArray<string>): ReadonlyArray<string> =>
+  commands.filter((command) =>
+    command.startsWith(`rm -rf '/workspace/${SESSION_ID}' && mkdir -p '/workspace'`),
+  );
+
+describe("Sandbox create orchestration", () => {
+  it("verifies the repository before any session authority or runtime mutation", async () => {
+    const harness = await createSessionHarness({
+      repoVerifier: {
+        verify: () => Effect.fail(new RepoVerifierFailure({ reason: "forbidden", status: 403 })),
+      },
+    });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.strictEqual(harness.readRecord(), undefined);
+    assert.deepStrictEqual(harness.schedules, []);
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
+    assert.deepStrictEqual(harness.commands, []);
+    assert.ok(!harness.events.some((event) => event.startsWith("projection:")));
+  });
+  it("decodes the cloneable Registry credential response before transient verification", async () => {
+    const secret = "session-rpc-secret";
+    let observed: string | undefined;
+    const harness = await createSessionHarness({
+      credentialRegistryGithubCliCredential: secret,
+      repoVerifier: {
+        verify: (_repo, token) => {
+          observed = token;
+          return Effect.succeed({ exists: true, defaultBranch: "main" });
+        },
+      },
+    });
+
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    assert.strictEqual(observed, secret);
+    assert.ok(!JSON.stringify(harness.readRecord()).includes(secret));
+  });
+
+  it("rejects an authenticated missing repository unless --new-repo is explicit", async () => {
+    const harness = await createSessionHarness({
+      repoVerifier: { verify: () => Effect.succeed({ exists: false }) },
+    });
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "not_found");
+    assert.include(error.message, "--new-repo");
+    assert.strictEqual(harness.readRecord(), undefined);
+    assert.deepStrictEqual(harness.schedules, []);
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
+    assert.deepStrictEqual(harness.commands, []);
+  });
+
+  it("initializes an intentional new repository with main as its verified branch", async () => {
+    const harness = await createSessionHarness({
+      repoVerifier: { verify: () => Effect.succeed({ exists: false }) },
+    });
+    const created = await harness.sandbox.createScottySession(
+      { ...CREATE_INPUT, newRepo: true },
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.strictEqual(created.status, "warm");
+    assert.deepStrictEqual(
+      harness.readRecord() && {
+        repoExistsAtCreate: harness.readRecord()?.repoExistsAtCreate,
+        defaultBranch: harness.readRecord()?.defaultBranch,
+      },
+      { repoExistsAtCreate: false, defaultBranch: "main" },
+    );
+    assert.ok(harness.commands.some((command) => command.startsWith("git init -b main ")));
+    assert.ok(!harness.commands.some((command) => command.startsWith("gh repo view")));
+  });
+
+  it("uses the verified non-main branch for both the record and clone", async () => {
+    const harness = await createSessionHarness({
+      repoVerifier: {
+        verify: () => Effect.succeed({ exists: true, defaultBranch: "trunk" }),
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    assert.strictEqual(harness.readRecord()?.repoExistsAtCreate, true);
+    assert.strictEqual(harness.readRecord()?.defaultBranch, "trunk");
+    assert.ok(harness.commands.some((command) => command.includes("clone --branch 'trunk'")));
+  });
+
+  it("rejects runner-backed session creation until native Pi transport is available", async () => {
+    const harness = await createSessionHarness();
+    const error = await rejection(
+      harness.sandbox.createScottySession(
+        { ...CREATE_INPUT, provider: "runner", runner: "example-runner" },
+        SESSION_ID,
+        CREATE_IDEMPOTENCY,
+      ),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "bad_request");
+    assert.strictEqual(harness.readRecord(), undefined);
+    assert.deepStrictEqual(harness.runnerOperations, []);
+  });
+
+  it("arms the hard cap before committing authority, then projects and reaches warm", async () => {
+    const harness = await createSessionHarness();
+
+    const created = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.strictEqual(created.status, "warm");
+    const record = harness.readRecord();
+    assert.strictEqual(record?.status, "warm");
+    assert.strictEqual(record?.operation, null);
+    assert.strictEqual(record?.repoExistsAtCreate, true);
+    assert.strictEqual(record?.defaultBranch, "main");
+    assert.strictEqual(record?.codexThreadId, `pi-${SESSION_ID}`);
+    assert.deepStrictEqual(record?.sandboxBundle, { digest: null });
+    assert.deepStrictEqual(created.sandboxBundle, { digest: null });
+    assert.deepStrictEqual(harness.read(sessionHarnessKeys.createIdempotency), CREATE_IDEMPOTENCY);
+
+    const recordIndex = harness.events.indexOf("record:booting");
+    const projectionIndex = harness.events.indexOf("projection:booting");
+    const hardCapIndex = harness.events.indexOf("schedule:enforceHardCap");
+    const warmIndex = harness.events.lastIndexOf("record:warm");
+    const warmProjectionIndex = harness.events.lastIndexOf("projection:warm");
+    const authIndex = harness.events.indexOf("host:mkdir");
+    assert.ok(hardCapIndex >= 0);
+    assert.ok(recordIndex >= 0);
+    assert.ok(hardCapIndex < recordIndex);
+    assert.ok(recordIndex < projectionIndex);
+    assert.ok(projectionIndex < authIndex);
+    assert.ok(authIndex < warmIndex);
+    assert.ok(projectionIndex < warmIndex);
+    assert.ok(warmIndex < warmProjectionIndex);
+    assert.deepStrictEqual(
+      harness.schedules.map((schedule) => schedule.callback),
+      ["enforceHardCap"],
+    );
+    assert.deepStrictEqual(
+      harness.writtenFiles.find((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
+      {
+        path: `/workspace/${SESSION_ID}/.pi-agent/initial-prompt`,
+        content: CREATE_INPUT.prompt,
+      },
+    );
+    assert.deepStrictEqual(harness.aborts, []);
+  });
+
+  it("pins the current Registry grant without storing credential plaintext", async () => {
+    const harness = await createSessionHarness({ credentialRegistryGrants: [...VALID_GRANTS] });
+
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    assert.deepStrictEqual(harness.credentialGrantRequests, [
+      { sessionId: SESSION_ID, repository: "owner/project" },
+    ]);
+    assert.deepStrictEqual(harness.readRecord()?.credentialGrant, {
+      sessionId: SESSION_ID,
+      grants: [...VALID_GRANTS],
+    });
+    const serialized = JSON.stringify(harness.readRecord());
+    assert.ok(!serialized.includes("seed-access-token"));
+    assert.ok(!serialized.includes("seed-refresh-token"));
+    assert.ok(!serialized.includes("seed-github-token"));
+    const authFile = harness.writtenFiles.find((file) =>
+      file.path.endsWith("/.pi-agent/auth.json"),
+    );
+    assert.ok(authFile !== undefined);
+    const auth = JSON.parse(authFile.content) as ProjectedManagedPiAuth;
+    assert.strictEqual(auth["openai-codex"].expires, PI_EXPIRES);
+    assert.strictEqual(auth["openai-codex"].refresh, "scotty-managed://openai/openai-codex/access");
+    assert.ok(!authFile.content.includes("seed-"));
+    assert.ok(!authFile.content.includes("/refresh"));
+  });
+
+  it("carries the pinned GitHub managed handle through create and vaporize", async () => {
+    const harness = await createSessionHarness({ credentialRegistryGrants: [...VALID_GRANTS] });
+
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    assert.deepStrictEqual(harness.readRecord()?.credentialGrant?.grants, [...VALID_GRANTS]);
+    const shell = harness.writtenFiles.find((file) =>
+      file.path.endsWith("/.pi-agent/scotty-shell"),
+    );
+    assert.ok(shell !== undefined);
+    assert.include(shell.content, "scotty-managed://github/github/git-https");
+
+    await harness.sandbox.vaporizeScottySession();
+
+    assert.deepStrictEqual(harness.credentialGrantReleases, [
+      { sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
+    ]);
+    assert.strictEqual(harness.readRecord()?.status, "gone");
+  });
+
+  it("fails before workspace and container execution when Pi credential selection is missing", async () => {
+    const harness = await createSessionHarness({ credentialRegistryGrants: [] });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.include(error.message, "Pi session creation is ambiguous");
+    assert.deepStrictEqual(workspaceResetCommands(harness.commands), []);
+    assert.ok(!harness.events.includes("host:mkdir"));
+  });
+
+  it("fails before workspace and container execution when Pi credential selection is ambiguous", async () => {
+    const alternatePiGrant: CredentialGrant = {
+      ...PI_GRANT,
+      name: "alternate",
+      versionRef: "version-alternate",
+    };
+    const harness = await createSessionHarness({
+      credentialRegistryGrants: [PI_GRANT, alternatePiGrant, GITHUB_GRANT],
+    });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.include(error.message, "Pi session creation is ambiguous");
+    assert.deepStrictEqual(workspaceResetCommands(harness.commands), []);
+    assert.ok(!harness.events.includes("host:mkdir"));
+  });
+
+  it("fails explicitly before workspace.prepare when the GitHub managed handle is missing", async () => {
+    const harness = await createSessionHarness({ credentialRegistryGrants: [PI_GRANT] });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.strictEqual(error.message, "Session setup failed");
+    assert.deepStrictEqual(workspaceResetCommands(harness.commands), []);
+    assert.ok(!harness.events.includes("host:exec:workspace"));
+    assert.ok(!harness.events.includes("host:mkdir"));
+  });
+  it("fails explicitly before workspace.prepare when replaying a setup with a missing GitHub managed handle", async () => {
+    const nonce = "create-before-missing-github-replay";
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "booting",
+          operation: {
+            kind: "create",
+            nonce,
+            startedAt: "2026-07-24T12:00:00.000Z",
+            createPhase: "setup",
+          },
+          branch: `scotty/${SESSION_ID}`,
+          credentialGrant: { sessionId: SESSION_ID, grants: [PI_GRANT] },
+        }),
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+    });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.strictEqual(error.message, "Session setup failed");
+    assert.strictEqual(harness.readRecord()?.status, "failed");
+    assert.deepStrictEqual(workspaceResetCommands(harness.commands), []);
+    assert.ok(!harness.events.includes("host:exec:workspace"));
+    assert.ok(!harness.events.includes("host:mkdir"));
+  });
+  it("requires Registry issuance before creating runtime state", async () => {
+    const harness = await createSessionHarness({ credentialRegistryIssueFailure: true });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.strictEqual(harness.readRecord()?.status, "booting");
+    assert.strictEqual(harness.readRecord()?.credentialGrant, undefined);
+    assert.ok(!harness.events.includes("host:mkdir"));
+  });
+
+  it("recovers a committed booting record through the pre-armed hard-cap schedule after a crash", async () => {
+    const crashedHarness = await createSessionHarness({
+      crashAfterInitialRecordCommit: true,
+    });
+
+    const crash = await rejection(
+      crashedHarness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(crash instanceof InitialSessionStorageFailure);
+    assert.ok(crash.cause instanceof Error);
+    assert.strictEqual(crash.cause.message, "simulated DO crash after initial record commit");
+    const committed = crashedHarness.readRecord();
+    assert.ok(committed);
+    assert.strictEqual(committed.status, "booting");
+    assert.ok(committed.operation);
+    assert.strictEqual(committed.operation.kind, "create");
+    assert.strictEqual(committed.operation.createPhase, "setup");
+    const hardCap = crashedHarness.schedules.find(
+      (schedule) => schedule.callback === "enforceHardCap",
+    );
+    assert.ok(hardCap, "hard-cap schedule must be armed before initial record commit");
+    assert.ok(
+      typeof hardCap.payload === "object" &&
+        hardCap.payload !== null &&
+        "hardCapAt" in hardCap.payload &&
+        typeof hardCap.payload.hardCapAt === "string",
+    );
+    assert.strictEqual(hardCap.payload.hardCapAt, committed.hardCapAt);
+
+    const reconstructed = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: {
+          ...committed,
+          operation: {
+            ...committed.operation,
+            startedAt: "2026-01-01T00:00:00.000Z",
+          },
+        },
+      },
+    });
+
+    await reconstructed.sandbox.enforceHardCap({ hardCapAt: hardCap.payload.hardCapAt });
+
+    const failed = reconstructed.readRecord();
+    assert.strictEqual(failed?.status, "failed");
+    assert.strictEqual(failed?.operation, null);
+    assert.deepStrictEqual(failed?.failure, {
+      code: "hard_cap_checkpoint_failed",
+      message: "A session operation exceeded the hard-cap grace period",
+      recoverable: false,
+    });
+    assert.ok(reconstructed.events.includes("projection:failed"));
+    assert.ok(reconstructed.events.includes("host:destroy"));
+  });
+
+  it("does not replay a legacy session without a pinned grant", async () => {
+    const { credentialGrant: _grant, ...legacyRecord } = makeSessionRecord({ id: SESSION_ID });
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: legacyRecord,
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+    });
+
+    await assertUpstreamFailure(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.deepStrictEqual(harness.credentialGrantRequests, []);
+    assert.ok(!harness.events.includes("host:mkdir"));
+  });
+
+  it("replays the matching idempotency tuple without touching runtime or schedules", async () => {
+    let verifierCalls = 0;
+    const existing = makeSessionRecord({
+      id: SESSION_ID,
+      branch: `scotty/${SESSION_ID}`,
+    });
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: existing,
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+      repoVerifier: {
+        verify: () => {
+          verifierCalls += 1;
+          return Effect.fail(new RepoVerifierFailure({ reason: "transport" }));
+        },
+      },
+    });
+
+    const replayed = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.strictEqual(replayed.id, existing.id);
+    assert.strictEqual(replayed.status, existing.status);
+    assert.deepStrictEqual(harness.readRecord(), existing);
+    assert.deepStrictEqual(harness.events, []);
+    assert.deepStrictEqual(harness.schedules, []);
+    assert.strictEqual(verifierCalls, 0);
+  });
+
+  it("replays a matching booting create through Pi with the same identity and payload", async () => {
+    const nonce = "create-before-do-restart";
+    const existing = makeSessionRecord({
+      id: SESSION_ID,
+      status: "booting",
+      operation: {
+        kind: "create",
+        nonce,
+        startedAt: "2026-07-24T12:00:00.000Z",
+        createPhase: "runtime",
+      },
+      branch: `scotty/${SESSION_ID}`,
+      repoExistsAtCreate: true,
+      defaultBranch: "main",
+      codexThreadId: undefined,
+      credentialGrant: { sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
+    });
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: existing,
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+    });
+
+    const replayed = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.strictEqual(replayed.status, "warm");
+    assert.strictEqual(replayed.defaultBranch, "main");
+    assert.strictEqual(replayed.codexThreadId, `pi-${SESSION_ID}`);
+    assert.strictEqual(harness.readRecord()?.operation, null);
+    assert.deepStrictEqual(harness.schedules, []);
+    assert.deepStrictEqual(
+      harness.writtenFiles.find((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
+      {
+        path: `/workspace/${SESSION_ID}/.pi-agent/initial-prompt`,
+        content: CREATE_INPUT.prompt,
+      },
+    );
+    assert.ok(!harness.commands.some((command) => command.startsWith("gh repo view")));
+    assert.ok(!harness.events.includes("host:destroy"));
+  });
+
+  it("replays setup only before advancing durably to the Pi phase", async () => {
+    const nonce = "create-before-workspace-setup";
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "booting",
+          operation: {
+            kind: "create",
+            nonce,
+            startedAt: "2026-07-24T12:00:00.000Z",
+            createPhase: "setup",
+          },
+          branch: `scotty/${SESSION_ID}`,
+          codexThreadId: undefined,
+          credentialGrant: { sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
+        }),
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+    });
+
+    const replayed = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.strictEqual(replayed.status, "warm");
+    assert.ok(harness.events.includes("host:exec:workspace"));
+    assert.ok(
+      harness.events.lastIndexOf("record:booting") < harness.events.lastIndexOf("record:warm"),
+    );
+  });
+
+  it("singleflights concurrent matching setup replays", async () => {
+    const nonce = "concurrent-create-setup";
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "booting",
+          operation: {
+            kind: "create",
+            nonce,
+            startedAt: "2026-07-24T12:00:00.000Z",
+            createPhase: "setup",
+          },
+          branch: `scotty/${SESSION_ID}`,
+          codexThreadId: undefined,
+          credentialGrant: { sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
+        }),
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    ]);
+
+    assert.deepStrictEqual(first, second);
+    assert.lengthOf(workspaceResetCommands(harness.commands), 1);
+    assert.ok(!harness.events.includes("host:destroy"));
+  });
+
+  it("singleflights concurrent matching Pi-phase replays", async () => {
+    const nonce = "concurrent-create-runtime";
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "booting",
+          operation: {
+            kind: "create",
+            nonce,
+            startedAt: "2026-07-24T12:00:00.000Z",
+            createPhase: "runtime",
+          },
+          branch: `scotty/${SESSION_ID}`,
+          codexThreadId: undefined,
+          credentialGrant: { sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
+        }),
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    ]);
+
+    assert.deepStrictEqual(first, second);
+    assert.ok(!harness.commands.some((command) => command.startsWith("gh repo view")));
+    assert.ok(!harness.events.includes("host:destroy"));
+  });
+
+  it("re-enters the create gate when handing off queued callers", async () => {
+    let releaseInspection = (): void => undefined;
+    const inspectionRelease = new Promise<void>((resolve) => {
+      releaseInspection = resolve;
+    });
+    let announceInspection = (): void => undefined;
+    const inspectionReached = new Promise<void>((resolve) => {
+      announceInspection = resolve;
+    });
+    const harness = await createSessionHarness({
+      onStorageGet: async (key, count) => {
+        if (key !== sessionHarnessKeys.record) return;
+        if (count === 1) throw injectedHarnessFailure("first create failed before authority");
+        if (count === 2) {
+          announceInspection();
+          await inspectionRelease;
+        }
+      },
+    });
+    const firstIdempotency = {
+      keyDigest: "c".repeat(64),
+      inputDigest: "d".repeat(64),
+    };
+    const conflictingIdempotency = {
+      keyDigest: CREATE_IDEMPOTENCY.keyDigest,
+      inputDigest: "e".repeat(64),
+    };
+
+    const first = rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, firstIdempotency),
+    );
+    const queued = harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+    await inspectionReached;
+
+    const matching = harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+    const nonmatching = rejection(
+      harness.sandbox.createScottySession(
+        { ...CREATE_INPUT, prompt: "Conflicting queued prompt" },
+        SESSION_ID,
+        conflictingIdempotency,
+      ),
+    );
+    releaseInspection();
+
+    const [firstError, queuedResult, matchingResult, conflictError] = await Promise.all([
+      first,
+      queued,
+      matching,
+      nonmatching,
+    ]);
+
+    assert.ok(firstError instanceof Error);
+    assert.deepStrictEqual(queuedResult, matchingResult);
+    assert.ok(conflictError instanceof ScottyError);
+    assert.strictEqual(conflictError.code, "conflict");
+    assert.deepStrictEqual(
+      harness.schedules.map((schedule) => schedule.callback),
+      ["enforceHardCap"],
+    );
+    assert.lengthOf(workspaceResetCommands(harness.commands), 1);
+    assert.ok(!harness.events.includes("host:destroy"));
+  });
+
+  for (const failureStage of ["containerAuthSeed"] as const) {
+    it(`preserves Pi phase after ${failureStage} uncertainty`, async () => {
+      const nonce = `uncertain-${failureStage}`;
+      const harness = await createSessionHarness({
+        failureStage,
+        initialEntries: {
+          [sessionHarnessKeys.record]: makeSessionRecord({
+            id: SESSION_ID,
+            status: "booting",
+            operation: {
+              kind: "create",
+              nonce,
+              startedAt: "2026-07-24T12:00:00.000Z",
+              createPhase: "runtime",
+            },
+            branch: `scotty/${SESSION_ID}`,
+            codexThreadId: undefined,
+            credentialGrant: { sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
+          }),
+          [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+        },
+      });
+
+      const error = await rejection(
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+
+      assert.ok(error instanceof ScottyError);
+      assert.strictEqual(
+        error.message,
+        "Pi session creation is ambiguous (stage: seed) [transport] Sandbox directory transport failed",
+      );
+      assert.strictEqual(harness.readRecord()?.status, "booting");
+      assert.deepInclude(harness.readRecord()?.operation, {
+        kind: "create",
+        nonce,
+        createPhase: "runtime",
+      });
+      assert.deepStrictEqual(harness.readRecord()?.failure, {
+        code: "create_ambiguous",
+        message:
+          "Pi session creation is ambiguous (stage: seed) [transport] Sandbox directory transport failed",
+        recoverable: true,
+        stage: "seed",
+      });
+      assert.ok(!harness.events.includes("host:destroy"));
+    });
+  }
+
+  it("preserves Pi phase when ready state cannot be persisted", async () => {
+    const nonce = "stable-before-storage-failure";
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "booting",
+          operation: {
+            kind: "create",
+            nonce,
+            startedAt: "2026-07-24T12:00:00.000Z",
+            createPhase: "runtime",
+          },
+          branch: `scotty/${SESSION_ID}`,
+          codexThreadId: undefined,
+          credentialGrant: { sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
+        }),
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+      transactionFailureCountdown: 0,
+    });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.message, "Pi session creation is ambiguous (stage: warm_commit)");
+    assert.strictEqual(harness.readRecord()?.status, "booting");
+    assert.deepInclude(harness.readRecord()?.operation, {
+      kind: "create",
+      nonce,
+      createPhase: "runtime",
+    });
+    assert.strictEqual(harness.readRecord()?.codexThreadId, undefined);
+    assert.deepStrictEqual(harness.readRecord()?.failure, {
+      code: "create_ambiguous",
+      message: "Pi session creation is ambiguous (stage: warm_commit)",
+      recoverable: true,
+      stage: "warm_commit",
+    });
+    assert.ok(!harness.events.includes("record:failed"));
+    assert.ok(!harness.events.includes("host:destroy"));
+  });
+
+  it("replays a matching booting create from its durable runtime phase", async () => {
+    const nonce = "create-before-unknown-replay";
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "booting",
+          operation: {
+            kind: "create",
+            nonce,
+            startedAt: "2026-07-24T12:00:00.000Z",
+            createPhase: "runtime",
+          },
+          branch: `scotty/${SESSION_ID}`,
+          defaultBranch: "main",
+          codexThreadId: undefined,
+          credentialGrant: { sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
+        }),
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+    });
+
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    assert.strictEqual(harness.readRecord()?.status, "warm");
+    assert.strictEqual(harness.readRecord()?.failure, undefined);
+    assert.ok(!harness.events.includes("host:destroy"));
+  });
+
+  it("rejects a conflicting existing session before projection or runtime work", async () => {
+    const existing = makeSessionRecord({
+      id: SESSION_ID,
+      branch: `scotty/${SESSION_ID}`,
+    });
+    const harness = await createSessionHarness({
+      initialEntries: { [sessionHarnessKeys.record]: existing },
+    });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "conflict");
+    assert.deepStrictEqual(harness.readRecord(), existing);
+    assert.deepStrictEqual(harness.events, []);
+  });
+
+  const failureCases = [
+    {
+      name: "workspace prepare",
+      options: { failureStage: "workspacePrepare" satisfies HarnessFailureStage },
+    },
+    {
+      name: "hard-cap schedule",
+      options: { failureStage: "hardCapSchedule" satisfies HarnessFailureStage },
+    },
+  ] satisfies ReadonlyArray<{ readonly name: string; readonly options: HarnessOptions }>;
+
+  for (const testCase of failureCases) {
+    it(`persists non-recoverable failed state and destroys after ${testCase.name} failure`, async () => {
+      const harness = await createSessionHarness(testCase.options);
+
+      await assertUpstreamFailure(
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+
+      const failed = harness.readRecord();
+      assert.strictEqual(failed?.status, "failed");
+      assert.strictEqual(failed?.operation, null);
+      assert.deepStrictEqual(failed?.failure, {
+        code: "create_failed",
+        message: "Session setup failed",
+        recoverable: false,
+      });
+      assert.ok(harness.events.includes("projection:failed"));
+      assert.ok(harness.events.includes("host:destroy"));
+      assert.ok(harness.events.indexOf("record:failed") < harness.events.indexOf("host:destroy"));
+    });
+  }
+
+  it("persists a null sandbox bundle pin on fresh create", async () => {
+    const harness = await createSessionHarness();
+
+    const created = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
+      digest: null,
+    });
+    assert.deepStrictEqual(created.sandboxBundle, {
+      digest: null,
+    });
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), 1);
+  });
+
+  it("persists the active sandbox digest before workspace setup", async () => {
+    const digest = EMPTY_ADDITIONS_DIGEST;
+    const harness = await createSessionHarness({
+      sandboxConfigStatus: { revision: 2, activeDigest: digest },
+    });
+
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    const recordIndex = harness.events.indexOf("record:booting");
+    const authIndex = harness.events.indexOf("host:mkdir");
+    assert.ok(recordIndex >= 0);
+    assert.ok(authIndex >= 0);
+    assert.ok(recordIndex < authIndex);
+    assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
+      digest,
+    });
+  });
+
+  it("keeps the initial sandbox bundle pin across create replay after config changes", async () => {
+    const digestA = EMPTY_ADDITIONS_DIGEST;
+    const digestB = "b".repeat(64);
+    const crashedHarness = await createSessionHarness({
+      crashAfterInitialRecordCommit: true,
+      sandboxConfigStatus: { revision: 1, activeDigest: digestA },
+    });
+
+    const crash = await rejection(
+      crashedHarness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+    assert.ok(crash instanceof InitialSessionStorageFailure);
+    const committed = crashedHarness.readRecord();
+    assert.ok(committed);
+    assert.deepStrictEqual(committed.sandboxBundle, { digest: digestA });
+    assert.strictEqual(crashedHarness.sandboxConfigStatusCallCount(), 1);
+
+    const replayHarness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: committed,
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+      sandboxConfigStatus: { revision: 2, activeDigest: digestB },
+    });
+
+    const replayed = await replayHarness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.deepStrictEqual(replayHarness.readRecord()?.sandboxBundle, {
+      digest: digestA,
+    });
+    assert.deepStrictEqual(replayed.sandboxBundle, {
+      digest: digestA,
+    });
+    assert.strictEqual(replayHarness.sandboxConfigStatusCallCount(), 0);
+  });
+
+  it("materializes the pinned sandbox bundle during create", async () => {
+    const digest = EMPTY_ADDITIONS_DIGEST;
+    const harness = await createSessionHarness({
+      sandboxConfigStatus: { revision: 2, activeDigest: digest },
+    });
+
+    const created = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.strictEqual(created.status, "warm");
+    const mkdirIndex = harness.events.indexOf("host:mkdir");
+    assert.ok(mkdirIndex >= 0);
+    const archiveIndex = harness.writtenFiles.findIndex(
+      (file) => file.path.includes("/.scotty/sandbox/.staging-") && file.path.endsWith(".tar.gz"),
+    );
+    const verifiedIndex = harness.writtenFiles.findIndex(
+      (file) =>
+        file.path.includes("/.scotty/sandbox/.staging-") && file.path.endsWith("/.verified"),
+    );
+    assert.ok(archiveIndex >= 0);
+    assert.ok(verifiedIndex >= 0);
+    const extractionIndex = harness.commands.findIndex((command) => command.startsWith("tar -xf "));
+    const promotionIndex = harness.commands.findIndex(
+      (command) => command.startsWith("rm -rf ") && command.includes(" && mv "),
+    );
+    assert.ok(extractionIndex >= 0);
+    assert.ok(promotionIndex > extractionIndex);
+    assert.ok(harness.events.some((event) => event.startsWith("host:pi:start:")));
+    assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
+      digest,
+    });
+    assert.deepStrictEqual(created.sandboxBundle, {
+      digest,
+    });
+  });
+
+  it("does not reach warm when the pinned sandbox bundle is missing", async () => {
+    const digest = "a".repeat(64);
+    const harness = await createSessionHarness({
+      sandboxConfigStatus: { revision: 2, activeDigest: digest },
+      seedPinnedSandboxBundle: false,
+    });
+
+    await assertUpstreamFailure(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.notStrictEqual(harness.readRecord()?.status, "warm");
+    assert.ok(!harness.events.some((event) => event.startsWith("host:pi:start:")));
+  });
+
+  it("does not commit a session record when sandbox config status fails", async () => {
+    for (const sandboxConfigStatusFailure of ["rpc-error", "throw"] as const) {
+      const harness = await createSessionHarness({ sandboxConfigStatusFailure });
+
+      await assertUpstreamFailure(
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+
+      assert.strictEqual(harness.readRecord(), undefined);
+      assert.strictEqual(harness.sandboxConfigStatusCallCount(), 1);
+    }
+  });
+});

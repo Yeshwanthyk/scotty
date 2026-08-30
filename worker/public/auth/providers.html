@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#01060c" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
+    <link rel="apple-touch-icon" href="/brand/scotty-mark-128.png" />
+    <link rel="stylesheet" href="/shared/styles.css" />
+    <link rel="stylesheet" href="/auth/providers.css" />
+    <title>Scotty providers</title>
+  </head>
+  <body class="scotty-ui app-page providers-page">
+    <header class="masthead">
+      <div class="masthead-inner">
+        <a class="identity" href="/sessions" aria-label="Scotty sessions">
+          <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
+          <span class="wordmark">SCOTTY</span>
+        </a>
+        <div class="masthead-actions">
+          <nav class="masthead-nav" aria-label="Primary navigation">
+            <a class="button" href="/sessions">Sessions</a>
+            <a class="button" href="/stats">Stats</a>
+            <a class="button" href="/devices">Devices</a>
+          </nav>
+          <details class="mobile-utilities">
+            <summary aria-label="Open primary navigation">•••</summary>
+            <nav aria-label="Primary navigation">
+              <a href="/sessions">Sessions</a>
+              <a href="/stats">Stats</a>
+              <a href="/devices">Devices</a>
+            </nav>
+          </details>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <div class="page-heading">
+        <div>
+          <h1>Execution providers</h1>
+          <p class="intro">
+            Provider configuration and runner transport are separate signals. Disconnecting a runner
+            tests recovery; it does not disable the machine.
+          </p>
+        </div>
+        <button class="button" id="refresh" type="button">Refresh</button>
+      </div>
+
+      <section class="provider-section" aria-labelledby="provider-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="provider-heading">Providers</h2>
+            <p>Session placement uses these provider types.</p>
+          </div>
+        </div>
+        <div class="provider-list" id="providers" aria-live="polite" aria-busy="true">
+          <div class="loading-row">Loading provider configuration…</div>
+        </div>
+      </section>
+
+      <section class="provider-section" aria-labelledby="runner-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="runner-heading">Runners</h2>
+            <p>Named machines connected through the runner provider.</p>
+          </div>
+        </div>
+        <div class="runner-list" id="runners" aria-live="polite" aria-busy="true">
+          <div class="loading-row">Actively probing runner connections…</div>
+        </div>
+      </section>
+
+      <div class="page-error" id="error" role="alert" hidden></div>
+    </main>
+    <script type="module" src="/auth/providers.js"></script>
+  </body>
+</html>

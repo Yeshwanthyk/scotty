@@ -81,7 +81,6 @@ const encodeSessionId = (sessionId: string): string =>
 
 const failure = (operation: RunnerOperation, code: RunnerFailureCode): RunnerFailure => ({
   _tag: "RunnerFailure",
-  version: 2,
   operationId: operation.operationId,
   sessionId: operation.sessionId,
   code,
@@ -89,7 +88,6 @@ const failure = (operation: RunnerOperation, code: RunnerFailureCode): RunnerFai
 
 const success = (operation: RunnerOperation, result: RunnerResult): RunnerResponse => ({
   _tag: "RunnerSuccess",
-  version: 2,
   operationId: operation.operationId,
   sessionId: operation.sessionId,
   result,
@@ -141,7 +139,7 @@ const makeProcessRunnerCompute = Effect.fnUntraced(function* (
     const encoded = encodeSessionId(sessionId);
     return {
       workspace: path.join(root, "sessions", `session-${encoded}`),
-      resourceId: `runner-v1:${encoded}`,
+      resourceId: `runner:${encoded}`,
     };
   };
 

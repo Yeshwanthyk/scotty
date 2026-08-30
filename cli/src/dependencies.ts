@@ -12,6 +12,7 @@ import {
   type Config,
   type BeamUpRequest,
   type PendingUp,
+  type RawConfig,
 } from "./schemas";
 import { CliRuntime, FileSystem } from "./services";
 import { requestJson } from "./transport";
@@ -26,6 +27,61 @@ const unexpected = (): CliError =>
     "Retry with --json; if it persists, inspect the local error and Worker logs.",
     EXIT.GENERIC,
   );
+
+const invalidManagedConfig = (
+  raw: RawConfig,
+  hasPreviewInput: boolean,
+  hasEvidenceInput: boolean,
+  preview: Option.Option<{ readonly base: string; readonly zoneId: string }>,
+  evidenceEnabled: true | undefined,
+): boolean =>
+  (hasPreviewInput && Option.isNone(preview)) ||
+  (hasEvidenceInput && evidenceEnabled !== true) ||
+  (raw.installationName !== undefined && (Option.isNone(preview) || evidenceEnabled !== true));
+
+const configIdentity = (values: {
+  readonly installationName: string | undefined;
+  readonly profile: string | undefined;
+  readonly stackName: string | undefined;
+  readonly stage: string | undefined;
+  readonly accountId: string | undefined;
+}): Partial<Config> => ({
+  ...(values.installationName === undefined ? {} : { installationName: values.installationName }),
+  ...(values.profile === undefined ? {} : { profile: values.profile }),
+  ...(values.stackName === undefined ? {} : { stackName: values.stackName }),
+  ...(values.stage === undefined ? {} : { stage: values.stage }),
+  ...(values.accountId === undefined ? {} : { accountId: values.accountId }),
+});
+
+const configResources = (values: {
+  readonly workerName: string | undefined;
+  readonly runnerWorkerName: string | undefined;
+  readonly containerName: string | undefined;
+  readonly kvTitle: string | undefined;
+  readonly backupBucketName: string | undefined;
+}): Partial<Config> => ({
+  ...(values.workerName === undefined ? {} : { workerName: values.workerName }),
+  ...(values.runnerWorkerName === undefined ? {} : { runnerWorkerName: values.runnerWorkerName }),
+  ...(values.containerName === undefined ? {} : { containerName: values.containerName }),
+  ...(values.kvTitle === undefined ? {} : { kvTitle: values.kvTitle }),
+  ...(values.backupBucketName === undefined ? {} : { backupBucketName: values.backupBucketName }),
+});
+
+const configAccess = (
+  preview: Option.Option<{ readonly base: string; readonly zoneId: string }>,
+  evidenceEnabled: true | undefined,
+  values: {
+    readonly host: string | undefined;
+    readonly token: string | undefined;
+  },
+): Partial<Config> => ({
+  ...(Option.isNone(preview)
+    ? {}
+    : { previewBase: preview.value.base, previewZoneId: preview.value.zoneId }),
+  ...(evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
+  ...(values.host === undefined ? {} : { host: values.host }),
+  ...(values.token === undefined ? {} : { token: values.token }),
+});
 
 export const readConfig = Effect.fnUntraced(function* (path: string) {
   const fileSystem = yield* FileSystem;
@@ -80,50 +136,23 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
   const previewBase = Option.getOrUndefined(decodeString(raw.value.previewBase));
   const previewZoneId = Option.getOrUndefined(decodeString(raw.value.previewZoneId));
   const evidenceEnabled = Option.getOrUndefined(decodeTrue(raw.value.evidenceEnabled));
-  const adoptionManifestPath = Option.getOrUndefined(decodeString(raw.value.adoptionManifestPath));
   const hasPreviewInput =
     raw.value.previewBase !== undefined || raw.value.previewZoneId !== undefined;
   const hasEvidenceInput = raw.value.evidenceEnabled !== undefined;
   const preview = hasPreviewInput
     ? decodeInstallationPreviewConfiguration({ base: previewBase, zoneId: previewZoneId })
     : Option.none();
-  if (
-    (raw.value.version !== undefined &&
-      raw.value.version !== 1 &&
-      raw.value.version !== 2 &&
-      raw.value.version !== 3) ||
-    (hasPreviewInput &&
-      ((raw.value.version !== 2 && raw.value.version !== 3) || Option.isNone(preview))) ||
-    (raw.value.version === 3 && (Option.isNone(preview) || evidenceEnabled !== true)) ||
-    (hasEvidenceInput && (raw.value.version !== 3 || evidenceEnabled !== true))
-  )
+  if (invalidManagedConfig(raw.value, hasPreviewInput, hasEvidenceInput, preview, evidenceEnabled))
     return yield* new CliError(
       "invalid_config",
-      "Scotty config has an invalid versioned preview or evidence configuration",
+      "Scotty config has an invalid preview or evidence configuration",
       `Fix or rerun scotty recover for ${path}.`,
       EXIT.USAGE,
     );
   return {
-    ...(raw.value.version === 1 || raw.value.version === 2 || raw.value.version === 3
-      ? { version: raw.value.version }
-      : {}),
-    ...(installationName === undefined ? {} : { installationName }),
-    ...(profile === undefined ? {} : { profile }),
-    ...(stackName === undefined ? {} : { stackName }),
-    ...(stage === undefined ? {} : { stage }),
-    ...(accountId === undefined ? {} : { accountId }),
-    ...(workerName === undefined ? {} : { workerName }),
-    ...(runnerWorkerName === undefined ? {} : { runnerWorkerName }),
-    ...(containerName === undefined ? {} : { containerName }),
-    ...(kvTitle === undefined ? {} : { kvTitle }),
-    ...(backupBucketName === undefined ? {} : { backupBucketName }),
-    ...(Option.isNone(preview)
-      ? {}
-      : { previewBase: preview.value.base, previewZoneId: preview.value.zoneId }),
-    ...(evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
-    ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
-    ...(host === undefined ? {} : { host }),
-    ...(token === undefined ? {} : { token }),
+    ...configIdentity({ installationName, profile, stackName, stage, accountId }),
+    ...configResources({ workerName, runnerWorkerName, containerName, kvTitle, backupBucketName }),
+    ...configAccess(preview, evidenceEnabled, { host, token }),
   } satisfies Config;
 });
 
@@ -186,7 +215,6 @@ export const pendingUpRequest = Effect.fnUntraced(function* (host: string, body:
         );
 
     const pending = {
-      version: 1,
       key: crypto.randomUUID(),
       createdAt: new Date(nowMillis).toISOString(),
     } satisfies PendingUp;

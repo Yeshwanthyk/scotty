@@ -99,7 +99,7 @@ Keep content upload and credential upload as separate requests/results internall
 
 - `worker/src/credential-vault.ts`
 - `worker/src/installation-pi-auth-store.ts`
-- `worker/src/contracts.ts`
+- `worker/src/session/contracts.ts`
 - Worker route/RPC wiring
 - `infra/cloudflare-stack.ts` and `infra/installation.ts` only for the required DO/binding/migration
 
@@ -111,8 +111,8 @@ Keep content upload and credential upload as separate requests/results internall
 
 **Likely baseline files:**
 
-- `worker/src/session.ts` and Session contracts/store
-- `worker/src/container-auth.ts`
+- `worker/src/session/object.ts` and Session contracts/store
+- `worker/src/sandbox/auth.ts`
 - existing Sandbox runtime adapter
 
 The existing container and runner remain unchanged. Materialization is an input to their established startup path.

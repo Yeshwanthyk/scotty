@@ -56,12 +56,12 @@ Materialization must use Git's normal non-interactive HTTPS credential mechanism
 
 ### 1. Narrow Git adapter
 
-**Behavior:** Map the existing credential grant to the baseline's existing Git HTTPS setup. Prefer adapting `worker/src/container-auth.ts` and its existing credential configuration over introducing a new service. Keep repository URL construction credential-free.
+**Behavior:** Map the existing credential grant to the baseline's existing Git HTTPS setup. Prefer adapting `worker/src/sandbox/auth.ts` and its existing credential configuration over introducing a new service. Keep repository URL construction credential-free.
 
 **Likely baseline files:**
 
 - Slice 2–3 credential definition and grant unions
-- `worker/src/container-auth.ts`
+- `worker/src/sandbox/auth.ts`
 - existing workspace/Git setup module
 - focused Git/config tests
 

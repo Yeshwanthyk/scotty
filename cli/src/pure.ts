@@ -189,7 +189,6 @@ export function stableSession(record: SessionResponse): StableSession {
       ? undefined
       : {
           digest: record.sandboxBundle.digest,
-          manifestVersion: record.sandboxBundle.manifestVersion,
         };
   return {
     id: record.id,

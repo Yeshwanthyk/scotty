@@ -1,9 +1,9 @@
 import type { BackupOptions, RestoreBackupResult } from "@cloudflare/sandbox";
 import { assert } from "@effect/vitest";
 import { Schema } from "effect";
-import type { BackupCapabilities, BackupObjectPage } from "../../src/backup-store";
-import { DirectoryBackupSchema, type DirectoryBackup } from "../../src/contracts";
-import type { SessionRecordStorage, SessionRecordTransaction } from "../../src/session-store";
+import type { BackupCapabilities, BackupObjectPage } from "../../src/backups/store";
+import { DirectoryBackupSchema, type DirectoryBackup } from "../../src/session/contracts";
+import type { SessionRecordStorage, SessionRecordTransaction } from "../../src/session/store";
 
 declare const process: {
   readonly env: Readonly<Record<string, string | undefined>>;
