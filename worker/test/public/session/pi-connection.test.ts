@@ -1,4 +1,4 @@
-import { assert, describe, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 import {
   commandIntentDigest,
   consoleUrl,
@@ -30,6 +30,24 @@ const accepted = async (envelope: CommandEnvelope): Promise<CommandTransportResu
 });
 
 describe("Pi connection", () => {
+  it("uses an explicit same-origin mutation to prepare a missing runtime", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const transport = createConsoleTransport({
+      fetch,
+      eventSource: () => ({ addEventListener() {}, close() {} }),
+      origin: "https://scotty.example",
+    });
+
+    await transport.prepare("session/a");
+
+    expect(fetch).toHaveBeenCalledWith("/s/session%2Fa/console/prepare", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+      cache: "no-store",
+    });
+  });
+
   it("uses only console URLs and matches the server digest", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     let eventUrl: URL | undefined;
@@ -123,6 +141,7 @@ describe("Pi connection", () => {
         signals.push(signal);
         return sessionId === "a" ? snapshotA.promise : { epoch: "epoch-b", sequence: 0 };
       },
+      prepare: async () => undefined,
       events: (sessionId: string) => source(sessionId),
       command: async (_sessionId: string, envelope: CommandEnvelope) => accepted(envelope),
     };

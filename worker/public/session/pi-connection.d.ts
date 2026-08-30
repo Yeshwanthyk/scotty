@@ -51,6 +51,7 @@ export declare function createConsoleTransport(options: {
   origin: string;
 }): {
   snapshot(sessionId: string, signal?: AbortSignal): Promise<unknown>;
+  prepare(sessionId: string): Promise<void>;
   events(sessionId: string, authority: { epoch?: string; sequence?: number }): PiEventSource;
   command(sessionId: string, envelope: CommandEnvelope): Promise<CommandTransportResult>;
 };

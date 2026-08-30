@@ -919,13 +919,18 @@ app.all(`/s/:id/${PI_CONSOLE_PUBLIC_PATH_SEGMENT}/:action`, async (c) => {
   const expectedMethod =
     action === "snapshot" || action === "events"
       ? "GET"
-      : action === "command"
+      : action === "command" || action === "prepare"
         ? "POST"
         : undefined;
   if (expectedMethod === undefined || c.req.method !== expectedMethod)
     return c.json({ error: { code: "not_found", message: "Route not found" } }, 404);
+  if (c.req.method === "POST") requireCookieMutationSecurity(c.req.raw);
+  if (action === "prepare") {
+    const sandbox = sessionSandbox(c.env, id);
+    await assertCloudflarePiAccess(sandbox);
+    return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+  }
   if (c.req.method === "POST") {
-    requireCookieMutationSecurity(c.req.raw);
     requireJsonContentType(c.req.raw);
   }
 
