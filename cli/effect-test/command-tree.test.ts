@@ -1,6 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, FileSystem, Result } from "effect";
+import { Effect, Fiber, FileSystem, Result } from "effect";
+import { TestClock } from "effect/testing";
 import { execute } from "../src/commands";
 import { CliError, EXIT, VERSION } from "../src/core";
 import { cliLayer, type CliDependencies } from "../src/dependencies";
@@ -63,6 +64,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "vaporize");
         assert.notInclude(rootHelp, "\n  auth");
         assert.include(rootHelp, "inspect");
+        assert.include(rootHelp, "read");
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
         assert.notInclude(rootHelp, "\n  sandbox");
@@ -109,6 +111,15 @@ describe("Effect command tree", () => {
         assert.include(beam.stdout.join(""), "--new-repo");
         assert.notInclude(beam.stdout.join(""), "SUBCOMMANDS");
         assert.strictEqual(beam.stderr.join(""), "");
+
+        const read = run(["read", "SESSION_ID", "--help"]);
+        assert.strictEqual(yield* read.effect, EXIT.OK);
+        assert.include(read.stdout.join(""), "scotty read [flags] <id>");
+        assert.include(read.stdout.join(""), "--last");
+        assert.include(read.stdout.join(""), "--role");
+        assert.include(read.stdout.join(""), "--since");
+        assert.include(read.stdout.join(""), "--follow");
+        assert.strictEqual(read.stderr.join(""), "");
 
         const vaporize = run(["vaporize", "SESSION_ID", "--help"]);
         assert.strictEqual(yield* vaporize.effect, EXIT.OK);
@@ -228,6 +239,54 @@ describe("Effect command tree", () => {
           },
         ],
       );
+    }),
+  );
+
+  it.effect("follows changed messages with the test clock and stops on interruption", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const snapshot = (sequence: number, content: string) => ({
+        epoch: "epoch-1",
+        baseSequence: sequence,
+        sequence,
+        sessionRevision: 1,
+        state: { isStreaming: sequence === 1 },
+        messages: [{ id: "assistant-1", role: "assistant", content }],
+        overlapEvents: [],
+        activeTools: [],
+        queue: { steer: [], followUp: [] },
+        pendingUi: [],
+        pendingUiAuthority: {
+          status: "partial",
+          reason: "pi_0_83_signal_cancellation_unobservable",
+        },
+        extensionSurface: { statuses: {}, widgets: [] },
+        capabilities: { models: [], thinkingLevels: [], commands: [] },
+        truncated: { messages: false, values: false },
+      });
+      const followed = run(["read", "s1", "--follow", "--since", "1", "--json"], {
+        env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "secret" },
+        fetch: async () => {
+          calls++;
+          if (calls === 1) return Response.json(snapshot(1, "Working"));
+          if (calls === 2) return Response.json(snapshot(2, "Working"));
+          return Response.json(snapshot(3, "Finished"));
+        },
+      });
+      const fiber = yield* followed.effect.pipe(Effect.forkChild({ startImmediately: true }));
+      while (calls < 1) yield* Effect.yieldNow;
+      assert.strictEqual(followed.stdout.length, 0);
+
+      yield* TestClock.adjust("1 second");
+      while (calls < 2) yield* Effect.yieldNow;
+      assert.strictEqual(followed.stdout.length, 0);
+
+      yield* TestClock.adjust("1 second");
+      while (followed.stdout.length < 1) yield* Effect.yieldNow;
+      assert.strictEqual(JSON.parse(followed.stdout[0] ?? "{}").messages[0]?.content, "Finished");
+
+      yield* Fiber.interrupt(fiber);
+      assert.strictEqual(calls, 3);
     }),
   );
 

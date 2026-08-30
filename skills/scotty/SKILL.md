@@ -32,3 +32,10 @@ description: Set up, deploy, verify, or synchronize a Scotty installation from a
 2. Run `scotty config check` and fix any reported source error.
 3. Run `scotty sync --json`. Treat `items` as the synchronized `{kind, name}` entries and save `digest` as the immutable bundle identity.
 4. Create a fresh session using the current bundle and verify the expected skill, tool, or extension there. Existing sessions stay pinned to their original digest.
+
+# Read and steer sessions
+
+1. Use `scotty read SESSION_ID` to read the latest user or assistant message without waking the session. Use `--last N` for bounded context and `--role user|assistant` when only one side is needed. Do not use the full `inspect` snapshot for ordinary transcript reads.
+2. Use the returned `sequence` as the cursor. Run `scotty read SESSION_ID --since SEQUENCE --json` to check for a newer snapshot, or add `--follow` to stream new or changed readable messages as JSON lines. A sequence cursor indicates snapshot change; it is not a wall-clock timestamp or a per-message sequence.
+3. Use `scotty inspect SESSION_ID --json` only for state, active tools, queues, pending UI, truncation, or protocol diagnosis. Treat `truncated: true` from `read` as notice that older messages fell outside the bounded passive snapshot.
+4. Use `scotty steer SESSION_ID "MESSAGE" --json` for one new instruction. Read again after acceptance. Never retry an ambiguous steer automatically, and do not treat an accepted receipt as proof that Pi completed the work.
