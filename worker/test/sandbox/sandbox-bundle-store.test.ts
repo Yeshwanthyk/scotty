@@ -93,6 +93,52 @@ describe("SandboxBundleStore", () => {
       }),
   );
 
+  it.effect("accepts a committed object when the put response is lost", () =>
+    Effect.gen(function* () {
+      const test = makeMemoryCapabilities();
+      const put = test.capabilities.put;
+      let loseResponse = true;
+      const capabilities: SandboxBundleCapabilities = {
+        ...test.capabilities,
+        put: async (...args) => {
+          const stored = await put(...args);
+          if (loseResponse) {
+            loseResponse = false;
+            // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: fake R2 Promise client simulates a native rejection after commit
+            throw new Error("Network connection lost.");
+          }
+          return stored;
+        },
+      };
+
+      yield* putBundle(capabilities);
+
+      assert.strictEqual(test.putCalls(), 2);
+      assert.strictEqual(test.headCalls(), 1);
+      assert.ok(test.objects.has(sandboxBundleTarGzKey("a".repeat(64))));
+      assert.ok(test.objects.has(sandboxBundleManifestKey("a".repeat(64))));
+    }),
+  );
+
+  it.effect("rejects a lost put response when no object was committed", () =>
+    Effect.gen(function* () {
+      const test = makeMemoryCapabilities();
+      const capabilities: SandboxBundleCapabilities = {
+        ...test.capabilities,
+        put: async () => {
+          // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: fake R2 Promise client simulates a native rejection before commit
+          throw new Error("Network connection lost.");
+        },
+      };
+
+      const result = yield* Effect.result(putBundle(capabilities));
+
+      assert.deepInclude(failure(result), { reason: "upstream" });
+      assert.strictEqual(test.headCalls(), 1);
+      assert.strictEqual(test.objects.size, 0);
+    }),
+  );
+
   it.effect("rejects mismatched existing metadata without overwriting", () =>
     Effect.gen(function* () {
       const test = makeMemoryCapabilities();

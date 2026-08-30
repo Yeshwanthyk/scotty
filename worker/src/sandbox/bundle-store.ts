@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer, Predicate } from "effect";
+import { Context, Data, Effect, Layer, Predicate, Result } from "effect";
 
 export const SANDBOX_BUNDLE_MAX_GZIP_BYTES = 48 * 1024 * 1024;
 
@@ -140,9 +140,9 @@ const makeSandboxBundleStore = (
         });
       },
     });
-    const putResult = yield* put;
-    if (putResult !== null) {
-      if (metadataMatches(putResult, expected)) return;
+    const putResult = yield* Effect.result(put);
+    if (Result.isSuccess(putResult) && putResult.success !== null) {
+      if (metadataMatches(putResult.success, expected)) return;
       reportSandboxBundleVerificationFailure("put", "metadata_mismatch");
       return yield* new SandboxBundleFailure({
         reason: "metadata_mismatch",
