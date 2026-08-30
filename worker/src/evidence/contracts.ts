@@ -128,6 +128,7 @@ export const BrowserEvidenceStepSchema = Schema.Struct({
 export type BrowserEvidenceStep = typeof BrowserEvidenceStepSchema.Type;
 
 export const BrowserEvidenceJobSchema = Schema.Struct({
+  version: Schema.Literal(2),
   port: PositivePortSchema,
   viewport: Schema.Struct({
     width: Schema.Int.check(Schema.isBetween({ minimum: 320, maximum: 1_920 })),

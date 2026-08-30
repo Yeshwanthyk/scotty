@@ -42,6 +42,7 @@ const DIAGNOSTIC = {
 } as const;
 
 const JOB: BrowserEvidenceJob = {
+  version: 2,
   port: 4_173,
   viewport: { width: 1_280, height: 720 },
   capture: { screenshots: "after-each-step", video: false },

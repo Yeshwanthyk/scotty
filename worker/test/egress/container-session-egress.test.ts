@@ -21,7 +21,7 @@ import { makeSessionRecord } from "../support";
 const TARGET_ID = "b0b1c2d3e4f5";
 const SOURCE_CONTAINER_ID = "a".repeat(64);
 
-const evidenceJob = () => ({
+const unversionedEvidenceJob = () => ({
   port: 4_173,
   viewport: { width: 1_280, height: 720 },
   steps: [
@@ -33,6 +33,8 @@ const evidenceJob = () => ({
   ],
   capture: { screenshots: "after-each-step" as const, video: false },
 });
+
+const evidenceJob = () => ({ version: 2 as const, ...unversionedEvidenceJob() });
 
 const evidenceResult = () => ({
   jobId: "job-abcd1234",
@@ -613,7 +615,7 @@ describe("container-only session egress", () => {
     }
   });
 
-  it("runs one bounded evidence job only on the source selected by actual container identity", async () => {
+  it("admits one bounded v2 evidence job only on the source selected by actual container identity", async () => {
     const selectedContainerIds: string[] = [];
     const jobs: unknown[] = [];
     let unrelatedCalls = 0;
@@ -656,6 +658,32 @@ describe("container-only session egress", () => {
     assert.strictEqual(response.headers.get("cache-control"), "no-store");
   });
 
+  it("rejects missing, legacy, and excess evidence job shapes before source admission", async () => {
+    let sourceCalls = 0;
+    const source = {
+      runScottyEvidenceJob: async () => {
+        sourceCalls += 1;
+        return evidenceResult();
+      },
+    };
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(sandboxNamespace({ fromString: () => source }));
+
+    for (const body of [
+      unversionedEvidenceJob(),
+      { ...evidenceJob(), version: 1 },
+      { ...evidenceJob(), targetOrigin: "https://example.com" },
+    ]) {
+      const response = await handler(evidenceRequest(body), env, context());
+      assert.strictEqual(response.status, 400);
+      assert.include(await response.text(), "Evidence job is invalid");
+    }
+    assert.strictEqual(sourceCalls, 0);
+  });
+
   it("rejects evidence caller authority, missing source identity, invalid routes, and a disabled gate", async () => {
     let sourceCalls = 0;
     const source = {
@@ -672,7 +700,6 @@ describe("container-only session egress", () => {
     const env = bindings(namespace);
 
     const requests = [
-      evidenceRequest({ ...evidenceJob(), sessionId: SESSION_ID }),
       evidenceRequest(evidenceJob(), { authorization: "Bearer ambient" }),
       evidenceRequest(evidenceJob(), { "x-scotty-session-id": SESSION_ID }),
       new Request(

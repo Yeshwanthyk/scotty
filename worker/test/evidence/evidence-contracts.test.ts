@@ -20,6 +20,15 @@ const step = {
   expect: [{ kind: "urlPath", expected: "/" }],
 } as const;
 
+const unversionedJob = {
+  port: 4_173,
+  viewport: { width: 1_280, height: 720 },
+  capture: { screenshots: "after-each-step", video: false },
+  steps: [step],
+} as const;
+
+const evidenceJob = { version: 2, ...unversionedJob } as const;
+
 const diagnostic = {
   operation: "screenshot",
   reason: "ambiguous",
@@ -74,28 +83,26 @@ const activeState = {
 };
 
 describe("evidence contracts", () => {
-  it("decodes the bounded declarative job without retaining excess input", () => {
-    const decoded = decodeBrowserEvidenceJob({
-      port: 4_173,
-      viewport: { width: 1_280, height: 720 },
-      capture: { screenshots: "after-each-step", video: false },
-      steps: [step],
-    });
+  it("decodes the bounded declarative v2 job without retaining excess input", () => {
+    const decoded = decodeBrowserEvidenceJob(evidenceJob);
     assert.ok(Option.isSome(decoded));
+    assert.strictEqual(decoded.value.version, 2);
     assert.deepStrictEqual(decoded.value.steps[0], step);
   });
 
-  it("rejects invalid ports, arbitrary paths, excess fields, and oversized graphs", () => {
+  it("rejects missing, legacy, excess, and otherwise invalid v2 job shapes", () => {
     for (const input of [
-      { port: 80, steps: [step] },
-      { port: 3_000, steps: [step] },
-      { port: 43_117, steps: [step] },
+      unversionedJob,
+      { ...evidenceJob, version: 1 },
+      { ...evidenceJob, targetOrigin: "https://example.com" },
+      { ...evidenceJob, port: 80 },
+      { ...evidenceJob, port: 3_000 },
+      { ...evidenceJob, port: 43_117 },
       {
-        port: 4_173,
+        ...evidenceJob,
         steps: [{ ...step, action: { kind: "goto", path: "https://example.com" } }],
       },
-      { port: 4_173, steps: [step], targetOrigin: "https://example.com" },
-      { port: 4_173, steps: Array.from({ length: 13 }, () => step) },
+      { ...evidenceJob, steps: Array.from({ length: 13 }, () => step) },
     ]) {
       assert.ok(Option.isNone(decodeBrowserEvidenceJob(input)));
     }
