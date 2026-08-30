@@ -93,6 +93,7 @@ export function labSystemEnvironment(home, explicit = {}, source = process.env) 
   if (typeof explicit.SCOTTY_TOKEN === "string") labValues.SCOTTY_TOKEN = explicit.SCOTTY_TOKEN;
   if (typeof explicit.DOCKER_HOST === "string") labValues.DOCKER_HOST = explicit.DOCKER_HOST;
   if (typeof explicit.DOCKER_CONFIG === "string") labValues.DOCKER_CONFIG = explicit.DOCKER_CONFIG;
+  if (typeof explicit.PATH === "string") labValues.PATH = explicit.PATH;
   return {
     ...environment,
     HOME: home,

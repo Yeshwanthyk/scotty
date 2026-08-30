@@ -13,6 +13,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   cleanupOwnedFiles,
+  prepareCredentialSetup,
   readLabManifest,
   readPrivateToken,
   stopManifest,
@@ -182,21 +183,55 @@ test("lab token files must be private regular files", () => {
 test("lab child environments keep only benign system values and explicit lab values", () => {
   const environment = labSystemEnvironment(
     "/tmp/scotty-lab-home",
-    { SCOTTY_HOST: "http://127.0.0.1:8791", SCOTTY_TOKEN: "root-token" },
+    {
+      SCOTTY_HOST: "http://127.0.0.1:8791",
+      SCOTTY_TOKEN: "root-token",
+      PATH: "/explicit/bin:/bin",
+    },
     {
       PATH: "/bin",
       DOCKER_HOST: "unix:///tmp/docker.sock",
       HOME: "/real/home",
       CLOUDFLARE_API_TOKEN: "cloudflare-secret",
       SCOTTY_TOKEN: "ambient-secret",
+      GH_CONFIG_DIR: "/real/gh-config",
     },
   );
-  assert.equal(environment.PATH, "/bin");
+  assert.equal(environment.PATH, "/explicit/bin:/bin");
   assert.equal(environment.DOCKER_HOST, "unix:///tmp/docker.sock");
   assert.equal(environment.HOME, "/tmp/scotty-lab-home");
   assert.equal(environment.SCOTTY_HOST, "http://127.0.0.1:8791");
   assert.equal(environment.SCOTTY_TOKEN, "root-token");
   assert.equal(environment.CLOUDFLARE_API_TOKEN, undefined);
+  assert.equal(environment.GH_CONFIG_DIR, undefined);
+});
+
+test("lab credential setup writes only private source pointers", () => {
+  const tempRoot = mkdtempSync(path.join(tmpdir(), `scotty-lab-${RUN_ID}-`));
+  try {
+    const manifest = fixtureManifest(tempRoot);
+    mkdirSync(manifest.cliHome, { mode: 0o700 });
+    const setup = prepareCredentialSetup(manifest, "owner/repo", {
+      piAuthPath: "/private/pi-auth.json",
+      githubConfigDir: "/private/gh-config",
+      githubHome: "/private/home",
+      githubExecutable: "/opt/bin/gh",
+    });
+    const configPath = path.join(manifest.cliHome, ".config", "scotty", "scotty.toml");
+    const githubLauncher = path.join(setup.credentialBin, "gh");
+    const config = readFileSync(configPath, "utf8");
+    assert.equal(statSync(configPath).mode & 0o777, 0o600);
+    assert.equal(statSync(githubLauncher).mode & 0o777, 0o700);
+    assert.match(config, /^allowed = \["owner\/repo"\]$/mu);
+    assert.match(config, /^source = "\/private\/pi-auth\.json"$/mu);
+    assert.doesNotMatch(config, /token|credential value/iu);
+    assert.equal(
+      readFileSync(githubLauncher, "utf8"),
+      "#!/bin/sh\nexec env HOME='/private/home' GH_CONFIG_DIR='/private/gh-config' '/opt/bin/gh' \"$@\"\n",
+    );
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("Wrangler lab invocations carry the run-specific worker name", () => {
