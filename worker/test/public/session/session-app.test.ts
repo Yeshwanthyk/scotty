@@ -54,6 +54,7 @@ describe("cloud-agent session application", () => {
     assert.include(appSource, "projection?.queue?.followUp");
     assert.include(appSource, "follow-up queued · sends after Pi finishes");
     assert.include(appSource, "follow-ups queued · send after Pi finishes");
+    assert.include(appSource, "composerHint.textContent !== nextComposerHint");
   });
 
   it("uses a modal mobile sidebar, visible focus, safe areas, and reduced motion", () => {

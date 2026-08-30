@@ -131,7 +131,7 @@ function updateComposer() {
       ? "Steer"
       : "Follow up"
     : "Send";
-  composerHint.textContent = paused
+  const nextComposerHint = paused
     ? paused === "stale"
       ? "Session changed · commands held"
       : "Outcome unknown · commands held"
@@ -146,6 +146,9 @@ function updateComposer() {
             : projection
               ? "Pi is ready"
               : "Loading session state…";
+  if (composerHint.textContent !== nextComposerHint) {
+    composerHint.textContent = nextComposerHint;
+  }
 }
 
 function autosizeComposer() {
