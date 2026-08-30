@@ -275,6 +275,7 @@ exec /usr/local/bin/scotty-pi-shell
 export const sandboxAgentsInstructions = `- Read and follow the repository AGENTS.md first; repository instructions override this file.
 - Inspect the standard sandbox tool inventory with \`jq . /opt/scotty/toolsets/standard.json\`.
 - Prefer \`rg\`, \`fd\`, and \`ast-grep\` for search. Use \`jq\`, \`yq\`, and \`qsv\` for structured data.
+- To create a pull request for the session's pinned repository, use the repository-scoped GitHub REST endpoint with \`gh api --method POST repos/{owner}/{repo}/pulls\` and fields for \`title\`, \`head\`, \`base\`, and \`body\`; do not use \`gh pr create\` or GitHub GraphQL.
 - Use \`uv\` and \`uvx\` for Python. Use the repository's declared JavaScript package manager; use Corepack only when it declares Yarn or pnpm.
 - If a required tool is absent or a dependency download is blocked by Scotty policy (including HTTP 520), stop after one bounded retry. Run the focused checks that are available and report the exact unavailable gate. If publication was requested, continue to commit, push, and open the PR so CI can run the locked full gate.
 - Don't build a missing toolchain from source, install a third-party embedded toolchain, add temporary module replacements, or bypass the proxy with direct arbitrary-host downloads unless the user explicitly asks.

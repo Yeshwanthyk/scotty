@@ -237,6 +237,57 @@ describe("credential egress", () => {
     }),
   );
 
+  it.effect(
+    "authorizes REST pull request creation only when the URL identifies the repository",
+    () =>
+      Effect.gen(function* () {
+        const requests: Array<Request> = [];
+        const repositories: Array<string | undefined> = [];
+        const body = JSON.stringify({ title: "Add feature", head: "scotty/change", base: "main" });
+        const credentialShape: EgressCredentialShape = {
+          resolve: (handle, repository) => {
+            repositories.push(repository);
+            return handle === GITHUB_HANDLE && repository === "owner/project"
+              ? Effect.succeed(Redacted.make(REAL_GITHUB))
+              : Effect.succeed(null);
+          },
+        };
+
+        const response = yield* run(
+          proxyGitHubProgram(
+            new Request("https://api.github.com/repos/owner/project/pulls", {
+              method: "POST",
+              headers: { authorization: `Bearer ${GITHUB_HANDLE}` },
+              body,
+            }),
+          ),
+          { credential: credentialShape, nativeRequests: requests },
+        );
+
+        assert.equal(response.status, 200);
+        assert.deepEqual(repositories, ["owner/project"]);
+        const sent = requests[0];
+        assert.ok(sent !== undefined);
+        assert.equal(sent.method, "POST");
+        assert.equal(yield* Effect.promise(() => sent.text()), body);
+
+        const graphqlResponse = yield* run(
+          proxyGitHubProgram(
+            new Request("https://api.github.com/graphql", {
+              method: "POST",
+              headers: { authorization: `Bearer ${GITHUB_HANDLE}` },
+              body: "{}",
+            }),
+          ),
+          { credential: credentialShape, nativeRequests: requests },
+        );
+
+        assert.equal(graphqlResponse.status, 403);
+        assert.deepEqual(repositories, ["owner/project"]);
+        assert.equal(requests.length, 1);
+      }),
+  );
+
   it.effect("returns credential-bearing redirects without forwarding credentials again", () =>
     Effect.gen(function* () {
       const requests: Array<Request> = [];
