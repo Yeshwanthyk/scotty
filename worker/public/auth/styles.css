@@ -167,6 +167,57 @@
   box-shadow: 0 0 0 1px rgb(238 231 211 / 0.09);
 }
 
+.locked-card p {
+  text-wrap: pretty;
+}
+
+.recovery-command {
+  margin-top: 24px;
+  padding: 14px 16px 15px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--control);
+}
+
+.recovery-command span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--quiet);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.recovery-command code {
+  color: var(--ink);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.locked-steps {
+  display: grid;
+  gap: 10px;
+  margin: 22px 0 0;
+  padding-left: 22px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.locked-steps li::marker {
+  color: var(--accent-strong);
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+}
+
+.auth-card .locked-security {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--quiet);
+  font-size: 0.76rem;
+}
+
 @media (max-width: 620px) {
   .auth-flow-page {
     place-items: center;

@@ -47,6 +47,7 @@ import { Effect, Layer, Option, Predicate, Redacted, Result, Schema } from "effe
 import { FetchHttpClient } from "effect/unstable/http";
 import { sha256Hex } from "./shared/digest";
 import {
+  authenticateRequest,
   authRegistry,
   browserLabel,
   clearClientAuthCookie,
@@ -1045,7 +1046,10 @@ app.all("/s/:id/*", async (c) => {
 
 app.get("/sessions", async (c) => {
   rejectRootQuery(c.req.raw);
-  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  const principal = await authenticateRequest(c.req.raw, c.env);
+  if (principal === undefined) return authAsset(c.env, c.req.raw, "/auth/locked.html");
+  if (principal.kind !== "client" || principal.source !== "cookie")
+    await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
   return secureAsset(c.env, c.req.raw, "/sessions/index.html");
 });
@@ -1077,7 +1081,13 @@ app.get("/pair", (c) => authAsset(c.env, c.req.raw, "/auth/pair.html"));
 app.get("/owner-transfer", (c) => authAsset(c.env, c.req.raw, "/auth/owner-transfer.html"));
 app.get("/recover", (c) => authAsset(c.env, c.req.raw, "/auth/recover.html"));
 
-app.get("/", (c) => c.redirect("/sessions", 302));
+app.get("/", async (c) => {
+  const principal = await authenticateRequest(c.req.raw, c.env);
+  if (principal === undefined) return authAsset(c.env, c.req.raw, "/auth/locked.html");
+  if (principal.kind !== "client" || principal.source !== "cookie")
+    await requireClientCookieRequest(c.req.raw, c.env);
+  return c.redirect("/sessions", 302);
+});
 
 app.get("/health", (c) => c.json({ ok: true }));
 

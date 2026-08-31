@@ -19,6 +19,9 @@ browser input.
 The terminal presentation vendors the browser distributions from `@xterm/xterm` 6.0.0 and
 `@xterm/addon-fit` 0.11.0 under `vendor/`; both are MIT-licensed and covered by `xterm.LICENSE`.
 
+`auth/locked.html` is the credential-free entry surface for an untrusted browser at `/` or
+`/sessions`; it directs the operator to `scotty owner recover` without accepting secret material.
+
 `auth/devices.html` is the primary-device-only browser manager. It creates five-minute one-use pairing
 links, starts target-bound ownership transfers, distinguishes the server-derived `Primary` role
 from `This device`, and renders capability QR matrices locally. `auth/pair.html`,

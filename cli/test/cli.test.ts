@@ -3695,6 +3695,154 @@ describe("commands and schemas", () => {
     expect(h.stderr.join("")).not.toContain(recoveryCredential);
   });
 
+  test("owner recover guides a human through the short-lived browser handoff", async () => {
+    const rootToken = "protected-root-token";
+    const recoveryCredential =
+      "scotty_recovery.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1_000).toISOString();
+    const h = harness({
+      env: { SCOTTY_TOKEN: rootToken },
+      stdoutIsTTY: true,
+      stdinIsTTY: true,
+      fetch: async () =>
+        Response.json({
+          url: `https://worker.example/recover#token=${recoveryCredential}`,
+          expiresAt,
+        }),
+      openBrowser: async () => {},
+    });
+
+    expect(await main(["owner", "recover", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    const output = stripVTControlCharacters(h.stdout.join(""));
+    expect(output).toContain("Scotty owner recovery");
+    expect(output).toContain("Preparing a short-lived, one-use recovery grant");
+    expect(output).toContain("Recovery grant issued");
+    expect(output).toContain("Opening the secure browser handoff");
+    expect(output).toContain(`The handoff expires at ${expiresAt}.`);
+    expect(output).toContain("confirm recovery in the browser");
+    expect(output).toContain("rerun this command to issue a fresh handoff");
+    expect(output).not.toContain(rootToken);
+    expect(output).not.toContain(recoveryCredential);
+    expect(h.stderr.join("")).toBe("");
+  });
+
+  test("owner recover closes the human flow when preparation fails", async () => {
+    const rootToken = "protected-root-token";
+    const recoveryCredential =
+      "scotty_recovery.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1_000).toISOString();
+    const attempts = [
+      {
+        exit: EXIT.USAGE,
+        h: harness({ env: {}, stdoutIsTTY: true, stdinIsTTY: true }),
+      },
+      {
+        exit: EXIT.GENERIC,
+        h: harness({
+          env: { SCOTTY_TOKEN: rootToken },
+          stdoutIsTTY: true,
+          stdinIsTTY: true,
+          fetch: async () => rejected("network unavailable"),
+        }),
+      },
+      {
+        exit: EXIT.GENERIC,
+        h: harness({
+          env: { SCOTTY_TOKEN: rootToken },
+          stdoutIsTTY: true,
+          stdinIsTTY: true,
+          fetch: async () =>
+            Response.json({
+              url: `https://attacker.example/recover#token=${recoveryCredential}`,
+              expiresAt,
+            }),
+        }),
+      },
+    ];
+
+    for (const { exit, h } of attempts) {
+      expect(await main(["owner", "recover", "--host", "https://worker.example"], h.deps)).toBe(
+        exit,
+      );
+      const output = stripVTControlCharacters(h.stdout.join(""));
+      expect(output).toContain("Recovery handoff could not be prepared");
+      expect(output).toContain("No browser handoff was opened");
+      expect(output).toContain("then rerun this");
+      expect(output).toContain("command.");
+      expect(output + h.stderr.join("")).not.toContain(rootToken);
+      expect(output + h.stderr.join("")).not.toContain(recoveryCredential);
+    }
+  });
+
+  test("owner recover closes the human flow when the browser launcher rejects", async () => {
+    const rootToken = "protected-root-token";
+    const recoveryCredential =
+      "scotty_recovery.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1_000).toISOString();
+    const h = harness({
+      env: { SCOTTY_TOKEN: rootToken },
+      stdoutIsTTY: true,
+      stdinIsTTY: true,
+      fetch: async () =>
+        Response.json({
+          url: `https://worker.example/recover#token=${recoveryCredential}`,
+          expiresAt,
+        }),
+      openBrowser: async () => rejected("launcher unavailable"),
+    });
+
+    expect(await main(["owner", "recover", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
+    const output = stripVTControlCharacters(h.stdout.join(""));
+    expect(output).toContain("Browser handoff could not be opened");
+    expect(output).toContain(`The issued handoff expires at ${expiresAt}.`);
+    expect(output).toContain("First check whether the recovery page opened");
+    expect(output).toContain("rerun this command for a fresh");
+    expect(output).toContain("handoff.");
+    expect(h.error()).toEqual({
+      error: {
+        code: "browser_open_failed",
+        message: "Could not open owner recovery in the browser",
+        hint: "Check whether the recovery page opened. If not, fix your browser launcher and rerun scotty owner recover.",
+      },
+    });
+    expect(output + h.stderr.join("")).not.toContain(rootToken);
+    expect(output + h.stderr.join("")).not.toContain(recoveryCredential);
+  });
+
+  test("owner recover preserves the JSON failure envelope when the browser launcher rejects", async () => {
+    const rootToken = "protected-root-token";
+    const recoveryCredential =
+      "scotty_recovery.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1_000).toISOString();
+    const h = harness({
+      env: { SCOTTY_TOKEN: rootToken },
+      fetch: async () =>
+        Response.json({
+          url: `https://worker.example/recover#token=${recoveryCredential}`,
+          expiresAt,
+        }),
+      openBrowser: async () => rejected("launcher unavailable"),
+    });
+
+    expect(
+      await main(["owner", "recover", "--host", "https://worker.example", "--json"], h.deps),
+    ).toBe(EXIT.GENERIC);
+    expect(h.stdout.join("")).toBe("");
+    expect(h.error()).toEqual({
+      error: {
+        code: "internal_error",
+        message: "Scotty failed unexpectedly",
+        hint: "Retry with --json; if it persists, inspect the local error and Worker logs.",
+      },
+    });
+    expect(h.stderr.join("")).not.toContain(rootToken);
+    expect(h.stderr.join("")).not.toContain(recoveryCredential);
+  });
+
   test("owner recover rejects unsafe or malformed capability responses without opening them", async () => {
     const credential = "scotty_recovery.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const validExpiry = new Date(Date.now() + 5 * 60 * 1_000).toISOString();

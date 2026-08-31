@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#01060c" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
+    <link rel="apple-touch-icon" href="/brand/scotty-mark-128.png" />
+    <link rel="stylesheet" href="/shared/styles.css" />
+    <link rel="stylesheet" href="/auth/styles.css" />
+    <title>Browser access locked · Scotty</title>
+  </head>
+  <body class="scotty-ui auth-flow-page">
+    <main class="auth-card locked-card" aria-labelledby="locked-title">
+      <div class="auth-lockup">
+        <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
+        <span>SCOTTY / LOCKED</span>
+      </div>
+      <section>
+        <h1 id="locked-title">Browser access is locked</h1>
+        <p>
+          This browser is not trusted yet. Set it up or recover ownership from a terminal on the
+          machine that manages this Scotty installation.
+        </p>
+        <div class="recovery-command" aria-label="Owner recovery command">
+          <span>Run in a trusted terminal</span>
+          <code>scotty owner recover</code>
+        </div>
+        <ol class="locked-steps">
+          <li>Let the CLI prepare a one-use browser handoff.</li>
+          <li>Review the reset warning in the page it opens.</li>
+          <li>Confirm recovery, then return to your sessions.</li>
+        </ol>
+        <p class="locked-security">
+          Your installation secret stays with the CLI. This page never asks you to paste it, and
+          recovery may revoke access for previously trusted browsers.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

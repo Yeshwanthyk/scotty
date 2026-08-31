@@ -3010,6 +3010,33 @@ describe("real Hono boundary", () => {
     expect(apiRootCookie.status).toBe(401);
   });
 
+  it("serves the secure locked page for unauthenticated browser entry routes", async () => {
+    const assetPaths: string[] = [];
+    const assets = {
+      fetch: async (request: Request) => {
+        assetPaths.push(new URL(request.url).pathname);
+        return new Response("<!doctype html><title>Browser access locked · Scotty</title>", {
+          headers: { "content-type": "text/html" },
+        });
+      },
+      connect: () => {
+        throw new RouteTestFailure("ASSETS.connect isn't used by route tests");
+      },
+    } as Fetcher;
+
+    for (const path of ["/", "/sessions"]) {
+      const response = await app.request(path, undefined, env({ assets }));
+      expect(response.status, path).toBe(200);
+      expect(await response.text(), path).toContain("Browser access locked");
+      expect(response.headers.get("cache-control"), path).toBe("no-store");
+      expect(response.headers.get("content-security-policy"), path).toContain("default-src 'none'");
+      expect(response.headers.get("content-security-policy"), path).toContain("form-action 'none'");
+      expect(response.headers.get("referrer-policy"), path).toBe("no-referrer");
+      expect(response.headers.get("set-cookie"), path).toBeNull();
+    }
+    expect(assetPaths).toEqual(["/auth/locked.html", "/auth/locked.html"]);
+  });
+
   it("serves the session shell for Cloudflare sessions with registered-client cookies", async () => {
     const assetPaths: string[] = [];
     const assets = {
@@ -3841,8 +3868,25 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("set-cookie")).toContain("SameSite=Strict");
   });
 
-  it("redirects the public root to the canonical session manager", async () => {
-    const response = await app.request("/", undefined, env());
+  it("keeps root authority out of the public browser entry", async () => {
+    const rootBearer = await app.request(
+      "/",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(rootBearer.status).toBe(401);
+
+    const rootQuery = await app.request(`/?t=${TOKEN}`, undefined, env());
+    expect(rootQuery.status).toBe(401);
+    expect(rootQuery.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("redirects an authenticated public root to the canonical session manager", async () => {
+    const response = await app.request(
+      "/",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/sessions");
   });
