@@ -93,7 +93,13 @@ import { runRunnerSupervisor } from "./runner-link";
 import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { setupRunner } from "./runner-setup";
 import { requestJson } from "./transport";
-import { makeInitUi, makeSilentInitUi, type InitPhase } from "./init-ui";
+import {
+  makeDeployUi,
+  makeInitUi,
+  makeSilentDeployUi,
+  makeSilentInitUi,
+  type UiPhase,
+} from "./init-ui";
 import { makeOwnerRecoveryUi } from "./owner-recovery-ui";
 import {
   decodeInstallationPreviewConfiguration,
@@ -171,8 +177,8 @@ const flushCapturedOutput = (
   for (const value of stderr) stderrWriter(value.endsWith("\n") ? value : `${value}\n`);
 };
 
-const finishInitPhase = (
-  phase: InitPhase,
+const finishUiPhase = (
+  phase: UiPhase,
   exit: Exit.Exit<unknown, unknown>,
   success: string,
   failure: string,
@@ -685,7 +691,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const dockerPhase = initUi.phase("Checking Docker");
             yield* ensureDocker().pipe(
               Effect.onExit((exit) =>
-                finishInitPhase(dockerPhase, exit, "Docker is ready", "Docker check failed"),
+                finishUiPhase(dockerPhase, exit, "Docker is ready", "Docker check failed"),
               ),
             );
             const creator = yield* InstallationCreator;
@@ -701,7 +707,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               .plan(deploymentTarget)
               .pipe(
                 Effect.onExit((exit) =>
-                  finishInitPhase(
+                  finishUiPhase(
                     planPhase,
                     exit,
                     "Installation plan ready",
@@ -794,7 +800,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               })
               .pipe(
                 Effect.onExit((exit) =>
-                  finishInitPhase(
+                  finishUiPhase(
                     createPhase,
                     exit,
                     "Cloudflare resources created",
@@ -836,7 +842,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const syncPhase = initUi.phase("Synchronizing sandbox capabilities");
             yield* synchronizeInstallationSandbox(runtime.home, runtime.cwd, { host, token }).pipe(
               Effect.onExit((exit) =>
-                finishInitPhase(
+                finishUiPhase(
                   syncPhase,
                   exit,
                   "Sandbox capabilities synchronized",
@@ -1163,63 +1169,96 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (options.host || options.tokenFile)
           return yield* usage("deploy does not accept --host or --token-file");
         yield* validateDeploymentMode(planOnly, yes);
-        const config = yield* readConfig(managedInstallationPath(runtime.home));
-        if (!config.installationName || !config.profile || !config.accountId)
-          return yield* usage(
-            "No managed Scotty installation is configured",
-            "Run scotty init or scotty recover first.",
+        const interactive = !options.json && runtime.stdinIsTTY && runtime.stdoutIsTTY;
+        const deployUi = interactive ? makeDeployUi(runtime.stdout) : makeSilentDeployUi();
+        deployUi.start();
+        const prerequisitePhase = deployUi.phase("Checking deployment prerequisites");
+        const prerequisites = yield* Effect.gen(function* () {
+          const config = yield* readConfig(managedInstallationPath(runtime.home));
+          const { accountId, installationName, profile, token } = config;
+          if (!installationName || !profile || !accountId)
+            return yield* usage(
+              "No managed Scotty installation is configured",
+              "Run scotty init or scotty recover first.",
+            );
+          if (!token)
+            return yield* usage(
+              "Managed installation credentials are missing",
+              "Run scotty recover --name NAME first.",
+            );
+          const built = yield* prepareScottyTomlBundle(runtime.home, runtime.cwd).pipe(
+            Effect.mapError(mapLifecycleSyncError),
           );
-        if (!config.token)
-          return yield* usage(
-            "Managed installation credentials are missing",
-            "Run scotty recover --name NAME first.",
-          );
-        const built = yield* prepareScottyTomlBundle(runtime.home, runtime.cwd).pipe(
-          Effect.mapError(mapLifecycleSyncError),
+          yield* ensureDocker();
+          return { accountId, built, config, installationName, profile, token };
+        }).pipe(
+          Effect.onExit((exit) =>
+            finishUiPhase(
+              prerequisitePhase,
+              exit,
+              "Deployment prerequisites are ready",
+              "Deployment prerequisite checks failed",
+            ),
+          ),
         );
-        yield* ensureDocker();
+        const { accountId, built, config, installationName, profile, token } = prerequisites;
         const deployer = yield* InstallationDeployer;
         const request = {
-          installationName: config.installationName,
-          profile: config.profile,
+          installationName,
+          profile,
           ...configuredPreview(config),
           ...configuredEvidence(config),
         };
-        const plan = yield* deployer.plan(request);
-        if (plan.accountId !== config.accountId)
-          return yield* new CliError(
-            "deployment_account_changed",
-            "The Cloudflare account does not match the saved installation",
-            "Select the saved Alchemy profile or recover the installation before deploying.",
-            EXIT.GENERIC,
-          );
+        const planningPhase = deployUi.phase("Planning resource changes");
+        const plan = yield* Effect.gen(function* () {
+          const planned = yield* deployer.plan(request);
+          if (planned.accountId !== accountId)
+            return yield* new CliError(
+              "deployment_account_changed",
+              "The Cloudflare account does not match the saved installation",
+              "Select the saved Alchemy profile or recover the installation before deploying.",
+              EXIT.GENERIC,
+            );
+          return planned;
+        }).pipe(
+          Effect.onExit((exit) =>
+            finishUiPhase(
+              planningPhase,
+              exit,
+              "Exact resource plan is ready",
+              "Resource planning failed",
+            ),
+          ),
+        );
         const savedPlan = {
           version: 1 as const,
           cliVersion: VERSION,
-          installationName: config.installationName,
+          installationName,
           accountId: plan.accountId,
           planFingerprint: plan.fingerprint,
           bundleDigest: built.digest,
         };
+        deployUi.review({
+          fingerprint: plan.fingerprint,
+          bundleDigest: built.digest,
+          changes: plan.changes,
+        });
         if (planOnly) {
           yield* writeDeploymentPlan(runtime.home, savedPlan);
           const result = {
-            installationName: config.installationName,
+            installationName,
             version: VERSION,
             plan: plan.fingerprint,
             bundle: built.digest,
             changes: plan.changes,
           };
           if (autoJson) outputJson(runtime.stdout, result);
-          else
-            runtime.stdout(
-              `Installation: ${config.installationName}\nVersion: ${VERSION}\nPlan: ${plan.fingerprint}\nBundle: ${built.digest}\n${plan.changes.map((change) => `${change.action.padEnd(7)} ${change.id}`).join("\n")}${plan.changes.length === 0 ? "No infrastructure changes.\n" : "\n"}Run scotty deploy --yes to apply this exact plan.\n`,
-            );
+          else deployUi.planComplete(plan.changes.length);
           return;
         }
         if (plan.changes.length === 0) {
           const result = {
-            installationName: config.installationName,
+            installationName,
             version: VERSION,
             plan: plan.fingerprint,
             bundle: built.digest,
@@ -1232,21 +1271,32 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               "Scotty host is not configured",
               "Run scotty init or pass --host / SCOTTY_HOST.",
             );
-          if (config.token === undefined)
-            return yield* usage(
-              "Scotty token is not configured",
-              "Run scotty init or pass --token-file / SCOTTY_TOKEN.",
-            );
+          const host = yield* Effect.fromResult(normalizeHost(config.host));
           yield* consumeAuthorizedDeploymentPlan(runtime.home, savedPlan);
+          const resourcePhase = deployUi.phase("Applying resource changes");
+          resourcePhase.succeed("No provider resource operations needed");
+          const readinessPhase = deployUi.phase("Verifying rollout readiness");
+          readinessPhase.succeed("No provider rollout was required");
+          const syncPhase = deployUi.phase("Synchronizing sandbox bundle");
           yield* synchronizeScottyToml({
             built,
             target: {
-              host: yield* Effect.fromResult(normalizeHost(config.host)),
-              token: config.token,
+              host,
+              token,
             },
-          }).pipe(Effect.mapError(mapLifecycleSyncError));
+          }).pipe(
+            Effect.mapError(mapLifecycleSyncError),
+            Effect.onExit((exit) =>
+              finishUiPhase(
+                syncPhase,
+                exit,
+                "Sandbox bundle is synchronized",
+                "Sandbox bundle synchronization failed",
+              ),
+            ),
+          );
           if (autoJson) outputJson(runtime.stdout, result);
-          else runtime.stdout(`${config.installationName} is already up to date.\n`);
+          else deployUi.applyComplete(0, 0);
           return;
         }
         if (config.host === undefined)
@@ -1256,19 +1306,69 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           );
         const readinessHost = yield* Effect.fromResult(normalizeHost(config.host));
         yield* consumeAuthorizedDeploymentPlan(runtime.home, savedPlan);
-        if (!autoJson) runtime.stdout(`Deploying ${config.installationName}...\n`);
-        const deployed = yield* deployer.deploy(
-          {
-            ...request,
-            expectedAccountId: plan.accountId,
-            expectedPlanFingerprint: plan.fingerprint,
+        const resourcePhase = deployUi.phase("Applying resource changes");
+        let providerOperations: number | undefined;
+        let readinessPhase: UiPhase | undefined;
+        let readinessVerified = false;
+        const progress = {
+          providerOperationsSucceeded: (count: number): void => {
+            if (providerOperations !== undefined) return;
+            providerOperations = count;
+            resourcePhase.succeed(
+              `${count} provider ${count === 1 ? "operation" : "operations"} succeeded`,
+            );
+            readinessPhase = deployUi.phase("Verifying rollout readiness");
           },
-          { host: readinessHost, token: config.token },
-        );
+          readinessVerified: (): void => {
+            if (providerOperations === undefined || readinessVerified) return;
+            readinessVerified = true;
+            readinessPhase?.succeed("Provider rollout and readiness are verified");
+          },
+        };
+        const deployed = yield* deployer
+          .deploy(
+            {
+              ...request,
+              expectedAccountId: plan.accountId,
+              expectedPlanFingerprint: plan.fingerprint,
+            },
+            { host: readinessHost, token },
+            progress,
+          )
+          .pipe(
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                if (Exit.isSuccess(exit)) return;
+                if (providerOperations === undefined)
+                  resourcePhase.fail("Provider resource application failed");
+                else if (!readinessVerified)
+                  readinessPhase?.fail("Provider rollout/readiness is not confirmed");
+              }),
+            ),
+          );
+        if (providerOperations === undefined) {
+          resourcePhase.fail("Provider operation receipt is unavailable");
+          return yield* new CliError(
+            "deployment_receipt_missing",
+            "Provider deployment completed without an operation receipt",
+            "Inspect Cloudflare state before retrying the deployment.",
+            EXIT.GENERIC,
+          );
+        }
+        if (!readinessVerified) {
+          readinessPhase?.fail("Provider rollout/readiness is not confirmed");
+          return yield* new CliError(
+            "deployment_readiness_receipt_missing",
+            "Provider deployment completed without readiness confirmation",
+            "Inspect Cloudflare rollout and application health before retrying the deployment.",
+            EXIT.GENERIC,
+          );
+        }
+        const succeededProviderOperations = providerOperations;
         const host = yield* Effect.fromResult(normalizeHost(deployed.host));
         yield* secureWrite(
           managedInstallationPath(runtime.home),
-          `${JSON.stringify(managedConfig({ ...deployed, host }, config.token), null, 2)}\n`,
+          `${JSON.stringify(managedConfig({ ...deployed, host }, token), null, 2)}\n`,
         );
         const result = {
           installationName: deployed.installationName,
@@ -1282,14 +1382,20 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           changes: plan.changes,
           rootTokenRotated: false,
         };
-        yield* synchronizeScottyToml({ built, target: { host, token: config.token } }).pipe(
+        const syncPhase = deployUi.phase("Synchronizing sandbox bundle");
+        yield* synchronizeScottyToml({ built, target: { host, token } }).pipe(
           Effect.mapError(mapLifecycleSyncError),
+          Effect.onExit((exit) =>
+            finishUiPhase(
+              syncPhase,
+              exit,
+              "Sandbox bundle is synchronized",
+              "Sandbox bundle synchronization failed",
+            ),
+          ),
         );
         if (autoJson) outputJson(runtime.stdout, result);
-        else
-          runtime.stdout(
-            `Deployed ${deployed.installationName}. Root credentials were unchanged.\n`,
-          );
+        else deployUi.applyComplete(plan.changes.length, succeededProviderOperations);
       }),
   ).pipe(Command.withDescription("Deploy Scotty code without changing credentials"));
 

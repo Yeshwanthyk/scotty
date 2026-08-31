@@ -1328,8 +1328,10 @@ describe("configuration and transport", () => {
           changes: [{ id: "Scotty-home/Worker", action: "update" }],
         };
       },
-      deployInstallation: async (input) => {
+      deployInstallation: async (input, _readinessTarget, progress) => {
         deploymentRequests.push(input);
+        progress?.providerOperationsSucceeded(1);
+        progress?.readinessVerified();
         return enabledResult;
       },
     });
@@ -1552,8 +1554,10 @@ describe("configuration and transport", () => {
         fingerprint: "plan-1",
         changes: [{ id: "Scotty-home/Worker", action: "update" }],
       }),
-      deployInstallation: async (input) => {
+      deployInstallation: async (input, _readinessTarget, progress) => {
         request = input;
+        progress?.providerOperationsSucceeded(1);
+        progress?.readinessVerified();
         return {
           installationName: input.installationName,
           profile: input.profile,
@@ -1642,6 +1646,380 @@ describe("configuration and transport", () => {
     expect((await stat(deploymentPlanPath(home))).mode & 0o777).toBe(0o600);
   });
 
+  test("deploy TTY plan presents stable phases and exact unambiguous change counts", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    const h = harness({
+      home,
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "tty-plan",
+        changes: [
+          { id: "Scotty-home/Worker", action: "update" },
+          { id: "Scotty-home/Runner", action: "replace" },
+        ],
+      }),
+    });
+
+    expect(await main(["deploy", "--plan"], h.deps)).toBe(EXIT.OK);
+    const output = stripVTControlCharacters(h.stdout.join("")).replaceAll("\r", "");
+    expect(output).toContain("Scotty deploy");
+    expect(output).toContain("Deployment prerequisites are ready");
+    expect(output).toContain("Exact resource plan is ready");
+    expect(output).toContain("Exact deployment plan");
+    expect(output).toContain("Plan fingerprint  tty-plan");
+    expect(output).toContain("Planned changes   2");
+    expect(output).toContain("update         Scotty-home/Worker");
+    expect(output).toContain("replace        Scotty-home/Runner");
+    expect(output).toContain("Apply command     scotty deploy --yes");
+    expect(output).toContain("Plan saved · 2 planned changes");
+    expect(output).not.toContain("provider operations succeeded");
+    expect(output).not.toContain("Deployment ready");
+    expect(h.stderr.join("")).toBe("");
+  });
+
+  test("deploy TTY no-op distinguishes zero planned changes and zero provider operations", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    let applied = false;
+    const h = harness({
+      home,
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      fetch: acceptingSandboxSyncFetch(),
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "tty-noop",
+        changes: [],
+      }),
+      deployInstallation: async () => {
+        applied = true;
+        return rejected("no-op must not call the provider apply");
+      },
+    });
+
+    await planDeployment(h);
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.OK);
+    const output = stripVTControlCharacters(h.stdout.join("")).replaceAll("\r", "");
+    expect(applied).toBe(false);
+    expect(output).toContain("Planned changes   0");
+    expect(output).toContain("No provider resource operations needed");
+    expect(output).toContain("No provider rollout was required");
+    expect(output).toContain("Sandbox bundle is synchronized");
+    expect(output).toContain(
+      "Deployment ready · 0 planned changes · 0 provider operations succeeded",
+    );
+    expect(h.stderr.join("")).toBe("");
+  });
+
+  test("deploy TTY validates a no-op host before starting bundle synchronization", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    await writeFile(
+      managedInstallationPath(home),
+      JSON.stringify({ ...managedConfig(), host: "not-a-valid-origin" }),
+      { mode: 0o600 },
+    );
+    const h = harness({
+      home,
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "tty-invalid-host-noop",
+        changes: [],
+      }),
+    });
+
+    await planDeployment(h);
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.USAGE);
+    const output = stripVTControlCharacters(h.stdout.join("")).replaceAll("\r", "");
+    expect(output).not.toContain("Synchronizing sandbox bundle");
+    expect(output).not.toContain("Deployment ready");
+    expect(h.error().error.code).toBe("bad_usage");
+    expect(await stat(deploymentPlanPath(home))).toBeDefined();
+  });
+
+  test("deploy fails closed without a provider receipt in TTY and non-TTY modes", async () => {
+    for (const interactive of [false, true]) {
+      const home = await temporaryDirectory();
+      await writeScottyToml(home);
+      await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+        mode: 0o600,
+      });
+      const h = harness({
+        home,
+        stdinIsTTY: interactive,
+        stdoutIsTTY: interactive,
+        planInstallation: async () => ({
+          installationName: "home",
+          accountId: "0123456789abcdef0123456789abcdef",
+          hasExistingResources: true,
+          fingerprint: `missing-receipt-${interactive}`,
+          changes: [{ id: "Scotty-home/Worker", action: "update" }],
+        }),
+        deployInstallation: async (input) => ({
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          host: "https://worker.example",
+        }),
+      });
+
+      await planDeployment(h);
+      expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+      expect(h.error().error.code).toBe("deployment_receipt_missing");
+      expect(h.stdout.join("")).not.toContain("Deployment ready");
+      const completedOutput = h.stdout.join("");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(h.stdout.join("")).toBe(completedOutput);
+      expect(
+        stripVTControlCharacters(completedOutput).includes(
+          "Provider operation receipt is unavailable",
+        ),
+      ).toBe(interactive);
+    }
+  });
+
+  test("deploy does not infer readiness from a successful provider return", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    const h = harness({
+      home,
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "missing-readiness-receipt",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async (input, _readinessTarget, progress) => {
+        progress?.providerOperationsSucceeded(1);
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          host: "https://worker.example",
+        };
+      },
+    });
+
+    await planDeployment(h);
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    const output = stripVTControlCharacters(h.stdout.join("")).replaceAll("\r", "");
+    expect(output).toContain("1 provider operation succeeded");
+    expect(output).toContain("Provider rollout/readiness is not confirmed");
+    expect(output).not.toContain("Provider rollout and readiness are verified");
+    expect(output).not.toContain("Deployment ready");
+    expect(h.error().error.code).toBe("deployment_readiness_receipt_missing");
+  });
+
+  test("deploy TTY apply separates provider success, readiness, synchronization, and completion", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    const h = harness({
+      home,
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      fetch: acceptingSandboxSyncFetch(),
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "tty-apply",
+        changes: [
+          { id: "Scotty-home/Worker", action: "update" },
+          { id: "Scotty-home/Runner", action: "update" },
+        ],
+      }),
+      deployInstallation: async (input, _readinessTarget, progress) => {
+        progress?.providerOperationsSucceeded(2);
+        progress?.readinessVerified();
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          host: "https://worker.example",
+        };
+      },
+    });
+
+    await planDeployment(h);
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.OK);
+    const output = stripVTControlCharacters(h.stdout.join("")).replaceAll("\r", "");
+    const provider = output.indexOf("2 provider operations succeeded");
+    const readiness = output.indexOf("Provider rollout and readiness are verified");
+    const synchronization = output.indexOf("Sandbox bundle is synchronized");
+    const completion = output.indexOf(
+      "Deployment ready · 2 planned changes · 2 provider operations succeeded",
+    );
+    expect(provider).toBeGreaterThan(-1);
+    expect(readiness).toBeGreaterThan(provider);
+    expect(synchronization).toBeGreaterThan(readiness);
+    expect(completion).toBeGreaterThan(synchronization);
+    expect(output).toContain("root credentials unchanged");
+    expect(output).not.toContain("Alchemy");
+    expect(h.stderr.join("")).toBe("");
+  });
+
+  test("deploy TTY provider failure fails the apply phase and keeps a private redacted diagnostic", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    const secret = "synthetic-tty-provider-secret";
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    const h = harness({
+      home,
+      env: { CLOUDFLARE_API_TOKEN: secret },
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "tty-provider-failure",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async () => rejected(`provider failed with token ${secret}`),
+    });
+
+    await planDeployment(h);
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    const output = stripVTControlCharacters(h.stdout.join("")).replaceAll("\r", "");
+    expect(output).toContain("Provider resource application failed");
+    expect(output).not.toContain("provider operation succeeded");
+    expect(output).not.toContain("Verifying rollout readiness");
+    expect(output).not.toContain("Deployment ready");
+    expect(h.stderr.join("")).not.toContain(secret);
+    const envelope = h.error();
+    expect(envelope.error.hint).toContain(
+      `Diagnostic: ${join(home, ".scotty/diagnostics/deploy-apply.json")}`,
+    );
+    const diagnosticPath = join(home, ".scotty", "diagnostics", "deploy-apply.json");
+    expect((await stat(diagnosticPath)).mode & 0o777).toBe(0o600);
+    const diagnostic = await readFile(diagnosticPath, "utf8");
+    expect(diagnostic).not.toContain(secret);
+    expect(diagnostic).toContain("[redacted-secret]");
+  });
+
+  test("deploy TTY ambiguous rollout preserves provider success without claiming readiness", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    const secret = "synthetic-ambiguous-rollout-secret";
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    const h = harness({
+      home,
+      env: { CLOUDFLARE_API_TOKEN: secret },
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "tty-ambiguous-rollout",
+        changes: [{ id: "Scotty-home/SandboxContainer", action: "update" }],
+      }),
+      deployInstallation: async (_input, _readinessTarget, progress) => {
+        progress?.providerOperationsSucceeded(1);
+        return rejected(`rollout outcome remained ambiguous with ${secret}`);
+      },
+    });
+
+    await planDeployment(h);
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    const output = stripVTControlCharacters(h.stdout.join("")).replaceAll("\r", "");
+    expect(output).toContain("1 provider operation succeeded");
+    expect(output).toContain("Provider rollout/readiness is not confirmed");
+    expect(output).not.toContain("Provider rollout and readiness are verified");
+    expect(output).not.toContain("Deployment ready");
+    expect(h.stderr.join("")).not.toContain(secret);
+    const diagnosticPath = join(home, ".scotty", "diagnostics", "deploy-apply.json");
+    expect((await stat(diagnosticPath)).mode & 0o777).toBe(0o600);
+    const diagnostic = await readFile(diagnosticPath, "utf8");
+    expect(diagnostic).not.toContain(secret);
+    expect(diagnostic).toContain("rollout outcome remained ambiguous");
+  });
+
+  test("deploy plan keeps identical JSON bytes for non-TTY auto mode and explicit TTY JSON", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    const overrides: Partial<CliDependencies> = {
+      home,
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "json-invariant-plan",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+    };
+    const nonTty = harness(overrides);
+    const explicitJson = harness({ ...overrides, stdinIsTTY: true, stdoutIsTTY: true });
+
+    expect(await main(["deploy", "--plan"], nonTty.deps)).toBe(EXIT.OK);
+    expect(await main(["deploy", "--plan", "--json"], explicitJson.deps)).toBe(EXIT.OK);
+    expect(explicitJson.stdout.join("")).toBe(nonTty.stdout.join(""));
+    expect(explicitJson.stdout.join("")).toBe(`${JSON.stringify(nonTty.json())}\n`);
+    expect(Object.keys(nonTty.json())).toEqual([
+      "installationName",
+      "version",
+      "plan",
+      "bundle",
+      "changes",
+    ]);
+    expect(nonTty.stderr.join("")).toBe("");
+    expect(explicitJson.stderr.join("")).toBe("");
+  });
+
   test("deploy yes fails closed when the reviewed bundle changes", async () => {
     const home = await temporaryDirectory();
     const skillRoot = join(home, "skills");
@@ -1714,8 +2092,10 @@ describe("configuration and transport", () => {
         fingerprint: "plan-one-use",
         changes: [{ id: "Scotty-home/Worker", action: "update" }],
       }),
-      deployInstallation: async (input) => {
+      deployInstallation: async (input, _readinessTarget, progress) => {
         applyCount += 1;
+        progress?.providerOperationsSucceeded(1);
+        progress?.readinessVerified();
         return {
           installationName: input.installationName,
           profile: input.profile,
@@ -1781,19 +2161,23 @@ describe("configuration and transport", () => {
         fingerprint: "plan-1",
         changes: [{ id: "Scotty-home/Worker", action: "update" }],
       }),
-      deployInstallation: async (input) => ({
-        installationName: input.installationName,
-        profile: input.profile,
-        stackName: "Scotty-home",
-        stage: "production",
-        accountId: "0123456789abcdef0123456789abcdef",
-        workerName: "scotty-home-worker",
-        runnerWorkerName: "scotty-home-runner",
-        containerName: "scotty-home-sandbox",
-        kvTitle: "scotty-home-sessions",
-        backupBucketName: "scotty-home-backups",
-        host: "https://new.example/",
-      }),
+      deployInstallation: async (input, _readinessTarget, progress) => {
+        progress?.providerOperationsSucceeded(1);
+        progress?.readinessVerified();
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          host: "https://new.example/",
+        };
+      },
     });
 
     await planDeployment(h);
