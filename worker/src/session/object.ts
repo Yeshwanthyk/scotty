@@ -10,6 +10,7 @@ import {
   type PiConsoleStaleCommand,
   type PiConsoleUnavailable,
 } from "../../../protocol/pi-console";
+import { sessionTerminalId } from "../../../protocol/session-terminal";
 import { parseManagedHandle, type ManagedHandle } from "../../../protocol/credentials";
 import type { RunnerOperation } from "../../../protocol/runner";
 import {
@@ -358,6 +359,10 @@ export interface PassivePiConsoleRelay {
   }) => Promise<Response>;
 }
 
+export interface TerminalSessionControl {
+  readonly delete: (terminalId: string) => Promise<void>;
+}
+
 export interface SandboxEffectOptions {
   readonly clock?: Clock.Clock;
   readonly containerEvidenceRecorder?: ContainerEvidenceRecorder["Service"];
@@ -370,6 +375,7 @@ export interface SandboxEffectOptions {
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly previewRequestForwarder?: (request: Request) => Promise<Response>;
   readonly hatchRequestForwarder?: (request: Request) => Promise<Response>;
+  readonly terminalSessionControl?: TerminalSessionControl;
   readonly repoVerifier?: RepoVerifier["Service"];
 }
 
@@ -404,7 +410,7 @@ const mapCreateUncertain =
     new SessionCreateUncertain({ cause, stage });
 
 class PiRuntimeStopFailure extends Data.TaggedError("PiRuntimeStopFailure")<{
-  readonly stage: "quiesce" | "process";
+  readonly stage: "quiesce" | "process" | "terminal";
   readonly cause: unknown;
 }> {}
 
@@ -648,6 +654,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly hatchRequestForwarder: (request: Request) => Promise<Response>;
   private readonly rawContainer: DurableObjectState["container"];
   private readonly sessionControlGate: SessionControlGate;
+  private readonly terminalSessionControl: TerminalSessionControl;
   private readonly authoritativeStorage: SessionRecordStorage;
   private readonly evidenceEnabled: boolean;
   private readonly evidencePreviewHostTimeoutMillis: number;
@@ -696,6 +703,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.hatchRequestForwarder =
       options.hatchRequestForwarder ?? ((request) => this.forwardSandboxPreviewRequest(request));
     this.sessionControlGate = makeSessionControlGate();
+    this.terminalSessionControl = options.terminalSessionControl ?? {
+      delete: (terminalId) => this.deleteSession(terminalId).then(() => undefined),
+    };
 
     const authoritativeStorage = durableObjectSessionRecordStorage(
       // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning authoritative state adapters
@@ -2092,6 +2102,42 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (!sessionAllowsRuntimeAccess(record))
       return yield* conflict("Session destruction is already in progress");
     return record;
+  });
+
+  private readonly prepareTerminalAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const record = yield* this.requireRecordProgram();
+    if (record.status !== "warm")
+      return yield* wrongState(
+        record.status,
+        "access",
+        record.status === "sleeping"
+          ? "Resume the session from Home before opening the terminal"
+          : undefined,
+      );
+    if (!sessionAllowsRuntimeAccess(record))
+      return yield* conflict("Session destruction is already in progress");
+    if (record.operation)
+      return yield* conflict(`Session is already running ${record.operation.kind}`);
+    if (record.execution.provider !== "cloudflare")
+      return yield* wrongState(record.status, "access", "This session uses the runner runtime");
+    const grant = record.credentialGrant;
+    if (grant === undefined)
+      return yield* this.upstreamError(
+        "Session credential grant is unavailable",
+        undefined,
+        record.id,
+      );
+    const containerAuth = yield* ContainerAuth;
+    yield* containerAuth.ensureTerminal(record.id, sessionRuntimeCredentials(grant.grants));
+    return record;
+  });
+
+  private readonly restartScottyTerminalProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const record = yield* this.prepareTerminalAccessProgram();
+    yield* Effect.tryPromise({
+      try: () => this.terminalSessionControl.delete(sessionTerminalId(record.id)),
+      catch: (cause) => this.upstreamError("Terminal restart failed", cause, record.id),
+    });
   });
 
   private readonly preparePiSessionAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -3972,6 +4018,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.expireRetainedEvidenceProgram(payload));
   }
 
+  async prepareTerminalAccess(): Promise<void> {
+    return this.#run(this.prepareTerminalAccessProgram()).then(() => undefined);
+  }
+
+  async restartScottyTerminal(): Promise<void> {
+    return this.#run(this.restartScottyTerminalProgram());
+  }
+
   async preparePiSessionAccess(): Promise<void> {
     return this.#run(this.preparePiSessionAccessProgram());
   }
@@ -4850,6 +4904,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const checkpoint = withCheckpointRuntimeRestore(
       Effect.gen({ self: this }, function* () {
         runtimeStopAttempted = true;
+        yield* Effect.tryPromise({
+          try: () => this.terminalSessionControl.delete(sessionTerminalId(record.id)),
+          catch: (cause) => new PiRuntimeStopFailure({ stage: "terminal", cause }),
+        });
         const piProcess = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
         if (
           piProcess !== null &&

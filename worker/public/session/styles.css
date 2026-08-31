@@ -20,6 +20,7 @@
   --z-backdrop: 30;
   --z-sidebar: 40;
   --z-summary: 40;
+  --z-terminal: 45;
   font-family:
     Inter,
     ui-sans-serif,
@@ -309,6 +310,7 @@ select:focus-visible {
 .agent-switcher {
   display: none;
 }
+.terminal-toggle,
 .summary-toggle,
 .manage-session-link {
   display: none;
@@ -321,6 +323,10 @@ select:focus-visible {
   font-size: 0.75rem;
   font-weight: 700;
   cursor: pointer;
+}
+.terminal-toggle {
+  display: inline-flex;
+  align-items: center;
 }
 .manage-session-link {
   display: inline-flex;
@@ -799,6 +805,145 @@ select:focus-visible {
   color: #d9a39e;
   font-size: 0.75rem;
 }
+.terminal-drawer {
+  display: flex;
+  height: min(var(--terminal-height, 360px), 70vh);
+  min-height: 220px;
+  flex: none;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  background: #02080d;
+}
+.terminal-drawer[data-open="false"] {
+  display: none;
+}
+.terminal-resizer {
+  position: relative;
+  height: 9px;
+  flex: none;
+  cursor: row-resize;
+  touch-action: none;
+}
+.terminal-resizer::after {
+  position: absolute;
+  width: 44px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  content: "";
+  inset: 3px auto auto 50%;
+  transform: translateX(-50%);
+}
+.terminal-resizer:hover::after,
+.terminal-resizer:focus-visible::after {
+  background: var(--beam);
+}
+.terminal-header {
+  display: flex;
+  min-height: 50px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 14px 8px 18px;
+  border-bottom: 1px solid var(--soft-line);
+}
+.terminal-title,
+.terminal-actions,
+.terminal-state {
+  display: flex;
+  align-items: center;
+}
+.terminal-title {
+  min-width: 0;
+  gap: 10px;
+}
+.terminal-title > span {
+  color: var(--accent);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.9rem;
+  font-weight: 760;
+}
+.terminal-title h2,
+.terminal-title p {
+  margin: 0;
+}
+.terminal-title h2 {
+  font-size: 0.82rem;
+}
+.terminal-title p {
+  margin-top: 2px;
+  color: var(--quiet);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.62rem;
+}
+.terminal-actions {
+  gap: 8px;
+}
+.terminal-state {
+  min-height: 32px;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+.terminal-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--quiet);
+}
+.terminal-state[data-state="connected"] .terminal-state-dot {
+  background: #76b58b;
+}
+.terminal-state[data-state="connecting"] .terminal-state-dot,
+.terminal-state[data-state="reconnecting"] .terminal-state-dot,
+.terminal-state[data-state="restarting"] .terminal-state-dot {
+  background: #d4a96e;
+}
+.terminal-state[data-state="disconnected"] .terminal-state-dot,
+.terminal-state[data-state="exited"] .terminal-state-dot,
+.terminal-state[data-state="unavailable"] .terminal-state-dot {
+  background: var(--danger);
+}
+.terminal-action {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.terminal-action:hover:not(:disabled) {
+  border-color: #465459;
+  background: var(--raised);
+}
+.terminal-action:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.terminal-close {
+  width: 38px;
+  height: 38px;
+}
+.terminal-surface {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  padding: 10px 12px max(12px, env(safe-area-inset-bottom));
+  overflow: hidden;
+}
+.terminal-surface .xterm {
+  height: 100%;
+}
+.terminal-resizing,
+.terminal-resizing * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
 .agent-backdrop {
   position: fixed;
   z-index: var(--z-backdrop);
@@ -984,6 +1129,32 @@ select:focus-visible {
 }
 
 @media (max-width: 760px) {
+  .terminal-drawer {
+    position: fixed;
+    z-index: var(--z-terminal);
+    height: 100dvh;
+    min-height: 0;
+    inset: 0;
+    padding-top: env(safe-area-inset-top);
+  }
+  .terminal-resizer {
+    display: none;
+  }
+  .terminal-header {
+    min-height: 62px;
+    padding: 8px max(10px, env(safe-area-inset-right)) 8px max(14px, env(safe-area-inset-left));
+  }
+  .terminal-state {
+    display: none;
+  }
+  .terminal-action,
+  .terminal-close {
+    min-height: 44px;
+  }
+  .terminal-surface {
+    padding-inline: max(8px, env(safe-area-inset-left)) max(8px, env(safe-area-inset-right));
+  }
+
   .agent-sidebar {
     position: fixed;
     z-index: var(--z-sidebar);
@@ -1051,6 +1222,10 @@ select:focus-visible {
   .agent-header-actions {
     gap: 4px;
   }
+  .manage-session-link {
+    display: none;
+  }
+  .terminal-toggle,
   .summary-toggle {
     min-height: 44px;
   }

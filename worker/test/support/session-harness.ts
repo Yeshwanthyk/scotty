@@ -1225,6 +1225,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     passivePiConsoleRelay: options.passivePiConsoleRelay,
     previewRequestForwarder: options.previewRequestForwarder,
     hatchRequestForwarder: options.hatchRequestForwarder,
+    terminalSessionControl: {
+      delete: async (terminalId) => {
+        events.push(`host:terminal:delete:${terminalId}`);
+      },
+    },
     repoVerifier:
       options.repoVerifier ??
       ({

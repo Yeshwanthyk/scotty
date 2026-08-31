@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 import appSource from "../../../public/session/index.js?raw";
 import sessionHtml from "../../../public/session/index.html?raw";
+import terminalSource from "../../../public/session/terminal.js?raw";
 
 const sessionCss = readFileSync(
   new URL("../../../public/session/styles.css", import.meta.url),
@@ -54,6 +55,30 @@ describe("cloud-agent session application", () => {
     assert.include(sessionHtml, "Scotty will never replay it automatically");
     assert.notInclude(appSource, "new WebSocket");
     assert.notInclude(appSource, "/rpc/");
+  });
+
+  it("presents one explicit, resizable session terminal drawer", () => {
+    assert.include(sessionHtml, 'id="open-terminal"');
+    assert.include(sessionHtml, 'aria-controls="terminal-drawer"');
+    assert.include(sessionHtml, 'id="terminal-drawer"');
+    assert.include(sessionHtml, 'id="terminal-resizer"');
+    assert.include(sessionHtml, 'aria-orientation="horizontal"');
+    assert.include(sessionHtml, 'id="restart-terminal"');
+    assert.include(sessionHtml, 'aria-label="Close terminal"');
+    assert.include(appSource, 'await import("./terminal.js")');
+    assert.include(appSource, "terminalDrawer.open(currentSessionId, openTerminalButton)");
+    assert.include(sessionCss, "height: min(var(--terminal-height, 360px), 70vh)");
+    assert.match(
+      sessionCss,
+      /@media \(max-width: 760px\)[\s\S]*?\.terminal-drawer \{[\s\S]*?position: fixed;[\s\S]*?height: 100dvh;/u,
+    );
+  });
+
+  it("ignores a terminal restart result after the drawer changes sessions", () => {
+    assert.include(terminalSource, "const restartingSessionId = sessionId");
+    assert.include(terminalSource, "terminalRestartUrl(restartingSessionId)");
+    assert.include(terminalSource, "if (!open || sessionId !== restartingSessionId) return");
+    assert.include(terminalSource, "if (open && sessionId === restartingSessionId)");
   });
 
   it("links the conversation to its focused session management row", () => {

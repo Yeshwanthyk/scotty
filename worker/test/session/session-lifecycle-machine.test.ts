@@ -496,7 +496,7 @@ describe("Sandbox lifecycle machine", () => {
       }),
   );
 
-  it.effect("a manual snapshot stops the Pi PTY before writing the backup", () =>
+  it.effect("a manual snapshot stops the interactive and Pi PTYs before writing the backup", () =>
     Effect.gen(function* () {
       const record = makeSessionRecord();
       const harness = yield* createTestHarness({
@@ -508,8 +508,13 @@ describe("Sandbox lifecycle machine", () => {
 
       yield* Effect.promise(() => harness.sandbox.snapshotScottySession());
 
+      const terminalStopIndex = harness.events.indexOf(
+        "host:terminal:delete:terminal-a0b1c2d3e4f5",
+      );
       const stopIndex = harness.events.indexOf("host:pi:kill");
       const backupIndex = harness.events.indexOf("host:createBackup");
+      assert.ok(terminalStopIndex >= 0);
+      assert.ok(terminalStopIndex < backupIndex);
       assert.ok(stopIndex >= 0);
       assert.ok(stopIndex < backupIndex);
       assert.strictEqual(harness.readRecord()?.status, "warm");

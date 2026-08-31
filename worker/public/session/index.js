@@ -21,6 +21,14 @@ const summaryPanel = byId("summary-panel");
 const summaryContent = byId("summary-content");
 const openSummaryButton = byId("open-summary");
 const closeSummaryButton = byId("close-summary");
+const openTerminalButton = byId("open-terminal");
+const terminalRoot = byId("terminal-drawer");
+const terminalSurface = byId("terminal-surface");
+const terminalState = byId("terminal-state");
+const terminalStateLabel = byId("terminal-state-label");
+const closeTerminalButton = byId("close-terminal");
+const restartTerminalButton = byId("restart-terminal");
+const terminalResizer = byId("terminal-resizer");
 const manageSessionLink = byId("manage-session");
 const agentList = byId("agent-list");
 const agentCount = byId("agent-count");
@@ -60,6 +68,35 @@ let renderFrame;
 let loadGeneration = 0;
 let sidebarOpener;
 let summaryOpener;
+let terminalDrawer;
+
+async function openTerminal() {
+  if (!currentSessionId || openTerminalButton.disabled) return;
+  openTerminalButton.disabled = true;
+  try {
+    if (!terminalDrawer) {
+      const { createTerminalDrawer } = await import("./terminal.js");
+      terminalDrawer = createTerminalDrawer({
+        root: terminalRoot,
+        surface: terminalSurface,
+        status: terminalState,
+        statusLabel: terminalStateLabel,
+        closeButton: closeTerminalButton,
+        restartButton: restartTerminalButton,
+        resizer: terminalResizer,
+        workspace: document.querySelector(".agent-workspace"),
+        fetch: window.fetch.bind(window),
+        origin: window.location.origin,
+        onOpenChange: (open) => openTerminalButton.setAttribute("aria-expanded", String(open)),
+      });
+    }
+    setSidebar(false);
+    setSummary(false);
+    terminalDrawer.open(currentSessionId, openTerminalButton);
+  } finally {
+    openTerminalButton.disabled = false;
+  }
+}
 
 function sessionIdFromLocation() {
   const match = window.location.pathname.match(/^\/s\/([^/]+)$/u);
@@ -291,6 +328,7 @@ async function switchSession(sessionId, options = {}) {
     window.history.pushState({ sessionId }, "", `/s/${encodeURIComponent(sessionId)}`);
   setSidebar(false);
   setSummary(false);
+  terminalDrawer?.setSessionId(sessionId);
   await loadSession(sessionId, { focusComposer: options.focusComposer });
 }
 
@@ -543,6 +581,7 @@ feed.addEventListener("submit", (event) => {
 openAgentsButton.addEventListener("click", () => setSidebar(true));
 closeAgentsButton.addEventListener("click", () => setSidebar(false));
 openSummaryButton.addEventListener("click", () => setSummary(true));
+openTerminalButton.addEventListener("click", () => void openTerminal());
 closeSummaryButton.addEventListener("click", () => setSummary(false));
 backdrop.addEventListener("click", () => {
   setSidebar(false);
@@ -560,6 +599,7 @@ window.addEventListener("beforeunload", () => {
   directory.dispose();
   connection.close();
   summaryView.reset();
+  terminalDrawer?.dispose();
   if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
 });
 
