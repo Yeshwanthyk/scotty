@@ -38,6 +38,7 @@ description: Set up, deploy, verify, or synchronize a Scotty installation from a
    authoritative Hatch result. Use complete inline ensure fields only for a deliberate manual
    override.
 4. Treat `scotty hatch init` and `scotty hatch check` as deferred CLI work; this flow adds neither.
+
 # Deploy Scotty
 
 1. Choose one exact deployment source.
