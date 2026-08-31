@@ -1,3 +1,4 @@
+import { Script } from "node:vm";
 import { assert, describe, it } from "vitest";
 import {
   formatShowcaseDuration,
@@ -7,7 +8,65 @@ import {
 import showcaseScript from "../../../public/showcase/index.js?raw";
 import showcaseHtml from "../../../public/showcase/index.html?raw";
 
+const validatorSource = showcaseScript.slice(
+  showcaseScript.indexOf("function validJob"),
+  showcaseScript.indexOf("function assertionCount"),
+);
+type ShowcaseValidatorContext = {
+  beforeJobId: string;
+  afterJobId: string;
+  validShowcase?: (value: unknown) => boolean;
+};
+
+function validateShowcase(value: unknown) {
+  const context: ShowcaseValidatorContext = {
+    beforeJobId: "before-job",
+    afterJobId: "after-job",
+  };
+  new Script(`${validatorSource}\nglobalThis.validShowcase = validShowcase;`).runInNewContext(
+    context,
+  );
+  return context.validShowcase?.(value) ?? false;
+}
+
 describe("Showcase video review", () => {
+  it("accepts the current unversioned payload at the render gate", () => {
+    const showcase = {
+      before: {
+        status: "succeeded",
+        jobId: "before-job",
+        viewport: { width: 1_280, height: 720 },
+        steps: [
+          {
+            status: "passed",
+            name: "Open the app",
+            frame: { frameId: "before-frame" },
+            assertions: [{ passed: true }],
+          },
+        ],
+      },
+      after: {
+        status: "succeeded",
+        jobId: "after-job",
+        viewport: { width: 1_280, height: 720 },
+        steps: [
+          {
+            status: "passed",
+            name: "Open the app",
+            frame: { frameId: "after-frame" },
+            assertions: [{ passed: true }],
+          },
+        ],
+        video: { artifactId: "recording" },
+      },
+      paths: { video: "/video.webm", hatch: "/hatch/open" },
+    };
+
+    assert.isTrue(validateShowcase(showcase));
+    assert.isFalse(validateShowcase(undefined));
+    assert.notMatch(showcaseScript, /\bversion\b/u);
+    assert.include(showcaseScript, "render(showcase);");
+  });
   it("formats recording durations for the visible metadata", () => {
     assert.strictEqual(formatShowcaseDuration(0), "0:00");
     assert.strictEqual(formatShowcaseDuration(65.9), "1:05");
