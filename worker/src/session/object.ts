@@ -542,6 +542,25 @@ const normalizeHatchWebSocketMessage = async (
 const decodeEvidenceArtifactError = Schema.decodeUnknownOption(EvidenceArtifactError);
 const decodeEvidenceStateError = Schema.decodeUnknownOption(EvidenceStateError);
 
+const MissingTerminalSessionErrorSchema = Schema.Struct({
+  errorResponse: Schema.Struct({
+    code: Schema.Literal("INTERNAL_ERROR"),
+    context: Schema.Struct({
+      sessionId: Schema.String,
+      originalError: Schema.Literal("Session not found"),
+    }),
+    httpStatus: Schema.Literal(500),
+  }),
+});
+const decodeMissingTerminalSessionError = Schema.decodeUnknownOption(
+  MissingTerminalSessionErrorSchema,
+);
+
+const isMissingTerminalSessionError = (error: unknown, terminalId: string): boolean => {
+  const decoded = decodeMissingTerminalSessionError(error);
+  return Option.isSome(decoded) && decoded.value.errorResponse.context.sessionId === terminalId;
+};
+
 const evidenceControlFailureCode = (error: unknown) => {
   const artifactError = decodeEvidenceArtifactError(error);
   if (Option.isSome(artifactError)) {
@@ -703,8 +722,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.hatchRequestForwarder =
       options.hatchRequestForwarder ?? ((request) => this.forwardSandboxPreviewRequest(request));
     this.sessionControlGate = makeSessionControlGate();
-    this.terminalSessionControl = options.terminalSessionControl ?? {
-      delete: (terminalId) => this.deleteSession(terminalId).then(() => undefined),
+    const terminalSessionControl = options.terminalSessionControl ?? {
+      delete: (terminalId: string) => this.deleteSession(terminalId).then(() => undefined),
+    };
+    this.terminalSessionControl = {
+      delete: (terminalId) =>
+        terminalSessionControl.delete(terminalId).then(
+          () => undefined,
+          (cause: unknown) => {
+            if (isMissingTerminalSessionError(cause, terminalId)) return;
+            // oxlint-disable-next-line scotty/no-promise-reject -- boundary: preserve the native Sandbox terminal deletion rejection
+            return Promise.reject(cause);
+          },
+        ),
     };
 
     const authoritativeStorage = durableObjectSessionRecordStorage(

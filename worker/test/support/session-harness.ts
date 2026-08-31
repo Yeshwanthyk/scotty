@@ -331,6 +331,7 @@ export interface HarnessOptions {
   }>;
   readonly seedPinnedSandboxBundle?: boolean;
   readonly stopCallsOnStop?: boolean;
+  readonly terminalDeleteFailure?: unknown;
   readonly transactionFailureCountdown?: number;
   readonly workspaceExists?: boolean;
 }
@@ -1228,6 +1229,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     terminalSessionControl: {
       delete: async (terminalId) => {
         events.push(`host:terminal:delete:${terminalId}`);
+        if (options.terminalDeleteFailure !== undefined) throw options.terminalDeleteFailure;
       },
     },
     repoVerifier:
