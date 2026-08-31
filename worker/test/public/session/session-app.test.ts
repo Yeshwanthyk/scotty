@@ -21,6 +21,8 @@ describe("cloud-agent session application", () => {
     assert.include(appSource, 'from "./pi-connection.js"');
     assert.include(appSource, 'from "./chat.js"');
     assert.include(appSource, 'from "./summary.js"');
+    assert.include(appSource, 'from "./changes.js"');
+    assert.include(sessionHtml, '<link rel="stylesheet" href="/session/changes.css" />');
     assert.include(sessionHtml, '<aside id="summary-panel"');
     assert.include(sessionHtml, '<div id="summary-content"');
     assert.include(sessionHtml, 'aria-controls="summary-panel"');

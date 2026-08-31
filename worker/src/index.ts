@@ -16,6 +16,7 @@ import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./shared/bindings";
 import { readBoundedBytes, readBoundedUtf8Body } from "./shared/bounded-http";
+import { parseChangedPath } from "./changes/contracts";
 import { decodeJsonValue } from "./shared/json";
 import {
   ArtifactStore,
@@ -205,7 +206,9 @@ app.use("/api/auth/*", async (c, next) => {
 app.use("*", async (c, next) => {
   const incomingUrl = new URL(c.req.url);
   if (incomingUrl.searchParams.has("t")) c.header("cache-control", "no-store");
-  else if (/^\/(?:api\/sessions|s)\/[^/]+\/(?:evidence|hatch)(?:\/|$)/u.test(incomingUrl.pathname))
+  else if (
+    /^\/(?:api\/sessions|s)\/[^/]+\/(?:changes|evidence|hatch)(?:\/|$)/u.test(incomingUrl.pathname)
+  )
     c.header("cache-control", "private, no-store");
   rejectRootQuery(c.req.raw);
   await next();
@@ -728,6 +731,20 @@ app.get("/api/sessions/:id", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).getScottySession());
+});
+
+app.get("/api/sessions/:id/changes", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).listScottyChanges());
+});
+
+app.get("/api/sessions/:id/changes/patch", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const id = parseSessionId(c.req.param("id"));
+  const path = parseChangedPath(c.req.query("path"));
+  if (path === undefined) throw badRequest("Changed file path is invalid");
+  return c.json(await sessionSandbox(c.env, id).getScottyChangedFilePatch(path));
 });
 
 app.get("/api/sessions/:id/hatch", async (c) => {
