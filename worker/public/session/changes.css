@@ -1,0 +1,341 @@
+.changes-toggle,
+.changes-close {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.changes-toggle:hover,
+.changes-close:hover {
+  border-color: #465459;
+  background: var(--raised);
+}
+
+.changes-viewer {
+  width: min(1480px, calc(100vw - 48px));
+  height: min(880px, calc(100dvh - 48px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--space);
+  color: var(--ink);
+}
+
+.changes-viewer::backdrop {
+  background: rgb(0 0 0 / 0.76);
+}
+
+.changes-shell {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.changes-header,
+.changes-patch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--shell);
+}
+
+.changes-header {
+  min-height: 68px;
+  padding: 12px 16px 12px 20px;
+}
+
+.changes-heading h2,
+.changes-heading p,
+.changes-patch-header h3,
+.changes-patch-header p {
+  margin: 0;
+}
+
+.changes-heading h2 {
+  font-size: 0.98rem;
+}
+
+.changes-summary,
+.changes-patch-header p {
+  margin-top: 4px !important;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.changes-body {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+}
+
+.changes-directory {
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--shell);
+}
+
+.changes-file-list {
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+}
+
+.changes-file {
+  display: grid;
+  width: 100%;
+  min-height: 52px;
+  align-content: center;
+  gap: 4px;
+  padding: 8px 10px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.changes-file:hover {
+  background: rgb(238 231 211 / 0.05);
+}
+
+.changes-file[aria-current="true"] {
+  border-color: var(--line);
+  background: var(--panel);
+}
+
+.changes-file-path,
+.changes-file-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.changes-file-path {
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.76rem;
+  font-weight: 680;
+}
+
+.changes-file-meta {
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.changes-patch-panel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.changes-patch-header {
+  min-height: 68px;
+  align-items: flex-start;
+  flex-direction: column;
+  justify-content: center;
+  padding: 10px 16px;
+}
+
+.changes-patch-header h3 {
+  max-width: 100%;
+  overflow: hidden;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.changes-patch-body {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  background: #02080d;
+  color: #d9d2be;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.74rem;
+  line-height: 1.55;
+  scrollbar-gutter: stable;
+}
+
+.changes-state {
+  max-width: 52ch;
+  margin: 32px;
+  color: var(--muted);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.changes-state.is-error {
+  color: #ff9b92;
+}
+
+.changes-unified,
+.changes-split {
+  min-width: max-content;
+  padding-block: 10px;
+}
+
+.changes-diff-line {
+  display: grid;
+  min-height: 22px;
+  grid-template-columns: 26px minmax(0, 1fr);
+}
+
+.changes-diff-sign {
+  color: var(--quiet);
+  text-align: center;
+  user-select: none;
+}
+
+.changes-diff-code {
+  display: block;
+  min-height: 22px;
+  padding-inline: 8px 22px;
+  white-space: pre;
+}
+
+.changes-diff-line.is-addition,
+.changes-split-cell.is-addition {
+  background: rgb(79 145 100 / 0.18);
+  color: #cce8d3;
+}
+
+.changes-diff-line.is-deletion,
+.changes-split-cell.is-deletion {
+  background: rgb(180 74 67 / 0.18);
+  color: #f1cbc7;
+}
+
+.changes-diff-line.is-hunk,
+.changes-split-wide.is-hunk {
+  background: rgb(81 124 151 / 0.18);
+  color: #a9d0e6;
+}
+
+.changes-diff-line.is-meta,
+.changes-split-wide.is-meta {
+  color: var(--quiet);
+}
+
+.changes-split-heading,
+.changes-split-row {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr);
+}
+
+.changes-split-heading {
+  position: sticky;
+  z-index: 1;
+  top: -10px;
+  min-height: 34px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  background: var(--shell);
+  color: var(--muted);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.changes-split-heading span,
+.changes-split-cell {
+  padding-inline: 8px;
+}
+
+.changes-split-heading span + span,
+.changes-split-cell + .changes-split-cell {
+  border-left: 1px solid var(--line);
+}
+
+.changes-split-cell,
+.changes-split-wide {
+  min-height: 22px;
+}
+
+.changes-split-wide {
+  padding-inline: 12px;
+  white-space: pre;
+}
+
+.changes-unified {
+  display: none;
+}
+
+@media (max-width: 1099px) {
+  .changes-split {
+    display: none;
+  }
+
+  .changes-unified {
+    display: block;
+  }
+}
+
+@media (max-width: 760px) {
+  .changes-toggle {
+    min-height: 44px;
+  }
+
+  .changes-viewer {
+    width: 100vw;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .changes-header {
+    min-height: 64px;
+    padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 10px
+      max(14px, env(safe-area-inset-left));
+  }
+
+  .changes-close {
+    min-height: 44px;
+  }
+
+  .changes-body {
+    grid-template-columns: minmax(132px, 38vw) minmax(0, 1fr);
+  }
+
+  .changes-file-list {
+    padding: 6px;
+  }
+
+  .changes-file {
+    min-height: 56px;
+    padding-inline: 7px;
+  }
+
+  .changes-file-meta {
+    white-space: normal;
+  }
+
+  .changes-patch-header {
+    min-height: 64px;
+    padding-inline: 10px;
+  }
+
+  .changes-patch-body {
+    font-size: 0.7rem;
+  }
+
+  .changes-state {
+    margin: 22px 14px;
+  }
+}

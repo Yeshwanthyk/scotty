@@ -11,6 +11,7 @@ import {
 import { createCloudAgentDirectory } from "./cloud-agents.js";
 import { createConsoleTransport, createPiConnection } from "./pi-connection.js";
 import { createSummaryView } from "./summary.js";
+import { createChangesViewer } from "./changes.js";
 
 const byId = (id) => document.getElementById(id);
 const sidebar = byId("agent-sidebar");
@@ -60,6 +61,11 @@ const summaryView = createSummaryView({
   root: summaryContent,
   baseUrl: window.location.href,
   fetch: window.fetch.bind(window),
+});
+const changesViewer = createChangesViewer({
+  document,
+  fetch: window.fetch.bind(window),
+  headerActions: document.querySelector(".agent-header-actions"),
 });
 
 let currentSessionId;
@@ -329,6 +335,7 @@ async function switchSession(sessionId, options = {}) {
   setSidebar(false);
   setSummary(false);
   terminalDrawer?.setSessionId(sessionId);
+  changesViewer.setSessionId(sessionId);
   await loadSession(sessionId, { focusComposer: options.focusComposer });
 }
 
@@ -600,10 +607,12 @@ window.addEventListener("beforeunload", () => {
   connection.close();
   summaryView.reset();
   terminalDrawer?.dispose();
+  changesViewer.dispose();
   if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
 });
 
 currentSessionId = sessionIdFromLocation();
+changesViewer.setSessionId(currentSessionId);
 updateManageSessionLink(currentSessionId);
 directory.setCurrent(currentSessionId);
 setSidebar(false);

@@ -4,6 +4,8 @@ const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
   getScottySession: vi.fn(),
   getScottyDeploymentReadiness: vi.fn(),
+  listScottyChanges: vi.fn(),
+  getScottyChangedFilePatch: vi.fn(),
   completeScottyEvidenceStep: vi.fn(),
   finalizeScottyEvidenceJob: vi.fn(),
   listScottyEvidence: vi.fn(),
@@ -453,6 +455,19 @@ describe("real Hono boundary", () => {
       provider: "cloudflare",
       repo: "owner/repo",
       branch: "scotty/a0b1c2d3e4f5",
+    });
+    sandbox.listScottyChanges.mockResolvedValue({ files: [], truncated: false });
+    sandbox.getScottyChangedFilePatch.mockResolvedValue({
+      path: "src/app.ts",
+      status: "modified",
+      staged: false,
+      unstaged: true,
+      additions: 1,
+      deletions: 1,
+      binary: false,
+      patchable: true,
+      patch: "@@ -1 +1 @@\n-old\n+new\n",
+      truncated: false,
     });
     sandbox.getScottyDeploymentReadiness.mockResolvedValue({
       id: "a0b1c2d3e4f5",
@@ -1745,6 +1760,55 @@ describe("real Hono boundary", () => {
       error: { code: "bad_request", message: "provider must be cloudflare or runner" },
     });
     expect(sandbox.createScottySession).not.toHaveBeenCalled();
+  });
+
+  it("serves authenticated no-store changed files and one encoded lazy patch", async () => {
+    sandbox.listScottyChanges.mockResolvedValueOnce({
+      files: [
+        {
+          path: "src/odd name.ts",
+          status: "modified",
+          staged: true,
+          unstaged: true,
+          additions: 2,
+          deletions: 1,
+          binary: false,
+          patchable: true,
+        },
+      ],
+      truncated: false,
+    });
+    const headers = { authorization: `Bearer ${TOKEN}` };
+
+    const list = await app.request("/api/sessions/a0b1c2d3e4f5/changes", { headers }, env());
+    const patch = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/changes/patch?path=src%2Fodd%20name.ts",
+      { headers },
+      env(),
+    );
+
+    expect(list.status).toBe(200);
+    expect(list.headers.get("cache-control")).toBe("private, no-store");
+    await expect(list.json()).resolves.toMatchObject({
+      files: [{ path: "src/odd name.ts", staged: true, unstaged: true }],
+    });
+    expect(patch.status).toBe(200);
+    expect(patch.headers.get("cache-control")).toBe("private, no-store");
+    expect(sandbox.getScottyChangedFilePatch).toHaveBeenCalledWith("src/odd name.ts");
+  });
+
+  it("rejects an invalid changed path before the Session DO", async () => {
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/changes/patch?path=bad%00path",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "Changed file path is invalid" },
+    });
+    expect(sandbox.getScottyChangedFilePatch).not.toHaveBeenCalled();
   });
 
   it("does not expose a source-control publishing route", async () => {

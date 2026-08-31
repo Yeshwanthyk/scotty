@@ -214,6 +214,12 @@ import {
   type VerifiedRepository,
 } from "../repos/verifier";
 import { sessionRoot, Workspace, workspaceLayer } from "../sandbox/workspace";
+import {
+  findGitWorktreeChange,
+  listGitWorktreeChanges,
+  readGitWorktreePatch,
+} from "../changes/git";
+import { parseChangedPath, type ChangedFilePatch, type ChangedFiles } from "../changes/contracts";
 
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HARD_CAP_GRACE_MS = 30_000;
@@ -2635,6 +2641,77 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return toSessionView(toProjection(setup.success, new Date(completedAt)), completedAt);
   });
 
+  private readonly requireChangesAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const store = yield* SessionStore;
+    const authority = yield* store.readControlAuthority;
+    const record = authority.record;
+    if (record.status !== "warm")
+      return yield* wrongState(
+        record.status,
+        "review changes",
+        "Changes are available only while the Cloudflare session is warm",
+      );
+    if (record.execution.provider !== "cloudflare")
+      return yield* wrongState(record.status, "review changes", "Runner sessions are unsupported");
+    if (!sessionAllowsRuntimeAccess(record))
+      return yield* conflict("Session destruction is already in progress");
+    if (record.operation)
+      return yield* conflict(`Session is already running ${record.operation.kind}`);
+    if (this.rawContainer?.running !== true)
+      return yield* wrongState(
+        record.status,
+        "review changes",
+        "The Sandbox runtime is not running",
+      );
+    return authority;
+  });
+
+  private readonly listScottyChangesProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const observed = yield* this.requireChangesAccessProgram();
+    const runtime = yield* SandboxRuntime;
+    const changes = yield* listGitWorktreeChanges(runtime, sessionRoot(observed.record.id)).pipe(
+      Effect.mapError((cause) =>
+        this.upstreamError("Changed files are unavailable", cause, observed.record.id),
+      ),
+    );
+    const current = yield* this.requireChangesAccessProgram();
+    if (current.revision !== observed.revision)
+      return yield* conflict("Session changed while reading changed files");
+    return changes;
+  });
+
+  private readonly getScottyChangedFilePatchProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    value: unknown,
+  ) {
+    const path = parseChangedPath(typeof value === "string" ? value : undefined);
+    if (path === undefined) return yield* badRequest("Changed file path is invalid");
+    const observed = yield* this.requireChangesAccessProgram();
+    const runtime = yield* SandboxRuntime;
+    const file = yield* findGitWorktreeChange(runtime, sessionRoot(observed.record.id), path).pipe(
+      Effect.mapError((cause) =>
+        this.upstreamError("Changed files are unavailable", cause, observed.record.id),
+      ),
+    );
+    const currentAfterLookup = yield* this.requireChangesAccessProgram();
+    if (currentAfterLookup.revision !== observed.revision)
+      return yield* conflict("Session changed while finding the changed file");
+    if (file === undefined)
+      return yield* new ScottyError("not_found", "Changed file was not found", {
+        httpStatus: 404,
+        exitCode: 3,
+      });
+    const patch = yield* readGitWorktreePatch(runtime, sessionRoot(observed.record.id), file).pipe(
+      Effect.mapError((cause) =>
+        this.upstreamError("Changed file patch is unavailable", cause, observed.record.id),
+      ),
+    );
+    const current = yield* this.requireChangesAccessProgram();
+    if (current.revision !== observed.revision)
+      return yield* conflict("Session changed while reading the changed file patch");
+    return patch;
+  });
+
   private readonly getScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const record = yield* this.requireRecordProgram();
     const now = yield* Clock.currentTimeMillis;
@@ -3702,6 +3779,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async getScottyDeploymentReadiness(): Promise<SessionDeploymentReadiness> {
     return this.#run(this.getScottyDeploymentReadinessProgram());
+  }
+
+  async listScottyChanges(): Promise<ChangedFiles> {
+    return this.#run(this.listScottyChangesProgram());
+  }
+
+  async getScottyChangedFilePatch(path: unknown): Promise<ChangedFilePatch> {
+    return this.#run(this.getScottyChangedFilePatchProgram(path));
   }
 
   private readonly requireReadyHatchServiceProgram = Effect.fnUntraced(function* (
