@@ -24,6 +24,13 @@ test("critical auth pages externalize scripts and strip fragments before fetch",
   const devicesHtml = fs.readFileSync(path.join(assets, "auth", "devices.html"), "utf8");
   assert.match(devicesHtml, /<script type="module" src="\/auth\/devices\.js"><\/script>/u);
   assert.doesNotMatch(devicesHtml, /<script(?![^>]*\bsrc=)[^>]*>/iu);
+  const lockedHtml = fs.readFileSync(path.join(assets, "auth", "locked.html"), "utf8");
+  assert.match(lockedHtml, /<code>scotty owner recover<\/code>/u);
+  assert.doesNotMatch(lockedHtml, /<script|<form|<input|<textarea/iu);
+  assert.doesNotMatch(
+    lockedHtml,
+    /scotty_recovery\.|authorization\s*:|bearer\s+|__Host-scotty|token=|credential=/iu,
+  );
 });
 
 test("browser chat modules keep protocol, state, view, and transport boundaries explicit", () => {

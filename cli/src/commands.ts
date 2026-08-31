@@ -94,6 +94,7 @@ import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { setupRunner } from "./runner-setup";
 import { requestJson } from "./transport";
 import { makeInitUi, makeSilentInitUi, type InitPhase } from "./init-ui";
+import { makeOwnerRecoveryUi } from "./owner-recovery-ui";
 import {
   decodeInstallationPreviewConfiguration,
   makeInstallationTopology,
@@ -1694,20 +1695,41 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const ownerRecover = Command.make("recover", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
-      const browser = yield* BrowserLauncher;
-      const auth = yield* credentials(options);
-      const raw = yield* requestJson(auth, "/api/auth/recovery-grants", {
-        method: "POST",
-      });
-      const nowMillis = yield* Clock.currentTimeMillis;
-      const recovery = yield* Effect.fromResult(stableRecoveryGrant(raw, auth.host, nowMillis));
-      yield* browser.open(recovery.url);
+      const recoveryUi =
+        !options.json && runtime.stdoutIsTTY ? makeOwnerRecoveryUi(runtime.stdout) : undefined;
+      recoveryUi?.start();
+      recoveryUi?.preparing();
+      const prepared = yield* Effect.gen(function* () {
+        const browser = yield* BrowserLauncher;
+        const auth = yield* credentials(options);
+        const raw = yield* requestJson(auth, "/api/auth/recovery-grants", {
+          method: "POST",
+        });
+        const nowMillis = yield* Clock.currentTimeMillis;
+        const recovery = yield* Effect.fromResult(stableRecoveryGrant(raw, auth.host, nowMillis));
+        return { browser, recovery };
+      }).pipe(Effect.result);
+      if (Result.isFailure(prepared)) {
+        recoveryUi?.preparationFailed();
+        return yield* prepared.failure;
+      }
+      const { browser, recovery } = prepared.success;
+      recoveryUi?.issued();
+      recoveryUi?.opening();
+      const opened = yield* browser.open(recovery.url).pipe(Effect.result);
+      if (Result.isFailure(opened)) {
+        if (recoveryUi === undefined) return yield* opened.failure;
+        recoveryUi.failed(recovery.expiresAt);
+        return yield* new CliError(
+          "browser_open_failed",
+          "Could not open owner recovery in the browser",
+          "Check whether the recovery page opened. If not, fix your browser launcher and rerun scotty owner recover.",
+          opened.failure.exitCode,
+        );
+      }
       const result = { opened: true, expiresAt: recovery.expiresAt };
       if (autoJson) outputJson(runtime.stdout, result);
-      else
-        runtime.stdout(
-          `Opened owner recovery in your browser. It expires at ${recovery.expiresAt}.\n`,
-        );
+      else recoveryUi?.complete(recovery.expiresAt);
     }),
   ).pipe(Command.withDescription("Recover ownership on a replacement device"));
 
