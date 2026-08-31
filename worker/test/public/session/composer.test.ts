@@ -2,6 +2,7 @@ import { assert, describe, it } from "vitest";
 import {
   composerPresentation,
   createSessionMemory,
+  currentActivity,
   reconcileDelivery,
   renderComposerPresentation,
   shouldSubmitComposerKey,
@@ -50,7 +51,10 @@ describe("session composer", () => {
       delivery: { kind: "follow_up", message: "later", status: "queued" },
     });
     renderComposerPresentation(elements, queued);
-    assert.strictEqual(elements.hint.textContent, "Queued · sends after Pi finishes");
+    assert.strictEqual(
+      elements.hint.textContent,
+      "Follow-up queued · sends after Pi finishes · “later”",
+    );
     assert.strictEqual(elements.hint.dataset.state, "queued");
     assert.isTrue(elements.sendButton.disabled);
     assert.isFalse(elements.deliveryControls.hidden);
@@ -68,6 +72,35 @@ describe("session composer", () => {
     assert.strictEqual(
       elements.hint.textContent,
       "Delivery unknown · check the conversation before recovering",
+    );
+  });
+
+  it("shows bounded current work and explains queued delivery", () => {
+    const tools = new Map([["tool-1", { id: "tool-1", name: "bash", status: "running" }]]);
+    assert.strictEqual(currentActivity({ active: true, tools }), "Running command");
+    assert.strictEqual(
+      composerPresentation({
+        projection: { active: true, tools, queue: { steer: [], followUp: [] } },
+        lane: { items: [] },
+        draft: "",
+        deliveryMode: "steer",
+      }).hint,
+      "Pi is working · Running command",
+    );
+    assert.strictEqual(
+      composerPresentation({
+        projection: { active: true, tools, queue: { steer: ["Fix this"], followUp: [] } },
+        lane: { items: [] },
+        draft: "",
+        deliveryMode: "steer",
+        delivery: {
+          kind: "steer",
+          message:
+            "Explain the current action and then keep this intentionally long message bounded",
+          status: "queued",
+        },
+      }).hint,
+      "Steer queued · delivers after Running command · “Explain the current action and then keep this intent…”",
     );
   });
 
