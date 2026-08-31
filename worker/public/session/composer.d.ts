@@ -20,6 +20,8 @@ export type SessionMemoryEntry = {
 };
 export type ComposerProjection = {
   readonly active?: boolean;
+  readonly tools?: ReadonlyMap<string, { readonly name?: string; readonly status?: string }>;
+  readonly pendingUi?: ReadonlyMap<string, unknown>;
   readonly messages?: ReadonlyArray<{
     readonly id?: string;
     readonly role?: string;
@@ -63,6 +65,9 @@ export declare function reconcileDelivery(
   projection: ComposerProjection | undefined,
   event?: { readonly message?: { readonly role?: string; readonly content?: unknown } },
 ): DeliveryState | undefined;
+export declare function currentActivity(
+  projection: ComposerProjection | undefined,
+): string | undefined;
 export declare function composerPresentation(input: {
   projection?: ComposerProjection;
   lane: { paused?: string; items: ReadonlyArray<{ state: string }> };

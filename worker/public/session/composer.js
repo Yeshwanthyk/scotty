@@ -39,6 +39,33 @@ const messageText = (message) => {
     .join("");
 };
 
+const boundedQueueMessage = (message, maximum = 52) => {
+  const compact = String(message ?? "")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+  return compact.length > maximum ? `${compact.slice(0, maximum).trimEnd()}…` : compact;
+};
+
+const activityForTool = (name) => {
+  const normalized = String(name ?? "").toLowerCase();
+  if (/hatch/u.test(normalized)) return "Starting Hatch";
+  if (/browser|playwright|evidence/u.test(normalized)) return "Testing in browser";
+  if (/apply_patch|edit|write|replace/u.test(normalized)) return "Editing files";
+  if (/bash|shell|exec|command|terminal/u.test(normalized)) return "Running command";
+  if (/subagent|spawn_agent|wait_agent|agent/u.test(normalized)) return "Coordinating agents";
+  if (/read|search|find|grep|glob|list/u.test(normalized)) return "Reading project";
+  return "Using a tool";
+};
+
+export function currentActivity(projection) {
+  if (!projection?.active) return undefined;
+  if ((projection.pendingUi?.size ?? 0) > 0) return "Waiting for your input";
+  const running = projection.tools?.values
+    ? [...projection.tools.values()].filter((tool) => tool?.status === "running")
+    : [];
+  return running.length > 0 ? activityForTool(running.at(-1)?.name) : "Thinking";
+}
+
 export function reconcileDelivery(delivery, projection, event) {
   if (!delivery || !projection) return delivery;
   const queue = delivery.kind === "steer" ? projection.queue?.steer : projection.queue?.followUp;
@@ -61,7 +88,8 @@ export function reconcileDelivery(delivery, projection, event) {
 
 const defaultHint = (projection) => {
   if (!projection) return "Loading session state…";
-  return projection.active ? "Pi is working · choose when this message arrives" : "Pi is ready";
+  const activity = currentActivity(projection);
+  return activity ? `Pi is working · ${activity}` : "Pi is ready";
 };
 
 const sendLabel = (active, deliveryMode) => {
@@ -69,16 +97,23 @@ const sendLabel = (active, deliveryMode) => {
   return deliveryMode === "steer" ? "Steer now" : "Send follow-up";
 };
 
+const queuedDeliveryHint = (delivery, activity) => {
+  const message = boundedQueueMessage(delivery?.message);
+  return delivery?.kind === "steer"
+    ? `Steer queued · delivers after ${activity ?? "current action"} · “${message}”`
+    : `Follow-up queued · sends after Pi finishes · “${message}”`;
+};
+
 export function composerPresentation({ projection, lane, draft, delivery, deliveryMode }) {
   const active = Boolean(projection?.active);
   const paused = lane.paused;
   const sending = lane.items.some((item) => item.state === "sending");
   const status = paused === "ambiguous" ? "ambiguous" : sending ? "submitting" : delivery?.status;
+  const activity = currentActivity(projection);
   const messages = {
     submitting: "Submitting…",
     accepted: "Accepted by Pi",
-    queued:
-      delivery?.kind === "steer" ? "Queued · steers Pi next" : "Queued · sends after Pi finishes",
+    queued: queuedDeliveryHint(delivery, activity),
     delivered: "Delivered to Pi",
     stale:
       delivery?.detail === "refreshed"

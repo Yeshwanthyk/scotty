@@ -2,6 +2,7 @@ import { createChatView, applyEvent, projectionFromSnapshot, sanitizeText } from
 import {
   composerPresentation,
   createSessionMemory,
+  currentActivity,
   reconcileDelivery,
   renderComposerPresentation,
   selectedDeliveryMode,
@@ -123,9 +124,10 @@ function saveBrowserState() {
 }
 
 function setConnection(state, message) {
+  const activity = currentActivity(projection);
   const labels = {
     connecting: "Connecting",
-    connected: projection?.active ? "Pi working" : "Connected",
+    connected: activity ? `Pi working · ${activity}` : "Connected",
     reconnecting: "Reconnecting",
     changed: "Session changed",
     ambiguous: "Outcome unknown",

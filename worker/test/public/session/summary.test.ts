@@ -3,6 +3,7 @@ import { projectionFromSnapshot } from "../../../public/session/chat.js";
 import {
   decodeSummaryEvidence,
   decodeSummaryHatch,
+  createHatchStatusLoader,
   extractSummaryReferences,
   summaryProjection,
 } from "../../../public/session/summary.js";
@@ -246,5 +247,78 @@ describe("agent Summary projection", () => {
     assert.include(summarySource, "Open full evidence");
     assert.notInclude(summarySource, "localStorage");
     assert.notInclude(summarySource, "innerHTML");
+  });
+
+  it("keeps the last verified Hatch state visible while refreshing", async () => {
+    const pending: Array<(value: { status: string }) => void> = [];
+    const loader = createHatchStatusLoader(
+      () =>
+        new Promise((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+
+    const first = loader.refresh(sessionId);
+    const duplicate = loader.refresh(sessionId);
+    assert.strictEqual(first, duplicate);
+    await Promise.resolve();
+    assert.lengthOf(pending, 1);
+    pending[0]?.({ status: "not_configured" });
+    await first;
+    assert.deepStrictEqual(loader.current(sessionId), { status: "not_configured" });
+
+    const refreshing = loader.refresh(sessionId);
+    assert.deepStrictEqual(loader.current(sessionId), { status: "not_configured" });
+    await Promise.resolve();
+    assert.lengthOf(pending, 2);
+    pending[1]?.({ status: "configured" });
+    await refreshing;
+    assert.deepStrictEqual(loader.current(sessionId), { status: "configured" });
+  });
+
+  it("does not let an old session Hatch response replace the current session", async () => {
+    const pending = new Map<string, Array<(value: { status: string }) => void>>();
+    const loader = createHatchStatusLoader(
+      (id) =>
+        new Promise((resolve) => {
+          pending.set(id, [...(pending.get(id) ?? []), resolve]);
+        }),
+    );
+    const oldRefresh = loader.refresh("old-session");
+    await Promise.resolve();
+    const currentRefresh = loader.refresh("current-session");
+    await Promise.resolve();
+    pending.get("old-session")?.[0]?.({ status: "configured" });
+    await oldRefresh;
+    assert.isUndefined(loader.current("current-session"));
+    pending.get("current-session")?.[0]?.({ status: "not_configured" });
+    await currentRefresh;
+    assert.deepStrictEqual(loader.current("current-session"), { status: "not_configured" });
+  });
+
+  it("fences an old request when navigation returns to the same session", async () => {
+    const pending = new Map<string, Array<(value: { status: string }) => void>>();
+    const loader = createHatchStatusLoader(
+      (id) =>
+        new Promise((resolve) => {
+          pending.set(id, [...(pending.get(id) ?? []), resolve]);
+        }),
+    );
+    const firstA = loader.refresh("session-a");
+    await Promise.resolve();
+    const requestB = loader.refresh("session-b");
+    await Promise.resolve();
+    const secondA = loader.refresh("session-a");
+    await Promise.resolve();
+
+    pending.get("session-a")?.[0]?.({ status: "configured" });
+    await firstA;
+    assert.isUndefined(loader.current("session-a"));
+
+    pending.get("session-a")?.[1]?.({ status: "not_configured" });
+    await secondA;
+    assert.deepStrictEqual(loader.current("session-a"), { status: "not_configured" });
+    pending.get("session-b")?.[0]?.({ status: "configured" });
+    await requestB;
   });
 });
