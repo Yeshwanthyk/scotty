@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 import appSource from "../../../public/session/index.js?raw";
 import sessionHtml from "../../../public/session/index.html?raw";
+import terminalSource from "../../../public/session/terminal.js?raw";
 
 const sessionCss = readFileSync(
   new URL("../../../public/session/styles.css", import.meta.url),
@@ -71,6 +72,13 @@ describe("cloud-agent session application", () => {
       sessionCss,
       /@media \(max-width: 760px\)[\s\S]*?\.terminal-drawer \{[\s\S]*?position: fixed;[\s\S]*?height: 100dvh;/u,
     );
+  });
+
+  it("ignores a terminal restart result after the drawer changes sessions", () => {
+    assert.include(terminalSource, "const restartingSessionId = sessionId");
+    assert.include(terminalSource, "terminalRestartUrl(restartingSessionId)");
+    assert.include(terminalSource, "if (!open || sessionId !== restartingSessionId) return");
+    assert.include(terminalSource, "if (open && sessionId === restartingSessionId)");
   });
 
   it("links the conversation to its focused session management row", () => {

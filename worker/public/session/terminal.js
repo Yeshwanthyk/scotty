@@ -119,11 +119,12 @@ export function createTerminalDrawer({
 
   const restart = async () => {
     if (!sessionId || restartButton.disabled) return;
+    const restartingSessionId = sessionId;
     restartButton.disabled = true;
     connection.disconnect();
     setState("restarting", "Restarting");
     try {
-      const response = await fetch(terminalRestartUrl(sessionId), {
+      const response = await fetch(terminalRestartUrl(restartingSessionId), {
         method: "POST",
         credentials: "same-origin",
         headers: { accept: "application/json" },
@@ -133,13 +134,15 @@ export function createTerminalDrawer({
         const body = await response.json().catch(() => undefined);
         throw new Error(body?.error?.message ?? `Terminal restart failed (${response.status})`);
       }
+      if (!open || sessionId !== restartingSessionId) return;
       terminal.reset();
       connection.reconnect();
     } catch (error) {
-      setState(
-        "unavailable",
-        error instanceof Error ? error.message : "The terminal could not restart",
-      );
+      if (open && sessionId === restartingSessionId)
+        setState(
+          "unavailable",
+          error instanceof Error ? error.message : "The terminal could not restart",
+        );
     } finally {
       restartButton.disabled = false;
     }
