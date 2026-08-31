@@ -30,7 +30,6 @@ function framePath(jobId, frameId) {
 function validJob(job) {
   return (
     job &&
-    job.version === 2 &&
     job.status === "succeeded" &&
     typeof job.jobId === "string" &&
     Array.isArray(job.steps) &&
@@ -48,7 +47,7 @@ function validJob(job) {
 
 function validShowcase(value) {
   return (
-    value?.version === 2 &&
+    value &&
     validJob(value.before) &&
     validJob(value.after) &&
     value.before.jobId === beforeJobId &&
