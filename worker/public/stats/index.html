@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="/stats/styles.css" />
     <title>Scotty stats</title>
   </head>
-  <body class="scotty-ui app-page stats-page">
+  <body class="scotty-ui app-page standard-page stats-page">
     <header class="masthead">
       <div class="masthead-inner">
         <a class="identity" href="/sessions" aria-label="Scotty sessions">
@@ -22,13 +22,15 @@
         <div class="masthead-actions">
           <nav class="masthead-nav" aria-label="Primary navigation">
             <a class="button" href="/sessions">Sessions</a>
+            <a class="button" href="/stats" aria-current="page">Stats</a>
             <a class="button" id="providers" href="/providers" hidden>Providers</a>
             <a class="button" id="devices" href="/devices" hidden>Devices</a>
           </nav>
           <details class="mobile-utilities">
-            <summary aria-label="Open primary navigation">•••</summary>
+            <summary>Menu</summary>
             <nav aria-label="Primary navigation">
               <a href="/sessions">Sessions</a>
+              <a href="/stats" aria-current="page">Stats</a>
               <a id="providers-mobile" href="/providers" hidden>Providers</a>
               <a id="devices-mobile" href="/devices" hidden>Devices</a>
             </nav>

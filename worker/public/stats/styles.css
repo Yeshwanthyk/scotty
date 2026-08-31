@@ -26,13 +26,6 @@ a {
   font: inherit;
 }
 
-main {
-  width: min(100%, 980px);
-  margin-inline: auto;
-  padding: 32px max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom))
-    max(16px, env(safe-area-inset-left));
-}
-
 .page-heading {
   margin-bottom: 24px;
 }

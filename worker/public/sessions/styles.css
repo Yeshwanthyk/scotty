@@ -64,16 +64,6 @@ button {
   color: inherit;
 }
 
-main {
-  width: min(100%, 1120px);
-  margin-inline: auto;
-}
-
-main {
-  padding: 32px max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom))
-    max(16px, env(safe-area-inset-left));
-}
-
 .page-heading {
   display: flex;
   align-items: center;

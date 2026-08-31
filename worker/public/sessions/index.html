@@ -13,7 +13,7 @@
     <link rel="stylesheet" href="/sessions/styles.css" />
     <link rel="stylesheet" href="/shared/styles.css" />
   </head>
-  <body class="scotty-ui app-page sessions-page">
+  <body class="scotty-ui app-page standard-page sessions-page">
     <header class="masthead">
       <div class="masthead-inner">
         <a class="identity" href="/sessions" aria-label="Scotty sessions">
@@ -22,6 +22,7 @@
         </a>
         <div class="masthead-actions">
           <nav class="masthead-nav" aria-label="Primary navigation">
+            <a class="button" href="/sessions" aria-current="page">Sessions</a>
             <a class="button" href="/stats">Stats</a>
             <a class="button" id="providers" href="/providers" hidden>Providers</a>
             <a class="button" id="devices" href="/devices" hidden>Devices</a>
@@ -36,8 +37,9 @@
             New session
           </button>
           <details class="mobile-utilities">
-            <summary aria-label="Open primary navigation">•••</summary>
+            <summary>Menu</summary>
             <nav aria-label="Primary navigation">
+              <a href="/sessions" aria-current="page">Sessions</a>
               <a href="/stats">Stats</a>
               <a id="providers-mobile" href="/providers" hidden>Providers</a>
               <a id="devices-mobile" href="/devices" hidden>Devices</a>
