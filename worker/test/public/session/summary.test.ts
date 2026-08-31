@@ -277,22 +277,48 @@ describe("agent Summary projection", () => {
   });
 
   it("does not let an old session Hatch response replace the current session", async () => {
-    const pending = new Map<string, (value: { status: string }) => void>();
+    const pending = new Map<string, Array<(value: { status: string }) => void>>();
     const loader = createHatchStatusLoader(
       (id) =>
         new Promise((resolve) => {
-          pending.set(id, resolve);
+          pending.set(id, [...(pending.get(id) ?? []), resolve]);
         }),
     );
     const oldRefresh = loader.refresh("old-session");
     await Promise.resolve();
     const currentRefresh = loader.refresh("current-session");
     await Promise.resolve();
-    pending.get("old-session")?.({ status: "configured" });
+    pending.get("old-session")?.[0]?.({ status: "configured" });
     await oldRefresh;
     assert.isUndefined(loader.current("current-session"));
-    pending.get("current-session")?.({ status: "not_configured" });
+    pending.get("current-session")?.[0]?.({ status: "not_configured" });
     await currentRefresh;
     assert.deepStrictEqual(loader.current("current-session"), { status: "not_configured" });
+  });
+
+  it("fences an old request when navigation returns to the same session", async () => {
+    const pending = new Map<string, Array<(value: { status: string }) => void>>();
+    const loader = createHatchStatusLoader(
+      (id) =>
+        new Promise((resolve) => {
+          pending.set(id, [...(pending.get(id) ?? []), resolve]);
+        }),
+    );
+    const firstA = loader.refresh("session-a");
+    await Promise.resolve();
+    const requestB = loader.refresh("session-b");
+    await Promise.resolve();
+    const secondA = loader.refresh("session-a");
+    await Promise.resolve();
+
+    pending.get("session-a")?.[0]?.({ status: "configured" });
+    await firstA;
+    assert.isUndefined(loader.current("session-a"));
+
+    pending.get("session-a")?.[1]?.({ status: "not_configured" });
+    await secondA;
+    assert.deepStrictEqual(loader.current("session-a"), { status: "not_configured" });
+    pending.get("session-b")?.[0]?.({ status: "configured" });
+    await requestB;
   });
 });

@@ -369,7 +369,7 @@ export function createHatchStatusLoader(load) {
       const request = Promise.resolve()
         .then(() => load(sessionId))
         .then((next) => {
-          if (activeSessionId === ownedSessionId) value = next;
+          if (activeSessionId === ownedSessionId && pending === request) value = next;
           return next;
         })
         .finally(() => {
