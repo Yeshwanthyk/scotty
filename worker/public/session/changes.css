@@ -126,7 +126,7 @@
 }
 
 .changes-file-path {
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.76rem;
   font-weight: 680;
 }
@@ -154,7 +154,7 @@
 .changes-patch-header h3 {
   max-width: 100%;
   overflow: hidden;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.82rem;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -166,7 +166,7 @@
   overflow: auto;
   background: #02080d;
   color: #d9d2be;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.74rem;
   line-height: 1.55;
   scrollbar-gutter: stable;
