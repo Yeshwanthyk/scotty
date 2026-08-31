@@ -8,8 +8,15 @@ description: Set up, deploy, verify, or synchronize a Scotty installation from a
 1. Obtain an explicit lowercase installation name, Cloudflare profile, preview DNS base, and the 32-character lowercase Cloudflare zone ID that owns that base. Never infer these values from a username, machine, repository, or Cloudflare account.
 2. Run `scotty init --name NAME --profile PROFILE --preview-base DOMAIN --preview-zone-id ZONE_ID`. Review and confirm the displayed account, resources, and Hatch/Evidence domain. Use `--yes` only when the user already authorized non-interactive creation.
 3. Treat successful init as the setup boundary: it provisions the wildcard DNS and Worker route used by Hatch and Evidence, enables both capabilities, and saves the private managed installation pointer. Do not create parallel Wrangler resources or manually copy root credentials.
-4. Declare Pi and repository-scoped GitHub credential sources in `~/.config/scotty/scotty.toml`, then run `scotty config check`, `scotty sync --json`, and `scotty doctor --json`.
+4. Declare Pi and repository-scoped GitHub credential sources in `~/.config/scotty/scotty.toml`, register each repository as described below, then run `scotty doctor --json`.
 5. Run `scotty owner recover` in the browser that will own the installation. Create a fresh session and verify chat plus `scotty_hatch ensure` before calling setup complete.
+
+# Register a repository
+
+1. Obtain the exact GitHub `OWNER/REPO`. A local checkout path is not sandbox input: Scotty clones the registered GitHub repository, so local commits and dirty files that were not pushed are absent from the session.
+2. Add `OWNER/REPO` to `[repos].allowed` in `~/.config/scotty/scotty.toml`. When the GitHub credential has `scope = "repository"`, also add the same value to `[credentials.github].repositories`. The allow-list validates local CLI intent; the credential list authorizes GitHub access. Neither replaces installation registration.
+3. Run `scotty config check --json`, then `scotty sync --json`. Sync is required after a credential-scope change. Stop if the checked projection does not show the repository in both applicable lists.
+4. Run `scotty repo add OWNER/REPO --json`, then confirm it with `scotty repo list --json`. If verification fails, inspect the credential repository scope and sync result before retrying; do not treat repeated `repo add` calls as credential repair.
 
 # Configure a repository Hatch
 
@@ -31,7 +38,6 @@ description: Set up, deploy, verify, or synchronize a Scotty installation from a
    authoritative Hatch result. Use complete inline ensure fields only for a deliberate manual
    override.
 4. Treat `scotty hatch init` and `scotty hatch check` as deferred CLI work; this flow adds neither.
-
 # Deploy Scotty
 
 1. Choose one exact deployment source.
@@ -41,7 +47,7 @@ description: Set up, deploy, verify, or synchronize a Scotty installation from a
 3. If `changes` includes `SandboxContainer`, expect apply to read authoritative session readiness. Wait for active work to finish and checkpoint affected sessions. Do not infer safety from `scotty list`, bypass a missing readiness route, or treat a 404 as an empty session set.
 4. Obtain explicit authorization for that exact plan. Then run `scotty deploy --yes --json` for a release or `bun cli/scotty.ts deploy --yes --json` for a checkout. Never add `--yes` without the preceding reviewed plan. If Scotty reports `deployment_plan_changed` or consumes a plan after a failed preflight, stop and review a fresh plan; do not bypass the mismatch.
 5. Treat success as provider rollout settlement plus publication of the reviewed bundle. Run `scotty doctor --json` or `bun cli/scotty.ts doctor --json`, then run the matching plan command again and require `changes: []`.
-6. For full sandbox proof, obtain an explicit `OWNER/REPO`; never infer one. Run `beam` with that repository, verify the session, then run `vaporize SESSION_ID --yes --json`. For a signed release, do not require a source checkout, Node, npm, or a repository deploy script.
+6. For full sandbox proof, obtain an explicit registered `OWNER/REPO`; never infer one. Run `beam` with that repository. Ask the sandbox agent to start the repository's real development server and call `scotty_hatch ensure` with an explicit argv array, workspace-relative cwd, approved port, and health path. Treat Hatch as ready only when its authoritative status is running and public-ready and the paired session UI shows **Open Hatch**. Never copy the authenticated Hatch URL or handoff into chat. Verify the preview, then run `scotty vaporize SESSION_ID --yes --json`. For a signed release, do not require a source checkout, Node, npm, or a repository deploy script.
 
 # Sync Scotty capabilities
 
