@@ -3,7 +3,9 @@ import { projectionFromSnapshot } from "../../../public/session/chat.js";
 import {
   decodeSummaryEvidence,
   decodeSummaryHatch,
+  createEvidenceLoader,
   createHatchStatusLoader,
+  createSummaryView,
   extractSummaryReferences,
   summaryProjection,
 } from "../../../public/session/summary.js";
@@ -37,6 +39,147 @@ const snapshot = (messages: ReadonlyArray<unknown>) => ({
   activeTools: [],
   queue: { steer: [], followUp: [] },
   pendingUi: [],
+});
+
+class TestNode {
+  readonly children: TestNode[] = [];
+  readonly dataset: Record<string, string> = {};
+  readonly attributes = new Map<string, string>();
+  parent: TestNode | undefined;
+  className = "";
+  textContent = "";
+  href = "";
+  src = "";
+  alt = "";
+  loading = "";
+
+  constructor(
+    readonly tagName: string,
+    readonly fragment = false,
+  ) {}
+
+  get childNodes(): ReadonlyArray<TestNode> {
+    return this.children;
+  }
+
+  append(...nodes: TestNode[]): void {
+    for (const node of nodes) {
+      const appended = node.fragment ? [...node.children] : [node];
+      for (const child of appended) {
+        child.parent = this;
+        this.children.push(child);
+      }
+      if (node.fragment) node.children.length = 0;
+    }
+  }
+
+  replaceChildren(...nodes: TestNode[]): void {
+    for (const child of this.children) child.parent = undefined;
+    this.children.length = 0;
+    this.append(...nodes);
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+
+  descendants(): TestNode[] {
+    return this.children.flatMap((child) => [child, ...child.descendants()]);
+  }
+}
+
+class TestDocument {
+  createElement(tagName: string): TestNode {
+    return new TestNode(tagName);
+  }
+
+  createDocumentFragment(): TestNode {
+    return new TestNode("#fragment", true);
+  }
+
+  createTextNode(text: string): TestNode {
+    const node = new TestNode("#text");
+    node.textContent = text;
+    return node;
+  }
+}
+
+interface TestResponse {
+  readonly ok: boolean;
+  readonly json: () => Promise<unknown>;
+}
+
+const deferred = <A>() => {
+  let resolve = (_value: A): void => undefined;
+  const promise = new Promise<A>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+};
+
+const flush = async (): Promise<void> => {
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+};
+
+const evidencePayload = (jobId: string) => ({
+  jobId,
+  status: "succeeded",
+  totalSteps: 1,
+  completedSteps: 1,
+  frameCount: 1,
+  steps: [
+    {
+      index: 0,
+      name: "Home",
+      status: "passed",
+      assertions: [{ kind: "visible", passed: true }],
+      frame: { frameId: `frame-${jobId}`, offsetMillis: 10 },
+    },
+  ],
+});
+
+const summaryMessagesForSession = (targetSessionId: string, ...jobIds: string[]) => [
+  { id: "u1", role: "user", content: "Check the page" },
+  ...jobIds.flatMap((jobId, index) => [
+    {
+      id: `call-${jobId}`,
+      role: "assistant",
+      content: [{ type: "toolCall", id: `tool-${index}`, name: "scotty_browser_test" }],
+    },
+    {
+      ...evidenceResult,
+      id: `result-${jobId}`,
+      toolCallId: `tool-${index}`,
+      content: {
+        details: {
+          ...evidenceResult.content.details,
+          jobId,
+          summaryUrl: `/s/${targetSessionId}/evidence/${jobId}`,
+        },
+      },
+    },
+  ]),
+  {
+    id: "summary",
+    role: "assistant",
+    content: jobIds.map((jobId) => `scotty-evidence:${jobId}`).join(" "),
+  },
+];
+
+const summaryMessages = (...jobIds: string[]) => summaryMessagesForSession(sessionId, ...jobIds);
+
+const nodeForReference = (root: TestNode, reference: string): TestNode => {
+  const node = root.descendants().find((candidate) => candidate.dataset.reference === reference);
+  assert.isDefined(node, `Missing ${reference}`);
+  return node;
+};
+
+const renderedText = (node: TestNode): string =>
+  [node.textContent, ...node.children.map(renderedText)].filter(Boolean).join(" ");
+
+const response = (value: unknown): TestResponse => ({
+  ok: true,
+  json: () => Promise.resolve(value),
 });
 
 describe("agent Summary projection", () => {
@@ -247,6 +390,129 @@ describe("agent Summary projection", () => {
     assert.include(summarySource, "Open full evidence");
     assert.notInclude(summarySource, "localStorage");
     assert.notInclude(summarySource, "innerHTML");
+  });
+
+  it("deduplicates and caches successfully decoded Evidence by session and job", async () => {
+    const pending = deferred<ReturnType<typeof evidencePayload> | undefined>();
+    let requests = 0;
+    const loader = createEvidenceLoader(async () => {
+      requests += 1;
+      return pending.promise;
+    });
+
+    const first = loader.load(sessionId, "job-1");
+    const duplicate = loader.load(sessionId, "job-1");
+    assert.strictEqual(first, duplicate);
+    await flush();
+    assert.strictEqual(requests, 1);
+    pending.resolve(evidencePayload("job-1"));
+    const verified = await first;
+    assert.strictEqual(loader.current(sessionId, "job-1"), verified);
+    assert.strictEqual(await loader.load(sessionId, "job-1"), verified);
+    assert.strictEqual(requests, 1);
+  });
+
+  it("does not cache a late Evidence result after reset", async () => {
+    const requests: Array<ReturnType<typeof deferred<ReturnType<typeof evidencePayload>>>> = [];
+    const loader = createEvidenceLoader(() => {
+      const request = deferred<ReturnType<typeof evidencePayload>>();
+      requests.push(request);
+      return request.promise;
+    });
+
+    const stale = loader.load(sessionId, "job-1");
+    await flush();
+    loader.reset();
+    const current = loader.load(sessionId, "job-1");
+    await flush();
+    requests[0]?.resolve(evidencePayload("job-1"));
+    await stale;
+    assert.isUndefined(loader.current(sessionId, "job-1"));
+    requests[1]?.resolve(evidencePayload("job-1"));
+    assert.deepStrictEqual(await current, evidencePayload("job-1"));
+    assert.isDefined(loader.current(sessionId, "job-1"));
+  });
+
+  it("keeps verified Evidence mounted through frequent sequence-only renders", async () => {
+    const document = new TestDocument();
+    const root = new TestNode("div");
+    const evidenceRequests: string[] = [];
+    const fetch = (input: string) => {
+      if (input.endsWith("/hatch")) return Promise.resolve(response({ status: "not_configured" }));
+      evidenceRequests.push(input);
+      return Promise.resolve(response(evidencePayload("job-1")));
+    };
+    const view = createSummaryView({
+      document: document as never,
+      root: root as never,
+      baseUrl: "https://scotty.example/",
+      fetch: fetch as never,
+    });
+    const projection = projectionFromSnapshot(snapshot(summaryMessages("job-1")));
+
+    view.render(projection, sessionId);
+    await flush();
+    const verified = nodeForReference(root, "scotty-evidence:job-1");
+    assert.include(renderedText(verified), "Verified run");
+
+    for (let sequence = 1; sequence <= 20; sequence += 1) {
+      projection.sequence = sequence;
+      view.render(projection, sessionId);
+    }
+
+    const stable = nodeForReference(root, "scotty-evidence:job-1");
+    assert.strictEqual(stable, verified);
+    assert.notInclude(renderedText(stable), "Loading…");
+    assert.lengthOf(evidenceRequests, 1);
+    const changedMessages = summaryMessages("job-1");
+    changedMessages[changedMessages.length - 1] = {
+      id: "summary-updated",
+      role: "assistant",
+      content: "Still verified. scotty-evidence:job-1",
+    };
+    view.render(projectionFromSnapshot(snapshot(changedMessages)), sessionId);
+    const rerendered = nodeForReference(root, "scotty-evidence:job-1");
+    assert.include(renderedText(rerendered), "Verified run");
+    assert.notInclude(renderedText(rerendered), "Loading…");
+    assert.lengthOf(evidenceRequests, 1);
+  });
+
+  it("fences late Evidence across session switches and keeps distinct refs independent", async () => {
+    const document = new TestDocument();
+    const root = new TestNode("div");
+    const oldEvidence = deferred<TestResponse>();
+    const firstEvidence = deferred<TestResponse>();
+    const requests: string[] = [];
+    const fetch = (input: string) => {
+      if (input.endsWith("/hatch")) return Promise.resolve(response({ status: "not_configured" }));
+      requests.push(input);
+      if (input.includes("old-job")) return oldEvidence.promise;
+      if (input.includes("job-1")) return firstEvidence.promise;
+      return Promise.resolve(response(evidencePayload("job-2")));
+    };
+    const view = createSummaryView({
+      document: document as never,
+      root: root as never,
+      baseUrl: "https://scotty.example/",
+      fetch: fetch as never,
+    });
+
+    view.render(projectionFromSnapshot(snapshot(summaryMessages("old-job"))), sessionId);
+    const nextSessionId = "f0e1d2c3b4a5";
+    const nextMessages = summaryMessagesForSession(nextSessionId, "job-1", "job-2");
+    view.render(projectionFromSnapshot(snapshot(nextMessages)), nextSessionId);
+    await flush();
+
+    assert.include(renderedText(nodeForReference(root, "scotty-evidence:job-1")), "Loading…");
+    assert.include(renderedText(nodeForReference(root, "scotty-evidence:job-2")), "Verified run");
+    oldEvidence.resolve(response(evidencePayload("old-job")));
+    await flush();
+    assert.notInclude(renderedText(root), "old-job browser evidence");
+
+    firstEvidence.resolve(response(evidencePayload("job-1")));
+    await flush();
+    assert.include(renderedText(nodeForReference(root, "scotty-evidence:job-1")), "Verified run");
+    assert.lengthOf(requests, 3);
   });
 
   it("keeps the last verified Hatch state visible while refreshing", async () => {

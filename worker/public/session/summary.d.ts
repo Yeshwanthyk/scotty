@@ -51,6 +51,13 @@ export declare function decodeSummaryEvidence(
   jobId: string,
 ): SummaryEvidence | undefined;
 export declare function decodeSummaryHatch(value: unknown): SummaryHatch | undefined;
+export declare function createEvidenceLoader<T>(
+  load: (sessionId: string, jobId: string) => Promise<T | undefined>,
+): {
+  readonly current: (sessionId: string, jobId: string) => T | undefined;
+  readonly load: (sessionId: string, jobId: string) => Promise<T | undefined>;
+  readonly reset: () => void;
+};
 export declare function createHatchStatusLoader<T>(load: (sessionId: string) => Promise<T>): {
   readonly current: (sessionId: string) => T | undefined;
   readonly refresh: (sessionId: string) => Promise<T>;
