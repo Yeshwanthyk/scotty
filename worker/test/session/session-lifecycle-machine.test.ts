@@ -523,6 +523,71 @@ describe("Sandbox lifecycle machine", () => {
     }),
   );
 
+  it.effect("a manual snapshot treats an absent optional terminal as already stopped", () =>
+    Effect.gen(function* () {
+      const terminalId = `terminal-${SESSION_ID}`;
+      const harness = yield* createTestHarness({
+        initialEntries: {
+          [sessionHarnessKeys.record]: makeSessionRecord(),
+        },
+        piSessionRunning: true,
+        terminalDeleteFailure: {
+          errorResponse: {
+            code: "INTERNAL_ERROR",
+            context: { sessionId: terminalId, originalError: "Session not found" },
+            httpStatus: 500,
+          },
+        },
+      });
+
+      yield* Effect.promise(() => harness.sandbox.snapshotScottySession());
+
+      const terminalStopIndex = harness.events.indexOf(`host:terminal:delete:${terminalId}`);
+      const quiesceIndex = harness.events.indexOf(`host:pi:fetch:43117:/quiesce`);
+      const stopIndex = harness.events.indexOf("host:pi:kill");
+      const backupIndex = harness.events.indexOf("host:createBackup");
+      assert.ok(terminalStopIndex >= 0);
+      assert.ok(terminalStopIndex < quiesceIndex);
+      assert.ok(quiesceIndex < stopIndex);
+      assert.ok(stopIndex < backupIndex);
+      assert.strictEqual(harness.readRecord()?.status, "warm");
+      assert.strictEqual(harness.readRecord()?.operation, null);
+      assert.strictEqual(harness.readRecord()?.backup?.current.id, "backup-1");
+    }),
+  );
+
+  it.effect("a manual snapshot fails closed for an unrelated terminal deletion failure", () =>
+    Effect.gen(function* () {
+      const harness = yield* createTestHarness({
+        initialEntries: {
+          [sessionHarnessKeys.record]: makeSessionRecord(),
+        },
+        piSessionRunning: true,
+        terminalDeleteFailure: {
+          errorResponse: {
+            code: "INTERNAL_ERROR",
+            context: {
+              sessionId: "terminal-another-session",
+              originalError: "Session not found",
+            },
+            httpStatus: 500,
+          },
+        },
+      });
+
+      const error = yield* Effect.promise(() => rejection(harness.sandbox.snapshotScottySession()));
+
+      assert.ok(error instanceof ScottyError);
+      assert.strictEqual(error.message, "Snapshot failed");
+      assert.strictEqual(harness.readRecord()?.status, "warm");
+      assert.strictEqual(harness.readRecord()?.operation, null);
+      assert.strictEqual(harness.readRecord()?.backup, undefined);
+      assert.ok(!harness.events.includes(`host:pi:fetch:43117:/quiesce`));
+      assert.ok(!harness.events.includes("host:pi:kill"));
+      assert.ok(!harness.events.includes("host:createBackup"));
+    }),
+  );
+
   it.effect("sleep releases its lease when checkpoint sync fails after stopping Pi", () =>
     Effect.gen(function* () {
       const harness = yield* createTestHarness({
