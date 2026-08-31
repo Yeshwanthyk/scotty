@@ -18,6 +18,27 @@ description: Set up, deploy, verify, or synchronize a Scotty installation from a
 3. Run `scotty config check --json`, then `scotty sync --json`. Sync is required after a credential-scope change. Stop if the checked projection does not show the repository in both applicable lists.
 4. Run `scotty repo add OWNER/REPO --json`, then confirm it with `scotty repo list --json`. If verification fails, inspect the credential repository scope and sync result before retrying; do not treat repeated `repo add` calls as credential repair.
 
+# Configure a repository Hatch
+
+1. Create `hatch.toml` at the repository root with exactly this shape:
+
+   ```toml
+   [hatch]
+   service = "web"
+   argv = ["pnpm", "exec", "vite", "dev", "--host", "0.0.0.0", "--port", "4173"]
+   cwd = "."
+   port = 4173
+   health_path = "/"
+   ```
+
+2. Review every value and confirm `cwd` is workspace-relative. Treat the file as non-secret
+   repository configuration; ordinary tracked-file permissions are sufficient.
+3. Invoke `scotty_hatch` with only `{ "operation": "ensure" }`. Completion requires the tool to
+   validate the root file, start the bounded process with shell disabled, and return the
+   authoritative Hatch result. Use complete inline ensure fields only for a deliberate manual
+   override.
+4. Treat `scotty hatch init` and `scotty hatch check` as deferred CLI work; this flow adds neither.
+
 # Deploy Scotty
 
 1. Choose one exact deployment source.

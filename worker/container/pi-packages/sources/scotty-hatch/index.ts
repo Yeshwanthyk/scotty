@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, normalize, resolve, sep } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { parse as parseToml } from "smol-toml";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 
@@ -12,6 +13,7 @@ export const SCOTTY_HATCH_MAX_BYTES = 64 * 1_024;
 export const SCOTTY_HATCH_LOG_TAIL_BYTES = 4 * 1_024;
 export const SCOTTY_HATCH_READY_TIMEOUT_MILLIS = 30_000;
 export const SCOTTY_HATCH_AUTHORITY_TIMEOUT_MILLIS = 30_000;
+export const SCOTTY_HATCH_CONFIG_FILE_NAME = "hatch.toml";
 
 const MAX_NAME_LENGTH = 120;
 const MAX_ARG_LENGTH = 4_096;
@@ -57,7 +59,7 @@ const PortSchema = Type.Integer({
   not: { enum: RESERVED_PORTS },
 });
 
-const EnsureParameters = Type.Object(
+const ExplicitEnsureParameters = Type.Object(
   {
     operation: Type.Literal("ensure"),
     service: ServiceNameSchema,
@@ -65,6 +67,25 @@ const EnsureParameters = Type.Object(
     cwd: RelativeCwdSchema,
     port: PortSchema,
     healthPath: HealthPathSchema,
+  },
+  { additionalProperties: false },
+);
+const RepositoryEnsureParameters = Type.Object(
+  { operation: Type.Literal("ensure") },
+  { additionalProperties: false },
+);
+const HatchTomlSchema = Type.Object(
+  {
+    hatch: Type.Object(
+      {
+        service: ServiceNameSchema,
+        argv: Type.Array(ArgSchema, { minItems: 1, maxItems: MAX_ARGV_LENGTH }),
+        cwd: RelativeCwdSchema,
+        port: PortSchema,
+        health_path: HealthPathSchema,
+      },
+      { additionalProperties: false },
+    ),
   },
   { additionalProperties: false },
 );
@@ -78,12 +99,13 @@ const CloseParameters = Type.Object(
 );
 
 export const ScottyHatchParameters = Type.Union([
-  EnsureParameters,
+  ExplicitEnsureParameters,
+  RepositoryEnsureParameters,
   StatusParameters,
   CloseParameters,
 ]);
 export type ScottyHatchInput = Static<typeof ScottyHatchParameters>;
-type EnsureInput = Static<typeof EnsureParameters>;
+type EnsureInput = Static<typeof ExplicitEnsureParameters>;
 
 const TimestampSchema = Type.String({ minLength: 20, maxLength: 64 });
 const ConfiguredStatusSchema = Type.Object(
@@ -560,9 +582,51 @@ async function resolveRestoreWorkingDirectory(
 function checkedInput(value: unknown): ScottyHatchInput {
   if (!Check(ScottyHatchParameters, value))
     throw new Error("scotty_hatch input does not match the bounded operation schema");
-  if (value.operation === "ensure" && value.argv[0]?.length === 0)
+  if (value.operation === "ensure" && "argv" in value && value.argv[0]?.length === 0)
     throw new Error("scotty_hatch argv[0] must not be empty");
   return value;
+}
+
+function configReadError(error: unknown): Error {
+  if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
+    return new Error("Repository hatch.toml is missing");
+  return new Error("Repository hatch.toml could not be read");
+}
+
+export async function loadRepositoryHatchConfig(workspaceRoot: string): Promise<EnsureInput> {
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(join(workspaceRoot, SCOTTY_HATCH_CONFIG_FILE_NAME));
+  } catch (error) {
+    throw configReadError(error);
+  }
+  if (bytes.byteLength > SCOTTY_HATCH_MAX_BYTES)
+    throw new Error("Repository hatch.toml exceeds the 64 KiB limit");
+
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("Repository hatch.toml is not valid UTF-8");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = parseToml(text);
+  } catch {
+    throw new Error("Repository hatch.toml contains malformed TOML");
+  }
+  if (!Check(HatchTomlSchema, parsed) || parsed.hatch.argv[0]?.length === 0)
+    throw new Error("Repository hatch.toml contains unsupported or malformed fields");
+
+  return {
+    operation: "ensure",
+    service: parsed.hatch.service,
+    argv: parsed.hatch.argv,
+    cwd: parsed.hatch.cwd,
+    port: parsed.hatch.port,
+    healthPath: parsed.hatch.health_path,
+  };
 }
 
 function statusReference(status: HatchStatus): string | undefined {
@@ -632,7 +696,9 @@ export class ScottyHatchManager {
       const input = checkedInput(value);
       if (input.operation === "status") return this.#status(signal);
       if (input.operation === "close") return this.#close(signal);
-      return this.#ensure(input, signal);
+      const ensureInput =
+        "service" in input ? input : await loadRepositoryHatchConfig(await this.#workspaceRoot);
+      return this.#ensure(ensureInput, signal);
     });
   }
 
@@ -881,10 +947,10 @@ export default function scottyHatch(pi: ExtensionAPI): void {
     name: "scotty_hatch",
     label: "Scotty Hatch",
     description:
-      "Ensure, inspect, or close the one bounded application Hatch for the current warm Scotty session. Ensure requires an explicit service name, argv, workspace-relative cwd, approved port, and health path.",
+      "Ensure, inspect, or close the one bounded application Hatch for the current warm Scotty session. Ensure loads strict repository-root hatch.toml configuration when service fields are omitted; complete inline configuration remains a manual override.",
     promptSnippet: "Manage the current session's bounded authenticated application Hatch",
     promptGuidelines: [
-      "Use scotty_hatch ensure only with an explicit argv array and workspace-relative cwd. Do not pass shell commands, environment variables, credentials, URLs, or inferred service identity.",
+      "Use scotty_hatch ensure without inline service fields when the repository has a reviewed root hatch.toml. Use a complete explicit argv array and workspace-relative cwd only as a manual override. Never pass shell commands, environment variables, credentials, URLs, or inferred service identity.",
       "In the next meaningful progress or final update, include the returned exact scotty-hatch:<hatchId> reference once. Never invent or repeat a reference, and do not publish ports, paths, argv, authority values, or URLs.",
     ],
     parameters: ScottyHatchParameters,
