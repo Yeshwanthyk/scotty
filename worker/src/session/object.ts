@@ -985,6 +985,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
             );
             if (Result.isFailure(decodedCredential))
               return yield* rejectBoundary("create_repository_credential_invalid");
+            const githubHandle = githubManagedHandle(input.grants);
+            if (githubHandle === undefined)
+              return yield* rejectBoundary("create_credential_grant_invalid");
             const credential = Redacted.make(decodedCredential.success.value);
             const verified = yield* verifier
               .verify(authority.session.repository, Redacted.value(credential))
@@ -1020,14 +1023,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
               sandboxBundle: { digest: input.sandboxBundleDigest },
               credentialGrant: { sessionId: authority.session.id, grants: input.grants },
             };
-            const githubCredential = Redacted.make(decodedCredential.success.value);
             const prepared = yield* workspaceService
-              .prepare(workspaceRecord, Redacted.value(githubCredential), verified)
+              .prepare(workspaceRecord, githubHandle, verified)
               .pipe(
                 Effect.mapError(() =>
                   rejectBoundary("create_workspace_outcome_unknown", "unknown_after_admission"),
                 ),
-                Effect.ensuring(Effect.sync(() => void Redacted.wipeUnsafe(githubCredential))),
               );
             return {
               workspaceId: prepared.root,
