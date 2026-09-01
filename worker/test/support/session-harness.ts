@@ -381,6 +381,7 @@ export interface SessionHarness {
   readonly stopHatchProcess: (generation: number) => void;
   readonly startRuntime: () => Promise<void>;
   readonly stopRuntime: () => Promise<void>;
+  readonly drainBackground: () => Promise<void>;
   readonly memory: InMemoryFaultInjectableFake;
   readonly injectFailure: (stage: HarnessFailureStage) => void;
   readonly clearFailure: (stage?: HarnessFailureStage) => void;
@@ -891,6 +892,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     options.sharedMemory,
   );
   const constructorWork: Promise<unknown>[] = [];
+  const backgroundWork: Promise<unknown>[] = [];
 
   const ctx: DurableObjectState<{}> = {
     id: {
@@ -921,7 +923,9 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       constructorWork.push(work);
       return work;
     },
-    waitUntil: () => undefined,
+    waitUntil: (work: Promise<unknown>) => {
+      backgroundWork.push(work);
+    },
     abort: (reason?: string) => {
       aborts.push(reason ?? "");
     },
@@ -1563,6 +1567,9 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       rawPiContainerRunning = false;
       runtimeStatus = "stopped";
       await sandbox.onStop();
+    },
+    drainBackground: async () => {
+      while (backgroundWork.length > 0) await Promise.all(backgroundWork.splice(0));
     },
     memory: storage.memory,
     injectFailure: (stage) => {

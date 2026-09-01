@@ -78,6 +78,7 @@ const readiness: ReadinessProof = {
 const warmAuthority = (proof: ReadinessProof = readiness): SessionAuthority => ({
   revision: 8,
   session,
+  hardCap: request().hardCap,
   state: {
     _tag: "Stable",
     stable: {
@@ -99,6 +100,7 @@ const acceptedAdmission = (value: CreateControllerRequest = request()): Accepted
     timestamp: value.timestamp,
     deadlineAt: value.transitionDeadlineAt,
     session: value.session,
+    hardCap: value.hardCap,
   });
   assert.ok(Predicate.isTagged(admission, "Accepted"));
   return admission;

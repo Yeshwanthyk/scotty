@@ -994,50 +994,6 @@ describe("evidence session lifecycle", () => {
     );
   }
 
-  it.effect("arms retained evidence before hard-cap interruption releases its lease", () =>
-    Effect.gen(function* () {
-      const harness = yield* createHarness({ stopCallsOnStop: true });
-      yield* Effect.promise(() => harness.startRuntime());
-      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
-      yield* Effect.promise(() =>
-        harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, {
-          index: 0,
-          startedAt: "2026-08-06T12:00:00.100Z",
-          completedAt: "2026-08-06T12:00:01.000Z",
-          offsetMillis: 1_000,
-          assertions: [{ kind: "urlPath", passed: true, expected: "/", actual: "/" }],
-          frame: {
-            frameId: "frame-1",
-            bytes: PNG,
-            capturedAt: "2026-08-06T12:00:01.000Z",
-            offsetMillis: 1_000,
-          },
-        }),
-      );
-
-      yield* Effect.promise(() =>
-        harness.sandbox.enforceHardCap({ hardCapAt: "2026-08-06T13:00:00.000Z" }),
-      );
-
-      assert.deepInclude(
-        harness.schedules.find(({ callback }) => callback === "expireRetainedEvidence"),
-        {
-          when: new Date(accepted.deadlineAt),
-          callback: "expireRetainedEvidence",
-        },
-      );
-      assert.notInclude(harness.deletedSchedules, "expireRetainedEvidence");
-      assert.lengthOf(
-        harness.schedules.filter(({ callback }) => callback === "expireRetainedEvidence"),
-        1,
-      );
-      assert.deepInclude(harness.read<EvidenceState>(sessionHarnessKeys.evidence)?.jobs[0], {
-        status: "interrupted",
-        frameCount: 1,
-      });
-    }),
-  );
-
   it.effect("retains vaporize retry authority until artifact absence is proved", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness();
@@ -1754,35 +1710,6 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
-  it.effect("destroys compute and fails the callback when cleanup retry scheduling fails", () =>
-    Effect.gen(function* () {
-      const harness = yield* createHarness({ previewBase: "preview.scotty.example" });
-      yield* Effect.promise(() => harness.startRuntime());
-      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
-      yield* Effect.promise(() =>
-        harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
-      );
-      harness.injectFailure("previewUnexpose");
-      harness.injectFailure("hardCapSchedule");
-
-      const enforced = yield* Effect.result(
-        Effect.tryPromise({
-          try: () => harness.sandbox.enforceHardCap({ hardCapAt: "2026-08-06T13:00:00.000Z" }),
-          catch: (cause) => cause,
-        }),
-      );
-      assert.ok(Result.isFailure(enforced));
-      assert.include(harness.events, "host:destroy");
-      assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
-      assert.deepInclude(harness.read<EvidenceState>(sessionHarnessKeys.evidence)?.activeJob, {
-        status: "interrupted",
-        exposure: "unexpose_pending",
-        previewCookieDigest: null,
-      });
-      assert.deepStrictEqual(harness.exposedPreviewPorts(), [job.port]);
-    }),
-  );
-
   it.effect("fails closed when runtime epoch start or stop persistence is ambiguous", () =>
     Effect.gen(function* () {
       const failedStart = yield* createHarness({ failureStage: "runtimeEpochPut" });
@@ -1873,32 +1800,6 @@ describe("evidence session lifecycle", () => {
         consumedRequestMillis: 30_000,
         permits: [],
       });
-
-      const hardCapStart = harness.events.length;
-      yield* Effect.promise(() =>
-        harness.sandbox.enforceHardCap({ hardCapAt: "2026-08-06T13:00:00.000Z" }),
-      );
-      const hardCapEvents = harness.events.slice(hardCapStart);
-      assert.include(hardCapEvents, `storage:put:${sessionHarnessKeys.evidence}`);
-      assert.include(hardCapEvents, "host:destroy");
-      assert.isBelow(
-        hardCapEvents.indexOf(`storage:put:${sessionHarnessKeys.evidence}`),
-        hardCapEvents.indexOf("host:destroy"),
-      );
-      assert.deepInclude(
-        harness.schedules.find(({ callback }) => callback === "enforceHardCap"),
-        {
-          callback: "enforceHardCap",
-          payload: { hardCapAt: "2026-08-06T13:00:00.000Z" },
-        },
-      );
-      assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
-      assert.deepInclude(harness.read<EvidenceState>(sessionHarnessKeys.evidence)?.activeJob, {
-        status: "interrupted",
-        exposure: "unexpose_pending",
-        previewCookieDigest: null,
-      });
-      assert.deepStrictEqual(harness.exposedPreviewPorts(), [job.port]);
 
       harness.clearFailure("previewUnexpose");
       const gone = yield* Effect.promise(() => harness.sandbox.vaporizeScottySession());

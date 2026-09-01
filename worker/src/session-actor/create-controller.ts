@@ -229,6 +229,7 @@ const command = (
   timestamp: request.timestamp,
   deadlineAt: request.transitionDeadlineAt,
   session: request.session,
+  hardCap: request.hardCap,
 });
 
 const metadataInput = (request: CreateControllerRequest): SessionActorMetadataInput => ({

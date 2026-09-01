@@ -18,6 +18,7 @@ import {
 
 const T0 = "2026-03-01T00:00:00.000Z";
 const DEADLINE = "2026-03-01T01:00:00.000Z";
+const hardCap = { durationSeconds: 3_600, deadlineAt: DEADLINE, generation: "hard-cap-1" };
 const JOURNAL_PREFIX = "scotty:session-actor:journal:";
 
 const journalKey = (sequence: number): string =>
@@ -45,6 +46,7 @@ const initialDecision = (): AcceptedDecision =>
         execution: { provider: "cloudflare", runtimeName: "runtime-native-storage" },
         createdAt: T0,
       },
+      hardCap,
     }),
   );
 

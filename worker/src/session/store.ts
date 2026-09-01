@@ -2,12 +2,10 @@ import { Clock, Context, Data, Effect, Layer, Option, Predicate, Result } from "
 import {
   conflict,
   decodeSessionRecordResult,
-  hasCommittedManagedStop,
   notFound,
   ScottyError,
   wrongState,
   type OperationKind,
-  type AgentActivityState,
   type SessionRecord,
   type SessionStatus,
 } from "./contracts";
@@ -17,7 +15,6 @@ import {
   type CreateIdempotencyDecision,
   type CreateIdempotencyMetadata,
 } from "./create-idempotency";
-import { hardCapObservationIsCurrent } from "./lifecycle";
 import type {
   ActorStoragePort,
   ActorStorageTransactionPlan,
@@ -153,21 +150,11 @@ interface SessionStoreShape {
     nonce: string,
     update: (record: SessionRecord) => SessionRecord,
   ) => Effect.Effect<SessionRecord, ScottyError>;
-  readonly updateAgentActivity: (
-    expectedLastEventAt: string | undefined,
-    state: AgentActivityState,
-  ) => Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
   readonly rename: (title: string) => Effect.Effect<SessionRecord, ScottyError>;
   readonly releaseOperation: (nonce: string) => Effect.Effect<SessionRecord, ScottyError>;
   readonly releaseOperationIfHeld: (
     nonce: string,
   ) => Effect.Effect<SessionRecord | undefined, ScottyError>;
-  readonly markHardCapFailure: (
-    observed: SessionRecord,
-    message: string,
-  ) => Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
-  readonly recordRuntimeStop: Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
-  readonly claimManagedStopRollback: (nonce: string) => Effect.Effect<boolean, ScottyError>;
   readonly failOperation: (
     nonce: string,
     code: string,
@@ -542,31 +529,6 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
       },
     ),
     updateForOperation,
-    updateAgentActivity: Effect.fnUntraced(function* (expectedLastEventAt, state) {
-      const lastAgentEventAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-      return yield* transact(async (transaction) => {
-        const stored = await transaction.get();
-        if (stored === undefined) return Result.succeed(Option.none());
-        const decoded = decode(stored);
-        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
-        const record = decoded.success;
-        if (
-          record.status !== "warm" ||
-          record.operation !== null ||
-          record.lastAgentEventAt !== expectedLastEventAt
-        )
-          return Result.succeed(Option.none());
-        if (record.agentState === state) return Result.succeed(Option.some(record));
-        const next: SessionRecord = {
-          ...record,
-          agentState: state,
-          lastAgentEventAt,
-          updatedAt: lastAgentEventAt,
-        };
-        await transaction.put(next);
-        return Result.succeed(Option.some(next));
-      });
-    }),
     rename: Effect.fnUntraced(function* (title) {
       const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
       return yield* transact(async (transaction) => {
@@ -599,91 +561,6 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
         const next = { ...record, operation: null, updatedAt: now };
         await transaction.put(next);
         return Result.succeed(next);
-      });
-    }),
-    markHardCapFailure: Effect.fnUntraced(function* (observed, message) {
-      const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-      return yield* transact(async (transaction) => {
-        const stored = await transaction.get();
-        if (stored === undefined) return Result.succeed(Option.none());
-        const decoded = decode(stored);
-        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
-        const current = decoded.success;
-        if (!hardCapObservationIsCurrent(observed, current)) return Result.succeed(Option.none());
-        const failed: SessionRecord = {
-          ...current,
-          status: "failed",
-          operation: null,
-          failure: {
-            code: "hard_cap_checkpoint_failed",
-            message,
-            recoverable: Boolean(current.backup?.current),
-          },
-          updatedAt,
-        };
-        await transaction.put(failed);
-        return Result.succeed(Option.some(failed));
-      });
-    }),
-    recordRuntimeStop: Effect.gen(function* () {
-      const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-      return yield* transact(async (transaction) => {
-        const stored = await transaction.get();
-        if (stored === undefined) return Result.succeed(Option.none());
-        const decoded = decode(stored);
-        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
-        const record = decoded.success;
-        if (
-          record.status === "sleeping" ||
-          record.status === "failed" ||
-          record.status === "gone" ||
-          record.operation?.kind === "vaporize"
-        )
-          return Result.succeed(Option.none());
-        const next: SessionRecord = hasCommittedManagedStop(record)
-          ? {
-              ...record,
-              status: "sleeping",
-              operation: null,
-              failure: undefined,
-              updatedAt,
-            }
-          : {
-              ...record,
-              status: "failed",
-              operation: record.operation?.kind === "evidence" ? record.operation : null,
-              failure: {
-                code: "runtime_stopped",
-                message: "Sandbox runtime stopped before a managed checkpoint",
-                recoverable: Boolean(record.backup?.current),
-              },
-              updatedAt,
-            };
-        await transaction.put(next);
-        return Result.succeed(Option.some(next));
-      });
-    }),
-    claimManagedStopRollback: Effect.fnUntraced(function* (nonce) {
-      const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-      return yield* transact(async (transaction) => {
-        const stored = await transaction.get();
-        if (stored === undefined) return Result.succeed(false);
-        const decoded = decode(stored);
-        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
-        const current = decoded.success;
-        if (
-          current.operation?.nonce !== nonce ||
-          current.operation.stopRequestedAt ||
-          current.operation.checkpointedBackupId !== current.backup?.current.id
-        )
-          return Result.succeed(false);
-        if (current.operation.stopRollbackAt) return Result.succeed(true);
-        await transaction.put({
-          ...current,
-          operation: { ...current.operation, stopRollbackAt: updatedAt },
-          updatedAt,
-        });
-        return Result.succeed(true);
       });
     }),
     failOperation: Effect.fnUntraced(function* (nonce, code, message, recoverable) {

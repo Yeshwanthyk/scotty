@@ -143,6 +143,17 @@ describe("Sandbox actor create boundary", () => {
     assert.strictEqual(response.status, 200);
     const body = await decodeSteerResult(await response.json());
     assert.deepStrictEqual(body, { id: SESSION_ID, status: "accepted" });
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined &&
+        Predicate.isTagged(authority.state, "Stable") &&
+        Predicate.isTagged(authority.state.stable, "Warm"),
+    );
+    assert.deepInclude(authority.state.stable.activity, {
+      supervisorEpoch: `pi-${SESSION_ID}`,
+      piSequence: 0,
+      state: "waiting",
+    });
   });
 
   it("replays matching idempotency without dispatching provider work again", async () => {

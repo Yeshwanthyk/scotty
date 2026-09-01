@@ -57,4 +57,79 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.ok(harness.events.includes("host:stop"));
     assert.ok(harness.events.includes("host:restoreBackup"));
   });
+
+  it("commits hard-cap failure before destroying the runtime and ignores stale fences", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const warm = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.isDefined(warm);
+
+    await harness.sandbox.sessionActorHardCap({
+      sessionId: SESSION_ID,
+      generation: "stale-hard-cap",
+      deadlineAt: warm.hardCap.deadlineAt,
+    });
+    assert.notInclude(harness.events, "host:destroy");
+
+    const expired = {
+      ...warm,
+      hardCap: {
+        ...warm.hardCap,
+        deadlineAt: "2020-01-01T00:00:00.000Z",
+      },
+    };
+    harness.memory.values.set(sessionHarnessKeys.actorAuthority, expired);
+    const start = harness.events.length;
+    await harness.sandbox.sessionActorHardCap({
+      sessionId: SESSION_ID,
+      generation: expired.hardCap.generation,
+      deadlineAt: expired.hardCap.deadlineAt,
+    });
+
+    const failed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      failed !== undefined &&
+        Predicate.isTagged(failed.state, "Stable") &&
+        Predicate.isTagged(failed.state.stable, "Failed"),
+    );
+    assert.strictEqual(failed.state.stable.code, "hard_cap_elapsed");
+    const events = harness.events.slice(start);
+    const committed = events.indexOf(`storage:put:${sessionHarnessKeys.actorAuthority}`);
+    const destroyed = events.indexOf("host:destroy");
+    assert.ok(committed >= 0);
+    assert.ok(destroyed > committed);
+  });
+
+  it("feeds runtime-stop callbacks into the actor without synchronous re-entry", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    await harness.stopRuntime();
+    await harness.drainBackground();
+
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined &&
+        Predicate.isTagged(authority.state, "Stable") &&
+        Predicate.isTagged(authority.state.stable, "Failed"),
+    );
+    assert.strictEqual(authority.state.stable.code, "runtime_stopped");
+  });
+
+  it("routes activity expiry through actor checkpoint and sleep", async () => {
+    const harness = await createSessionHarness({ stopCallsOnStop: true });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    await harness.sandbox.onActivityExpired();
+    await harness.drainBackground();
+
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined &&
+        Predicate.isTagged(authority.state, "Stable") &&
+        Predicate.isTagged(authority.state.stable, "Sleeping"),
+    );
+    assert.strictEqual(authority.state.stable.wakeSource.backupId, "backup-1");
+    assert.include(harness.events, "host:stop");
+  });
 });

@@ -25,6 +25,7 @@ import {
 const T0 = "2026-02-01T00:00:00.000Z";
 const T1 = "2026-02-01T00:01:00.000Z";
 const DEADLINE = "2026-02-01T01:00:00.000Z";
+const hardCap = { durationSeconds: 3_600, deadlineAt: DEADLINE, generation: "hard-cap-1" };
 const session = {
   id: "session-reachable",
   title: "Reachable session",
@@ -189,11 +190,11 @@ const makeCommand = (tag: SessionCommand["_tag"], revision: number): SessionComm
     timestamp: T0,
     deadlineAt: DEADLINE,
   };
-  if (tag === "CreateCommand") return { _tag: tag, ...common, session };
+  if (tag === "CreateCommand") return { _tag: tag, ...common, session, hardCap };
   if (tag === "WarmWorkCommand") return { _tag: tag, ...common, workKind: "Evidence" };
   if (tag === "CheckpointCommand") return { _tag: tag, ...common };
   if (tag === "SleepCommand") return { _tag: tag, ...common };
-  if (tag === "ResumeCommand") return { _tag: tag, ...common };
+  if (tag === "ResumeCommand") return { _tag: tag, ...common, nextHardCap: hardCap };
   return { _tag: tag, ...common };
 };
 
@@ -269,6 +270,7 @@ describe("session actor reachability", () => {
   it("rejects schema-shaped but semantically unreachable authorities", () => {
     const incoherent: SessionAuthority = {
       session,
+      hardCap,
       revision: 1,
       state: {
         _tag: "Transitioning",
@@ -298,6 +300,7 @@ describe("session actor reachability", () => {
 
     const unownedSleeping: SessionAuthority = {
       session,
+      hardCap,
       revision: 1,
       state: {
         _tag: "Stable",

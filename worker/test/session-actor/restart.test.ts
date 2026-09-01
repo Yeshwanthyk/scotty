@@ -32,6 +32,7 @@ import { phases, type TransitionKind } from "../../src/session-actor/transition"
 const T0 = "2026-03-03T00:00:00.000Z";
 const T1 = "2026-03-03T00:01:00.000Z";
 const DEADLINE = "2026-03-03T01:00:00.000Z";
+const hardCap = { durationSeconds: 3_600, deadlineAt: DEADLINE, generation: "hard-cap-1" };
 const session = {
   id: "session-restart",
   title: "Restart",
@@ -185,6 +186,7 @@ const transition = (kind: TransitionKind, phase: string): Transition => {
 
 const authority = (transition: Transition): SessionAuthority => ({
   session,
+  hardCap,
   revision: 1,
   state: { _tag: "Transitioning", transition },
 });
@@ -213,6 +215,7 @@ describe("session actor restart", () => {
         service.run({
           authority: {
             session,
+            hardCap,
             revision: 1,
             state: {
               _tag: "Stable",
@@ -387,6 +390,7 @@ describe("session actor restart", () => {
     timestamp: T0,
     deadlineAt: DEADLINE,
     session,
+    hardCap,
   });
 
   const actorPort = (

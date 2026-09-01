@@ -14,11 +14,9 @@ import { sessionTerminalId } from "../../../protocol/session-terminal";
 import { parseManagedHandle, type ManagedHandle } from "../../../protocol/credentials";
 import type { RunnerOperation } from "../../../protocol/runner";
 import {
-  type Cause,
   Clock,
   Data,
   Effect,
-  Exit,
   Layer,
   Option,
   Predicate,
@@ -178,7 +176,6 @@ import {
   makeSessionControlGate,
   SessionStore,
   sessionStoreLayer,
-  type SessionControlAuthority,
   type SessionControlGate,
   type SessionRecordStorage,
 } from "./store";
@@ -199,6 +196,11 @@ import {
   sandboxRuntimeStopLayer,
   sleepSandboxTransitionProviderLayer,
 } from "../session-actor/transitions/backup-lifecycle-sandbox";
+import {
+  RecoverySandbox,
+  recoveryRuntimeDestroyLayer,
+  recoverySandboxLayer,
+} from "../session-actor/transitions/recovery-sandbox";
 import {
   SessionActorMetadataStore,
   sessionActorMetadataStoreLayer,
@@ -221,6 +223,7 @@ import {
   AuthorityStateSchema,
   StableStateSchema,
   TransitionSchema,
+  type ReadinessProgress,
   type SessionAuthority,
 } from "../session-actor/authority";
 import { sessionProjectionFromActor, sessionViewFromActor } from "../session-actor/public-view";
@@ -263,7 +266,7 @@ import { parseChangedPath, type ChangedFilePatch, type ChangedFiles } from "../c
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HARD_CAP_GRACE_MS = 30_000;
 const ABANDONED_OPERATION_MS = 5 * 60_000;
-const MANAGED_STOP_RETRY_SECONDS = 2;
+const ACTIVITY_OBSERVATION_TTL_MS = 90_000;
 const DESTROY_DEADLINE_MS = 30_000;
 const DESTROY_RETRY_SECONDS = 35;
 const PASSIVE_PI_CONSOLE_MAX_HEADER_BYTES = 8 * 1024;
@@ -375,11 +378,8 @@ type SandboxServices =
   | SessionActorMetadataStore
   | CreateController
   | LifecycleController
+  | RecoverySandbox
   | Workspace;
-
-interface HardCapPayload {
-  hardCapAt: string;
-}
 
 const ActorAlarmFenceSchema = Schema.Struct({
   alarmId: Schema.String,
@@ -403,10 +403,14 @@ const decodeCreateHardCapFence = Schema.decodeUnknownOption(CreateHardCapFenceSc
   onExcessProperty: "error",
 });
 
-interface ManagedStopPayload {
-  nonce: string;
-  armedAt: string;
-}
+const actorReadiness = (authority: SessionAuthority): ReadinessProgress | null => {
+  if (AuthorityStateSchema.guards.Stable(authority.state))
+    return StableStateSchema.guards.Warm(authority.state.stable)
+      ? authority.state.stable.readiness
+      : null;
+  const proof = authority.state.transition.proof;
+  return "readiness" in proof ? proof.readiness : null;
+};
 
 interface VaporizeRetryPayload {
   id: string;
@@ -456,12 +460,6 @@ export const SANDBOX_TEST_EXPOSE_EVIDENCE = Symbol("scotty.test.exposeEvidence")
 export const SANDBOX_TEST_COMPLETE_EVIDENCE_STEP = Symbol("scotty.test.completeEvidenceStep");
 export const SANDBOX_TEST_FINALIZE_EVIDENCE = Symbol("scotty.test.finalizeEvidence");
 
-class ManagedStopArmedError extends Data.TaggedError("ManagedStopArmedError")<{
-  readonly cause: unknown;
-}> {}
-
-class SessionShutdownPending extends Data.TaggedError("SessionShutdownPending")<{}> {}
-
 class SessionCreateUncertain extends Data.TaggedError("SessionCreateUncertain")<{
   readonly cause: unknown;
   readonly stage?: SessionCreateSetupStage;
@@ -480,24 +478,6 @@ const mapCreateUncertain =
   (stage: SessionCreateSetupStage) =>
   (cause: unknown): SessionCreateUncertain =>
     new SessionCreateUncertain({ cause, stage });
-
-class PiRuntimeStopFailure extends Data.TaggedError("PiRuntimeStopFailure")<{
-  readonly stage: "quiesce" | "process" | "terminal";
-  readonly cause: unknown;
-}> {}
-
-export interface CheckpointExitClassification {
-  readonly failed: boolean;
-  readonly hasDefect: boolean;
-  readonly hasTypedFailure: boolean;
-  readonly wasInterrupted: boolean;
-}
-
-export class CheckpointRuntimeUnavailable extends Data.TaggedError("CheckpointRuntimeUnavailable")<{
-  readonly checkpoint: CheckpointExitClassification;
-  readonly checkpointCause: Cause.Cause<unknown> | undefined;
-  readonly relaunchCause: unknown;
-}> {}
 
 type HostOperation = "destroy" | "expose" | "schedule" | "stop" | "unexpose";
 
@@ -525,13 +505,7 @@ interface ActorPassiveConsoleAuthority {
   readonly revision: number;
 }
 
-interface LegacyPassiveConsoleAuthority {
-  readonly _tag: "Legacy";
-  readonly control: SessionControlAuthority;
-  readonly revision: number;
-}
-
-type PassiveConsoleAuthority = ActorPassiveConsoleAuthority | LegacyPassiveConsoleAuthority;
+type PassiveConsoleAuthority = ActorPassiveConsoleAuthority;
 
 const hostEffect = <A>(
   operation: HostOperation,
@@ -697,38 +671,6 @@ const reportEvidenceControlFailure = (operation: string, error: unknown): void =
         }),
   });
 };
-
-const classifyCheckpointExit = <A, E>(exit: Exit.Exit<A, E>): CheckpointExitClassification => ({
-  failed: Exit.isFailure(exit),
-  hasDefect: Exit.hasDies(exit),
-  hasTypedFailure: Exit.hasFails(exit),
-  wasInterrupted: Exit.hasInterrupts(exit),
-});
-
-export const withCheckpointRuntimeRestore = <A, E, R, RestoreE, RestoreR>(
-  checkpoint: Effect.Effect<A, E, R>,
-  options: {
-    readonly restore: Effect.Effect<void, RestoreE, RestoreR>;
-    readonly resumeRuntime: boolean;
-    readonly stopAttempted: () => boolean;
-  },
-): Effect.Effect<A, E | CheckpointRuntimeUnavailable, R | RestoreR> =>
-  checkpoint.pipe(
-    Effect.onExit((exit) =>
-      options.stopAttempted() && (options.resumeRuntime || Exit.isFailure(exit))
-        ? options.restore.pipe(
-            Effect.mapError(
-              (relaunchCause) =>
-                new CheckpointRuntimeUnavailable({
-                  checkpoint: classifyCheckpointExit(exit),
-                  checkpointCause: Exit.isFailure(exit) ? exit.cause : undefined,
-                  relaunchCause,
-                }),
-            ),
-          )
-        : Effect.void,
-    ),
-  );
 
 interface PendingHatchRestore {
   readonly hatch: HatchRecord;
@@ -1157,6 +1099,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const resumeProvider = resumeSandboxTransitionProviderLayer.pipe(
       Layer.provide(Layer.merge(backupLifecycleSandbox, actorMetadata)),
     );
+    const recoveryDestroy = recoveryRuntimeDestroyLayer({ destroy: () => this.destroy() });
+    const recovery = recoverySandboxLayer.pipe(
+      Layer.provide(Layer.mergeAll(actorRuntimeAndContainerAuth, recoveryDestroy)),
+    );
     const providerExecutor = sessionProviderEffectExecutorLayer.pipe(
       Layer.provide(
         Layer.mergeAll(createProvider, checkpointProvider, sleepProvider, resumeProvider),
@@ -1166,12 +1112,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       Layer.provide(Layer.merge(actorAlarms, providerExecutor)),
     );
     const actor = sessionActorLayer.pipe(Layer.provide(Layer.merge(actorStore, actorRunner)));
-    const lifecycleController = lifecycleControllerLayer.pipe(
-      Layer.provide(Layer.merge(actorStore, actor)),
-    );
-    const metadataController = createMetadataControllerFromStoresLayer.pipe(
-      Layer.provide(Layer.merge(actorMetadata, actorStore)),
-    );
     const hardCap = createHardCapControllerLayer((fence) =>
       Effect.tryPromise({
         try: () =>
@@ -1185,6 +1125,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
           }),
       }),
     );
+    const lifecycleController = lifecycleControllerLayer.pipe(
+      Layer.provide(Layer.mergeAll(actorStore, actor, hardCap)),
+    );
+    const metadataController = createMetadataControllerFromStoresLayer.pipe(
+      Layer.provide(Layer.merge(actorMetadata, actorStore)),
+    );
     const createController = createControllerLayer.pipe(
       Layer.provide(Layer.mergeAll(actor, hardCap, metadataController)),
     );
@@ -1195,6 +1141,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       actor,
       createController,
       lifecycleController,
+      recovery,
       store,
       evidence,
       hatch,
@@ -2636,18 +2583,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   });
 
-  private readonly isManagedStopPendingProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    nonce: string,
-  ) {
-    const record = yield* this.readRecordProgram();
-    return (
-      (record?.status === "warm" || record?.status === "booting") &&
-      record.operation?.nonce === nonce &&
-      Boolean(record.operation.stopRequestedAt)
-    );
-  });
-
   private readonly prepareCloudflarePiCreateProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     record: SessionRecord,
@@ -3036,27 +2971,48 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const controller = yield* LifecycleController;
     const now = yield* Clock.currentTimeMillis;
-    const outcome = yield* controller
-      .run({
-        kind,
-        correlationId: crypto.randomUUID(),
-        nonce: crypto.randomUUID(),
-        attempt: crypto.randomUUID(),
-        timestamp: new Date(now).toISOString(),
-        deadlineAt: new Date(now + ABANDONED_OPERATION_MS).toISOString(),
-      })
-      .pipe(
-        Effect.catchTag("LifecycleControllerRejected", () =>
-          Effect.flatMap(this.readActorSessionStateProgram(), ({ view }) =>
-            wrongState(view.status, kind.toLowerCase()),
-          ),
+    const baseRequest = {
+      correlationId: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
+      attempt: crypto.randomUUID(),
+      timestamp: new Date(now).toISOString(),
+      deadlineAt: new Date(now + ABANDONED_OPERATION_MS).toISOString(),
+    };
+    const request =
+      kind === "Resume"
+        ? yield* Effect.gen(function* () {
+            const store = yield* ActorStore;
+            const snapshot = yield* store.read;
+            if (snapshot.authority === undefined)
+              return yield* new ScottyError("not_found", "Session not found", {
+                httpStatus: 404,
+                exitCode: 3,
+              });
+            return {
+              ...baseRequest,
+              kind,
+              nextHardCap: {
+                durationSeconds: snapshot.authority.hardCap.durationSeconds,
+                deadlineAt: new Date(
+                  now + snapshot.authority.hardCap.durationSeconds * 1_000,
+                ).toISOString(),
+                generation: crypto.randomUUID(),
+              },
+            };
+          })
+        : { ...baseRequest, kind };
+    const outcome = yield* controller.run(request).pipe(
+      Effect.catchTag("LifecycleControllerRejected", () =>
+        Effect.flatMap(this.readActorSessionStateProgram(), ({ view }) =>
+          wrongState(view.status, kind.toLowerCase()),
         ),
-        Effect.mapError((failure) =>
-          Predicate.isTagged(failure, "ScottyError")
-            ? failure
-            : this.upstreamError(`Session ${kind.toLowerCase()} failed`, failure),
-        ),
-      );
+      ),
+      Effect.mapError((failure) =>
+        Predicate.isTagged(failure, "ScottyError")
+          ? failure
+          : this.upstreamError(`Session ${kind.toLowerCase()} failed`, failure),
+      ),
+    );
     if (Predicate.isTagged(outcome, "Reconciling"))
       return yield* this.upstreamError(
         `Session ${kind.toLowerCase()} outcome is being reconciled`,
@@ -3493,19 +3449,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return prepared.success;
   });
 
-  private readonly markHardCapFailureProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    record: SessionRecord,
-    message: string,
-  ) {
-    const store = yield* SessionStore;
-    const failedOption = yield* store.markHardCapFailure(record, message);
-    if (Option.isNone(failedOption)) return;
-    const failed = failedOption.value;
-    yield* this.projectProgram(failed);
-    yield* this.destroyFailedRuntimeProgram(failed.id);
-  });
-
   private readonly destroyFailedRuntimeProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     sessionId: string,
@@ -3580,275 +3523,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }),
       );
     }
-  });
-
-  private readonly restoreHardCapWorkspaceIfMissingProgram = Effect.fnUntraced(function* (
-    record: SessionRecord,
-  ) {
-    const runtime = yield* SandboxRuntime;
-    const root = sessionRoot(record.id);
-    const workspace = yield* Effect.result(runtime.execChecked(`test -d ${shellQuote(root)}`));
-    if (Result.isSuccess(workspace)) return;
-    const backup = record.backup?.current;
-    if (backup === undefined) return yield* workspace.failure;
-    const backups = yield* BackupStore;
-    yield* backups.restore(backup);
-  });
-
-  private readonly enforceHardCapWithoutOperationProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    record: SessionRecord,
-  ) {
-    if (record.execution.provider === "runner") {
-      const acquired = yield* Effect.result(
-        this.acquireOperationProgram("snapshot", ["warm", "booting"]),
-      );
-      if (Result.isFailure(acquired)) return;
-      const stopped = yield* Effect.result(
-        this.stopRunnerIntoSleepingProgram(
-          record,
-          acquired.success.nonce,
-          `hard-cap-${acquired.success.nonce}`,
-          true,
-        ),
-      );
-      if (Result.isFailure(stopped))
-        yield* Effect.sync(() =>
-          console.error("Runner hard-cap stop failed", {
-            sessionId: record.id,
-            error: errorName(stopped.failure),
-          }),
-        );
-      return;
-    }
-
-    const operationResult = yield* Effect.result(
-      this.acquireOperationProgram("snapshot", ["warm", "booting"]),
-    );
-    if (Result.isFailure(operationResult)) {
-      const current = yield* this.readRecordProgram();
-      if (current)
-        yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
-      return;
-    }
-    const operation = operationResult.success;
-    const stopped = yield* Effect.result(
-      Effect.gen({ self: this }, function* () {
-        yield* this.restoreHardCapWorkspaceIfMissingProgram(record);
-        yield* this.checkpointProgram(operation.nonce, false, false);
-        yield* this.stopAfterCheckpointProgram(operation.nonce);
-      }),
-    );
-    if (Result.isSuccess(stopped)) return;
-    const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
-    if (Predicate.isTagged(stopped.failure, "ManagedStopArmedError") || pending) return;
-    const current = yield* this.readRecordProgram();
-    if (current)
-      yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
-  });
-
-  private readonly enforceHardCapProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    payload: HardCapPayload,
-  ) {
-    const record = yield* this.readRecordProgram();
-    if (!record || record.status === "gone" || record.status === "sleeping") return;
-    if (payload.hardCapAt !== record.hardCapAt) return;
-    if (
-      record.execution.provider === "runner" &&
-      (record.operation?.kind === "snapshot" || record.operation?.kind === "resume")
-    ) {
-      const stopped = yield* Effect.result(
-        this.stopRunnerIntoSleepingProgram(
-          record,
-          record.operation.nonce,
-          `hard-cap-${record.operation.nonce}`,
-          true,
-        ),
-      );
-      if (Result.isFailure(stopped))
-        yield* Effect.sync(() =>
-          console.error("Runner hard-cap stop failed", {
-            sessionId: record.id,
-            error: errorName(stopped.failure),
-          }),
-        );
-      return;
-    }
-    if (record.operation) {
-      if (record.operation.kind === "vaporize") return;
-      if (record.operation.kind === "evidence") {
-        const evidence = yield* EvidenceStore;
-        const cleaned = yield* Effect.result(
-          this.cleanupEvidencePreviewProgram(record.operation.nonce, "deadline"),
-        );
-        if (Result.isFailure(cleaned)) {
-          const rescheduled = yield* Effect.result(
-            hostEffect("schedule", () =>
-              this.schedule(EVIDENCE_CLEANUP_RETRY_SECONDS, "enforceHardCap", payload),
-            ),
-          );
-          const destroyed = yield* Effect.result(
-            this.destroyFailedRuntimeProgram(record.id, "hard_cap"),
-          );
-          if (Result.isFailure(destroyed)) return yield* destroyed.failure;
-          if (Result.isFailure(rescheduled)) return yield* rescheduled.failure;
-          return;
-        }
-        const interrupted = yield* Effect.result(
-          evidence.interrupt(record.operation.nonce, "deadline"),
-        );
-        if (Result.isFailure(interrupted)) {
-          yield* Effect.sync(() =>
-            console.error("Evidence hard-cap interruption failed", {
-              sessionId: record.id,
-              error: errorName(interrupted.failure),
-            }),
-          );
-          return;
-        }
-      } else {
-        const operationAge =
-          (yield* Clock.currentTimeMillis) - Date.parse(record.operation.startedAt);
-        if (operationAge < HARD_CAP_GRACE_MS) {
-          yield* hostEffect("schedule", () => this.schedule(5, "enforceHardCap", payload));
-          return;
-        }
-        yield* this.markHardCapFailureProgram(
-          record,
-          "A session operation exceeded the hard-cap grace period",
-        );
-        return;
-      }
-    }
-
-    yield* this.enforceHardCapWithoutOperationProgram(record);
-  });
-
-  private readonly onActivityExpiredProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const record = yield* this.readRecordProgram();
-    if (!record || record.status !== "warm" || record.operation) return;
-    const acquired = yield* Effect.result(this.acquireOperationProgram("snapshot", ["warm"]));
-    if (Result.isFailure(acquired)) {
-      yield* Effect.sync(() =>
-        console.error("Managed idle checkpoint failed", {
-          sessionId: record.id,
-          error: errorName(acquired.failure),
-        }),
-      );
-      return;
-    }
-    const operation = acquired.success;
-    if (record.execution.provider === "runner") {
-      const stopped = yield* Effect.result(
-        this.stopRunnerIntoSleepingProgram(
-          record,
-          operation.nonce,
-          `idle-${operation.nonce}`,
-          true,
-        ),
-      );
-      if (Result.isFailure(stopped))
-        yield* Effect.sync(() =>
-          console.error("Runner idle stop failed", {
-            sessionId: record.id,
-            error: errorName(stopped.failure),
-          }),
-        );
-      return;
-    }
-    const stopped = yield* Effect.result(
-      Effect.gen({ self: this }, function* () {
-        yield* this.checkpointProgram(operation.nonce, false, false);
-        yield* this.stopAfterCheckpointProgram(operation.nonce);
-      }),
-    );
-    if (Result.isSuccess(stopped)) return;
-    if (Predicate.isTagged(stopped.failure, "CheckpointRuntimeUnavailable")) {
-      yield* Effect.sync(() =>
-        console.error("Managed idle checkpoint failed", {
-          sessionId: record.id,
-          error: errorName(stopped.failure),
-        }),
-      );
-      return;
-    }
-    const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
-    if (!Predicate.isTagged(stopped.failure, "ManagedStopArmedError") && !pending)
-      yield* this.releaseOperationIfHeldProgram(operation.nonce);
-    yield* Effect.sync(() =>
-      console.error("Managed idle checkpoint failed", {
-        sessionId: record.id,
-        error: errorName(stopped.failure),
-      }),
-    );
-  });
-
-  private readonly interruptEvidenceForRuntimeStopProgram = Effect.fnUntraced(
-    function* (this: Sandbox) {
-      const evidence = yield* EvidenceStore;
-      const state = yield* evidence.read;
-      const active = state.activeJob;
-      if (active === undefined) return;
-      yield* this.cleanupEvidencePreviewProgram(active.operationNonce, "interrupted");
-      yield* evidence.interrupt(active.operationNonce, "interrupted");
-    },
-  );
-
-  private readonly finalizeManagedStopProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    payload: ManagedStopPayload,
-  ) {
-    const store = yield* SessionStore;
-    const record = yield* this.readRecordProgram();
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    if (
-      record.operation?.nonce === payload.nonce &&
-      record.operation.checkpointedBackupId === record.backup?.current.id &&
-      !record.operation.stopRequestedAt
-    ) {
-      const now = yield* Clock.currentTimeMillis;
-      if (now - Date.parse(payload.armedAt) < 30_000) {
-        yield* hostEffect("schedule", () =>
-          this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
-        );
-        return;
-      }
-      yield* hostEffect("schedule", () =>
-        this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
-      );
-      const rollbackClaimed = yield* store.claimManagedStopRollback(payload.nonce);
-      if (!rollbackClaimed) return;
-      yield* this.releaseOperationIfHeldProgram(payload.nonce);
-      return;
-    }
-    if (!(yield* this.isManagedStopPendingProgram(payload.nonce))) return;
-    yield* hostEffect("schedule", () =>
-      this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
-    );
-    const stopped = yield* Effect.result(hostEffect("stop", () => this.stop()));
-    if (Result.isFailure(stopped)) {
-      yield* Effect.sync(() =>
-        console.error("Managed stop reconciliation failed", {
-          error: errorName(stopped.failure),
-        }),
-      );
-    }
-  });
-
-  private readonly retryHardCapDestroyProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    sessionId: string,
-  ) {
-    const record = yield* this.readRecordProgram();
-    if (
-      !record ||
-      record.id !== sessionId ||
-      record.status !== "failed" ||
-      record.operation?.kind === "vaporize"
-    )
-      return;
-    yield* this.destroyFailedRuntimeProgram(sessionId);
   });
 
   private readonly previewForwardingRoute = (
@@ -4511,25 +4185,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
           function* (this: Sandbox) {
             const actorStore = yield* ActorStore;
             const snapshot = yield* actorStore.read;
-            if (snapshot.authority !== undefined) {
-              const metadataStore = yield* SessionActorMetadataStore;
-              const metadata = yield* metadataStore.read(snapshot.authority);
-              if (metadata === undefined)
-                return yield* new ScottyError("internal", "Session actor metadata is unavailable", {
-                  httpStatus: 500,
-                  exitCode: 1,
-                });
-              return {
-                _tag: "Actor" as const,
-                authority: snapshot.authority,
-                metadata,
-                revision: snapshot.authority.revision,
-              };
-            }
-            const legacy = yield* SessionStore.pipe(
-              Effect.flatMap((store) => store.readControlAuthority),
-            );
-            return { _tag: "Legacy" as const, control: legacy, revision: legacy.revision };
+            if (snapshot.authority === undefined)
+              return yield* new ScottyError("not_found", "Session actor authority is unavailable", {
+                httpStatus: 404,
+                exitCode: 3,
+              });
+            const metadataStore = yield* SessionActorMetadataStore;
+            const metadata = yield* metadataStore.read(snapshot.authority);
+            if (metadata === undefined)
+              return yield* new ScottyError("internal", "Session actor metadata is unavailable", {
+                httpStatus: 500,
+                exitCode: 1,
+              });
+            return {
+              _tag: "Actor" as const,
+              authority: snapshot.authority,
+              metadata,
+              revision: snapshot.authority.revision,
+            };
           }.bind(this),
         ),
       ),
@@ -4564,11 +4237,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
           }),
         );
       const sourceAuthorityValue = sourceAuthority.success;
-      const sourceWarm = Predicate.isTagged(sourceAuthorityValue, "Actor")
-        ? AuthorityStateSchema.guards.Stable(sourceAuthorityValue.authority.state) &&
-          StableStateSchema.guards.Warm(sourceAuthorityValue.authority.state.stable)
-        : sourceAuthorityValue.control.record.status === "warm" &&
-          sourceAuthorityValue.control.record.operation === null;
+      const sourceWarm =
+        AuthorityStateSchema.guards.Stable(sourceAuthorityValue.authority.state) &&
+        StableStateSchema.guards.Warm(sourceAuthorityValue.authority.state.stable);
       if (!sourceWarm)
         return scottyErrorResponse(
           new ScottyError("wrong_state", "Source session is not available for orchestration", {
@@ -4577,23 +4248,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
             hint: "The source session must be warm with no active lifecycle operation.",
           }),
         );
-      if (
-        (Predicate.isTagged(sourceAuthorityValue, "Actor")
-          ? sourceAuthorityValue.authority.session.execution.provider
-          : sourceAuthorityValue.control.record.execution.provider) !== "cloudflare"
-      )
+      if (sourceAuthorityValue.authority.session.execution.provider !== "cloudflare")
         return scottyErrorResponse(
           new ScottyError("wrong_state", "Source session provider cannot orchestrate sessions", {
             httpStatus: 409,
             exitCode: 5,
           }),
         );
-      const sourceId = Predicate.isTagged(sourceAuthorityValue, "Actor")
-        ? sourceAuthorityValue.authority.session.id
-        : sourceAuthorityValue.control.record.id;
-      const sourceRepository = Predicate.isTagged(sourceAuthorityValue, "Actor")
-        ? sourceAuthorityValue.authority.session.repository
-        : sourceAuthorityValue.control.record.repo;
+      const sourceId = sourceAuthorityValue.authority.session.id;
+      const sourceRepository = sourceAuthorityValue.authority.session.repository;
       if (decoded.value.targetId === sourceId)
         return scottyErrorResponse(
           new ScottyError("auth", "Container session access denied", {
@@ -4625,14 +4288,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly validatePassiveConsoleAuthority = (
     authority: PassiveConsoleAuthority,
   ): Response | undefined => {
-    if (Predicate.isTagged(authority, "Legacy")) {
-      const record = authority.control.record;
-      if (record.status !== "warm") return this.passiveConsoleUnavailable("session_not_warm", 409);
-      if (record.operation) return this.passiveConsoleUnavailable("session_operation_active", 409);
-      if (record.execution.provider !== "cloudflare")
-        return this.passiveConsoleUnavailable("provider_unsupported", 409);
-      return undefined;
-    }
     const state = authority.authority.state;
     if (!AuthorityStateSchema.guards.Stable(state) || !StableStateSchema.guards.Warm(state.stable))
       return this.passiveConsoleUnavailable(
@@ -4671,9 +4326,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const authority = await this.readPassiveConsoleAuthority();
     if (
       authority instanceof Response ||
-      (Predicate.isTagged(authority, "Actor")
-        ? authority.metadata.createObservations.credentialGrants === null
-        : authority.control.record.credentialGrant === undefined)
+      authority.metadata.createObservations.credentialGrants === null
     )
       return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
     const transportToken = await piSessionTransportToken(input.sessionId).then(
@@ -4747,9 +4400,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         signal: request.signal,
       });
       const response = await relay.fetch({
-        sessionId: Predicate.isTagged(authority, "Actor")
-          ? authority.authority.session.id
-          : authority.control.record.id,
+        sessionId: authority.authority.session.id,
         request: relayRequest,
       });
       if (action !== "snapshot" || response.status !== 200) return response;
@@ -4765,8 +4416,47 @@ export class Sandbox extends BaseSandbox<Bindings> {
       );
       if (Result.isFailure(decoded))
         return Response.json({ error: "invalid_snapshot" }, { status: 502 });
+      const state = authority.authority.state;
+      if (
+        !AuthorityStateSchema.guards.Stable(state) ||
+        !StableStateSchema.guards.Warm(state.stable)
+      )
+        return this.passiveConsoleUnavailable("session_not_warm", 409);
+      const readiness = state.stable.readiness;
+      const sessionRevision = await this.#run(
+        Effect.gen(function* () {
+          const actor = yield* SessionActor;
+          const now = yield* Clock.currentTimeMillis;
+          const observedAt = new Date(now).toISOString();
+          yield* actor.handle({
+            _tag: "ActivityObserved",
+            revision: authority.revision,
+            expectedRuntimeGeneration: readiness.runtime.runtimeGeneration,
+            expectedSupervisorEpoch: readiness.supervisor.supervisorEpoch,
+            correlationId: crypto.randomUUID(),
+            timestamp: observedAt,
+            activity: {
+              supervisorEpoch: decoded.success.epoch,
+              piSequence: decoded.success.sequence,
+              state:
+                decoded.success.activeTools.length > 0 ||
+                decoded.success.queue.steer.length > 0 ||
+                decoded.success.queue.followUp.length > 0
+                  ? "working"
+                  : "waiting",
+              observedAt,
+              expiresAt: new Date(now + ACTIVITY_OBSERVATION_TTL_MS).toISOString(),
+            },
+          });
+          const store = yield* ActorStore;
+          return (yield* store.read).revision;
+        }),
+      ).then(
+        (revision) => revision,
+        () => authority.revision,
+      );
       return Response.json(
-        { ...decoded.success, sessionRevision: authority.revision },
+        { ...decoded.success, sessionRevision },
         { headers: { "cache-control": "no-store" } },
       );
     };
@@ -5295,10 +4985,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.resolveCredentialForProxyProgram(decoded.success));
   }
 
-  async enforceHardCap(payload: HardCapPayload): Promise<void> {
-    return this.#run(this.enforceHardCapProgram(payload));
-  }
-
   async sessionActorDeadline(payload: unknown): Promise<void> {
     const fence = decodeActorAlarmFence(payload);
     if (Option.isNone(fence)) return;
@@ -5325,229 +5011,125 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const fence = decodeCreateHardCapFence(payload);
     if (Option.isNone(fence)) return;
     return this.#run(
-      Effect.gen(function* () {
+      Effect.gen({ self: this }, function* () {
+        const retry = Effect.tryPromise({
+          try: () => this.schedule(5, "sessionActorHardCap", fence.value).then(() => undefined),
+          catch: () => undefined,
+        }).pipe(Effect.ignore);
+        const actor = yield* SessionActor;
+        const now = yield* Clock.currentTimeMillis;
+        const handled = yield* Effect.result(
+          actor.handle({
+            _tag: "HardCapDeadlineAlarm",
+            alarmId: fence.value.generation,
+            expectedGeneration: fence.value.generation,
+            expectedDeadlineAt: fence.value.deadlineAt,
+            correlationId: crypto.randomUUID(),
+            timestamp: new Date(now).toISOString(),
+          }),
+        );
+        if (Result.isFailure(handled)) return yield* retry;
+
         const store = yield* ActorStore;
-        const snapshot = yield* store.read;
-        const authority = snapshot.authority;
-        if (authority === undefined || authority.session.id !== fence.value.sessionId) return;
-        const metadataStore = yield* SessionActorMetadataStore;
-        const metadata = yield* metadataStore.read(authority);
+        const after = yield* store.read;
+        const authority = after.authority;
         if (
-          metadata === undefined ||
-          metadata.hardCap.generation !== fence.value.generation ||
-          metadata.hardCap.deadlineAt !== fence.value.deadlineAt
+          authority === undefined ||
+          authority.session.id !== fence.value.sessionId ||
+          authority.hardCap.generation !== fence.value.generation ||
+          authority.hardCap.deadlineAt !== fence.value.deadlineAt ||
+          !AuthorityStateSchema.guards.Stable(authority.state) ||
+          !StableStateSchema.guards.Failed(authority.state.stable) ||
+          authority.state.stable.code !== "hard_cap_elapsed"
         )
           return;
-        return yield* new ScottyError(
-          "internal",
-          "Session actor hard-cap settlement is unavailable until the hard-cap transition slice",
-          { httpStatus: 500, exitCode: 1 },
-        );
+        const recovery = yield* RecoverySandbox;
+        const destroyed = yield* Effect.result(recovery.destroyFailedRuntime(authority));
+        if (Result.isFailure(destroyed)) yield* retry;
       }),
     );
+  }
+
+  private enqueueRuntimeLifecycleObservation(lifecycle: "started" | "stopped"): void {
+    const background = Promise.resolve()
+      .then(() =>
+        this.#run(
+          Effect.gen(function* () {
+            const store = yield* ActorStore;
+            const snapshot = yield* store.read;
+            const authority = snapshot.authority;
+            if (authority === undefined) return;
+            const runtime = actorReadiness(authority)?.runtime;
+            if (runtime === null || runtime === undefined) return;
+            const recovery = yield* RecoverySandbox;
+            const fence = {
+              sessionId: authority.session.id,
+              providerRuntimeId: runtime.providerRuntimeId,
+              runtimeGeneration: runtime.runtimeGeneration,
+              correlationId: crypto.randomUUID(),
+            };
+            const observed =
+              lifecycle === "started"
+                ? yield* Effect.result(recovery.observeRuntimeStarted(fence))
+                : Result.succeed(yield* recovery.observeRuntimeStoppedCallback(fence));
+            if (Result.isFailure(observed)) {
+              yield* Effect.sync(() =>
+                console.error("Session actor runtime observation remains unknown", {
+                  lifecycle,
+                  resultCode: observed.failure.safeResultCode,
+                }),
+              );
+              return;
+            }
+            const actor = yield* SessionActor;
+            yield* actor
+              .handle(observed.success)
+              .pipe(Effect.catchTag("ActorStoreConflict", () => actor.handle(observed.success)));
+          }),
+        ),
+      )
+      .then(
+        () => undefined,
+        (cause: unknown) => {
+          console.error("Session actor runtime callback failed", {
+            lifecycle,
+            error: errorName(cause),
+          });
+        },
+      );
+    this.ctx.waitUntil(background);
   }
 
   override async onActivityExpired(): Promise<void> {
-    return this.#run(this.onActivityExpiredProgram());
+    return this.#run(
+      Effect.gen({ self: this }, function* () {
+        const store = yield* ActorStore;
+        const snapshot = yield* store.read;
+        if (
+          snapshot.authority === undefined ||
+          !AuthorityStateSchema.guards.Stable(snapshot.authority.state) ||
+          !StableStateSchema.guards.Warm(snapshot.authority.state.stable)
+        )
+          return;
+        yield* this.actorLifecycleProgram("Sleep").pipe(Effect.asVoid);
+      }),
+    );
   }
 
   override async onStart(): Promise<void> {
-    return super.onStart();
+    await super.onStart();
+    this.enqueueRuntimeLifecycleObservation("started");
   }
 
   override async onStop(): Promise<void> {
-    return super.onStop();
+    await super.onStop();
+    this.enqueueRuntimeLifecycleObservation("stopped");
   }
 
-  async finalizeManagedStop(payload: ManagedStopPayload): Promise<void> {
-    return this.#run(this.finalizeManagedStopProgram(payload));
+  override onError(error: unknown): void {
+    super.onError(error);
+    this.enqueueRuntimeLifecycleObservation("started");
   }
-
-  private readonly checkpointProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    nonce: string,
-    resumeRuntime: boolean,
-    releaseLease = resumeRuntime,
-  ) {
-    const record = yield* this.requireRecordProgram();
-    const hatchCleanup = yield* Effect.result(
-      this.cleanupHatchProgram(nonce, "sleeping", false, "operation"),
-    );
-    if (Result.isFailure(hatchCleanup)) {
-      yield* hostEffect("schedule", () =>
-        this.schedule(5, "retryHatchCleanup", {
-          operationNonce: nonce,
-          target: "sleeping",
-          closeDesired: false,
-        } satisfies HatchCleanupRetry),
-      );
-      return yield* hatchCleanup.failure;
-    }
-    const runtime = yield* SandboxRuntime;
-    const backups = yield* BackupStore;
-    const containerAuth = yield* ContainerAuth;
-    const root = sessionRoot(record.id);
-    let runtimeStopAttempted = false;
-
-    const checkpoint = withCheckpointRuntimeRestore(
-      Effect.gen({ self: this }, function* () {
-        runtimeStopAttempted = true;
-        yield* Effect.tryPromise({
-          try: () => this.terminalSessionControl.delete(sessionTerminalId(record.id)),
-          catch: (cause) => new PiRuntimeStopFailure({ stage: "terminal", cause }),
-        });
-        const piProcess = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
-        if (
-          piProcess !== null &&
-          piProcess.status !== "completed" &&
-          piProcess.status !== "failed" &&
-          piProcess.status !== "killed" &&
-          piProcess.status !== "error"
-        ) {
-          const grant = record.credentialGrant;
-          if (grant === undefined)
-            return yield* this.upstreamError(
-              "Session credential grant is unavailable",
-              undefined,
-              record.id,
-            );
-          yield* containerAuth
-            .quiescePiSession(record.id, sessionRuntimeCredentials(grant.grants))
-            .pipe(
-              Effect.mapError((cause) => new PiRuntimeStopFailure({ stage: "quiesce", cause })),
-            );
-        }
-        yield* containerAuth
-          .stopPiSession()
-          .pipe(Effect.mapError((cause) => new PiRuntimeStopFailure({ stage: "process", cause })));
-        yield* runtime.execChecked("sync", { timeout: 30_000 });
-        const now = yield* Clock.currentTimeMillis;
-        const backup = yield* backups.create({
-          dir: root,
-          name: `scotty-${record.id}-${now}`,
-          ttl: BACKUP_TTL_SECONDS,
-          localBucket: true,
-          compression: { format: "zstd" },
-        });
-        const priorPrevious = record.backup?.previous;
-        const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-        const backupExpiresAt = new Date(
-          (yield* Clock.currentTimeMillis) + BACKUP_TTL_SECONDS * 1_000,
-        ).toISOString();
-        const updated = yield* this.updateForOperationProgram(nonce, (current) => ({
-          ...current,
-          operation: current.operation && {
-            ...current.operation,
-            checkpointedBackupId: backup.id,
-          },
-          backup: { current: backup, previous: current.backup?.current },
-          ownedBackupIds: [...new Set([...current.ownedBackupIds, backup.id])],
-          backupExpiresAt,
-          failure: undefined,
-          updatedAt,
-        }));
-        if (priorPrevious) yield* backups.delete(priorPrevious.id).pipe(Effect.ignore);
-        return updated;
-      }),
-      {
-        restore: Effect.gen({ self: this }, function* () {
-          const grant = record.credentialGrant;
-          if (grant === undefined)
-            return yield* this.upstreamError(
-              "Session credential grant is unavailable",
-              undefined,
-              record.id,
-            );
-          yield* this.restorePiAndHatchProgram(
-            nonce,
-            containerAuth.ensurePiSession(record.id, sessionRuntimeCredentials(grant.grants)),
-          );
-        }),
-        resumeRuntime,
-        stopAttempted: () => runtimeStopAttempted,
-      },
-    );
-    const outcome = yield* Effect.result(checkpoint);
-
-    if (
-      Result.isFailure(outcome) &&
-      Predicate.isTagged(outcome.failure, "CheckpointRuntimeUnavailable")
-    ) {
-      yield* Effect.gen({ self: this }, function* () {
-        const current = yield* this.requireRecordProgram();
-        if (current.operation?.nonce !== nonce) return;
-        yield* this.failOperationProgram(
-          nonce,
-          "checkpoint_runtime_unavailable",
-          "Pi session failed to recover after checkpoint",
-          Boolean(current.backup?.current),
-        );
-      }).pipe(Effect.ignore);
-      return yield* Effect.fail(outcome.failure);
-    }
-    const updated = yield* Result.match(outcome, {
-      onFailure: Effect.fail,
-      onSuccess: Effect.succeed,
-    });
-    return releaseLease ? yield* this.releaseOperationProgram(nonce) : updated;
-  });
-
-  private readonly stopAfterCheckpointProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    nonce: string,
-  ) {
-    const armedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-    const payload = { nonce, armedAt } satisfies ManagedStopPayload;
-    yield* hostEffect("schedule", () =>
-      this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
-    );
-
-    const beforeStop = yield* Effect.result(
-      Effect.gen({ self: this }, function* () {
-        const current = yield* this.requireRecordProgram();
-        if (current.operation?.stopRollbackAt)
-          return yield* conflict("Managed stop rollback started");
-        const stopRequestedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-        yield* this.updateForOperationProgram(nonce, (record) => ({
-          ...record,
-          operation: record.operation && {
-            ...record.operation,
-            stopRequestedAt,
-          },
-          updatedAt: stopRequestedAt,
-        }));
-        yield* hostEffect("stop", () => this.stop());
-      }),
-    );
-    if (Result.isFailure(beforeStop)) {
-      const current = yield* this.requireRecordProgram();
-      if (current.status === "sleeping") return current;
-      return yield* new ManagedStopArmedError({ cause: beforeStop.failure });
-    }
-
-    const observeStopped = Effect.gen({ self: this }, function* () {
-      const stopped = yield* this.requireRecordProgram();
-      if (stopped.status === "sleeping") return stopped;
-      if (stopped.status === "failed") return yield* wrongState(stopped.status, "stop");
-      const stoppedAgain = yield* hostEffect("stop", () => this.stop()).pipe(
-        Effect.mapError((cause) => new ManagedStopArmedError({ cause })),
-      );
-      void stoppedAgain;
-      return yield* new SessionShutdownPending();
-    });
-
-    return yield* observeStopped.pipe(
-      Effect.retry({ times: 19, schedule: Schedule.spaced("250 millis") }),
-      Effect.catchTag(
-        "SessionShutdownPending",
-        () =>
-          new ScottyError("upstream", "Session shutdown is still completing", {
-            httpStatus: 502,
-            exitCode: 4,
-          }),
-      ),
-    );
-  });
 
   private cancelVaporizeConflictingSchedules(): void {
     for (const callback of VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS) {
@@ -5559,10 +5141,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     for (const callback of SESSION_SCHEDULE_CALLBACKS) {
       this.deleteSchedules(callback);
     }
-  }
-
-  async retryHardCapDestroy(sessionId: string): Promise<void> {
-    return this.#run(this.retryHardCapDestroyProgram(sessionId));
   }
 
   private async requireRecord(): Promise<SessionRecord> {
@@ -5598,8 +5176,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       sessionId,
       error: errorName(error),
       ...(Option.isSome(stateError) ? { evidenceStateReason: stateError.value.reason } : {}),
-      stage: piRuntimeStopStage(error),
-      cause: nestedSandboxRuntimeFailure(error),
     });
     return new ScottyError("upstream", message, {
       httpStatus: 502,
@@ -5629,25 +5205,6 @@ function credentialProxyGrant(
 
 function isHatchStateError(error: unknown): error is HatchStateError {
   return Predicate.isTagged("HatchStateError")(error);
-}
-
-function piRuntimeStopStage(error: unknown): string | undefined {
-  if (!Predicate.isTagged("PiRuntimeStopFailure")(error)) return undefined;
-  const stage = Reflect.get(error, "stage");
-  return typeof stage === "string" ? stage : undefined;
-}
-
-function nestedSandboxRuntimeFailure(
-  error: unknown,
-): { readonly reason: string; readonly message: string } | undefined {
-  if (!Predicate.isTagged("PiRuntimeStopFailure")(error)) return undefined;
-  const cause = Reflect.get(error, "cause");
-  if (!Predicate.isTagged("SandboxRuntimeFailure")(cause)) return undefined;
-  const reason = Reflect.get(cause, "reason");
-  const message = Reflect.get(cause, "message");
-  return typeof reason === "string" && typeof message === "string"
-    ? { reason, message }
-    : undefined;
 }
 
 function randomToken(bytes: number): string {

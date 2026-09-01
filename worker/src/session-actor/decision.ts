@@ -29,7 +29,10 @@ export interface JournalEvent {
     | "completed"
     | "deadline_reconciling"
     | "provider_reconciling"
-    | "activity_observed";
+    | "activity_observed"
+    | "runtime_observed"
+    | "availability_lost"
+    | "hard_cap_elapsed";
   readonly transitionKind: TransitionKind | null;
   readonly transitionPhase: TransitionPhase | null;
   readonly resultCode: string;

@@ -16,6 +16,7 @@ const PROJECTED_AT = {
   epochMillis: Date.parse("2026-08-31T13:00:00.000Z"),
 };
 const DIGEST = "a".repeat(64);
+const hardCap = { durationSeconds: 14_400, deadlineAt: HARD_CAP_AT, generation: "cap-1" };
 
 const identity = {
   id: "public-session",
@@ -50,7 +51,7 @@ const metadata = (workspaceObserved = true): SessionActorMetadata => ({
   repository: identity.repository,
   branch: "scotty/public-session",
   createRepositoryIfMissing: false,
-  hardCap: { durationSeconds: 14_400, deadlineAt: HARD_CAP_AT, generation: "cap-1" },
+  hardCap,
   createIdempotency: null,
   createAttempt: "create-attempt-1",
   privateCreateInput: null,
@@ -78,6 +79,7 @@ const metadata = (workspaceObserved = true): SessionActorMetadata => ({
 
 const createAuthority = (): SessionAuthority => ({
   session: identity,
+  hardCap,
   revision: 1,
   state: {
     _tag: "Transitioning",
@@ -101,6 +103,7 @@ const createAuthority = (): SessionAuthority => ({
 
 const warmAuthority = (): SessionAuthority => ({
   session: identity,
+  hardCap,
   revision: 7,
   state: {
     _tag: "Stable",
@@ -118,12 +121,11 @@ const warmAuthority = (): SessionAuthority => ({
         currentBackupId: "backup-1",
       },
       activity: {
-        activityGeneration: "activity-1",
-        runtimeGeneration: "runtime-generation-1",
         supervisorEpoch: "supervisor-epoch-1",
+        piSequence: 1,
         state: "working",
         observedAt: UPDATED_AT,
-        freshUntil: HARD_CAP_AT,
+        expiresAt: HARD_CAP_AT,
       },
     },
   },
@@ -164,6 +166,7 @@ describe("session actor public projection", () => {
   it("derives create failure only after workspace metadata is available", () => {
     const failed: SessionAuthority = {
       session: identity,
+      hardCap,
       revision: 6,
       state: {
         _tag: "Stable",
@@ -208,6 +211,7 @@ describe("session actor public projection", () => {
   it("marks an origin-compatible Vaporize projection as deleting", () => {
     const vaporizing: SessionAuthority = {
       session: identity,
+      hardCap,
       revision: 8,
       state: {
         _tag: "Transitioning",

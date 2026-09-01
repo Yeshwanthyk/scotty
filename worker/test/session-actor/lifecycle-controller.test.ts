@@ -9,8 +9,14 @@ import {
 } from "../../src/session-actor/lifecycle-controller";
 import { ActorStore, type ActorStoreSnapshot } from "../../src/session-actor/store";
 import type { SessionActorInput } from "../../src/session-actor/input";
+import { createHardCapControllerLayer } from "../../src/session-actor/create-controller";
 
 const T0 = "2026-09-01T00:00:00.000Z";
+const hardCap = {
+  durationSeconds: 3_600,
+  deadlineAt: "2026-09-01T01:00:00.000Z",
+  generation: "hard-cap-1",
+};
 const readiness: ReadinessProof = {
   runtime: {
     providerRuntimeId: "provider-runtime",
@@ -32,6 +38,7 @@ const readiness: ReadinessProof = {
 };
 const warm: SessionAuthority = {
   revision: 7,
+  hardCap,
   session: {
     id: "lifecycle-session",
     title: "Lifecycle session",
@@ -50,14 +57,18 @@ const warm: SessionAuthority = {
   },
 };
 
-const request = (kind: LifecycleControllerRequest["kind"]): LifecycleControllerRequest => ({
-  kind,
-  correlationId: "correlation",
-  nonce: "nonce",
-  attempt: "attempt",
-  timestamp: T0,
-  deadlineAt: "2026-09-01T00:10:00.000Z",
-});
+const request = (kind: LifecycleControllerRequest["kind"]): LifecycleControllerRequest => {
+  const fields = {
+    correlationId: "correlation",
+    nonce: "nonce",
+    attempt: "attempt",
+    timestamp: T0,
+    deadlineAt: "2026-09-01T00:10:00.000Z",
+  };
+  return kind === "Resume"
+    ? { kind, ...fields, nextHardCap: { ...hardCap, generation: "hard-cap-resume" } }
+    : { kind, ...fields };
+};
 
 const snapshot = (authority: SessionAuthority): ActorStoreSnapshot => ({
   authority,
@@ -92,7 +103,7 @@ const layer = (
 ) =>
   lifecycleControllerLayer.pipe(
     Layer.provide(
-      Layer.merge(
+      Layer.mergeAll(
         Layer.succeed(SessionActor)(
           SessionActor.of({ handle, resume: () => Effect.succeed(undefined) }),
         ),
@@ -103,6 +114,7 @@ const layer = (
             reconcileUnknownCommit: () => Effect.die("unused"),
           }),
         ),
+        createHardCapControllerLayer(() => Effect.void),
       ),
     ),
   );

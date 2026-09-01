@@ -1,12 +1,14 @@
 import { Context, Effect, Layer, Predicate, Schema } from "effect";
 import { SessionActor, type ActorHandleError } from "./actor";
 import { AuthorityStateSchema, type SessionAuthority, StableStateSchema } from "./authority";
+import { CreateHardCapController, type CreateControllerBoundaryFailure } from "./create-controller";
 import type { SessionActorInput } from "./input";
+import { decide } from "./reducer";
 import { ActorStore, type ActorStoreReadError } from "./store";
 
 export type LifecycleCommandKind = "Checkpoint" | "Sleep" | "Resume";
 
-export interface LifecycleControllerRequest {
+interface LifecycleControllerRequestBase {
   readonly kind: LifecycleCommandKind;
   readonly correlationId: string;
   readonly nonce: string;
@@ -14,6 +16,14 @@ export interface LifecycleControllerRequest {
   readonly timestamp: string;
   readonly deadlineAt: string;
 }
+
+export type LifecycleControllerRequest =
+  | (LifecycleControllerRequestBase & { readonly kind: "Checkpoint" })
+  | (LifecycleControllerRequestBase & { readonly kind: "Sleep" })
+  | (LifecycleControllerRequestBase & {
+      readonly kind: "Resume";
+      readonly nextHardCap: SessionAuthority["hardCap"];
+    });
 
 export type LifecycleControllerResult =
   | { readonly _tag: "Settled"; readonly authority: SessionAuthority }
@@ -45,6 +55,7 @@ export class LifecycleControllerInvariantFailure extends Schema.TaggedError<Life
 export type LifecycleControllerError =
   | ActorHandleError
   | ActorStoreReadError
+  | CreateControllerBoundaryFailure
   | LifecycleControllerRejected
   | LifecycleControllerInvariantFailure;
 
@@ -62,18 +73,19 @@ export class LifecycleController extends Context.Service<
 const command = (
   request: LifecycleControllerRequest,
   expectedRevision: number,
-): Extract<
-  SessionActorInput,
-  { readonly _tag: "CheckpointCommand" | "SleepCommand" | "ResumeCommand" }
-> => ({
-  _tag: `${request.kind}Command`,
-  expectedRevision,
-  correlationId: request.correlationId,
-  nonce: request.nonce,
-  attempt: request.attempt,
-  timestamp: request.timestamp,
-  deadlineAt: request.deadlineAt,
-});
+): Extract<SessionActorInput, { readonly _tag: `${LifecycleCommandKind}Command` }> => {
+  const base = {
+    expectedRevision,
+    correlationId: request.correlationId,
+    nonce: request.nonce,
+    attempt: request.attempt,
+    timestamp: request.timestamp,
+    deadlineAt: request.deadlineAt,
+  };
+  if (request.kind === "Checkpoint") return { _tag: "CheckpointCommand", ...base };
+  if (request.kind === "Sleep") return { _tag: "SleepCommand", ...base };
+  return { _tag: "ResumeCommand", ...base, nextHardCap: request.nextHardCap };
+};
 
 const classify = (authority: SessionAuthority): LifecycleControllerResult => {
   if (AuthorityStateSchema.guards.Transitioning(authority.state))
@@ -96,16 +108,31 @@ const classify = (authority: SessionAuthority): LifecycleControllerResult => {
 export const lifecycleControllerLayer: Layer.Layer<
   LifecycleController,
   never,
-  ActorStore | SessionActor
+  ActorStore | SessionActor | CreateHardCapController
 > = Layer.effect(
   LifecycleController,
   Effect.gen(function* () {
     const store = yield* ActorStore;
     const actor = yield* SessionActor;
+    const hardCap = yield* CreateHardCapController;
     return LifecycleController.of({
       run: Effect.fnUntraced(function* (request) {
         const before = yield* store.read;
-        const handled = yield* actor.handle(command(request, before.revision));
+        const input = command(request, before.revision);
+        const proposed = decide(before.authority, input);
+        if (Predicate.isTagged(proposed, "Rejected"))
+          return yield* new LifecycleControllerRejected({
+            kind: request.kind,
+            code: proposed.code,
+          });
+        if (request.kind === "Resume") {
+          yield* hardCap.arm({
+            sessionId: proposed.nextAuthority.session.id,
+            generation: request.nextHardCap.generation,
+            deadlineAt: request.nextHardCap.deadlineAt,
+          });
+        }
+        const handled = yield* actor.handle(input);
         if (Predicate.isTagged(handled.decision, "Rejected"))
           return yield* new LifecycleControllerRejected({
             kind: request.kind,

@@ -11,6 +11,7 @@ import {
 
 const T0 = "2026-03-02T00:00:00.000Z";
 const DEADLINE = "2026-03-02T01:00:00.000Z";
+const hardCap = { durationSeconds: 3_600, deadlineAt: DEADLINE, generation: "hard-cap-1" };
 const session = {
   id: "session-race",
   title: "Race",
@@ -35,6 +36,7 @@ const create = (nonce: string): AcceptedDecision =>
       timestamp: T0,
       deadlineAt: DEADLINE,
       session,
+      hardCap,
     }),
   );
 

@@ -1,8 +1,9 @@
-import { Match, Schema } from "effect";
+import { Match, Predicate, Schema } from "effect";
 import type {
   BackupIdentity,
   BackupProof,
   CleanupProof,
+  HardCapProof,
   ReadinessProof,
   ReadinessProgress,
   SessionAuthority,
@@ -34,6 +35,7 @@ import type { SessionActorInput, SessionCommand, TransitionProof } from "./input
 import { SessionCommandSchema } from "./input";
 import { isNextPhase, isTerminalPhase, phaseIndex } from "./transition";
 import { transitionKind } from "./transition";
+import { handleRecoveryInput, isRecoveryInput } from "./transitions/recovery";
 
 const isCreateProof = Schema.is(CreateProofSchema);
 const isCheckpointProof = Schema.is(CheckpointProofSchema);
@@ -150,18 +152,28 @@ const validCleanup = (cleanup: CleanupProof, complete: boolean): boolean =>
     (cleanup.absent.length === requiredAbsence.length &&
       requiredAbsence.every((category) => cleanup.absent.includes(category))));
 
+const validHardCap = (hardCap: HardCapProof): boolean =>
+  Number.isInteger(hardCap.durationSeconds) &&
+  hardCap.durationSeconds > 0 &&
+  nonEmpty(hardCap.generation) &&
+  validTimestamp(hardCap.deadlineAt);
+
+const validActivity = (activity: NonNullable<StableCase<"Warm">["activity"]>): boolean =>
+  nonEmpty(activity.supervisorEpoch) &&
+  Number.isInteger(activity.piSequence) &&
+  activity.piSequence >= 0 &&
+  validTimestamp(activity.observedAt) &&
+  validTimestamp(activity.expiresAt) &&
+  Date.parse(activity.observedAt) <= Date.parse(activity.expiresAt);
+
 type StableCase<Tag extends StableState["_tag"]> = Extract<StableState, { _tag: Tag }>;
 
 const validWarm = (stable: StableCase<"Warm">): boolean =>
   validReadiness(stable.readiness) &&
   validBackup(stable.backups, stable.backups.currentBackupId !== null) &&
   (stable.activity === null ||
-    (stable.activity.runtimeGeneration === stable.readiness.runtime.runtimeGeneration &&
-      stable.activity.supervisorEpoch === stable.readiness.supervisor.supervisorEpoch &&
-      nonEmpty(stable.activity.activityGeneration) &&
-      validTimestamp(stable.activity.observedAt) &&
-      validTimestamp(stable.activity.freshUntil) &&
-      stable.activity.observedAt <= stable.activity.freshUntil));
+    (stable.activity.supervisorEpoch === stable.readiness.supervisor.supervisorEpoch &&
+      validActivity(stable.activity)));
 
 const validSleeping = (stable: StableCase<"Sleeping">): boolean =>
   validBackupIdentity(stable.backup) &&
@@ -246,10 +258,9 @@ const validWarmWorkTransition = (transition: TransitionCase<"WarmWork">, index: 
   validReadiness(transition.proof.readiness) &&
   validBackup(transition.proof.backups, transition.proof.backups.currentBackupId !== null) &&
   (transition.proof.activity === null ||
-    (transition.proof.activity.runtimeGeneration ===
-      transition.proof.readiness.runtime.runtimeGeneration &&
-      transition.proof.activity.supervisorEpoch ===
-        transition.proof.readiness.supervisor.supervisorEpoch)) &&
+    (transition.proof.activity.supervisorEpoch ===
+      transition.proof.readiness.supervisor.supervisorEpoch &&
+      validActivity(transition.proof.activity))) &&
   nonEmpty(transition.proof.activityGeneration) &&
   (index < 2 || transition.proof.resultCode !== null);
 
@@ -284,6 +295,7 @@ export const validateAuthority = (authority: SessionAuthority): boolean =>
     authority.session.createdAt,
   ].every(nonEmpty) &&
   validTimestamp(authority.session.createdAt) &&
+  validHardCap(authority.hardCap) &&
   Number.isInteger(authority.revision) &&
   authority.revision >= 1 &&
   Match.valueTags(authority.state, {
@@ -607,12 +619,23 @@ const completedStable = (transition: Transition, proof: TransitionProof): Stable
         : undefined,
   });
 
+type TransitionFencedInput = Extract<
+  SessionActorInput,
+  {
+    _tag:
+      | "ActorFact"
+      | "RuntimeObservation"
+      | "ProviderObservation"
+      | "TransitionCompleted"
+      | "TransitionFailed"
+      | "DeadlineAlarm"
+      | "UnknownProviderOutcome";
+  }
+>;
+
 const factFence = (
   authority: SessionAuthority,
-  input: Exclude<
-    SessionActorInput,
-    SessionCommand | Extract<SessionActorInput, { _tag: "ActivityObserved" }>
-  >,
+  input: TransitionFencedInput,
 ): Decision | Transition => {
   if (!AuthorityStateSchema.guards.Transitioning(authority.state)) return reject("duplicate");
   const transition = authority.state.transition;
@@ -640,6 +663,10 @@ const isCommand = (input: SessionActorInput): input is SessionCommand =>
     DeadlineAlarm: () => false,
     UnknownProviderOutcome: () => false,
     ActivityObserved: () => false,
+    RuntimeLifecycleObserved: () => false,
+    SupervisorUnavailableObserved: () => false,
+    TransportUnavailableObserved: () => false,
+    HardCapDeadlineAlarm: () => false,
   });
 
 const handleCommand = (
@@ -663,9 +690,16 @@ const handleCommand = (
     ? command.session
     : current?.session;
   if (session === undefined) return reject("not_admissible");
+  const hardCap = SessionCommandSchema.guards.CreateCommand(command)
+    ? command.hardCap
+    : SessionCommandSchema.guards.ResumeCommand(command)
+      ? command.nextHardCap
+      : current?.hardCap;
+  if (hardCap === undefined || !validHardCap(hardCap)) return reject("not_admissible");
   return accept(
     commandRevision(current),
     session,
+    hardCap,
     { _tag: "Transitioning", transition },
     journal(command, transition, "admitted", "admitted"),
     [
@@ -690,15 +724,26 @@ const handleActivity = (current: SessionAuthority, input: ActivityInput): Decisi
   if (
     input.expectedRuntimeGeneration !== warm.readiness.runtime.runtimeGeneration ||
     input.expectedSupervisorEpoch !== warm.readiness.supervisor.supervisorEpoch ||
-    input.activity.runtimeGeneration !== warm.readiness.runtime.runtimeGeneration ||
     input.activity.supervisorEpoch !== warm.readiness.supervisor.supervisorEpoch
   )
     return reject("stale_generation");
+  if (
+    warm.activity !== null &&
+    warm.activity.supervisorEpoch === input.activity.supervisorEpoch &&
+    input.activity.piSequence <= warm.activity.piSequence
+  )
+    return reject("duplicate");
+  if (
+    Date.parse(input.activity.observedAt) > Date.parse(input.timestamp) ||
+    Date.parse(input.activity.expiresAt) <= Date.parse(input.timestamp)
+  )
+    return reject("invalid_progress");
   const stable: StableState = { ...warm, activity: input.activity };
   if (!validStable(stable)) return reject("invalid_progress");
   return accept(
     current.revision,
     current.session,
+    current.hardCap,
     { _tag: "Stable", stable },
     {
       timestamp: input.timestamp,
@@ -730,6 +775,7 @@ const reconcile = (
   return accept(
     current.revision,
     current.session,
+    current.hardCap,
     { _tag: "Transitioning", transition: reconciling },
     journal(input, reconciling, eventType, resultCode),
     [
@@ -816,6 +862,7 @@ const handleFailure = (
   return accept(
     current.revision,
     current.session,
+    current.hardCap,
     { _tag: "Stable", stable: failed },
     journal(input, transition, "completed", input.resultCode),
     [],
@@ -858,6 +905,7 @@ const handleProgress = (
   return accept(
     current.revision,
     current.session,
+    current.hardCap,
     { _tag: "Transitioning", transition: progressed },
     journal(input, progressed, "progressed", input.resultCode),
     intentsFor(progressed),
@@ -876,13 +924,14 @@ const handleCompleted = (
   return accept(
     current.revision,
     current.session,
+    current.hardCap,
     { _tag: "Stable", stable },
     journal(input, transition, "completed", input.resultCode),
     [],
   );
 };
 
-type FencedInput = Exclude<SessionActorInput, SessionCommand | ActivityInput>;
+type FencedInput = TransitionFencedInput;
 const handleFenced = (current: SessionAuthority, input: FencedInput): Decision => {
   const fenced = factFence(current, input);
   if (!("nonce" in fenced)) return fenced;
@@ -904,14 +953,7 @@ export const decide = (
   if (current !== undefined && !validateAuthority(current)) return reject("invalid_authority");
   if (isCommand(input)) return handleCommand(current, input);
   if (current === undefined) return reject("duplicate");
-  return Match.valueTags(input, {
-    ActivityObserved: (value) => handleActivity(current, value),
-    ActorFact: (value) => handleFenced(current, value),
-    RuntimeObservation: (value) => handleFenced(current, value),
-    ProviderObservation: (value) => handleFenced(current, value),
-    TransitionCompleted: (value) => handleFenced(current, value),
-    TransitionFailed: (value) => handleFenced(current, value),
-    DeadlineAlarm: (value) => handleFenced(current, value),
-    UnknownProviderOutcome: (value) => handleFenced(current, value),
-  });
+  if (isRecoveryInput(input)) return handleRecoveryInput(current, input);
+  if (Predicate.isTagged(input, "ActivityObserved")) return handleActivity(current, input);
+  return handleFenced(current, input);
 };

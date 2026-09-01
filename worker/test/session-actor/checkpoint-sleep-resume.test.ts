@@ -32,6 +32,7 @@ const T0 = "2026-09-01T00:00:00.000Z";
 const T1 = "2026-09-01T00:01:00.000Z";
 const T2 = "2026-09-01T00:02:00.000Z";
 const DEADLINE = "2026-09-01T01:00:00.000Z";
+const hardCap = { durationSeconds: 3_600, deadlineAt: DEADLINE, generation: "hard-cap-1" };
 
 const session: SessionIdentity = {
   id: "lifecycle-session",
@@ -68,6 +69,7 @@ const backup: BackupIdentity = {
 
 const warm = (): SessionAuthority => ({
   session,
+  hardCap,
   revision: 1,
   state: {
     _tag: "Stable",
@@ -83,15 +85,19 @@ const warm = (): SessionAuthority => ({
 const command = (
   tag: "CheckpointCommand" | "SleepCommand" | "ResumeCommand",
   expectedRevision: number,
-): SessionActorInput => ({
-  _tag: tag,
-  expectedRevision,
-  correlationId: `${tag}-correlation`,
-  nonce: `${tag}-nonce`,
-  attempt: `${tag}-attempt`,
-  timestamp: T0,
-  deadlineAt: DEADLINE,
-});
+): SessionActorInput => {
+  const fields = {
+    expectedRevision,
+    correlationId: `${tag}-correlation`,
+    nonce: `${tag}-nonce`,
+    attempt: `${tag}-attempt`,
+    timestamp: T0,
+    deadlineAt: DEADLINE,
+  };
+  return tag === "ResumeCommand"
+    ? { _tag: tag, ...fields, nextHardCap: hardCap }
+    : { _tag: tag, ...fields };
+};
 
 const accepted = (decision: Decision): AcceptedDecision => {
   assert.ok(Predicate.isTagged(decision, "Accepted"));
@@ -396,6 +402,7 @@ describe("checkpoint, sleep, and resume transition executors", () => {
     Effect.gen(function* () {
       const sleeping: SessionAuthority = {
         session,
+        hardCap,
         revision: 2,
         state: {
           _tag: "Stable",

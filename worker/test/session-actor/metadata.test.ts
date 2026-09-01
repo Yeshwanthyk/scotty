@@ -17,6 +17,11 @@ const T0 = "2026-08-31T12:00:00.000Z";
 const T1 = "2026-08-31T12:01:00.000Z";
 const DEADLINE = "2026-08-31T16:00:00.000Z";
 const DIGEST = "a".repeat(64);
+const hardCap = {
+  durationSeconds: 4 * 60 * 60,
+  deadlineAt: DEADLINE,
+  generation: "hard-cap-generation-1",
+};
 
 const createAuthority = (): SessionAuthority => ({
   session: {
@@ -26,6 +31,7 @@ const createAuthority = (): SessionAuthority => ({
     execution: { provider: "cloudflare", runtimeName: "runtime-metadata-session" },
     createdAt: T0,
   },
+  hardCap,
   revision: 1,
   state: {
     _tag: "Transitioning",
@@ -50,11 +56,7 @@ const createAuthority = (): SessionAuthority => ({
 const input = (): SessionActorMetadataInput => ({
   branch: "scotty/metadata-session",
   createRepositoryIfMissing: false,
-  hardCap: {
-    durationSeconds: 4 * 60 * 60,
-    deadlineAt: DEADLINE,
-    generation: "hard-cap-generation-1",
-  },
+  hardCap,
   createIdempotency: { keyDigest: "b".repeat(64), inputDigest: "c".repeat(64) },
   payload: { reference: "private-payload-reference-1" },
   initialPrompt: "Keep this prompt private and scrub it after create settles.",

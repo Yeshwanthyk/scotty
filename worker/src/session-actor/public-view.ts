@@ -156,7 +156,11 @@ export const sessionProjectionFromActor = (
   if (view === undefined)
     return Result.fail(new SessionActorProjectionUnavailable({ code: "workspace_not_observed" }));
   const details = projectionDetails(authority);
-  const activity = details.activity;
+  const activity =
+    details.activity !== undefined &&
+    Date.parse(details.activity.expiresAt) > projectedAt.epochMillis
+      ? details.activity
+      : undefined;
   const execution = authority.session.execution;
   return Result.succeed({
     id: authority.session.id,
@@ -173,7 +177,7 @@ export const sessionProjectionFromActor = (
     ...(activity === undefined ? {} : { lastAgentEventAt: activity.observedAt }),
     createdAt: authority.session.createdAt,
     updatedAt,
-    hardCapAt: metadata.hardCap.deadlineAt,
+    hardCapAt: authority.hardCap.deadlineAt,
     projectedAt: projectedAt.iso,
     ...(details.failure === undefined ? {} : { failure: details.failure }),
     sandboxBundle: { digest: metadata.createObservations.bundle?.digest ?? null },

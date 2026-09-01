@@ -20,6 +20,7 @@ import {
 const T0 = "2026-03-04T00:00:00.000Z";
 const T1 = "2026-03-04T00:01:00.000Z";
 const DEADLINE = "2026-03-04T01:00:00.000Z";
+const hardCap = { durationSeconds: 3_600, deadlineAt: DEADLINE, generation: "hard-cap-1" };
 
 const session: SessionIdentity = {
   id: "create-session",
@@ -58,6 +59,7 @@ const createCommand = (): SessionActorInput => ({
   timestamp: T0,
   deadlineAt: DEADLINE,
   session,
+  hardCap,
 });
 
 const accepted = (decision: Decision): AcceptedDecision => {

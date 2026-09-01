@@ -4,7 +4,9 @@ import {
   ActivityProofSchema,
   CheckpointProofSchema,
   CreateProofSchema,
+  HardCapProofSchema,
   ResumeProofSchema,
+  RuntimeProofSchema,
   SessionIdentitySchema,
   SleepProofSchema,
   TransitionSchema,
@@ -23,10 +25,14 @@ const CommandFence = {
 };
 
 export const SessionCommandSchema = Schema.Union([
-  Schema.TaggedStruct("CreateCommand", { ...CommandFence, session: SessionIdentitySchema }),
+  Schema.TaggedStruct("CreateCommand", {
+    ...CommandFence,
+    session: SessionIdentitySchema,
+    hardCap: HardCapProofSchema,
+  }),
   Schema.TaggedStruct("CheckpointCommand", CommandFence),
   Schema.TaggedStruct("SleepCommand", CommandFence),
-  Schema.TaggedStruct("ResumeCommand", CommandFence),
+  Schema.TaggedStruct("ResumeCommand", { ...CommandFence, nextHardCap: HardCapProofSchema }),
   Schema.TaggedStruct("WarmWorkCommand", { ...CommandFence, workKind: WarmWorkKindSchema }),
   Schema.TaggedStruct("VaporizeCommand", CommandFence),
 ]).pipe(Schema.toTaggedUnion("_tag"));
@@ -103,6 +109,43 @@ export const ActivityObservedSchema = Schema.TaggedStruct("ActivityObserved", {
   timestamp: Schema.String,
   activity: ActivityProofSchema,
 });
+export const RuntimeLifecycleObservedSchema = Schema.TaggedStruct("RuntimeLifecycleObserved", {
+  expectedProviderRuntimeId: Schema.String,
+  expectedRuntimeGeneration: Schema.String,
+  lifecycle: Schema.Literals(["started", "stopped"]),
+  runtime: Schema.NullOr(RuntimeProofSchema),
+  correlationId: Schema.String,
+  timestamp: Schema.String,
+  resultCode: Schema.String,
+});
+export const SupervisorUnavailableObservedSchema = Schema.TaggedStruct(
+  "SupervisorUnavailableObserved",
+  {
+    expectedRuntimeGeneration: Schema.String,
+    expectedSupervisorEpoch: Schema.String,
+    correlationId: Schema.String,
+    timestamp: Schema.String,
+    resultCode: Schema.String,
+  },
+);
+export const TransportUnavailableObservedSchema = Schema.TaggedStruct(
+  "TransportUnavailableObserved",
+  {
+    expectedRuntimeGeneration: Schema.String,
+    expectedSupervisorEpoch: Schema.String,
+    expectedTransportId: Schema.String,
+    correlationId: Schema.String,
+    timestamp: Schema.String,
+    resultCode: Schema.String,
+  },
+);
+export const HardCapDeadlineAlarmSchema = Schema.TaggedStruct("HardCapDeadlineAlarm", {
+  alarmId: Schema.String,
+  expectedGeneration: Schema.String,
+  expectedDeadlineAt: Schema.String,
+  correlationId: Schema.String,
+  timestamp: Schema.String,
+});
 
 export const SessionActorInputSchema = Schema.Union([
   SessionCommandSchema,
@@ -114,6 +157,10 @@ export const SessionActorInputSchema = Schema.Union([
   DeadlineAlarmSchema,
   UnknownProviderOutcomeSchema,
   ActivityObservedSchema,
+  RuntimeLifecycleObservedSchema,
+  SupervisorUnavailableObservedSchema,
+  TransportUnavailableObservedSchema,
+  HardCapDeadlineAlarmSchema,
 ]).pipe(Schema.toTaggedUnion("_tag"));
 export type SessionActorInput = typeof SessionActorInputSchema.Type;
 

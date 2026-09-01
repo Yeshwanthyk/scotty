@@ -11,6 +11,13 @@ export type Origin = typeof OriginSchema.Type;
 export const ExecutionModeSchema = Schema.Literals(["executing", "reconciling"]);
 export type ExecutionMode = typeof ExecutionModeSchema.Type;
 
+export const HardCapProofSchema = Schema.Struct({
+  durationSeconds: Schema.Int.check(Schema.isGreaterThan(0)),
+  deadlineAt: SafeTimestampSchema,
+  generation: SafeIdentifierSchema,
+});
+export type HardCapProof = typeof HardCapProofSchema.Type;
+
 export const ExecutionBindingSchema = Schema.Union([
   Schema.Struct({ provider: Schema.Literal("cloudflare"), runtimeName: Schema.String }),
   Schema.Struct({ provider: Schema.Literal("runner"), runnerName: Schema.String }),
@@ -83,12 +90,11 @@ export const StopObservationSchema = Schema.Struct({
 export type StopObservation = typeof StopObservationSchema.Type;
 
 export const ActivityProofSchema = Schema.Struct({
-  activityGeneration: SafeIdentifierSchema,
-  runtimeGeneration: SafeIdentifierSchema,
   supervisorEpoch: SafeIdentifierSchema,
+  piSequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   state: Schema.Literals(["working", "waiting", "completed", "tool-stalled"]),
   observedAt: SafeTimestampSchema,
-  freshUntil: SafeTimestampSchema,
+  expiresAt: SafeTimestampSchema,
 });
 export type ActivityProof = typeof ActivityProofSchema.Type;
 
@@ -290,6 +296,7 @@ export type AuthorityState = typeof AuthorityStateSchema.Type;
 
 export const SessionAuthoritySchema = Schema.Struct({
   session: SessionIdentitySchema,
+  hardCap: HardCapProofSchema,
   revision: Schema.Int,
   state: AuthorityStateSchema,
 });

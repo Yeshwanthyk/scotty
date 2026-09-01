@@ -43,9 +43,22 @@ surfaces in order.
   - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
   - [x] Slice 5 commit
 
+- [x] Slice 6 — runtime loss, activity, deadlines, and hard cap (local implementation and focused proof)
+  - [x] authoritative hard-cap generation and deadline in actor state
+  - [x] pre-armed Resume cap activated atomically only after actor admission
+  - [x] runtime, supervisor, and transport observations fenced by readiness generations
+  - [x] exact reconciliation for provider ambiguity and transition availability loss
+  - [x] bounded Pi activity persisted from decoded snapshots and invalidated by supervisor epoch
+  - [x] deferred Sandbox start/stop/error callbacks with re-entrant stop protection
+  - [x] hard-cap failure committed before runtime destruction, with cleanup retry authority
+  - [x] actor-backed idle expiry through checkpoint and Sleep
+  - [x] old hard-cap, managed-stop, checkpoint, idle, and legacy authority fallback removed
+  - [x] focused actor/provider/host tests, worker typecheck/lint, and local lab doctor proof
+  - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
+  - [x] Slice 6 commit
+
 ## Remaining
 
-- [ ] Slice 6 — runtime loss, activity, deadlines, and hard cap
 - [ ] Slice 7 — vaporize
 - [ ] Slice 8 — evidence, Hatch, and other warm work
 - [ ] Slice 9 — cutover and delete old lifecycle

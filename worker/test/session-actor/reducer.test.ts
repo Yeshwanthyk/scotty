@@ -24,6 +24,7 @@ import { phaseIndex, transitionPhases } from "../../src/session-actor/transition
 const T0 = "2026-01-01T00:00:00.000Z";
 const T1 = "2026-01-01T00:01:00.000Z";
 const DEADLINE = "2026-01-01T01:00:00.000Z";
+const hardCap = { durationSeconds: 3_600, deadlineAt: DEADLINE, generation: "hard-cap-1" };
 const session = {
   id: "session-1",
   title: "Session one",
@@ -88,10 +89,12 @@ const createCommand = (expectedRevision = 0): SessionCommand => ({
   timestamp: T0,
   deadlineAt: DEADLINE,
   session,
+  hardCap,
 });
 
 const warmAuthority = (): SessionAuthority => ({
   session,
+  hardCap,
   revision: 7,
   state: {
     _tag: "Stable",
@@ -100,12 +103,11 @@ const warmAuthority = (): SessionAuthority => ({
       readiness: readiness(),
       backups: { ownedBackupIds: ["backup-1"], prepared: backup(), currentBackupId: "backup-1" },
       activity: {
-        activityGeneration: "activity-1",
-        runtimeGeneration: "runtime-1",
         supervisorEpoch: "supervisor-1",
+        piSequence: 1,
         state: "working",
         observedAt: T0,
-        freshUntil: DEADLINE,
+        expiresAt: DEADLINE,
       },
     },
   },
@@ -113,6 +115,7 @@ const warmAuthority = (): SessionAuthority => ({
 
 const warmWithReadiness = (proof: ReadinessProof): SessionAuthority => ({
   session,
+  hardCap,
   revision: 1,
   state: {
     _tag: "Stable",
@@ -128,15 +131,19 @@ const warmWithReadiness = (proof: ReadinessProof): SessionAuthority => ({
 const command = (
   tag: "CheckpointCommand" | "SleepCommand" | "ResumeCommand" | "VaporizeCommand",
   revision: number,
-): SessionCommand => ({
-  _tag: tag,
-  expectedRevision: revision,
-  correlationId: `correlation-${tag}`,
-  nonce: `nonce-${tag}`,
-  attempt: `attempt-${tag}`,
-  timestamp: T0,
-  deadlineAt: DEADLINE,
-});
+): SessionCommand => {
+  const fields = {
+    expectedRevision: revision,
+    correlationId: `correlation-${tag}`,
+    nonce: `nonce-${tag}`,
+    attempt: `attempt-${tag}`,
+    timestamp: T0,
+    deadlineAt: DEADLINE,
+  };
+  return tag === "ResumeCommand"
+    ? { _tag: tag, ...fields, nextHardCap: hardCap }
+    : { _tag: tag, ...fields };
+};
 
 const fact = (
   authority: SessionAuthority,
@@ -249,6 +256,7 @@ describe("session actor reducer", () => {
 
     const gone: SessionAuthority = {
       session,
+      hardCap,
       revision: 10,
       state: {
         _tag: "Stable",
@@ -376,12 +384,11 @@ describe("session actor reducer", () => {
         correlationId: "correlation-activity",
         timestamp: T1,
         activity: {
-          activityGeneration: "activity-2",
-          runtimeGeneration: "runtime-1",
           supervisorEpoch: "supervisor-1",
+          piSequence: 2,
           state: "waiting",
           observedAt: T1,
-          freshUntil: DEADLINE,
+          expiresAt: DEADLINE,
         },
       }),
     );
@@ -396,12 +403,11 @@ describe("session actor reducer", () => {
       correlationId: "correlation-activity-stale",
       timestamp: T1,
       activity: {
-        activityGeneration: "activity-3",
-        runtimeGeneration: "runtime-old",
         supervisorEpoch: "supervisor-1",
+        piSequence: 3,
         state: "working",
         observedAt: T1,
-        freshUntil: DEADLINE,
+        expiresAt: DEADLINE,
       },
     });
     assert.deepStrictEqual(stale, { _tag: "Rejected", code: "stale_generation" });
@@ -504,6 +510,7 @@ describe("session actor reducer", () => {
     assert.strictEqual(validateAuthority(warmAuthority()), true);
     const incoherent: SessionAuthority = {
       session,
+      hardCap,
       revision: 7,
       state: {
         _tag: "Stable",
@@ -540,6 +547,7 @@ describe("session actor reducer", () => {
 
     const sleeping: SessionAuthority = {
       session,
+      hardCap,
       revision: 1,
       state: {
         _tag: "Stable",
@@ -555,6 +563,7 @@ describe("session actor reducer", () => {
     assert.strictEqual(validateAuthority(sleeping), false);
     const gone: SessionAuthority = {
       session,
+      hardCap,
       revision: 1,
       state: {
         _tag: "Stable",
@@ -567,6 +576,7 @@ describe("session actor reducer", () => {
   it("commits transport verification intent before transport proof exists", () => {
     const verifying: SessionAuthority = {
       session,
+      hardCap,
       revision: 6,
       state: {
         _tag: "Transitioning",

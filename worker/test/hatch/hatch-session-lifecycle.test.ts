@@ -873,24 +873,6 @@ describe("authoritative Hatch session lifecycle", () => {
     }),
   );
 
-  it.effect("revokes Hatch before hard-cap checkpoint work", () =>
-    Effect.gen(function* () {
-      const harness = yield* createHarness(true);
-      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ service }));
-
-      yield* Effect.promise(() =>
-        harness.sandbox.enforceHardCap({ hardCapAt: "2026-08-08T13:00:00.000Z" }),
-      );
-
-      const unexpose = harness.events.indexOf("host:preview:unexpose:4173");
-      const backup = harness.events.indexOf("host:createBackup");
-      assert.ok(unexpose >= 0);
-      assert.ok(backup > unexpose);
-      assert.strictEqual(hatchState(harness)?.primary?.exposure, "closed");
-      assert.lengthOf(hatchState(harness)?.primary?.permits ?? [], 0);
-    }),
-  );
-
   it.effect("restores the exact managed service after snapshot with a fenced generation", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness();

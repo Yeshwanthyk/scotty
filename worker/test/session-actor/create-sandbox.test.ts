@@ -24,6 +24,7 @@ import { sandboxRuntimeCapabilitiesFake } from "../support";
 
 const T0 = "2026-08-31T20:00:00.000Z";
 const DEADLINE = "2026-08-31T21:00:00.000Z";
+const hardCap = { durationSeconds: 3_600, deadlineAt: DEADLINE, generation: "hard-cap-1" };
 const runtimeProof = {
   providerRuntimeId: "runtime-session-create",
   runtimeGeneration: "scotty-runtime-generation-1",
@@ -84,6 +85,7 @@ const authority = (
     execution: { provider: "cloudflare", runtimeName: runtimeProof.providerRuntimeId },
     createdAt: T0,
   },
+  hardCap,
   revision: 4,
   state: { _tag: "Transitioning", transition: transition(phase, supervisor) },
 });
