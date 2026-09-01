@@ -903,6 +903,13 @@ const makeCredentialRegistry = (
               },
             },
 
+      resolve: async () => ({
+        ok: true as const,
+        value: {
+          value: options.credentialRegistryGithubCliCredential ?? "test-github-token",
+        },
+      }),
+
       release: async (input: unknown) => {
         releases.push(structuredClone(input));
         if (options.credentialRegistryReleaseFailure)
