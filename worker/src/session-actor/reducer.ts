@@ -492,18 +492,25 @@ const journal = (
   causeAttempt: transition.attempt,
 });
 
-const intentsFor = (transition: Transition): ReadonlyArray<EffectIntent> =>
-  TransitionSchema.guards.WarmWork(transition)
+const intentsFor = (transition: Transition): ReadonlyArray<EffectIntent> => [
+  {
+    _tag: "ArmDeadline",
+    deadlineAt: transition.deadlineAt,
+    transitionNonce: transition.nonce,
+    attempt: transition.attempt,
+  },
+  ...(TransitionSchema.guards.WarmWork(transition)
     ? []
     : [
         {
-          _tag: "ExecutePhase",
+          _tag: "ExecutePhase" as const,
           transitionKind: transitionKind(transition),
           phase: transition.phase,
           transitionNonce: transition.nonce,
           attempt: transition.attempt,
         },
-      ];
+      ]),
+];
 
 const proofMatches = (transition: Transition, proof: TransitionProof): boolean =>
   Match.valueTags(transition, {
@@ -731,15 +738,7 @@ const handleCommand = (
     hardCap,
     { _tag: "Transitioning", transition },
     journal(command, transition, "admitted", "admitted"),
-    [
-      {
-        _tag: "ArmDeadline",
-        deadlineAt: transition.deadlineAt,
-        transitionNonce: transition.nonce,
-        attempt: transition.attempt,
-      },
-      ...intentsFor(transition),
-    ],
+    intentsFor(transition),
   );
 };
 
@@ -839,12 +838,6 @@ const reconcile = (
     { _tag: "Transitioning", transition: reconciling },
     journal(input, reconciling, eventType, resultCode),
     [
-      {
-        _tag: "ArmDeadline",
-        deadlineAt: transition.deadlineAt,
-        transitionNonce: transition.nonce,
-        attempt: transition.attempt,
-      },
       {
         _tag: "ReconcileTransition",
         transitionKind: transitionKind(transition),
