@@ -23,6 +23,7 @@ import {
   Flag,
 } from "effect/unstable/cli";
 import { isRepositoryIdentity } from "../protocol/repository.ts";
+import { SessionActorDiagnosticsSchema } from "../worker/src/session-actor/diagnostics.ts";
 import {
   acquireLifecycleLock,
   activeRunManifest,
@@ -39,7 +40,9 @@ import {
   prepareCredentialSetup,
   prepareStart,
   PROTECTED_SESSION_ID,
+  readActorDiagnostics,
   recordCleanupResult,
+  recordActorDiagnostics,
   recordOwnedSession,
   recordScenarioResult,
   releaseLifecycleLock,
@@ -93,6 +96,9 @@ const decodeSessionOperationJson = Schema.decodeUnknownEffect(
 );
 const decodeSessionIdentityJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(SessionIdentityOutput),
+);
+const decodeActorDiagnosticsJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(SessionActorDiagnosticsSchema),
 );
 
 export class LabFailure extends Data.TaggedError("LabFailure")<{
@@ -524,6 +530,28 @@ const runRecordedSleep = Effect.fnUntraced(function* (manifest: Manifest, sessio
   return response.body;
 });
 
+const captureActorDiagnostics = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  scenario: LifecycleScenario,
+  sessionId: string,
+) {
+  const response = yield* attemptPromise("Unable to read actor diagnostics", (signal) =>
+    readActorDiagnostics(manifest, sessionId, signal),
+  );
+  if (response.status < 200 || response.status >= 300)
+    return yield* new LabFailure({
+      message: `Actor diagnostics returned HTTP ${response.status}: ${response.body}`,
+    });
+  const diagnostics = yield* decodeActorDiagnosticsJson(response.body).pipe(
+    Effect.mapError((cause) => failure(cause, "Actor diagnostics returned invalid JSON")),
+  );
+  const observedAt = yield* nowIso;
+  yield* attempt("Unable to persist actor diagnostics", () =>
+    recordActorDiagnostics(manifest, { scenario, sessionId, observedAt, diagnostics }),
+  );
+  return diagnostics;
+});
+
 const decodeOperation = (json: string) =>
   decodeSessionOperationJson(json).pipe(
     Effect.mapError((cause) => failure(cause, "Scotty CLI returned invalid lifecycle JSON")),
@@ -583,6 +611,7 @@ const createAndReady = Effect.fnUntraced(function* (
   yield* attempt("Unable to record lifecycle session ownership", () =>
     recordOwnedSession(manifest, identity.id, ownershipRecordedAt),
   );
+  yield* captureActorDiagnostics(manifest, "create-and-ready", identity.id);
   const created = yield* decodeOperation(output);
   if (created.status !== "warm")
     return yield* failScenario(manifest, {
@@ -610,6 +639,7 @@ const checkpoint = Effect.fnUntraced(function* (
   const operation = yield* decodeOperation(
     yield* runRecordedCli(manifest, "checkpoint", ["snapshot", ownedId, "--json"], ownedId),
   );
+  yield* captureActorDiagnostics(manifest, "checkpoint", ownedId);
   if (operation.id !== ownedId || operation.status !== "warm")
     return yield* failScenario(manifest, {
       scenario: "checkpoint",
@@ -631,6 +661,7 @@ const sleepResume = Effect.fnUntraced(function* (
   const ownedId = yield* requireOwnedSession(manifest, "sleep-resume", sessionId, startedAt);
   yield* requestedFaultUnavailable(manifest, "sleep-resume", fault, startedAt, ownedId);
   const slept = yield* decodeOperation(yield* runRecordedSleep(manifest, ownedId));
+  yield* captureActorDiagnostics(manifest, "sleep-resume", ownedId);
   if (slept.id !== ownedId || slept.status !== "sleeping")
     return yield* failScenario(manifest, {
       scenario: "sleep-resume",
@@ -643,6 +674,7 @@ const sleepResume = Effect.fnUntraced(function* (
   const resumed = yield* decodeOperation(
     yield* runRecordedCli(manifest, "sleep-resume", ["resume", ownedId, "--json"], ownedId),
   );
+  yield* captureActorDiagnostics(manifest, "sleep-resume", ownedId);
   if (resumed.id !== ownedId || resumed.status !== "warm")
     return yield* failScenario(manifest, {
       scenario: "sleep-resume",
@@ -685,6 +717,7 @@ const vaporize = Effect.fnUntraced(function* (
   const operation = yield* decodeOperation(
     yield* runRecordedCli(manifest, "vaporize", ["vaporize", ownedId, "--yes", "--json"], ownedId),
   );
+  yield* captureActorDiagnostics(manifest, "vaporize", ownedId);
   if (operation.id !== ownedId || operation.status !== "gone")
     return yield* failScenario(manifest, {
       scenario: "vaporize",

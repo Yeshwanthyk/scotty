@@ -23,6 +23,7 @@ import {
   readLabManifest,
   readEvidenceManifest,
   readPrivateToken,
+  recordActorDiagnostics,
   recordCleanupResult,
   recordOwnedSession,
   recordScenarioResult,
@@ -159,6 +160,26 @@ test("lifecycle evidence is private, atomic, retained, and explicit about unavai
       },
       evidenceRoot,
     );
+    recordActorDiagnostics(
+      manifest,
+      {
+        scenario: "checkpoint",
+        sessionId: "a0b1c2d3e4f5",
+        observedAt: "2026-08-31T00:00:04.500Z",
+        diagnostics: {
+          revision: 2,
+          authority: { state: { _tag: "Stable", stable: { _tag: "Warm" } } },
+          journalSequence: 2,
+          journalTail: { sequence: 2, resultCode: "checkpoint_complete" },
+          journal: [
+            { sequence: 1, resultCode: "create_complete" },
+            { sequence: 2, resultCode: "checkpoint_complete" },
+          ],
+          journalTruncated: false,
+        },
+      },
+      evidenceRoot,
+    );
     recordScenarioResult(
       manifest,
       {
@@ -201,8 +222,10 @@ test("lifecycle evidence is private, atomic, retained, and explicit about unavai
     assert.equal(evidence.scenarioResults[1].fault, "after-intent-commit");
     assert.equal(evidence.scenarioResults[2].status, "rejected");
     assert.equal(evidence.cleanupResult.status, "succeeded");
-    assert.equal(evidence.observations.actorAuthorityRevision.status, "not-available");
-    assert.equal(evidence.observations.operationJournal.status, "not-available");
+    assert.equal(evidence.observations.actorAuthorityRevision.status, "available");
+    assert.equal(evidence.observations.actorAuthorityRevision.snapshots[0].revision, 2);
+    assert.equal(evidence.observations.operationJournal.status, "available");
+    assert.equal(evidence.observations.operationJournal.snapshots[0].journal.length, 2);
     assert.equal(evidence.observations.providerSnapshot.status, "not-available");
     assert.equal(statSync(evidencePathsForRunId(RUN_ID, evidenceRoot).manifest).isFile(), true);
   } finally {

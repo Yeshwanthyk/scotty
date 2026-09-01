@@ -47,6 +47,7 @@ export interface CreateSandboxResolvedInput {
   readonly payloadReference: string;
   readonly runtimeGeneration: string;
   readonly sandboxBundleDigest: string | null;
+  readonly githubHandle: string;
   readonly credentials: SessionRuntimeCredentials;
   readonly grants: ReadonlyArray<CredentialGrant>;
 }

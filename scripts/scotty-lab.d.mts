@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import type { SessionActorDiagnostics } from "../worker/src/session-actor/diagnostics";
 
 export interface LabManifest {
   readonly version: 1;
@@ -48,6 +49,11 @@ export interface EvidenceUnavailable {
   readonly reason: string;
 }
 
+export interface EvidenceAvailable {
+  readonly status: "available";
+  readonly snapshots: ReadonlyArray<Readonly<Record<string, unknown>>>;
+}
+
 export interface EvidenceManifest {
   readonly version: 1;
   readonly runId: string;
@@ -58,8 +64,8 @@ export interface EvidenceManifest {
   readonly cleanupResult: Readonly<Record<string, unknown>>;
   readonly sessionOwnershipUpdatedAt?: string;
   readonly observations: {
-    readonly actorAuthorityRevision: EvidenceUnavailable;
-    readonly operationJournal: EvidenceUnavailable;
+    readonly actorAuthorityRevision: EvidenceUnavailable | EvidenceAvailable;
+    readonly operationJournal: EvidenceUnavailable | EvidenceAvailable;
     readonly providerSnapshot: EvidenceUnavailable;
   };
 }
@@ -94,6 +100,16 @@ export function recordScenarioResult(
 export function recordCleanupResult(
   manifest: LabManifest,
   result: Readonly<Record<string, unknown>>,
+  evidenceDirectory?: string,
+): EvidenceManifest;
+export function recordActorDiagnostics(
+  manifest: LabManifest,
+  observation: {
+    readonly scenario: string;
+    readonly sessionId: string;
+    readonly observedAt: string;
+    readonly diagnostics: SessionActorDiagnostics;
+  },
   evidenceDirectory?: string,
 ): EvidenceManifest;
 export function appendEvidenceCommand(
@@ -144,6 +160,11 @@ export function spawnCli(
 ): ChildProcess;
 export function sanitizeEvidenceText(manifest: LabManifest, value: string): string;
 export function sleepSession(
+  manifest: LabManifest,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<{ readonly status: number; readonly body: string }>;
+export function readActorDiagnostics(
   manifest: LabManifest,
   sessionId: string,
   signal?: AbortSignal,

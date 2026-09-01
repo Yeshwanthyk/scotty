@@ -1,5 +1,11 @@
 import { Context, Effect, Layer, Predicate, Result, Schema } from "effect";
-import { SessionActor, type ActorHandleError, type ActorHandleResult } from "./actor";
+import {
+  actorResultAuthority,
+  actorResultRejectedBeforeCommit,
+  SessionActor,
+  type ActorHandleError,
+  type ActorHandleResult,
+} from "./actor";
 import {
   AuthorityStateSchema,
   type SessionAuthority,
@@ -280,13 +286,16 @@ const proposedCreate = (
 
 const authorityFromActor = (
   result: ActorHandleResult,
+  existing?: SessionAuthority,
 ): Effect.Effect<SessionAuthority, CreateControllerRejected | CreateControllerInvariantFailure> => {
-  if (Predicate.isTagged(result.decision, "Rejected"))
+  const committed = actorResultAuthority(result);
+  if (committed !== undefined) return Effect.succeed(committed);
+  if (existing !== undefined) return Effect.succeed(existing);
+  if (actorResultRejectedBeforeCommit(result))
     return Effect.fail(new CreateControllerRejected({ code: result.decision.code }));
-  const last = result.committed[result.committed.length - 1];
-  return last === undefined
-    ? Effect.fail(new CreateControllerInvariantFailure({ code: "actor_committed_no_authority" }))
-    : Effect.succeed(last.authority);
+  return Effect.fail(
+    new CreateControllerInvariantFailure({ code: "actor_committed_no_authority" }),
+  );
 };
 
 const validateResultAuthority = (
@@ -370,7 +379,8 @@ export const createControllerLayer: Layer.Layer<
               correlationId: request.correlationId,
             })
           : undefined;
-        const authority = resumed === undefined ? existing : yield* authorityFromActor(resumed);
+        const authority =
+          resumed === undefined ? existing : yield* authorityFromActor(resumed, existing);
         yield* scrubIfSettled(metadataStore, authority, inspected.metadata.createAttempt);
         return yield* classify(authority, true);
       }
@@ -400,7 +410,8 @@ export const createControllerLayer: Layer.Layer<
               correlationId: request.correlationId,
             })
           : undefined;
-        const authority = resumed === undefined ? existing : yield* authorityFromActor(resumed);
+        const authority =
+          resumed === undefined ? existing : yield* authorityFromActor(resumed, existing);
         yield* scrubIfSettled(metadataStore, authority, reservation.metadata.createAttempt);
         return yield* classify(authority, true);
       }

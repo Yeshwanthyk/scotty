@@ -16,6 +16,11 @@ import type {
   ActorStorageTransactionPlan,
   RawActorStorageSnapshot,
 } from "../session-actor/store";
+import { decodeActorStorageSnapshot } from "../session-actor/store";
+import {
+  makeSessionActorDiagnostics,
+  type SessionActorDiagnostics,
+} from "../session-actor/diagnostics";
 import type { SessionRecord } from "./contracts";
 
 export const EVIDENCE_RECORD_KEY = "scotty:evidence";
@@ -26,6 +31,7 @@ export const SESSION_ACTOR_JOURNAL_SEQUENCE_KEY = "scotty:session-actor:journal-
 export const SESSION_ACTOR_JOURNAL_TAIL_KEY = "scotty:session-actor:journal-tail";
 export const SESSION_ACTOR_METADATA_KEY = "scotty:session-actor:metadata";
 const SESSION_ACTOR_JOURNAL_PREFIX = "scotty:session-actor:journal:";
+const SESSION_ACTOR_DIAGNOSTIC_JOURNAL_LIMIT = 256;
 
 class SessionActorStorageFailure extends Data.TaggedError("SessionActorStorageFailure")<{
   readonly reason: "invalid";
@@ -297,6 +303,27 @@ export const durableObjectSessionActorStorage = (
       }),
     ),
 });
+
+export const readDurableObjectSessionActorDiagnostics = async (
+  storage: DurableObjectStorage,
+): Promise<Result.Result<SessionActorDiagnostics, "absent" | "invalid">> =>
+  storage.transaction(async (transaction) => {
+    const snapshot = decodeActorStorageSnapshot(await readActorStorageSnapshot(transaction));
+    if (Result.isFailure(snapshot)) return Result.fail("invalid" as const);
+    const { authority, journalSequence, journalTail } = snapshot.success;
+    if (authority === undefined || journalTail === undefined) return Result.fail("absent" as const);
+    const storedJournal = await transaction.list<unknown>({
+      prefix: SESSION_ACTOR_JOURNAL_PREFIX,
+      reverse: true,
+      limit: SESSION_ACTOR_DIAGNOSTIC_JOURNAL_LIMIT,
+    });
+    const diagnostics = makeSessionActorDiagnostics(authority, journalSequence, journalTail, [
+      ...storedJournal.values(),
+    ]);
+    return Result.isSuccess(diagnostics)
+      ? Result.succeed(diagnostics.success)
+      : Result.fail("invalid" as const);
+  });
 
 export const durableObjectSessionActorMetadataStorage = (
   storage: DurableObjectStorage,

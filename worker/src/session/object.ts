@@ -167,9 +167,11 @@ import {
   durableObjectSessionActorMetadataStorage,
   durableObjectSessionActorStorage,
   makeSessionControlGate,
+  readDurableObjectSessionActorDiagnostics,
   sessionRecordFromActor,
   type SessionControlGate,
 } from "./store";
+import type { SessionActorDiagnostics } from "../session-actor/diagnostics";
 import { ActorStore, actorStoreLayer } from "../session-actor/store";
 import { SessionActor, sessionActorLayer } from "../session-actor/actor";
 import { ActorAlarmOutcomeUnknown, actorAlarmSchedulerLayer } from "../session-actor/alarm";
@@ -947,14 +949,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
             if (
               Result.isFailure(decoded) ||
               decoded.success.sessionId !== authority.session.id ||
-              Result.isFailure(selectPiAuthGrant(decoded.success.grants)) ||
-              githubManagedHandle(decoded.success.grants) === undefined
+              Result.isFailure(selectPiAuthGrant(decoded.success.grants))
             )
+              return yield* rejectBoundary("create_credential_grant_invalid");
+            const githubHandle = githubManagedHandle(decoded.success.grants);
+            if (githubHandle === undefined)
               return yield* rejectBoundary("create_credential_grant_invalid");
             return {
               payloadReference,
               runtimeGeneration: transition.attempt,
               sandboxBundleDigest: config.value.activeDigest,
+              githubHandle,
               credentials: sessionRuntimeCredentials(decoded.success.grants),
               grants: decoded.success.grants,
             };
@@ -985,8 +990,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             );
             if (Result.isFailure(decodedCredential))
               return yield* rejectBoundary("create_repository_credential_invalid");
-            const githubHandle = githubManagedHandle(input.grants);
-            if (githubHandle === undefined)
+            if (githubManagedHandle(input.grants) !== input.githubHandle)
               return yield* rejectBoundary("create_credential_grant_invalid");
             const credential = Redacted.make(decodedCredential.success.value);
             const verified = yield* verifier
@@ -1024,10 +1028,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
               credentialGrant: { sessionId: authority.session.id, grants: input.grants },
             };
             const prepared = yield* workspaceService
-              .prepare(workspaceRecord, githubHandle, verified)
+              .prepare(workspaceRecord, input.githubHandle, verified)
               .pipe(
-                Effect.mapError(() =>
-                  rejectBoundary("create_workspace_outcome_unknown", "unknown_after_admission"),
+                Effect.mapError((error) =>
+                  error.reason === "transport"
+                    ? rejectBoundary("create_workspace_outcome_unknown", "unknown_after_admission")
+                    : rejectBoundary("create_workspace_failed"),
                 ),
               );
             return {
@@ -3004,6 +3010,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return (yield* this.readActorSessionStateProgram()).view;
   });
 
+  private readonly getScottyActorDiagnosticsProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const diagnostics = yield* Effect.tryPromise({
+      try: () =>
+        // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: authenticated diagnostics read the actor's immutable authority journal without mutating it
+        readDurableObjectSessionActorDiagnostics(this.ctx.storage),
+      catch: (cause) => this.upstreamError("Session actor diagnostics are unavailable", cause),
+    });
+    if (Result.isSuccess(diagnostics)) return diagnostics.success;
+    if (diagnostics.failure === "absent") return yield* notFound("unknown");
+    return yield* this.upstreamError("Session actor diagnostics are invalid", undefined);
+  });
+
   private readonly getScottyDeploymentReadinessProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
       const record = yield* this.requireRecordProgram();
@@ -3396,6 +3414,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async getScottySession(): Promise<SessionView> {
     return this.#run(this.getScottySessionProgram());
+  }
+
+  async getScottyActorDiagnostics(): Promise<SessionActorDiagnostics> {
+    return this.#run(this.getScottyActorDiagnosticsProgram());
   }
 
   async getScottyDeploymentReadiness(): Promise<SessionDeploymentReadiness> {

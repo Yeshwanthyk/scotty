@@ -5,7 +5,7 @@ import {
   decodePiConsoleCommandPromise,
   type PiConsoleRelaySnapshot,
 } from "../../../protocol/pi-console";
-import type { SessionAuthority } from "../../src/session-actor/authority";
+import { AuthorityStateSchema, type SessionAuthority } from "../../src/session-actor/authority";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import { ScottyError } from "../../src/session/contracts";
@@ -97,6 +97,21 @@ describe("Sandbox actor create boundary", () => {
     assert.strictEqual(tail?.eventType, "completed");
     assert.strictEqual(tail?.resultCode, "create_transport_verified");
     assert.strictEqual(tail?.revision, authority.revision);
+
+    const diagnostics = await harness.sandbox.getScottyActorDiagnostics();
+    assert.strictEqual(diagnostics.authority.revision, authority.revision);
+    assert.strictEqual(diagnostics.journalSequence, authority.revision);
+    assert.strictEqual(diagnostics.journal.length, diagnostics.journalSequence);
+    assert.deepStrictEqual(diagnostics.journal.at(-1), diagnostics.journalTail);
+    assert.isFalse(diagnostics.journalTruncated);
+
+    harness.memory.values.set(sessionHarnessKeys.actorJournalTail, {
+      ...diagnostics.journalTail,
+      resultCode: "mismatched_tail",
+    });
+    const invalidDiagnostics = await rejection(harness.sandbox.getScottyActorDiagnostics());
+    assert.ok(invalidDiagnostics instanceof ScottyError);
+    assert.strictEqual(invalidDiagnostics.code, "upstream");
 
     const hardCapIndex = harness.events.indexOf("schedule:sessionActorHardCap");
     const firstProviderIndex = harness.events.findIndex((event) =>
@@ -208,6 +223,52 @@ describe("Sandbox actor create boundary", () => {
       harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority),
       authority,
     );
+  });
+
+  it("retains an ambiguous workspace create as reconciling across idempotent replay", async () => {
+    const harness = await createSessionHarness({ failureStage: "workspacePrepare" });
+
+    const first = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(first instanceof ScottyError);
+    assert.strictEqual(first.code, "upstream");
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state),
+    );
+    assert.strictEqual(authority.state.transition.phase, "WorkspacePreparing");
+    assert.strictEqual(authority.state.transition.mode, "reconciling");
+    const workspaceCalls = harness.events.filter((event) =>
+      event.startsWith("host:exec:workspace"),
+    ).length;
+
+    const replay = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(replay instanceof ScottyError);
+    assert.strictEqual(replay.code, "upstream");
+    assert.strictEqual(
+      harness.events.filter((event) => event.startsWith("host:exec:workspace")).length,
+      workspaceCalls,
+    );
+  });
+
+  it("settles a confirmed workspace failure as Failed", async () => {
+    const harness = await createSessionHarness({ failureStage: "workspaceNonzero" });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(authority !== undefined && AuthorityStateSchema.guards.Stable(authority.state));
+    assert.ok(Predicate.isTagged(authority.state.stable, "Failed"));
+    assert.strictEqual(authority.state.stable.code, "create_workspace_failed");
   });
 
   it("preserves the missing-repository public not_found contract and points to --new-repo", async () => {

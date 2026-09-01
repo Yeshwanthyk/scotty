@@ -547,6 +547,7 @@ export type HarnessFailureStage =
   | "restoreBackup"
   | "terminalStop"
   | "vaporizeDestroy"
+  | "workspaceNonzero"
   | "workspacePrepare";
 
 export interface HarnessOptions {
@@ -738,6 +739,15 @@ class HarnessStorage {
     this.recordMutation(key, value);
   };
 
+  list = async <A>(options: DurableObjectListOptions = {}): Promise<Map<string, A>> => {
+    const prefix = options.prefix ?? "";
+    const entries = [...this.memory.values.entries()].filter(([key]) => key.startsWith(prefix));
+    entries.sort(([left], [right]) => left.localeCompare(right));
+    if (options.reverse) entries.reverse();
+    const limited = entries.slice(0, options.limit);
+    return new Map(limited.map(([key, value]) => [key, structuredClone(value) as A]));
+  };
+
   delete = async (key: string): Promise<boolean> => {
     const deleted = this.memory.values.delete(key);
     this.events.push(`storage:delete:${key}`);
@@ -747,6 +757,7 @@ class HarnessStorage {
   transaction = async <A>(
     operation: (transaction: {
       readonly get: <T>(key: string) => Promise<T | undefined>;
+      readonly list: <T>(options?: DurableObjectListOptions) => Promise<Map<string, T>>;
       readonly put: <T>(key: string, value: T) => Promise<void>;
       readonly delete: (key: string) => Promise<boolean>;
     }) => Promise<A>,
@@ -766,6 +777,17 @@ class HarnessStorage {
       try {
         const result = await operation({
           get: async <T>(key: string) => structuredClone(staged.get(key)) as T | undefined,
+          list: async <T>(options: DurableObjectListOptions = {}) => {
+            const prefix = options.prefix ?? "";
+            const entries = [...staged.entries()].filter(([key]) => key.startsWith(prefix));
+            entries.sort(([left], [right]) => left.localeCompare(right));
+            if (options.reverse) entries.reverse();
+            return new Map(
+              entries
+                .slice(0, options.limit)
+                .map(([key, value]) => [key, structuredClone(value) as T]),
+            );
+          },
           put: async <T>(key: string, value: T) => {
             staged.set(key, structuredClone(value));
             mutations.push({ kind: "put", key, value });
@@ -989,6 +1011,17 @@ const injectedExecResult = (
     };
   if (context.failures.has("workspacePrepare") && stage === "workspace")
     throw injectedHarnessFailure("injected workspace failure");
+  if (
+    context.failures.has("workspaceNonzero") &&
+    stage === "workspace" &&
+    command.includes(" clone ")
+  )
+    return {
+      ...harnessSuccessfulExec(command),
+      success: false,
+      exitCode: 128,
+      stderr: "clone rejected",
+    };
   if (context.failures.has("checkpointSync") && command === "sync")
     throw injectedHarnessFailure("injected checkpoint sync failure");
   if (context.failures.has("checkpointDefect") && command === "sync")
