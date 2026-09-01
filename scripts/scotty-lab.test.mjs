@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -13,9 +14,18 @@ import path from "node:path";
 import test from "node:test";
 import {
   cleanupOwnedFiles,
+  appendEvidenceCommand,
+  assertLifecycleSessionId,
+  ensureEvidenceRun,
+  evidencePathsForRunId,
+  isOwnedSession,
   prepareCredentialSetup,
   readLabManifest,
+  readEvidenceManifest,
   readPrivateToken,
+  recordCleanupResult,
+  recordOwnedSession,
+  recordScenarioResult,
   stopManifest,
   validateLabExecManifest,
   validateLabManifestPaths,
@@ -77,6 +87,127 @@ test("lab manifests are private, atomically replaceable, and contain no credenti
     assert.throws(() => readLabManifest(manifestDirectory), /regular file/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle evidence is private, atomic, retained, and explicit about unavailable observations", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "scotty-lab-evidence-test-"));
+  const tempRoot = mkdtempSync(path.join(tmpdir(), `scotty-lab-${RUN_ID}-`));
+  try {
+    const manifest = fixtureManifest(tempRoot);
+    const evidenceRoot = path.join(root, "evidence");
+    const paths = ensureEvidenceRun(manifest, evidenceRoot);
+    assert.equal(statSync(evidenceRoot).mode & 0o777, 0o700);
+    assert.equal(statSync(paths.directory).mode & 0o777, 0o700);
+    assert.equal(statSync(paths.manifest).mode & 0o777, 0o600);
+    assert.equal(statSync(paths.commands).mode & 0o777, 0o600);
+
+    appendEvidenceCommand(
+      manifest,
+      {
+        scenario: "checkpoint",
+        argv: ["snapshot", "a0b1c2d3e4f5", "--json"],
+        stdout: '{"id":"a0b1c2d3e4f5","status":"warm"}\n',
+        stderr: "",
+        exitCode: 0,
+        signal: null,
+        startedAt: "2026-08-31T00:00:00.000Z",
+        finishedAt: "2026-08-31T00:00:01.000Z",
+        sessionId: "a0b1c2d3e4f5",
+        sessionOwned: true,
+      },
+      evidenceRoot,
+    );
+    appendEvidenceCommand(
+      manifest,
+      {
+        scenario: "hard-cap",
+        argv: [],
+        stdout: "",
+        stderr: "not available",
+        exitCode: 1,
+        signal: null,
+        startedAt: "2026-08-31T00:00:02.000Z",
+        finishedAt: "2026-08-31T00:00:02.000Z",
+        sessionId: "a0b1c2d3e4f5",
+        sessionOwned: true,
+      },
+      evidenceRoot,
+    );
+    const commands = readFileSync(paths.commands, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(commands.length, 2);
+    assert.deepEqual(commands[0].argv, ["snapshot", "a0b1c2d3e4f5", "--json"]);
+    assert.equal(commands[0].stdout.includes("warm"), true);
+    assert.equal(commands[0].stderr, "");
+    assert.equal(commands[0].exitCode, 0);
+    assert.equal(commands[0].signal, null);
+    assert.doesNotMatch(JSON.stringify(commands), /SCOTTY_TOKEN|root-token-value/u);
+    assert.equal(
+      readdirSync(paths.directory).some((name) => name.endsWith(".tmp")),
+      false,
+    );
+
+    // Ownership is retained even when the create response is not ready yet.
+    recordOwnedSession(manifest, "a0b1c2d3e4f5", "2026-08-31T00:00:03.000Z", evidenceRoot);
+    recordScenarioResult(
+      manifest,
+      {
+        scenario: "create-and-ready",
+        status: "failed",
+        sessionId: "a0b1c2d3e4f5",
+        reason: "Expected warm, received booting",
+      },
+      evidenceRoot,
+    );
+    recordScenarioResult(
+      manifest,
+      {
+        scenario: "checkpoint",
+        status: "not-available",
+        sessionId: "a0b1c2d3e4f5",
+        fault: "after-intent-commit",
+        reason: "Fault injection is not available",
+      },
+      evidenceRoot,
+    );
+    recordScenarioResult(
+      manifest,
+      {
+        scenario: "vaporize",
+        status: "rejected",
+        sessionId: "b0b1c2d3e4f5",
+        reason: "Session is not owned by this run",
+      },
+      evidenceRoot,
+    );
+    assert.equal(isOwnedSession(manifest, "a0b1c2d3e4f5", evidenceRoot), true);
+    assert.equal(isOwnedSession(manifest, "b0b1c2d3e4f5", evidenceRoot), false);
+    assert.throws(() => assertLifecycleSessionId("6ffa0a512819"), /protected/u);
+    assert.throws(
+      () => recordOwnedSession(manifest, "6ffa0a512819", "2026-08-31T00:00:04.000Z", evidenceRoot),
+      /protected/u,
+    );
+
+    recordCleanupResult(
+      manifest,
+      { status: "succeeded", finishedAt: "2026-08-31T00:00:05.000Z", errors: [] },
+      evidenceRoot,
+    );
+    rmSync(tempRoot, { recursive: true, force: true });
+    const evidence = readEvidenceManifest(RUN_ID, evidenceRoot);
+    assert.deepEqual(evidence.ownedSessionIds, ["a0b1c2d3e4f5"]);
+    assert.equal(evidence.scenarioResults[0].status, "failed");
+    assert.equal(evidence.scenarioResults[1].status, "not-available");
+    assert.equal(evidence.scenarioResults[1].fault, "after-intent-commit");
+    assert.equal(evidence.scenarioResults[2].status, "rejected");
+    assert.equal(evidence.cleanupResult.status, "succeeded");
+    assert.equal(evidence.observations.actorAuthorityRevision.status, "not-available");
+    assert.equal(evidence.observations.operationJournal.status, "not-available");
+    assert.equal(evidence.observations.providerSnapshot.status, "not-available");
+    assert.equal(statSync(evidencePathsForRunId(RUN_ID, evidenceRoot).manifest).isFile(), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 

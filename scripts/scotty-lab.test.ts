@@ -1,7 +1,8 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
+import { spawn } from "node:child_process";
 import { Effect, Layer, Predicate, Result } from "effect";
-import { LabOperations, LabUsageError, runLab } from "./scotty-lab.ts";
+import { LabOperations, LabUsageError, runLab, waitForCapturedChild } from "./scotty-lab.ts";
 
 const RUN_ID = "lab-12345678-1234-4123-8123-123456789abc";
 
@@ -18,6 +19,27 @@ const run = (args: ReadonlyArray<string>, calls: string[]): Effect.Effect<void, 
             Effect.asVoid,
           ),
         stop: (runId) => Effect.sync(() => calls.push(`stop:${runId}`)).pipe(Effect.asVoid),
+        createAndReady: (repo, fault) =>
+          Effect.sync(() => calls.push(`create-and-ready:${repo}:${fault ?? "none"}`)).pipe(
+            Effect.asVoid,
+          ),
+        checkpoint: (sessionId, fault) =>
+          Effect.sync(() => calls.push(`checkpoint:${sessionId}:${fault ?? "none"}`)).pipe(
+            Effect.asVoid,
+          ),
+        sleepResume: (sessionId, fault) =>
+          Effect.sync(() => calls.push(`sleep-resume:${sessionId}:${fault ?? "none"}`)).pipe(
+            Effect.asVoid,
+          ),
+        runtimeLoss: (sessionId, fault) =>
+          Effect.sync(() => calls.push(`runtime-loss:${sessionId}:${fault ?? "none"}`)),
+        hardCap: (sessionId, fault) =>
+          Effect.sync(() => calls.push(`hard-cap:${sessionId}:${fault ?? "none"}`)),
+        vaporize: (sessionId, fault) =>
+          Effect.sync(() => calls.push(`vaporize:${sessionId}:${fault ?? "none"}`)).pipe(
+            Effect.asVoid,
+          ),
+        full: (repo, fault) => Effect.sync(() => calls.push(`full:${repo}:${fault ?? "none"}`)),
       }),
     ),
   );
@@ -29,7 +51,7 @@ const assertUsageFailure = (result: Result.Result<void, unknown>): void => {
     result.failure,
     new LabUsageError({
       message:
-        "Usage: npm run lab -- start | setup RUN_ID --repo OWNER/REPO | exec RUN_ID -- <scotty argv> | stop RUN_ID",
+        "Usage: npm run lab -- start | setup RUN_ID --repo OWNER/REPO | exec RUN_ID -- <scotty argv> | stop RUN_ID | lifecycle <scenario>",
     }),
   );
 };
@@ -87,6 +109,68 @@ describe("Effect Scotty lab command grammar", () => {
     }),
   );
 
+  it.effect("rejects the protected session before invoking any lab operation", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      for (const args of [
+        ["exec", RUN_ID, "--", "resume", "6ffa0a512819", "--json"],
+        ["lifecycle", "checkpoint", "--session", "6ffa0a512819"],
+        ["lifecycle", "vaporize", "--session", "6ffa0a512819"],
+      ]) {
+        const result = yield* Effect.result(run(args, calls));
+        assert.ok(Result.isFailure(result));
+        assert.ok(Predicate.isTagged(result.failure, "LabFailure"));
+        assert.match(JSON.stringify(result.failure), /protected/u);
+      }
+      assert.deepEqual(calls, []);
+    }),
+  );
+
+  it.effect("models every lifecycle scenario and the closed fault vocabulary", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      yield* run(["lifecycle", "create-and-ready", "--repo", "owner/repo"], calls);
+      yield* run(["lifecycle", "checkpoint", "--session", "a0b1c2d3e4f5"], calls);
+      yield* run(
+        ["lifecycle", "sleep-resume", "--session", "a0b1c2d3e4f5", "--fault", "runtime-stopped"],
+        calls,
+      );
+      yield* run(["lifecycle", "runtime-loss", "--session", "a0b1c2d3e4f5"], calls);
+      yield* run(["lifecycle", "hard-cap", "--session", "a0b1c2d3e4f5"], calls);
+      yield* run(["lifecycle", "vaporize", "--session", "a0b1c2d3e4f5"], calls);
+      yield* run(["lifecycle", "full", "--repo", "owner/repo"], calls);
+      assert.deepEqual(calls, [
+        "create-and-ready:owner/repo:none",
+        "checkpoint:a0b1c2d3e4f5:none",
+        "sleep-resume:a0b1c2d3e4f5:runtime-stopped",
+        "runtime-loss:a0b1c2d3e4f5:none",
+        "hard-cap:a0b1c2d3e4f5:none",
+        "vaporize:a0b1c2d3e4f5:none",
+        "full:owner/repo:none",
+      ]);
+      assertUsageFailure(
+        yield* Effect.result(
+          run(
+            ["lifecycle", "checkpoint", "--session", "a0b1c2d3e4f5", "--fault", "invented"],
+            calls,
+          ),
+        ),
+      );
+    }),
+  );
+
+  it.effect("captures child stdout, stderr, and exit status", () =>
+    Effect.gen(function* () {
+      const child = spawn(
+        process.execPath,
+        ["-e", "process.stdout.write('out'); process.stderr.write('err'); process.exitCode = 7"],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const captured = yield* waitForCapturedChild(child);
+      assert.deepEqual(captured, { stdout: "out", stderr: "err", code: 7 });
+    }),
+  );
+
   it.effect("rejects every command and trailing shape outside the public grammar", () =>
     Effect.gen(function* () {
       const calls: string[] = [];
@@ -97,6 +181,7 @@ describe("Effect Scotty lab command grammar", () => {
         ["start", "extra"],
         ["setup", RUN_ID, "--repo", "not-a-repo"],
         ["setup", RUN_ID, "--repo", "owner/repo", "extra"],
+        ["lifecycle", "checkpoint", "a0b1c2d3e4f5"],
         ["stop", RUN_ID, "extra"],
         ["stop", "not-a-run"],
       ]) {

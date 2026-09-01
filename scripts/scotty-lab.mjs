@@ -36,8 +36,11 @@ import {
 export const LAB_DIRECTORY = path.join(ROOT, ".scotty-lab");
 export const MANIFEST_PATH = path.join(LAB_DIRECTORY, "run.json");
 export const LIFECYCLE_LOCK_PATH = path.join(LAB_DIRECTORY, "lifecycle.lock");
+export const EVIDENCE_DIRECTORY = path.join(LAB_DIRECTORY, "evidence");
+export const PROTECTED_SESSION_ID = "6ffa0a512819";
 const PORT = 8791;
 const RUN_ID_PATTERN = /^lab-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SESSION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{5,31}$/u;
 const STATUS_VALUES = new Set(["starting", "running", "cleanup-pending"]);
 const GENERATED_PATH_NAMES = ["tokenFile", "cliHome", "persistPath", "envFile", "logFile"];
 
@@ -110,6 +113,155 @@ export function writePrivateManifest(manifestPath, manifest, { exclusive = false
   } finally {
     rmSync(temporaryPath, { force: true });
   }
+}
+
+export function evidencePathsForRunId(runId, evidenceDirectory = EVIDENCE_DIRECTORY) {
+  if (!RUN_ID_PATTERN.test(runId)) throw new Error("Lab run ID is invalid");
+  const directory = path.join(evidenceDirectory, runId);
+  return {
+    directory,
+    manifest: path.join(directory, "run.json"),
+    commands: path.join(directory, "commands.jsonl"),
+  };
+}
+
+function unavailableObservation(reason) {
+  return { status: "not-available", reason };
+}
+
+export function ensureEvidenceRun(manifest, evidenceDirectory = EVIDENCE_DIRECTORY) {
+  const paths = evidencePathsForRunId(manifest.runId, evidenceDirectory);
+  mkdirSync(evidenceDirectory, { recursive: true, mode: 0o700 });
+  chmodSync(evidenceDirectory, 0o700);
+  mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
+  chmodSync(paths.directory, 0o700);
+  try {
+    privateRegularFile(paths.manifest, "Lab evidence manifest");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    writePrivateManifest(
+      paths.manifest,
+      {
+        version: 1,
+        runId: manifest.runId,
+        createdAt: manifest.createdAt,
+        workerName: manifest.workerName,
+        ownedSessionIds: [],
+        scenarioResults: [],
+        cleanupResult: { status: "not-run" },
+        observations: {
+          actorAuthorityRevision: unavailableObservation(
+            "The public CLI does not expose the actor authority revision.",
+          ),
+          operationJournal: unavailableObservation(
+            "The public CLI does not expose the actor operation journal.",
+          ),
+          providerSnapshot: unavailableObservation(
+            "The public CLI does not expose provider state snapshots.",
+          ),
+        },
+      },
+      { exclusive: true },
+    );
+  }
+  try {
+    privateRegularFile(paths.commands, "Lab evidence command log");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    writeFileSync(paths.commands, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
+    chmodSync(paths.commands, 0o600);
+  }
+  return paths;
+}
+
+export function readEvidenceManifest(runId, evidenceDirectory = EVIDENCE_DIRECTORY) {
+  const paths = evidencePathsForRunId(runId, evidenceDirectory);
+  privateRegularFile(paths.manifest, "Lab evidence manifest");
+  const parsed = JSON.parse(readFileSync(paths.manifest, "utf8"));
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    parsed.version !== 1 ||
+    parsed.runId !== runId ||
+    !Array.isArray(parsed.ownedSessionIds) ||
+    !Array.isArray(parsed.scenarioResults)
+  ) {
+    throw new Error("Lab evidence manifest is invalid");
+  }
+  return parsed;
+}
+
+function updateEvidenceManifest(manifest, update, evidenceDirectory = EVIDENCE_DIRECTORY) {
+  ensureEvidenceRun(manifest, evidenceDirectory);
+  const paths = evidencePathsForRunId(manifest.runId, evidenceDirectory);
+  const current = readEvidenceManifest(manifest.runId, evidenceDirectory);
+  writePrivateManifest(paths.manifest, update(current));
+  return readEvidenceManifest(manifest.runId, evidenceDirectory);
+}
+
+export function recordOwnedSession(manifest, sessionId, recordedAt, evidenceDirectory) {
+  assertLifecycleSessionId(sessionId);
+  return updateEvidenceManifest(
+    manifest,
+    (current) => ({
+      ...current,
+      ownedSessionIds: current.ownedSessionIds.includes(sessionId)
+        ? current.ownedSessionIds
+        : [...current.ownedSessionIds, sessionId],
+      sessionOwnershipUpdatedAt: recordedAt,
+    }),
+    evidenceDirectory,
+  );
+}
+
+export function isOwnedSession(manifest, sessionId, evidenceDirectory) {
+  assertLifecycleSessionId(sessionId);
+  ensureEvidenceRun(manifest, evidenceDirectory);
+  return readEvidenceManifest(manifest.runId, evidenceDirectory).ownedSessionIds.includes(
+    sessionId,
+  );
+}
+
+export function recordScenarioResult(manifest, result, evidenceDirectory) {
+  return updateEvidenceManifest(
+    manifest,
+    (current) => ({ ...current, scenarioResults: [...current.scenarioResults, result] }),
+    evidenceDirectory,
+  );
+}
+
+export function recordCleanupResult(manifest, cleanupResult, evidenceDirectory) {
+  return updateEvidenceManifest(
+    manifest,
+    (current) => ({ ...current, cleanupResult }),
+    evidenceDirectory,
+  );
+}
+
+export function appendEvidenceCommand(manifest, record, evidenceDirectory) {
+  const paths = ensureEvidenceRun(manifest, evidenceDirectory);
+  privateRegularFile(paths.commands, "Lab evidence command log");
+  const previous = readFileSync(paths.commands, "utf8");
+  const temporaryPath = `${paths.commands}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, `${previous}${JSON.stringify(record)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    chmodSync(temporaryPath, 0o600);
+    renameSync(temporaryPath, paths.commands);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+}
+
+export function assertLifecycleSessionId(sessionId) {
+  if (sessionId === PROTECTED_SESSION_ID)
+    throw new Error(`Session ${PROTECTED_SESSION_ID} is protected and must never be targeted`);
+  if (!SESSION_ID_PATTERN.test(sessionId)) throw new Error("Session ID is invalid");
+  return sessionId;
 }
 
 function generatedPaths(tempRoot) {
@@ -312,8 +464,15 @@ export function createStartReservation(createdAt) {
   };
   try {
     writePrivateManifest(MANIFEST_PATH, manifest, { exclusive: true });
+    ensureEvidenceRun(manifest);
     return manifest;
   } catch (error) {
+    try {
+      const persisted = readLabManifest();
+      if (persisted.runId === runId) rmSync(MANIFEST_PATH, { force: true });
+    } catch {
+      // The reservation either was never written or cannot be safely identified as this run.
+    }
     rmSync(tempRoot, { recursive: true, force: true });
     if (error?.code === "EEXIST")
       throw new Error(`A Scotty lab already exists; stop the run recorded in ${MANIFEST_PATH}`);
@@ -449,6 +608,11 @@ export function execManifest(runId) {
   return manifest;
 }
 
+export function activeRunManifest() {
+  const manifest = readLabManifest();
+  return execManifest(manifest.runId);
+}
+
 const shellWord = (value) => `'${value.replaceAll("'", `'\\''`)}'`;
 
 export function prepareCredentialSetup(manifest, repo, suppliedInputs) {
@@ -487,7 +651,7 @@ export function prepareCredentialSetup(manifest, repo, suppliedInputs) {
   return { credentialBin };
 }
 
-export function spawnCli(manifest, argv, explicitEnvironment = {}) {
+export function spawnCli(manifest, argv, explicitEnvironment = {}, stdio = "inherit") {
   const rootToken = readPrivateToken(manifest.tokenFile);
   return spawn("bun", [path.join(ROOT, "cli/scotty.ts"), ...argv], {
     cwd: ROOT,
@@ -496,8 +660,27 @@ export function spawnCli(manifest, argv, explicitEnvironment = {}) {
       SCOTTY_TOKEN: rootToken,
       ...explicitEnvironment,
     }),
-    stdio: "inherit",
+    stdio,
   });
+}
+
+export function sanitizeEvidenceText(manifest, value) {
+  return redact(value, [readPrivateToken(manifest.tokenFile)]);
+}
+
+export async function sleepSession(manifest, sessionId, signal) {
+  assertLifecycleSessionId(sessionId);
+  const rootToken = readPrivateToken(manifest.tokenFile);
+  const response = await fetch(
+    new URL(`/api/sessions/${encodeURIComponent(sessionId)}/sleep`, manifest.host),
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${rootToken}` },
+      signal,
+    },
+  );
+  const body = redact(await response.text(), [rootToken]);
+  return { status: response.status, body };
 }
 
 export function stopManifest(runId, manifestPath = MANIFEST_PATH) {
