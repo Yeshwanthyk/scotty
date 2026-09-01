@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
+  getScottyActorDiagnostics: vi.fn(),
   getScottySession: vi.fn(),
   getScottyDeploymentReadiness: vi.fn(),
   listScottyChanges: vi.fn(),
@@ -2221,6 +2222,24 @@ describe("real Hono boundary", () => {
       status: "warm",
     });
     expect(harness.events).toContain("projection:warm");
+  });
+
+  it("reads validated actor authority and journal evidence through the authenticated boundary", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    useRealSandbox(harness);
+
+    const response = await app.request(
+      `/api/sessions/${SESSION_ID}/actor`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      authority: { session: { id: SESSION_ID }, state: { _tag: "Stable" } },
+      journalTruncated: false,
+    });
   });
 
   it("resumes through real restore, credential, runtime, and state orchestration", async () => {

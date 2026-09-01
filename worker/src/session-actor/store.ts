@@ -168,7 +168,7 @@ const validateSnapshotCoherence = (
   return undefined;
 };
 
-const decodeSnapshot = (
+export const decodeActorStorageSnapshot = (
   raw: RawActorStorageSnapshot,
 ): Result.Result<ActorStoreSnapshot, ActorStoreCorrupt> => {
   const revision = decodeCounter(raw.revision, "revision");
@@ -236,7 +236,7 @@ const planCommit = (
   raw: RawActorStorageSnapshot,
   request: ActorCommitRequest,
 ): ActorStorageTransactionPlan => {
-  const decoded = decodeSnapshot(raw);
+  const decoded = decodeActorStorageSnapshot(raw);
   if (Result.isFailure(decoded))
     return { _tag: "NoCommit", outcome: { _tag: "Corrupt", key: decoded.failure.key } };
   const current = decoded.success;
@@ -295,7 +295,7 @@ export const makeActorStore = (
     catch: () => new ActorStoreReadFailure({ operation: "read" }),
   }).pipe(
     Effect.flatMap((raw) => {
-      const decoded = decodeSnapshot(raw);
+      const decoded = decodeActorStorageSnapshot(raw);
       return Result.isSuccess(decoded)
         ? Effect.succeed(decoded.success)
         : Effect.fail(decoded.failure);

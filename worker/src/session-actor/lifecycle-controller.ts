@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Predicate, Schema } from "effect";
-import { SessionActor, type ActorHandleError } from "./actor";
+import { actorResultRejectedBeforeCommit, SessionActor, type ActorHandleError } from "./actor";
 import { AuthorityStateSchema, type SessionAuthority, StableStateSchema } from "./authority";
 import { CreateHardCapController, type CreateControllerBoundaryFailure } from "./create-controller";
 import type { SessionActorInput } from "./input";
@@ -133,7 +133,7 @@ export const lifecycleControllerLayer: Layer.Layer<
           });
         }
         const handled = yield* actor.handle(input);
-        if (Predicate.isTagged(handled.decision, "Rejected"))
+        if (actorResultRejectedBeforeCommit(handled))
           return yield* new LifecycleControllerRejected({
             kind: request.kind,
             code: handled.decision.code,

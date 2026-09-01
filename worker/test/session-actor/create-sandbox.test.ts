@@ -165,6 +165,7 @@ const providerLayer = (
         payloadReference,
         runtimeGeneration: runtimeProof.runtimeGeneration,
         sandboxBundleDigest: null,
+        githubHandle: "scotty-managed://github/github/git-https",
         credentials: sessionRuntimeCredentials(grants),
         grants,
       }),

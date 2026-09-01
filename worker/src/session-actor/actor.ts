@@ -14,6 +14,7 @@ import {
   type CommittedActorDecision,
   type EvidenceMutation,
 } from "./store";
+import { transitionKind } from "./transition";
 
 export type ActorHandleError =
   | ActorStoreReadError
@@ -25,6 +26,15 @@ export interface ActorHandleResult {
   readonly decision: Decision;
   readonly committed: ReadonlyArray<CommittedActorDecision>;
 }
+
+export const actorResultAuthority = (result: ActorHandleResult): SessionAuthority | undefined =>
+  result.committed[result.committed.length - 1]?.authority;
+
+export const actorResultRejectedBeforeCommit = (
+  result: ActorHandleResult,
+): result is ActorHandleResult & {
+  readonly decision: Extract<Decision, { readonly _tag: "Rejected" }>;
+} => result.committed.length === 0 && Predicate.isTagged(result.decision, "Rejected");
 
 interface SessionActorShape {
   readonly handle: (
@@ -174,6 +184,24 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
         if (authority === undefined || !AuthorityStateSchema.guards.Transitioning(authority.state))
           return undefined;
         const transition = authority.state.transition;
+        if (transition.mode === "reconciling") {
+          const journalEvent = snapshot.journalTail;
+          if (journalEvent === undefined) return undefined;
+          const observation = yield* runner.run({
+            authority,
+            journalEvent,
+            intent: {
+              _tag: "ReconcileTransition",
+              transitionKind: transitionKind(transition),
+              phase: transition.phase,
+              transitionNonce: transition.nonce,
+              attempt: transition.attempt,
+            },
+          });
+          return Predicate.isTagged(observation, "Observation")
+            ? yield* handle(observation.input)
+            : undefined;
+        }
         return yield* handle({
           _tag: "UnknownProviderOutcome",
           revision: authority.revision,

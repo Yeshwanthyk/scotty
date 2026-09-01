@@ -345,6 +345,83 @@ describe("session actor restart", () => {
     }),
   );
 
+  it.effect(
+    "re-dispatches persisted reconciliation without committing a duplicate unknown fact",
+    () =>
+      Effect.gen(function* () {
+        const persistedTransition = {
+          ...transition("Create", "WorkspacePreparing"),
+          mode: "reconciling" as const,
+        };
+        const persisted = authority(persistedTransition);
+        const memory = actorPort(undefined, false, {
+          authority: persisted,
+          revision: 1,
+          journalSequence: 1,
+          journalTail: {
+            sequence: 1,
+            revision: 1,
+            timestamp: T1,
+            correlationId: "correlation-before-restart",
+            transitionNonce: persistedTransition.nonce,
+            eventType: "provider_reconciling",
+            transitionKind: "Create",
+            transitionPhase: "WorkspacePreparing",
+            resultCode: "workspace_outcome_unknown",
+            causeSequence: null,
+            causeAttempt: persistedTransition.attempt,
+          },
+        });
+        const dispatched: string[] = [];
+        const runner = actorEffectRunnerLayer.pipe(
+          Layer.provide(
+            Layer.merge(
+              actorAlarmSchedulerLayer(() => Effect.void),
+              providerEffectExecutorLayer((committed) => {
+                dispatched.push(
+                  Match.valueTags(committed.intent, {
+                    ExecutePhase: () => "ExecutePhase",
+                    ReconcileTransition: () => "ReconcileTransition",
+                  }),
+                );
+                assert.ok(AuthorityStateSchema.guards.Transitioning(committed.authority.state));
+                if (!AuthorityStateSchema.guards.Transitioning(committed.authority.state))
+                  return Effect.succeed(createCommand());
+                const current = committed.authority.state.transition;
+                return Effect.succeed({
+                  _tag: "TransitionFailed",
+                  revision: committed.authority.revision,
+                  transitionNonce: current.nonce,
+                  attempt: current.attempt,
+                  expectedPhase: current.phase,
+                  timestamp: T1,
+                  correlationId: committed.journalEvent.correlationId,
+                  failureCode: "workspace_absent_after_restart",
+                  actionable: false,
+                  backup: null,
+                  ownedBackupIds: [],
+                  wakeSource: null,
+                  resultCode: "workspace_absent_after_restart",
+                });
+              }),
+            ),
+          ),
+        );
+        const actor = sessionActorLayer.pipe(
+          Layer.provide(Layer.merge(actorStoreLayer(memory.port), runner)),
+        );
+
+        const result = yield* Effect.flatMap(SessionActor, (service) =>
+          service.resume({ timestamp: T1, correlationId: "correlation-restart" }),
+        ).pipe(Effect.provide(actor));
+
+        assert.ok(result !== undefined);
+        assert.deepStrictEqual(dispatched, ["ReconcileTransition"]);
+        assert.strictEqual(result.committed.length, 1);
+        assert.ok(AuthorityStateSchema.guards.Stable(result.committed[0]?.authority.state));
+      }),
+  );
+
   it.effect("reconstructs every transition phase from storage without runtime-memory state", () =>
     Effect.gen(function* () {
       for (const kind of Object.keys(phases) as ReadonlyArray<TransitionKind>) {

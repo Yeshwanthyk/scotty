@@ -155,8 +155,9 @@ the lab does not simulate desired state or write internal storage. `full` runs t
 create, checkpoint, sleep, resume, and vaporize steps in order. It retains all evidence after the
 owned session is gone.
 
-The evidence manifest also marks actor authority revision, operation journal, and provider snapshot
-observations as `not-available`. Current evidence proves only the local public HTTP/CLI paths and
-their observed outputs. It does not prove internal actor revision/journal ordering, provider state,
-fault recovery, hard-cap alarm behavior, deployed behavior, or absence of post-response provider
-ambiguity.
+After each supported lifecycle action, the lab reads the authenticated actor diagnostics endpoint
+and retains the validated authority, revision, bounded immutable journal, and journal tail. The
+journal response declares when its 256-event window is truncated. Provider snapshots remain
+`not-available`; the lab therefore proves the public HTTP/CLI result and its matching actor commit,
+but it does not by itself prove provider state, fault recovery, hard-cap alarm behavior, deployed
+behavior, or absence of post-response provider ambiguity.

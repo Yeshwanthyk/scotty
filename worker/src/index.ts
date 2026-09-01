@@ -734,6 +734,12 @@ app.get("/api/sessions/:id", async (c) => {
   return c.json(await sessionSandbox(c.env, id).getScottySession());
 });
 
+app.get("/api/sessions/:id/actor", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).getScottyActorDiagnostics());
+});
+
 app.get("/api/sessions/:id/changes", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));

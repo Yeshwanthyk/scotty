@@ -239,6 +239,48 @@ export function recordCleanupResult(manifest, cleanupResult, evidenceDirectory) 
   );
 }
 
+export function recordActorDiagnostics(manifest, observation, evidenceDirectory) {
+  assertLifecycleSessionId(observation.sessionId);
+  return updateEvidenceManifest(
+    manifest,
+    (current) => ({
+      ...current,
+      observations: {
+        ...current.observations,
+        actorAuthorityRevision: {
+          status: "available",
+          snapshots: [
+            ...(current.observations.actorAuthorityRevision.snapshots ?? []),
+            {
+              scenario: observation.scenario,
+              sessionId: observation.sessionId,
+              observedAt: observation.observedAt,
+              revision: observation.diagnostics.revision,
+              authority: observation.diagnostics.authority,
+            },
+          ],
+        },
+        operationJournal: {
+          status: "available",
+          snapshots: [
+            ...(current.observations.operationJournal.snapshots ?? []),
+            {
+              scenario: observation.scenario,
+              sessionId: observation.sessionId,
+              observedAt: observation.observedAt,
+              journalSequence: observation.diagnostics.journalSequence,
+              journalTail: observation.diagnostics.journalTail,
+              journal: observation.diagnostics.journal,
+              journalTruncated: observation.diagnostics.journalTruncated,
+            },
+          ],
+        },
+      },
+    }),
+    evidenceDirectory,
+  );
+}
+
 export function appendEvidenceCommand(manifest, record, evidenceDirectory) {
   const paths = ensureEvidenceRun(manifest, evidenceDirectory);
   privateRegularFile(paths.commands, "Lab evidence command log");
@@ -675,6 +717,20 @@ export async function sleepSession(manifest, sessionId, signal) {
     new URL(`/api/sessions/${encodeURIComponent(sessionId)}/sleep`, manifest.host),
     {
       method: "POST",
+      headers: { authorization: `Bearer ${rootToken}` },
+      signal,
+    },
+  );
+  const body = redact(await response.text(), [rootToken]);
+  return { status: response.status, body };
+}
+
+export async function readActorDiagnostics(manifest, sessionId, signal) {
+  assertLifecycleSessionId(sessionId);
+  const rootToken = readPrivateToken(manifest.tokenFile);
+  const response = await fetch(
+    new URL(`/api/sessions/${encodeURIComponent(sessionId)}/actor`, manifest.host),
+    {
       headers: { authorization: `Bearer ${rootToken}` },
       signal,
     },
