@@ -112,6 +112,7 @@ describe("Sandbox actor create boundary", () => {
     assert.isDefined(cloneCommand);
     assert.include(cloneCommand, btoa("x-access-token:scotty-managed://github/github/git-https"));
     assert.notInclude(cloneCommand, "test-github-token");
+    assert.notInclude(cloneCommand, btoa("x-access-token:test-github-token"));
   });
 
   it("scrubs the private prompt after settlement and journals only safe causal fields", async () => {
