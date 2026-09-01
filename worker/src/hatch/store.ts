@@ -23,8 +23,8 @@ import {
 } from "./contracts";
 import {
   HATCH_STATE_KEY,
-  RUNTIME_EPOCH_KEY,
-  SESSION_RECORD_KEY,
+  readActorBackedSessionRecord,
+  readActorRuntimeGeneration,
   type SessionControlGate,
 } from "../session/store";
 
@@ -53,8 +53,8 @@ export const durableObjectHatchStateStorage = (
       storage.transaction((transaction) =>
         operation({
           getHatch: () => transaction.get(HATCH_STATE_KEY),
-          getRecord: () => transaction.get(SESSION_RECORD_KEY),
-          getRuntimeEpoch: () => transaction.get(RUNTIME_EPOCH_KEY),
+          getRecord: () => readActorBackedSessionRecord(transaction),
+          getRuntimeEpoch: () => readActorRuntimeGeneration(transaction),
           putHatch: (state) => transaction.put(HATCH_STATE_KEY, state),
           deleteHatch: () => transaction.delete(HATCH_STATE_KEY).then(() => undefined),
         }),

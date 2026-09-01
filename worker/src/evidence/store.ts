@@ -55,6 +55,13 @@ export interface AcceptEvidenceJobInput {
   readonly job: BrowserEvidenceJob;
 }
 
+export interface EvidenceAdmissionPlan {
+  readonly active: EvidenceActiveJob;
+  readonly state: EvidenceState;
+  readonly expectedEvidence: unknown | undefined;
+  readonly capacityDeletes: ReadonlyArray<EvidenceArtifact>;
+}
+
 export interface BeginEvidencePreviewInput {
   readonly runtimeEpoch: string;
   readonly runtimeRunning: boolean;
@@ -112,10 +119,11 @@ interface EvidenceStoreShape {
     jobId: string,
     frameId: string,
   ) => Effect.Effect<EvidenceArtifact, EvidenceStateError | ScottyError>;
-  readonly prepareJobCapacity: Effect.Effect<ReadonlyArray<EvidenceArtifact>, EvidenceStateError>;
-  readonly accept: (
+  readonly prepareAdmission: (
     input: AcceptEvidenceJobInput,
-  ) => Effect.Effect<EvidenceActiveJob, EvidenceStateError | ScottyError>;
+    session: SessionRecord,
+    runtimeEpoch: string,
+  ) => Effect.Effect<EvidenceAdmissionPlan, EvidenceStateError | ScottyError>;
   readonly setPhase: (
     nonce: string,
     status: Extract<EvidenceJobStatus, "exposing" | "running" | "finalizing">,
@@ -670,11 +678,6 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
         now,
       );
       await transaction.putEvidence(nextState);
-      await transaction.putRecord({
-        ...session.success,
-        operation: null,
-        updatedAt: now,
-      });
       return Result.succeed(summary);
     }) as Effect.Effect<EvidenceJobSummary, EvidenceStateError>;
   });
@@ -707,143 +710,98 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
           return artifact === undefined ? Effect.fail(notFound(frameId)) : Effect.succeed(artifact);
         }),
       ),
-    prepareJobCapacity: Effect.fnUntraced(function* () {
-      const requestedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-      return yield* transact(async (transaction) => {
-        const state = decodeState(await transaction.getEvidence());
-        if (Result.isFailure(state)) return Result.fail(state.failure);
-        if (state.success.activeJob !== undefined)
-          return Result.fail(new EvidenceStateError({ reason: "invalid" }));
-        const cleanupKeys = new Set(
-          state.success.pendingDeletes
-            .filter((pending) => pending.reason === "history_evicted")
-            .map((pending) => pending.objectKey),
-        );
-        let jobs = [...state.success.jobs];
-        const projectedArtifactCount = (): number =>
-          state.success.artifacts.filter((artifact) => !cleanupKeys.has(artifact.objectKey)).length;
-        while (
-          (jobs.length >= EVIDENCE_MAX_RETAINED_JOBS ||
-            projectedArtifactCount() >
-              EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_ARTIFACTS_PER_JOB) &&
-          jobs.length > 0
-        ) {
-          const oldest = jobs.at(-1);
-          if (oldest === undefined) break;
-          jobs = jobs.slice(0, -1);
-          for (const artifact of state.success.artifacts) {
-            if (artifact.jobId === oldest.jobId) cleanupKeys.add(artifact.objectKey);
-          }
-        }
-        if (
-          jobs.length >= EVIDENCE_MAX_RETAINED_JOBS ||
-          projectedArtifactCount() >
-            EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_ARTIFACTS_PER_JOB
-        )
-          return Result.fail(new EvidenceStateError({ reason: "invalid" }));
-        const cleanup = state.success.artifacts.filter((artifact) =>
-          cleanupKeys.has(artifact.objectKey),
-        );
-        const requested = requestDeletes(
-          { ...state.success, jobs },
-          cleanup,
-          "history_evicted",
-          requestedAt,
-        );
-        if (jobs.length !== state.success.jobs.length || cleanup.length > 0)
-          await transaction.putEvidence(requested);
-        return Result.succeed(
-          requested.artifacts.filter(
-            (artifact) =>
-              cleanupKeys.has(artifact.objectKey) && artifact.status === "delete_pending",
-          ),
-        );
-      }) as Effect.Effect<ReadonlyArray<EvidenceArtifact>, EvidenceStateError>;
-    })(),
-    accept: Effect.fnUntraced(function* (input) {
+    prepareAdmission: Effect.fnUntraced(function* (input, record, runtimeEpoch) {
+      if (getEvidence === undefined) return yield* new EvidenceStateError({ reason: "storage" });
       const acceptedAtMillis = yield* Clock.currentTimeMillis;
       const acceptedAt = new Date(acceptedAtMillis).toISOString();
-      return yield* transact(async (transaction) => {
-        const [storedSession, storedEvidence, runtimeEpoch] = await Promise.all([
-          transaction.getRecord(),
-          transaction.getEvidence(),
-          transaction.getRuntimeEpoch(),
-        ]);
-        const session = decodeSession(storedSession);
-        const state = decodeState(storedEvidence);
-        if (Result.isFailure(session)) return Result.fail(session.failure);
-        if (Result.isFailure(state)) return Result.fail(state.failure);
-        const record = session.success;
-        if (record.status === "gone") return Result.fail(notFound(record.id));
-        if (record.status !== "warm") return Result.fail(wrongState(record.status, "evidence"));
-        if (record.execution.provider !== "cloudflare")
-          return Result.fail(
-            wrongState(record.status, "evidence", "Runner-backed evidence is disabled"),
-          );
-        if (record.operation !== null)
-          return Result.fail(conflict(`Session is already running ${record.operation.kind}`));
-        const deadlineMillis = Date.parse(input.deadlineAt);
-        const hardCapMillis = Date.parse(record.hardCapAt);
-        if (
-          !Number.isFinite(deadlineMillis) ||
-          deadlineMillis <= acceptedAtMillis ||
-          deadlineMillis - acceptedAtMillis > EVIDENCE_JOB_TIMEOUT_MILLIS ||
-          deadlineMillis > hardCapMillis
-        )
-          return Result.fail(new EvidenceStateError({ reason: "invalid" }));
-        if (state.success.activeJob !== undefined)
-          return Result.fail(conflict("Session already has an active evidence job"));
-        if (
-          state.success.jobs.length >= EVIDENCE_MAX_RETAINED_JOBS ||
-          state.success.artifacts.length >
-            EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_ARTIFACTS_PER_JOB ||
-          state.success.pendingDeletes.some((pending) => pending.reason === "history_evicted")
-        )
-          return Result.fail(new EvidenceStateError({ reason: "invalid" }));
-        if (runtimeEpoch !== input.runtimeEpoch)
-          return Result.fail(new EvidenceStateError({ reason: "preview_unavailable" }));
-        const active: EvidenceActiveJob = {
-          sequence: state.success.nextSequence,
-          jobId: input.jobId,
-          status: "accepted",
-          acceptedAt,
-          totalSteps: input.job.steps.length,
-          completedSteps: 0,
-          viewport: input.job.viewport,
-          recordVideo: input.job.capture.video,
-          flowHash: input.flowHash,
-          steps: [],
-          frameCount: 0,
-          operationNonce: input.operationNonce,
-          port: input.job.port,
-          runtimeEpoch: input.runtimeEpoch,
-          routeNonce: input.routeNonce,
-          previewCookieDigest: null,
-          exposure: "not_exposed",
-          previewAccounting: emptyEvidencePreviewAccounting(),
-          deadlineAt: input.deadlineAt,
-          stepPlan: [
-            evidenceStepPlan(input.job.steps[0]),
-            ...input.job.steps.slice(1).map(evidenceStepPlan),
-          ],
-        };
-        const nextState: EvidenceState = {
-          ...state.success,
-          nextSequence: state.success.nextSequence + 1,
-          activeJob: active,
-        };
-        await transaction.putEvidence(nextState);
-        await transaction.putRecord({
-          ...record,
-          operation: {
-            kind: "evidence",
-            nonce: input.operationNonce,
-            startedAt: acceptedAt,
-          },
-          updatedAt: acceptedAt,
-        });
-        return Result.succeed(active);
-      });
+      const stored = yield* Effect.tryPromise({ try: getEvidence, catch: () => STORAGE_ERROR });
+      const state = yield* Effect.fromResult(decodeState(stored));
+      if (record.status === "gone") return yield* notFound(record.id);
+      if (record.status !== "warm") return yield* wrongState(record.status, "evidence");
+      if (record.execution.provider !== "cloudflare")
+        return yield* wrongState(record.status, "evidence", "Runner-backed evidence is disabled");
+      const deadlineMillis = Date.parse(input.deadlineAt);
+      const hardCapMillis = Date.parse(record.hardCapAt);
+      if (
+        !Number.isFinite(deadlineMillis) ||
+        deadlineMillis <= acceptedAtMillis ||
+        deadlineMillis - acceptedAtMillis > EVIDENCE_JOB_TIMEOUT_MILLIS ||
+        deadlineMillis > hardCapMillis
+      )
+        return yield* new EvidenceStateError({ reason: "invalid" });
+      if (state.activeJob !== undefined)
+        return yield* conflict("Session already has an active evidence job");
+      if (runtimeEpoch !== input.runtimeEpoch)
+        return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+
+      const cleanupKeys = new Set(
+        state.pendingDeletes
+          .filter((pending) => pending.reason === "history_evicted")
+          .map((pending) => pending.objectKey),
+      );
+      let jobs = [...state.jobs];
+      const projectedArtifactCount = (): number =>
+        state.artifacts.filter((artifact) => !cleanupKeys.has(artifact.objectKey)).length;
+      while (
+        (jobs.length >= EVIDENCE_MAX_RETAINED_JOBS ||
+          projectedArtifactCount() >
+            EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_ARTIFACTS_PER_JOB) &&
+        jobs.length > 0
+      ) {
+        const oldest = jobs.at(-1);
+        if (oldest === undefined) break;
+        jobs = jobs.slice(0, -1);
+        for (const artifact of state.artifacts) {
+          if (artifact.jobId === oldest.jobId) cleanupKeys.add(artifact.objectKey);
+        }
+      }
+      if (
+        jobs.length >= EVIDENCE_MAX_RETAINED_JOBS ||
+        projectedArtifactCount() > EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_ARTIFACTS_PER_JOB
+      )
+        return yield* new EvidenceStateError({ reason: "invalid" });
+      const capacityDeletes = state.artifacts.filter((artifact) =>
+        cleanupKeys.has(artifact.objectKey),
+      );
+      const prepared = requestDeletes(
+        { ...state, jobs },
+        capacityDeletes,
+        "history_evicted",
+        acceptedAt,
+      );
+      const active: EvidenceActiveJob = {
+        sequence: prepared.nextSequence,
+        jobId: input.jobId,
+        status: "accepted",
+        acceptedAt,
+        totalSteps: input.job.steps.length,
+        completedSteps: 0,
+        viewport: input.job.viewport,
+        recordVideo: input.job.capture.video,
+        flowHash: input.flowHash,
+        steps: [],
+        frameCount: 0,
+        operationNonce: input.operationNonce,
+        port: input.job.port,
+        runtimeEpoch: input.runtimeEpoch,
+        routeNonce: input.routeNonce,
+        previewCookieDigest: null,
+        exposure: "not_exposed",
+        previewAccounting: emptyEvidencePreviewAccounting(),
+        deadlineAt: input.deadlineAt,
+        stepPlan: [
+          evidenceStepPlan(input.job.steps[0]),
+          ...input.job.steps.slice(1).map(evidenceStepPlan),
+        ],
+      };
+      return {
+        active,
+        expectedEvidence: stored,
+        capacityDeletes: prepared.artifacts.filter(
+          (artifact) => cleanupKeys.has(artifact.objectKey) && artifact.status === "delete_pending",
+        ),
+        state: { ...prepared, nextSequence: prepared.nextSequence + 1, activeJob: active },
+      };
     }),
     setPhase: (nonce, status) =>
       updateActive(nonce, (active, state) => {

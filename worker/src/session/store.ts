@@ -21,6 +21,17 @@ import type {
   RawActorStorageSnapshot,
 } from "../session-actor/store";
 import type { MetadataStoragePort } from "../session-actor/metadata-store";
+import {
+  AuthorityStateSchema,
+  decodeSessionAuthority,
+  StableStateSchema,
+  TransitionSchema,
+  type ActivityProof,
+  type BackupIdentity,
+  type SessionAuthority,
+} from "../session-actor/authority";
+import { publicView } from "../session-actor/public-view";
+import { decodeSessionActorMetadata, type SessionActorMetadata } from "../session-actor/metadata";
 
 export const SESSION_RECORD_KEY = "scotty:session";
 export const EVIDENCE_RECORD_KEY = "scotty:evidence";
@@ -31,7 +42,7 @@ export const SESSION_ACTOR_AUTHORITY_KEY = "scotty:session-actor:authority";
 export const SESSION_ACTOR_REVISION_KEY = "scotty:session-actor:revision";
 export const SESSION_ACTOR_JOURNAL_SEQUENCE_KEY = "scotty:session-actor:journal-sequence";
 export const SESSION_ACTOR_JOURNAL_TAIL_KEY = "scotty:session-actor:journal-tail";
-export const SESSION_ACTOR_EVIDENCE_KEY = "scotty:session-actor:evidence";
+export const SESSION_ACTOR_EVIDENCE_KEY = EVIDENCE_RECORD_KEY;
 export const SESSION_ACTOR_METADATA_KEY = "scotty:session-actor:metadata";
 const SESSION_ACTOR_JOURNAL_PREFIX = "scotty:session-actor:journal:";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
@@ -82,7 +93,6 @@ export interface SessionEvidenceTransaction {
   readonly getRecord: () => Promise<unknown | undefined>;
   readonly getEvidence: () => Promise<unknown | undefined>;
   readonly getRuntimeEpoch: () => Promise<unknown | undefined>;
-  readonly putRecord: (record: SessionRecord) => Promise<void>;
   readonly putEvidence: (evidence: unknown) => Promise<void>;
   readonly deleteEvidence: () => Promise<void>;
 }
@@ -218,6 +228,168 @@ const writeRecordWithNextControlRevision = async (
   ]);
 };
 
+const actorOperation = (authority: SessionAuthority): SessionRecord["operation"] => {
+  if (!AuthorityStateSchema.guards.Transitioning(authority.state)) return null;
+  const transition = authority.state.transition;
+  const kind = TransitionSchema.guards.Create(transition)
+    ? "create"
+    : TransitionSchema.guards.Checkpoint(transition) || TransitionSchema.guards.Sleep(transition)
+      ? "snapshot"
+      : TransitionSchema.guards.Resume(transition)
+        ? "resume"
+        : TransitionSchema.guards.Vaporize(transition)
+          ? "vaporize"
+          : transition.workKind === "Evidence"
+            ? "evidence"
+            : transition.workKind === "Hatch"
+              ? "hatch"
+              : transition.workKind === "Down"
+                ? "down"
+                : "snapshot";
+  return {
+    kind,
+    nonce: transition.nonce,
+    startedAt: transition.startedAt,
+    ...(kind === "create" ? { createPhase: "runtime" as const } : {}),
+  };
+};
+
+interface ActorStableRecordDetails {
+  readonly ownedBackupIds: ReadonlyArray<string>;
+  readonly currentBackup: BackupIdentity | null;
+  readonly activity: ActivityProof | null;
+  readonly failure: SessionRecord["failure"] | undefined;
+}
+
+const actorStableRecordDetails = (authority: SessionAuthority): ActorStableRecordDetails => {
+  if (!AuthorityStateSchema.guards.Stable(authority.state))
+    return { ownedBackupIds: [], currentBackup: null, activity: null, failure: undefined };
+  const stable = authority.state.stable;
+  if (StableStateSchema.guards.Warm(stable))
+    return {
+      ownedBackupIds: stable.backups.ownedBackupIds,
+      currentBackup: stable.backups.prepared,
+      activity: stable.activity,
+      failure: undefined,
+    };
+  if (StableStateSchema.guards.Sleeping(stable))
+    return {
+      ownedBackupIds: stable.ownedBackupIds,
+      currentBackup: stable.backup,
+      activity: null,
+      failure: undefined,
+    };
+  if (StableStateSchema.guards.Failed(stable))
+    return {
+      ownedBackupIds: stable.ownedBackupIds,
+      currentBackup: stable.backup,
+      activity: null,
+      failure: { code: stable.code, message: stable.code, recoverable: stable.actionable },
+    };
+  return { ownedBackupIds: [], currentBackup: null, activity: null, failure: undefined };
+};
+
+export const sessionRecordFromActor = (
+  authority: SessionAuthority,
+  metadata: SessionActorMetadata,
+  updatedAt: string,
+  existing?: SessionRecord,
+): SessionRecord | undefined => {
+  const workspace = metadata.createObservations.workspace;
+  const view = publicView(authority);
+  if (workspace === null || view === undefined) return undefined;
+  const { ownedBackupIds, currentBackup, activity, failure } = actorStableRecordDetails(authority);
+  const grants = metadata.createObservations.credentialGrants?.grants;
+  return {
+    id: authority.session.id,
+    title: authority.session.title,
+    status: view.status,
+    operation: actorOperation(authority),
+    execution:
+      authority.session.execution.provider === "cloudflare"
+        ? { provider: "cloudflare" }
+        : {
+            provider: "runner",
+            runner: authority.session.execution.runnerName,
+            runtimeId: authority.session.id,
+          },
+    provider: authority.session.execution.provider,
+    ...(authority.session.execution.provider === "runner"
+      ? { runner: authority.session.execution.runnerName }
+      : {}),
+    repo: workspace.repository,
+    repoExistsAtCreate: workspace.repositoryExists,
+    defaultBranch: workspace.defaultBranch,
+    branch: metadata.branch,
+    createdAt: authority.session.createdAt,
+    updatedAt,
+    hardCapAt: authority.hardCap.deadlineAt,
+    hardCapDurationSeconds: authority.hardCap.durationSeconds,
+    ownedBackupIds,
+    ...(currentBackup === null
+      ? {}
+      : {
+          backup: {
+            current: { id: currentBackup.backupId, dir: `/workspace/${authority.session.id}` },
+          },
+        }),
+    ...(existing?.codexThreadId === undefined ? {} : { codexThreadId: existing.codexThreadId }),
+    ...(activity === null
+      ? {}
+      : { agentState: activity.state, lastAgentEventAt: activity.observedAt }),
+    ...(failure === undefined ? {} : { failure }),
+    sandboxBundle: { digest: metadata.createObservations.bundle?.digest ?? null },
+    ...(grants === undefined
+      ? {}
+      : { credentialGrant: { sessionId: authority.session.id, grants } }),
+  };
+};
+
+export const readActorBackedSessionRecord = async (
+  transaction: DurableObjectTransaction,
+): Promise<unknown | undefined> => {
+  const [storedRecord, storedAuthority, storedMetadata] = await Promise.all([
+    transaction.get<unknown>(SESSION_RECORD_KEY),
+    transaction.get<unknown>(SESSION_ACTOR_AUTHORITY_KEY),
+    transaction.get<unknown>(SESSION_ACTOR_METADATA_KEY),
+  ]);
+  if (storedAuthority === undefined || storedMetadata === undefined) return storedRecord;
+  const record = storedRecord === undefined ? undefined : decodeSessionRecordResult(storedRecord);
+  const authority = decodeSessionAuthority(storedAuthority);
+  const metadata = decodeSessionActorMetadata(storedMetadata);
+  if (Result.isFailure(authority) || Result.isFailure(metadata)) return storedRecord;
+  const existing = record !== undefined && Result.isSuccess(record) ? record.success : undefined;
+  return sessionRecordFromActor(
+    authority.success,
+    metadata.success,
+    AuthorityStateSchema.guards.Transitioning(authority.success.state)
+      ? authority.success.state.transition.lastProgressAt
+      : (existing?.updatedAt ?? authority.success.session.createdAt),
+    existing,
+  );
+};
+
+export const readActorRuntimeGeneration = async (
+  transaction: DurableObjectTransaction,
+): Promise<unknown | undefined> => {
+  const storedAuthority = await transaction.get<unknown>(SESSION_ACTOR_AUTHORITY_KEY);
+  if (storedAuthority !== undefined) {
+    const authority = decodeSessionAuthority(storedAuthority);
+    if (Result.isSuccess(authority)) {
+      const readiness = AuthorityStateSchema.guards.Stable(authority.success.state)
+        ? StableStateSchema.guards.Warm(authority.success.state.stable)
+          ? authority.success.state.stable.readiness
+          : undefined
+        : "readiness" in authority.success.state.transition.proof
+          ? authority.success.state.transition.proof.readiness
+          : undefined;
+      if (readiness?.runtime !== null && readiness?.runtime !== undefined)
+        return readiness.runtime.runtimeGeneration;
+    }
+  }
+  return transaction.get(RUNTIME_EPOCH_KEY);
+};
+
 export const durableObjectSessionRecordStorage = (
   storage: DurableObjectStorage,
   controlGate: SessionControlGate = makeSessionControlGate(),
@@ -251,10 +423,9 @@ export const durableObjectSessionRecordStorage = (
     controlGate.run(() =>
       storage.transaction((transaction) =>
         operation({
-          getRecord: () => transaction.get(SESSION_RECORD_KEY),
+          getRecord: () => readActorBackedSessionRecord(transaction),
           getEvidence: () => transaction.get(EVIDENCE_RECORD_KEY),
-          getRuntimeEpoch: () => transaction.get(RUNTIME_EPOCH_KEY),
-          putRecord: (record) => writeRecordWithNextControlRevision(transaction, record),
+          getRuntimeEpoch: () => readActorRuntimeGeneration(transaction),
           putEvidence: (evidence) => transaction.put(EVIDENCE_RECORD_KEY, evidence),
           deleteEvidence: () => transaction.delete(EVIDENCE_RECORD_KEY).then(() => undefined),
         }),

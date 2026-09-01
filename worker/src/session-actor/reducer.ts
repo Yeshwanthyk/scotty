@@ -492,15 +492,18 @@ const journal = (
   causeAttempt: transition.attempt,
 });
 
-const intentsFor = (transition: Transition): ReadonlyArray<EffectIntent> => [
-  {
-    _tag: "ExecutePhase",
-    transitionKind: transitionKind(transition),
-    phase: transition.phase,
-    transitionNonce: transition.nonce,
-    attempt: transition.attempt,
-  },
-];
+const intentsFor = (transition: Transition): ReadonlyArray<EffectIntent> =>
+  TransitionSchema.guards.WarmWork(transition)
+    ? []
+    : [
+        {
+          _tag: "ExecutePhase",
+          transitionKind: transitionKind(transition),
+          phase: transition.phase,
+          transitionNonce: transition.nonce,
+          attempt: transition.attempt,
+        },
+      ];
 
 const proofMatches = (transition: Transition, proof: TransitionProof): boolean =>
   Match.valueTags(transition, {

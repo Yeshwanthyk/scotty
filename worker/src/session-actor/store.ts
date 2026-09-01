@@ -10,8 +10,8 @@ import { validateAuthority } from "./reducer";
 
 export type EvidenceMutation =
   | { readonly _tag: "Keep" }
-  | { readonly _tag: "Put"; readonly value: unknown }
-  | { readonly _tag: "Delete" };
+  | { readonly _tag: "Put"; readonly value: unknown; readonly expected?: unknown }
+  | { readonly _tag: "Delete"; readonly expected?: unknown };
 
 export interface RawActorStorageSnapshot {
   readonly authority?: unknown;
@@ -47,7 +47,7 @@ export type ActorStorageTransactionOutcome =
 export type ActorStorageTransactionFailure =
   | {
       readonly _tag: "Conflict";
-      readonly reason: "revision" | "nonce" | "phase";
+      readonly reason: "revision" | "nonce" | "phase" | "evidence";
       readonly actualRevision: number;
     }
   | { readonly _tag: "Corrupt"; readonly key: ActorStorageKey };
@@ -64,7 +64,7 @@ export type ActorStorageKey = "authority" | "revision" | "journalSequence" | "jo
 export class ActorStoreConflict extends Schema.TaggedError<ActorStoreConflict>()(
   "ActorStoreConflict",
   {
-    reason: Schema.Literals(["revision", "nonce", "phase"]),
+    reason: Schema.Literals(["revision", "nonce", "phase", "evidence"]),
     expectedRevision: Schema.Int,
     actualRevision: Schema.Int,
   },
@@ -224,7 +224,7 @@ const currentTransitionFence = (
 };
 
 const conflict = (
-  reason: "revision" | "nonce" | "phase",
+  reason: "revision" | "nonce" | "phase" | "evidence",
   request: ActorCommitRequest,
   actualRevision: number,
 ): ActorStorageTransactionPlan => ({
@@ -246,6 +246,12 @@ const planCommit = (
   if (fence.nonce !== request.expectedTransitionNonce)
     return conflict("nonce", request, current.revision);
   if (fence.phase !== request.expectedPhase) return conflict("phase", request, current.revision);
+  if (
+    !Predicate.isTagged(request.evidence, "Keep") &&
+    "expected" in request.evidence &&
+    !Equal.equals(current.evidence, request.evidence.expected)
+  )
+    return conflict("evidence", request, current.revision);
   if (request.decision.nextAuthority.revision !== current.revision + 1)
     return { _tag: "NoCommit", outcome: { _tag: "Corrupt", key: "authority" } };
 

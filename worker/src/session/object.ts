@@ -173,6 +173,7 @@ import {
   durableObjectSessionActorMetadataStorage,
   durableObjectSessionActorStorage,
   makeSessionControlGate,
+  sessionRecordFromActor,
   SessionStore,
   sessionStoreLayer,
   type SessionControlGate,
@@ -223,6 +224,11 @@ import {
   lifecycleControllerLayer,
   type LifecycleCommandKind,
 } from "../session-actor/lifecycle-controller";
+import {
+  WarmWorkController,
+  warmWorkControllerLayer,
+  type WarmWorkLease,
+} from "../session-actor/transitions/warm-work";
 import {
   AuthorityStateSchema,
   StableStateSchema,
@@ -375,6 +381,7 @@ type SandboxServices =
   | SessionActorMetadataStore
   | CreateController
   | LifecycleController
+  | WarmWorkController
   | RecoverySandbox
   | Workspace;
 
@@ -823,7 +830,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const sessionProjection = sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS));
     const legacyRuntimeAccess = this.assertRuntimeAccessProgram().pipe(
       Effect.asVoid,
-      Effect.provide(store),
+      Effect.provide(Layer.mergeAll(store, actorStore, actorMetadata)),
     );
     const actorRuntimeAccess = Effect.flatMap(ActorStore, (actor) =>
       Effect.flatMap(actor.read, (snapshot) => {
@@ -1282,6 +1289,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const lifecycleController = lifecycleControllerLayer.pipe(
       Layer.provide(Layer.mergeAll(actorStore, actor, hardCap)),
     );
+    const warmWorkController = warmWorkControllerLayer.pipe(
+      Layer.provide(Layer.merge(actorStore, actor)),
+    );
     const metadataController = createMetadataControllerFromStoresLayer.pipe(
       Layer.provide(Layer.merge(actorMetadata, actorStore)),
     );
@@ -1295,6 +1305,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       actor,
       createController,
       lifecycleController,
+      warmWorkController,
       recovery,
       store,
       evidence,
@@ -1311,12 +1322,31 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
-  private readonly requireRecordProgram = Effect.fnUntraced(function* () {
+  private readonly readActorHostRecordProgram = Effect.fnUntraced(function* () {
+    const actorStore = yield* ActorStore;
+    const snapshot = yield* actorStore.read;
+    const authority = snapshot.authority;
+    if (authority === undefined) return undefined;
+    const metadataStore = yield* SessionActorMetadataStore;
+    const metadata = yield* metadataStore.read(authority);
+    if (metadata === undefined) return undefined;
+    return sessionRecordFromActor(
+      authority,
+      metadata,
+      snapshot.journalTail?.timestamp ?? authority.session.createdAt,
+    );
+  });
+
+  private readonly requireRecordProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const actorRecord = yield* this.readActorHostRecordProgram();
+    if (actorRecord !== undefined) return actorRecord;
     const store = yield* SessionStore;
     return yield* store.requireRecord;
   });
 
-  private readonly readRecordProgram = Effect.fnUntraced(function* () {
+  private readonly readRecordProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const actorRecord = yield* this.readActorHostRecordProgram();
+    if (actorRecord !== undefined) return actorRecord;
     const store = yield* SessionStore;
     return Option.getOrUndefined(yield* store.read);
   });
@@ -1446,6 +1476,20 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly currentRuntimeEpochProgram = Effect.fnUntraced(function* (this: Sandbox) {
     if (this.rawContainer?.running !== true)
       return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    const actor = yield* ActorStore;
+    const snapshot = yield* actor.read;
+    const authority = snapshot.authority;
+    if (authority !== undefined) {
+      const readiness = AuthorityStateSchema.guards.Stable(authority.state)
+        ? StableStateSchema.guards.Warm(authority.state.stable)
+          ? authority.state.stable.readiness
+          : undefined
+        : "readiness" in authority.state.transition.proof
+          ? authority.state.transition.proof.readiness
+          : undefined;
+      if (readiness?.runtime !== null && readiness?.runtime !== undefined)
+        return readiness.runtime.runtimeGeneration;
+    }
     const getRuntimeEpoch = this.authoritativeStorage.getRuntimeEpoch;
     if (getRuntimeEpoch === undefined)
       return yield* new EvidenceStateError({ reason: "preview_unavailable" });
@@ -1643,8 +1687,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
         evidenceState.activeJob.exposure === "unexpose_pending")
     )
       return yield* conflict("Hatch cannot expose the active evidence service port");
-    const operation = yield* this.acquireOperationProgram("hatch", ["warm"]);
+    const operation = yield* this.admitWarmWorkProgram("Hatch");
     let cleanupRequired = false;
+    let cleanupOutcomeUnknown = false;
     const result = yield* Effect.result(
       Effect.gen({ self: this }, function* () {
         const runtimeEpoch = yield* this.currentRuntimeEpochProgram();
@@ -1687,7 +1732,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       const cleanup = yield* Effect.result(
         this.cleanupHatchProgram(operation.nonce, "failed", false, "operation"),
       );
-      if (Result.isFailure(cleanup))
+      cleanupOutcomeUnknown = Result.isFailure(cleanup);
+      if (cleanupOutcomeUnknown)
         yield* hostEffect("schedule", () =>
           this.schedule(5, "retryHatchCleanup", {
             operationNonce: operation.nonce,
@@ -1696,7 +1742,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
           } satisfies HatchCleanupRetry),
         );
     }
-    yield* this.releaseOperationIfHeldProgram(operation.nonce);
+    if (cleanupOutcomeUnknown)
+      yield* this.reconcileWarmWorkProgram(operation, "hatch_cleanup_outcome_unknown");
+    else
+      yield* this.settleWarmWorkProgram(
+        operation,
+        Result.isFailure(result) ? "hatch_ensure_failed" : "hatch_ensure_complete",
+      );
     if (Result.isFailure(result)) return yield* this.hatchControlError(result.failure);
     return result.success;
   });
@@ -1752,7 +1804,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly closeScottyHatchProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const record = yield* this.requireRecordProgram();
     if (record.status !== "warm") return yield* wrongState(record.status, "hatch");
-    const operation = yield* this.acquireOperationProgram("hatch", ["warm"]);
+    const operation = yield* this.admitWarmWorkProgram("Hatch");
     const closed = yield* Effect.result(
       this.cleanupHatchProgram(operation.nonce, "stopped", true, "operation"),
     );
@@ -1767,7 +1819,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ),
         )
       : Result.succeed(undefined);
-    yield* this.releaseOperationIfHeldProgram(operation.nonce);
+    if (Result.isFailure(closed) || Result.isFailure(scheduled))
+      yield* this.reconcileWarmWorkProgram(operation, "hatch_close_outcome_unknown");
+    else yield* this.settleWarmWorkProgram(operation, "hatch_close_complete");
     if (Result.isFailure(scheduled))
       return yield* this.upstreamError("Hatch cleanup retry scheduling failed", scheduled.failure);
     if (Result.isFailure(closed)) return yield* this.hatchControlError(closed.failure);
@@ -1826,32 +1880,51 @@ export class Sandbox extends BaseSandbox<Bindings> {
       catch: () => new EvidenceStateError({ reason: "storage" }),
     });
     const evidence = yield* EvidenceStore;
-    const capacityDeletes = yield* evidence.prepareJobCapacity;
-    if (capacityDeletes.length > 0) {
-      yield* this.armEvidenceRetentionFailClosedProgram();
-      yield* this.deleteEvidenceArtifactsProgram(capacityDeletes);
-      yield* this.armEvidenceRetentionFailClosedProgram();
-    }
-    const accepted = yield* evidence.accept({
-      jobId: `job-${randomToken(8)}`,
-      operationNonce,
+    const admission = yield* evidence.prepareAdmission(
+      {
+        jobId: `job-${randomToken(8)}`,
+        operationNonce,
+        runtimeEpoch,
+        routeNonce: randomToken(8),
+        deadlineAt,
+        flowHash,
+        job,
+      },
+      record,
       runtimeEpoch,
-      routeNonce: randomToken(8),
-      deadlineAt,
-      flowHash,
-      job,
-    });
-    const scheduled = yield* Effect.result(
-      hostEffect("schedule", () =>
-        this.schedule(new Date(deadlineAt), "expireEvidenceJob", {
-          nonce: operationNonce,
-          deadlineAt,
-        } satisfies EvidenceDeadlinePayload),
-      ),
     );
-    if (Result.isSuccess(scheduled)) return accepted;
-    yield* evidence.interrupt(operationNonce, "interrupted");
-    return yield* this.upstreamError("Evidence deadline scheduling failed", scheduled.failure);
+    const lease = yield* this.admitWarmWorkProgram("Evidence", {
+      nonce: operationNonce,
+      deadlineAt,
+      evidence: {
+        _tag: "Put",
+        value: admission.state,
+        expected: admission.expectedEvidence,
+      },
+    });
+    const admitted = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        if (admission.capacityDeletes.length > 0) {
+          yield* this.armEvidenceRetentionFailClosedProgram();
+          yield* this.deleteEvidenceArtifactsProgram(admission.capacityDeletes);
+          yield* this.armEvidenceRetentionFailClosedProgram();
+        }
+        const scheduled = yield* Effect.result(
+          hostEffect("schedule", () =>
+            this.schedule(new Date(deadlineAt), "expireEvidenceJob", {
+              nonce: operationNonce,
+              deadlineAt,
+            } satisfies EvidenceDeadlinePayload),
+          ),
+        );
+        if (Result.isSuccess(scheduled)) return admission.active;
+        yield* evidence.interrupt(operationNonce, "interrupted");
+        return yield* this.upstreamError("Evidence deadline scheduling failed", scheduled.failure);
+      }),
+    );
+    if (Result.isSuccess(admitted)) return admitted.success;
+    yield* this.reconcileWarmWorkProgram(lease, "evidence_admission_outcome_unknown");
+    return yield* admitted.failure;
   });
 
   private readonly acceptScottyEvidenceJobProgram = Effect.fnUntraced(function* (
@@ -2492,6 +2565,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }),
       );
     yield* this.armEvidenceRetentionFailClosedProgram();
+    yield* this.settleCurrentWarmWorkProgram(
+      "Evidence",
+      nonce,
+      status === "succeeded" ? "evidence_complete" : `evidence_${status}`,
+    );
     return summary;
   });
 
@@ -3245,6 +3323,82 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return publicState.view;
   });
 
+  private readonly admitWarmWorkProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    kind: "Evidence" | "Hatch" | "Down" | "RuntimePreparation",
+    options?: {
+      readonly nonce?: string;
+      readonly deadlineAt?: string;
+      readonly evidence?: import("../session-actor/store").EvidenceMutation;
+    },
+  ) {
+    const store = yield* ActorStore;
+    const snapshot = yield* store.read;
+    const authority = snapshot.authority;
+    if (authority === undefined)
+      return yield* new ScottyError("not_found", "Session not found", {
+        httpStatus: 404,
+        exitCode: 3,
+      });
+    const now = yield* Clock.currentTimeMillis;
+    const requestedDeadline =
+      options?.deadlineAt === undefined
+        ? now + ABANDONED_OPERATION_MS
+        : Date.parse(options.deadlineAt);
+    const deadlineMillis = Math.min(
+      now + ABANDONED_OPERATION_MS,
+      Date.parse(authority.hardCap.deadlineAt),
+      requestedDeadline,
+    );
+    if (!Number.isFinite(deadlineMillis) || deadlineMillis <= now)
+      return yield* wrongState("warm", kind.toLowerCase(), "The session hard cap has elapsed");
+    const controller = yield* WarmWorkController;
+    return yield* controller
+      .admit({
+        kind,
+        correlationId: crypto.randomUUID(),
+        nonce: options?.nonce ?? crypto.randomUUID(),
+        attempt: crypto.randomUUID(),
+        timestamp: new Date(now).toISOString(),
+        deadlineAt: new Date(deadlineMillis).toISOString(),
+        evidence: options?.evidence,
+      })
+      .pipe(
+        Effect.mapError(() =>
+          conflict(`Session cannot admit ${kind.toLowerCase()} while another transition owns it`),
+        ),
+      );
+  });
+
+  private readonly settleWarmWorkProgram = Effect.fnUntraced(function* (
+    lease: WarmWorkLease,
+    resultCode: string,
+  ) {
+    const controller = yield* WarmWorkController;
+    const now = yield* Clock.currentTimeMillis;
+    return yield* controller.settle(lease, new Date(now).toISOString(), resultCode);
+  });
+
+  private readonly reconcileWarmWorkProgram = Effect.fnUntraced(function* (
+    lease: WarmWorkLease,
+    resultCode: string,
+  ) {
+    const controller = yield* WarmWorkController;
+    const now = yield* Clock.currentTimeMillis;
+    return yield* controller.reconcile(lease, new Date(now).toISOString(), resultCode);
+  });
+
+  private readonly settleCurrentWarmWorkProgram = Effect.fnUntraced(function* (
+    kind: "Evidence" | "Hatch" | "Down" | "RuntimePreparation",
+    nonce: string,
+    resultCode: string,
+  ) {
+    const controller = yield* WarmWorkController;
+    const lease = yield* controller.current(kind, nonce);
+    const now = yield* Clock.currentTimeMillis;
+    return yield* controller.settle(lease, new Date(now).toISOString(), resultCode);
+  });
+
   private readonly requireChangesAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const store = yield* SessionStore;
     const authority = yield* store.readControlAuthority;
@@ -3466,7 +3620,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       );
     const runtime = yield* SandboxRuntime;
     const discovery = yield* RolloutDiscovery;
-    const operation = yield* this.acquireOperationProgram("down", ["warm"]);
+    const operation = yield* this.admitWarmWorkProgram("Down");
     const record = yield* this.requireRecordProgram();
     const root = sessionRoot(record.id);
     const prepared = yield* Effect.result(
@@ -3495,7 +3649,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
         return { path: archivePath, filename: `scotty-${record.id}.tar`, manifest };
       }),
     );
-    yield* this.releaseOperationProgram(operation.nonce);
+    if (Result.isFailure(prepared))
+      yield* this.reconcileWarmWorkProgram(operation, "down_archive_outcome_unknown");
+    else yield* this.settleWarmWorkProgram(operation, "down_archive_complete");
     if (Result.isFailure(prepared))
       return yield* this.upstreamError("Beam-down archive failed", prepared.failure);
     return prepared.success;

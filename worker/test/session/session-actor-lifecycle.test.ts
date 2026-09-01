@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Predicate } from "effect";
 import type { SessionAuthority } from "../../src/session-actor/authority";
+import type { EvidenceState } from "../../src/evidence/contracts";
 import {
   CREATE_IDEMPOTENCY,
   CREATE_INPUT,
@@ -10,6 +11,85 @@ import {
 } from "../support/session-harness";
 
 describe("Sandbox actor checkpoint, sleep, and resume", () => {
+  it("runs Hatch and Beam-down under WarmWork authority without a legacy record", async () => {
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      evidenceEnabled: true,
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    const hatch = await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    assert.strictEqual(hatch.status, "configured");
+    if (hatch.status !== "configured") return;
+    assert.strictEqual(hatch.observedStatus, "running");
+
+    const archive = await harness.sandbox.prepareDownArchive();
+    assert.strictEqual(archive.manifest.id, SESSION_ID);
+    assert.strictEqual(archive.manifest.repo, CREATE_INPUT.repo);
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined &&
+        Predicate.isTagged(authority.state, "Stable") &&
+        Predicate.isTagged(authority.state.stable, "Warm"),
+    );
+    assert.strictEqual(harness.readRecord(), undefined);
+  });
+
+  it("runs Evidence admission and finalization under WarmWork authority", async () => {
+    const harness = await createSessionHarness({
+      evidenceEnabled: true,
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    const active = await harness.sandbox.acceptScottyEvidenceJob({
+      port: 4_173,
+      viewport: { width: 1_280, height: 720 },
+      capture: { screenshots: "after-each-step", video: false },
+      steps: [
+        {
+          name: "Open the app",
+          action: { kind: "goto", path: "/" },
+          expect: [{ kind: "urlPath", expected: "/" }],
+        },
+      ],
+    });
+    const running = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      running !== undefined &&
+        Predicate.isTagged(running.state, "Transitioning") &&
+        Predicate.isTagged(running.state.transition, "WarmWork"),
+    );
+    assert.strictEqual(
+      harness.read<EvidenceState>(sessionHarnessKeys.evidence)?.activeJob?.operationNonce,
+      active.operationNonce,
+    );
+
+    await harness.sandbox.finalizeScottyEvidenceJob(active.operationNonce, "interrupted");
+    const settled = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      settled !== undefined &&
+        Predicate.isTagged(settled.state, "Stable") &&
+        Predicate.isTagged(settled.state.stable, "Warm"),
+    );
+    assert.strictEqual(
+      harness.read<EvidenceState>(sessionHarnessKeys.evidence)?.activeJob,
+      undefined,
+    );
+    assert.strictEqual(harness.readRecord(), undefined);
+  });
+
   it("runs the complete backup lifecycle without a legacy session record", async () => {
     const harness = await createSessionHarness();
     const created = await harness.sandbox.createScottySession(

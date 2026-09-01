@@ -164,6 +164,27 @@ describe("session actor store atomicity", () => {
     }),
   );
 
+  it.effect("rejects a stale co-transactional evidence snapshot", () =>
+    Effect.gen(function* () {
+      const memory = memoryPort();
+      const stale = request();
+      const result = yield* makeActorStore(memory.port)
+        .commit({
+          ...stale,
+          evidence: {
+            _tag: "Put",
+            expected: { activeJob: "stale" },
+            value: { activeJob: "next" },
+          },
+        })
+        .pipe(Effect.result);
+      assert.ok(Result.isFailure(result));
+      assert.ok(Predicate.isTagged(result.failure, "ActorStoreConflict"));
+      assert.strictEqual(result.failure.reason, "evidence");
+      assert.deepStrictEqual(memory.snapshot(), {});
+    }),
+  );
+
   it("uses a typed unknown outcome rather than treating transaction rejection as rollback", () => {
     const error = new ActorStoreTransactionOutcomeUnknown({
       correlationId: "correlation-create",
