@@ -175,6 +175,35 @@ describe("Pi connection", () => {
     assert.strictEqual(attempts, 2);
   });
 
+  it("reports reconnecting without synthesizing a settlement event", async () => {
+    const listeners = new Map<string, (event: MessageEvent) => void>();
+    const states: string[] = [];
+    const events: unknown[] = [];
+    const connection = createPiConnection({
+      transport: {
+        snapshot: async () => ({ epoch: "epoch-1", sequence: 0, state: { isStreaming: true } }),
+        prepare: async () => undefined,
+        events: () => ({
+          addEventListener(type: string, listener: (event: MessageEvent) => void) {
+            listeners.set(type, listener);
+          },
+          close() {},
+        }),
+        command: async (_sessionId: string, envelope: CommandEnvelope) => accepted(envelope),
+      },
+      randomUUID: () => ids[0],
+      onEvent: (event) => events.push(event),
+      onState: (state) => states.push(state),
+      onLaneChange() {},
+    });
+
+    await connection.open("agent-a");
+    listeners.get("error")?.({} as MessageEvent);
+
+    assert.strictEqual(states.at(-1), "reconnecting");
+    assert.deepStrictEqual(events, []);
+  });
+
   it("aborts the old snapshot and closes its stream before switching", async () => {
     const snapshotA = deferred<unknown>();
     const signals: AbortSignal[] = [];

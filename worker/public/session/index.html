@@ -33,7 +33,7 @@
         </header>
         <div class="directory-heading">
           <h2>Cloud agents</h2>
-          <span id="agent-count" aria-live="polite"></span>
+          <span id="agent-count"></span>
         </div>
         <nav id="agent-list" class="agent-list" aria-label="Cloud agents">
           <p class="directory-state">Loading cloud agents…</p>
@@ -66,14 +66,7 @@
             <p id="agent-meta">Connecting to Pi</p>
           </div>
           <div class="agent-header-actions">
-            <div
-              id="connection-state"
-              class="connection-state"
-              data-state="connecting"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >
+            <div id="connection-state" class="connection-state" data-state="connecting">
               <span class="connection-dot" aria-hidden="true"></span>
               <span id="connection-label">Connecting</span>
             </div>
@@ -99,13 +92,16 @@
           </div>
         </header>
 
-        <section id="transcript" class="transcript" aria-label="Conversation with Pi" tabindex="-1">
-          <div id="transcript-feed" class="transcript-feed" aria-busy="true">
-            <div class="transcript-loading" aria-hidden="true">
-              <span></span><span></span><span></span>
+        <section id="transcript" class="transcript" aria-label="Conversation with Pi">
+          <div id="transcript-scroller" class="transcript-scroller" tabindex="-1">
+            <div id="transcript-feed" class="transcript-feed" aria-busy="true">
+              <div class="transcript-loading" aria-hidden="true">
+                <span></span><span></span><span></span>
+              </div>
+              <p>Loading this conversation…</p>
             </div>
-            <p>Loading this conversation…</p>
           </div>
+          <button id="new-activity" class="new-activity" type="button" hidden>New activity</button>
         </section>
 
         <div class="composer-dock">
@@ -185,14 +181,7 @@
               </div>
             </div>
             <div class="terminal-actions">
-              <div
-                id="terminal-state"
-                class="terminal-state"
-                data-state="closed"
-                role="status"
-                aria-live="polite"
-                aria-atomic="true"
-              >
+              <div id="terminal-state" class="terminal-state" data-state="closed">
                 <span class="terminal-state-dot" aria-hidden="true"></span>
                 <span id="terminal-state-label">Closed</span>
               </div>
@@ -230,7 +219,7 @@
             ×
           </button>
         </header>
-        <div id="summary-content" class="summary-content" aria-live="polite">
+        <div id="summary-content" class="summary-content">
           <p class="summary-state">Loading the latest agent update…</p>
         </div>
       </aside>
