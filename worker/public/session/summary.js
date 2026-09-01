@@ -116,7 +116,7 @@ export function summaryProjection(projection, sessionId) {
   return {
     objective,
     update: updates.at(-1) ?? "",
-    previousUpdates: updates.slice(-5, -1),
+    previousUpdates: updates.slice(-6, -1),
     artifacts: [...artifacts.values()].slice(-8),
   };
 }

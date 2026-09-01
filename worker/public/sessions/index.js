@@ -3,6 +3,7 @@ import {
   promptText,
   repositoryName,
   safeSessionPath,
+  sessionDisplayStatus,
   sessionKeyboardAction,
   sessionTitle,
   submissionIdentity,
@@ -22,7 +23,6 @@ const devicesLink = document.querySelector("#devices");
 const devicesMobileLink = document.querySelector("#devices-mobile");
 const providersLink = document.querySelector("#providers");
 const providersMobileLink = document.querySelector("#providers-mobile");
-const mobileUtilities = document.querySelector(".mobile-utilities");
 const repositoryNav = document.querySelector("#repository-nav");
 const sessionSearch = document.querySelector("#session-search");
 const summary = document.querySelector("#summary");
@@ -65,7 +65,6 @@ let pollTimer;
 const busy = new Map();
 const confirmations = new Set();
 const expandedSleepingProjects = new Set();
-const expandedSessionDetails = new Set();
 const archiveVisibleCounts = new Map();
 const archiveOpen = new Set();
 const cleanupPending = new Set();
@@ -274,7 +273,6 @@ function render(options = {}) {
     busy,
     confirmations,
     expandedSleepingProjects,
-    expandedSessionDetails,
     rowErrors,
     renamingId,
     renameDraft,
@@ -424,7 +422,6 @@ function finishProjectedCleanup(completedIds) {
   for (const id of completedIds) {
     cleanupPending.delete(id);
     confirmations.delete(id);
-    expandedSessionDetails.delete(id);
     rowErrors.delete(id);
     announce(`${cleanupTitles.get(id) || "Session"} deleted.`);
     cleanupTitles.delete(id);
@@ -437,13 +434,13 @@ function applyProjectedSessions(next) {
   sessions = cleanup.sessions;
   if (!sessions.some((session) => session.id === selectedSessionId)) {
     selectedSessionId =
-      sessions.find((session) => ["warm", "booting", "stopping"].includes(session.status))?.id ||
-      sessions[0]?.id;
+      sessions.find((session) =>
+        ["warm", "booting", "stopping"].includes(sessionDisplayStatus(session.status)),
+      )?.id || sessions[0]?.id;
   }
   finishProjectedCleanup(cleanup.completedIds);
   const target = sessions.find((session) => session.id === targetSessionId);
   if (focusTargetSession && target) {
-    expandedSessionDetails.add(target.id);
     if (target.status === "sleeping" && target.repo) expandedSleepingProjects.add(target.repo);
   }
   return cleanup;
@@ -621,20 +618,11 @@ content.addEventListener("click", (event) => {
   const { action, id } = button.dataset;
   if (action === "open-composer") {
     setComposerOpen(true);
-  } else if (action === "toggle-details") {
-    const opening = !expandedSessionDetails.has(id);
-    expandedSessionDetails.clear();
-    if (opening) {
-      expandedSessionDetails.add(id);
-      if (mobileUtilities) mobileUtilities.open = false;
-    }
-    render();
   } else if (action === "rename") {
     const session = sessions.find((candidate) => candidate.id === id);
     if (!session) return;
     renamingId = id;
     renameDraft = sessionTitle(session);
-    expandedSessionDetails.add(id);
     render();
     requestAnimationFrame(() => {
       const input = content.querySelector(`[data-focus-key="rename:${CSS.escape(id)}"]`);
@@ -673,13 +661,17 @@ repositoryNav?.addEventListener("click", (event) => {
   }
 });
 
-repositoryNav?.addEventListener("toggle", (event) => {
-  const archive = event.target.closest(".rail-archive");
-  if (!archive?.dataset.repo) return;
-  if (archive.open) archiveOpen.add(archive.dataset.repo);
-  else archiveOpen.delete(archive.dataset.repo);
-  render();
-});
+repositoryNav?.addEventListener(
+  "toggle",
+  (event) => {
+    const archive = event.target.closest(".rail-archive");
+    if (!archive?.dataset.repo) return;
+    if (archive.open) archiveOpen.add(archive.dataset.repo);
+    else archiveOpen.delete(archive.dataset.repo);
+    render();
+  },
+  true,
+);
 
 sessionSearch?.addEventListener("input", () => render());
 document.addEventListener("keydown", (event) => {
@@ -692,23 +684,6 @@ document.addEventListener("keydown", (event) => {
 
 content.addEventListener("input", (event) => {
   if (event.target.matches(".rename-input")) renameDraft = event.target.value;
-});
-
-document.addEventListener("click", (event) => {
-  if (
-    expandedSessionDetails.size === 0 ||
-    event.target.closest(".session-detail, .session-disclosure-toggle")
-  ) {
-    return;
-  }
-  expandedSessionDetails.clear();
-  render();
-});
-
-mobileUtilities?.addEventListener("toggle", () => {
-  if (!mobileUtilities.open || expandedSessionDetails.size === 0) return;
-  expandedSessionDetails.clear();
-  render();
 });
 
 content.addEventListener("submit", (event) => {
@@ -739,14 +714,6 @@ content.addEventListener("keydown", (event) => {
     );
     return;
   }
-  const row = event.target.closest(".session[data-session-id]");
-  const id = row?.dataset.sessionId;
-  if (!id || !expandedSessionDetails.has(id)) return;
-  event.preventDefault();
-  confirmations.delete(id);
-  expandedSessionDetails.delete(id);
-  render();
-  focusVisibleControl(`[data-action="toggle-details"][data-id="${CSS.escape(id)}"]`);
 });
 
 content.addEventListener(

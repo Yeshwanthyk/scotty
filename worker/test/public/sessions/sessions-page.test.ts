@@ -74,28 +74,6 @@ describe("sessions page", () => {
     assert.include(sessionsScript, "preserveFocusedDraft: options.actionId === undefined");
   });
 
-  it("renders session actions as an explicit, labelled disclosure", () => {
-    assert.include(sessionListSource, 'toggle.className = "session-disclosure-toggle"');
-    assert.include(sessionListSource, 'toggle.setAttribute("aria-expanded"');
-    assert.include(sessionListSource, 'toggle.setAttribute("aria-controls"');
-    assert.include(sessionListSource, 'detail.className = "session-detail"');
-  });
-
-  it("uses a compact overflow trigger for lifecycle actions", () => {
-    assert.include(sessionListSource, 'actionButton(state, "⋯", "toggle-details"');
-    assert.include(sessionListSource, 'toggle.className = "session-disclosure-toggle"');
-    assert.include(sessionListSource, 'toggle.setAttribute("aria-expanded"');
-    assert.include(sessionListSource, 'detail.className = "session-detail"');
-    assert.include(sessionsScript, "expandedSessionDetails.clear()");
-    assert.include(sessionsScript, "mobileUtilities.open = false");
-  });
-
-  it("lets keyboard users close phone actions and restores disclosure focus", () => {
-    assert.include(sessionsScript, 'if (event.key !== "Escape") return');
-    assert.include(sessionsScript, "expandedSessionDetails.delete(id)");
-    assert.include(sessionsScript, '[data-action="toggle-details"]');
-  });
-
   it("names both destructive resources in permanent-delete confirmation", () => {
     assert.include(sessionListSource, "This permanently removes the session and its backups.");
     assert.include(sessionListSource, '"Delete permanently", "delete"');
@@ -202,8 +180,11 @@ describe("sessions page", () => {
       sessionListSource,
       "sleepingSummary.dataset.focusKey = sleepingProjectFocusKey(group.repo)",
     );
-    assert.include(sessionListSource, "focusRenderedControl(content, focusKey)");
-    assert.include(sessionListSource, "if (sleeping.open)");
+    assert.include(
+      sessionListSource,
+      "focusRenderedControl([content, ...(repositoryNav ? [repositoryNav] : [])], focusKey)",
+    );
+    assert.include(sessionListSource, "section.append(sleeping)");
     assert.include(sessionsScript, "if (changed) render()");
   });
 

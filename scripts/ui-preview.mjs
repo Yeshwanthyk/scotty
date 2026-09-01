@@ -1,9 +1,10 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, join, normalize } from "node:path";
+import { extname, join, normalize, sep } from "node:path";
 import { createPreviewSession, PREVIEW_SESSION_ID } from "./ui-preview-state.mjs";
 
-const port = Number.parseInt(process.env.SCOTTY_UI_PREVIEW_PORT ?? "8791", 10);
+const configuredPort = Number.parseInt(process.env.SCOTTY_UI_PREVIEW_PORT ?? "8791", 10);
+const port = configuredPort > 0 && configuredPort <= 65_535 ? configuredPort : 8791;
 const publicRoot = join(import.meta.dirname, "..", "worker", "public");
 const now = Date.now();
 const previewSession = createPreviewSession();
@@ -143,7 +144,7 @@ const requestJson = (request) =>
 const serve = (response, pathname) => {
   const relative = normalize(pathname).replace(/^\/+/, "");
   const path = join(publicRoot, relative);
-  if (!path.startsWith(publicRoot) || !existsSync(path) || !statSync(path).isFile()) {
+  if (!path.startsWith(`${publicRoot}${sep}`) || !existsSync(path) || !statSync(path).isFile()) {
     response.writeHead(404).end("Not found");
     return;
   }
@@ -209,7 +210,11 @@ const server = createServer(async (request, response) => {
   } else if (pathname === "/sessions") serveSessionsPreview(response);
   else if (pathname === "/s/preview-agent")
     response.writeHead(302, { location: `/s/${PREVIEW_SESSION_ID}` }).end();
-  else if (pathname === `/s/${PREVIEW_SESSION_ID}`) serveSessionPreview(response);
+  else if (
+    /^\/s\/[^/]+$/u.test(pathname) &&
+    sessions.some((session) => pathname === `/s/${session.id}`)
+  )
+    serveSessionPreview(response);
   else if (pathname === "/session/index.js" && url.searchParams.has("v"))
     serveVersionedScript(response, "session", "index.js", url.searchParams.get("v"));
   else if (pathname === "/sessions/index.js" && url.searchParams.has("v"))

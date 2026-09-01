@@ -21,6 +21,7 @@
   --z-sidebar: 40;
   --z-summary: 40;
   --z-terminal: 45;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   font-family:
     Inter,
     ui-sans-serif,
@@ -647,13 +648,10 @@ select:focus-visible {
   }
 }
 .turn-progress {
-  margin: 0;
+  margin: 8px 0;
   color: var(--quiet);
   font-size: 0.78rem;
   line-height: 1.55;
-}
-.turn-progress {
-  margin: 8px 0;
 }
 .tool-row {
   position: relative;
@@ -699,7 +697,7 @@ select:focus-visible {
 .tool-identity code {
   overflow: hidden;
   color: var(--quiet);
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.64rem;
   font-weight: 500;
   text-overflow: ellipsis;
@@ -1115,13 +1113,13 @@ select:focus-visible {
   width: 16px;
   height: 16px;
   fill: none;
-  stroke: currentColor;
+  stroke: currentcolor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
 }
 .composer-action.button-stop svg {
-  fill: currentColor;
+  fill: currentcolor;
   stroke: none;
 }
 .composer .button-primary {
@@ -1672,8 +1670,8 @@ select:focus-visible {
   }
   .agent-header-actions .header-action-icon {
     display: inline;
-    color: currentColor;
-    font-family: "SFMono-Regular", Consolas, monospace;
+    color: currentcolor;
+    font-family: SFMono-Regular, Consolas, monospace;
     font-size: 0.84rem;
     font-weight: 650;
   }

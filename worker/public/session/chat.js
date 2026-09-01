@@ -755,6 +755,7 @@ function renderTurn(document, turn, projection, sessionId, baseUrl, working) {
         assistant.className = "assistant-message";
         assistant.append(renderSafeMarkdown(document, text, baseUrl));
         article.append(assistant);
+        hasActivity = true;
       }
     }
   }

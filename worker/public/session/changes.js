@@ -331,7 +331,7 @@ export function createChangesViewer({
     resetPatch();
     trigger.setAttribute("aria-expanded", "false");
     if (dialog.open) dialog.close();
-    onOpenChange?.(false);
+    else onOpenChange?.(false);
     trigger.focus({ preventScroll: true });
   };
 

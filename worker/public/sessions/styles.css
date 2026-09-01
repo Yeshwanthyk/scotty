@@ -410,7 +410,7 @@ textarea.control {
   background: var(--panel-raised);
   box-shadow: var(--ring);
   color: var(--muted);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 0.7rem;
   line-height: 1.2;
   transition:
@@ -687,7 +687,7 @@ textarea.control {
   justify-items: center;
   gap: 10px;
   color: var(--quiet);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 0.68rem;
 }
 
@@ -1030,7 +1030,7 @@ textarea.control {
 .branch,
 .session-id,
 .metrics {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1839,7 +1839,7 @@ body.sessions-page .workspace-meta {
   overflow: hidden;
   margin: 0;
   color: var(--quiet);
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.65rem;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2032,7 +2032,7 @@ body.sessions-page .work-terminal {
   margin: 0;
   padding: 16px 14px;
   color: var(--muted);
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.7rem;
   line-height: 1.65;
 }
@@ -2092,7 +2092,7 @@ body.sessions-page .workspace-manage-title {
 body.sessions-page .workspace-manage-meta {
   margin: 6px 0 28px;
   color: var(--quiet);
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.68rem;
 }
 
@@ -2223,7 +2223,6 @@ body.sessions-page .composer-region.is-open .composer {
   padding: 0;
   border: 0;
   margin: -1px;
-  clip: rect(0 0 0 0);
   clip-path: inset(50%);
   white-space: nowrap;
 }

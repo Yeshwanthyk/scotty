@@ -35,7 +35,6 @@ export interface SessionListRenderState {
   readonly busy: ReadonlyMap<string, SessionAction>;
   readonly confirmations: ReadonlySet<string>;
   readonly expandedSleepingProjects: ReadonlySet<string>;
-  readonly expandedSessionDetails: ReadonlySet<string>;
   readonly rowErrors: ReadonlyMap<string, string>;
   readonly renamingId?: string;
   readonly renameDraft: string;
@@ -45,6 +44,7 @@ export interface SessionListRenderState {
   readonly selectedSessionId?: string;
   readonly searchQuery?: string;
   readonly archiveVisibleCounts?: ReadonlyMap<string, number>;
+  readonly archiveOpen?: ReadonlySet<string>;
 }
 
 export function formatSessionDuration(value: unknown): string;

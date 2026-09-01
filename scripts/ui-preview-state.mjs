@@ -149,12 +149,14 @@ export function createPreviewSession({
     });
 
   const later = (task, delay) => {
+    let completedSynchronously = false;
     let timer;
     timer = schedule(() => {
-      timers.delete(timer);
+      completedSynchronously = timer === undefined;
+      if (timer !== undefined) timers.delete(timer);
       task();
     }, delay);
-    timers.add(timer);
+    if (!completedSynchronously) timers.add(timer);
     return timer;
   };
 
@@ -334,7 +336,7 @@ export function createPreviewSession({
     if (intent.type === "abort") return abort();
     const text = typeof intent.message === "string" ? intent.message.trim() : "";
     if (!text) return;
-    if (!active && intent.type === "prompt") return startTurn(text);
+    if (!active && (intent.type === "prompt" || intent.type === "steer")) return startTurn(text);
     if (intent.type === "steer") {
       queue.steer.push({ text });
       publishQueue();

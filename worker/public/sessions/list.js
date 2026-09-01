@@ -253,15 +253,6 @@ function appendRailSession(parent, session, selectedSessionId, now, compact = fa
 }
 
 function renderRepositoryRail(parent, groups, state, now) {
-  // The compact disclosure and destructive-copy strings remain part of the
-  // sessions UI contract for clients that inspect the rendered source.
-  // actionButton(state, "⋯", "toggle-details"
-  // toggle.className = "session-disclosure-toggle";
-  // toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
-  // toggle.setAttribute("aria-controls", detailId);
-  // detail.className = "session-detail";
-  // This permanently removes the session and its backups.
-  // "Delete permanently", "delete"
   parent.replaceChildren();
   const query = (state.searchQuery || "").trim().toLocaleLowerCase("en-US");
   const visibleGroups = groups
@@ -314,20 +305,22 @@ function renderRepositoryRail(parent, groups, state, now) {
         more.className = "rail-show-more";
         more.dataset.action = "show-more-archive";
         more.dataset.repo = group.repo;
+        more.dataset.focusKey = `archive-more:${encodeURIComponent(group.repo)}`;
         more.textContent = `Show ${Math.min(10, archived.length - count)} more`;
         list.append(more);
       }
       sleeping.append(list);
-      if (sleeping.open) section.append(sleeping);
-      else section.append(sleeping);
+      section.append(sleeping);
     }
     parent.append(section);
   }
 }
 
-function focusRenderedControl(content, focusKey) {
+function focusRenderedControl(hosts, focusKey) {
   if (!focusKey) return;
-  const matches = content.querySelectorAll(`[data-focus-key="${CSS.escape(focusKey)}"]`);
+  const matches = hosts.flatMap((host) => [
+    ...host.querySelectorAll(`[data-focus-key="${CSS.escape(focusKey)}"]`),
+  ]);
   const control = [...matches].find((candidate) => candidate.getClientRects().length > 0);
   control?.focus();
 }
@@ -381,7 +374,8 @@ export function renderSessionsView(state) {
   const { content, repositoryNav, summary, sessions, loaded, fetching } = state;
   const activeElement = document.activeElement;
   const focusKey =
-    activeElement instanceof HTMLElement && content.contains(activeElement)
+    activeElement instanceof HTMLElement &&
+    (content.contains(activeElement) || repositoryNav?.contains(activeElement))
       ? activeElement.dataset.focusKey
       : undefined;
 
@@ -433,6 +427,6 @@ export function renderSessionsView(state) {
   if (managedSession) renderManageWorkspace(content, state, managedSession);
   else renderSessionsHome(content);
   focusTargetSession(content, state);
-  focusRenderedControl(content, focusKey);
+  focusRenderedControl([content, ...(repositoryNav ? [repositoryNav] : [])], focusKey);
   return { preservedDraft: false };
 }
