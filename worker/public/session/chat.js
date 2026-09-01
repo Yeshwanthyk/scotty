@@ -15,6 +15,7 @@ const TERMINAL_EVENTS = new Set([
 ]);
 const UI_METHODS = new Set(["select", "confirm", "input", "editor"]);
 const VISIBLE_TURN_COUNT = 3;
+const HISTORY_BATCH_COUNT = 10;
 const DESKTOP_TOOL_LIMIT = 3;
 const THINKING_LIMIT = 600;
 const TOOL_OUTPUT_LIMIT = 1_200;
@@ -564,20 +565,26 @@ export function toolOutputText(tool) {
 
 function renderTool(document, tool, sessionId) {
   const artifact = artifactForTool(tool, sessionId);
-  const row = artifact ? renderArtifactCard(document, artifact) : document.createElement("div");
+  const row = artifact ? renderArtifactCard(document, artifact) : document.createElement("details");
   row.classList.add("work-tool");
   row.dataset.toolId = tool.id;
   row.dataset.signature = JSON.stringify(tool);
   if (artifact) return row;
   row.classList.add("tool-row", `tool-${tool.status}`);
+  const summary = document.createElement("summary");
+  const identity = document.createElement("span");
+  identity.className = "tool-identity";
   const name = document.createElement("strong");
   name.textContent = semanticToolLabel(tool.name);
-  name.title = sanitizeText(tool.name ?? "Tool", 120);
+  const invocation = document.createElement("code");
+  invocation.textContent = sanitizeText(tool.name ?? "tool", 120);
+  identity.append(name, invocation);
   const status = document.createElement("span");
   status.className = "tool-status";
   status.textContent =
     tool.status === "running" ? "Running" : tool.status === "error" ? "Failed" : "Done";
-  row.append(name, status);
+  summary.append(identity, status);
+  row.append(summary);
   const outputText = toolOutputText(tool);
   if (outputText) {
     const output = document.createElement("pre");
@@ -587,80 +594,45 @@ function renderTool(document, tool, sessionId) {
   return row;
 }
 
-function workSummaryText(work) {
-  if (work.totalTools === 0) return work.state === "failed" ? "Failed" : "No tools";
-  return `${work.totalTools} ${work.totalTools === 1 ? "action" : "actions"}${work.failedTools > 0 ? ` · ${work.failedTools} failed` : ""}`;
+function toolForPart(part, tools) {
+  const id = toolId(part);
+  return id ? tools.get(id) : normalizedTool(part, "running");
 }
 
-function appendWorkContents(document, root, work, sessionId) {
-  if (work.thinking) {
-    const reasoning = document.createElement("p");
-    reasoning.className = "reasoning";
-    reasoning.textContent = work.thinking;
-    root.append(reasoning);
-  } else if (work.tools.length === 0 && work.artifacts.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "work-empty";
-    empty.textContent = work.state === "waiting" ? "Pi needs your input to continue." : "Thinking…";
-    root.append(empty);
-  }
-  if (work.tools.length > 0) {
-    const tools = document.createElement("div");
-    tools.className = "work-tools";
-    for (const tool of work.tools) tools.append(renderTool(document, tool, sessionId));
-    root.append(tools);
-  }
-  if (work.artifacts.length > 0) {
-    const artifacts = document.createElement("div");
-    artifacts.className = "work-artifacts";
-    for (const tool of work.artifacts) artifacts.append(renderTool(document, tool, sessionId));
-    root.append(artifacts);
-  }
-}
-
-function workForRender(turn, projection, sessionId) {
-  const toolsForDisplay = projection.active
-    ? turn.tools
-    : turn.tools.map((tool) => (tool.status === "running" ? { ...tool, status: "done" } : tool));
-  const work = currentWorkPresentation({ ...turn, tools: toolsForDisplay }, projection);
-  const artifacts = toolsForDisplay.filter((tool) => artifactForTool(tool, sessionId));
-  const artifactIds = new Set(artifacts.map((tool) => tool.id));
-  const tools = boundedTools(
-    toolsForDisplay.filter((tool) => !artifactIds.has(tool.id)),
-    DESKTOP_TOOL_LIMIT,
-  );
-  return { ...work, tools, artifacts };
-}
-
-function renderWork(document, turn, projection, sessionId, working) {
-  const work = workForRender(turn, projection, sessionId);
-  if (working) {
-    const section = document.createElement("section");
-    section.className = "current-work";
-    section.dataset.workState = work.state;
-    const header = document.createElement("header");
-    const title = document.createElement("strong");
-    title.textContent = "Current work";
-    const status = document.createElement("span");
-    status.className = "work-status";
-    status.textContent = work.label;
-    header.append(title, status);
-    section.append(header);
-    appendWorkContents(document, section, work, sessionId);
-    return section;
-  }
-  const details = document.createElement("details");
-  details.className = "work-disclosure";
+function renderToolActivity(document, tools, sessionId, working) {
+  const activity = document.createElement("details");
+  activity.className = "tool-activity";
+  activity.dataset.activityState = working ? "running" : "settled";
+  activity.open = working;
+  activity.dataset.activityKey = tools.map((tool) => tool.id).join(",");
+  const latestTool = tools.at(-1);
   const summary = document.createElement("summary");
-  const title = document.createElement("span");
-  title.textContent = "Worked";
+  summary.className = "tool-activity-summary";
+  const title = document.createElement("strong");
+  title.textContent = working ? `${semanticToolLabel(latestTool.name)}…` : "Actions";
   const meta = document.createElement("span");
-  meta.className = "work-summary-meta";
-  meta.textContent = workSummaryText(work);
+  meta.className = "tool-activity-count";
+  meta.setAttribute("aria-live", "polite");
+  meta.textContent = `${tools.length} ${tools.length === 1 ? "action" : "actions"}`;
   summary.append(title, meta);
-  details.append(summary);
-  appendWorkContents(document, details, work, sessionId);
-  return details;
+  const body = document.createElement("div");
+  body.className = "tool-activity-body";
+  for (const tool of tools) body.append(renderTool(document, tool, sessionId));
+  activity.append(summary, body);
+  return activity;
+}
+
+function renderToolRun(document, thoughts, tools, sessionId, working) {
+  const run = document.createElement("div");
+  run.className = "tool-run";
+  if (thoughts.length > 0) {
+    const thinking = document.createElement("p");
+    thinking.className = "thinking-line";
+    thinking.textContent = compactText(thoughts.join(" · "), THINKING_LIMIT);
+    run.append(thinking);
+  }
+  if (tools.length > 0) run.append(renderToolActivity(document, tools, sessionId, working));
+  return run;
 }
 
 function renderQuestion(document, request) {
@@ -737,19 +709,64 @@ function renderTurn(document, turn, projection, sessionId, baseUrl, working) {
     user.textContent = contentParts(turn.user).map(partText).filter(Boolean).join("\n");
     article.append(user);
   }
-  const assistant = document.createElement("div");
-  assistant.className = "assistant-message";
-  let hasWork = false;
+  const tools = new Map(
+    turn.tools.map((tool) => [
+      tool.id,
+      !projection.active && tool.status === "running" ? { ...tool, status: "done" } : tool,
+    ]),
+  );
+  const renderedTools = new Set();
+  let hasActivity = false;
+  let runThoughts = [];
+  let runTools = [];
+  const flushToolRun = () => {
+    if (runThoughts.length === 0 && runTools.length === 0) return;
+    article.append(renderToolRun(document, runThoughts, runTools, sessionId, working));
+    runThoughts = [];
+    runTools = [];
+    hasActivity = true;
+  };
+  const appendUnrenderedTools = () => {
+    // The turn list is already bounded at the conversation level. Keep every
+    // call inside a loaded turn so its call/result remains auditable and in
+    // chronological order; only the compact row body is collapsed by default.
+    const unrendered = [...tools.values()].filter((candidate) => !renderedTools.has(candidate.id));
+    for (const tool of unrendered) {
+      runTools.push(tool);
+      renderedTools.add(tool.id);
+    }
+  };
   for (const message of turn.assistants) {
     for (const part of contentParts(message)) {
-      if (part?.type === "thinking") hasWork = true;
-      else if (part?.type === "text" || typeof part === "string")
-        assistant.append(renderSafeMarkdown(document, partText(part), baseUrl));
+      if (part?.type === "thinking") {
+        const text = partText(part);
+        if (text) runThoughts.push(text);
+      } else if (["toolCall", "tool_call", "tool-call"].includes(part?.type)) {
+        const tool = toolForPart(part, tools);
+        if (tool) {
+          runTools.push(tool);
+          renderedTools.add(tool.id);
+        }
+      } else if (part?.type === "text" || typeof part === "string") {
+        const text = partText(part);
+        if (!text) continue;
+        flushToolRun();
+        const assistant = document.createElement("div");
+        assistant.className = "assistant-message";
+        assistant.append(renderSafeMarkdown(document, text, baseUrl));
+        article.append(assistant);
+        hasActivity = true;
+      }
     }
   }
-  if (assistant.childNodes.length > 0) article.append(assistant);
-  if (hasWork || turn.tools.length > 0 || working)
-    article.append(renderWork(document, turn, projection, sessionId, working));
+  appendUnrenderedTools();
+  flushToolRun();
+  if (working && !hasActivity) {
+    const progress = document.createElement("p");
+    progress.className = "turn-progress";
+    progress.textContent = projection.pendingUi.size > 0 ? "Waiting for your reply…" : "Thinking…";
+    article.append(progress);
+  }
   return article;
 }
 
@@ -762,35 +779,64 @@ function preserveKeyedState(previous, candidate) {
     const before = previousTools.get(next.dataset.toolId);
     if (before?.dataset.signature === next.dataset.signature) next.replaceWith(before);
   }
-  const beforeDetails = previous.querySelector(".work-disclosure");
-  const nextDetails = candidate.querySelector(".work-disclosure");
-  if (beforeDetails?.open && nextDetails) nextDetails.open = true;
+  const previousActivities = [...previous.querySelectorAll(".tool-activity")];
+  const previousActivitiesByKey = new Map(
+    previousActivities.map((activity) => [activity.dataset.activityKey, activity]),
+  );
+  const nextActivities = [...candidate.querySelectorAll(".tool-activity")];
+  for (const [index, next] of nextActivities.entries()) {
+    const before =
+      previousActivitiesByKey.get(next.dataset.activityKey) ?? previousActivities[index];
+    if (before) next.open = before.open;
+  }
   return candidate;
 }
 
-function renderEarlierTurns(document, presentation, projection, sessionId, baseUrl, existing) {
-  const details = document.createElement("details");
-  details.className = "earlier-turns";
-  details.dataset.earlierTurns = "";
-  details.dataset.signature = JSON.stringify(presentation.earlier);
-  const summary = document.createElement("summary");
+function renderEarlierTurns(
+  document,
+  presentation,
+  projection,
+  sessionId,
+  baseUrl,
+  existing,
+  visibleHistoryCount,
+  onShowMore,
+) {
+  const section = document.createElement("section");
+  section.className = "earlier-turns";
+  section.dataset.earlierTurns = "";
+  const loaded = visibleHistoryCount > 0 ? presentation.earlier.slice(-visibleHistoryCount) : [];
+  const remaining = presentation.earlier.length - loaded.length;
+  section.dataset.signature = JSON.stringify([loaded.map((turn) => turn.key), remaining]);
+  const header = document.createElement("div");
+  header.className = "earlier-turns-header";
   const label = document.createElement("span");
-  label.textContent = `Earlier turns (${presentation.earlier.length})`;
+  label.textContent = `${presentation.earlier.length} earlier ${presentation.earlier.length === 1 ? "turn" : "turns"}`;
+  header.append(label);
+  if (remaining > 0) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "show-more-turns";
+    more.dataset.focusKey = "show-more-turns";
+    more.textContent = `Show ${Math.min(HISTORY_BATCH_COUNT, remaining)} more`;
+    more.addEventListener("click", onShowMore);
+    header.append(more);
+  }
   const preview = document.createElement("span");
   preview.className = "earlier-turns-preview";
   preview.textContent = presentation.preview;
-  summary.append(label, preview);
-  details.append(summary);
-  for (const turn of presentation.earlier) {
+  section.append(header);
+  if (loaded.length === 0 && preview.textContent) section.append(preview);
+  for (const turn of loaded) {
     const candidate = renderTurn(document, turn, projection, sessionId, baseUrl, false);
     const previous = existing.get(turn.key);
-    details.append(
+    section.append(
       previous?.dataset.signature === candidate.dataset.signature
         ? previous
         : preserveKeyedState(previous, candidate),
     );
   }
-  return details;
+  return section;
 }
 
 function captureScrollAnchor(feed, scroller) {
@@ -817,15 +863,18 @@ function restoreScrollAnchor(feed, scroller, anchor) {
 
 function appendEarlierTurns(
   fragment,
-  { document, presentation, projection, sessionId, baseUrl, feed, existing, anchor },
+  {
+    document,
+    presentation,
+    projection,
+    sessionId,
+    baseUrl,
+    existing,
+    visibleHistoryCount,
+    onShowMore,
+  },
 ) {
   if (presentation.earlier.length === 0) return;
-  const previous = feed.querySelector("[data-earlier-turns]");
-  const signature = JSON.stringify(presentation.earlier);
-  if (previous?.dataset.signature === signature) {
-    fragment.append(previous);
-    return;
-  }
   const earlier = renderEarlierTurns(
     document,
     presentation,
@@ -833,14 +882,18 @@ function appendEarlierTurns(
     sessionId,
     baseUrl,
     existing,
+    visibleHistoryCount,
+    onShowMore,
   );
-  if (previous?.open || presentation.earlier.some((turn) => turn.key === anchor?.key))
-    earlier.open = true;
   fragment.append(earlier);
 }
 
 export function createChatView({ document, feed, scroller, newActivity, baseUrl }) {
   let renderedSignature = "";
+  let historySessionId;
+  let visibleHistoryCount = 0;
+  let latestProjection;
+  let latestSessionId;
   scroller.addEventListener(
     "scroll",
     () => {
@@ -853,8 +906,14 @@ export function createChatView({ document, feed, scroller, newActivity, baseUrl 
     newActivity.hidden = true;
     scroller.focus({ preventScroll: true });
   });
-  return {
+  const view = {
     render(projection, sessionId) {
+      latestProjection = projection;
+      latestSessionId = sessionId;
+      if (historySessionId !== sessionId) {
+        historySessionId = sessionId;
+        visibleHistoryCount = 0;
+      }
       const followTail = isNearBottom(scroller);
       const previousScrollTop = scroller.scrollTop;
       const scrollAnchor = followTail ? undefined : captureScrollAnchor(feed, scroller);
@@ -873,6 +932,7 @@ export function createChatView({ document, feed, scroller, newActivity, baseUrl 
         projection.sequence,
         [...projection.pendingUi.keys()],
         turns.map((turn) => turn.key),
+        visibleHistoryCount,
       ]);
       if (signature === renderedSignature) return;
       renderedSignature = signature;
@@ -886,9 +946,13 @@ export function createChatView({ document, feed, scroller, newActivity, baseUrl 
         projection,
         sessionId,
         baseUrl,
-        feed,
         existing,
-        anchor: scrollAnchor,
+        visibleHistoryCount,
+        onShowMore: () => {
+          visibleHistoryCount += HISTORY_BATCH_COUNT;
+          renderedSignature = "";
+          view.render(latestProjection, latestSessionId);
+        },
       });
       for (const [index, turn] of presentation.visible.entries()) {
         const working = projection.active && index === presentation.visible.length - 1;
@@ -925,7 +989,10 @@ export function createChatView({ document, feed, scroller, newActivity, baseUrl 
     },
     reset() {
       renderedSignature = "";
+      historySessionId = undefined;
+      visibleHistoryCount = 0;
       newActivity.hidden = true;
     },
   };
+  return view;
 }

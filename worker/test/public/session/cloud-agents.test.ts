@@ -1,7 +1,10 @@
 import { assert, describe, it } from "vitest";
 import {
+  cloudAgentGroupWindow,
   cloudAgentSignature,
+  filterCloudAgents,
   groupCloudAgents,
+  isActiveCloudAgent,
   normalizeCloudAgent,
 } from "../../../public/session/cloud-agents.js";
 import cloudAgentSource from "../../../public/session/cloud-agents.js?raw";
@@ -27,9 +30,40 @@ describe("cloud-agent directory", () => {
     assert.ok(warm);
     assert.ok(sleeping);
     assert.deepStrictEqual(groupCloudAgents([sleeping, warm]), [
-      { repo: "openai/scotty", agents: [sleeping, warm] },
+      { repo: "openai/scotty", agents: [warm, sleeping] },
     ]);
     assert.isUndefined(normalizeCloudAgent({ title: "missing id" }));
+  });
+
+  it("keeps only booting and warm sessions in the in-session directory", () => {
+    assert.ok(warm);
+    assert.ok(sleeping);
+    assert.isTrue(isActiveCloudAgent(warm));
+    assert.isFalse(isActiveCloudAgent(sleeping));
+    assert.isTrue(isActiveCloudAgent({ ...warm, status: "booting" }));
+    assert.isFalse(isActiveCloudAgent({ ...warm, status: "failed" }));
+    assert.include(cloudAgentSource, "const activeAgents = agents.filter(isActiveCloudAgent)");
+    assert.include(cloudAgentSource, "count.textContent = String(activeAgents.length)");
+  });
+
+  it("pins active work and bounds sleeping rows until a repository is expanded", () => {
+    assert.ok(warm);
+    const sleepers = Array.from({ length: 12 }, (_, index) => ({
+      id: `sleeping-${index}`,
+      title: `Sleeping ${index}`,
+      repo: "openai/scotty",
+      branch: "",
+      status: "sleeping",
+      provider: "cloudflare",
+    }));
+    assert.deepStrictEqual(cloudAgentGroupWindow([warm, ...sleepers], warm.id), {
+      agents: [warm, ...sleepers.slice(0, 6)],
+      hidden: 6,
+    });
+    assert.deepStrictEqual(
+      cloudAgentGroupWindow([warm, ...sleepers], warm.id, { expanded: true }),
+      { agents: [warm, ...sleepers], hidden: 0 },
+    );
   });
 
   it("changes its render signature only for visible directory state", () => {
@@ -41,6 +75,15 @@ describe("cloud-agent directory", () => {
       signature,
     );
     assert.notStrictEqual(cloudAgentSignature([warm], "another"), signature);
+  });
+
+  it("filters a large directory by title, repository, or branch", () => {
+    assert.ok(warm);
+    assert.ok(sleeping);
+    assert.deepStrictEqual(filterCloudAgents([warm, sleeping], "ship browser"), [warm]);
+    assert.deepStrictEqual(filterCloudAgents([warm, sleeping], "OPENAI/SCOTTY"), [warm, sleeping]);
+    assert.deepStrictEqual(filterCloudAgents([warm, sleeping], "browser-chat"), [warm]);
+    assert.deepStrictEqual(filterCloudAgents([warm, sleeping], "missing"), []);
   });
 
   it("keeps one delegated selector and pauses polling while hidden", () => {

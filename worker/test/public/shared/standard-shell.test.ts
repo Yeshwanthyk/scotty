@@ -23,9 +23,11 @@ const pages = [
 const destinations = ["/sessions", "/stats", "/providers", "/devices"];
 
 function shellRegion(html: string, mobile: boolean): string {
-  const pattern = mobile
-    ? /<details class="mobile-utilities">[\s\S]*?<\/details>/u
-    : /<nav class="masthead-nav"[\s\S]*?<\/nav>/u;
+  const pattern = html.includes('class="sessions-rail"')
+    ? /<nav class="rail-global"[\s\S]*?<\/nav>/u
+    : mobile
+      ? /<details class="mobile-utilities">[\s\S]*?<\/details>/u
+      : /<nav class="masthead-nav"[\s\S]*?<\/nav>/u;
   const region = html.match(pattern)?.[0];
   assert.ok(region);
   return region;
@@ -40,13 +42,18 @@ function links(region: string) {
 
 describe("standard application shell", () => {
   it("uses one identity and four-link navigation contract on desktop and mobile", () => {
-    const identity = sessionsHtml.match(/<a class="identity"[\s\S]*?<\/a>/u)?.[0];
+    const identity = statsHtml.match(/<a class="identity"[\s\S]*?<\/a>/u)?.[0];
     assert.ok(identity);
+    assert.match(sessionsHtml, /<a class="rail-brand"[\s\S]*?Scotty[\s\S]*?<\/a>/u);
 
     for (const page of pages) {
       assert.include(page.html, 'class="scotty-ui app-page standard-page');
+    }
+    for (const page of pages.slice(1)) {
       assert.strictEqual(page.html.match(/<a class="identity"[\s\S]*?<\/a>/u)?.[0], identity);
+    }
 
+    for (const page of pages) {
       for (const mobile of [false, true]) {
         const navigation = links(shellRegion(page.html, mobile));
         assert.deepStrictEqual(

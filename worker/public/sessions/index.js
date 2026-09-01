@@ -3,6 +3,7 @@ import {
   promptText,
   repositoryName,
   safeSessionPath,
+  sessionDisplayStatus,
   sessionKeyboardAction,
   sessionTitle,
   submissionIdentity,
@@ -22,6 +23,8 @@ const devicesLink = document.querySelector("#devices");
 const devicesMobileLink = document.querySelector("#devices-mobile");
 const providersLink = document.querySelector("#providers");
 const providersMobileLink = document.querySelector("#providers-mobile");
+const repositoryNav = document.querySelector("#repository-nav");
+const sessionSearch = document.querySelector("#session-search");
 const summary = document.querySelector("#summary");
 const notice = document.querySelector("#notice");
 const noticeText = document.querySelector("#notice-text");
@@ -62,7 +65,8 @@ let pollTimer;
 const busy = new Map();
 const confirmations = new Set();
 const expandedSleepingProjects = new Set();
-const expandedSessionDetails = new Set();
+const archiveVisibleCounts = new Map();
+const archiveOpen = new Set();
 const cleanupPending = new Set();
 const cleanupTitles = new Map();
 const rowErrors = new Map();
@@ -72,6 +76,7 @@ let renameDraft = "";
 let renderedSessionsSignature;
 const targetSessionId = focusedSessionId(window.location.search);
 let focusTargetSession = targetSessionId !== undefined;
+let selectedSessionId = targetSessionId;
 
 function sessionPath(id, suffix = "") {
   return `/api/sessions/${encodeURIComponent(id)}${suffix}`;
@@ -260,6 +265,7 @@ function render(options = {}) {
   }
   const result = renderSessionsView({
     content,
+    repositoryNav,
     summary,
     sessions,
     loaded,
@@ -267,13 +273,16 @@ function render(options = {}) {
     busy,
     confirmations,
     expandedSleepingProjects,
-    expandedSessionDetails,
     rowErrors,
     renamingId,
     renameDraft,
     preserveFocusedDraft: options.preserveFocusedDraft === true,
     targetSessionId,
     focusTargetSession,
+    selectedSessionId,
+    searchQuery: sessionSearch?.value || "",
+    archiveVisibleCounts,
+    archiveOpen,
   });
   if (!result.preservedDraft) renderedSessionsSignature = signature;
   if (loaded) focusTargetSession = false;
@@ -413,7 +422,6 @@ function finishProjectedCleanup(completedIds) {
   for (const id of completedIds) {
     cleanupPending.delete(id);
     confirmations.delete(id);
-    expandedSessionDetails.delete(id);
     rowErrors.delete(id);
     announce(`${cleanupTitles.get(id) || "Session"} deleted.`);
     cleanupTitles.delete(id);
@@ -424,10 +432,15 @@ function applyProjectedSessions(next) {
   const normalized = next.map(normalizeSessionListItem).filter((session) => session !== undefined);
   const cleanup = reconcileCleanupProjection(normalized, [...cleanupPending]);
   sessions = cleanup.sessions;
+  if (!sessions.some((session) => session.id === selectedSessionId)) {
+    selectedSessionId =
+      sessions.find((session) =>
+        ["warm", "booting", "stopping"].includes(sessionDisplayStatus(session.status)),
+      )?.id || sessions[0]?.id;
+  }
   finishProjectedCleanup(cleanup.completedIds);
   const target = sessions.find((session) => session.id === targetSessionId);
   if (focusTargetSession && target) {
-    expandedSessionDetails.add(target.id);
     if (target.status === "sleeping" && target.repo) expandedSleepingProjects.add(target.repo);
   }
   return cleanup;
@@ -598,21 +611,18 @@ async function performRename(id, title) {
 }
 
 content.addEventListener("click", (event) => {
+  const more = event.target.closest('[data-action="show-more-archive"]');
+  if (more) return;
   const button = event.target.closest("button[data-action]");
   if (!button) return;
   const { action, id } = button.dataset;
   if (action === "open-composer") {
     setComposerOpen(true);
-  } else if (action === "toggle-details") {
-    if (expandedSessionDetails.has(id)) expandedSessionDetails.delete(id);
-    else expandedSessionDetails.add(id);
-    render();
   } else if (action === "rename") {
     const session = sessions.find((candidate) => candidate.id === id);
     if (!session) return;
     renamingId = id;
     renameDraft = sessionTitle(session);
-    expandedSessionDetails.add(id);
     render();
     requestAnimationFrame(() => {
       const input = content.querySelector(`[data-focus-key="rename:${CSS.escape(id)}"]`);
@@ -634,6 +644,41 @@ content.addEventListener("click", (event) => {
     render();
   } else {
     void perform(id, action);
+  }
+});
+
+repositoryNav?.addEventListener("click", (event) => {
+  const more = event.target.closest('[data-action="show-more-archive"]');
+  if (more) {
+    event.preventDefault();
+    const repo = more.dataset.repo;
+    if (repo) {
+      archiveVisibleCounts.set(repo, (archiveVisibleCounts.get(repo) || 10) + 10);
+      archiveOpen.add(repo);
+      render();
+    }
+    return;
+  }
+});
+
+repositoryNav?.addEventListener(
+  "toggle",
+  (event) => {
+    const archive = event.target.closest(".rail-archive");
+    if (!archive?.dataset.repo) return;
+    if (archive.open) archiveOpen.add(archive.dataset.repo);
+    else archiveOpen.delete(archive.dataset.repo);
+    render();
+  },
+  true,
+);
+
+sessionSearch?.addEventListener("input", () => render());
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    if (event.target.matches("input, textarea, select")) return;
+    event.preventDefault();
+    sessionSearch?.focus();
   }
 });
 
@@ -669,14 +714,6 @@ content.addEventListener("keydown", (event) => {
     );
     return;
   }
-  const row = event.target.closest(".session[data-session-id]");
-  const id = row?.dataset.sessionId;
-  if (!id || !expandedSessionDetails.has(id)) return;
-  event.preventDefault();
-  confirmations.delete(id);
-  expandedSessionDetails.delete(id);
-  render();
-  focusVisibleControl(`[data-action="toggle-details"][data-id="${CSS.escape(id)}"]`);
 });
 
 content.addEventListener(
@@ -684,8 +721,12 @@ content.addEventListener(
   (event) => {
     const sleeping = event.target.closest(".sleeping-group");
     if (!sleeping?.dataset.repo) return;
+    const changed = sleeping.open
+      ? !expandedSleepingProjects.has(sleeping.dataset.repo)
+      : expandedSleepingProjects.has(sleeping.dataset.repo);
     if (sleeping.open) expandedSleepingProjects.add(sleeping.dataset.repo);
     else expandedSleepingProjects.delete(sleeping.dataset.repo);
+    if (changed) render();
   },
   true,
 );

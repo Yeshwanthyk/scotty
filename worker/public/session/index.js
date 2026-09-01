@@ -5,6 +5,8 @@ import {
   currentActivity,
   reconcileDelivery,
   reconcileAcceptedDelivery,
+  queuePresentation,
+  renderComposerQueue,
   renderComposerPresentation,
   selectedDeliveryMode,
   shouldSubmitComposerKey,
@@ -15,6 +17,7 @@ import { createSummaryView } from "./summary.js";
 import { createChangesViewer } from "./changes.js";
 
 const byId = (id) => document.getElementById(id);
+const appShell = document.querySelector(".app-shell") ?? document.body;
 const sidebar = byId("agent-sidebar");
 const backdrop = byId("agent-backdrop");
 const openAgentsButton = byId("open-agents");
@@ -34,10 +37,12 @@ const terminalResizer = byId("terminal-resizer");
 const manageSessionLink = byId("manage-session");
 const agentList = byId("agent-list");
 const agentCount = byId("agent-count");
+const agentFilter = byId("agent-filter");
 const title = byId("agent-title");
 const meta = byId("agent-meta");
 const mobileTitle = byId("active-agent-title");
 const mobileRepo = byId("active-agent-repo");
+const mobileConnectionState = byId("mobile-connection-state");
 const connectionState = byId("connection-state");
 const connectionLabel = byId("connection-label");
 const transcript = byId("transcript-scroller");
@@ -46,6 +51,7 @@ const newActivity = byId("new-activity");
 const composer = byId("composer");
 const composerInput = byId("composer-input");
 const composerHint = byId("composer-hint");
+const composerQueue = byId("composer-queue");
 const sendButton = byId("send-message");
 const stopButton = byId("stop-agent");
 const deliveryControls = byId("delivery-controls");
@@ -53,7 +59,6 @@ const deliveryMode = byId("delivery-mode");
 const recovery = byId("command-recovery");
 const discardCommands = byId("discard-commands");
 const compactViewport = matchMedia("(max-width: 760px)");
-const compactSummary = matchMedia("(max-width: 1180px)");
 const sessionMemory = createSessionMemory();
 const pendingUiResponses = new Set();
 const deliveredUiResponses = new Set();
@@ -74,6 +79,11 @@ const changesViewer = createChangesViewer({
   document,
   fetch: window.fetch.bind(window),
   headerActions: document.querySelector(".agent-header-actions"),
+  surfaceHost: appShell,
+  onBeforeOpen: () => {
+    setSummary(false);
+    terminalDrawer?.close();
+  },
 });
 
 let currentSessionId;
@@ -106,6 +116,7 @@ async function openTerminal() {
     }
     setSidebar(false);
     setSummary(false);
+    changesViewer.close();
     terminalDrawer.open(currentSessionId, openTerminalButton);
   } finally {
     openTerminalButton.disabled = false;
@@ -148,13 +159,17 @@ function setConnection(state, message) {
     unavailable: "Unavailable",
   };
   connectionState.dataset.state = state;
+  mobileConnectionState.dataset.state = state;
+  mobileConnectionState.setAttribute("aria-label", message ?? labels[state] ?? "Unavailable");
   connectionLabel.textContent = message ?? labels[state] ?? "Unavailable";
 }
 
 function updateAgentCopy(agent) {
   const agentTitle = agent?.title ?? currentSessionId ?? "Cloud agent";
   const repository = agent?.repo ?? "Cloud agent";
-  const detail = [repository, agent?.branch].filter(Boolean).join(" · ");
+  const project = repository.split("/").at(-1) || repository;
+  const branch = agent?.branch?.replace(/^scotty\//u, "");
+  const detail = [project, branch].filter(Boolean).join(" · ");
   title.textContent = agentTitle;
   meta.textContent = detail;
   mobileTitle.textContent = agentTitle;
@@ -178,6 +193,7 @@ function updateComposer() {
       deliveryMode: selectedDeliveryMode(deliveryMode),
     }),
   );
+  renderComposerQueue(composerQueue, queuePresentation(projection));
 }
 
 function autosizeComposer() {
@@ -295,6 +311,7 @@ const directory = createCloudAgentDirectory({
   document,
   target: agentList,
   count: agentCount,
+  filter: agentFilter,
   fetch: window.fetch.bind(window),
   onSelect: (sessionId) => void switchSession(sessionId),
   onChange: () => updateAgentCopy(directory.find(currentSessionId)),
@@ -488,17 +505,19 @@ function setSidebar(open) {
 }
 
 function setSummary(open) {
-  const compact = compactSummary.matches;
-  const expanded = compact ? open : true;
-  if (open) setSidebar(false);
-  summaryPanel.dataset.open = String(expanded);
-  summaryPanel.inert = compact && !expanded;
-  openSummaryButton.setAttribute("aria-expanded", String(expanded));
+  if (open) {
+    setSidebar(false);
+    changesViewer.close();
+    terminalDrawer?.close();
+  }
+  summaryPanel.dataset.open = String(open);
+  summaryPanel.inert = !open;
+  openSummaryButton.setAttribute("aria-expanded", String(open));
   updateBackdrop();
-  if (open && compact) {
+  if (open) {
     summaryOpener = document.activeElement;
     closeSummaryButton.focus({ preventScroll: true });
-  } else if (!open && summaryOpener && compact) {
+  } else if (summaryOpener) {
     summaryOpener.focus({ preventScroll: true });
     summaryOpener = undefined;
   }
@@ -506,7 +525,7 @@ function setSummary(open) {
 
 function updateBackdrop() {
   const sidebarOpen = compactViewport.matches && sidebar.dataset.open === "true";
-  const summaryOpen = compactSummary.matches && summaryPanel.dataset.open === "true";
+  const summaryOpen = compactViewport.matches && summaryPanel.dataset.open === "true";
   backdrop.hidden = !sidebarOpen && !summaryOpen;
 }
 
@@ -514,9 +533,14 @@ function trapDrawerFocus(event) {
   const activeDrawer =
     compactViewport.matches && sidebar.dataset.open === "true"
       ? sidebar
-      : compactSummary.matches && summaryPanel.dataset.open === "true"
+      : compactViewport.matches && summaryPanel.dataset.open === "true"
         ? summaryPanel
         : undefined;
+  if (event.key === "Escape" && summaryPanel.dataset.open === "true" && !activeDrawer) {
+    event.preventDefault();
+    setSummary(false);
+    return;
+  }
   if (event.key === "Escape" && activeDrawer) {
     event.preventDefault();
     if (activeDrawer === sidebar) setSidebar(false);
@@ -611,7 +635,6 @@ compactViewport.addEventListener("change", () => {
   setSidebar(false);
   autosizeComposer();
 });
-compactSummary.addEventListener("change", () => setSummary(false));
 window.addEventListener("popstate", () => {
   const sessionId = sessionIdFromLocation();
   if (sessionId) void switchSession(sessionId, { history: false });

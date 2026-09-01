@@ -2,7 +2,6 @@ import { assert, describe, it } from "vitest";
 import {
   deletionActionLabel,
   focusKeyNeedsStableDraft,
-  lifecycleActionLabel,
   normalizeSessionListItem,
   sessionPrimaryTiming,
   sessionsRenderSignature,
@@ -73,27 +72,6 @@ describe("sessions page", () => {
       /id="session-announcer"[\s\S]*?role="status"[\s\S]*?aria-live="polite"/u,
     );
     assert.include(sessionsScript, "preserveFocusedDraft: options.actionId === undefined");
-  });
-
-  it("renders phone disclosure as an explicit, labelled control", () => {
-    assert.include(sessionListSource, 'toggle.className = "session-disclosure-toggle"');
-    assert.include(sessionListSource, 'toggle.setAttribute("aria-expanded"');
-    assert.include(sessionListSource, 'toggle.setAttribute("aria-controls"');
-    assert.include(sessionListSource, 'detail.className = "mobile-session-detail"');
-  });
-
-  it("labels the phone lifecycle disclosure as Actions", () => {
-    assert.strictEqual(lifecycleActionLabel(false), "Actions");
-    assert.strictEqual(lifecycleActionLabel(true), "Hide actions");
-    assert.include(sessionListSource, 'toggle.className = "session-disclosure-toggle"');
-    assert.include(sessionListSource, 'toggle.setAttribute("aria-expanded"');
-    assert.include(sessionListSource, 'detail.className = "mobile-session-detail"');
-  });
-
-  it("lets keyboard users close phone actions and restores disclosure focus", () => {
-    assert.include(sessionsScript, 'if (event.key !== "Escape") return');
-    assert.include(sessionsScript, "expandedSessionDetails.delete(id)");
-    assert.include(sessionsScript, '[data-action="toggle-details"]');
   });
 
   it("names both destructive resources in permanent-delete confirmation", () => {
@@ -202,7 +180,12 @@ describe("sessions page", () => {
       sessionListSource,
       "sleepingSummary.dataset.focusKey = sleepingProjectFocusKey(group.repo)",
     );
-    assert.include(sessionListSource, "focusRenderedControl(content, focusKey)");
+    assert.include(
+      sessionListSource,
+      "focusRenderedControl([content, ...(repositoryNav ? [repositoryNav] : [])], focusKey)",
+    );
+    assert.include(sessionListSource, "section.append(sleeping)");
+    assert.include(sessionsScript, "if (changed) render()");
   });
 
   it("keeps passive session renders stable within a minute", () => {

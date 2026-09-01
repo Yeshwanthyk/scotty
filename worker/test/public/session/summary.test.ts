@@ -219,12 +219,14 @@ describe("agent Summary projection", () => {
       ]),
     );
     assert.deepStrictEqual(summaryProjection(projection, sessionId), {
+      objective: "Check the page",
       update: "The run completed.",
+      previousUpdates: [],
       artifacts: [],
     });
   });
 
-  it("renders invented and stale cross-conversation references as unavailable", () => {
+  it("keeps verified evidence from earlier turns in the whole-session summary", () => {
     const projection = projectionFromSnapshot(
       snapshot([
         { id: "u1", role: "user", content: "Check the page" },
@@ -238,15 +240,14 @@ describe("agent Summary projection", () => {
         },
       ]),
     );
-    assert.deepStrictEqual(summaryProjection(projection, sessionId), {
-      update: "scotty-evidence:job-1 and scotty-hatch:invented",
-      artifacts: [
-        {
-          kind: "unavailable",
-          reference: "scotty-evidence:job-1",
-          label: "Evidence unavailable",
-        },
-      ],
+    const summary = summaryProjection(projection, sessionId);
+    assert.strictEqual(summary.objective, "Check the page");
+    assert.strictEqual(summary.update, "scotty-evidence:job-1 and scotty-hatch:invented");
+    assert.deepStrictEqual(summary.previousUpdates, ["scotty-evidence:job-1"]);
+    assert.deepInclude(summary.artifacts[0], {
+      kind: "evidence",
+      reference: "scotty-evidence:job-1",
+      jobId: "job-1",
     });
   });
 

@@ -3,6 +3,7 @@ import {
   composerPresentation,
   createSessionMemory,
   currentActivity,
+  queuePresentation,
   reconcileDelivery,
   reconcileAcceptedDelivery,
   renderComposerPresentation,
@@ -52,10 +53,7 @@ describe("session composer", () => {
       delivery: { kind: "follow_up", message: "later", status: "queued" },
     });
     renderComposerPresentation(elements, queued);
-    assert.strictEqual(
-      elements.hint.textContent,
-      "Follow-up queued · sends after Pi finishes · “later”",
-    );
+    assert.strictEqual(elements.hint.textContent, "Follow-up queued · sends after Pi finishes");
     assert.strictEqual(elements.hint.dataset.state, "queued");
     assert.isTrue(elements.sendButton.disabled);
     assert.isFalse(elements.deliveryControls.hidden);
@@ -185,8 +183,42 @@ describe("session composer", () => {
           status: "queued",
         },
       }).hint,
-      "Steer queued · delivers after Running command · “Explain the current action and then keep this intent…”",
+      "Steer queued · delivers after Running command",
     );
+  });
+
+  it("presents steer and follow-up queues compactly without inventing cross-queue state", () => {
+    assert.deepStrictEqual(
+      queuePresentation({
+        queue: {
+          steer: ["Correct the title placement"],
+          followUp: ["Verify mobile", { text: "Capture screenshots" }, "Run checks"],
+        },
+      }),
+      {
+        items: [
+          { mode: "steer", label: "Steer", text: "Correct the title placement" },
+          { mode: "follow_up", label: "Queued", text: "Verify mobile" },
+          { mode: "follow_up", label: "Queued", text: "Capture screenshots" },
+        ],
+        overflow: 1,
+      },
+    );
+  });
+
+  it("accepts authoritative queue envelopes and clamps presentation limits", () => {
+    const projection = {
+      queue: {
+        steer: [{ message: "interrupt" }],
+        followUp: [{ prompt: "continue" }, { text: "verify" }],
+      },
+    };
+    assert.deepStrictEqual(queuePresentation(projection, 0), { items: [], overflow: 3 });
+    assert.deepStrictEqual(queuePresentation(projection, -4), { items: [], overflow: 3 });
+    assert.deepStrictEqual(queuePresentation(projection, 2).items, [
+      { mode: "steer", label: "Steer", text: "interrupt" },
+      { mode: "follow_up", label: "Queued", text: "continue" },
+    ]);
   });
 
   it("names every command delivery phase without implying replay", () => {

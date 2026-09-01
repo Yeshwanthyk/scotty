@@ -82,35 +82,43 @@ export function extractSummaryReferences(text) {
 }
 
 export function summaryProjection(projection, sessionId) {
-  if (!SESSION_ID.test(sessionId)) return { update: "", artifacts: [] };
+  if (!SESSION_ID.test(sessionId))
+    return { objective: "", update: "", previousUpdates: [], artifacts: [] };
   const turns = conversationTurns(projection);
-  for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
-    const turn = turns[turnIndex];
-    for (let messageIndex = turn.assistants.length - 1; messageIndex >= 0; messageIndex -= 1) {
-      const update = messageText(turn.assistants[messageIndex]);
+  const objective = turns.map((turn) => messageText(turn.user)).find(Boolean) ?? "";
+  const updates = [];
+  const artifacts = new Map();
+  for (const turn of turns) {
+    const verified = new Map(
+      turn.tools
+        .map((tool) => artifactForTool(tool, sessionId))
+        .filter((artifact) => artifact?.reference)
+        .map((artifact) => [artifact.reference, artifact]),
+    );
+    for (const message of turn.assistants) {
+      const update = messageText(message);
       if (!update) continue;
-      const verified = new Map(
-        turn.tools
-          .map((tool) => artifactForTool(tool, sessionId))
-          .filter((artifact) => artifact?.reference)
-          .map((artifact) => [artifact.reference, artifact]),
-      );
-      return {
-        update,
-        artifacts: extractSummaryReferences(update)
-          .filter((reference) => reference.startsWith("scotty-evidence:"))
-          .map(
-            (reference) =>
-              verified.get(reference) ?? {
-                kind: "unavailable",
-                reference,
-                label: "Evidence unavailable",
-              },
-          ),
-      };
+      updates.push(update);
+      for (const reference of extractSummaryReferences(update).filter((candidate) =>
+        candidate.startsWith("scotty-evidence:"),
+      )) {
+        const artifact = verified.get(reference);
+        if (artifact) artifacts.set(reference, artifact);
+        else if (!artifacts.has(reference))
+          artifacts.set(reference, {
+            kind: "unavailable",
+            reference,
+            label: "Evidence unavailable",
+          });
+      }
     }
   }
-  return { update: "", artifacts: [] };
+  return {
+    objective,
+    update: updates.at(-1) ?? "",
+    previousUpdates: updates.slice(-6, -1),
+    artifacts: [...artifacts.values()].slice(-8),
+  };
 }
 
 function summaryVideoProjection(value) {
@@ -480,10 +488,35 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
       const update = document.createElement("section");
       update.className = "summary-section summary-update";
       update.append(
-        sectionHeading(document, "Latest update", summary.update ? "From Pi" : "Nothing yet"),
+        sectionHeading(document, "Whole session", summary.update ? "Session brief" : "Nothing yet"),
       );
+      if (summary.objective) {
+        const objective = document.createElement("p");
+        objective.className = "summary-objective";
+        const label = document.createElement("strong");
+        label.textContent = "Started with";
+        objective.append(label, document.createTextNode(summary.objective));
+        update.append(objective);
+      }
       if (summary.update) update.append(renderSafeMarkdown(document, summary.update, baseUrl));
-      else update.append(summaryState(document, "Pi's latest completed update will appear here."));
+      else
+        update.append(
+          summaryState(document, "The session summary will appear as work progresses."),
+        );
+      if (summary.previousUpdates.length > 0) {
+        const history = document.createElement("details");
+        history.className = "summary-history";
+        const label = document.createElement("summary");
+        label.textContent = `${summary.previousUpdates.length} earlier update${summary.previousUpdates.length === 1 ? "" : "s"}`;
+        history.append(label);
+        for (const previous of summary.previousUpdates) {
+          const item = document.createElement("div");
+          item.className = "summary-history-item";
+          item.append(renderSafeMarkdown(document, previous, baseUrl));
+          history.append(item);
+        }
+        update.append(history);
+      }
       fragment.append(update);
       const hatchTarget = document.createElement("section");
       hatchTarget.className = "summary-section summary-hatch";
@@ -570,7 +603,7 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
       renderedSignature = "";
       evidenceStatus.reset();
       hatchStatus.reset();
-      root.replaceChildren(summaryState(document, "Loading the latest agent update…"));
+      root.replaceChildren(summaryState(document, "Loading the session summary…"));
     },
   };
 }

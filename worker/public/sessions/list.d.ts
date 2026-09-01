@@ -21,13 +21,13 @@ export interface SessionListItem {
 
 export type SessionAction = "sleep" | "resume" | "delete" | "retry-delete" | "rename";
 
-export function lifecycleActionLabel(expanded: boolean): string;
 export function deletionActionLabel(pendingAction: unknown, fallback: string): string;
 
 export function normalizeSessionListItem(value: unknown): SessionListItem | undefined;
 
 export interface SessionListRenderState {
   readonly content: HTMLElement;
+  readonly repositoryNav?: HTMLElement;
   readonly summary: HTMLElement;
   readonly sessions: ReadonlyArray<SessionListItem>;
   readonly loaded: boolean;
@@ -35,13 +35,16 @@ export interface SessionListRenderState {
   readonly busy: ReadonlyMap<string, SessionAction>;
   readonly confirmations: ReadonlySet<string>;
   readonly expandedSleepingProjects: ReadonlySet<string>;
-  readonly expandedSessionDetails: ReadonlySet<string>;
   readonly rowErrors: ReadonlyMap<string, string>;
   readonly renamingId?: string;
   readonly renameDraft: string;
   readonly preserveFocusedDraft: boolean;
   readonly targetSessionId?: string;
   readonly focusTargetSession: boolean;
+  readonly selectedSessionId?: string;
+  readonly searchQuery?: string;
+  readonly archiveVisibleCounts?: ReadonlyMap<string, number>;
+  readonly archiveOpen?: ReadonlySet<string>;
 }
 
 export function formatSessionDuration(value: unknown): string;

@@ -85,7 +85,7 @@ describe("cloud-agent session application", () => {
 
   it("links the conversation to its focused session management row", () => {
     assert.include(sessionHtml, 'id="manage-session"');
-    assert.include(sessionHtml, "Manage session");
+    assert.include(sessionHtml, 'aria-label="Manage session"');
     assert.include(appSource, "`/sessions?focus=${encodeURIComponent(sessionId)}`");
     assert.include(appSource, "updateManageSessionLink(sessionId)");
   });
@@ -97,10 +97,13 @@ describe("cloud-agent session application", () => {
     );
   });
 
-  it("uses clear delivery choices and keeps Stop outside the message form", () => {
+  it("uses compact delivery choices and keeps Stop beside the send action", () => {
     assert.include(sessionHtml, 'id="composer-hint" class="composer-hint" role="status"');
     assert.include(sessionHtml, 'aria-live="polite"');
-    assert.match(sessionHtml, /id="stop-agent"[\s\S]*?<form id="composer"/u);
+    assert.match(
+      sessionHtml,
+      /<form id="composer"[\s\S]*?id="stop-agent"[\s\S]*?id="send-message"/u,
+    );
     assert.include(sessionHtml, 'id="composer-input"');
     assert.include(sessionHtml, 'rows="1"');
     assert.include(sessionHtml, 'aria-describedby="composer-hint composer-keyboard-instructions"');
@@ -111,9 +114,10 @@ describe("cloud-agent session application", () => {
     assert.include(sessionHtml, 'id="delivery-steer"');
     assert.include(sessionHtml, 'for="delivery-steer"');
     assert.include(sessionHtml, 'value="steer"');
-    assert.include(sessionHtml, "Follow-up");
-    assert.include(sessionHtml, "After Pi finishes");
-    assert.include(sessionHtml, "Guide the next turn");
+    assert.include(sessionHtml, "Queue");
+    assert.include(sessionHtml, "Send after Pi finishes");
+    assert.include(sessionHtml, "Guide the current turn");
+    assert.include(sessionHtml, 'id="composer-queue"');
     assert.include(sessionHtml, "Enter to send · Shift+Enter for newline");
     assert.match(sessionHtml, /class="composer-keyboard-hint" aria-hidden="true"/u);
     assert.match(sessionHtml, /id="composer-keyboard-instructions"\s+class="visually-hidden"/u);
@@ -137,22 +141,28 @@ describe("cloud-agent session application", () => {
     assert.notInclude(updateComposerSource, "composerInput.focus");
     assert.match(
       sessionCss,
-      /\.composer textarea \{[\s\S]*?min-height: 48px;[\s\S]*?max-height: 160px;/u,
+      /\.composer textarea \{[\s\S]*?min-height: 64px;[\s\S]*?max-height: 160px;/u,
     );
-    assert.match(sessionCss, /\.composer \.button-primary:disabled \{[\s\S]*?opacity: 1;/u);
+    assert.match(
+      sessionCss,
+      /\.composer:has\(textarea:placeholder-shown\)[\s\S]*?textarea \{[\s\S]*?min-height: 48px;[\s\S]*?max-height: 48px;/u,
+    );
+    assert.match(
+      sessionCss,
+      /\.composer \.button-primary:disabled \{[\s\S]*?background: var\(--raised\);[\s\S]*?color: var\(--quiet\);/u,
+    );
     assert.match(
       sessionCss,
       /\.delivery-mode input:focus-visible \+ span \{[\s\S]*?outline: 2px solid var\(--focus\);/u,
     );
     assert.match(
       sessionCss,
-      /@media \(max-width: 760px\)[\s\S]*?\.composer textarea \{[\s\S]*?max-height: 128px;[\s\S]*?\.composer-keyboard-hint \{[\s\S]*?display: none;[\s\S]*?\.delivery-mode label > span \{[\s\S]*?min-height: 44px;/u,
+      /@media \(max-width: 760px\)[\s\S]*?\.composer textarea \{[\s\S]*?min-height: 68px;[\s\S]*?max-height: 160px;[\s\S]*?\.composer-keyboard-hint \{[\s\S]*?display: none;[\s\S]*?\.delivery-mode label > span \{[\s\S]*?min-height: 36px;/u,
     );
     assert.include(sessionCss, "grid-template-columns: minmax(0, 1fr) auto");
-    assert.include(sessionCss, "grid-template-columns: repeat(2, minmax(0, 1fr))");
     assert.match(
       sessionCss,
-      /@media \(max-width: 760px\)[\s\S]*?\.delivery-controls \{[\s\S]*?grid-row: 1;[\s\S]*?grid-column: 1 \/ -1;[\s\S]*?\.composer \.button-primary \{[\s\S]*?grid-row: 2;[\s\S]*?grid-column: 2;[\s\S]*?min-height: 44px;/u,
+      /@media \(max-width: 760px\)[\s\S]*?\.composer-footer \{[\s\S]*?display: flex;[\s\S]*?\.composer-action \{[\s\S]*?width: 44px;[\s\S]*?height: 44px;/u,
     );
   });
 

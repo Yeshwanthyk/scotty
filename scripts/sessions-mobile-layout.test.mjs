@@ -8,18 +8,18 @@ const sessionsStyles = await readFile(
 );
 
 describe("sessions mobile layout", () => {
-  it("keeps disclosure actions on one full-width row", () => {
+  it("keeps the session rail full-width with one bounded list scroller", () => {
     assert.match(
       sessionsStyles,
-      /body\.sessions-page \.mobile-session-detail\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/u,
+      /body\.sessions-page \.rail-repositories\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*auto;/u,
     );
     assert.match(
       sessionsStyles,
-      /body\.sessions-page \.mobile-actions\s*\{[^}]*grid-area:\s*auto;[^}]*width:\s*100%;[^}]*flex-wrap:\s*nowrap;/u,
+      /@media \(max-width: 760px\)[\s\S]*?body\.sessions-page \.sessions-app\s*\{[^}]*display:\s*block;/u,
     );
     assert.match(
       sessionsStyles,
-      /body\.sessions-page \.mobile-actions \.button\s*\{[^}]*min-height:\s*44px;[^}]*flex:\s*1 1 0;/u,
+      /@media \(max-width: 760px\)[\s\S]*?body\.sessions-page \.sessions-rail\s*\{[^}]*width:\s*100%;[^}]*height:\s*100dvh;/u,
     );
   });
 });

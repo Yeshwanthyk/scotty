@@ -21,7 +21,11 @@ export function createChangesViewer(options: {
   readonly document: Document;
   readonly fetch: typeof globalThis.fetch;
   readonly headerActions: Element;
+  readonly surfaceHost?: Element;
+  readonly onBeforeOpen?: () => void;
+  readonly onOpenChange?: (open: boolean) => void;
 }): {
   readonly setSessionId: (sessionId: string | undefined) => void;
+  readonly close: () => void;
   readonly dispose: () => void;
 };
