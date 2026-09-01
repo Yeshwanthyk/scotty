@@ -30,6 +30,8 @@ const notice = document.querySelector("#notice");
 const noticeText = document.querySelector("#notice-text");
 const retryButton = document.querySelector("#retry");
 const newSessionButton = document.querySelector("#new-session");
+const newSessionIcon = document.querySelector("#new-session-icon");
+const newSessionLabel = document.querySelector("#new-session-label");
 const composerRegion = document.querySelector("#new-session-region");
 const sessionForm = document.querySelector("#new-session-form");
 const titleInput = document.querySelector("#session-title");
@@ -115,7 +117,8 @@ function setComposerOpen(open) {
   composerRegion.toggleAttribute("inert", !open);
   composerRegion.setAttribute("aria-hidden", open ? "false" : "true");
   newSessionButton.setAttribute("aria-expanded", open ? "true" : "false");
-  newSessionButton.textContent = open ? "Close" : "Create session";
+  newSessionIcon.hidden = open;
+  newSessionLabel.textContent = open ? "Close" : "Create session";
   newSessionButton.classList.toggle("button-primary", !open);
   if (open) requestAnimationFrame(() => titleInput.focus());
   else newSessionButton.focus();

@@ -36,8 +36,9 @@ describe("sessions mobile layout", () => {
       sessionsStyles,
       /@media \(max-width: 760px\)[\s\S]*?body\.sessions-page\.composer-open \.workspace-shell\s*\{[^}]*display:\s*grid;/u,
     );
-    assert.ok(
-      sessionsScript.includes('newSessionButton.textContent = open ? "Close" : "Create session";'),
+    assert.match(
+      sessionsScript,
+      /newSessionIcon\.hidden = open;[\s\S]*?newSessionLabel\.textContent = open \? "Close" : "Create session";/u,
     );
   });
 });
