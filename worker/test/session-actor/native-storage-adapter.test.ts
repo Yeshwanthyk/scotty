@@ -9,7 +9,7 @@ import {
   durableObjectSessionActorMetadataStorage,
   durableObjectSessionActorStorage,
   SESSION_ACTOR_AUTHORITY_KEY,
-  SESSION_ACTOR_EVIDENCE_KEY,
+  EVIDENCE_RECORD_KEY,
   SESSION_ACTOR_JOURNAL_SEQUENCE_KEY,
   SESSION_ACTOR_JOURNAL_TAIL_KEY,
   SESSION_ACTOR_METADATA_KEY,
@@ -192,7 +192,7 @@ describe("native Durable Object session actor storage adapter", () => {
       plan.write.appendJournal,
     );
     assert.deepStrictEqual(native.inspect(journalKey(1)), plan.write.appendJournal);
-    assert.deepStrictEqual(native.inspect(SESSION_ACTOR_EVIDENCE_KEY), { state: "collecting" });
+    assert.deepStrictEqual(native.inspect(EVIDENCE_RECORD_KEY), { state: "collecting" });
 
     assert.deepStrictEqual(await port.read(), {
       authority: plan.write.authority,
@@ -210,7 +210,7 @@ describe("native Durable Object session actor storage adapter", () => {
     const deletion = commitPlan({ _tag: "Delete" }, 2);
 
     assert.deepStrictEqual(await port.transaction(() => deletion), { _tag: "Committed" });
-    assert.strictEqual(native.inspect(SESSION_ACTOR_EVIDENCE_KEY), undefined);
+    assert.strictEqual(native.inspect(EVIDENCE_RECORD_KEY), undefined);
     assert.strictEqual(native.inspect(SESSION_ACTOR_REVISION_KEY), 2);
     assert.deepStrictEqual(native.inspect(journalKey(2)), deletion.write.appendJournal);
   });

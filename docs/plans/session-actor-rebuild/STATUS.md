@@ -95,7 +95,22 @@ context; it is not persisted authority.
 
 ## Remaining
 
-- [ ] Slice 10 — Quint alignment and complete proof
+- [x] Slice 10 — Quint alignment (local implementation and proof)
+  - [x] maintained exact reducer model at `protocol/formal/session-control.qnt`
+  - [x] stable states, transition kinds, and every implemented phase mirrored
+  - [x] admission, revision/nonce/attempt fences, deadlines, and reconciliation mirrored
+  - [x] readiness/activity generations, backup currentness, hard cap, and Vaporize mirrored
+  - [x] exhaustive public status, deleting flag, and actions mirrored
+  - [x] deterministic full-lifecycle, actionable-recovery, and ambiguity witnesses
+  - [x] Quint parse, typecheck, and 50,000-sample safety exploration
+  - [x] liveness assumptions and permanent-ambiguity limit stated explicitly
+  - [ ] live local lifecycle (exact disposable repository not supplied)
+  - [ ] guarded deployed canary and orphan scan (explicit deployment inputs remain incomplete)
+
+## Remaining proof
+
+- [ ] live local create → read/steer → checkpoint → sleep → resume → warm work → vaporize
+- [ ] guarded real Cloudflare canary and orphan scan
 
 ## Deployment inputs
 

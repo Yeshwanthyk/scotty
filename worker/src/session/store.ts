@@ -24,7 +24,6 @@ export const SESSION_ACTOR_AUTHORITY_KEY = "scotty:session-actor:authority";
 export const SESSION_ACTOR_REVISION_KEY = "scotty:session-actor:revision";
 export const SESSION_ACTOR_JOURNAL_SEQUENCE_KEY = "scotty:session-actor:journal-sequence";
 export const SESSION_ACTOR_JOURNAL_TAIL_KEY = "scotty:session-actor:journal-tail";
-export const SESSION_ACTOR_EVIDENCE_KEY = EVIDENCE_RECORD_KEY;
 export const SESSION_ACTOR_METADATA_KEY = "scotty:session-actor:metadata";
 const SESSION_ACTOR_JOURNAL_PREFIX = "scotty:session-actor:journal:";
 
@@ -254,7 +253,7 @@ const readActorStorageSnapshot = async (
     storage.get<unknown>(SESSION_ACTOR_REVISION_KEY),
     storage.get<unknown>(SESSION_ACTOR_JOURNAL_SEQUENCE_KEY),
     storage.get<unknown>(SESSION_ACTOR_JOURNAL_TAIL_KEY),
-    storage.get<unknown>(SESSION_ACTOR_EVIDENCE_KEY),
+    storage.get<unknown>(EVIDENCE_RECORD_KEY),
   ]);
   return { authority, revision, journalSequence, journalTail, evidence };
 };
@@ -277,9 +276,9 @@ const applyActorStorageCommit = async (
     transaction.put(journalKey, plan.write.appendJournal),
   ];
   if (Predicate.isTagged(plan.write.evidence, "Put"))
-    writes.push(transaction.put(SESSION_ACTOR_EVIDENCE_KEY, plan.write.evidence.value));
+    writes.push(transaction.put(EVIDENCE_RECORD_KEY, plan.write.evidence.value));
   if (Predicate.isTagged(plan.write.evidence, "Delete"))
-    writes.push(transaction.delete(SESSION_ACTOR_EVIDENCE_KEY).then(() => undefined));
+    writes.push(transaction.delete(EVIDENCE_RECORD_KEY).then(() => undefined));
   await Promise.all(writes);
 };
 
