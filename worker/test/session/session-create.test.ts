@@ -256,6 +256,34 @@ describe("Sandbox actor create boundary", () => {
     );
   });
 
+  it("resolves a committed GitHub grant while Create is preparing the workspace", async () => {
+    const harness = await createSessionHarness({ failureStage: "workspacePrepare" });
+
+    await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state),
+    );
+    assert.strictEqual(authority.state.transition.phase, "WorkspacePreparing");
+    assert.strictEqual(
+      await harness.sandbox.resolveCredentialForProxy({
+        handle: "scotty-managed://github/github/git-https",
+        repository: CREATE_INPUT.repo,
+      }),
+      "test-github-token",
+    );
+    assert.strictEqual(
+      await harness.sandbox.resolveCredentialForProxy({
+        handle: "scotty-managed://github/github/git-https",
+        repository: "other/project",
+      }),
+      null,
+    );
+  });
+
   it("settles a confirmed workspace failure as Failed", async () => {
     const harness = await createSessionHarness({ failureStage: "workspaceNonzero" });
 

@@ -4535,33 +4535,47 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     input: import("../credentials/managed").SessionCredentialAccess,
   ) {
-    const record = yield* this.requireRecordProgram();
     const handle = parseManagedHandle(input.handle);
     if (Option.isNone(handle)) return null;
-    const grant = credentialProxyGrant(record, handle.value, input.repository);
+    const actorStore = yield* ActorStore;
+    const { authority } = yield* actorStore.read;
+    if (authority === undefined || !allowsCredentialProxyAccess(authority)) return null;
+    const metadataStore = yield* SessionActorMetadataStore;
+    const metadata = yield* metadataStore.read(authority);
+    if (metadata === undefined) return null;
+    const grant = credentialProxyGrant(authority, metadata, handle.value, input.repository);
     if (grant === undefined) return null;
     const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
     if (registry === undefined)
-      return yield* this.upstreamError("Credential registry is unavailable", undefined, record.id);
+      return yield* this.upstreamError(
+        "Credential registry is unavailable",
+        undefined,
+        authority.session.id,
+      );
     const resolved = yield* Effect.tryPromise({
       try: () =>
         registry.resolve({
-          sessionId: record.id,
+          sessionId: authority.session.id,
           name: grant.name,
           kind: grant.kind,
           versionRef: grant.versionRef,
           handle: input.handle,
         }),
-      catch: (cause) => this.upstreamError("Credential resolution failed", cause, record.id),
+      catch: (cause) =>
+        this.upstreamError("Credential resolution failed", cause, authority.session.id),
     });
     if (!resolved.ok)
-      return yield* this.upstreamError("Credential resolution failed", resolved.error, record.id);
+      return yield* this.upstreamError(
+        "Credential resolution failed",
+        resolved.error,
+        authority.session.id,
+      );
     const decoded = decodeCredentialRegistryResolvedCredentialResult(resolved.value);
     if (Result.isFailure(decoded))
       return yield* this.upstreamError(
         "Credential resolution failed",
         "invalid_response",
-        record.id,
+        authority.session.id,
       );
     const credential = Redacted.make(decoded.success.value);
     const plaintext = Redacted.value(credential);
@@ -4802,18 +4816,35 @@ Sandbox.outboundByHost = makeOutboundByHost(fetch);
 Sandbox.outbound = denyOutbound;
 
 function credentialProxyGrant(
-  record: SessionRecord,
+  authority: SessionAuthority,
+  metadata: SessionActorMetadata,
   handle: ManagedHandle,
   repository?: string,
 ): SessionCredentialGrant["grants"][number] | undefined {
-  const pinned = record.credentialGrant;
-  if (pinned === undefined || pinned.sessionId !== record.id) return undefined;
-  if (handle.provider === "github" ? repository !== record.repo : repository !== undefined)
+  const pinned = metadata.createObservations.credentialGrants;
+  if (
+    metadata.sessionId !== authority.session.id ||
+    metadata.repository !== authority.session.repository ||
+    pinned === null ||
+    pinned.attempt !== metadata.createAttempt
+  )
+    return undefined;
+  if (
+    handle.provider === "github"
+      ? repository !== authority.session.repository
+      : repository !== undefined
+  )
     return undefined;
   const kind = credentialKindForHandle(handle);
   return pinned.grants.find(
     (grant) => grant.kind === kind && credentialGrantHasHandle(grant, handle),
   );
+}
+
+function allowsCredentialProxyAccess(authority: SessionAuthority): boolean {
+  if (AuthorityStateSchema.guards.Stable(authority.state))
+    return !StableStateSchema.guards.Gone(authority.state.stable);
+  return !TransitionSchema.guards.Vaporize(authority.state.transition);
 }
 
 function isHatchStateError(error: unknown): error is HatchStateError {

@@ -267,23 +267,36 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const auth = yield* ContainerAuth;
     const runtime = yield* SandboxRuntime;
 
-    const recordWorkspace = Effect.fnUntraced(function* (
+    const recordCredentialGrants = Effect.fnUntraced(function* (
       context: CreateProviderContext,
       input: CreateSandboxResolvedInput,
-      prepared: CreateSandboxPreparedWorkspace,
       observedAt: string,
     ) {
+      const metadata = yield* metadataStore
+        .read(context.authority)
+        .pipe(
+          Effect.mapError(() =>
+            failure("rejected_before_admission", "create_metadata_unavailable", observedAt),
+          ),
+        );
       yield* metadataStore
         .recordObservation(context.authority, {
           _tag: "CredentialGrants",
           value: {
             attempt: context.transition.attempt,
             payloadReference: context.payload.reference,
-            observedAt,
+            observedAt: metadata?.createObservations.credentialGrants?.observedAt ?? observedAt,
             grants: input.grants,
           },
         })
         .pipe(Effect.mapError((error) => mapMetadataFailure(error, observedAt)));
+    });
+
+    const recordWorkspace = Effect.fnUntraced(function* (
+      context: CreateProviderContext,
+      prepared: CreateSandboxPreparedWorkspace,
+      observedAt: string,
+    ) {
       yield* metadataStore
         .recordObservation(context.authority, {
           _tag: "Workspace",
@@ -309,13 +322,14 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const prepareWorkspace = Effect.fnUntraced(function* (context: CreateProviderContext) {
       const input = yield* resolveInput(boundary, context);
       const observedAt = yield* timestamp;
+      yield* recordCredentialGrants(context, input, observedAt);
       const prepared = yield* boundary
         .prepareWorkspace(context.authority, context.transition, input)
         .pipe(
           Effect.mapError((error) => mapBoundaryFailure(error, observedAt)),
           (effect) => beforeTransitionDeadline(context, "create_workspace_timeout", effect),
         );
-      return yield* recordWorkspace(context, input, prepared, observedAt);
+      return yield* recordWorkspace(context, prepared, observedAt);
     });
 
     const recordBundle = Effect.fnUntraced(function* (
@@ -560,6 +574,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       if (context.transition.phase === "WorkspacePreparing") {
         const input = yield* resolveInput(boundary, context);
         const observedAt = yield* timestamp;
+        yield* recordCredentialGrants(context, input, observedAt);
         const prepared = yield* boundary
           .observeWorkspace(context.authority, context.transition, input)
           .pipe(Effect.mapError((error) => mapBoundaryFailure(error, observedAt)));
@@ -569,7 +584,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
               "create_workspace_reconciliation_unknown",
               observedAt,
             )
-          : yield* recordWorkspace(context, input, prepared, observedAt);
+          : yield* recordWorkspace(context, prepared, observedAt);
       }
       if (context.transition.phase === "RuntimeMaterializing") {
         const input = yield* resolveInput(boundary, context);
