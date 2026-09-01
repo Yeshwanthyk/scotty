@@ -1,7 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { BackupOptions } from "@cloudflare/sandbox";
-import { Effect, Fiber, Result } from "effect";
-import { TestClock } from "effect/testing";
+import { Effect, Result } from "effect";
 import {
   BackupStore,
   BackupStoreFailure,
@@ -130,26 +129,23 @@ describe("BackupStore", () => {
     }),
   );
 
-  it.effect("retries one first-create failure after a bounded delay", () =>
+  it.effect("does not retry an ambiguous create outcome", () =>
     Effect.gen(function* () {
       const memory = new InMemoryFaultInjectableFake();
       memory.injectFailure("create", { error: "provider create details", times: 1 });
       const capabilities = backupCapabilitiesFake(memory, backup);
       const options: BackupOptions = { dir: backup.dir, localBucket: true };
-      const fiber = yield* Effect.forkChild(
+      const outcome = yield* Effect.result(
         withStore(
           capabilities,
           Effect.flatMap(BackupStore, (store) => store.create(options)),
         ),
       );
 
-      yield* TestClock.adjust("999 millis");
+      assert.ok(Result.isFailure(outcome));
+      assert.deepStrictEqual(outcome.failure, new BackupStoreFailure({ operation: "create" }));
       assert.strictEqual(memory.calls("create").length, 1);
-      yield* TestClock.adjust("1 millis");
-      const created = yield* Fiber.join(fiber);
-
-      assert.strictEqual(created, backup);
-      assert.deepStrictEqual(memory.calls("create"), [[options], [options]]);
+      assert.deepStrictEqual(memory.calls("create"), [[options]]);
     }),
   );
 
@@ -182,7 +178,7 @@ describe("BackupStore", () => {
   it.effect("maps provider failures to fixed redacted typed failures", () =>
     Effect.gen(function* () {
       for (const [operation, expectedCreateCalls] of [
-        ["create", 2],
+        ["create", 1],
         ["restore", 0],
         ["list", 0],
         ["delete", 0],
@@ -197,9 +193,7 @@ describe("BackupStore", () => {
             : operation === "restore"
               ? Effect.flatMap(BackupStore, (store) => store.restore(backup))
               : Effect.flatMap(BackupStore, (store) => store.delete(backup.id));
-        const fiber = yield* Effect.forkChild(Effect.result(withStore(capabilities, effect)));
-        yield* TestClock.adjust("1 second");
-        const result = yield* Fiber.join(fiber);
+        const result = yield* Effect.result(withStore(capabilities, effect));
         assert.deepStrictEqual(failure(result), new BackupStoreFailure({ operation }));
         assert.ok(!JSON.stringify(failure(result)).includes("provider"));
         assert.strictEqual(memory.calls("create").length, expectedCreateCalls);

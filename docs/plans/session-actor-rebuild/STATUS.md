@@ -1,8 +1,8 @@
 # Session actor rebuild status
 
 This is the maintained execution checklist for the rebuild lane. The detailed acceptance criteria
-remain in the approved ten-slice plan. Stop after Slice 4 until the user explicitly resumes later
-slices.
+remain in the approved ten-slice plan. The user resumed the remaining slices and explicitly chose
+a clean actor cutover with active legacy removal rather than persisted-record compatibility.
 
 ## Completed
 
@@ -28,9 +28,23 @@ The new actor path is the Slice 4 proof boundary. The old `SessionRecord` create
 legacy lifecycle tests are not compatibility gates for this rebuild; Slices 5–9 replace those
 surfaces in order.
 
-## Deferred until explicitly resumed
+## In progress
 
-- [ ] Slice 5 — checkpoint, sleep, and resume
+- [x] Slice 5 — checkpoint, sleep, and resume (local implementation and focused proof)
+  - [x] typed provider algebras and fenced phase executors
+  - [x] prepared/current/owned backup invariants
+  - [x] real Sandbox backup, Pi, runtime-stop, and readiness adapters
+  - [x] source and target runtime-generation separation on resume
+  - [x] single provider dispatcher for Create, Checkpoint, Sleep, and Resume
+  - [x] actor-backed public snapshot, sleep, resume, read, and Sandbox callbacks
+  - [x] old public checkpoint/sleep/resume programs removed
+  - [x] host create → checkpoint → sleep → resume flow proof with no legacy record
+  - [ ] lifecycle lab scenario (exact disposable repository not supplied)
+  - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
+  - [x] Slice 5 commit
+
+## Remaining
+
 - [ ] Slice 6 — runtime loss, activity, deadlines, and hard cap
 - [ ] Slice 7 — vaporize
 - [ ] Slice 8 — evidence, Hatch, and other warm work

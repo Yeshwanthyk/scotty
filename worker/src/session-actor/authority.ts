@@ -219,6 +219,7 @@ export const SleepProofSchema = Schema.Struct({
   readiness: ReadinessProofSchema,
   piStoppedAt: Schema.NullOr(Schema.String),
   backup: BackupProofSchema,
+  stopRequestedAt: Schema.optional(Schema.NullOr(Schema.String)),
   stop: Schema.NullOr(StopObservationSchema),
 });
 export const ResumeProofSchema = Schema.Struct({

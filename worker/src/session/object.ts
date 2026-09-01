@@ -148,7 +148,6 @@ import {
   badRequest,
   conflict,
   decodeContainerSessionRequest,
-  hasCommittedManagedStop,
   notFound,
   ScottyError,
   toProjection,
@@ -187,12 +186,19 @@ import { ActorStore, actorStoreLayer } from "../session-actor/store";
 import { SessionActor, sessionActorLayer } from "../session-actor/actor";
 import { ActorAlarmOutcomeUnknown, actorAlarmSchedulerLayer } from "../session-actor/alarm";
 import { actorEffectRunnerLayer } from "../session-actor/effect-runner";
-import { createProviderEffectExecutorLayer } from "../session-actor/transitions/create";
+import { sessionProviderEffectExecutorLayer } from "../session-actor/provider-executor";
 import {
   CreateSandboxBoundary,
   CreateSandboxBoundaryFailure,
   createSandboxTransitionProviderLayer,
 } from "../session-actor/transitions/create-sandbox";
+import {
+  backupLifecycleSandboxLayer,
+  checkpointSandboxTransitionProviderLayer,
+  resumeSandboxTransitionProviderLayer,
+  sandboxRuntimeStopLayer,
+  sleepSandboxTransitionProviderLayer,
+} from "../session-actor/transitions/backup-lifecycle-sandbox";
 import {
   SessionActorMetadataStore,
   sessionActorMetadataStoreLayer,
@@ -207,8 +213,14 @@ import {
   type CreateControllerRequest,
 } from "../session-actor/create-controller";
 import {
+  LifecycleController,
+  lifecycleControllerLayer,
+  type LifecycleCommandKind,
+} from "../session-actor/lifecycle-controller";
+import {
   AuthorityStateSchema,
   StableStateSchema,
+  TransitionSchema,
   type SessionAuthority,
 } from "../session-actor/authority";
 import { sessionProjectionFromActor, sessionViewFromActor } from "../session-actor/public-view";
@@ -362,6 +374,7 @@ type SandboxServices =
   | SessionActor
   | SessionActorMetadataStore
   | CreateController
+  | LifecycleController
   | Workspace;
 
 interface HardCapPayload {
@@ -855,10 +868,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
               exitCode: 1,
             }),
           );
-        if (AuthorityStateSchema.guards.Transitioning(authority.state))
-          return Predicate.isTagged(authority.state.transition, "Create")
+        if (AuthorityStateSchema.guards.Transitioning(authority.state)) {
+          const transition = authority.state.transition;
+          return TransitionSchema.guards.Create(transition) ||
+            TransitionSchema.guards.Checkpoint(transition) ||
+            TransitionSchema.guards.Sleep(transition) ||
+            TransitionSchema.guards.Resume(transition)
             ? Effect.void
             : Effect.fail(conflict("Session lifecycle transition does not allow runtime access"));
+        }
         return StableStateSchema.guards.Warm(authority.state.stable)
           ? Effect.void
           : Effect.fail(
@@ -925,19 +943,20 @@ export class Sandbox extends BaseSandbox<Bindings> {
       actorRuntime,
       containerAuthLayer.pipe(Layer.provide(actorRuntime)),
     );
-    const backup = backupStoreLayer(
-      {
-        createBackup: (backupOptions) => this.createBackup(backupOptions),
-        restoreBackup: (directoryBackup) => this.restoreBackup(directoryBackup),
-        listObjects: (prefix, cursor) =>
-          env.BACKUP_BUCKET.list({ prefix, cursor }).then((page) => ({
-            keys: page.objects.map((object) => object.key),
-            cursor: page.truncated ? page.cursor : undefined,
-          })),
-        deleteObjects: (keys) => env.BACKUP_BUCKET.delete([...keys]),
-      },
-      legacyRuntimeAccess,
-    );
+    const backupCapabilities = {
+      createBackup: (backupOptions: Parameters<Sandbox["createBackup"]>[0]) =>
+        this.createBackup(backupOptions),
+      restoreBackup: (directoryBackup: Parameters<Sandbox["restoreBackup"]>[0]) =>
+        this.restoreBackup(directoryBackup),
+      listObjects: (prefix: string, cursor?: string) =>
+        env.BACKUP_BUCKET.list({ prefix, cursor }).then((page) => ({
+          keys: page.objects.map((object) => object.key),
+          cursor: page.truncated ? page.cursor : undefined,
+        })),
+      deleteObjects: (keys: ReadonlyArray<string>) => env.BACKUP_BUCKET.delete([...keys]),
+    };
+    const backup = backupStoreLayer(backupCapabilities, legacyRuntimeAccess);
+    const actorBackup = backupStoreLayer(backupCapabilities, actorRuntimeAccess);
     const evidenceRecorder =
       options.containerEvidenceRecorder === undefined
         ? containerEvidenceRecorderLayer.pipe(Layer.provide(runtime))
@@ -1125,11 +1144,31 @@ export class Sandbox extends BaseSandbox<Bindings> {
         ),
       ),
     );
-    const providerExecutor = createProviderEffectExecutorLayer.pipe(Layer.provide(createProvider));
+    const actorRuntimeStop = sandboxRuntimeStopLayer({ requestStop: () => this.stop() });
+    const backupLifecycleSandbox = backupLifecycleSandboxLayer.pipe(
+      Layer.provide(Layer.mergeAll(actorBackup, actorRuntimeAndContainerAuth, actorRuntimeStop)),
+    );
+    const checkpointProvider = checkpointSandboxTransitionProviderLayer.pipe(
+      Layer.provide(Layer.merge(backupLifecycleSandbox, actorMetadata)),
+    );
+    const sleepProvider = sleepSandboxTransitionProviderLayer.pipe(
+      Layer.provide(Layer.merge(backupLifecycleSandbox, actorMetadata)),
+    );
+    const resumeProvider = resumeSandboxTransitionProviderLayer.pipe(
+      Layer.provide(Layer.merge(backupLifecycleSandbox, actorMetadata)),
+    );
+    const providerExecutor = sessionProviderEffectExecutorLayer.pipe(
+      Layer.provide(
+        Layer.mergeAll(createProvider, checkpointProvider, sleepProvider, resumeProvider),
+      ),
+    );
     const actorRunner = actorEffectRunnerLayer.pipe(
       Layer.provide(Layer.merge(actorAlarms, providerExecutor)),
     );
     const actor = sessionActorLayer.pipe(Layer.provide(Layer.merge(actorStore, actorRunner)));
+    const lifecycleController = lifecycleControllerLayer.pipe(
+      Layer.provide(Layer.merge(actorStore, actor)),
+    );
     const metadataController = createMetadataControllerFromStoresLayer.pipe(
       Layer.provide(Layer.merge(actorMetadata, actorStore)),
     );
@@ -1155,6 +1194,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       actorMetadata,
       actor,
       createController,
+      lifecycleController,
       store,
       evidence,
       hatch,
@@ -2990,6 +3030,57 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return publicState.view;
   });
 
+  private readonly actorLifecycleProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    kind: LifecycleCommandKind,
+  ) {
+    const controller = yield* LifecycleController;
+    const now = yield* Clock.currentTimeMillis;
+    const outcome = yield* controller
+      .run({
+        kind,
+        correlationId: crypto.randomUUID(),
+        nonce: crypto.randomUUID(),
+        attempt: crypto.randomUUID(),
+        timestamp: new Date(now).toISOString(),
+        deadlineAt: new Date(now + ABANDONED_OPERATION_MS).toISOString(),
+      })
+      .pipe(
+        Effect.catchTag("LifecycleControllerRejected", () =>
+          Effect.flatMap(this.readActorSessionStateProgram(), ({ view }) =>
+            wrongState(view.status, kind.toLowerCase()),
+          ),
+        ),
+        Effect.mapError((failure) =>
+          Predicate.isTagged(failure, "ScottyError")
+            ? failure
+            : this.upstreamError(`Session ${kind.toLowerCase()} failed`, failure),
+        ),
+      );
+    if (Predicate.isTagged(outcome, "Reconciling"))
+      return yield* this.upstreamError(
+        `Session ${kind.toLowerCase()} outcome is being reconciled`,
+        outcome.phase,
+        outcome.authority.session.id,
+      );
+    if (Predicate.isTagged(outcome, "Failed"))
+      return yield* this.upstreamError(
+        `Session ${kind.toLowerCase()} failed`,
+        outcome.code,
+        outcome.authority.session.id,
+      );
+    const publicState = yield* this.readActorSessionStateProgram();
+    yield* Effect.tryPromise({
+      try: () =>
+        this.env.SESSIONS.put(
+          `${SESSION_KV_PREFIX}${publicState.projection.id}`,
+          JSON.stringify(publicState.projection),
+        ),
+      catch: () => undefined,
+    }).pipe(Effect.ignore);
+    return publicState.view;
+  });
+
   private readonly requireChangesAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const store = yield* SessionStore;
     const authority = yield* store.readControlAuthority;
@@ -3062,16 +3153,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly getScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const actorStore = yield* ActorStore;
-    const actor = yield* actorStore.read.pipe(
-      Effect.mapError((failure) =>
-        this.upstreamError("Session actor authority is unavailable", failure),
-      ),
-    );
-    if (actor.authority !== undefined) return (yield* this.readActorSessionStateProgram()).view;
-    const record = yield* this.requireRecordProgram();
-    const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(record, new Date(now)), now);
+    return (yield* this.readActorSessionStateProgram()).view;
   });
 
   private readonly getScottyDeploymentReadinessProgram = Effect.fnUntraced(
@@ -3125,15 +3207,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* this.projectProgram(record);
     const now = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(record, new Date(now)), now);
-  });
-
-  private readonly resumeRunnerSessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const authoritative = yield* this.requireRecordProgram();
-    return yield* wrongState(
-      authoritative.status,
-      "resume",
-      "Runner-backed sessions require a native Pi transport and cannot be resumed yet",
-    );
   });
 
   private readonly stopRunnerIntoSleepingProgram = Effect.fnUntraced(function* (
@@ -3217,81 +3290,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }));
     yield* Effect.sync(() => this.deleteSchedules("enforceHardCap"));
     return sleeping;
-  });
-
-  private readonly resumeScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const authoritative = yield* this.requireRecordProgram();
-    if (authoritative.execution.provider === "runner")
-      return yield* this.resumeRunnerSessionProgram();
-    const pinnedGrant = authoritative.credentialGrant;
-    if (pinnedGrant === undefined || pinnedGrant.sessionId !== authoritative.id)
-      return yield* this.upstreamError(
-        "Session credential grant is unavailable",
-        undefined,
-        authoritative.id,
-      );
-    const backups = yield* BackupStore;
-    const containerAuth = yield* ContainerAuth;
-    const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
-    let record = yield* this.requireRecordProgram();
-    const backup = record.backup?.current;
-    if (!backup) {
-      yield* this.releaseOperationProgram(operation.nonce);
-      return yield* wrongState(record.status, "resume", "No successful backup is available");
-    }
-
-    const bootingAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-    record = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
-      ...current,
-      status: "booting",
-      failure: undefined,
-      updatedAt: bootingAt,
-    }));
-
-    const restored = yield* Effect.result(
-      Effect.gen({ self: this }, function* () {
-        const hardCapAt = new Date(
-          (yield* Clock.currentTimeMillis) + record.hardCapDurationSeconds * 1_000,
-        ).toISOString();
-        const hardCapUpdatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-        record = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
-          ...current,
-          hardCapAt,
-          updatedAt: hardCapUpdatedAt,
-        }));
-        yield* hostEffect("schedule", () => this.scheduleHardCap(hardCapAt));
-        yield* backups.restore(backup);
-        yield* this.materializeAndSeedSandboxProgram(record, pinnedGrant);
-        yield* this.restorePiAndHatchProgram(
-          operation.nonce,
-          containerAuth.ensurePiSession(record.id, sessionRuntimeCredentials(pinnedGrant.grants)),
-        );
-        const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-        const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
-          ...current,
-          status: "warm",
-          operation: null,
-          agentState: "waiting",
-          lastAgentEventAt: readyAt,
-          failure: undefined,
-          hardCapAt,
-          updatedAt: readyAt,
-        }));
-        return ready;
-      }),
-    );
-    if (Result.isFailure(restored)) {
-      yield* this.failOperationProgram(
-        operation.nonce,
-        "resume_failed",
-        "Session restore failed",
-        true,
-      );
-      yield* this.destroyFailedRuntimeProgram(record.id);
-      return yield* this.upstreamError("Session restore failed", restored.failure);
-    }
-    const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(restored.success, new Date(now)), now);
   });
 
   private readonly armVaporizeRetryProgram = Effect.fnUntraced(function* (
@@ -3796,14 +3794,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       yield* evidence.interrupt(active.operationNonce, "interrupted");
     },
   );
-
-  private readonly onStopProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const store = yield* SessionStore;
-    const next = yield* store.recordRuntimeStop;
-    if (Option.isSome(next)) {
-      yield* this.projectProgram(next.value);
-    }
-  });
 
   private readonly finalizeManagedStopProgram = Effect.fnUntraced(function* (
     this: Sandbox,
@@ -5267,15 +5257,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   async snapshotScottySession(): Promise<SessionView> {
-    return this.#run(this.snapshotScottySessionProgram());
+    return this.#run(this.actorLifecycleProgram("Checkpoint"));
   }
 
   async sleepScottySession(): Promise<SessionView> {
-    return this.#run(this.sleepScottySessionProgram());
+    return this.#run(this.actorLifecycleProgram("Sleep"));
   }
 
   async resumeScottySession(): Promise<SessionView> {
-    return this.#run(this.resumeScottySessionProgram());
+    return this.#run(this.actorLifecycleProgram("Resume"));
   }
 
   async prepareDownArchive(): Promise<DownArchive> {
@@ -5362,93 +5352,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   override async onStart(): Promise<void> {
-    const runtimeEpochEnabled = this.evidenceEnabled || this.previewBase !== undefined;
-    if (!runtimeEpochEnabled) return super.onStart();
-    if (this.evidenceEnabled) {
-      const staleEvidence = await this.#run(
-        Effect.result(this.interruptEvidenceForRuntimeStopProgram()),
-      );
-      if (Result.isFailure(staleEvidence)) return this.#run(Effect.fail(staleEvidence.failure));
-    }
-    if (this.previewBase !== undefined) {
-      const beforeStart = await this.#run(this.readRecordProgram());
-      const managedRestore =
-        beforeStart !== undefined &&
-        (beforeStart.status === "sleeping" ||
-          beforeStart.operation?.kind === "snapshot" ||
-          beforeStart.operation?.kind === "resume");
-      const target = managedRestore ? "sleeping" : "failed";
-      const hatchNonce = `start-${randomToken(8)}`;
-      const staleHatch = await this.#run(
-        Effect.result(this.cleanupHatchProgram(hatchNonce, target, false, "runtime_start")),
-      );
-      if (Result.isFailure(staleHatch)) {
-        await this.schedule(5, "retryHatchCleanup", {
-          operationNonce: hatchNonce,
-          target,
-          closeDesired: false,
-        } satisfies HatchCleanupRetry).then(
-          () => undefined,
-          () => undefined,
-        );
-        await this.#run(Effect.result(this.deleteRuntimeEpochProgram()));
-        return this.#run(Effect.fail(staleHatch.failure));
-      }
-    }
-    await super.onStart();
-    const runtimeEpoch = randomToken(16);
-    const stored = await this.#run(Effect.result(this.putRuntimeEpochProgram(runtimeEpoch)));
-    if (Result.isFailure(stored)) {
-      await this.#run(Effect.result(this.deleteRuntimeEpochProgram()));
-      return this.#run(Effect.fail(stored.failure));
-    }
+    return super.onStart();
   }
 
   override async onStop(): Promise<void> {
-    const runtimeEpochEnabled = this.evidenceEnabled || this.previewBase !== undefined;
-    const beforeStop = await this.#run(this.readRecordProgram());
-    const managedStop = beforeStop !== undefined && hasCommittedManagedStop(beforeStop);
-    const hatchNonce = `stop-${randomToken(8)}`;
-    const hatchCleanup = await this.#run(
-      Effect.result(
-        this.cleanupHatchProgram(
-          hatchNonce,
-          managedStop ? "sleeping" : "failed",
-          false,
-          "runtime_stop",
-        ),
-      ),
-    );
-    if (Result.isFailure(hatchCleanup)) {
-      console.error("Hatch runtime-stop cleanup remains pending", {
-        error: errorName(hatchCleanup.failure),
-      });
-      await this.schedule(5, "retryHatchCleanup", {
-        operationNonce: hatchNonce,
-        target: managedStop ? "sleeping" : "failed",
-        closeDesired: false,
-      } satisfies HatchCleanupRetry).then(
-        () => undefined,
-        () => undefined,
-      );
-    }
-    const evidenceCleanup = this.evidenceEnabled
-      ? await this.#run(Effect.result(this.interruptEvidenceForRuntimeStopProgram()))
-      : Result.succeed(undefined);
-    if (Result.isFailure(evidenceCleanup))
-      console.error("Evidence runtime-stop cleanup remains pending", {
-        error: errorName(evidenceCleanup.failure),
-      });
-    const deletedEpoch = runtimeEpochEnabled
-      ? await this.#run(Effect.result(this.deleteRuntimeEpochProgram()))
-      : Result.succeed(undefined);
-    if (Result.isFailure(deletedEpoch))
-      console.error("Runtime epoch cleanup failed", { error: errorName(deletedEpoch.failure) });
-    await super.onStop();
-    await this.#run(this.onStopProgram());
-    if (Result.isFailure(hatchCleanup)) return this.#run(Effect.fail(hatchCleanup.failure));
-    if (Result.isFailure(evidenceCleanup)) return this.#run(Effect.fail(evidenceCleanup.failure));
-    if (Result.isFailure(deletedEpoch)) return this.#run(Effect.fail(deletedEpoch.failure));
+    return super.onStop();
   }
 
   async finalizeManagedStop(payload: ManagedStopPayload): Promise<void> {
@@ -5640,67 +5548,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
   });
-
-  private readonly snapshotScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const authoritative = yield* this.requireRecordProgram();
-    if (authoritative.execution.provider === "runner")
-      return yield* wrongState(
-        authoritative.status,
-        "snapshot",
-        "Runner lifecycle is not supported yet",
-      );
-    const operation = yield* this.acquireOperationProgram("snapshot", ["warm"]);
-    const result = yield* Effect.result(this.checkpointProgram(operation.nonce, true));
-    if (Result.isFailure(result)) {
-      if (!Predicate.isTagged(result.failure, "CheckpointRuntimeUnavailable"))
-        yield* this.releaseOperationProgram(operation.nonce);
-      return yield* this.upstreamError("Snapshot failed", result.failure);
-    }
-    const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(result.success, new Date(now)), now);
-  });
-
-  private readonly sleepScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const authoritative = yield* this.requireRecordProgram();
-    if (authoritative.execution.provider === "runner") {
-      const operation =
-        authoritative.operation?.kind === "snapshot"
-          ? authoritative.operation
-          : yield* this.acquireOperationProgram("snapshot", ["warm"]);
-      const sleeping = yield* this.stopRunnerIntoSleepingProgram(
-        authoritative,
-        operation.nonce,
-        `sleep-${operation.nonce}`,
-        false,
-      );
-      const now = yield* Clock.currentTimeMillis;
-      return toSessionView(toProjection(sleeping, new Date(now)), now);
-    }
-    const operation = yield* this.acquireOperationProgram("snapshot", ["warm"]);
-    const result = yield* Effect.result(
-      Effect.gen({ self: this }, function* () {
-        yield* this.checkpointProgram(operation.nonce, false, false);
-        return yield* this.stopAfterCheckpointProgram(operation.nonce);
-      }),
-    );
-    if (Result.isFailure(result)) {
-      if (Predicate.isTagged(result.failure, "CheckpointRuntimeUnavailable"))
-        return yield* this.upstreamError("Session stop failed", result.failure);
-      const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
-      if (!Predicate.isTagged(result.failure, "ManagedStopArmedError") && !pending)
-        yield* this.releaseOperationIfHeldProgram(operation.nonce);
-      return yield* this.upstreamError("Session stop failed", result.failure);
-    }
-    const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(result.success, new Date(now)), now);
-  });
-
-  private async scheduleHardCap(hardCapAt: string): Promise<void> {
-    this.deleteSchedules("enforceHardCap");
-    await this.schedule(new Date(hardCapAt), "enforceHardCap", {
-      hardCapAt,
-    } satisfies HardCapPayload);
-  }
 
   private cancelVaporizeConflictingSchedules(): void {
     for (const callback of VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS) {

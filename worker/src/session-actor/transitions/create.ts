@@ -370,7 +370,7 @@ const dispatch = (
     Match.exhaustive,
   );
 
-const executeCreate = Effect.fnUntraced(function* (
+export const executeCreateTransition = Effect.fnUntraced(function* (
   provider: CreateTransitionProvider["Service"],
   committed: CommittedProviderEffectIntent,
 ) {
@@ -437,6 +437,8 @@ export const createProviderEffectExecutorLayer: Layer.Layer<
 > = Layer.effect(
   ProviderEffectExecutor,
   Effect.map(CreateTransitionProvider, (provider) =>
-    ProviderEffectExecutor.of({ execute: (committed) => executeCreate(provider, committed) }),
+    ProviderEffectExecutor.of({
+      execute: (committed) => executeCreateTransition(provider, committed),
+    }),
   ),
 );

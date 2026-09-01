@@ -217,12 +217,18 @@ const validCheckpointTransition = (
   validBackup(transition.proof.backup, index >= 4) &&
   (index < 1 || transition.proof.piStoppedAt !== null);
 
-const validSleepTransition = (transition: TransitionCase<"Sleep">, index: number): boolean =>
-  transition.origin === "Warm" &&
-  validReadiness(transition.proof.readiness) &&
-  validBackup(transition.proof.backup, index >= 3) &&
-  (index < 1 || transition.proof.piStoppedAt !== null) &&
-  (index < 4 || transition.proof.stop !== null);
+const validSleepTransition = (transition: TransitionCase<"Sleep">, index: number): boolean => {
+  const stopRequestedAt = transition.proof.stopRequestedAt ?? transition.proof.stop?.requestedAt;
+  return (
+    transition.origin === "Warm" &&
+    validReadiness(transition.proof.readiness) &&
+    validBackup(transition.proof.backup, index >= 3) &&
+    (index < 1 || transition.proof.piStoppedAt !== null) &&
+    (index < 4 || (stopRequestedAt !== undefined && validTimestamp(stopRequestedAt))) &&
+    (index < 5 || transition.proof.stop !== null) &&
+    (transition.proof.stop === null || stopRequestedAt === transition.proof.stop.requestedAt)
+  );
+};
 
 const validResumeTransition = (transition: TransitionCase<"Resume">, index: number): boolean =>
   (transition.origin === "Sleeping" || transition.origin === "Failed") &&
@@ -367,6 +373,7 @@ const commandTransition = (
           readiness: warm.readiness,
           piStoppedAt: null,
           backup: warm.backups,
+          stopRequestedAt: null,
           stop: null,
         },
       } satisfies Transition;

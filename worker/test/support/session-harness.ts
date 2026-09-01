@@ -869,6 +869,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const artifactObjects = initialArtifactObjectMap(options.initialArtifactObjects);
   let piSessionRunning = options.piSessionRunning ?? false;
   let rawPiContainerRunning = false;
+  let runtimeStatus: "running" | "stopped" = "running";
   let hatchHealthGate = options.hatchHealthGate;
   const failures = new Set<HarnessFailureStage>();
   if (options.failureStage !== undefined) failures.add(options.failureStage);
@@ -1251,7 +1252,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 
   Object.defineProperties(sandbox, {
     getState: {
-      value: async () => ({ status: "running" as const }),
+      value: async () => ({ status: runtimeStatus }),
     },
     getContainerPlacementId: {
       value: async () => `placement-${SESSION_ID}`,
@@ -1339,6 +1340,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         events.push("host:restoreBackup");
         if (options.failureStage === "restoreBackup")
           throw injectedHarnessFailure("injected restore failure");
+        runtimeStatus = "running";
         return { success: true, id: backup.id, dir: backup.dir };
       },
     },
@@ -1456,6 +1458,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     stop: {
       value: async (): Promise<void> => {
         events.push("host:stop");
+        runtimeStatus = "stopped";
         if (options.stopCallsOnStop) await sandbox.onStop();
       },
     },
@@ -1552,11 +1555,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     startRuntime: async () => {
       if (!rawPiContainerRunning) piSessionRunning = false;
       rawPiContainerRunning = true;
+      runtimeStatus = "running";
       await sandbox.onStart();
     },
     stopRuntime: async () => {
       piSessionRunning = false;
       rawPiContainerRunning = false;
+      runtimeStatus = "stopped";
       await sandbox.onStop();
     },
     memory: storage.memory,
