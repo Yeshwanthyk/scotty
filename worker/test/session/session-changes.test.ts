@@ -6,9 +6,10 @@ import {
   gitUntrackedNumstatCommand,
 } from "../../src/changes/git";
 import type { ChangedFile } from "../../src/changes/contracts";
-import { createSessionHarness } from "../support/session-harness";
+import type { SessionAuthority } from "../../src/session-actor/authority";
+import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
+import { createSessionHarness, sessionHarnessKeys } from "../support/session-harness";
 import { InMemoryFaultInjectableFake, makeSessionRecord } from "../support";
-import { SESSION_CONTROL_REVISION_KEY } from "../../src/session/store";
 
 const hash = "a".repeat(40);
 const statusFor = (path: string): string =>
@@ -25,6 +26,21 @@ const changedFile = (path: string): ChangedFile => ({
   patchable: true,
 });
 
+const advanceActorRevision = (memory: InMemoryFaultInjectableFake, revision: number): void => {
+  const authority = memory.values.get(sessionHarnessKeys.actorAuthority) as SessionAuthority;
+  const journalTail = memory.values.get(
+    sessionHarnessKeys.actorJournalTail,
+  ) as LifecycleJournalEvent;
+  memory.values.set(sessionHarnessKeys.actorAuthority, { ...authority, revision });
+  memory.values.set(sessionHarnessKeys.actorRevision, revision);
+  memory.values.set(sessionHarnessKeys.actorJournalSequence, revision);
+  memory.values.set(sessionHarnessKeys.actorJournalTail, {
+    ...journalTail,
+    sequence: revision,
+    revision,
+  });
+};
+
 describe("session changed-files review", () => {
   it("reads one validated patch from a warm Cloudflare worktree without an operation lease", async () => {
     const path = "src/odd '; echo nope.ts";
@@ -34,7 +50,7 @@ describe("session changed-files review", () => {
     const untrackedCommand = gitUntrackedNumstatCommand([file]);
     const harness = await createSessionHarness({
       rawPiContainerRunning: true,
-      initialEntries: { "scotty:session": makeSessionRecord() },
+      initialEntries: { [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord() },
       commandStdout: (command) =>
         command === GIT_STATUS_COMMAND
           ? statusFor(path)
@@ -60,7 +76,7 @@ describe("session changed-files review", () => {
   it("rejects a path that is not in the freshly read current changes", async () => {
     const harness = await createSessionHarness({
       rawPiContainerRunning: true,
-      initialEntries: { "scotty:session": makeSessionRecord() },
+      initialEntries: { [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord() },
       commandStdout: (command) => (command === GIT_STATUS_COMMAND ? statusFor("src/app.ts") : ""),
     });
 
@@ -81,16 +97,14 @@ describe("session changed-files review", () => {
       rawPiContainerRunning: true,
       sharedMemory: memory,
       initialEntries: {
-        "scotty:session": initial,
-        [SESSION_CONTROL_REVISION_KEY]: 7,
+        [sessionHarnessKeys.actorFixtureSession]: initial,
       },
       commandStdout: (command) => {
         if (command !== GIT_STATUS_COMMAND) return "";
         if (!interleaved) {
           interleaved = true;
           // Simulate a lifecycle write and restoration within one clock tick.
-          memory.values.set("scotty:session", initial);
-          memory.values.set(SESSION_CONTROL_REVISION_KEY, 8);
+          advanceActorRevision(memory, 2);
         }
         return statusFor("src/app.ts");
       },
@@ -106,12 +120,11 @@ describe("session changed-files review", () => {
       rawPiContainerRunning: true,
       sharedMemory: memory,
       initialEntries: {
-        "scotty:session": initial,
-        [SESSION_CONTROL_REVISION_KEY]: 11,
+        [sessionHarnessKeys.actorFixtureSession]: initial,
       },
       commandStdout: (command) => {
         if (command !== GIT_STATUS_COMMAND) return "";
-        memory.values.set(SESSION_CONTROL_REVISION_KEY, 12);
+        advanceActorRevision(memory, 2);
         return "";
       },
     });
@@ -144,7 +157,7 @@ describe("session changed-files review", () => {
   ])("fails closed for %s sessions without touching Git", async (_label, record) => {
     const harness = await createSessionHarness({
       rawPiContainerRunning: true,
-      initialEntries: { "scotty:session": record },
+      initialEntries: { [sessionHarnessKeys.actorFixtureSession]: record },
     });
 
     await expect(harness.sandbox.listScottyChanges()).rejects.toMatchObject({ httpStatus: 409 });

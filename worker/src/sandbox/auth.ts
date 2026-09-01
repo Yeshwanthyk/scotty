@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, Option, Result, Schema } from "effect";
+import { PI_CONSOLE_MAX_RESPONSE_BYTES } from "../../../protocol/pi-console";
 import {
   githubManagedHandle,
   piAuthJson,
@@ -25,6 +26,27 @@ export const PI_PACKAGES = [
 export const PI_SESSION_PORT = 43_117;
 export const PI_SESSION_PROCESS_ID = "scotty-pi-session";
 export const PI_SESSION_TOKEN_HEADER = "x-scotty-pi-session";
+
+const PiSessionHealthSchema = Schema.Struct({
+  status: Schema.Literal("ready"),
+  epoch: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
+});
+const decodePiSessionHealth = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PiSessionHealthSchema),
+  { onExcessProperty: "ignore" },
+);
+const PiSessionSnapshotIdentitySchema = Schema.Struct({
+  epoch: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
+});
+const decodePiSessionSnapshotIdentity = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PiSessionSnapshotIdentitySchema),
+  { onExcessProperty: "ignore" },
+);
+
+export interface PiSessionProcessProof {
+  readonly processId: string;
+  readonly epoch: string;
+}
 
 const piSessionTokenPath = (id: SessionRecord["id"]): string =>
   `${sessionRoot(id)}/.pi-agent/scotty-pi-session.token`;
@@ -319,6 +341,17 @@ interface ContainerAuthShape {
     id: SessionRecord["id"],
     credentials: SessionRuntimeCredentials,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly startPiSession: (
+    id: SessionRecord["id"],
+    credentials: SessionRuntimeCredentials,
+  ) => Effect.Effect<string, SandboxRuntimeFailure>;
+  readonly readPiSessionHealth: (
+    id: SessionRecord["id"],
+  ) => Effect.Effect<PiSessionProcessProof, SandboxRuntimeFailure>;
+  readonly verifyPiSessionSnapshot: (
+    id: SessionRecord["id"],
+    expectedEpoch: string,
+  ) => Effect.Effect<PiSessionProcessProof, SandboxRuntimeFailure>;
   readonly quiescePiSession: (
     id: SessionRecord["id"],
     credentials: SessionRuntimeCredentials,
@@ -477,6 +510,92 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         { env, timeout: 10_000 },
       );
     });
+    const startPiSession = Effect.fnUntraced(function* (
+      id: SessionRecord["id"],
+      credentials: SessionRuntimeCredentials,
+    ) {
+      const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
+      if (existing?.status === "starting" || existing?.status === "running") return existing.id;
+      yield* refreshPiAuth(id, credentials);
+      const transportToken = yield* derivePiSessionTransportToken(id);
+      const tokenPath = piSessionTokenPath(id);
+      yield* runtime.writeFile(tokenPath, transportToken);
+      yield* runtime.execChecked(`chmod 600 ${shellQuote(tokenPath)}`);
+      const process = yield* runtime.startProcess("/usr/local/bin/scotty-pi-session", {
+        autoCleanup: true,
+        cwd: sessionRoot(id),
+        env: {
+          ...agentEnv(id, credentials),
+          SCOTTY_PI_SESSION_PORT: String(PI_SESSION_PORT),
+          SCOTTY_PI_SESSION_TOKEN_FILE: tokenPath,
+          SCOTTY_WORKSPACE: sessionRoot(id),
+        },
+        processId: PI_SESSION_PROCESS_ID,
+      });
+      return process.id;
+    });
+    const currentPiProcess = Effect.fnUntraced(function* () {
+      const process = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
+      if (process === null || (process.status !== "starting" && process.status !== "running"))
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Pi session process is not running",
+        });
+      return process;
+    });
+    const readPiSessionHealth = Effect.fnUntraced(function* (_id: SessionRecord["id"]) {
+      const process = yield* currentPiProcess();
+      const response = yield* runtime.fetchPortBody("/health", PI_SESSION_PORT, "GET", 4_096);
+      if (response.status !== 200)
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Pi session health check failed",
+        });
+      const health = yield* decodePiSessionHealth(response.body).pipe(
+        Effect.mapError(
+          () =>
+            new SandboxRuntimeFailure({
+              reason: "nonzero_exit",
+              message: "Pi session health response is invalid",
+            }),
+        ),
+      );
+      return { processId: process.id, epoch: health.epoch };
+    });
+    const verifyPiSessionSnapshot = Effect.fnUntraced(function* (
+      id: SessionRecord["id"],
+      expectedEpoch: string,
+    ) {
+      const process = yield* currentPiProcess();
+      const transportToken = yield* derivePiSessionTransportToken(id);
+      const response = yield* runtime.fetchPortBody(
+        "/snapshot",
+        PI_SESSION_PORT,
+        "GET",
+        PI_CONSOLE_MAX_RESPONSE_BYTES,
+        { [PI_SESSION_TOKEN_HEADER]: transportToken },
+      );
+      if (response.status !== 200)
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Pi session snapshot check failed",
+        });
+      const snapshot = yield* decodePiSessionSnapshotIdentity(response.body).pipe(
+        Effect.mapError(
+          () =>
+            new SandboxRuntimeFailure({
+              reason: "nonzero_exit",
+              message: "Pi session snapshot response is invalid",
+            }),
+        ),
+      );
+      if (snapshot.epoch !== expectedEpoch)
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Pi session snapshot epoch does not match health",
+        });
+      return { processId: process.id, epoch: snapshot.epoch };
+    });
     return ContainerAuth.of({
       seed,
       preflight,
@@ -485,6 +604,9 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         if (existing.success) return;
         yield* seed(id, credentials);
       }),
+      startPiSession,
+      readPiSessionHealth,
+      verifyPiSessionSnapshot,
       ensurePiSession: Effect.fnUntraced(function* (id, credentials) {
         const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
         if (existing?.status === "starting" || existing?.status === "running") {
@@ -495,22 +617,8 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           });
           return;
         }
-        yield* refreshPiAuth(id, credentials);
-        const transportToken = yield* derivePiSessionTransportToken(id);
-        const tokenPath = piSessionTokenPath(id);
-        yield* runtime.writeFile(tokenPath, transportToken);
-        yield* runtime.execChecked(`chmod 600 ${shellQuote(tokenPath)}`);
-        const process = yield* runtime.startProcess("/usr/local/bin/scotty-pi-session", {
-          autoCleanup: true,
-          cwd: sessionRoot(id),
-          env: {
-            ...agentEnv(id, credentials),
-            SCOTTY_PI_SESSION_PORT: String(PI_SESSION_PORT),
-            SCOTTY_PI_SESSION_TOKEN_FILE: tokenPath,
-            SCOTTY_WORKSPACE: sessionRoot(id),
-          },
-          processId: PI_SESSION_PROCESS_ID,
-        });
+        yield* startPiSession(id, credentials);
+        const process = yield* currentPiProcess();
         yield* process.waitForPort(PI_SESSION_PORT, {
           path: "/health",
           status: 200,

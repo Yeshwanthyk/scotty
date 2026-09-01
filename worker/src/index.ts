@@ -43,7 +43,7 @@ import {
   wrongState,
   type CreateSessionInput,
 } from "./session/contracts";
-import type { CreateIdempotencyMetadata } from "./session/create-idempotency";
+import type { CreateIdempotencyDigestMetadata } from "./session-actor/metadata";
 import { Effect, Layer, Option, Predicate, Redacted, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { sha256Hex } from "./shared/digest";
@@ -1596,7 +1596,7 @@ function createSessionId(): string {
 async function createSessionIdempotency(
   key: string | undefined,
   input: CreateSessionInput,
-): Promise<CreateIdempotencyMetadata | undefined> {
+): Promise<CreateIdempotencyDigestMetadata | undefined> {
   if (key === undefined) return undefined;
   parseIdempotencyKey(key);
   const [keyDigest, inputDigest] = await Promise.all([

@@ -103,8 +103,9 @@ import evidenceScript from "../../public/evidence/index.js?raw";
 import showcaseHtml from "../../public/showcase/index.html?raw";
 import showcaseScript from "../../public/showcase/index.js?raw";
 import {
+  CREATE_IDEMPOTENCY,
+  CREATE_INPUT,
   createSessionHarness,
-  makeResumeBackup,
   SESSION_ID,
   sessionHarnessKeys,
   type SessionHarness,
@@ -1330,7 +1331,7 @@ describe("real Hono boundary", () => {
     expect(runner.control).toHaveBeenCalledTimes(4);
   });
 
-  it("preserves the create status, output shape, and ignored legacy cap", async () => {
+  it("preserves the create status, output shape, and default hard cap", async () => {
     const harness = await routeHarness();
     useRealSandbox(harness);
     const response = await app.request(
@@ -1373,13 +1374,12 @@ describe("real Hono boundary", () => {
     });
     expect(harness.events).toEqual(
       expect.arrayContaining([
-        "record:booting",
-        "projection:booting",
-        "schedule:enforceHardCap",
+        "schedule:sessionActorHardCap",
+        "storage:put:scotty:session-actor:authority",
+        "storage:put:scotty:session-actor:journal-tail",
         "host:exec:workspace",
         "host:writeFile",
         "host:setEnvVars",
-        "record:warm",
         "projection:warm",
       ]),
     );
@@ -1443,7 +1443,10 @@ describe("real Hono boundary", () => {
       provider: "cloudflare",
       status: "warm",
     });
-    expect(harness.read(sessionHarnessKeys.createIdempotency)).toEqual({
+    expect(
+      harness.read<{ createIdempotency: unknown }>(sessionHarnessKeys.actorMetadata)
+        ?.createIdempotency,
+    ).toEqual({
       keyDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
       inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
@@ -1453,7 +1456,7 @@ describe("real Hono boundary", () => {
     expect(sandboxConfig.addRepo).toHaveBeenCalledTimes(2);
   });
 
-  it("preserves legacy idempotency for omitted/false newRepo and separates true", async () => {
+  it("preserves create idempotency for omitted/false newRepo and separates true", async () => {
     const harness = await routeHarness();
     useRealSandbox(harness);
     const headers = {
@@ -1924,7 +1927,6 @@ describe("real Hono boundary", () => {
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
-
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     await expect(response.json()).resolves.toEqual(snapshot);
@@ -2188,7 +2190,7 @@ describe("real Hono boundary", () => {
   it("renames a session through the authenticated JSON boundary", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
           id: SESSION_ID,
           title: "Old title",
         }),
@@ -2222,18 +2224,9 @@ describe("real Hono boundary", () => {
   });
 
   it("resumes through real restore, credential, runtime, and state orchestration", async () => {
-    const harness = await createSessionHarness({
-      initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
-          id: SESSION_ID,
-          status: "sleeping",
-          branch: `scotty/${SESSION_ID}`,
-          backup: { current: makeResumeBackup() },
-          ownedBackupIds: ["backup-1"],
-          codexThreadId: "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
-        }),
-      },
-    });
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.sleepScottySession();
     useRealSandbox(harness);
 
     const response = await app.request(
@@ -2241,7 +2234,6 @@ describe("real Hono boundary", () => {
       { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
       env(),
     );
-
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       id: SESSION_ID,
@@ -2252,12 +2244,11 @@ describe("real Hono boundary", () => {
     expect(harness.readRecord()).toMatchObject({ status: "warm", operation: null });
     expect(harness.events).toEqual(
       expect.arrayContaining([
-        "schedule:enforceHardCap",
+        "schedule:sessionActorHardCap",
         "host:restoreBackup",
         "host:mkdir",
         "host:writeFile",
         "host:setEnvVars",
-        "record:warm",
         "projection:warm",
       ]),
     );
@@ -2267,7 +2258,7 @@ describe("real Hono boundary", () => {
     const harness = await createSessionHarness({
       rawPiContainerRunning: true,
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
           id: SESSION_ID,
           branch: `scotty/${SESSION_ID}`,
         }),
@@ -2291,21 +2282,18 @@ describe("real Hono boundary", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ id: SESSION_ID, status: "gone" });
-    expect(harness.readRecord()).toMatchObject({
-      id: SESSION_ID,
-      status: "gone",
-      operation: null,
-      ownedBackupIds: [],
+    expect(harness.read(sessionHarnessKeys.actorAuthority)).toMatchObject({
+      session: { id: SESSION_ID },
+      state: { _tag: "Stable", stable: { _tag: "Gone" } },
     });
     expect(harness.events).toEqual(
       expect.arrayContaining([
-        "schedule:retryVaporizeSession",
+        "schedule:sessionActorDeadline",
         "host:destroy",
-        "record:gone",
         `projection:delete:session:${SESSION_ID}`,
       ]),
     );
-    expect(harness.credentialGrantReleases).toEqual([{ sessionId: SESSION_ID, grants: [] }]);
+    expect(harness.credentialGrantReleases).toEqual([]);
     expect(harness.events).not.toContain(`projection:delete:stats:workspace-created:${SESSION_ID}`);
   });
 
@@ -3166,14 +3154,9 @@ describe("real Hono boundary", () => {
   it("shows fake-backed failed evidence frames through authenticated polling", async () => {
     const harness = await createSessionHarness({
       evidenceEnabled: true,
-      initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
-          id: SESSION_ID,
-          hardCapAt: "2099-08-06T13:00:00.000Z",
-        }),
-      },
+      rawPiContainerRunning: true,
     });
-    await harness.startRuntime();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
     const accepted = await harness.sandbox.acceptScottyEvidenceJob({
       port: 4_173,
       viewport: { width: 1_280, height: 720 },

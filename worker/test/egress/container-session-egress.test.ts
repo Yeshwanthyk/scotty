@@ -826,7 +826,7 @@ describe("source Sandbox orchestration authority", () => {
     for (const { record, rawPiContainerRunning } of records) {
       const source = await createSessionHarness({
         evidenceEnabled: true,
-        initialEntries: { [sessionHarnessKeys.record]: record },
+        initialEntries: { [sessionHarnessKeys.actorFixtureSession]: record },
         rawPiContainerRunning,
       });
       const namespace = sandboxNamespace({ fromString: () => source.sandbox });
@@ -859,7 +859,7 @@ describe("source Sandbox orchestration authority", () => {
     ]) {
       let targetSelections = 0;
       const source = await createSessionHarness({
-        initialEntries: { [sessionHarnessKeys.record]: record },
+        initialEntries: { [sessionHarnessKeys.actorFixtureSession]: record },
         sandboxNamespace: sandboxNamespace({
           fromName: () => {
             targetSelections += 1;
@@ -881,7 +881,9 @@ describe("source Sandbox orchestration authority", () => {
   it("rejects self-targeting and exact-case cross-repo targeting", async () => {
     let targetSelections = 0;
     const self = await createSessionHarness({
-      initialEntries: { [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }) },
+      initialEntries: {
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({ id: SESSION_ID }),
+      },
       sandboxNamespace: sandboxNamespace({
         fromName: () => {
           targetSelections += 1;
@@ -899,7 +901,7 @@ describe("source Sandbox orchestration authority", () => {
     let relayCalls = 0;
     const target = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
           id: TARGET_ID,
           repo: "Owner/project",
         }),
@@ -913,7 +915,7 @@ describe("source Sandbox orchestration authority", () => {
     });
     const source = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
           id: SESSION_ID,
           repo: "owner/project",
         }),
@@ -933,7 +935,7 @@ describe("source Sandbox orchestration authority", () => {
     const relayed: Request[] = [];
     const target = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
           id: TARGET_ID,
           repo: "owner/project",
         }),
@@ -970,7 +972,7 @@ describe("source Sandbox orchestration authority", () => {
     });
     const source = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
           id: SESSION_ID,
           repo: "owner/project",
         }),
@@ -989,7 +991,7 @@ describe("source Sandbox orchestration authority", () => {
       context(),
     );
     assert.strictEqual(inspected.status, 200);
-    assert.deepStrictEqual(await inspected.json(), snapshot());
+    assert.deepStrictEqual(await inspected.json(), { ...snapshot(), sessionRevision: 1 });
 
     const steered = await handler(
       new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/steer`, {
@@ -1021,7 +1023,9 @@ describe("source Sandbox orchestration authority", () => {
       fetch: () => Promise.resolve(Response.json({ unexpected: true })),
     };
     const source = await createSessionHarness({
-      initialEntries: { [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }) },
+      initialEntries: {
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({ id: SESSION_ID }),
+      },
       sandboxNamespace: sandboxNamespace({ fromName: () => unavailable }),
     });
 

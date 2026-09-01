@@ -14,18 +14,20 @@ import {
   EVIDENCE_PREVIEW_MAX_INGRESS_BYTES,
   EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
   EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+  decodeEvidenceStateResult,
   type BrowserEvidenceJob,
   type EvidenceArtifact,
   type EvidenceJobSummary,
   type EvidenceState,
 } from "../../src/evidence/contracts";
-import { EvidenceStore, evidenceStoreLayer } from "../../src/evidence/store";
 import {
-  SessionStore,
-  sessionStoreLayer,
+  EvidenceStore,
+  evidenceStoreLayer,
+  type AcceptEvidenceJobInput,
+} from "../../src/evidence/store";
+import {
+  type SessionAuxiliaryStorage,
   type SessionEvidenceTransaction,
-  type SessionRecordStorage,
-  type SessionRecordTransaction,
 } from "../../src/session/store";
 import { makeSessionRecord } from "../support";
 
@@ -96,44 +98,39 @@ const makeArtifactCapabilities = () => {
 };
 
 const makeAuthorityStorage = (initialEvidence?: unknown) => {
-  let record: unknown = makeSessionRecord({
+  let record = makeSessionRecord({
     id: SESSION_ID,
     hardCapAt: "2026-08-06T13:00:00.000Z",
   });
   let evidence: unknown | undefined = structuredClone(initialEvidence);
+  let operation = record.operation;
   const runtimeEpoch = "runtime-1";
-  const storage: SessionRecordStorage = {
-    get: async () => structuredClone(record),
-    put: async (next) => {
-      record = structuredClone(next);
-    },
-    transaction: async <A>(
-      operation: (transaction: SessionRecordTransaction) => Promise<A>,
-    ): Promise<A> => {
-      let staged = structuredClone(record);
-      const result = await operation({
-        get: async () => structuredClone(staged),
-        put: async (next) => {
-          staged = structuredClone(next);
-        },
-      });
-      record = staged;
-      return result;
-    },
+  const actorRecord = (currentRecord: typeof record, currentEvidence: unknown | undefined) => {
+    if (operation !== null) return { ...currentRecord, operation };
+    const decoded = decodeEvidenceStateResult(currentEvidence);
+    const active = Result.isSuccess(decoded) ? decoded.success.activeJob : undefined;
+    return active === undefined
+      ? currentRecord
+      : {
+          ...currentRecord,
+          operation: {
+            kind: "evidence" as const,
+            nonce: active.operationNonce,
+            startedAt: active.acceptedAt,
+          },
+        };
+  };
+  const storage: SessionAuxiliaryStorage = {
     getEvidence: async () => structuredClone(evidence),
-    getRuntimeEpoch: async () => runtimeEpoch,
     evidenceTransaction: async <A>(
       operation: (transaction: SessionEvidenceTransaction) => Promise<A>,
     ): Promise<A> => {
       let stagedRecord = structuredClone(record);
       let stagedEvidence = structuredClone(evidence);
       const result = await operation({
-        getRecord: async () => structuredClone(stagedRecord),
+        getRecord: async () => structuredClone(actorRecord(stagedRecord, stagedEvidence)),
         getEvidence: async () => structuredClone(stagedEvidence),
         getRuntimeEpoch: async () => runtimeEpoch,
-        putRecord: async (next) => {
-          stagedRecord = structuredClone(next);
-        },
         putEvidence: async (next) => {
           stagedEvidence = structuredClone(next);
         },
@@ -150,35 +147,49 @@ const makeAuthorityStorage = (initialEvidence?: unknown) => {
     storage,
     readRecord: () => structuredClone(record),
     readEvidence: () => structuredClone(evidence) as EvidenceState | undefined,
+    commitEvidence: (next: EvidenceState) => {
+      evidence = structuredClone(next);
+    },
+    setOperation: (next: typeof operation) => {
+      operation = next;
+    },
   };
 };
 
-const layers = (storage: SessionRecordStorage, artifacts: ArtifactStoreCapabilities) =>
-  Layer.mergeAll(
-    sessionStoreLayer(storage),
-    evidenceStoreLayer(storage),
-    artifactStoreLayer(artifacts),
-  );
+const layers = (storage: SessionAuxiliaryStorage, artifacts: ArtifactStoreCapabilities) =>
+  Layer.merge(evidenceStoreLayer(storage), artifactStoreLayer(artifacts));
 
 const failure = <A>(result: Result.Result<A, unknown>): unknown => {
   assert.ok(Result.isFailure(result));
   return result.failure;
 };
 
-const accept = (testLayers: Layer.Layer<SessionStore | EvidenceStore | ArtifactStore>) =>
-  Effect.flatMap(EvidenceStore, (store) =>
-    store.accept({
-      jobId: "job-1",
-      operationNonce: "evidence-nonce",
-      runtimeEpoch: "runtime-1",
-      routeNonce: "0123456789abcdef",
-      deadlineAt: "2026-08-06T12:05:00.000Z",
-      flowHash: "a".repeat(64),
-      job: JOB,
-    }),
-  ).pipe(Effect.provide(testLayers));
+const accept = (
+  authority: ReturnType<typeof makeAuthorityStorage>,
+  testLayers: Layer.Layer<EvidenceStore | ArtifactStore>,
+  overrides?: Partial<AcceptEvidenceJobInput>,
+) =>
+  Effect.gen(function* () {
+    const store = yield* EvidenceStore;
+    const plan = yield* store.prepareAdmission(
+      {
+        jobId: "job-1",
+        operationNonce: "evidence-nonce",
+        runtimeEpoch: "runtime-1",
+        routeNonce: "0123456789abcdef",
+        deadlineAt: "2026-08-06T12:05:00.000Z",
+        flowHash: "a".repeat(64),
+        job: JOB,
+        ...overrides,
+      },
+      authority.readRecord(),
+      "runtime-1",
+    );
+    authority.commitEvidence(plan.state);
+    return plan.active;
+  }).pipe(Effect.provide(testLayers));
 
-const publishPreview = (testLayers: Layer.Layer<SessionStore | EvidenceStore | ArtifactStore>) =>
+const publishPreview = (testLayers: Layer.Layer<EvidenceStore | ArtifactStore>) =>
   Effect.gen(function* () {
     const store = yield* EvidenceStore;
     yield* store.beginPreviewExposure("evidence-nonce", {
@@ -239,25 +250,9 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
-      const accepted = yield* accept(testLayers);
+      const accepted = yield* accept(authority, testLayers);
       assert.strictEqual(accepted.status, "accepted");
-      assert.deepInclude(authority.readRecord(), {
-        operation: {
-          kind: "evidence",
-          nonce: "evidence-nonce",
-          startedAt: "2026-08-06T12:00:00.000Z",
-        },
-      });
-
-      const collision = yield* Effect.result(
-        Effect.flatMap(SessionStore, (store) =>
-          store.acquireOperation("snapshot", ["warm"], "snapshot-nonce"),
-        ).pipe(Effect.provide(testLayers)),
-      );
-      assert.deepInclude(failure(collision), {
-        code: "conflict",
-        message: "Session is already running evidence",
-      });
+      assert.deepInclude(authority.readRecord(), { operation: null });
 
       const prepared = yield* Effect.flatMap(ArtifactStore, (store) =>
         store.prepareFrame({
@@ -321,9 +316,11 @@ describe("EvidenceStore", () => {
       assert.notProperty(persisted, "activeJob");
       assert.strictEqual(persisted.retainedBytes, artifact.bytes);
 
-      yield* Effect.flatMap(SessionStore, (store) =>
-        store.acquireOperation("vaporize", ["warm"], "vaporize-nonce"),
-      ).pipe(Effect.provide(testLayers));
+      authority.setOperation({
+        kind: "vaporize",
+        nonce: "vaporize-nonce",
+        startedAt: "2026-08-06T12:00:02.000Z",
+      });
       const pending = yield* Effect.flatMap(EvidenceStore, (store) =>
         store.prepareVaporizeDeletes("vaporize-nonce"),
       ).pipe(Effect.provide(testLayers));
@@ -353,20 +350,15 @@ describe("EvidenceStore", () => {
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
       const store = yield* Effect.provide(EvidenceStore, testLayers);
-      const accepted = yield* store
-        .accept({
-          jobId: "job-video",
-          operationNonce: "evidence-video-nonce",
-          runtimeEpoch: "runtime-1",
-          routeNonce: "0123456789abcdef",
-          deadlineAt: "2026-08-06T12:05:00.000Z",
-          flowHash: "b".repeat(64),
-          job: {
-            ...JOB,
-            capture: { screenshots: "after-each-step", video: true },
-          },
-        })
-        .pipe(Effect.provide(testLayers));
+      const accepted = yield* accept(authority, testLayers, {
+        jobId: "job-video",
+        operationNonce: "evidence-video-nonce",
+        flowHash: "b".repeat(64),
+        job: {
+          ...JOB,
+          capture: { screenshots: "after-each-step", video: true },
+        },
+      });
       yield* store
         .completeStep(accepted.operationNonce, {
           index: 0,
@@ -420,7 +412,7 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
-      yield* accept(testLayers);
+      yield* accept(authority, testLayers);
       yield* publishPreview(testLayers);
       const store = yield* Effect.provide(EvidenceStore, testLayers);
       const requestId = "9".repeat(32);
@@ -459,7 +451,7 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
-      yield* accept(testLayers);
+      yield* accept(authority, testLayers);
       const store = yield* Effect.provide(EvidenceStore, testLayers);
       const publication = {
         index: 0,
@@ -490,7 +482,7 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
-      yield* accept(testLayers);
+      yield* accept(authority, testLayers);
       yield* publishPreview(testLayers);
       const requestId = "1".repeat(32);
       const store = yield* Effect.provide(EvidenceStore, testLayers);
@@ -532,7 +524,7 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
-      yield* accept(testLayers);
+      yield* accept(authority, testLayers);
       yield* publishPreview(testLayers);
       const store = yield* Effect.provide(EvidenceStore, testLayers);
       const canceledId = "2".repeat(32);
@@ -577,7 +569,7 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
-      yield* accept(testLayers);
+      yield* accept(authority, testLayers);
       yield* publishPreview(testLayers);
       const store = yield* Effect.provide(EvidenceStore, testLayers);
       const requestId = "7".repeat(32);
@@ -606,7 +598,7 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
-      yield* accept(testLayers);
+      yield* accept(authority, testLayers);
       yield* publishPreview(testLayers);
       const store = yield* Effect.provide(EvidenceStore, testLayers);
       for (const digit of ["1", "2", "3", "4"]) {
@@ -654,15 +646,19 @@ describe("EvidenceStore", () => {
       yield* TestClock.setTime(NOW);
       const result = yield* Effect.result(
         Effect.flatMap(EvidenceStore, (store) =>
-          store.accept({
-            jobId: "job-1",
-            operationNonce: "evidence-nonce",
-            runtimeEpoch: "runtime-1",
-            routeNonce: "0123456789abcdef",
-            deadlineAt: "2026-08-06T14:00:00.000Z",
-            flowHash: "a".repeat(64),
-            job: JOB,
-          }),
+          store.prepareAdmission(
+            {
+              jobId: "job-1",
+              operationNonce: "evidence-nonce",
+              runtimeEpoch: "runtime-1",
+              routeNonce: "0123456789abcdef",
+              deadlineAt: "2026-08-06T14:00:00.000Z",
+              flowHash: "a".repeat(64),
+              job: JOB,
+            },
+            authority.readRecord(),
+            "runtime-1",
+          ),
         ).pipe(Effect.provide(layers(authority.storage, artifacts.capabilities))),
       );
       assert.deepInclude(failure(result), { reason: "invalid" });
@@ -679,7 +675,7 @@ describe("EvidenceStore", () => {
         const artifacts = makeArtifactCapabilities();
         const testLayers = layers(authority.storage, artifacts.capabilities);
         yield* TestClock.setTime(NOW);
-        yield* accept(testLayers);
+        yield* accept(authority, testLayers);
         const store = yield* Effect.provide(EvidenceStore, testLayers);
         yield* store
           .recordFailure("evidence-nonce", { code: "interrupted", step: 0 }, DIAGNOSTIC)
@@ -716,7 +712,7 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
-      yield* accept(testLayers);
+      yield* accept(authority, testLayers);
 
       const stale = yield* Effect.result(
         Effect.flatMap(EvidenceStore, (store) => store.interrupt("stale", "deadline")).pipe(
@@ -783,10 +779,11 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
-      const pending = yield* Effect.flatMap(
-        EvidenceStore,
-        (store) => store.prepareJobCapacity,
-      ).pipe(Effect.provide(testLayers));
+      const accepted = yield* accept(authority, testLayers);
+      const pending =
+        authority
+          .readEvidence()
+          ?.artifacts.filter((candidate) => candidate.status === "delete_pending") ?? [];
       assert.deepInclude(pending[0], { objectKey: artifact.objectKey, status: "delete_pending" });
       assert.deepInclude(authority.readEvidence()?.pendingDeletes[0], {
         objectKey: artifact.objectKey,
@@ -798,9 +795,8 @@ describe("EvidenceStore", () => {
       yield* Effect.flatMap(EvidenceStore, (store) => store.confirmDelete(artifact.objectKey)).pipe(
         Effect.provide(testLayers),
       );
-      yield* accept(testLayers);
       yield* Effect.flatMap(EvidenceStore, (store) =>
-        store.finalize("evidence-nonce", "succeeded"),
+        store.finalize(accepted.operationNonce, "succeeded"),
       ).pipe(Effect.provide(testLayers));
 
       const state = authority.readEvidence();

@@ -401,6 +401,54 @@ describe("SandboxRuntime", () => {
     }),
   );
 
+  it.effect("exposes public container state, placement, and a bounded port body", () =>
+    Effect.gen(function* () {
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        getState: () => Promise.resolve({ status: "running", lastChange: 12 }),
+        getContainerPlacementId: () => Promise.resolve("placement-1"),
+        fetchPort: () =>
+          Promise.resolve(Response.json({ status: "ready", epoch: "epoch-1" }, { status: 200 })),
+      };
+      const program = Effect.gen(function* () {
+        const runtime = yield* SandboxRuntime;
+        assert.deepStrictEqual(yield* runtime.getState(), { status: "running", lastChange: 12 });
+        assert.strictEqual(yield* runtime.getContainerPlacementId(), "placement-1");
+        assert.deepStrictEqual(yield* runtime.fetchPortBody("/health", 43_117, "GET", 128), {
+          status: 200,
+          body: '{"status":"ready","epoch":"epoch-1"}',
+        });
+      });
+
+      yield* Effect.provide(program, sandboxRuntimeLayer(capabilities));
+    }),
+  );
+
+  it.effect("fails a port response that exceeds its caller-owned byte limit", () =>
+    Effect.gen(function* () {
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        fetchPort: () => Promise.resolve(new Response("too large", { status: 200 })),
+      };
+      const result = yield* Effect.result(
+        withRuntime(
+          capabilities,
+          Effect.flatMap(SandboxRuntime, (runtime) =>
+            runtime.fetchPortBody("/health", 43_117, "GET", 3),
+          ),
+        ),
+      );
+
+      assert.deepStrictEqual(
+        failure(result),
+        new SandboxRuntimeFailure({
+          reason: "transport",
+          message: "Sandbox port response exceeds its byte limit",
+        }),
+      );
+    }),
+  );
+
   it.effect("maps every process Promise rejection to an operation-specific redacted failure", () =>
     Effect.gen(function* () {
       const capabilities: SandboxRuntimeCapabilities = {

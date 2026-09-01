@@ -8,6 +8,7 @@
     "**/node_modules/**",
     "vendor/**",
     "work/**",
+    "scripts/*.d.mts",
     "worker/container/pi-packages/sources/scotty-browser-test/**",
     "worker/public/vendor/**"
   ],

@@ -11,10 +11,9 @@ import {
   conflict,
   decodePublicError,
   decodeSessionProjection,
-  decodeSessionRecord,
+  decodeSessionRecordResult,
   decodeStatsResponse,
   decodeWorkspaceCreationMarker,
-  hasCommittedManagedStop,
   notFound,
   parseCreateInput,
   parseRenameSessionInput,
@@ -195,7 +194,7 @@ describe("request contracts", () => {
   });
 });
 
-const persistedRecord = {
+const derivedRecord = {
   id: "a0b1c2d3e4f5",
   title: "Package Pi extensions",
   status: "sleeping",
@@ -275,80 +274,72 @@ describe("stats schemas", () => {
   });
 });
 
-describe("persisted session schemas", () => {
-  it.effect("decodes the exact authoritative record", () =>
-    Effect.gen(function* () {
-      const decoded = yield* decodeSessionRecord(persistedRecord);
-      assert.deepStrictEqual(decoded, persistedRecord);
-      const withPersistedUndefined = {
-        ...persistedRecord,
-        backup: { ...persistedRecord.backup, previous: undefined },
-        backupExpiresAt: undefined,
-        codexThreadId: undefined,
-        failure: undefined,
-      };
-      assert.deepStrictEqual(
-        yield* decodeSessionRecord(withPersistedUndefined),
-        withPersistedUndefined,
-      );
-    }),
-  );
+describe("derived session context schemas", () => {
+  it("decodes the exact actor-derived context", () => {
+    const decoded = decodeSessionRecordResult(derivedRecord);
+    assert.ok(Result.isSuccess(decoded));
+    assert.deepStrictEqual(decoded.success, derivedRecord);
+    const withOptionalUndefined = {
+      ...derivedRecord,
+      backup: { ...derivedRecord.backup, previous: undefined },
+      backupExpiresAt: undefined,
+      codexThreadId: undefined,
+      failure: undefined,
+    };
+    const optional = decodeSessionRecordResult(withOptionalUndefined);
+    assert.ok(Result.isSuccess(optional));
+    assert.deepStrictEqual(optional.success, withOptionalUndefined);
+  });
 
-  it.effect("fails closed for missing, malformed, and excess authoritative state", () =>
-    Effect.gen(function* () {
-      for (const malformed of [
-        { ...persistedRecord, title: undefined },
-        { ...persistedRecord, status: "unknown" },
-        { ...persistedRecord, operation: undefined },
-        {
-          ...persistedRecord,
-          operation: {
-            kind: "create",
-            nonce: "private",
-            startedAt: "2026-01-01T00:00:01.000Z",
-          },
+  it("fails closed for missing, malformed, and excess derived context", () => {
+    for (const malformed of [
+      { ...derivedRecord, title: undefined },
+      { ...derivedRecord, status: "unknown" },
+      { ...derivedRecord, operation: undefined },
+      {
+        ...derivedRecord,
+        operation: {
+          kind: "create",
+          nonce: "private",
+          startedAt: "2026-01-01T00:00:01.000Z",
         },
-        {
-          ...persistedRecord,
-          operation: {
-            kind: "create",
-            nonce: "private",
-            startedAt: "2026-01-01T00:00:01.000Z",
-            createPhase: "unknown",
-          },
+      },
+      {
+        ...derivedRecord,
+        operation: {
+          kind: "create",
+          nonce: "private",
+          startedAt: "2026-01-01T00:00:01.000Z",
+          createPhase: "unknown",
         },
-        {
-          ...persistedRecord,
-          operation: {
-            kind: "resume",
-            nonce: "private",
-            startedAt: "2026-01-01T00:00:01.000Z",
-            createPhase: "setup",
-          },
+      },
+      {
+        ...derivedRecord,
+        operation: {
+          kind: "resume",
+          nonce: "private",
+          startedAt: "2026-01-01T00:00:01.000Z",
+          createPhase: "setup",
         },
-        { ...persistedRecord, secret: "excess" },
-        {
-          ...persistedRecord,
-          backup: { current: { ...persistedRecord.backup.current, secret: "nested excess" } },
-        },
-      ]) {
-        const decoded = yield* Effect.result(decodeSessionRecord(malformed));
-        assert.ok(Result.isFailure(decoded));
-      }
-    }),
-  );
-
-  it.effect("rejects malformed sandbox bundle digests", () =>
-    Effect.gen(function* () {
-      const decoded = yield* Effect.result(
-        decodeSessionRecord({
-          ...persistedRecord,
-          sandboxBundle: { digest: "not-a-digest" },
-        }),
-      );
+      },
+      { ...derivedRecord, secret: "excess" },
+      {
+        ...derivedRecord,
+        backup: { current: { ...derivedRecord.backup.current, secret: "nested excess" } },
+      },
+    ]) {
+      const decoded = decodeSessionRecordResult(malformed);
       assert.ok(Result.isFailure(decoded));
-    }),
-  );
+    }
+  });
+
+  it("rejects malformed sandbox bundle digests", () => {
+    const decoded = decodeSessionRecordResult({
+      ...derivedRecord,
+      sandboxBundle: { digest: "not-a-digest" },
+    });
+    assert.ok(Result.isFailure(decoded));
+  });
 
   it("derives sandbox bundle pins in projections without exposing bundle contents", () => {
     const digest = "c".repeat(64);
@@ -378,65 +369,24 @@ describe("persisted session schemas", () => {
 
   it("strips projection extras and skips malformed projections", () => {
     const projection = {
-      id: persistedRecord.id,
-      title: persistedRecord.title,
-      status: persistedRecord.status,
-      provider: persistedRecord.provider,
-      repo: persistedRecord.repo,
-      defaultBranch: persistedRecord.defaultBranch,
-      branch: persistedRecord.branch,
-      createdAt: persistedRecord.createdAt,
-      updatedAt: persistedRecord.updatedAt,
-      hardCapAt: persistedRecord.hardCapAt,
-      projectedAt: persistedRecord.updatedAt,
-      sandboxBundle: persistedRecord.sandboxBundle,
+      id: derivedRecord.id,
+      title: derivedRecord.title,
+      status: derivedRecord.status,
+      provider: derivedRecord.provider,
+      repo: derivedRecord.repo,
+      defaultBranch: derivedRecord.defaultBranch,
+      branch: derivedRecord.branch,
+      createdAt: derivedRecord.createdAt,
+      updatedAt: derivedRecord.updatedAt,
+      hardCapAt: derivedRecord.hardCapAt,
+      projectedAt: derivedRecord.updatedAt,
+      sandboxBundle: derivedRecord.sandboxBundle,
       secret: "strip me",
     };
     const decoded = decodeSessionProjection(projection);
     assert.ok(Option.isSome(decoded));
     assert.ok(!("secret" in decoded.value));
     assert.ok(Option.isNone(decodeSessionProjection({ ...projection, status: "unknown" })));
-  });
-
-  it("requires an explicit stop request and matching committed backup before sleeping", () => {
-    const warm = { ...persistedRecord, status: "warm" as const };
-    assert.isFalse(hasCommittedManagedStop({ ...warm, operation: null }));
-    assert.isFalse(
-      hasCommittedManagedStop({
-        ...warm,
-        backup: undefined,
-        operation: {
-          kind: "snapshot",
-          nonce: "snapshot-1",
-          startedAt: warm.updatedAt,
-          checkpointedBackupId: undefined,
-          stopRequestedAt: warm.updatedAt,
-        },
-      }),
-    );
-    assert.isFalse(
-      hasCommittedManagedStop({
-        ...warm,
-        operation: {
-          kind: "snapshot",
-          nonce: "snapshot-1",
-          startedAt: warm.updatedAt,
-          checkpointedBackupId: "backup-1",
-        },
-      }),
-    );
-    assert.isTrue(
-      hasCommittedManagedStop({
-        ...warm,
-        operation: {
-          kind: "snapshot",
-          nonce: "snapshot-1",
-          startedAt: warm.updatedAt,
-          checkpointedBackupId: "backup-1",
-          stopRequestedAt: warm.updatedAt,
-        },
-      }),
-    );
   });
 });
 

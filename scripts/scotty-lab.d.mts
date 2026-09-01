@@ -43,6 +43,66 @@ export interface CredentialSetupInputs {
   readonly githubExecutable: string;
 }
 
+export interface EvidenceUnavailable {
+  readonly status: "not-available";
+  readonly reason: string;
+}
+
+export interface EvidenceManifest {
+  readonly version: 1;
+  readonly runId: string;
+  readonly createdAt: string;
+  readonly workerName: string;
+  readonly ownedSessionIds: ReadonlyArray<string>;
+  readonly scenarioResults: ReadonlyArray<Readonly<Record<string, unknown>>>;
+  readonly cleanupResult: Readonly<Record<string, unknown>>;
+  readonly sessionOwnershipUpdatedAt?: string;
+  readonly observations: {
+    readonly actorAuthorityRevision: EvidenceUnavailable;
+    readonly operationJournal: EvidenceUnavailable;
+    readonly providerSnapshot: EvidenceUnavailable;
+  };
+}
+
+export interface EvidencePaths {
+  readonly directory: string;
+  readonly manifest: string;
+  readonly commands: string;
+}
+
+export const EVIDENCE_DIRECTORY: string;
+export const PROTECTED_SESSION_ID: string;
+export function evidencePathsForRunId(runId: string, evidenceDirectory?: string): EvidencePaths;
+export function ensureEvidenceRun(manifest: LabManifest, evidenceDirectory?: string): EvidencePaths;
+export function readEvidenceManifest(runId: string, evidenceDirectory?: string): EvidenceManifest;
+export function recordOwnedSession(
+  manifest: LabManifest,
+  sessionId: string,
+  recordedAt: string,
+  evidenceDirectory?: string,
+): EvidenceManifest;
+export function isOwnedSession(
+  manifest: LabManifest,
+  sessionId: string,
+  evidenceDirectory?: string,
+): boolean;
+export function recordScenarioResult(
+  manifest: LabManifest,
+  result: Readonly<Record<string, unknown>>,
+  evidenceDirectory?: string,
+): EvidenceManifest;
+export function recordCleanupResult(
+  manifest: LabManifest,
+  result: Readonly<Record<string, unknown>>,
+  evidenceDirectory?: string,
+): EvidenceManifest;
+export function appendEvidenceCommand(
+  manifest: LabManifest,
+  record: Readonly<Record<string, unknown>>,
+  evidenceDirectory?: string,
+): void;
+export function assertLifecycleSessionId(sessionId: string): string;
+
 export function acquireLifecycleLock(): number;
 export function releaseLifecycleLock(descriptor: number): void;
 export function createStartReservation(createdAt: string): LabManifest;
@@ -70,6 +130,7 @@ export function cleanupOwnedFiles(manifest: LabManifest): ReadonlyArray<string>;
 export function removeOwnedTempRoot(manifest: LabManifest): void;
 export function markCleanupPending(manifest: LabManifest): void;
 export function execManifest(runId: string): LabManifest;
+export function activeRunManifest(): LabManifest;
 export function prepareCredentialSetup(
   manifest: LabManifest,
   repo: string,
@@ -79,5 +140,12 @@ export function spawnCli(
   manifest: LabManifest,
   argv: ReadonlyArray<string>,
   explicitEnvironment?: Readonly<Record<string, string>>,
+  stdio?: "inherit" | "pipe",
 ): ChildProcess;
+export function sanitizeEvidenceText(manifest: LabManifest, value: string): string;
+export function sleepSession(
+  manifest: LabManifest,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<{ readonly status: number; readonly body: string }>;
 export function stopManifest(runId: string, manifestPath?: string): LabManifest;

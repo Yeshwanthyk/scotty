@@ -2,7 +2,18 @@
 
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import type { ChildProcess } from "node:child_process";
-import { Console, Context, Data, Effect, Exit, Layer, Predicate, Result } from "effect";
+import {
+  Console,
+  Context,
+  Data,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Predicate,
+  Result,
+  Schema,
+} from "effect";
 import {
   Argument,
   CliConfig,
@@ -14,18 +25,28 @@ import {
 import { isRepositoryIdentity } from "../protocol/repository.ts";
 import {
   acquireLifecycleLock,
+  activeRunManifest,
+  appendEvidenceCommand,
+  assertLifecycleSessionId,
   awaitWrangler,
   cleanupOwnedFiles,
   completeStart,
   createStartReservation,
   execManifest,
+  isOwnedSession,
   launchWrangler,
   markCleanupPending,
   prepareCredentialSetup,
   prepareStart,
+  PROTECTED_SESSION_ID,
+  recordCleanupResult,
+  recordOwnedSession,
+  recordScenarioResult,
   releaseLifecycleLock,
   removeOwnedTempRoot,
   removeWorkerContainers,
+  sanitizeEvidenceText,
+  sleepSession,
   spawnCli,
   startupFailureDetails,
   stopManifest,
@@ -35,12 +56,44 @@ import {
 
 const VERSION = "0.3.3";
 const USAGE =
-  "Usage: npm run lab -- start | setup RUN_ID --repo OWNER/REPO | exec RUN_ID -- <scotty argv> | stop RUN_ID";
+  "Usage: npm run lab -- start | setup RUN_ID --repo OWNER/REPO | exec RUN_ID -- <scotty argv> | stop RUN_ID | lifecycle <scenario>";
 const RUN_ID_PATTERN = /^lab-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 type Manifest = ReturnType<typeof createStartReservation>;
 type Started = Awaited<ReturnType<typeof launchWrangler>>["started"];
 type Prepared = Awaited<ReturnType<typeof prepareStart>>;
+const FAULTS = [
+  "after-intent-commit",
+  "before-provider-dispatch",
+  "after-provider-dispatch",
+  "before-observation-commit",
+  "after-observation-commit",
+  "runtime-stopped",
+  "supervisor-lost",
+  "provider-response-lost",
+  "alarm-duplicated",
+] as const;
+type Fault = (typeof FAULTS)[number];
+type LifecycleScenario =
+  | "create-and-ready"
+  | "checkpoint"
+  | "sleep-resume"
+  | "runtime-loss"
+  | "hard-cap"
+  | "vaporize"
+  | "full";
+
+const SessionOperationOutput = Schema.Struct({
+  id: Schema.String,
+  status: Schema.String,
+});
+const SessionIdentityOutput = Schema.Struct({ id: Schema.String });
+const decodeSessionOperationJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(SessionOperationOutput),
+);
+const decodeSessionIdentityJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(SessionIdentityOutput),
+);
 
 export class LabFailure extends Data.TaggedError("LabFailure")<{
   readonly message: string;
@@ -198,6 +251,11 @@ interface ChildResult {
   readonly signal?: NodeJS.Signals;
 }
 
+export interface CapturedChildResult extends ChildResult {
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
 const waitForChild = (child: ChildProcess): Effect.Effect<ChildResult, LabFailure> =>
   Effect.callback<ChildResult, LabFailure>((resume) => {
     const onError = (cause: Error) =>
@@ -213,7 +271,53 @@ const waitForChild = (child: ChildProcess): Effect.Effect<ChildResult, LabFailur
     });
   });
 
+export const waitForCapturedChild = (
+  child: ChildProcess,
+): Effect.Effect<CapturedChildResult, LabFailure> =>
+  Effect.callback<CapturedChildResult, LabFailure>((resume) => {
+    let stdout = "";
+    let stderr = "";
+    const onStdout = (chunk: Buffer | string) => {
+      stdout += chunk.toString();
+    };
+    const onStderr = (chunk: Buffer | string) => {
+      stderr += chunk.toString();
+    };
+    const onError = (cause: Error) =>
+      resume(Effect.fail(failure(cause, "Unable to run the Scotty CLI")));
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) =>
+      resume(
+        Effect.succeed({
+          stdout,
+          stderr,
+          ...(signal === null ? { code: code ?? 1 } : { signal }),
+        }),
+      );
+    child.stdout?.on("data", onStdout);
+    child.stderr?.on("data", onStderr);
+    child.once("error", onError);
+    child.once("close", onClose);
+    return Effect.sync(() => {
+      child.stdout?.removeListener("data", onStdout);
+      child.stderr?.removeListener("data", onStderr);
+      child.removeListener("error", onError);
+      child.removeListener("close", onClose);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    });
+  });
+
+const nowIso = Effect.map(
+  Effect.clockWith((clock) => clock.currentTimeMillis),
+  (millis) => new Date(millis).toISOString(),
+);
+
 const executeLab = Effect.fnUntraced(function* (runId: string, argv: ReadonlyArray<string>) {
+  if (argv.includes(PROTECTED_SESSION_ID))
+    return yield* Effect.fail(
+      new LabFailure({
+        message: `Session ${PROTECTED_SESSION_ID} is protected and must never be targeted`,
+      }),
+    );
   const manifest = yield* attempt("Unable to read the running lab", () => execManifest(runId));
   const child = yield* attempt("Unable to start the Scotty CLI", () => spawnCli(manifest, argv));
   const result = yield* waitForChild(child);
@@ -240,6 +344,411 @@ const setupLab = Effect.fnUntraced(function* (runId: string, repo: string) {
   });
 });
 
+type ScenarioResult = Readonly<{
+  scenario: LifecycleScenario;
+  status: "succeeded" | "not-available" | "rejected" | "failed";
+  startedAt: string;
+  finishedAt: string;
+  sessionId?: string;
+  reason?: string;
+  fault?: Fault;
+}>;
+
+const persistScenarioResult = (manifest: Manifest, result: ScenarioResult) =>
+  attempt("Unable to persist the lifecycle scenario result", () =>
+    recordScenarioResult(manifest, result),
+  );
+
+const failScenario = Effect.fnUntraced(function* (manifest: Manifest, result: ScenarioResult) {
+  yield* persistScenarioResult(manifest, result);
+  return yield* Effect.fail(
+    new LabFailure({ message: JSON.stringify({ runId: manifest.runId, ...result }) }),
+  );
+});
+
+const requestedFaultUnavailable = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  scenario: LifecycleScenario,
+  fault: Fault | undefined,
+  startedAt: string,
+  sessionId?: string,
+) {
+  if (fault === undefined) return;
+  const finishedAt = yield* nowIso;
+  return yield* failScenario(manifest, {
+    scenario,
+    status: "not-available",
+    startedAt,
+    finishedAt,
+    ...(sessionId === undefined ? {} : { sessionId }),
+    fault,
+    reason:
+      "Fault injection is not available until the actor runner exposes a guarded public control.",
+  });
+});
+
+const requireOwnedSession = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  scenario: LifecycleScenario,
+  sessionId: string,
+  startedAt: string,
+) {
+  const validated = yield* Effect.result(
+    attempt("Session ID is invalid", () => assertLifecycleSessionId(sessionId)),
+  );
+  if (Result.isFailure(validated)) {
+    const finishedAt = yield* nowIso;
+    return yield* failScenario(manifest, {
+      scenario,
+      status: "rejected",
+      startedAt,
+      finishedAt,
+      sessionId,
+      reason: validated.failure.message,
+    });
+  }
+  const owned = yield* attempt("Unable to read lifecycle session ownership", () =>
+    isOwnedSession(manifest, validated.success),
+  );
+  if (!owned) {
+    const finishedAt = yield* nowIso;
+    return yield* failScenario(manifest, {
+      scenario,
+      status: "rejected",
+      startedAt,
+      finishedAt,
+      sessionId,
+      reason: `Session ${sessionId} is not recorded as owned by lab run ${manifest.runId}.`,
+    });
+  }
+  return validated.success;
+});
+
+const runRecordedCli = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  scenario: LifecycleScenario,
+  argv: ReadonlyArray<string>,
+  sessionId?: string,
+) {
+  const startedAt = yield* nowIso;
+  const child = yield* attempt("Unable to start the Scotty CLI", () =>
+    spawnCli(manifest, argv, {}, "pipe"),
+  );
+  const captured = yield* waitForCapturedChild(child);
+  const finishedAt = yield* nowIso;
+  const stdout = yield* attempt("Unable to sanitize lifecycle stdout", () =>
+    sanitizeEvidenceText(manifest, captured.stdout),
+  );
+  const stderr = yield* attempt("Unable to sanitize lifecycle stderr", () =>
+    sanitizeEvidenceText(manifest, captured.stderr),
+  );
+  yield* attempt("Unable to persist lifecycle command evidence", () =>
+    appendEvidenceCommand(manifest, {
+      scenario,
+      argv,
+      startedAt,
+      finishedAt,
+      stdout,
+      stderr,
+      exitCode: captured.code ?? null,
+      signal: captured.signal ?? null,
+      sessionId: sessionId ?? null,
+      sessionOwned: sessionId === undefined ? "pending-create" : true,
+    }),
+  );
+  if (captured.signal !== undefined || captured.code !== 0) {
+    yield* persistScenarioResult(manifest, {
+      scenario,
+      status: "failed",
+      startedAt,
+      finishedAt,
+      ...(sessionId === undefined ? {} : { sessionId }),
+      reason: `CLI exited with ${captured.signal ?? captured.code ?? "an unknown status"}.`,
+    });
+    return yield* Effect.fail(
+      new LabFailure({
+        message: JSON.stringify({
+          scenario,
+          status: "failed",
+          exitCode: captured.code ?? null,
+          signal: captured.signal ?? null,
+          stderr,
+        }),
+      }),
+    );
+  }
+  return stdout.trim();
+});
+
+const runRecordedSleep = Effect.fnUntraced(function* (manifest: Manifest, sessionId: string) {
+  const startedAt = yield* nowIso;
+  const response = yield* attemptPromise("Unable to sleep the lifecycle session", (signal) =>
+    sleepSession(manifest, sessionId, signal),
+  );
+  const finishedAt = yield* nowIso;
+  yield* attempt("Unable to persist sleep command evidence", () =>
+    appendEvidenceCommand(manifest, {
+      scenario: "sleep-resume",
+      argv: ["POST", `/api/sessions/${sessionId}/sleep`],
+      startedAt,
+      finishedAt,
+      stdout: response.body,
+      stderr: "",
+      exitCode: response.status >= 200 && response.status < 300 ? 0 : 1,
+      signal: null,
+      httpStatus: response.status,
+      sessionId,
+      sessionOwned: true,
+    }),
+  );
+  if (response.status < 200 || response.status >= 300) {
+    yield* persistScenarioResult(manifest, {
+      scenario: "sleep-resume",
+      status: "failed",
+      startedAt,
+      finishedAt,
+      sessionId,
+      reason: `Sleep returned HTTP ${response.status}.`,
+    });
+    return yield* Effect.fail(
+      new LabFailure({
+        message: JSON.stringify({
+          scenario: "sleep-resume",
+          status: "failed",
+          httpStatus: response.status,
+          body: response.body,
+        }),
+      }),
+    );
+  }
+  return response.body;
+});
+
+const decodeOperation = (json: string) =>
+  decodeSessionOperationJson(json).pipe(
+    Effect.mapError((cause) => failure(cause, "Scotty CLI returned invalid lifecycle JSON")),
+  );
+
+const finishScenario = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  scenario: LifecycleScenario,
+  startedAt: string,
+  sessionId?: string,
+) {
+  const result: ScenarioResult = {
+    scenario,
+    status: "succeeded",
+    startedAt,
+    finishedAt: yield* nowIso,
+    ...(sessionId === undefined ? {} : { sessionId }),
+  };
+  yield* persistScenarioResult(manifest, result);
+  return result;
+});
+
+const createAndReady = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  repo: string,
+  fault?: Fault,
+) {
+  const startedAt = yield* nowIso;
+  yield* requestedFaultUnavailable(manifest, "create-and-ready", fault, startedAt);
+  const output = yield* runRecordedCli(manifest, "create-and-ready", [
+    "beam",
+    "Reply with exactly SCOTTY_LAB_READY.",
+    "--title",
+    "Scotty lifecycle lab",
+    "--repo",
+    repo,
+    "--provider",
+    "cloudflare",
+    "--cap",
+    "30m",
+    "--detach",
+    "--json",
+  ]);
+  const identity = yield* decodeSessionIdentityJson(output).pipe(
+    Effect.mapError((cause) => failure(cause, "Scotty CLI returned invalid session identity JSON")),
+  );
+  if (identity.id === PROTECTED_SESSION_ID)
+    return yield* failScenario(manifest, {
+      scenario: "create-and-ready",
+      status: "rejected",
+      startedAt,
+      finishedAt: yield* nowIso,
+      sessionId: identity.id,
+      reason: `Session ${PROTECTED_SESSION_ID} is protected and must never be targeted.`,
+    });
+  const ownershipRecordedAt = yield* nowIso;
+  yield* attempt("Unable to record lifecycle session ownership", () =>
+    recordOwnedSession(manifest, identity.id, ownershipRecordedAt),
+  );
+  const created = yield* decodeOperation(output);
+  if (created.status !== "warm")
+    return yield* failScenario(manifest, {
+      scenario: "create-and-ready",
+      status: "failed",
+      startedAt,
+      finishedAt: yield* nowIso,
+      sessionId: created.id,
+      reason: `Expected a warm session, received ${created.status}.`,
+    });
+  return {
+    sessionId: created.id,
+    result: yield* finishScenario(manifest, "create-and-ready", startedAt, created.id),
+  };
+});
+
+const checkpoint = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  fault?: Fault,
+) {
+  const startedAt = yield* nowIso;
+  const ownedId = yield* requireOwnedSession(manifest, "checkpoint", sessionId, startedAt);
+  yield* requestedFaultUnavailable(manifest, "checkpoint", fault, startedAt, ownedId);
+  const operation = yield* decodeOperation(
+    yield* runRecordedCli(manifest, "checkpoint", ["snapshot", ownedId, "--json"], ownedId),
+  );
+  if (operation.id !== ownedId || operation.status !== "warm")
+    return yield* failScenario(manifest, {
+      scenario: "checkpoint",
+      status: "failed",
+      startedAt,
+      finishedAt: yield* nowIso,
+      sessionId: ownedId,
+      reason: "Snapshot did not return the owned session in warm state.",
+    });
+  return yield* finishScenario(manifest, "checkpoint", startedAt, ownedId);
+});
+
+const sleepResume = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  fault?: Fault,
+) {
+  const startedAt = yield* nowIso;
+  const ownedId = yield* requireOwnedSession(manifest, "sleep-resume", sessionId, startedAt);
+  yield* requestedFaultUnavailable(manifest, "sleep-resume", fault, startedAt, ownedId);
+  const slept = yield* decodeOperation(yield* runRecordedSleep(manifest, ownedId));
+  if (slept.id !== ownedId || slept.status !== "sleeping")
+    return yield* failScenario(manifest, {
+      scenario: "sleep-resume",
+      status: "failed",
+      startedAt,
+      finishedAt: yield* nowIso,
+      sessionId: ownedId,
+      reason: "Sleep did not return the owned session in sleeping state.",
+    });
+  const resumed = yield* decodeOperation(
+    yield* runRecordedCli(manifest, "sleep-resume", ["resume", ownedId, "--json"], ownedId),
+  );
+  if (resumed.id !== ownedId || resumed.status !== "warm")
+    return yield* failScenario(manifest, {
+      scenario: "sleep-resume",
+      status: "failed",
+      startedAt,
+      finishedAt: yield* nowIso,
+      sessionId: ownedId,
+      reason: "Resume did not return the owned session in warm state.",
+    });
+  return yield* finishScenario(manifest, "sleep-resume", startedAt, ownedId);
+});
+
+const unavailableScenario = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  scenario: "runtime-loss" | "hard-cap",
+  sessionId: string,
+  fault?: Fault,
+) {
+  const startedAt = yield* nowIso;
+  const ownedId = yield* requireOwnedSession(manifest, scenario, sessionId, startedAt);
+  yield* requestedFaultUnavailable(manifest, scenario, fault, startedAt, ownedId);
+  return yield* failScenario(manifest, {
+    scenario,
+    status: "not-available",
+    startedAt,
+    finishedAt: yield* nowIso,
+    sessionId: ownedId,
+    reason: `${scenario} has no complete public observation path yet.`,
+  });
+});
+
+const vaporize = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  fault?: Fault,
+) {
+  const startedAt = yield* nowIso;
+  const ownedId = yield* requireOwnedSession(manifest, "vaporize", sessionId, startedAt);
+  yield* requestedFaultUnavailable(manifest, "vaporize", fault, startedAt, ownedId);
+  const operation = yield* decodeOperation(
+    yield* runRecordedCli(manifest, "vaporize", ["vaporize", ownedId, "--yes", "--json"], ownedId),
+  );
+  if (operation.id !== ownedId || operation.status !== "gone")
+    return yield* failScenario(manifest, {
+      scenario: "vaporize",
+      status: "failed",
+      startedAt,
+      finishedAt: yield* nowIso,
+      sessionId: ownedId,
+      reason: "Vaporize did not return the owned session as gone.",
+    });
+  return yield* finishScenario(manifest, "vaporize", startedAt, ownedId);
+});
+
+const printLifecycleResult = (manifest: Manifest, result: ScenarioResult) =>
+  Effect.sync(() =>
+    process.stdout.write(`${JSON.stringify({ runId: manifest.runId, ...result })}\n`),
+  );
+
+const lifecycleOperation = <A>(operation: (manifest: Manifest) => Effect.Effect<A, LabFailure>) =>
+  withLifecycleLock(
+    Effect.gen(function* () {
+      const manifest = yield* attempt("Unable to resolve the active lab run", activeRunManifest);
+      return { manifest, value: yield* operation(manifest) };
+    }),
+  );
+
+const createAndReadyLab = (repo: string, fault?: Fault) =>
+  lifecycleOperation((manifest) => createAndReady(manifest, repo, fault)).pipe(
+    Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value.result)),
+  );
+
+const checkpointLab = (sessionId: string, fault?: Fault) =>
+  lifecycleOperation((manifest) => checkpoint(manifest, sessionId, fault)).pipe(
+    Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)),
+  );
+
+const sleepResumeLab = (sessionId: string, fault?: Fault) =>
+  lifecycleOperation((manifest) => sleepResume(manifest, sessionId, fault)).pipe(
+    Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)),
+  );
+
+const runtimeLossLab = (sessionId: string, fault?: Fault) =>
+  lifecycleOperation((manifest) => unavailableScenario(manifest, "runtime-loss", sessionId, fault));
+
+const hardCapLab = (sessionId: string, fault?: Fault) =>
+  lifecycleOperation((manifest) => unavailableScenario(manifest, "hard-cap", sessionId, fault));
+
+const vaporizeLab = (sessionId: string, fault?: Fault) =>
+  lifecycleOperation((manifest) => vaporize(manifest, sessionId, fault)).pipe(
+    Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)),
+  );
+
+const fullLifecycleLab = (repo: string, fault?: Fault) =>
+  lifecycleOperation((manifest) =>
+    Effect.gen(function* () {
+      const startedAt = yield* nowIso;
+      yield* requestedFaultUnavailable(manifest, "full", fault, startedAt);
+      const created = yield* createAndReady(manifest, repo);
+      yield* checkpoint(manifest, created.sessionId);
+      yield* sleepResume(manifest, created.sessionId);
+      yield* vaporize(manifest, created.sessionId);
+      return yield* finishScenario(manifest, "full", startedAt, created.sessionId);
+    }),
+  ).pipe(Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)));
+
 const stopLab = Effect.fnUntraced(function* (runId: string) {
   const stop = Effect.gen(function* () {
     const manifest = yield* attempt("Unable to read the lab", () => stopManifest(runId));
@@ -264,6 +773,19 @@ const stopLab = Effect.fnUntraced(function* (runId: string) {
         attempt("Unable to remove the lab temporary root", () => removeOwnedTempRoot(manifest)),
       );
     }
+    const cleanupFinishedAt = yield* nowIso;
+    yield* appendFailure(
+      errors,
+      attempt("Unable to persist lab cleanup evidence", () =>
+        recordCleanupResult(manifest, {
+          status: errors.length === 0 ? "succeeded" : "cleanup-pending",
+          finishedAt: cleanupFinishedAt,
+          process: processResult.validation.status,
+          processStopped: processResult.stopped,
+          errors: [...errors],
+        }),
+      ),
+    );
     if (errors.length > 0)
       yield* appendFailure(
         errors,
@@ -285,21 +807,36 @@ const stopLab = Effect.fnUntraced(function* (runId: string) {
   return yield* withLifecycleLock(stop);
 });
 
-export class LabOperations extends Context.Service<
-  LabOperations,
-  {
-    readonly start: Effect.Effect<void, LabFailure>;
-    readonly setup: (runId: string, repo: string) => Effect.Effect<void, LabFailure>;
-    readonly exec: (runId: string, argv: ReadonlyArray<string>) => Effect.Effect<void, LabFailure>;
-    readonly stop: (runId: string) => Effect.Effect<void, LabFailure>;
-  }
->()("scotty-lab/LabOperations") {}
+export interface LabOperationsShape {
+  readonly start: Effect.Effect<void, LabFailure>;
+  readonly setup: (runId: string, repo: string) => Effect.Effect<void, LabFailure>;
+  readonly exec: (runId: string, argv: ReadonlyArray<string>) => Effect.Effect<void, LabFailure>;
+  readonly stop: (runId: string) => Effect.Effect<void, LabFailure>;
+  readonly createAndReady: (repo: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
+  readonly checkpoint: (sessionId: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
+  readonly sleepResume: (sessionId: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
+  readonly runtimeLoss: (sessionId: string, fault?: Fault) => Effect.Effect<unknown, LabFailure>;
+  readonly hardCap: (sessionId: string, fault?: Fault) => Effect.Effect<unknown, LabFailure>;
+  readonly vaporize: (sessionId: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
+  readonly full: (repo: string, fault?: Fault) => Effect.Effect<unknown, LabFailure>;
+}
+
+export class LabOperations extends Context.Service<LabOperations, LabOperationsShape>()(
+  "scotty-lab/LabOperations",
+) {}
 
 const productionOperations = Layer.succeed(LabOperations, {
   start: startLab(),
   setup: setupLab,
   exec: executeLab,
   stop: stopLab,
+  createAndReady: createAndReadyLab,
+  checkpoint: checkpointLab,
+  sleepResume: sleepResumeLab,
+  runtimeLoss: runtimeLossLab,
+  hardCap: hardCapLab,
+  vaporize: vaporizeLab,
+  full: fullLifecycleLab,
 });
 
 const runIdArgument = Argument.string("RUN_ID").pipe(
@@ -309,9 +846,20 @@ const runIdArgument = Argument.string("RUN_ID").pipe(
   ),
 );
 const extrasArgument = Argument.string("extra").pipe(Argument.variadic());
+const sessionIdFlag = Flag.string("session");
+const faultFlag = Flag.choice("fault", FAULTS).pipe(Flag.optional);
 
 const rejectExtras = (extras: ReadonlyArray<string>): Effect.Effect<void, LabUsageError> =>
   extras.length === 0 ? Effect.void : Effect.fail(new LabUsageError({ message: USAGE }));
+
+const rejectProtectedSession = (values: ReadonlyArray<string>): Effect.Effect<void, LabFailure> =>
+  values.includes(PROTECTED_SESSION_ID)
+    ? Effect.fail(
+        new LabFailure({
+          message: `Session ${PROTECTED_SESSION_ID} is protected and must never be targeted`,
+        }),
+      )
+    : Effect.void;
 
 const startCommand = Command.make("start", { extras: extrasArgument }, ({ extras }) =>
   Effect.gen(function* () {
@@ -327,7 +875,11 @@ const execCommand = Command.make(
     runId: runIdArgument,
     argv: Argument.string("scotty argv").pipe(Argument.variadic({ min: 1 })),
   },
-  ({ argv, runId }) => Effect.flatMap(LabOperations, (operations) => operations.exec(runId, argv)),
+  ({ argv, runId }) =>
+    Effect.andThen(
+      rejectProtectedSession(argv),
+      Effect.flatMap(LabOperations, (operations) => operations.exec(runId, argv)),
+    ),
 );
 
 const setupCommand = Command.make(
@@ -357,8 +909,82 @@ const stopCommand = Command.make(
     ),
 );
 
+const optionalFault = (fault: Option.Option<Fault>): Fault | undefined =>
+  Option.getOrUndefined(fault);
+
+const createAndReadyCommand = Command.make(
+  "create-and-ready",
+  { repo: Flag.string("repo"), fault: faultFlag, extras: extrasArgument },
+  ({ extras, fault, repo }) =>
+    Effect.gen(function* () {
+      yield* rejectExtras(extras);
+      if (!isRepositoryIdentity(repo))
+        return yield* Effect.fail(new LabUsageError({ message: USAGE }));
+      const operations = yield* LabOperations;
+      yield* operations.createAndReady(repo, optionalFault(fault));
+    }),
+);
+
+const lifecycleSessionCommand = (
+  name: "checkpoint" | "sleep-resume" | "runtime-loss" | "hard-cap" | "vaporize",
+  select: (
+    operations: LabOperationsShape,
+  ) => (sessionId: string, fault?: Fault) => Effect.Effect<unknown, LabFailure>,
+) =>
+  Command.make(
+    name,
+    { sessionId: sessionIdFlag, fault: faultFlag, extras: extrasArgument },
+    ({ extras, fault, sessionId }) =>
+      Effect.gen(function* () {
+        yield* rejectExtras(extras);
+        yield* rejectProtectedSession([sessionId]);
+        const operations = yield* LabOperations;
+        yield* select(operations)(sessionId, optionalFault(fault));
+      }),
+  );
+
+const checkpointCommand = lifecycleSessionCommand(
+  "checkpoint",
+  (operations) => operations.checkpoint,
+);
+const sleepResumeCommand = lifecycleSessionCommand(
+  "sleep-resume",
+  (operations) => operations.sleepResume,
+);
+const runtimeLossCommand = lifecycleSessionCommand(
+  "runtime-loss",
+  (operations) => operations.runtimeLoss,
+);
+const hardCapCommand = lifecycleSessionCommand("hard-cap", (operations) => operations.hardCap);
+const vaporizeCommand = lifecycleSessionCommand("vaporize", (operations) => operations.vaporize);
+
+const fullCommand = Command.make(
+  "full",
+  { repo: Flag.string("repo"), fault: faultFlag, extras: extrasArgument },
+  ({ extras, fault, repo }) =>
+    Effect.gen(function* () {
+      yield* rejectExtras(extras);
+      if (!isRepositoryIdentity(repo))
+        return yield* Effect.fail(new LabUsageError({ message: USAGE }));
+      const operations = yield* LabOperations;
+      yield* operations.full(repo, optionalFault(fault));
+    }),
+);
+
+const lifecycleCommand = Command.make("lifecycle").pipe(
+  Command.withSubcommands([
+    createAndReadyCommand,
+    checkpointCommand,
+    sleepResumeCommand,
+    runtimeLossCommand,
+    hardCapCommand,
+    vaporizeCommand,
+    fullCommand,
+  ]),
+);
+
 export const labCommand = Command.make("scotty-lab").pipe(
-  Command.withSubcommands([startCommand, setupCommand, execCommand, stopCommand]),
+  Command.withSubcommands([startCommand, setupCommand, execCommand, stopCommand, lifecycleCommand]),
 );
 
 const requireExecSeparator = (args: ReadonlyArray<string>): Effect.Effect<void, LabUsageError> =>

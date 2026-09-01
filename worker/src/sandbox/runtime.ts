@@ -7,6 +7,7 @@ import type {
   WaitForPortOptions,
 } from "@cloudflare/sandbox";
 import { Context, Data, Effect, Layer, Predicate, Schedule } from "effect";
+import { readBoundedUtf8Body } from "../shared/bounded-http";
 
 export type SandboxExecOptions = Pick<ExecOptions, "cwd" | "env" | "timeout">;
 export type SandboxProcessOptions = Pick<
@@ -32,6 +33,8 @@ export class SandboxRuntimeFailure extends Data.TaggedError("SandboxRuntimeFailu
 export type SandboxWriteContent = string | Uint8Array | ReadableStream<Uint8Array>;
 
 export interface SandboxRuntimeCapabilities {
+  readonly getState?: () => Promise<unknown>;
+  readonly getContainerPlacementId?: () => Promise<string | null | undefined>;
   readonly exec: (command: string, options?: SandboxExecOptions) => Promise<ExecResult>;
   readonly mkdir: (path: string, options?: { readonly recursive?: boolean }) => Promise<unknown>;
   readonly readFileStream?: (path: string) => Promise<ReadableStream<Uint8Array>>;
@@ -66,6 +69,8 @@ export interface SandboxProcess {
 }
 
 interface SandboxRuntimeShape {
+  readonly getState: () => Effect.Effect<unknown, SandboxRuntimeFailure>;
+  readonly getContainerPlacementId: () => Effect.Effect<string | null, SandboxRuntimeFailure>;
   readonly exec: (
     command: string,
     options?: SandboxExecOptions,
@@ -102,6 +107,13 @@ interface SandboxRuntimeShape {
     method: "GET" | "POST",
     headers?: Readonly<Record<string, string>>,
   ) => Effect.Effect<number, SandboxRuntimeFailure>;
+  readonly fetchPortBody: (
+    path: string,
+    port: number,
+    method: "GET" | "POST",
+    maxBytes: number,
+    headers?: Readonly<Record<string, string>>,
+  ) => Effect.Effect<{ readonly status: number; readonly body: string }, SandboxRuntimeFailure>;
 }
 
 export class SandboxRuntime extends Context.Service<SandboxRuntime, SandboxRuntimeShape>()(
@@ -123,6 +135,33 @@ const makeSandboxRuntime = <E>(
   layerOptions: SandboxRuntimeLayerOptions,
 ): SandboxRuntimeShape =>
   SandboxRuntime.of({
+    getState: () => {
+      const getState = capabilities.getState;
+      if (getState === undefined)
+        return Effect.fail(transportFailure("Sandbox state transport is unavailable"));
+      return guardOperation(beforeOperation, "Sandbox state transport failed").pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: getState,
+            catch: () => transportFailure("Sandbox state transport failed"),
+          }),
+        ),
+      );
+    },
+    getContainerPlacementId: () => {
+      const getContainerPlacementId = capabilities.getContainerPlacementId;
+      if (getContainerPlacementId === undefined)
+        return Effect.fail(transportFailure("Sandbox placement transport is unavailable"));
+      return guardOperation(beforeOperation, "Sandbox placement transport failed").pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: getContainerPlacementId,
+            catch: () => transportFailure("Sandbox placement transport failed"),
+          }),
+        ),
+        Effect.map((placementId) => placementId ?? null),
+      );
+    },
     exec: (command, options) => exec(capabilities, beforeOperation, command, options),
     execChecked: Effect.fnUntraced(function* (command, options) {
       // The SDK's non-streaming exec RPC does not propagate AbortSignal cancellation to the
@@ -237,6 +276,31 @@ const makeSandboxRuntime = <E>(
           }),
         ),
         Effect.map((response) => response.status),
+      );
+    },
+    fetchPortBody: (path, port, method, maxBytes, headers) => {
+      const fetchPort = capabilities.fetchPort;
+      if (fetchPort === undefined)
+        return Effect.fail(transportFailure("Sandbox port transport is unavailable"));
+      return guardOperation(beforeOperation, "Sandbox port transport failed").pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () => fetchPort(path, port, method, headers),
+            catch: () => transportFailure("Sandbox port transport failed"),
+          }),
+        ),
+        Effect.flatMap((response) =>
+          Effect.tryPromise({
+            try: () => readBoundedUtf8Body(response, maxBytes),
+            catch: () => transportFailure("Sandbox port response transport failed"),
+          }).pipe(
+            Effect.flatMap((body) =>
+              body === undefined
+                ? Effect.fail(transportFailure("Sandbox port response exceeds its byte limit"))
+                : Effect.succeed({ status: response.status, body }),
+            ),
+          ),
+        ),
       );
     },
   });
