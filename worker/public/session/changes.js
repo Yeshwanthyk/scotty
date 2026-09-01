@@ -17,11 +17,7 @@ const element = (document, tag, className, text) => {
   return node;
 };
 
-const stateMessage = (document, className, text) => {
-  const node = element(document, "p", className, text);
-  node.setAttribute("role", "status");
-  return node;
-};
+const stateMessage = (document, className, text) => element(document, "p", className, text);
 
 const patchLineContent = (line) =>
   line.kind === "addition" || line.kind === "deletion" || line.kind === "context"
@@ -153,7 +149,6 @@ export function createChangesViewer({ document, fetch, headerActions }) {
   const title = element(document, "h2", "", "Working changes");
   title.id = "changes-title";
   const summary = element(document, "p", "changes-summary", "Open to read the live worktree.");
-  summary.setAttribute("aria-live", "polite");
   heading.append(title, summary);
   const close = element(document, "button", "changes-close", "Close");
   close.type = "button";

@@ -106,11 +106,13 @@ describe("cloud-agent session application", () => {
     assert.include(sessionHtml, "After Pi finishes");
     assert.include(sessionHtml, "Guide the next turn");
     assert.notInclude(sessionHtml, '<select id="delivery-mode">');
+    assert.strictEqual(sessionHtml.match(/aria-live="polite"/gu)?.length, 1);
+    assert.notInclude(appSource, 'setAttribute("aria-live"');
   });
 
   it("uses a modal mobile sidebar, visible focus, safe areas, and reduced motion", () => {
     assert.include(sessionHtml, 'aria-controls="agent-sidebar"');
-    assert.match(sessionHtml, /role="status"[\s\S]*?aria-live="polite"/u);
+    assert.include(sessionHtml, 'id="composer-hint" class="composer-hint" role="status"');
     assert.include(appSource, "trapDrawerFocus");
     assert.include(appSource, "setSummary(false)");
     assert.include(appSource, 'event.key === "Escape"');
@@ -119,5 +121,16 @@ describe("cloud-agent session application", () => {
     assert.include(sessionCss, "@media (prefers-reduced-motion: reduce)");
     assert.include(sessionCss, ":focus-visible");
     assert.include(sessionCss, "font-size: 16px");
+  });
+  it("shows live work, folds history, and exposes an explicit return to the tail", () => {
+    assert.include(sessionHtml, 'id="transcript-scroller"');
+    assert.include(sessionHtml, 'id="new-activity"');
+    assert.include(appSource, "newActivity");
+    assert.include(sessionCss, ".current-work");
+    assert.include(sessionCss, ".earlier-turns");
+    assert.match(
+      sessionCss,
+      /@media \(max-width: 760px\)[\s\S]*?\.current-work \.work-tools \.work-tool:nth-child\(n \+ 3\) \{[\s\S]*?display: none;/u,
+    );
   });
 });

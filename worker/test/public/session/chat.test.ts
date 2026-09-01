@@ -1,10 +1,14 @@
 import { assert, describe, it } from "vitest";
 import {
   applyEvent,
+  conversationPresentation,
   conversationTurns,
+  currentWorkPresentation,
+  isNearBottom,
   projectionFromSnapshot,
   safeMarkdownTree,
   sanitizeText,
+  toolOutputText,
 } from "../../../public/session/chat.js";
 import chatSource from "../../../public/session/chat.js?raw";
 
@@ -87,6 +91,27 @@ describe("canonical chat projection", () => {
     );
   });
 
+  it("settles live work only from terminal authority, never a non-terminal state update", () => {
+    const projection = projectionFromSnapshot(snapshot({ state: { isStreaming: true } }));
+    assert.isTrue(projection.active);
+
+    applyEvent(projection, {
+      epoch: "epoch-1",
+      sequence: 1,
+      event: { type: "state_update", state: { isStreaming: false } },
+    });
+    assert.isTrue(projection.active);
+
+    applyEvent(projection, {
+      epoch: "epoch-1",
+      sequence: 2,
+      event: { type: "agent_settled" },
+    });
+    assert.isFalse(projection.active);
+
+    assert.isFalse(projectionFromSnapshot(snapshot({ state: { isStreaming: false } })).active);
+  });
+
   it("applies streaming assistant deltas and tool lifecycle updates", () => {
     const projection = projectionFromSnapshot(snapshot());
     applyEvent(projection, {
@@ -133,9 +158,28 @@ describe("canonical chat projection", () => {
       role: "assistant",
       content: [{ type: "text", text: "Hello world" }],
     });
+    assert.strictEqual(projection.tools.size, 1);
     assert.deepInclude(projection.tools.get("tool-1"), {
       name: "read",
       result: "done",
+      status: "done",
+    });
+  });
+
+  it("coalesces repeated tool updates by tool-call ID", () => {
+    const projection = projectionFromSnapshot(snapshot({ state: { isStreaming: true } }));
+    for (const [sequence, event] of [
+      [1, { type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash" }],
+      [2, { type: "tool_execution_update", toolCallId: "tool-1", partialResult: "half" }],
+      [3, { type: "tool_execution_end", toolCallId: "tool-1", result: "complete" }],
+    ])
+      applyEvent(projection, { epoch: "epoch-1", sequence, event });
+
+    assert.strictEqual(projection.tools.size, 1);
+    assert.deepInclude(projection.tools.get("tool-1"), {
+      id: "tool-1",
+      name: "bash",
+      result: "complete",
       status: "done",
     });
   });
@@ -169,6 +213,68 @@ describe("canonical chat projection", () => {
     assert.strictEqual(turns[0].tools.length, 1);
     assert.strictEqual(projection.pendingUi.get("question-1")?.method, "confirm");
   });
+  it("keeps three newest turns visible and bounds one earlier-turn preview", () => {
+    const turns = Array.from({ length: 6 }, (_, index) => ({
+      key: `turn-${index}`,
+      user: {
+        role: "user",
+        content: [{ type: "text", text: `Turn ${index} ${"detail ".repeat(40)}` }],
+      },
+      assistants: [],
+      tools: [],
+    }));
+    const presentation = conversationPresentation(turns);
+
+    assert.deepStrictEqual(
+      presentation.visible.map((turn) => turn.key),
+      ["turn-3", "turn-4", "turn-5"],
+    );
+    assert.strictEqual(presentation.earlier.length, 3);
+    assert.isAtMost(presentation.preview.length, 220);
+  });
+
+  it("bounds current work for desktop and mobile and names every work state", () => {
+    const tools = [
+      { id: "one", name: "read", status: "done", result: "read", arguments: "" },
+      { id: "two", name: "edit", status: "done", result: "edited", arguments: "" },
+      { id: "three", name: "bash", status: "error", result: "failed", arguments: "" },
+      { id: "four", name: "browser", status: "running", result: "", arguments: "testing" },
+    ];
+    const turn = {
+      key: "turn",
+      assistants: [
+        { role: "assistant", content: [{ type: "thinking", thinking: "x".repeat(2_000) }] },
+      ],
+      tools,
+    };
+    const running = currentWorkPresentation(turn, { active: true, pendingUi: new Map() });
+    const waiting = currentWorkPresentation(turn, {
+      active: true,
+      pendingUi: new Map([["question", {}]]),
+    });
+    const failed = currentWorkPresentation(turn, { active: false, pendingUi: new Map() });
+    const done = currentWorkPresentation(
+      { ...turn, tools: tools.filter((tool) => tool.status === "done") },
+      { active: false, pendingUi: new Map() },
+    );
+
+    assert.strictEqual(running.state, "running");
+    assert.strictEqual(waiting.state, "waiting");
+    assert.strictEqual(failed.state, "failed");
+    assert.strictEqual(done.state, "done");
+    assert.strictEqual(running.tools.length, 3);
+    assert.strictEqual(
+      currentWorkPresentation(turn, { active: true, pendingUi: new Map() }, 2).tools.length,
+      2,
+    );
+    assert.isAtMost(running.thinking.length, 600);
+    assert.isAtMost(toolOutputText({ status: "done", result: "y".repeat(5_000) }).length, 1_200);
+  });
+
+  it("pins only readers already near the transcript tail", () => {
+    assert.isTrue(isNearBottom({ scrollHeight: 1_000, scrollTop: 420, clientHeight: 500 }));
+    assert.isFalse(isNearBottom({ scrollHeight: 1_000, scrollTop: 200, clientHeight: 500 }));
+  });
 });
 
 describe("safe chat rendering", () => {
@@ -198,5 +304,12 @@ describe("safe chat rendering", () => {
     assert.include(chatSource, "target.focus({ preventScroll: true })");
     assert.include(chatSource, "target.setSelectionRange(selection.start, selection.end)");
     assert.include(chatSource, "previous?.dataset.signature === candidate.dataset.signature");
+    assert.include(chatSource, 'querySelectorAll("[data-tool-id]")');
+    assert.include(chatSource, "scroller.scrollTop = previousScrollTop");
+    assert.include(chatSource, "newActivity.hidden = false");
+    assert.include(chatSource, "captureScrollAnchor(feed, scroller)");
+    assert.include(chatSource, "restoreScrollAnchor(feed, scroller, scrollAnchor)");
+    assert.include(chatSource, "turn.key === anchor?.key");
+    assert.include(chatSource, "const artifacts = toolsForDisplay.filter");
   });
 });

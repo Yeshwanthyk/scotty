@@ -39,8 +39,9 @@ const mobileTitle = byId("active-agent-title");
 const mobileRepo = byId("active-agent-repo");
 const connectionState = byId("connection-state");
 const connectionLabel = byId("connection-label");
-const transcript = byId("transcript");
+const transcript = byId("transcript-scroller");
 const feed = byId("transcript-feed");
+const newActivity = byId("new-activity");
 const composer = byId("composer");
 const composerInput = byId("composer-input");
 const composerHint = byId("composer-hint");
@@ -55,7 +56,13 @@ const compactSummary = matchMedia("(max-width: 1180px)");
 const sessionMemory = createSessionMemory();
 const pendingUiResponses = new Set();
 const deliveredUiResponses = new Set();
-const chatView = createChatView({ document, feed, baseUrl: window.location.href });
+const chatView = createChatView({
+  document,
+  feed,
+  scroller: transcript,
+  newActivity,
+  baseUrl: window.location.href,
+});
 const summaryView = createSummaryView({
   document,
   root: summaryContent,

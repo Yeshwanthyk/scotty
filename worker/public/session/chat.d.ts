@@ -37,10 +37,37 @@ export declare function applyEvent(
   envelope: unknown,
 ): "ignored" | "refresh" | "duplicate" | "applied";
 export declare function conversationTurns(projection: ChatProjection): ReadonlyArray<ChatTurn>;
+export declare function conversationPresentation(
+  turns: ReadonlyArray<ChatTurn>,
+  visibleCount?: number,
+): {
+  earlier: ReadonlyArray<ChatTurn>;
+  visible: ReadonlyArray<ChatTurn>;
+  preview: string;
+};
+export declare function currentWorkPresentation(
+  turn: ChatTurn,
+  projection: Pick<ChatProjection, "active" | "pendingUi">,
+  maximumTools?: number,
+): {
+  state: "waiting" | "running" | "failed" | "done";
+  label: string;
+  thinking: string;
+  tools: ReadonlyArray<ChatJsonObject>;
+  totalTools: number;
+  failedTools: number;
+};
+export declare function isNearBottom(
+  scroller: { scrollHeight: number; scrollTop: number; clientHeight: number },
+  threshold?: number,
+): boolean;
+export declare function toolOutputText(tool: ChatJsonObject): string;
 export declare function safeMarkdownTree(source: string, baseUrl?: string): ReadonlyArray<unknown>;
 export declare function createChatView(options: {
   document: Document;
   feed: HTMLElement;
+  scroller: HTMLElement;
+  newActivity: HTMLButtonElement;
   baseUrl: string;
 }): {
   render(projection: ChatProjection, sessionId: string): void;

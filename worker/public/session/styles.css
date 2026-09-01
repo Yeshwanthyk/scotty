@@ -362,11 +362,33 @@ select:focus-visible {
   background: var(--danger);
 }
 .transcript {
+  position: relative;
   min-height: 0;
   flex: 1;
+}
+.transcript-scroller {
+  height: 100%;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+}
+.new-activity {
+  position: absolute;
+  z-index: 10;
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--beam);
+  box-shadow: 0 4px 8px rgb(0 0 0 / 0.28);
+  color: #091117;
+  font-size: 0.72rem;
+  font-weight: 760;
+  cursor: pointer;
+  inset: auto 18px 16px auto;
+}
+.new-activity:hover {
+  background: #ece3c8;
 }
 .transcript-feed {
   width: min(100%, var(--content));
@@ -458,44 +480,136 @@ select:focus-visible {
 .markdown-link-blocked {
   color: var(--quiet);
 }
-.work-disclosure {
+.current-work {
   margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--muted);
+}
+.current-work > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.current-work > header strong {
+  color: var(--ink);
+  font-size: 0.78rem;
+}
+.work-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.68rem;
+  font-weight: 720;
+}
+.work-status::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d4a96e;
+  content: "";
+}
+.current-work[data-work-state="waiting"] .work-status::before {
+  background: var(--accent);
+}
+.current-work[data-work-state="failed"] .work-status::before {
+  background: var(--danger);
+}
+.work-disclosure {
+  margin-top: 14px;
   border-top: 1px solid var(--soft-line);
   color: var(--muted);
 }
 .work-disclosure summary {
+  display: flex;
   width: fit-content;
   min-height: 40px;
-  padding: 11px 4px;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 4px;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.73rem;
   font-weight: 680;
   cursor: pointer;
 }
-.reasoning {
-  margin: 4px 0 12px;
+.work-summary-meta {
   color: var(--quiet);
-  font-size: 0.78rem;
-  line-height: 1.55;
-  white-space: pre-wrap;
+  font-weight: 520;
+}
+.reasoning,
+.work-empty {
+  margin: 9px 0 2px;
+  overflow: hidden;
+  color: var(--quiet);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.work-tools {
+  margin-top: 8px;
 }
 .tool-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 16px;
-  padding: 10px 4px;
+  gap: 6px 16px;
+  padding: 9px 0;
   border-top: 1px solid var(--soft-line);
-  font-size: 0.74rem;
+  font-size: 0.72rem;
 }
 .tool-row strong {
   overflow: hidden;
   color: var(--ink);
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-status {
+  color: var(--quiet);
+  font-weight: 680;
+}
+.tool-running .tool-status {
+  color: #e4b878;
+}
+.tool-done .tool-status {
+  color: #8bc89d;
+}
+.tool-error .tool-status {
+  color: #ff9b92;
 }
 .tool-row pre {
   grid-column: 1 / -1;
-  max-height: 240px;
+  max-height: 112px;
   margin: 0;
+  overflow: hidden;
+}
+.earlier-turns {
+  margin-bottom: 34px;
+  border-bottom: 1px solid var(--soft-line);
+}
+.earlier-turns > summary {
+  display: grid;
+  min-height: 52px;
+  align-content: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.earlier-turns-preview {
+  max-width: 68ch;
+  overflow: hidden;
+  color: var(--quiet);
+  font-size: 0.69rem;
+  font-weight: 450;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.earlier-turns[open] > summary {
+  margin-bottom: 30px;
 }
 .artifact-card {
   display: flex;
@@ -1235,6 +1349,16 @@ select:focus-visible {
   }
   .transcript-feed {
     padding: 30px 16px 48px;
+  }
+  .new-activity {
+    min-height: 44px;
+    inset: auto 12px 12px auto;
+  }
+  .current-work {
+    padding-inline: 12px;
+  }
+  .current-work .work-tools .work-tool:nth-child(n + 3) {
+    display: none;
   }
   .composer-dock {
     padding-inline: max(10px, env(safe-area-inset-left)) max(10px, env(safe-area-inset-right));

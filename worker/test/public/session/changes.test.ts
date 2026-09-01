@@ -166,7 +166,8 @@ describe("session changes viewer", () => {
     assert.include(changesSource, "node.textContent = text");
     assert.notInclude(changesSource, ".innerHTML");
     assert.notInclude(changesSource, 'setAttribute("role", "table")');
-    assert.include(changesSource, 'setAttribute("aria-live", "polite")');
+    assert.notInclude(changesSource, 'setAttribute("aria-live", "polite")');
+    assert.notInclude(changesSource, 'setAttribute("role", "status")');
     assert.include(changesSource, "PATCH_LINE_LIMIT = 4_000");
     assert.include(changesSource, "currentGeneration !== generation");
     assert.include(changesSource, "controller?.abort()");
@@ -249,7 +250,7 @@ describe("session changes viewer", () => {
       "stale",
     );
     assert.isUndefined(patchBody.getAttribute("aria-live"));
-    assert.strictEqual(patchBody.descendants()[0].getAttribute("role"), "status");
+    assert.isUndefined(patchBody.descendants()[0].getAttribute("role"));
     viewer.dispose();
   });
 
