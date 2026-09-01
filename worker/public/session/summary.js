@@ -316,8 +316,6 @@ function renderEvidence(document, target, sessionId, evidence) {
 }
 
 function hatchStateCopy(hatch) {
-  if (hatch.desiredStatus === "closed" || hatch.exposure === "closed")
-    return "Hatch is closed. Ask Pi to open it when you need public access.";
   if (hatch.observedStatus === "starting")
     return "Hatch is starting. Public access will appear when the service is healthy.";
   if (hatch.observedStatus === "sleeping")
@@ -328,6 +326,8 @@ function hatchStateCopy(hatch) {
     return "Hatch is stopped. Ask Pi to start it when you need public access.";
   if (hatch.observedStatus === "failed")
     return "Hatch failed to start. Ask Pi to inspect the application service before trying again.";
+  if (hatch.desiredStatus === "closed" || hatch.exposure === "closed")
+    return "Hatch is closed. Ask Pi to open it when you need public access.";
   return "Hatch is configured, but public access is not ready yet.";
 }
 function renderHatch(document, target, sessionId, hatch) {
@@ -437,6 +437,10 @@ export function createHatchStatusLoader(load) {
           if (activeSessionId === ownedSessionId && pending === request) value = next;
           return next;
         })
+        .catch((error) => {
+          if (activeSessionId === ownedSessionId && pending === request) value = undefined;
+          throw error;
+        })
         .finally(() => {
           if (activeSessionId === ownedSessionId && pending === request) pending = undefined;
         });
@@ -485,6 +489,10 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
       hatchTarget.className = "summary-section summary-hatch";
       hatchTarget.hidden = true;
       hatchTarget.dataset.currentHatch = "";
+      hatchTarget.setAttribute("role", "status");
+      hatchTarget.setAttribute("aria-live", "polite");
+      hatchTarget.setAttribute("aria-atomic", "true");
+      hatchTarget.setAttribute("aria-busy", "true");
       const currentHatch = hatchStatus.current(sessionId);
       if (currentHatch) renderHatch(document, hatchTarget, sessionId, currentHatch);
       else hatchTarget.replaceChildren();
@@ -493,6 +501,7 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
         .refresh(sessionId)
         .then((hatch) => {
           if (generation !== currentGeneration) return;
+          hatchTarget.setAttribute("aria-busy", "false");
           if (hatch) renderHatch(document, hatchTarget, sessionId, hatch);
           else {
             hatchTarget.hidden = false;
@@ -506,7 +515,8 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
           }
         })
         .catch(() => {
-          if (generation === currentGeneration && !hatchStatus.current(sessionId)) {
+          if (generation === currentGeneration) {
+            hatchTarget.setAttribute("aria-busy", "false");
             hatchTarget.hidden = false;
             hatchTarget.replaceChildren(
               sectionHeading(document, "Hatch", "Unavailable"),

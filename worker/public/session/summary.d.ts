@@ -38,7 +38,13 @@ export type SummaryHatch =
       readonly hatchId: string;
       readonly serviceName: string;
       readonly desiredStatus: "open" | "closed";
-      readonly observedStatus: string;
+      readonly observedStatus:
+        | "starting"
+        | "running"
+        | "sleeping"
+        | "unhealthy"
+        | "stopped"
+        | "failed";
       readonly exposure: "not_exposed" | "active" | "unexpose_pending" | "closed";
       readonly available: boolean;
     };
