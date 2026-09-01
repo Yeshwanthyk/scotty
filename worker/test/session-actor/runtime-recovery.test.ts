@@ -161,8 +161,8 @@ describe("session actor runtime recovery", () => {
     assert.ok(AuthorityStateSchema.guards.Transitioning(reconciled.nextAuthority.state));
     assert.strictEqual(reconciled.nextAuthority.state.transition.phase, "Quiescing");
     assert.strictEqual(reconciled.nextAuthority.state.transition.mode, "reconciling");
-    assert.ok(Predicate.isTagged(reconciled.effectIntents[0], "ArmDeadline"));
-    assert.ok(Predicate.isTagged(reconciled.effectIntents[1], "ReconcileTransition"));
+    assert.strictEqual(reconciled.effectIntents.length, 1);
+    assert.ok(Predicate.isTagged(reconciled.effectIntents[0], "ReconcileTransition"));
     assert.deepStrictEqual(decide(reconciled.nextAuthority, runtimeInput()), {
       _tag: "Rejected",
       code: "duplicate",

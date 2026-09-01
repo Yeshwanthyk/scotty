@@ -28,6 +28,11 @@ const decodeSteerResult = Schema.decodeUnknownPromise(
   Schema.Struct({ id: Schema.String, status: Schema.String }),
 );
 
+interface DeadlineSchedulePayload {
+  readonly expectedPhase?: unknown;
+  readonly revision?: unknown;
+}
+
 const relaySnapshot = (): PiConsoleRelaySnapshot => ({
   epoch: `pi-${SESSION_ID}`,
   baseSequence: 0,
@@ -120,7 +125,31 @@ describe("Sandbox actor create boundary", () => {
     assert.ok(hardCapIndex >= 0);
     assert.ok(firstProviderIndex >= 0);
     assert.ok(hardCapIndex < firstProviderIndex);
-    assert.ok(harness.schedules.some((schedule) => schedule.callback === "sessionActorDeadline"));
+    const deadlineSchedules = harness.schedules.filter(
+      (schedule) => schedule.callback === "sessionActorDeadline",
+    );
+    assert.deepStrictEqual(
+      deadlineSchedules.map((schedule) => {
+        const payload = schedule.payload as DeadlineSchedulePayload;
+        return payload.expectedPhase;
+      }),
+      [
+        "IntentCommitted",
+        "WorkspacePreparing",
+        "RuntimeMaterializing",
+        "RuntimeReady",
+        "SupervisorStarting",
+        "SupervisorReady",
+        "TransportVerifying",
+      ],
+    );
+    assert.deepStrictEqual(
+      deadlineSchedules.map((schedule) => {
+        const payload = schedule.payload as DeadlineSchedulePayload;
+        return payload.revision;
+      }),
+      [1, 2, 3, 4, 5, 6, 7],
+    );
     const cloneCommand = harness.commands.find(
       (command) => command.startsWith("rm -rf ") && command.includes(" git -c http.extraHeader="),
     );

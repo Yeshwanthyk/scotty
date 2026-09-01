@@ -366,9 +366,8 @@ describe("session actor reducer", () => {
     assert.deepStrictEqual(mismatched, { _tag: "Rejected", code: "stale_phase" });
     const reconciled = accepted(decide(created, alarm));
     assert.strictEqual(transitioning(reconciled.nextAuthority).transition.mode, "reconciling");
-    assert.strictEqual(reconciled.effectIntents.length, 2);
-    assert.ok(Predicate.isTagged(reconciled.effectIntents[0], "ArmDeadline"));
-    assert.ok(Predicate.isTagged(reconciled.effectIntents[1], "ReconcileTransition"));
+    assert.strictEqual(reconciled.effectIntents.length, 1);
+    assert.ok(Predicate.isTagged(reconciled.effectIntents[0], "ReconcileTransition"));
   });
 
   it("reconciles an unknown provider outcome without advancing phase", () => {

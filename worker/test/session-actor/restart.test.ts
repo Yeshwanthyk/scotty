@@ -333,7 +333,7 @@ describe("session actor restart", () => {
       ).pipe(Effect.provide(actor));
 
       assert.ok(result !== undefined);
-      assert.deepStrictEqual(dispatched, ["ArmDeadline", "ReconcileTransition"]);
+      assert.deepStrictEqual(dispatched, ["ReconcileTransition"]);
       assert.strictEqual(result.committed.length, 2);
       const reconciling = result.committed[0];
       const failed = result.committed[1];
@@ -420,6 +420,83 @@ describe("session actor restart", () => {
         assert.strictEqual(result.committed.length, 1);
         assert.ok(AuthorityStateSchema.guards.Stable(result.committed[0]?.authority.state));
       }),
+  );
+
+  it.effect("handles a current deadline with one reconciliation observation", () =>
+    Effect.gen(function* () {
+      const persistedTransition = transition("Create", "WorkspacePreparing");
+      const persisted = authority(persistedTransition);
+      const memory = actorPort(undefined, false, {
+        authority: persisted,
+        revision: persisted.revision,
+        journalSequence: 1,
+        journalTail: {
+          sequence: 1,
+          revision: persisted.revision,
+          timestamp: T1,
+          correlationId: "correlation-before-deadline",
+          transitionNonce: persistedTransition.nonce,
+          eventType: "progressed",
+          transitionKind: "Create",
+          transitionPhase: persistedTransition.phase,
+          resultCode: "workspace_intent_committed",
+          causeSequence: null,
+          causeAttempt: persistedTransition.attempt,
+        },
+      });
+      let providerCalls = 0;
+      const runner = actorEffectRunnerLayer.pipe(
+        Layer.provide(
+          Layer.merge(
+            actorAlarmSchedulerLayer(() => Effect.void),
+            providerEffectExecutorLayer((committed) => {
+              providerCalls += 1;
+              return Effect.fail(
+                new ProviderEffectBoundaryFailure({
+                  expectedRevision: committed.authority.revision,
+                  transitionNonce: committed.intent.transitionNonce,
+                  attempt: committed.intent.attempt,
+                  expectedPhase: committed.intent.phase,
+                  expectedProviderRuntimeId: null,
+                  outcome: "unknown_after_admission",
+                  safeResultCode: "reconciliation_still_unknown",
+                  observedAt: DEADLINE,
+                }),
+              );
+            }),
+          ),
+        ),
+      );
+      const actor = sessionActorLayer.pipe(
+        Layer.provide(Layer.merge(actorStoreLayer(memory.port), runner)),
+      );
+
+      const result = yield* Effect.flatMap(SessionActor, (service) =>
+        service.handle({
+          _tag: "DeadlineAlarm",
+          revision: persisted.revision,
+          transitionNonce: persistedTransition.nonce,
+          attempt: persistedTransition.attempt,
+          expectedPhase: persistedTransition.phase,
+          timestamp: DEADLINE,
+          correlationId: "correlation-deadline",
+          alarmId: "deadline-alarm",
+          expectedDeadlineAt: persistedTransition.deadlineAt,
+        }),
+      ).pipe(Effect.provide(actor));
+
+      assert.strictEqual(providerCalls, 1);
+      assert.strictEqual(result.committed.length, 1);
+      const retained = result.committed[0]?.authority;
+      assert.ok(
+        retained !== undefined && AuthorityStateSchema.guards.Transitioning(retained.state),
+      );
+      assert.strictEqual(retained.state.transition.mode, "reconciling");
+      assert.deepInclude(result.committed[0]?.journalEvent, {
+        eventType: "deadline_reconciling",
+        resultCode: "deadline_elapsed",
+      });
+    }),
   );
 
   it.effect("reconstructs every transition phase from storage without runtime-memory state", () =>
@@ -698,6 +775,52 @@ describe("session actor restart", () => {
         eventType: "provider_reconciling",
         resultCode: "provider_response_lost",
       });
+    }),
+  );
+
+  it.effect("fences a provider defect as an unknown admitted outcome", () =>
+    Effect.gen(function* () {
+      const memory = actorPort(undefined, false);
+      let providerCalls = 0;
+      const result = yield* runActor(memory.port, () => {
+        providerCalls += 1;
+        return Effect.die("provider defect after dispatch");
+      });
+
+      assert.strictEqual(providerCalls, 2);
+      assert.strictEqual(result.committed.length, 2);
+      assert.deepInclude(result.committed[1]?.journalEvent, {
+        eventType: "provider_reconciling",
+        resultCode: "provider_effect_defect",
+      });
+      const retained = result.committed[1]?.authority;
+      assert.ok(
+        retained !== undefined && AuthorityStateSchema.guards.Transitioning(retained.state),
+      );
+      assert.strictEqual(retained.state.transition.mode, "reconciling");
+    }),
+  );
+
+  it.effect("fences provider interruption as an unknown admitted outcome", () =>
+    Effect.gen(function* () {
+      const memory = actorPort(undefined, false);
+      let providerCalls = 0;
+      const result = yield* runActor(memory.port, () => {
+        providerCalls += 1;
+        return Effect.interrupt;
+      });
+
+      assert.strictEqual(providerCalls, 2);
+      assert.strictEqual(result.committed.length, 2);
+      assert.deepInclude(result.committed[1]?.journalEvent, {
+        eventType: "provider_reconciling",
+        resultCode: "provider_effect_interrupted",
+      });
+      const retained = result.committed[1]?.authority;
+      assert.ok(
+        retained !== undefined && AuthorityStateSchema.guards.Transitioning(retained.state),
+      );
+      assert.strictEqual(retained.state.transition.mode, "reconciling");
     }),
   );
 

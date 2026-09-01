@@ -1,8 +1,9 @@
-import { Context, Effect, Layer, Match, Schema } from "effect";
-import { AuthorityStateSchema } from "./authority";
+import { Context, Effect, Exit, Layer, Match, Schema } from "effect";
+import { AuthorityStateSchema, type Transition } from "./authority";
 import { ActorAlarmScheduler, type ActorAlarmOutcomeUnknown } from "./alarm";
 import {
   type CommittedEffectIntent,
+  type CommittedProviderEffectIntent,
   type EffectObservation,
   ProviderEffectExecutor,
 } from "./effects";
@@ -77,6 +78,44 @@ export const actorEffectRunnerLayer: Layer.Layer<
   Effect.gen(function* () {
     const alarms = yield* ActorAlarmScheduler;
     const provider = yield* ProviderEffectExecutor;
+    const executeProvider = Effect.fnUntraced(function* (
+      committed: CommittedProviderEffectIntent,
+      transition: Transition,
+    ) {
+      const result = yield* provider.execute(committed).pipe(
+        Effect.map((input) => ({ _tag: "Observation", input }) as const),
+        Effect.catchTag("ProviderEffectBoundaryFailure", (failure) =>
+          Effect.succeed(
+            boundaryFailureObservation(
+              committed,
+              failure.expectedRevision,
+              failure.transitionNonce,
+              failure.attempt,
+              failure.expectedPhase,
+              failure.expectedProviderRuntimeId,
+              failure.safeResultCode,
+              failure.outcome,
+              failure.observedAt,
+            ),
+          ),
+        ),
+        Effect.exit,
+      );
+      if (Exit.isSuccess(result)) return result.value;
+      const proof = transition.proof;
+      const runtime = "readiness" in proof ? proof.readiness.runtime : null;
+      return boundaryFailureObservation(
+        committed,
+        committed.authority.revision,
+        transition.nonce,
+        transition.attempt,
+        transition.phase,
+        runtime?.providerRuntimeId ?? null,
+        Exit.hasInterrupts(result) ? "provider_effect_interrupted" : "provider_effect_defect",
+        "unknown_after_admission",
+        committed.journalEvent.timestamp,
+      );
+    });
     return ActorEffectRunner.of({
       run: Effect.fnUntraced(function* (committed) {
         if (!AuthorityStateSchema.guards.Transitioning(committed.authority.state))
@@ -97,44 +136,8 @@ export const actorEffectRunnerLayer: Layer.Layer<
                 correlationId: committed.journalEvent.correlationId,
               })
               .pipe(Effect.as({ _tag: "NoObservation" } as const)),
-          ExecutePhase: (intent) =>
-            provider.execute({ ...committed, intent }).pipe(
-              Effect.map((input) => ({ _tag: "Observation", input }) as const),
-              Effect.catchTag("ProviderEffectBoundaryFailure", (failure) =>
-                Effect.succeed(
-                  boundaryFailureObservation(
-                    committed,
-                    failure.expectedRevision,
-                    failure.transitionNonce,
-                    failure.attempt,
-                    failure.expectedPhase,
-                    failure.expectedProviderRuntimeId,
-                    failure.safeResultCode,
-                    failure.outcome,
-                    failure.observedAt,
-                  ),
-                ),
-              ),
-            ),
-          ReconcileTransition: (intent) =>
-            provider.execute({ ...committed, intent }).pipe(
-              Effect.map((input) => ({ _tag: "Observation", input }) as const),
-              Effect.catchTag("ProviderEffectBoundaryFailure", (failure) =>
-                Effect.succeed(
-                  boundaryFailureObservation(
-                    committed,
-                    failure.expectedRevision,
-                    failure.transitionNonce,
-                    failure.attempt,
-                    failure.expectedPhase,
-                    failure.expectedProviderRuntimeId,
-                    failure.safeResultCode,
-                    failure.outcome,
-                    failure.observedAt,
-                  ),
-                ),
-              ),
-            ),
+          ExecutePhase: (intent) => executeProvider({ ...committed, intent }, transition),
+          ReconcileTransition: (intent) => executeProvider({ ...committed, intent }, transition),
         });
       }),
     });

@@ -186,12 +186,6 @@ const reconcileTransition = (
     journal(authority, input, "availability_lost", input.resultCode),
     [
       {
-        _tag: "ArmDeadline",
-        deadlineAt: transition.deadlineAt,
-        transitionNonce: transition.nonce,
-        attempt: transition.attempt,
-      },
-      {
         _tag: "ReconcileTransition",
         transitionKind: transitionKind(transition),
         phase: transition.phase,
