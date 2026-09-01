@@ -127,27 +127,39 @@
             <label class="visually-hidden" for="composer-input">Message Pi</label>
             <textarea
               id="composer-input"
-              rows="2"
+              rows="1"
               autocomplete="off"
               autocapitalize="sentences"
               enterkeyhint="send"
               placeholder="Message Pi…"
-              aria-describedby="composer-hint"
+              aria-describedby="composer-hint composer-keyboard-instructions"
             ></textarea>
             <div class="composer-footer">
               <fieldset id="delivery-controls" class="delivery-controls" hidden>
                 <legend class="visually-hidden">When should Pi receive this message?</legend>
                 <div id="delivery-mode" class="delivery-mode">
-                  <label>
-                    <input type="radio" name="delivery-mode" value="follow_up" checked />
-                    <span><strong>Follow up</strong><small>After Pi finishes</small></span>
+                  <label for="delivery-follow-up">
+                    <input
+                      id="delivery-follow-up"
+                      type="radio"
+                      name="delivery-mode"
+                      value="follow_up"
+                      checked
+                    />
+                    <span><strong>Follow-up</strong><small>After Pi finishes</small></span>
                   </label>
-                  <label>
-                    <input type="radio" name="delivery-mode" value="steer" />
+                  <label for="delivery-steer">
+                    <input id="delivery-steer" type="radio" name="delivery-mode" value="steer" />
                     <span><strong>Steer</strong><small>Guide the next turn</small></span>
                   </label>
                 </div>
               </fieldset>
+              <span class="composer-keyboard-hint" aria-hidden="true">
+                Enter to send · Shift+Enter for newline
+              </span>
+              <span id="composer-keyboard-instructions" class="visually-hidden">
+                Enter sends the message. Shift plus Enter inserts a new line.
+              </span>
               <button id="send-message" class="button button-primary" type="submit" disabled>
                 Send
               </button>

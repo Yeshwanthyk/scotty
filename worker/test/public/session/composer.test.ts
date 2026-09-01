@@ -4,6 +4,7 @@ import {
   createSessionMemory,
   currentActivity,
   reconcileDelivery,
+  reconcileAcceptedDelivery,
   renderComposerPresentation,
   shouldSubmitComposerKey,
   type ComposerElements,
@@ -38,7 +39,7 @@ describe("session composer", () => {
   it("renders truthful DOM state for queued and ambiguous delivery", () => {
     const elements: ComposerElements = {
       recovery: { hidden: true },
-      deliveryControls: { hidden: true },
+      deliveryControls: { hidden: true, disabled: false },
       stopButton: { hidden: true, disabled: false },
       sendButton: { disabled: false, textContent: "" },
       hint: { dataset: {}, textContent: "" },
@@ -59,6 +60,15 @@ describe("session composer", () => {
     assert.isTrue(elements.sendButton.disabled);
     assert.isFalse(elements.deliveryControls.hidden);
 
+    const queuedWithDraft = composerPresentation({
+      projection: { active: true, queue: { steer: [], followUp: ["later"] } },
+      lane: { items: [] },
+      draft: "another message",
+      deliveryMode: "follow_up",
+      delivery: { kind: "follow_up", message: "later", status: "queued" },
+    });
+    assert.isFalse(queuedWithDraft.sendDisabled);
+
     const ambiguous = composerPresentation({
       projection: { active: true },
       lane: { paused: "ambiguous", items: [{ state: "ambiguous" }] },
@@ -68,11 +78,86 @@ describe("session composer", () => {
     });
     renderComposerPresentation(elements, ambiguous);
     assert.isFalse(elements.recovery.hidden);
+    assert.isTrue(elements.deliveryControls.disabled);
     assert.isTrue(elements.sendButton.disabled);
     assert.strictEqual(
       elements.hint.textContent,
       "Delivery unknown · check the conversation before recovering",
     );
+  });
+
+  it("uses the state and action label matrix without enabling unavailable actions", () => {
+    const cases = [
+      {
+        name: "loading",
+        input: { projection: undefined, lane: { items: [] }, draft: "draft" },
+        mode: "follow_up" as const,
+        label: "Send",
+        hint: "Loading session state…",
+        disabled: true,
+        deliveryDisabled: false,
+      },
+      {
+        name: "idle empty",
+        input: { projection: { active: false }, lane: { items: [] }, draft: "" },
+        mode: "follow_up" as const,
+        label: "Send",
+        hint: "Pi is ready",
+        disabled: true,
+        deliveryDisabled: false,
+      },
+      {
+        name: "idle typing",
+        input: { projection: { active: false }, lane: { items: [] }, draft: "Hello" },
+        mode: "follow_up" as const,
+        label: "Send",
+        hint: "Pi is ready",
+        disabled: false,
+        deliveryDisabled: false,
+      },
+      {
+        name: "working follow-up",
+        input: { projection: { active: true }, lane: { items: [] }, draft: "Later" },
+        mode: "follow_up" as const,
+        label: "Queue follow-up",
+        hint: "Pi is working · Thinking",
+        disabled: false,
+        deliveryDisabled: false,
+      },
+      {
+        name: "working steer",
+        input: { projection: { active: true }, lane: { items: [] }, draft: "Adjust" },
+        mode: "steer" as const,
+        label: "Steer now",
+        hint: "Pi is working · Thinking",
+        disabled: false,
+        deliveryDisabled: false,
+      },
+      {
+        name: "submitting",
+        input: {
+          projection: { active: true },
+          lane: { items: [{ state: "sending" }] },
+          draft: "In flight",
+        },
+        mode: "follow_up" as const,
+        label: "Submitting…",
+        hint: "Submitting…",
+        disabled: true,
+        deliveryDisabled: true,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const presentation = composerPresentation({
+        ...testCase.input,
+        deliveryMode: testCase.mode,
+      });
+      assert.strictEqual(presentation.sendLabel, testCase.label, testCase.name);
+      assert.strictEqual(presentation.hint, testCase.hint, testCase.name);
+      assert.strictEqual(presentation.sendDisabled, testCase.disabled, testCase.name);
+      assert.strictEqual(presentation.deliveryDisabled, testCase.deliveryDisabled, testCase.name);
+    }
   });
 
   it("shows bounded current work and explains queued delivery", () => {
@@ -133,6 +218,9 @@ describe("session composer", () => {
       deliveryMode: "follow_up",
     });
     assert.strictEqual(submitting.hint, "Submitting…");
+    assert.strictEqual(submitting.sendLabel, "Submitting…");
+    assert.isTrue(submitting.sendDisabled);
+    assert.isTrue(submitting.deliveryDisabled);
   });
 
   it("moves accepted queue entries to queued and then delivered", () => {
@@ -147,6 +235,44 @@ describe("session composer", () => {
       queue: { steer: [], followUp: [] },
     });
     assert.strictEqual(delivered?.status, "delivered");
+  });
+
+  it("does not regress queued or delivered mode commands when acceptance arrives last", () => {
+    for (const kind of ["follow_up", "steer"] as const) {
+      const accepted = { kind, message: "same command", status: "accepted" as const };
+      const queuedProjection = {
+        active: true,
+        queue:
+          kind === "steer"
+            ? { steer: ["same command"], followUp: [] }
+            : { steer: [], followUp: ["same command"] },
+      };
+      const queued = reconcileDelivery(accepted, queuedProjection);
+      assert.strictEqual(queued?.status, "queued", kind);
+      const receiptWhileQueued = reconcileAcceptedDelivery(queued, accepted, queuedProjection);
+      assert.strictEqual(receiptWhileQueued?.status, "queued", kind);
+      const receiptAfterQueueRemoval = reconcileAcceptedDelivery(queued, accepted, {
+        active: true,
+        queue: { steer: [], followUp: [] },
+      });
+      assert.strictEqual(receiptAfterQueueRemoval?.status, "delivered", kind);
+      const delivered = reconcileDelivery(queued, {
+        active: true,
+        queue: { steer: [], followUp: [] },
+      });
+      assert.strictEqual(delivered?.status, "delivered", kind);
+      const receiptAppliedLast = reconcileAcceptedDelivery(delivered, accepted, {
+        active: true,
+        queue: { steer: [], followUp: [] },
+      });
+      assert.strictEqual(receiptAppliedLast?.status, "delivered", kind);
+      const repeatedSubmission = reconcileAcceptedDelivery(
+        { ...accepted, status: "submitting" },
+        accepted,
+        { active: true, queue: { steer: [], followUp: [] } },
+      );
+      assert.strictEqual(repeatedSubmission?.status, "accepted", kind);
+    }
   });
 
   it("recovers an accepted prompt from the authoritative transcript after reload", () => {

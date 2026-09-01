@@ -4,6 +4,7 @@ import {
   createSessionMemory,
   currentActivity,
   reconcileDelivery,
+  reconcileAcceptedDelivery,
   renderComposerPresentation,
   selectedDeliveryMode,
   shouldSubmitComposerKey,
@@ -181,7 +182,10 @@ function updateComposer() {
 
 function autosizeComposer() {
   composerInput.style.height = "0";
-  composerInput.style.height = `${Math.min(composerInput.scrollHeight, 180)}px`;
+  const maximum = compactViewport.matches ? 128 : 160;
+  const height = Math.min(composerInput.scrollHeight, maximum);
+  composerInput.style.height = `${height}px`;
+  composerInput.style.overflowY = composerInput.scrollHeight > maximum ? "auto" : "hidden";
 }
 
 function scheduleRender() {
@@ -381,7 +385,8 @@ async function submitIntent(intent, label, draft) {
   const outcome = await submission.outcome;
   if (outcome.status === "accepted") {
     if (draft)
-      entry.delivery = reconcileDelivery(
+      entry.delivery = reconcileAcceptedDelivery(
+        entry.delivery,
         { kind: intent.type, message: draft.trim(), status: "accepted" },
         currentSessionId === sessionId ? projection : undefined,
       );
@@ -418,7 +423,7 @@ async function submitIntent(intent, label, draft) {
 }
 
 async function submitComposer() {
-  if (!projection || !currentSessionId) return;
+  if (!projection || !currentSessionId || sendButton.disabled) return;
   const draft = composerInput.value;
   const message = draft.trim();
   if (!message) return;
@@ -602,7 +607,10 @@ backdrop.addEventListener("click", () => {
   setSummary(false);
 });
 document.addEventListener("keydown", trapDrawerFocus);
-compactViewport.addEventListener("change", () => setSidebar(false));
+compactViewport.addEventListener("change", () => {
+  setSidebar(false);
+  autosizeComposer();
+});
 compactSummary.addEventListener("change", () => setSummary(false));
 window.addEventListener("popstate", () => {
   const sessionId = sessionIdFromLocation();

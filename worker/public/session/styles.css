@@ -755,6 +755,9 @@ select:focus-visible {
   padding: 0 4px 6px;
 }
 .composer {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--control);
@@ -767,16 +770,18 @@ select:focus-visible {
 .composer textarea {
   display: block;
   width: 100%;
-  min-height: 68px;
-  max-height: 180px;
+  min-height: 48px;
+  max-height: 160px;
   resize: none;
-  padding: 16px 17px 8px;
+  padding: 11px 16px;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--ink);
   font-size: 1rem;
-  line-height: 1.5;
+  line-height: 24px;
+  grid-column: 1 / -1;
+  overflow-y: hidden;
 }
 .composer textarea::placeholder {
   color: #a29a83;
@@ -784,12 +789,34 @@ select:focus-visible {
 }
 .composer-footer {
   display: flex;
-  min-height: 58px;
+  min-width: 0;
+  min-height: 56px;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   padding: 7px 8px 8px;
   border-top: 1px solid var(--soft-line);
+  grid-column: 1 / -1;
+}
+.composer:has(.delivery-controls[hidden]) textarea,
+.composer:has(.delivery-controls[hidden]) .composer-footer {
+  grid-row: 1;
+}
+.composer:has(.delivery-controls[hidden]) textarea {
+  grid-column: 1;
+}
+.composer:has(.delivery-controls[hidden]) .composer-footer {
+  min-height: 48px;
+  padding: 4px 5px 4px 8px;
+  border-top: 0;
+  grid-column: 2;
+}
+.composer-keyboard-hint {
+  min-width: 0;
+  margin-left: auto;
+  color: var(--quiet);
+  font-size: 0.67rem;
+  white-space: nowrap;
 }
 .composer-hint {
   min-width: 0;
@@ -814,6 +841,7 @@ select:focus-visible {
 }
 .delivery-controls {
   min-width: 0;
+  flex: none;
   margin: 0;
   padding: 0;
   border: 0;
@@ -848,17 +876,34 @@ select:focus-visible {
   font-size: 0.62rem;
   white-space: nowrap;
 }
-.delivery-mode label:hover > span {
+.delivery-controls:not(:disabled) .delivery-mode label:hover > span {
   background: var(--panel);
   color: var(--muted);
 }
 .delivery-mode input:checked + span {
   background: var(--raised);
   color: var(--ink);
+  box-shadow: inset 0 0 0 1px #405058;
 }
 .delivery-mode input:focus-visible + span {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+.delivery-controls:disabled label {
+  cursor: not-allowed;
+}
+.delivery-controls:disabled label > span {
+  color: var(--quiet);
+}
+.composer .button-primary {
+  min-width: 76px;
+  flex: none;
+}
+.composer .button-primary:disabled {
+  border-color: #344147;
+  background: #162229;
+  color: var(--muted);
+  opacity: 1;
 }
 .button-stop {
   min-height: 32px;
@@ -1365,13 +1410,22 @@ select:focus-visible {
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
   .composer textarea {
-    min-height: 62px;
+    min-height: 48px;
+    max-height: 128px;
+    padding-inline: 13px;
     font-size: 16px;
   }
   .composer-footer {
-    min-height: 60px;
-    gap: 6px;
-    padding: 7px;
+    min-height: 56px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 5px;
+    padding: 5px;
+  }
+  .composer:has(.delivery-controls[hidden]) .composer-footer {
+    min-height: 48px;
+    display: flex;
+    padding: 4px;
   }
   .composer-activity {
     min-height: 38px;
@@ -1380,12 +1434,33 @@ select:focus-visible {
   .composer-hint {
     font-size: 0.7rem;
   }
+  .composer-keyboard-hint {
+    display: none;
+  }
+  .delivery-controls,
+  .delivery-mode {
+    width: 100%;
+  }
+  .delivery-controls {
+    grid-row: 1;
+    grid-column: 1 / -1;
+  }
+  .delivery-mode {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .delivery-mode label > span {
     min-height: 44px;
-    padding-inline: 8px;
+    padding-inline: 7px;
   }
   .delivery-mode small {
     font-size: 0.58rem;
+  }
+  .composer .button-primary {
+    grid-row: 2;
+    grid-column: 2;
+    min-height: 44px;
+    padding-inline: 10px;
   }
   .button {
     min-height: 44px;

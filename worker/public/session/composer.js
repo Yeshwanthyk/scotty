@@ -86,15 +86,23 @@ export function reconcileDelivery(delivery, projection, event) {
   return delivery;
 }
 
+export function reconcileAcceptedDelivery(delivery, accepted, projection) {
+  const sameDelivery = delivery?.kind === accepted.kind && delivery?.message === accepted.message;
+  if (sameDelivery && ["queued", "delivered"].includes(delivery.status))
+    return reconcileDelivery(delivery, projection);
+  return reconcileDelivery(accepted, projection);
+}
+
 const defaultHint = (projection) => {
   if (!projection) return "Loading session state…";
   const activity = currentActivity(projection);
   return activity ? `Pi is working · ${activity}` : "Pi is ready";
 };
 
-const sendLabel = (active, deliveryMode) => {
+const sendLabel = (active, deliveryMode, submitting) => {
+  if (submitting) return "Submitting…";
   if (!active) return "Send";
-  return deliveryMode === "steer" ? "Steer now" : "Send follow-up";
+  return deliveryMode === "steer" ? "Steer now" : "Queue follow-up";
 };
 
 const queuedDeliveryHint = (delivery, activity) => {
@@ -125,9 +133,10 @@ export function composerPresentation({ projection, lane, draft, delivery, delive
   return {
     active,
     recovery: paused === "ambiguous",
+    deliveryDisabled: Boolean(paused || sending),
     sendDisabled: Boolean(paused || !projection || !draft.trim() || sending),
     stopDisabled: Boolean(paused || sending),
-    sendLabel: sendLabel(active, deliveryMode),
+    sendLabel: sendLabel(active, deliveryMode, sending),
     status: status ?? (projection ? (active ? "working" : "ready") : "loading"),
     hint: messages[status] ?? defaultHint(projection),
   };
@@ -136,6 +145,7 @@ export function composerPresentation({ projection, lane, draft, delivery, delive
 export function renderComposerPresentation(elements, presentation) {
   elements.recovery.hidden = !presentation.recovery;
   elements.deliveryControls.hidden = !presentation.active;
+  elements.deliveryControls.disabled = presentation.deliveryDisabled;
   elements.stopButton.hidden = !presentation.active;
   elements.stopButton.disabled = presentation.stopDisabled;
   elements.sendButton.disabled = presentation.sendDisabled;
