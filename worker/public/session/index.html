@@ -132,7 +132,7 @@
               autocapitalize="sentences"
               enterkeyhint="send"
               placeholder="Message Pi…"
-              aria-describedby="composer-hint"
+              aria-describedby="composer-hint composer-keyboard-instructions"
             ></textarea>
             <div class="composer-footer">
               <fieldset id="delivery-controls" class="delivery-controls" hidden>
@@ -156,6 +156,9 @@
               </fieldset>
               <span class="composer-keyboard-hint" aria-hidden="true">
                 Enter to send · Shift+Enter for newline
+              </span>
+              <span id="composer-keyboard-instructions" class="visually-hidden">
+                Enter sends the message. Shift plus Enter inserts a new line.
               </span>
               <button id="send-message" class="button button-primary" type="submit" disabled>
                 Send

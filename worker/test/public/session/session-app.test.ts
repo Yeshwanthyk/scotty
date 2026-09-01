@@ -103,6 +103,7 @@ describe("cloud-agent session application", () => {
     assert.match(sessionHtml, /id="stop-agent"[\s\S]*?<form id="composer"/u);
     assert.include(sessionHtml, 'id="composer-input"');
     assert.include(sessionHtml, 'rows="1"');
+    assert.include(sessionHtml, 'aria-describedby="composer-hint composer-keyboard-instructions"');
     assert.include(sessionHtml, 'id="delivery-follow-up"');
     assert.include(sessionHtml, 'for="delivery-follow-up"');
     assert.include(sessionHtml, 'name="delivery-mode"');
@@ -115,6 +116,8 @@ describe("cloud-agent session application", () => {
     assert.include(sessionHtml, "Guide the next turn");
     assert.include(sessionHtml, "Enter to send · Shift+Enter for newline");
     assert.match(sessionHtml, /class="composer-keyboard-hint" aria-hidden="true"/u);
+    assert.match(sessionHtml, /id="composer-keyboard-instructions"\s+class="visually-hidden"/u);
+    assert.include(sessionHtml, "Enter sends the message. Shift plus Enter inserts a new line.");
     assert.notInclude(sessionHtml, '<select id="delivery-mode">');
     assert.strictEqual(sessionHtml.match(/aria-live="polite"/gu)?.length, 1);
     assert.notInclude(appSource, 'setAttribute("aria-live"');
@@ -147,6 +150,10 @@ describe("cloud-agent session application", () => {
     );
     assert.include(sessionCss, "grid-template-columns: minmax(0, 1fr) auto");
     assert.include(sessionCss, "grid-template-columns: repeat(2, minmax(0, 1fr))");
+    assert.match(
+      sessionCss,
+      /@media \(max-width: 760px\)[\s\S]*?\.delivery-controls \{[\s\S]*?grid-row: 1;[\s\S]*?grid-column: 1 \/ -1;[\s\S]*?\.composer \.button-primary \{[\s\S]*?grid-row: 2;[\s\S]*?grid-column: 2;[\s\S]*?min-height: 44px;/u,
+    );
   });
 
   it("uses a modal mobile sidebar, visible focus, safe areas, and reduced motion", () => {
