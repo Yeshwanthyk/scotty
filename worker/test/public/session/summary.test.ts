@@ -349,7 +349,9 @@ describe("agent Summary projection", () => {
         configured: true,
         hatchId: "hatch-1",
         serviceName: "Preview",
+        desiredStatus: "open",
         observedStatus: "running",
+        exposure: "active",
         available: true,
       },
     );
@@ -370,10 +372,124 @@ describe("agent Summary projection", () => {
         configured: true,
         hatchId: "hatch-1",
         serviceName: "Preview",
+        desiredStatus: "open",
         observedStatus: "running",
+        exposure: "closed",
         available: false,
       },
     );
+  });
+
+  it("keeps an unconfigured Hatch absent from the summary", async () => {
+    const document = new TestDocument();
+    const root = new TestNode("div");
+    const view = createSummaryView({
+      document: document as never,
+      root: root as never,
+      baseUrl: "https://scotty.example/",
+      fetch: (() => Promise.resolve(response({ status: "not_configured" }))) as never,
+    });
+
+    view.render(
+      projectionFromSnapshot(
+        snapshot([{ id: "update", role: "assistant", content: "No preview configured." }]),
+      ),
+      sessionId,
+    );
+    assert.equal(root.children.length, 2);
+    assert.equal(root.children[1]?.children.length, 0);
+    assert.equal((root.children[1] as TestNode & { hidden: boolean }).hidden, true);
+    await flush();
+    assert.notInclude(renderedText(root), "Hatch");
+    assert.equal((root.children[1] as TestNode & { hidden: boolean }).hidden, true);
+    assert.equal(root.children[1]?.attributes.get("role"), "status");
+    assert.equal(root.children[1]?.attributes.get("aria-live"), "polite");
+    assert.equal(root.children[1]?.attributes.get("aria-atomic"), "true");
+    assert.equal(root.children[1]?.attributes.get("aria-busy"), "false");
+  });
+
+  it("explains configured Hatch states instead of presenting a dead open link", async () => {
+    const document = new TestDocument();
+    const root = new TestNode("div");
+    const view = createSummaryView({
+      document: document as never,
+      root: root as never,
+      baseUrl: "https://scotty.example/",
+      fetch: (() =>
+        Promise.resolve(
+          response({
+            status: "configured",
+            hatchId: "hatch-1",
+            service: { name: "Preview", port: 4173 },
+            desiredStatus: "open",
+            observedStatus: "starting",
+            exposure: "closed",
+          }),
+        )) as never,
+    });
+
+    view.render(
+      projectionFromSnapshot(
+        snapshot([{ id: "update", role: "assistant", content: "Preview is starting." }]),
+      ),
+      sessionId,
+    );
+    await flush();
+    assert.include(renderedText(root), "Hatch is starting");
+    assert.notInclude(renderedText(root), "Open Hatch");
+    assert.notInclude(renderedText(root), "Hatch is closed");
+    assert.equal(root.children[1]?.attributes.get("role"), "status");
+    assert.equal(root.children[1]?.attributes.get("aria-busy"), "false");
+  });
+
+  it("replaces a cached ready Hatch link when the next refresh rejects", async () => {
+    const document = new TestDocument();
+    const root = new TestNode("div");
+    let hatchRequests = 0;
+    const fetch = (input: string) => {
+      assert.include(input, "/hatch");
+      hatchRequests += 1;
+      if (hatchRequests > 1) return Promise.reject(new Error("Hatch status unavailable"));
+      return Promise.resolve(
+        response({
+          status: "configured",
+          hatchId: "hatch-1",
+          service: { name: "Preview", port: 4173 },
+          desiredStatus: "open",
+          observedStatus: "running",
+          exposure: "active",
+        }),
+      );
+    };
+    const view = createSummaryView({
+      document: document as never,
+      root: root as never,
+      baseUrl: "https://scotty.example/",
+      fetch: fetch as never,
+    });
+
+    view.render(
+      projectionFromSnapshot(
+        snapshot([{ id: "ready", role: "assistant", content: "Preview is ready." }]),
+      ),
+      sessionId,
+    );
+    await flush();
+    assert.include(renderedText(root), "Open Hatch");
+
+    view.render(
+      projectionFromSnapshot(
+        snapshot([{ id: "refresh", role: "assistant", content: "Checking preview again." }]),
+      ),
+      sessionId,
+    );
+    assert.include(renderedText(root), "Open Hatch");
+    assert.equal(root.children[1]?.attributes.get("aria-busy"), "true");
+    await flush();
+
+    assert.notInclude(renderedText(root), "Open Hatch");
+    assert.include(renderedText(root), "Hatch status could not be loaded");
+    assert.equal(root.children[1]?.attributes.get("aria-busy"), "false");
   });
 
   it("fences stale fetches and constructs only authenticated same-origin routes", () => {
@@ -540,6 +656,27 @@ describe("agent Summary projection", () => {
     pending[1]?.({ status: "configured" });
     await refreshing;
     assert.deepStrictEqual(loader.current(sessionId), { status: "configured" });
+  });
+
+  it("clears a cached Hatch state when a later refresh is rejected", async () => {
+    let requests = 0;
+    const loader = createHatchStatusLoader(async () => {
+      requests += 1;
+      if (requests === 1) return { status: "configured", available: true };
+      throw new Error("refresh failed");
+    });
+
+    await loader.refresh(sessionId);
+    assert.deepStrictEqual(loader.current(sessionId), { status: "configured", available: true });
+
+    let rejected = false;
+    try {
+      await loader.refresh(sessionId);
+    } catch {
+      rejected = true;
+    }
+    assert.isTrue(rejected);
+    assert.isUndefined(loader.current(sessionId));
   });
 
   it("does not let an old session Hatch response replace the current session", async () => {

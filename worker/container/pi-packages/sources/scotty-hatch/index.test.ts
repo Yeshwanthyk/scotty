@@ -148,6 +148,25 @@ test("rejects malformed TOML, unknown fields, unsafe cwd, and an absent config",
 
   const absent = await workspace();
   await assert.rejects(loadRepositoryHatchConfig(absent.root), /hatch\.toml is missing/u);
+
+  let spawns = 0;
+  let authorityCalls = 0;
+  const manager = new ScottyHatchManager({
+    workspaceRoot: absent.root,
+    spawnProcess: () => {
+      spawns += 1;
+      return new FakeChild(88);
+    },
+    authorityTransport: async () => {
+      authorityCalls += 1;
+      return Response.json({ status: "not_configured" });
+    },
+  });
+  const result = await manager.run({ operation: "ensure" });
+  assert.deepEqual(result.hatch, { status: "not_configured" });
+  assert.equal(result.process.status, "not_owned");
+  assert.equal(spawns, 0);
+  assert.equal(authorityCalls, 0);
 });
 
 test("complete explicit ensure input overrides repository config", async () => {

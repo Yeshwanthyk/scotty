@@ -15,6 +15,8 @@ export const SCOTTY_HATCH_READY_TIMEOUT_MILLIS = 30_000;
 export const SCOTTY_HATCH_AUTHORITY_TIMEOUT_MILLIS = 30_000;
 export const SCOTTY_HATCH_CONFIG_FILE_NAME = "hatch.toml";
 
+class RepositoryHatchMissingError extends Error {}
+
 const MAX_NAME_LENGTH = 120;
 const MAX_ARG_LENGTH = 4_096;
 const MAX_ARGV_LENGTH = 64;
@@ -589,7 +591,7 @@ function checkedInput(value: unknown): ScottyHatchInput {
 
 function configReadError(error: unknown): Error {
   if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
-    return new Error("Repository hatch.toml is missing");
+    return new RepositoryHatchMissingError("Repository hatch.toml is missing");
   return new Error("Repository hatch.toml could not be read");
 }
 
@@ -696,8 +698,15 @@ export class ScottyHatchManager {
       const input = checkedInput(value);
       if (input.operation === "status") return this.#status(signal);
       if (input.operation === "close") return this.#close(signal);
-      const ensureInput =
-        "service" in input ? input : await loadRepositoryHatchConfig(await this.#workspaceRoot);
+      if ("service" in input) return this.#ensure(input, signal);
+      let ensureInput: EnsureInput;
+      try {
+        ensureInput = await loadRepositoryHatchConfig(await this.#workspaceRoot);
+      } catch (error) {
+        if (error instanceof RepositoryHatchMissingError)
+          return this.#result("ensure", { status: "not_configured" }, this.#owned);
+        throw error;
+      }
       return this.#ensure(ensureInput, signal);
     });
   }
@@ -926,7 +935,11 @@ export class ScottyHatchManager {
 }
 
 function renderResult(result: ScottyHatchResult): string {
-  if (result.reference === undefined) return "Hatch is not configured.";
+  if (result.hatch.status === "not_configured")
+    return result.operation === "ensure"
+      ? "Hatch is not configured for this repository. Add hatch.toml to enable it."
+      : "Hatch is not configured.";
+  if (result.reference === undefined) return "Hatch status is unavailable.";
   const status =
     result.hatch.status === "configured" ? result.hatch.observedStatus : "not_configured";
   const lines = [
@@ -947,10 +960,10 @@ export default function scottyHatch(pi: ExtensionAPI): void {
     name: "scotty_hatch",
     label: "Scotty Hatch",
     description:
-      "Ensure, inspect, or close the one bounded application Hatch for the current warm Scotty session. Ensure loads strict repository-root hatch.toml configuration when service fields are omitted; complete inline configuration remains a manual override.",
+      "Ensure, inspect, or close the one bounded application Hatch for the current warm Scotty session. Ensure loads strict repository-root hatch.toml configuration when service fields are omitted; complete inline configuration remains a manual override. If hatch.toml is absent, ensure is a no-op and must not be retried.",
     promptSnippet: "Manage the current session's bounded authenticated application Hatch",
     promptGuidelines: [
-      "Use scotty_hatch ensure without inline service fields when the repository has a reviewed root hatch.toml. Use a complete explicit argv array and workspace-relative cwd only as a manual override. Never pass shell commands, environment variables, credentials, URLs, or inferred service identity.",
+      "Use scotty_hatch ensure without inline service fields only when the repository has a reviewed root hatch.toml; if it is absent, do not call or retry ensure. Use a complete explicit argv array and workspace-relative cwd only as a manual override. Never pass shell commands, environment variables, credentials, URLs, or inferred service identity.",
       "In the next meaningful progress or final update, include the returned exact scotty-hatch:<hatchId> reference once. Never invent or repeat a reference, and do not publish ports, paths, argv, authority values, or URLs.",
     ],
     parameters: ScottyHatchParameters,
