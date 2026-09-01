@@ -32,7 +32,8 @@ export interface JournalEvent {
     | "activity_observed"
     | "runtime_observed"
     | "availability_lost"
-    | "hard_cap_elapsed";
+    | "hard_cap_elapsed"
+    | "renamed";
   readonly transitionKind: TransitionKind | null;
   readonly transitionPhase: TransitionPhase | null;
   readonly resultCode: string;

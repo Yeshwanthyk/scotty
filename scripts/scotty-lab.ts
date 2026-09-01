@@ -744,9 +744,10 @@ const fullLifecycleLab = (repo: string, fault?: Fault) =>
       const created = yield* createAndReady(manifest, repo);
       yield* checkpoint(manifest, created.sessionId);
       yield* sleepResume(manifest, created.sessionId);
-      return yield* unavailableScenario(manifest, "runtime-loss", created.sessionId);
+      yield* vaporize(manifest, created.sessionId);
+      return yield* finishScenario(manifest, "full", startedAt, created.sessionId);
     }),
-  );
+  ).pipe(Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)));
 
 const stopLab = Effect.fnUntraced(function* (runId: string) {
   const stop = Effect.gen(function* () {

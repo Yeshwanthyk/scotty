@@ -220,6 +220,35 @@ describe("session actor reducer", () => {
     assert.deepStrictEqual(rejectedCheckpoint, { _tag: "Rejected", code: "not_admissible" });
   });
 
+  it("renames only stable live authority through the reducer revision fence", () => {
+    const current = warmAuthority();
+    const rename = {
+      _tag: "RenameCommand" as const,
+      expectedRevision: current.revision,
+      correlationId: "correlation-rename",
+      timestamp: T1,
+      title: "Renamed session",
+    };
+    const renamed = accepted(decide(current, rename));
+    assert.strictEqual(renamed.nextAuthority.session.title, "Renamed session");
+    assert.strictEqual(renamed.nextAuthority.revision, current.revision + 1);
+    assert.strictEqual(renamed.journalEvent.eventType, "renamed");
+    assert.deepStrictEqual(renamed.effectIntents, []);
+    assert.deepStrictEqual(decide(renamed.nextAuthority, rename), {
+      _tag: "Rejected",
+      code: "revision_mismatch",
+    });
+
+    const checkpoint = accepted(decide(current, command("CheckpointCommand", current.revision)));
+    assert.deepStrictEqual(
+      decide(checkpoint.nextAuthority, {
+        ...rename,
+        expectedRevision: checkpoint.nextAuthority.revision,
+      }),
+      { _tag: "Rejected", code: "transition_owned" },
+    );
+  });
+
   it("lets vaporize preempt another operation but not itself", () => {
     const checkpoint = accepted(decide(warmAuthority(), command("CheckpointCommand", 7)));
     const vaporize = accepted(decide(checkpoint.nextAuthority, command("VaporizeCommand", 8)));

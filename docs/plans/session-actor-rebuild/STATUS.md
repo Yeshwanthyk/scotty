@@ -20,15 +20,15 @@ a clean actor cutover with active legacy removal rather than persisted-record co
   - [x] Sandbox host and create-route cutover
   - [x] actor-derived public projection and create/read/steer path
   - [x] focused actor/provider/host checks and local lab doctor proof
-  - [ ] lifecycle `create-and-ready` lab scenario (exact disposable repository not supplied)
+  - [x] lifecycle `create-and-ready` lab driver and retained evidence path
+  - [ ] live lifecycle scenario (exact disposable repository not supplied)
   - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
   - [x] Slice 4 commit
 
-The new actor path is the Slice 4 proof boundary. The old `SessionRecord` create authority and later
-legacy lifecycle tests are not compatibility gates for this rebuild; Slices 5–9 replace those
-surfaces in order.
+The actor path is the lifecycle proof boundary. `SessionRecord` is now only a derived host/provider
+context; it is not persisted authority.
 
-## In progress
+## Completed locally
 
 - [x] Slice 5 — checkpoint, sleep, and resume (local implementation and focused proof)
   - [x] typed provider algebras and fenced phase executors
@@ -38,8 +38,9 @@ surfaces in order.
   - [x] single provider dispatcher for Create, Checkpoint, Sleep, and Resume
   - [x] actor-backed public snapshot, sleep, resume, read, and Sandbox callbacks
   - [x] old public checkpoint/sleep/resume programs removed
-  - [x] host create → checkpoint → sleep → resume flow proof with no legacy record
-  - [ ] lifecycle lab scenario (exact disposable repository not supplied)
+  - [x] host create → checkpoint → sleep → resume flow proof through actor authority
+  - [x] lifecycle lab driver for checkpoint, sleep, resume, and vaporize
+  - [ ] live lifecycle scenario (exact disposable repository not supplied)
   - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
   - [x] Slice 5 commit
 
@@ -52,7 +53,7 @@ surfaces in order.
   - [x] deferred Sandbox start/stop/error callbacks with re-entrant stop protection
   - [x] hard-cap failure committed before runtime destruction, with cleanup retry authority
   - [x] actor-backed idle expiry through checkpoint and Sleep
-  - [x] old hard-cap, managed-stop, checkpoint, idle, and legacy authority fallback removed
+  - [x] old hard-cap, managed-stop, checkpoint, idle, and authority fallback removed
   - [x] focused actor/provider/host tests, worker typecheck/lint, and local lab doctor proof
   - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
   - [x] Slice 6 commit
@@ -66,7 +67,7 @@ surfaces in order.
   - [x] old vaporize acquire/release/retry programs and gone-repair lifecycle removed
   - [x] actor create → Warm → vaporize → Gone host flow and idempotent replay proof
   - [x] focused actor/provider/host tests, worker typecheck, and lint
-  - [ ] full Worker suite (95 legacy Slice 8/9 fixture failures still omit actor authority)
+  - [x] full Worker suite
   - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
   - [x] Slice 7 commit
 
@@ -75,15 +76,25 @@ surfaces in order.
   - [x] Evidence authority, journal, and evidence state commit in one fenced transaction
   - [x] Hatch, Evidence, and Beam-down use actor authority and actor readiness generations
   - [x] old direct Evidence admission and capacity lifecycle APIs removed
-  - [x] actor create → Hatch/Down and create → Evidence host flows with no legacy record
+  - [x] actor create → Hatch/Down and create → Evidence host flows
   - [x] focused actor/evidence/host tests, worker typecheck, and lint
-  - [ ] full Worker suite (100 Slice 9 legacy fixtures still omit actor authority)
+  - [x] full Worker suite
   - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
   - [x] Slice 8 commit
 
+- [x] Slice 9 — cutover and delete old lifecycle (local implementation and proof)
+  - [x] one actor authority, reducer, commit adapter, and public-state mapper
+  - [x] old stored record, control revision, runtime-epoch key, and lifecycle mutation APIs deleted
+  - [x] old create/checkpoint/sleep/resume/vaporize programs and obsolete tests deleted
+  - [x] rename moved under reducer revision and journal authority
+  - [x] lab `full` runs supported create → checkpoint → sleep → resume → vaporize
+  - [x] stateful and structure review recorded in `09-cutover-review.md`
+  - [x] full repository test gate, typecheck, formatting, lint, secret scan, and CLI build
+  - [ ] live local lifecycle (exact disposable repository not supplied)
+  - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
+
 ## Remaining
 
-- [ ] Slice 9 — cutover and delete old lifecycle
 - [ ] Slice 10 — Quint alignment and complete proof
 
 ## Deployment inputs

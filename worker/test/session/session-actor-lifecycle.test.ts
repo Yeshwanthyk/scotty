@@ -11,7 +11,7 @@ import {
 } from "../support/session-harness";
 
 describe("Sandbox actor checkpoint, sleep, and resume", () => {
-  it("runs Hatch and Beam-down under WarmWork authority without a legacy record", async () => {
+  it("runs Hatch and Beam-down under WarmWork actor authority", async () => {
     const harness = await createSessionHarness({
       previewBase: "preview.example.test",
       evidenceEnabled: true,
@@ -42,7 +42,6 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         Predicate.isTagged(authority.state, "Stable") &&
         Predicate.isTagged(authority.state.stable, "Warm"),
     );
-    assert.strictEqual(harness.readRecord(), undefined);
   });
 
   it("runs Evidence admission and finalization under WarmWork authority", async () => {
@@ -87,10 +86,9 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
       harness.read<EvidenceState>(sessionHarnessKeys.evidence)?.activeJob,
       undefined,
     );
-    assert.strictEqual(harness.readRecord(), undefined);
   });
 
-  it("runs the complete backup lifecycle without a legacy session record", async () => {
+  it("runs the complete backup lifecycle through actor authority", async () => {
     const harness = await createSessionHarness();
     const created = await harness.sandbox.createScottySession(
       CREATE_INPUT,
@@ -132,7 +130,6 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
       await harness.sandbox.getScottySession().then((view) => view.status),
       "warm",
     );
-    assert.strictEqual(harness.readRecord(), undefined);
     assert.ok(harness.events.includes("host:createBackup"));
     assert.ok(harness.events.includes("host:stop"));
     assert.ok(harness.events.includes("host:restoreBackup"));
@@ -152,7 +149,6 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         Predicate.isTagged(authority.state.stable, "Gone"),
     );
     assert.strictEqual(harness.read(sessionHarnessKeys.actorMetadata), undefined);
-    assert.strictEqual(harness.read(sessionHarnessKeys.createIdempotency), undefined);
     assert.strictEqual(harness.readRecord(), undefined);
     assert.ok(harness.events.includes("host:destroy"));
     assert.includeMembers(harness.deletedSchedules, [

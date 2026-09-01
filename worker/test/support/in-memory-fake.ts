@@ -4,7 +4,6 @@ import type { DirectoryBackup } from "../../src/session/contracts";
 import type { RepoProjectionStorage } from "../../src/repos/projection";
 import type { SandboxExecOptions, SandboxRuntimeCapabilities } from "../../src/sandbox/runtime";
 import type { SessionProjectionStorage } from "../../src/session/projection";
-import type { SessionRecordStorage, SessionRecordTransaction } from "../../src/session/store";
 import type { StatsProjectionStorage } from "../../src/projections/stats";
 
 interface InjectedFailure {
@@ -123,27 +122,6 @@ export class InMemoryFaultInjectableFake<Operation extends string = string> {
   }
 }
 
-export const sessionRecordStorageFake = (
-  memory = new InMemoryFaultInjectableFake(),
-): SessionRecordStorage => ({
-  get: () => memory.invoke("get", [], () => memory.snapshot()),
-  deleteCreateIdempotency: () =>
-    memory.invoke("deleteCreateIdempotency", [], () => {
-      memory.values.delete("scotty:create-idempotency");
-    }),
-  put: (record) =>
-    memory.invoke("put", [record], () => {
-      memory.value = structuredClone(record);
-    }),
-  transaction: <A>(operation: (transaction: SessionRecordTransaction) => Promise<A>) =>
-    memory.transaction((transaction) =>
-      operation({
-        get: transaction.get,
-        put: (record) => transaction.put(record),
-      }),
-    ),
-});
-
 const projectionGet = (memory: InMemoryFaultInjectableFake, key: string): Promise<unknown | null> =>
   memory.invoke("get", [key], () => memory.values.get(key) ?? null);
 
@@ -251,13 +229,3 @@ export const sandboxRuntimeCapabilitiesFake = (
     })),
   setEnvVars: (envVars) => memory.invoke("setEnvVars", [envVars]),
 });
-
-export type SessionRecordStorageFactory = (initial?: unknown) => {
-  readonly memory: InMemoryFaultInjectableFake;
-  readonly storage: SessionRecordStorage;
-};
-
-export const makeSessionRecordStorageFake: SessionRecordStorageFactory = (initial) => {
-  const memory = new InMemoryFaultInjectableFake(initial);
-  return { memory, storage: sessionRecordStorageFake(memory) };
-};

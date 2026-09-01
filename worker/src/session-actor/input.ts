@@ -38,6 +38,13 @@ export const SessionCommandSchema = Schema.Union([
 ]).pipe(Schema.toTaggedUnion("_tag"));
 export type SessionCommand = typeof SessionCommandSchema.Type;
 
+export const RenameCommandSchema = Schema.TaggedStruct("RenameCommand", {
+  expectedRevision: Schema.Int,
+  correlationId: Schema.String,
+  timestamp: Schema.String,
+  title: Schema.String,
+});
+
 export const TransitionProofSchema = Schema.Union([
   CreateProofSchema,
   CheckpointProofSchema,
@@ -149,6 +156,7 @@ export const HardCapDeadlineAlarmSchema = Schema.TaggedStruct("HardCapDeadlineAl
 
 export const SessionActorInputSchema = Schema.Union([
   SessionCommandSchema,
+  RenameCommandSchema,
   ActorFactSchema,
   RuntimeObservationSchema,
   ProviderObservationSchema,

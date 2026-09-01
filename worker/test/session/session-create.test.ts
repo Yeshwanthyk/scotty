@@ -81,8 +81,6 @@ describe("Sandbox actor create boundary", () => {
     assert.strictEqual(created.id, SESSION_ID);
     assert.strictEqual(created.repo, CREATE_INPUT.repo);
     assert.strictEqual(created.status, "warm");
-    assert.strictEqual(harness.readRecord(), undefined);
-
     const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
     assert.isDefined(authority);
     assert.strictEqual(authority?.session.id, SESSION_ID);

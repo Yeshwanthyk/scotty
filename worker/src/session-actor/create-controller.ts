@@ -1,5 +1,4 @@
 import { Context, Effect, Layer, Predicate, Result, Schema } from "effect";
-import type { CreateIdempotencyMetadata } from "../session/create-idempotency";
 import { SessionActor, type ActorHandleError, type ActorHandleResult } from "./actor";
 import {
   AuthorityStateSchema,
@@ -10,6 +9,7 @@ import {
 import type { SessionActorInput } from "./input";
 import {
   makeSessionActorMetadata,
+  type CreateIdempotencyDigestMetadata,
   type SessionActorMetadata,
   type SessionActorMetadataInput,
   type SessionActorMetadataViolation,
@@ -29,7 +29,7 @@ export interface CreateControllerRequest {
   readonly createRepositoryIfMissing: boolean;
   readonly initialPrompt: string;
   readonly payloadReference: string;
-  readonly idempotency?: CreateIdempotencyMetadata;
+  readonly idempotency?: CreateIdempotencyDigestMetadata;
   readonly correlationId: string;
   readonly nonce: string;
   readonly attempt: string;
@@ -243,7 +243,7 @@ const metadataInput = (request: CreateControllerRequest): SessionActorMetadataIn
 
 const matchingIdempotency = (
   stored: SessionActorMetadata["createIdempotency"],
-  incoming: CreateIdempotencyMetadata | undefined,
+  incoming: CreateIdempotencyDigestMetadata | undefined,
 ): boolean =>
   stored !== null &&
   incoming !== undefined &&

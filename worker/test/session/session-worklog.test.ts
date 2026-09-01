@@ -7,7 +7,7 @@ import {
 } from "../../../protocol/pi-console";
 import { PI_SESSION_PORT, PI_SESSION_TOKEN_HEADER } from "../../src/sandbox/auth";
 import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "../support/session-harness";
-import { SESSION_CONTROL_REVISION_KEY } from "../../src/session/store";
+import { SESSION_ACTOR_REVISION_KEY } from "../../src/session/store";
 import { makeSessionRecord } from "../support";
 
 const decodeStaleCommand = Schema.decodeUnknownPromise(PiConsoleStaleCommandSchema);
@@ -50,7 +50,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
   it("fails a stopped container closed without touching start-capable provider runtime", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
           id: SESSION_ID,
           status: "warm",
         }),
@@ -77,7 +77,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const record = makeSessionRecord({ id: SESSION_ID, status: "warm" });
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: record,
+        [sessionHarnessKeys.actorFixtureSession]: record,
       },
       rawPiContainerRunning: true,
       rawPiFetch: async () => {
@@ -97,8 +97,8 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     });
     assert.strictEqual(harness.rawPiRequests.length, 1);
     assert.deepStrictEqual(harness.piRequests, []);
-    assert.deepStrictEqual(harness.readRecord(), record);
-    assert.strictEqual(harness.read<number>(SESSION_CONTROL_REVISION_KEY), undefined);
+    assert.deepInclude(harness.readRecord(), { id: record.id, status: record.status });
+    assert.strictEqual(harness.read<number>(SESSION_ACTOR_REVISION_KEY), 1);
     assert.isFalse(harness.events.some((event) => event.startsWith("host:pi:start:")));
     assert.isFalse(harness.events.some((event) => event.startsWith("host:container:")));
   });
@@ -106,7 +106,10 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
   it("maps an absent supervisor to typed unavailable without SDK containerFetch", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "warm",
+        }),
       },
       rawPiContainerRunning: true,
     });
@@ -125,13 +128,16 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     assert.deepStrictEqual(harness.piRequests, []);
     assert.isFalse(harness.events.some((event) => event.startsWith("host:pi:start:")));
     assert.isFalse(harness.events.some((event) => event.startsWith("host:container:")));
-    assert.strictEqual(harness.read<number>(SESSION_CONTROL_REVISION_KEY), undefined);
+    assert.strictEqual(harness.read<number>(SESSION_ACTOR_REVISION_KEY), 1);
   });
 
   it("relays a native snapshot over one raw TCP fetch with isolated headers and token", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "warm",
+        }),
       },
       rawPiContainerRunning: true,
       rawPiFetch: async () =>
@@ -157,7 +163,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
 
     assert.strictEqual(response.status, 200);
     assert.strictEqual(response.headers.get(PI_SESSION_TOKEN_HEADER), null);
-    assert.deepStrictEqual(await response.json(), { ...relaySnapshot(), sessionRevision: 0 });
+    assert.deepStrictEqual(await response.json(), { ...relaySnapshot(), sessionRevision: 1 });
     assert.strictEqual(harness.rawPiRequests.length, 1);
     const forwarded = harness.rawPiRequests[0];
     assert.strictEqual(new URL(forwarded.url).origin, `http://127.0.0.1:${PI_SESSION_PORT}`);
@@ -180,7 +186,10 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     let streamCancelled = false;
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "warm",
+        }),
       },
       rawPiContainerRunning: true,
       rawPiFetch: async () =>
@@ -224,8 +233,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     let relayCalls = 0;
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord(),
-        [SESSION_CONTROL_REVISION_KEY]: "invalid",
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord(),
       },
       passivePiConsoleRelay: {
         fetch: async () => {
@@ -234,6 +242,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
         },
       },
     });
+    harness.memory.values.set(SESSION_ACTOR_REVISION_KEY, "invalid");
 
     const response = await harness.sandbox.fetch(
       new Request("http://scotty.internal/_scotty/pi-console/snapshot"),
@@ -252,7 +261,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const relayRequests: Request[] = [];
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
           id: SESSION_ID,
           status: "warm",
         }),
@@ -273,7 +282,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     assert.strictEqual(response.status, 200);
     assert.deepStrictEqual(await response.json(), {
       ...relaySnapshot(),
-      sessionRevision: 0,
+      sessionRevision: 1,
     });
     assert.strictEqual(relayRequests.length, 1);
     assert.strictEqual(new URL(relayRequests[0].url).search, "?since=7");
@@ -285,7 +294,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
 
   it("relays a current native follow-up command over the raw TCP transport", async () => {
     const command = {
-      ...consoleCommand(0),
+      ...consoleCommand(1),
       intent: {
         type: "follow_up" as const,
         message: "run the focused tests next",
@@ -294,7 +303,10 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     };
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "warm",
+        }),
       },
       rawPiContainerRunning: true,
       rawPiFetch: async () => Response.json({ accepted: true }, { status: 202 }),
@@ -325,7 +337,9 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
   it("forwards a decoded command only when its selected-session revision is current", async () => {
     const relayRequests: Request[] = [];
     const harness = await createSessionHarness({
-      initialEntries: { [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }) },
+      initialEntries: {
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({ id: SESSION_ID }),
+      },
       passivePiConsoleRelay: {
         fetch: async ({ request }) => {
           relayRequests.push(request.clone());
@@ -333,7 +347,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
         },
       },
     });
-    const command = consoleCommand(0);
+    const command = consoleCommand(1);
 
     const response = await harness.sandbox.fetch(
       new Request("http://scotty.internal/_scotty/pi-console/command", {
@@ -353,7 +367,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const relayRequests: Request[] = [];
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({ id: SESSION_ID }),
       },
       passivePiConsoleRelay: {
         fetch: async ({ request }) => {
@@ -369,7 +383,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
       new Request("http://scotty.internal/_scotty/pi-console/command", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(consoleCommand(0)),
+        body: JSON.stringify(consoleCommand(1)),
       }),
     );
 
@@ -377,7 +391,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const stale = await decodeStaleCommand(await response.json());
     assert.deepInclude(stale, {
       status: "stale",
-      expectedSessionRevision: 0,
+      expectedSessionRevision: 1,
       retryable: false,
     });
     assert.isAbove(stale.sessionRevision, 0);
@@ -390,7 +404,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const relayResponse = deferred<Response>();
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({ id: SESSION_ID }),
       },
       passivePiConsoleRelay: {
         fetch: async () => {
@@ -404,7 +418,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
       new Request("http://scotty.internal/_scotty/pi-console/command", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(consoleCommand(0)),
+        body: JSON.stringify(consoleCommand(1)),
       }),
     );
     await relayEntered.promise;
@@ -419,20 +433,20 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
 
     assert.isFalse(lifecycleSettled);
     assert.strictEqual(harness.readRecord()?.operation, null);
-    assert.strictEqual(harness.read<number>(SESSION_CONTROL_REVISION_KEY), undefined);
+    assert.strictEqual(harness.read<number>(SESSION_ACTOR_REVISION_KEY), 1);
     assert.deepStrictEqual(harness.piRequests, []);
 
     relayResponse.resolve(Response.json({ accepted: true }, { status: 202 }));
     assert.strictEqual((await commandPromise).status, 202);
     await lifecyclePromise;
     assert.isTrue(lifecycleSettled);
-    assert.isAbove(harness.read<number>(SESSION_CONTROL_REVISION_KEY) ?? 0, 0);
+    assert.isAbove(harness.read<number>(SESSION_ACTOR_REVISION_KEY) ?? 0, 0);
   });
 
   it("bounds and decodes commands before reading authority or invoking the relay", async () => {
     let relayCalls = 0;
     const harness = await createSessionHarness({
-      initialEntries: { [sessionHarnessKeys.record]: makeSessionRecord() },
+      initialEntries: { [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord() },
       passivePiConsoleRelay: {
         fetch: async () => {
           relayCalls += 1;
@@ -490,7 +504,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     for (const { record, reason } of records) {
       let relayCalls = 0;
       const harness = await createSessionHarness({
-        initialEntries: { [sessionHarnessKeys.record]: record },
+        initialEntries: { [sessionHarnessKeys.actorFixtureSession]: record },
         passivePiConsoleRelay: {
           fetch: async () => {
             relayCalls += 1;

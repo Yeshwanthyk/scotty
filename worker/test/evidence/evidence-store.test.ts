@@ -26,11 +26,8 @@ import {
   type AcceptEvidenceJobInput,
 } from "../../src/evidence/store";
 import {
-  SessionStore,
-  sessionStoreLayer,
+  type SessionAuxiliaryStorage,
   type SessionEvidenceTransaction,
-  type SessionRecordStorage,
-  type SessionRecordTransaction,
 } from "../../src/session/store";
 import { makeSessionRecord } from "../support";
 
@@ -106,8 +103,10 @@ const makeAuthorityStorage = (initialEvidence?: unknown) => {
     hardCapAt: "2026-08-06T13:00:00.000Z",
   });
   let evidence: unknown | undefined = structuredClone(initialEvidence);
+  let operation = record.operation;
   const runtimeEpoch = "runtime-1";
   const actorRecord = (currentRecord: typeof record, currentEvidence: unknown | undefined) => {
+    if (operation !== null) return { ...currentRecord, operation };
     const decoded = decodeEvidenceStateResult(currentEvidence);
     const active = Result.isSuccess(decoded) ? decoded.success.activeJob : undefined;
     return active === undefined
@@ -121,26 +120,8 @@ const makeAuthorityStorage = (initialEvidence?: unknown) => {
           },
         };
   };
-  const storage: SessionRecordStorage = {
-    get: async () => structuredClone(actorRecord(record, evidence)),
-    put: async (next) => {
-      record = structuredClone(next);
-    },
-    transaction: async <A>(
-      operation: (transaction: SessionRecordTransaction) => Promise<A>,
-    ): Promise<A> => {
-      let staged = structuredClone(record);
-      const result = await operation({
-        get: async () => structuredClone(actorRecord(staged, evidence)),
-        put: async (next) => {
-          staged = structuredClone(next);
-        },
-      });
-      record = staged;
-      return result;
-    },
+  const storage: SessionAuxiliaryStorage = {
     getEvidence: async () => structuredClone(evidence),
-    getRuntimeEpoch: async () => runtimeEpoch,
     evidenceTransaction: async <A>(
       operation: (transaction: SessionEvidenceTransaction) => Promise<A>,
     ): Promise<A> => {
@@ -169,15 +150,14 @@ const makeAuthorityStorage = (initialEvidence?: unknown) => {
     commitEvidence: (next: EvidenceState) => {
       evidence = structuredClone(next);
     },
+    setOperation: (next: typeof operation) => {
+      operation = next;
+    },
   };
 };
 
-const layers = (storage: SessionRecordStorage, artifacts: ArtifactStoreCapabilities) =>
-  Layer.mergeAll(
-    sessionStoreLayer(storage),
-    evidenceStoreLayer(storage),
-    artifactStoreLayer(artifacts),
-  );
+const layers = (storage: SessionAuxiliaryStorage, artifacts: ArtifactStoreCapabilities) =>
+  Layer.merge(evidenceStoreLayer(storage), artifactStoreLayer(artifacts));
 
 const failure = <A>(result: Result.Result<A, unknown>): unknown => {
   assert.ok(Result.isFailure(result));
@@ -186,7 +166,7 @@ const failure = <A>(result: Result.Result<A, unknown>): unknown => {
 
 const accept = (
   authority: ReturnType<typeof makeAuthorityStorage>,
-  testLayers: Layer.Layer<SessionStore | EvidenceStore | ArtifactStore>,
+  testLayers: Layer.Layer<EvidenceStore | ArtifactStore>,
   overrides?: Partial<AcceptEvidenceJobInput>,
 ) =>
   Effect.gen(function* () {
@@ -209,7 +189,7 @@ const accept = (
     return plan.active;
   }).pipe(Effect.provide(testLayers));
 
-const publishPreview = (testLayers: Layer.Layer<SessionStore | EvidenceStore | ArtifactStore>) =>
+const publishPreview = (testLayers: Layer.Layer<EvidenceStore | ArtifactStore>) =>
   Effect.gen(function* () {
     const store = yield* EvidenceStore;
     yield* store.beginPreviewExposure("evidence-nonce", {
@@ -274,16 +254,6 @@ describe("EvidenceStore", () => {
       assert.strictEqual(accepted.status, "accepted");
       assert.deepInclude(authority.readRecord(), { operation: null });
 
-      const collision = yield* Effect.result(
-        Effect.flatMap(SessionStore, (store) =>
-          store.acquireOperation("snapshot", ["warm"], "snapshot-nonce"),
-        ).pipe(Effect.provide(testLayers)),
-      );
-      assert.deepInclude(failure(collision), {
-        code: "conflict",
-        message: "Session is already running evidence",
-      });
-
       const prepared = yield* Effect.flatMap(ArtifactStore, (store) =>
         store.prepareFrame({
           sessionId: SESSION_ID,
@@ -346,9 +316,11 @@ describe("EvidenceStore", () => {
       assert.notProperty(persisted, "activeJob");
       assert.strictEqual(persisted.retainedBytes, artifact.bytes);
 
-      yield* Effect.flatMap(SessionStore, (store) =>
-        store.acquireOperation("vaporize", ["warm"], "vaporize-nonce"),
-      ).pipe(Effect.provide(testLayers));
+      authority.setOperation({
+        kind: "vaporize",
+        nonce: "vaporize-nonce",
+        startedAt: "2026-08-06T12:00:02.000Z",
+      });
       const pending = yield* Effect.flatMap(EvidenceStore, (store) =>
         store.prepareVaporizeDeletes("vaporize-nonce"),
       ).pipe(Effect.provide(testLayers));

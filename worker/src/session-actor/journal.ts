@@ -44,6 +44,7 @@ export const LifecycleJournalEventSchema = Schema.Struct({
     "runtime_observed",
     "availability_lost",
     "hard_cap_elapsed",
+    "renamed",
   ]),
   transitionKind: Schema.NullOr(TransitionKindSchema),
   transitionPhase: Schema.NullOr(TransitionPhaseSchema),

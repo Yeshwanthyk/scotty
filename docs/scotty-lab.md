@@ -151,9 +151,9 @@ alarm-duplicated
 Pass a value as `--fault VALUE` to any lifecycle scenario. Fault controls are not yet exposed by
 the actor runner, so every requested fault fails as a recorded `not-available` result before any
 lifecycle action. `runtime-loss` and `hard-cap` likewise return recorded `not-available` results;
-the lab does not simulate desired state or write internal storage. `full` runs supported public
-steps in order and may stop at the first `not-available` result, retaining all evidence and session
-ownership so the operator can explicitly vaporize the session afterward.
+the lab does not simulate desired state or write internal storage. `full` runs the supported public
+create, checkpoint, sleep, resume, and vaporize steps in order. It retains all evidence after the
+owned session is gone.
 
 The evidence manifest also marks actor authority revision, operation journal, and provider snapshot
 observations as `not-available`. Current evidence proves only the local public HTTP/CLI paths and

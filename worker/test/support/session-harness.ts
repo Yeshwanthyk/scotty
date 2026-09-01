@@ -19,7 +19,13 @@ import type {
   SessionRecord,
   WorkspaceCreationMarker,
 } from "../../src/session/contracts";
-import type { CreateIdempotencyMetadata } from "../../src/session/create-idempotency";
+import type { CreateIdempotencyDigestMetadata } from "../../src/session-actor/metadata";
+import type {
+  BackupIdentity,
+  ReadinessProof,
+  SessionAuthority,
+} from "../../src/session-actor/authority";
+import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import type { EvidenceArtifact } from "../../src/evidence/contracts";
 import { HATCH_PRIVATE_READINESS_HEADER } from "../../src/hatch/contracts";
 import type { RepoVerifier } from "../../src/repos/verifier";
@@ -33,7 +39,7 @@ import {
   SESSION_ACTOR_JOURNAL_TAIL_KEY,
   SESSION_ACTOR_METADATA_KEY,
   SESSION_ACTOR_REVISION_KEY,
-  SESSION_CONTROL_REVISION_KEY,
+  sessionRecordFromActor,
 } from "../../src/session/store";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
@@ -44,11 +50,11 @@ import {
   type PassivePiConsoleRelay,
   type SandboxEffectOptions,
 } from "../../src/session/object";
-import { EVIDENCE_RECORD_KEY, RUNTIME_EPOCH_KEY } from "../../src/session/store";
+import { EVIDENCE_RECORD_KEY } from "../../src/session/store";
 import { InMemoryFaultInjectableFake } from "./index";
 
-const RECORD_KEY = "scotty:session";
-const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
+const ACTOR_FIXTURE_SESSION_KEY = "fixture:actor-session";
+const ACTOR_FIXTURE_RUNTIME_GENERATION_KEY = "fixture:actor-runtime-generation";
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const SANDBOX_BUNDLE_CONTENT_TYPE = "application/gzip";
 
@@ -209,12 +215,15 @@ interface StatusProjection {
 type InitialProjection = StatusProjection | WorkspaceCreationMarker;
 
 export type InitialStorageEntries = Partial<{
-  [RECORD_KEY]: SessionRecord;
-  [CREATE_IDEMPOTENCY_KEY]: CreateIdempotencyMetadata;
+  [ACTOR_FIXTURE_SESSION_KEY]: SessionRecord;
   [EVIDENCE_RECORD_KEY]: unknown;
   [HATCH_STATE_KEY]: unknown;
-  [RUNTIME_EPOCH_KEY]: unknown;
-  [SESSION_CONTROL_REVISION_KEY]: unknown;
+  [ACTOR_FIXTURE_RUNTIME_GENERATION_KEY]: unknown;
+  [SESSION_ACTOR_AUTHORITY_KEY]: SessionAuthority;
+  [SESSION_ACTOR_REVISION_KEY]: unknown;
+  [SESSION_ACTOR_JOURNAL_SEQUENCE_KEY]: number;
+  [SESSION_ACTOR_JOURNAL_TAIL_KEY]: unknown;
+  [SESSION_ACTOR_METADATA_KEY]: SessionActorMetadata;
 }>;
 
 export type InitialProjections = Readonly<{ readonly [key: string]: InitialProjection }>;
@@ -233,7 +242,7 @@ export const CREATE_INPUT: CreateSessionInput = {
   newRepo: false,
   hardCapSeconds: 14_400,
 };
-export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
+export const CREATE_IDEMPOTENCY: CreateIdempotencyDigestMetadata = {
   keyDigest: "a".repeat(64),
   inputDigest: "b".repeat(64),
 };
@@ -257,6 +266,263 @@ const DEFAULT_CREDENTIAL_REGISTRY_GRANTS: ReadonlyArray<CredentialGrant> = [
   },
 ];
 
+const fixtureReadiness = (runtimeGeneration: string): ReadinessProof => ({
+  runtime: {
+    providerRuntimeId: `provider-${SESSION_ID}`,
+    runtimeGeneration,
+    containerIncarnation: `container-${runtimeGeneration}`,
+  },
+  supervisor: {
+    processId: `supervisor-${runtimeGeneration}`,
+    supervisorEpoch: runtimeGeneration,
+    runtimeGeneration,
+    containerIncarnation: `container-${runtimeGeneration}`,
+  },
+  transport: {
+    transportId: `transport-${runtimeGeneration}`,
+    supervisorEpoch: runtimeGeneration,
+    runtimeGeneration,
+    containerIncarnation: `container-${runtimeGeneration}`,
+  },
+});
+
+const fixtureBackup = (record: SessionRecord): BackupIdentity => ({
+  backupId: record.backup?.current.id ?? "fixture-backup",
+  preparedAt: record.updatedAt,
+  confirmedAt: record.updatedAt,
+  sourceRuntimeGeneration: "runtime-1",
+});
+
+const fixtureIdentity = (record: SessionRecord) => ({
+  id: record.id,
+  title: record.title,
+  repository: record.repo,
+  execution:
+    record.execution.provider === "cloudflare"
+      ? ({ provider: "cloudflare", runtimeName: record.id } as const)
+      : ({ provider: "runner", runnerName: record.execution.runner } as const),
+  createdAt: record.createdAt,
+});
+
+const fixtureHardCap = (record: SessionRecord) => ({
+  durationSeconds: record.hardCapDurationSeconds,
+  deadlineAt: record.hardCapAt,
+  generation: "fixture-hard-cap",
+});
+
+const fixtureWarmWorkKind = (kind: NonNullable<SessionRecord["operation"]>["kind"]) => {
+  if (kind === "evidence") return "Evidence" as const;
+  if (kind === "hatch") return "Hatch" as const;
+  if (kind === "down") return "Down" as const;
+  return "ManualCheckpoint" as const;
+};
+
+const fixtureWarmAuthority = (
+  record: SessionRecord,
+  runtimeGeneration: string,
+  backup: BackupIdentity,
+): SessionAuthority => ({
+  revision: 1,
+  session: fixtureIdentity(record),
+  hardCap: fixtureHardCap(record),
+  state: {
+    _tag: "Stable",
+    stable: {
+      _tag: "Warm",
+      readiness: fixtureReadiness(runtimeGeneration),
+      backups: {
+        ownedBackupIds: record.ownedBackupIds,
+        prepared: record.backup?.current === undefined ? null : backup,
+        currentBackupId: record.backup?.current.id ?? null,
+      },
+      activity: null,
+    },
+  },
+});
+
+const fixtureAuthority = (record: SessionRecord, runtimeGeneration: string): SessionAuthority => {
+  const revision = 1;
+  const backup = fixtureBackup(record);
+  const identity = fixtureIdentity(record);
+  const hardCap = fixtureHardCap(record);
+  if (record.status === "sleeping")
+    return {
+      revision,
+      session: identity,
+      hardCap,
+      state: {
+        _tag: "Stable",
+        stable: {
+          _tag: "Sleeping",
+          backup,
+          ownedBackupIds: record.ownedBackupIds.includes(backup.backupId)
+            ? record.ownedBackupIds
+            : [...record.ownedBackupIds, backup.backupId],
+          stop: {
+            requestedAt: record.updatedAt,
+            observedAt: record.updatedAt,
+            runtimeGeneration,
+          },
+          wakeSource: { backupId: backup.backupId, confirmedAt: record.updatedAt },
+        },
+      },
+    };
+  if (record.status === "failed")
+    return {
+      revision,
+      session: identity,
+      hardCap,
+      state: {
+        _tag: "Stable",
+        stable: {
+          _tag: "Failed",
+          code: record.failure?.code ?? "fixture_failed",
+          actionable:
+            (record.failure?.recoverable ?? false) && record.backup?.current !== undefined,
+          origin: "Warm",
+          lastStable: "Warm",
+          backup: record.backup?.current === undefined ? null : backup,
+          ownedBackupIds: record.ownedBackupIds,
+          wakeSource:
+            record.backup?.current === undefined
+              ? null
+              : { backupId: backup.backupId, confirmedAt: record.updatedAt },
+        },
+      },
+    };
+  if (record.status === "gone")
+    return {
+      revision,
+      session: identity,
+      hardCap,
+      state: {
+        _tag: "Stable",
+        stable: {
+          _tag: "Gone",
+          cleanup: {
+            absent: [
+              "runtime",
+              "backups",
+              "evidence",
+              "grants",
+              "hatch",
+              "idempotency",
+              "schedules",
+            ],
+            lastObservedAt: record.updatedAt,
+          },
+        },
+      },
+    };
+  const warm = fixtureWarmAuthority(record, runtimeGeneration, backup);
+  if (record.operation === null) return warm;
+  return {
+    ...warm,
+    state: {
+      _tag: "Transitioning",
+      transition: {
+        _tag: "WarmWork",
+        nonce: record.operation.nonce,
+        origin: "Warm",
+        attempt: `fixture-${record.operation.nonce}`,
+        startedAt: record.operation.startedAt,
+        lastProgressAt: record.operation.startedAt,
+        deadlineAt: record.hardCapAt,
+        mode: "executing",
+        phase: "Running",
+        workKind: fixtureWarmWorkKind(record.operation.kind),
+        proof: {
+          readiness: fixtureReadiness(runtimeGeneration),
+          backups: {
+            ownedBackupIds: record.ownedBackupIds,
+            prepared: record.backup?.current === undefined ? null : backup,
+            currentBackupId: record.backup?.current.id ?? null,
+          },
+          activity: null,
+          activityGeneration: runtimeGeneration,
+          resultCode: null,
+        },
+      },
+    },
+  };
+};
+
+const fixtureMetadata = (record: SessionRecord): SessionActorMetadata => {
+  const attempt = "fixture-create";
+  const payloadReference = "fixture-payload";
+  const observation = {
+    attempt,
+    payloadReference,
+    observedAt: record.createdAt,
+  };
+  return {
+    sessionId: record.id,
+    repository: record.repo,
+    branch: record.branch,
+    createRepositoryIfMissing: !record.repoExistsAtCreate,
+    hardCap: {
+      durationSeconds: record.hardCapDurationSeconds,
+      deadlineAt: record.hardCapAt,
+      generation: "fixture-hard-cap",
+    },
+    createIdempotency: null,
+    createAttempt: attempt,
+    privateCreateInput: null,
+    createObservations: {
+      workspace: {
+        ...observation,
+        workspaceId: `/workspace/${record.id}`,
+        repository: record.repo,
+        defaultBranch: record.defaultBranch,
+        repositoryExists: record.repoExistsAtCreate,
+      },
+      bundle:
+        record.sandboxBundle.digest === null
+          ? null
+          : { ...observation, digest: record.sandboxBundle.digest },
+      credentialGrants:
+        record.credentialGrant === undefined
+          ? null
+          : { ...observation, grants: record.credentialGrant.grants },
+    },
+  };
+};
+
+const actorOnlyInitialEntries = (entries: InitialStorageEntries): InitialStorageEntries => {
+  const record = entries[ACTOR_FIXTURE_SESSION_KEY];
+  if (record === undefined || entries[SESSION_ACTOR_AUTHORITY_KEY] !== undefined) return entries;
+  const runtimeGeneration =
+    typeof entries[ACTOR_FIXTURE_RUNTIME_GENERATION_KEY] === "string"
+      ? entries[ACTOR_FIXTURE_RUNTIME_GENERATION_KEY]
+      : "runtime-1";
+  const authority = fixtureAuthority(record, runtimeGeneration);
+  const {
+    [ACTOR_FIXTURE_SESSION_KEY]: _record,
+    [ACTOR_FIXTURE_RUNTIME_GENERATION_KEY]: _runtimeGeneration,
+    ...retained
+  } = entries;
+  return {
+    ...retained,
+    [SESSION_ACTOR_AUTHORITY_KEY]: authority,
+    [SESSION_ACTOR_REVISION_KEY]: authority.revision,
+    [SESSION_ACTOR_JOURNAL_SEQUENCE_KEY]: 1,
+    [SESSION_ACTOR_JOURNAL_TAIL_KEY]: {
+      sequence: 1,
+      revision: authority.revision,
+      timestamp: record.updatedAt,
+      correlationId: "fixture",
+      transitionNonce: null,
+      eventType: "completed",
+      transitionKind: null,
+      transitionPhase: null,
+      resultCode: "fixture_seeded",
+      causeSequence: null,
+      causeAttempt: null,
+    },
+    [SESSION_ACTOR_METADATA_KEY]: fixtureMetadata(record),
+  };
+};
+
 export type HarnessFailureStage =
   | "artifactDelete"
   | "artifactDeleteAmbiguous"
@@ -278,19 +544,15 @@ export type HarnessFailureStage =
   | "previewExpose"
   | "previewUnexpose"
   | "projectionDelete"
-  | "runtimeEpochDelete"
-  | "runtimeEpochPut"
   | "restoreBackup"
   | "terminalStop"
   | "vaporizeDestroy"
-  | "vaporizeRetrySchedule"
   | "workspacePrepare";
 
 export interface HarnessOptions {
   readonly clock?: SandboxEffectOptions["clock"];
   readonly commandStdout?: (command: string) => string | undefined;
   readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
-  readonly crashAfterInitialRecordCommit?: boolean;
   readonly destroyBehavior?: "pending" | "reject" | "success";
   readonly evidenceEnabled?: boolean;
   readonly evidencePreviewHostTimeoutMillis?: number;
@@ -316,7 +578,6 @@ export interface HarnessOptions {
   readonly rawPiContainerRunning?: boolean;
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
   readonly rawPiGetTcpPortError?: unknown;
-  readonly rotateEpochAfterPreviewExpose?: boolean;
   readonly sharedMemory?: InMemoryFaultInjectableFake;
   readonly onStorageGet?: (
     key: string,
@@ -404,7 +665,6 @@ class HarnessStorage {
     private readonly schedules: ReadonlyArray<RecordedSchedule>,
     initialEntries: InitialStorageEntries,
     private readonly failures: ReadonlySet<HarnessFailureStage>,
-    private readonly crashAfterInitialRecordCommit: boolean,
     private readonly onStorageGet?: HarnessOptions["onStorageGet"],
     transactionFailureCountdown?: number,
     sharedMemory?: InMemoryFaultInjectableFake,
@@ -476,15 +736,11 @@ class HarnessStorage {
   put = async <A>(key: string, value: A): Promise<void> => {
     this.memory.values.set(key, structuredClone(value));
     this.recordMutation(key, value);
-    if (key === RUNTIME_EPOCH_KEY && this.failures.has("runtimeEpochPut"))
-      throw injectedHarnessFailure("injected ambiguous runtime epoch put failure");
   };
 
   delete = async (key: string): Promise<boolean> => {
     const deleted = this.memory.values.delete(key);
     this.events.push(`storage:delete:${key}`);
-    if (key === RUNTIME_EPOCH_KEY && this.failures.has("runtimeEpochDelete"))
-      throw injectedHarnessFailure("injected ambiguous runtime epoch delete failure");
     return deleted;
   };
 
@@ -526,18 +782,6 @@ class HarnessStorage {
           if (mutation.kind === "delete") this.events.push(`storage:delete:${mutation.key}`);
           else this.recordMutation(mutation.key, mutation.value);
         }
-        if (
-          this.crashAfterInitialRecordCommit &&
-          mutations.some(
-            (mutation) =>
-              mutation.kind === "put" &&
-              mutation.key === RECORD_KEY &&
-              (mutation.value as SessionRecord).status === "booting" &&
-              (mutation.value as SessionRecord).operation?.kind === "create",
-          )
-        ) {
-          throw injectedHarnessFailure("simulated DO crash after initial record commit");
-        }
         return result;
       } finally {
         unlock();
@@ -571,12 +815,8 @@ class HarnessStorage {
     });
   }
 
-  private recordMutation(key: string, value: unknown): void {
-    if (key === RECORD_KEY) {
-      this.events.push(`record:${(value as SessionRecord).status}`);
-    } else {
-      this.events.push(`storage:put:${key}`);
-    }
+  private recordMutation(key: string, _value: unknown): void {
+    this.events.push(`storage:put:${key}`);
   }
 }
 
@@ -699,7 +939,7 @@ const initialSandboxBundleObjectMap = (
   };
   if (options.seedPinnedSandboxBundle ?? true) {
     seedDigest(sandboxConfigStatus.activeDigest);
-    seedDigest(options.initialEntries?.[RECORD_KEY]?.sandboxBundle?.digest);
+    seedDigest(options.initialEntries?.[ACTOR_FIXTURE_SESSION_KEY]?.sandboxBundle?.digest);
   }
   return objects;
 };
@@ -845,6 +1085,7 @@ const makeHarnessExec =
   };
 
 export async function createSessionHarness(options: HarnessOptions = {}): Promise<SessionHarness> {
+  const initialEntries = actorOnlyInitialEntries(options.initialEntries ?? {});
   const events: string[] = [];
   const schedules: RecordedSchedule[] = [];
   const credentialGrantRequests: unknown[] = [];
@@ -884,9 +1125,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const storage = new HarnessStorage(
     events,
     schedules,
-    options.initialEntries ?? {},
+    initialEntries,
     failures,
-    options.crashAfterInitialRecordCommit ?? false,
     options.onStorageGet,
     options.transactionFailureCountdown,
     options.sharedMemory,
@@ -1316,8 +1556,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         exposedPreviewPorts.add(port);
         if (failures.has("previewExpose"))
           throw injectedHarnessFailure("injected ambiguous preview exposure failure");
-        if (options.rotateEpochAfterPreviewExpose)
-          storage.kv.put(RUNTIME_EPOCH_KEY, "runtime-epoch-rotated-after-expose");
         return {
           url: `https://${port}-${SESSION_ID}-${token}.${exposeOptions.hostname}/`,
           port,
@@ -1487,14 +1725,9 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
             failures.delete("evidenceRetentionSchedulePreInsertOnce"))
         )
           throw injectedHarnessFailure("injected pre-insert evidence retention schedule failure");
-        if (
-          failures.has("hardCapSchedule") &&
-          (callback === "enforceHardCap" || callback === "sessionActorHardCap")
-        ) {
+        if (failures.has("hardCapSchedule") && callback === "sessionActorHardCap") {
           throw injectedHarnessFailure("injected hard-cap schedule failure");
         }
-        if (failures.has("vaporizeRetrySchedule") && callback === "retryVaporizeSession")
-          throw injectedHarnessFailure("injected vaporize retry schedule failure");
         const scheduled = { when, callback, payload };
         schedules.push(scheduled);
         if (
@@ -1580,7 +1813,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       else failures.delete(stage);
     },
     read: <A>(key: string) => storage.read<A>(key),
-    readRecord: () => storage.read<SessionRecord>(RECORD_KEY),
+    readRecord: () => {
+      const authority = storage.read<SessionAuthority>(SESSION_ACTOR_AUTHORITY_KEY);
+      const metadata = storage.read<SessionActorMetadata>(SESSION_ACTOR_METADATA_KEY);
+      return authority === undefined || metadata === undefined
+        ? undefined
+        : sessionRecordFromActor(authority, metadata, authority.session.createdAt);
+    },
     sandboxConfigStatusCallCount: () => sandboxConfigStatusCalls,
     credentialGrantRequests,
     credentialGrantReleases,
@@ -1593,9 +1832,8 @@ export const sessionHarnessKeys = {
   actorJournalTail: SESSION_ACTOR_JOURNAL_TAIL_KEY,
   actorMetadata: SESSION_ACTOR_METADATA_KEY,
   actorRevision: SESSION_ACTOR_REVISION_KEY,
-  createIdempotency: CREATE_IDEMPOTENCY_KEY,
   evidence: EVIDENCE_RECORD_KEY,
   hatch: HATCH_STATE_KEY,
-  record: RECORD_KEY,
-  runtimeEpoch: RUNTIME_EPOCH_KEY,
+  actorFixtureSession: ACTOR_FIXTURE_SESSION_KEY,
+  actorFixtureRuntimeGeneration: ACTOR_FIXTURE_RUNTIME_GENERATION_KEY,
 } as const;

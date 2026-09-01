@@ -43,7 +43,7 @@ import {
   type EvidenceTerminalStatus,
 } from "./contracts";
 import { constantTimeStringEqual } from "../shared/digest";
-import type { SessionEvidenceTransaction, SessionRecordStorage } from "../session/store";
+import type { SessionAuxiliaryStorage, SessionEvidenceTransaction } from "../session/store";
 
 export interface AcceptEvidenceJobInput {
   readonly jobId: string;
@@ -565,10 +565,10 @@ const completeEvidenceStepTransition = (
   });
 };
 
-export const evidenceStoreLayer = (storage: SessionRecordStorage): Layer.Layer<EvidenceStore> =>
+export const evidenceStoreLayer = (storage: SessionAuxiliaryStorage): Layer.Layer<EvidenceStore> =>
   Layer.succeed(EvidenceStore)(makeEvidenceStore(storage));
 
-const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape => {
+const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape => {
   const getEvidence = storage.getEvidence;
   const evidenceTransaction = storage.evidenceTransaction;
 

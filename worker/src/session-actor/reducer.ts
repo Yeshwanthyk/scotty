@@ -32,7 +32,7 @@ import {
 import { accept, reject } from "./control";
 import type { Decision, EffectIntent, JournalEvent } from "./decision";
 import type { SessionActorInput, SessionCommand, TransitionProof } from "./input";
-import { SessionCommandSchema } from "./input";
+import { RenameCommandSchema, SessionCommandSchema } from "./input";
 import { isNextPhase, isTerminalPhase, phaseIndex } from "./transition";
 import { transitionKind } from "./transition";
 import { handleRecoveryInput, isRecoveryInput } from "./transitions/recovery";
@@ -683,6 +683,7 @@ const isCommand = (input: SessionActorInput): input is SessionCommand =>
     ResumeCommand: () => true,
     WarmWorkCommand: () => true,
     VaporizeCommand: () => true,
+    RenameCommand: () => false,
     ActorFact: () => false,
     RuntimeObservation: () => false,
     ProviderObservation: () => false,
@@ -740,6 +741,37 @@ const handleCommand = (
       ...intentsFor(transition),
     ],
   );
+};
+
+const handleRename = (
+  current: SessionAuthority | undefined,
+  input: typeof RenameCommandSchema.Type,
+): Decision => {
+  if (current === undefined) return reject("not_admissible");
+  if (input.expectedRevision !== current.revision) return reject("revision_mismatch");
+  if (AuthorityStateSchema.guards.Transitioning(current.state)) return reject("transition_owned");
+  if (StableStateSchema.guards.Gone(current.state.stable)) return reject("not_admissible");
+  if (!nonEmpty(input.title)) return reject("not_admissible");
+  if (current.session.title === input.title) return reject("duplicate");
+  return {
+    _tag: "Accepted",
+    nextAuthority: {
+      ...current,
+      revision: current.revision + 1,
+      session: { ...current.session, title: input.title },
+    },
+    journalEvent: {
+      timestamp: input.timestamp,
+      correlationId: input.correlationId,
+      transitionNonce: null,
+      eventType: "renamed",
+      transitionKind: null,
+      transitionPhase: null,
+      resultCode: "renamed",
+      causeAttempt: null,
+    },
+    effectIntents: [],
+  };
 };
 
 type ActivityInput = Extract<SessionActorInput, { _tag: "ActivityObserved" }>;
@@ -979,6 +1011,7 @@ export const decide = (
   input: SessionActorInput,
 ): Decision => {
   if (current !== undefined && !validateAuthority(current)) return reject("invalid_authority");
+  if (Predicate.isTagged(input, "RenameCommand")) return handleRename(current, input);
   if (isCommand(input)) return handleCommand(current, input);
   if (current === undefined) return reject("duplicate");
   if (isRecoveryInput(input)) return handleRecoveryInput(current, input);

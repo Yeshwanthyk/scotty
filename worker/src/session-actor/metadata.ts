@@ -38,6 +38,7 @@ export const CreateIdempotencyDigestMetadataSchema = Schema.Struct({
   keyDigest: Sha256DigestSchema,
   inputDigest: Sha256DigestSchema,
 });
+export type CreateIdempotencyDigestMetadata = typeof CreateIdempotencyDigestMetadataSchema.Type;
 
 const CreatePrivateInputSchema = Schema.Struct({
   attempt: SafeReferenceSchema,
