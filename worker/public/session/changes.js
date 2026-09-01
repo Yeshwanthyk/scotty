@@ -133,12 +133,25 @@ const renderPatch = (document, root, patch) => {
   root.replaceChildren(...[split, unified, notice].filter(Boolean));
 };
 
-export function createChangesViewer({ document, fetch, headerActions }) {
+export function createChangesViewer({
+  document,
+  fetch,
+  headerActions,
+  surfaceHost = document.body,
+  onBeforeOpen,
+  onOpenChange,
+}) {
   const trigger = element(document, "button", "changes-toggle", "Changes");
   trigger.type = "button";
+  const triggerIcon = element(document, "span", "header-action-icon", "±");
+  triggerIcon.setAttribute("aria-hidden", "true");
+  const triggerLabel = element(document, "span", "header-action-label", "Changes");
+  trigger.replaceChildren(triggerIcon, triggerLabel);
   trigger.setAttribute("aria-controls", "changes-viewer");
   trigger.setAttribute("aria-expanded", "false");
-  headerActions.prepend(trigger);
+  const summaryTrigger = headerActions.querySelector?.(".summary-toggle");
+  if (summaryTrigger) summaryTrigger.after(trigger);
+  else headerActions.prepend(trigger);
 
   const dialog = element(document, "dialog", "changes-viewer");
   dialog.id = "changes-viewer";
@@ -150,8 +163,9 @@ export function createChangesViewer({ document, fetch, headerActions }) {
   title.id = "changes-title";
   const summary = element(document, "p", "changes-summary", "Open to read the live worktree.");
   heading.append(title, summary);
-  const close = element(document, "button", "changes-close", "Close");
+  const close = element(document, "button", "changes-close", "×");
   close.type = "button";
+  close.setAttribute("aria-label", "Close changes");
   header.append(heading, close);
 
   const body = element(document, "div", "changes-body");
@@ -171,7 +185,7 @@ export function createChangesViewer({ document, fetch, headerActions }) {
   body.append(directory, patchPanel);
   shell.append(header, body);
   dialog.append(shell);
-  document.body.append(dialog);
+  surfaceHost.append(dialog);
 
   let sessionId;
   let generation = 0;
@@ -255,9 +269,13 @@ export function createChangesViewer({ document, fetch, headerActions }) {
         ? "No changed files"
         : `${files.length} changed file${files.length === 1 ? "" : "s"}${payload.truncated ? " · Showing first 100" : ""}`;
     if (files.length === 0) {
+      dialog.dataset.state = "empty";
       list.append(stateMessage(document, "changes-state", "The live worktree has no changes."));
       return;
     }
+    dialog.dataset.state = "ready";
+    let firstButton;
+    let firstFile;
     for (const file of files) {
       const button = element(document, "button", "changes-file");
       button.type = "button";
@@ -268,10 +286,16 @@ export function createChangesViewer({ document, fetch, headerActions }) {
       button.append(path, meta);
       button.addEventListener("click", () => void loadPatch(file, button));
       list.append(button);
+      if (!firstButton && file.patchable) {
+        firstButton = button;
+        firstFile = file;
+      }
     }
+    if (firstButton && firstFile) void loadPatch(firstFile, firstButton);
   };
 
   const loadList = async () => {
+    dialog.dataset.state = "loading";
     const currentGeneration = generation;
     list.replaceChildren(stateMessage(document, "changes-state", "Reading live worktree…"));
     try {
@@ -283,6 +307,7 @@ export function createChangesViewer({ document, fetch, headerActions }) {
     } catch (error) {
       if (error?.name === "AbortError" || currentGeneration !== generation) return;
       summary.textContent = "Changes unavailable";
+      dialog.dataset.state = "unavailable";
       list.replaceChildren(
         stateMessage(
           document,
@@ -295,8 +320,10 @@ export function createChangesViewer({ document, fetch, headerActions }) {
 
   const open = () => {
     if (!sessionId) return;
+    onBeforeOpen?.();
     trigger.setAttribute("aria-expanded", "true");
-    dialog.showModal();
+    dialog.show();
+    onOpenChange?.(true);
     void loadList();
   };
   const closeViewer = () => {
@@ -304,6 +331,7 @@ export function createChangesViewer({ document, fetch, headerActions }) {
     resetPatch();
     trigger.setAttribute("aria-expanded", "false");
     if (dialog.open) dialog.close();
+    onOpenChange?.(false);
     trigger.focus({ preventScroll: true });
   };
 
@@ -313,7 +341,10 @@ export function createChangesViewer({ document, fetch, headerActions }) {
     event.preventDefault();
     closeViewer();
   });
-  dialog.addEventListener("close", () => trigger.setAttribute("aria-expanded", "false"));
+  dialog.addEventListener("close", () => {
+    trigger.setAttribute("aria-expanded", "false");
+    onOpenChange?.(false);
+  });
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) closeViewer();
   });
@@ -329,6 +360,7 @@ export function createChangesViewer({ document, fetch, headerActions }) {
       summary.textContent = "Reading live worktree";
       if (dialog.open) void loadList();
     },
+    close: closeViewer,
     dispose() {
       controller?.abort();
       dialog.remove();

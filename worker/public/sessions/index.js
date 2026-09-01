@@ -22,6 +22,9 @@ const devicesLink = document.querySelector("#devices");
 const devicesMobileLink = document.querySelector("#devices-mobile");
 const providersLink = document.querySelector("#providers");
 const providersMobileLink = document.querySelector("#providers-mobile");
+const mobileUtilities = document.querySelector(".mobile-utilities");
+const repositoryNav = document.querySelector("#repository-nav");
+const sessionSearch = document.querySelector("#session-search");
 const summary = document.querySelector("#summary");
 const notice = document.querySelector("#notice");
 const noticeText = document.querySelector("#notice-text");
@@ -63,6 +66,8 @@ const busy = new Map();
 const confirmations = new Set();
 const expandedSleepingProjects = new Set();
 const expandedSessionDetails = new Set();
+const archiveVisibleCounts = new Map();
+const archiveOpen = new Set();
 const cleanupPending = new Set();
 const cleanupTitles = new Map();
 const rowErrors = new Map();
@@ -72,6 +77,7 @@ let renameDraft = "";
 let renderedSessionsSignature;
 const targetSessionId = focusedSessionId(window.location.search);
 let focusTargetSession = targetSessionId !== undefined;
+let selectedSessionId = targetSessionId;
 
 function sessionPath(id, suffix = "") {
   return `/api/sessions/${encodeURIComponent(id)}${suffix}`;
@@ -260,6 +266,7 @@ function render(options = {}) {
   }
   const result = renderSessionsView({
     content,
+    repositoryNav,
     summary,
     sessions,
     loaded,
@@ -274,6 +281,10 @@ function render(options = {}) {
     preserveFocusedDraft: options.preserveFocusedDraft === true,
     targetSessionId,
     focusTargetSession,
+    selectedSessionId,
+    searchQuery: sessionSearch?.value || "",
+    archiveVisibleCounts,
+    archiveOpen,
   });
   if (!result.preservedDraft) renderedSessionsSignature = signature;
   if (loaded) focusTargetSession = false;
@@ -424,6 +435,11 @@ function applyProjectedSessions(next) {
   const normalized = next.map(normalizeSessionListItem).filter((session) => session !== undefined);
   const cleanup = reconcileCleanupProjection(normalized, [...cleanupPending]);
   sessions = cleanup.sessions;
+  if (!sessions.some((session) => session.id === selectedSessionId)) {
+    selectedSessionId =
+      sessions.find((session) => ["warm", "booting", "stopping"].includes(session.status))?.id ||
+      sessions[0]?.id;
+  }
   finishProjectedCleanup(cleanup.completedIds);
   const target = sessions.find((session) => session.id === targetSessionId);
   if (focusTargetSession && target) {
@@ -598,14 +614,20 @@ async function performRename(id, title) {
 }
 
 content.addEventListener("click", (event) => {
+  const more = event.target.closest('[data-action="show-more-archive"]');
+  if (more) return;
   const button = event.target.closest("button[data-action]");
   if (!button) return;
   const { action, id } = button.dataset;
   if (action === "open-composer") {
     setComposerOpen(true);
   } else if (action === "toggle-details") {
-    if (expandedSessionDetails.has(id)) expandedSessionDetails.delete(id);
-    else expandedSessionDetails.add(id);
+    const opening = !expandedSessionDetails.has(id);
+    expandedSessionDetails.clear();
+    if (opening) {
+      expandedSessionDetails.add(id);
+      if (mobileUtilities) mobileUtilities.open = false;
+    }
     render();
   } else if (action === "rename") {
     const session = sessions.find((candidate) => candidate.id === id);
@@ -637,8 +659,56 @@ content.addEventListener("click", (event) => {
   }
 });
 
+repositoryNav?.addEventListener("click", (event) => {
+  const more = event.target.closest('[data-action="show-more-archive"]');
+  if (more) {
+    event.preventDefault();
+    const repo = more.dataset.repo;
+    if (repo) {
+      archiveVisibleCounts.set(repo, (archiveVisibleCounts.get(repo) || 10) + 10);
+      archiveOpen.add(repo);
+      render();
+    }
+    return;
+  }
+});
+
+repositoryNav?.addEventListener("toggle", (event) => {
+  const archive = event.target.closest(".rail-archive");
+  if (!archive?.dataset.repo) return;
+  if (archive.open) archiveOpen.add(archive.dataset.repo);
+  else archiveOpen.delete(archive.dataset.repo);
+  render();
+});
+
+sessionSearch?.addEventListener("input", () => render());
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    if (event.target.matches("input, textarea, select")) return;
+    event.preventDefault();
+    sessionSearch?.focus();
+  }
+});
+
 content.addEventListener("input", (event) => {
   if (event.target.matches(".rename-input")) renameDraft = event.target.value;
+});
+
+document.addEventListener("click", (event) => {
+  if (
+    expandedSessionDetails.size === 0 ||
+    event.target.closest(".session-detail, .session-disclosure-toggle")
+  ) {
+    return;
+  }
+  expandedSessionDetails.clear();
+  render();
+});
+
+mobileUtilities?.addEventListener("toggle", () => {
+  if (!mobileUtilities.open || expandedSessionDetails.size === 0) return;
+  expandedSessionDetails.clear();
+  render();
 });
 
 content.addEventListener("submit", (event) => {
@@ -684,8 +754,12 @@ content.addEventListener(
   (event) => {
     const sleeping = event.target.closest(".sleeping-group");
     if (!sleeping?.dataset.repo) return;
+    const changed = sleeping.open
+      ? !expandedSleepingProjects.has(sleeping.dataset.repo)
+      : expandedSleepingProjects.has(sleeping.dataset.repo);
     if (sleeping.open) expandedSleepingProjects.add(sleeping.dataset.repo);
     else expandedSleepingProjects.delete(sleeping.dataset.repo);
+    if (changed) render();
   },
   true,
 );

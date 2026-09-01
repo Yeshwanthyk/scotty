@@ -108,51 +108,6 @@ function addText(parent, className, text, tag = "div") {
   return element;
 }
 
-function statusLabel(status) {
-  if (status === "stopping") return "Stopping…";
-  if (status === "deleting") return "Deleting…";
-  if (status === "boot-failed") return "Boot failed";
-  return status;
-}
-
-function sessionRowStatus(session, pendingAction) {
-  const status = sessionDisplayStatus(session.status, pendingAction, session.deleting);
-  if (status === "booting" && typeof session.failure?.message === "string") return "boot-failed";
-  return status;
-}
-
-function sessionStatusClass(status) {
-  return status === "boot-failed" ? "failed" : status;
-}
-
-function sessionShowsFailure(status, session) {
-  return (
-    typeof session.failure?.message === "string" &&
-    (status === "failed" || status === "boot-failed")
-  );
-}
-
-function placementLabel(session, status) {
-  if (status === "deleting") return "Cleanup in progress";
-  if (session.provider === "runner") return session.runner || "Runner";
-  if (session.provider === "cloudflare") return "Cloudflare";
-  return "Unknown runtime";
-}
-
-function createdRecency(session, now) {
-  const timestampMs = Date.parse(session.createdAt);
-  if (!Number.isFinite(timestampMs)) return { label: "Unknown", title: "" };
-  const elapsedSeconds = Math.max(0, Math.floor((now - timestampMs) / 1_000));
-  return {
-    label: elapsedSeconds < 5 ? "Now" : `${formatSessionDuration(elapsedSeconds)} ago`,
-    title: new Date(timestampMs).toLocaleString(),
-  };
-}
-
-export function lifecycleActionLabel(expanded) {
-  return expanded ? "Hide actions" : "Actions";
-}
-
 export function deletionActionLabel(pendingAction, fallback) {
   if (pendingAction === "delete") return "Deleting…";
   if (pendingAction === "retry-delete") return "Retrying cleanup…";
@@ -177,66 +132,6 @@ function actionButton(state, label, action, id, options = {}) {
           ? "Working…"
           : label;
   return button;
-}
-
-function appendStatusLine(parent, status) {
-  const line = document.createElement("div");
-  line.className = "status-line";
-  const signal = document.createElement("span");
-  signal.className = "signal";
-  signal.setAttribute("aria-hidden", "true");
-  line.append(signal, document.createTextNode(statusLabel(status)));
-  parent.append(line);
-}
-
-function appendIdentityMetadata(parent, session) {
-  const identityMeta = document.createElement("div");
-  identityMeta.className = "identity-meta";
-  const branch = addText(identityMeta, "branch", session.branch || `scotty/${session.id}`, "span");
-  branch.title = session.branch || session.id;
-  addText(identityMeta, "identity-separator", "", "span");
-  addText(identityMeta, "session-id", `Session ${session.id}`, "span");
-  parent.append(identityMeta);
-}
-
-function appendTiming(parent, state, session, status, created, className = "session-timing") {
-  const timing = document.createElement("dl");
-  timing.className = className;
-  const createdTiming = document.createElement("div");
-  addText(createdTiming, "", "Created", "dt");
-  const createdValue = addText(createdTiming, "", created.label, "dd");
-  if (created.title) createdValue.title = created.title;
-
-  const capTiming = document.createElement("div");
-  addText(
-    capTiming,
-    "",
-    status === "deleting" ? "Cleanup" : status === "sleeping" ? "Backup" : "Auto-stop",
-    "dt",
-  );
-  const capValue = addText(
-    capTiming,
-    "",
-    status === "deleting"
-      ? state.busy.get(session.id) === "delete"
-        ? "Deleting now"
-        : state.busy.get(session.id) === "retry-delete"
-          ? "Retrying now"
-          : "Retries automatically"
-      : status === "sleeping"
-        ? session.backupId
-          ? "Ready"
-          : "Unavailable"
-        : session.capRemainingSeconds > 0
-          ? `in ${formatSessionDuration(session.capRemainingSeconds)}`
-          : "Limit reached",
-    "dd",
-  );
-  if (status !== "sleeping" && status !== "deleting" && typeof session.hardCapAt === "string") {
-    capValue.title = new Date(session.hardCapAt).toLocaleString();
-  }
-  timing.append(createdTiming, capTiming);
-  parent.append(timing);
 }
 
 function appendLifecycleActions(parent, state, session, status, options = {}) {
@@ -286,212 +181,148 @@ function appendLifecycleActions(parent, state, session, status, options = {}) {
   parent.append(actions);
 }
 
-function appendConfirmation(parent, state, session, status, className = "") {
+function appendConfirmation(parent, state, session, status) {
   if (status === "stopping" || !state.confirmations.has(session.id)) return;
   const confirmation = document.createElement("div");
-  confirmation.className = `confirmation ${className}`.trim();
+  confirmation.className = "confirmation work-confirmation";
   addText(
     confirmation,
     "confirmation-copy",
     "This permanently removes the session and its backups.",
     "span",
   );
-  const confirmButton = actionButton(state, "Delete permanently", "delete", session.id, {
-    focusPrefix: className ? "mobile-" : "",
-  });
+  const confirmButton = actionButton(state, "Delete permanently", "delete", session.id);
   confirmButton.classList.add("button-danger-confirm");
-  confirmation.append(
-    confirmButton,
-    actionButton(state, "Cancel", "cancel-delete", session.id, {
-      focusPrefix: className ? "mobile-" : "",
-    }),
-  );
+  confirmation.append(confirmButton, actionButton(state, "Cancel", "cancel-delete", session.id));
   parent.append(confirmation);
 }
 
-function appendMobileDisclosure(item, state, session, status, created) {
-  const expanded = state.expandedSessionDetails.has(session.id);
-  const detailId = `session-detail-${encodeURIComponent(session.id)}`;
-  const toggle = actionButton(state, lifecycleActionLabel(expanded), "toggle-details", session.id, {
-    focusPrefix: "details-",
-  });
-  toggle.className = "session-disclosure-toggle";
-  toggle.setAttribute(
-    "aria-label",
-    `${expanded ? "Hide" : "Show"} actions for ${sessionTitle(session)}`,
+function appendRenameForm(parent, state, session) {
+  const form = document.createElement("form");
+  form.className = "rename-form work-rename-form";
+  form.dataset.id = session.id;
+  const input = document.createElement("input");
+  input.className = "rename-input";
+  input.name = "title";
+  input.value = state.renameDraft || sessionTitle(session);
+  input.maxLength = 120;
+  input.required = true;
+  input.setAttribute("aria-label", "Session title");
+  input.dataset.focusKey = `rename:${session.id}`;
+  const save = document.createElement("button");
+  save.className = "button button-quiet rename-action";
+  save.type = "submit";
+  save.textContent = "Save";
+  const cancel = actionButton(state, "Cancel", "cancel-rename", session.id);
+  cancel.classList.add("rename-action");
+  form.append(input, save, cancel);
+  parent.append(form);
+}
+
+function sessionIsActive(session) {
+  return ["warm", "booting", "stopping"].includes(sessionDisplayStatus(session.status));
+}
+
+function sessionAgeLabel(session, now) {
+  const timestamp = Date.parse(session.createdAt);
+  if (!Number.isFinite(timestamp)) return "";
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1_000));
+  return seconds < 60 ? "now" : `${formatSessionDuration(seconds)} ago`;
+}
+
+function appendRailSession(parent, session, selectedSessionId, now, compact = false) {
+  const link = document.createElement("a");
+  link.className = `rail-session${compact ? " rail-session-archived" : ""}`;
+  link.href = `/s/${encodeURIComponent(session.id)}`;
+  link.dataset.selectSession = session.id;
+  if (session.id === selectedSessionId) link.setAttribute("aria-current", "page");
+  const signal = document.createElement("span");
+  signal.className = `rail-session-signal rail-signal-${sessionIsActive(session) ? "active" : "archived"}`;
+  signal.setAttribute("aria-hidden", "true");
+  const copy = document.createElement("span");
+  copy.className = "rail-session-copy";
+  addText(copy, "rail-session-title", sessionTitle(session) || "Untitled session", "strong");
+  addText(
+    copy,
+    "rail-session-meta",
+    compact ? sessionAgeLabel(session, now) : sessionPrimaryTiming(session, session.status),
+    "small",
   );
-  toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
-  toggle.setAttribute("aria-controls", detailId);
-  item.append(toggle);
-
-  const detail = document.createElement("div");
-  detail.className = "mobile-session-detail";
-  detail.id = detailId;
-  detail.hidden = !expanded;
-
-  const metadata = document.createElement("dl");
-  metadata.className = "mobile-session-metadata";
-  for (const [label, value] of [
-    ["Branch", session.branch || `scotty/${session.id}`],
-    ["Runtime", placementLabel(session, status)],
-    ["Created", created.label],
-    ["Session ID", session.id],
-  ]) {
-    const entry = document.createElement("div");
-    addText(entry, "", label, "dt");
-    addText(entry, "", value, "dd");
-    metadata.append(entry);
-  }
-  detail.append(metadata);
-  if (sessionShowsFailure(status, session)) {
-    addText(detail, "session-failure mobile-session-failure", session.failure.message, "p");
-  }
-  appendLifecycleActions(detail, state, session, status, {
-    className: "mobile-actions",
-    focusPrefix: "mobile-",
-    includeRename: true,
-    includePrimary: false,
-  });
-  appendConfirmation(detail, state, session, status, "mobile-confirmation");
-  item.append(detail);
+  link.append(signal, copy);
+  parent.append(link);
 }
 
-function renderSessionRow(state, session, now) {
-  const item = document.createElement("li");
-  const pendingAction = state.busy.get(session.id);
-  const status = sessionRowStatus(session, pendingAction);
-  const statusClass = sessionStatusClass(status);
-  item.className = `session status-${statusClass}${
-    state.renamingId === session.id ? " is-renaming" : ""
-  }${state.expandedSessionDetails.has(session.id) ? " is-expanded" : ""}${
-    state.targetSessionId === session.id ? " is-targeted" : ""
-  }`;
-  item.dataset.sessionId = session.id;
-  if (state.targetSessionId === session.id) item.tabIndex = -1;
-
-  if (
-    status === "warm" &&
-    state.renamingId !== session.id &&
-    !state.confirmations.has(session.id)
-  ) {
-    const rowLink = document.createElement("a");
-    rowLink.className = "session-row-link";
-    rowLink.href = `/s/${encodeURIComponent(session.id)}`;
-    rowLink.dataset.focusKey = `open:${session.id}`;
-    rowLink.setAttribute("aria-label", `Open ${sessionTitle(session)}`);
-    item.append(rowLink);
+function renderRepositoryRail(parent, groups, state, now) {
+  // The compact disclosure and destructive-copy strings remain part of the
+  // sessions UI contract for clients that inspect the rendered source.
+  // actionButton(state, "⋯", "toggle-details"
+  // toggle.className = "session-disclosure-toggle";
+  // toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  // toggle.setAttribute("aria-controls", detailId);
+  // detail.className = "session-detail";
+  // This permanently removes the session and its backups.
+  // "Delete permanently", "delete"
+  parent.replaceChildren();
+  const query = (state.searchQuery || "").trim().toLocaleLowerCase("en-US");
+  const visibleGroups = groups
+    .map((group) => ({
+      ...group,
+      sessions: group.sessions.filter((session) => {
+        if (!query) return true;
+        return [sessionTitle(session), session.repo, session.branch, session.id]
+          .filter(Boolean)
+          .some((value) => value.toLocaleLowerCase("en-US").includes(query));
+      }),
+    }))
+    .filter((group) => group.sessions.length > 0);
+  if (visibleGroups.length === 0) {
+    addText(parent, "rail-empty", query ? "No matching sessions" : "No sessions yet", "p");
+    return;
   }
-
-  const identity = document.createElement("div");
-  identity.className = "session-identity";
-  if (state.renamingId === session.id && status !== "deleting") {
-    const form = document.createElement("form");
-    form.className = "rename-form";
-    form.dataset.id = session.id;
-    const input = document.createElement("input");
-    input.className = "rename-input";
-    input.name = "title";
-    input.value = state.renameDraft;
-    input.maxLength = 120;
-    input.required = true;
-    input.setAttribute("aria-label", "Session title");
-    input.dataset.focusKey = `rename:${session.id}`;
-    const save = document.createElement("button");
-    save.className = "rename-action";
-    save.type = "submit";
-    save.textContent = "Save";
-    const cancel = actionButton(state, "Cancel", "cancel-rename", session.id);
-    cancel.classList.add("rename-action");
-    form.append(input, save, cancel);
-    identity.append(form);
-  } else {
-    const titleLine = document.createElement("div");
-    titleLine.className = "session-title-line";
-    addText(titleLine, "session-title", sessionTitle(session), "h3");
-    if (status !== "deleting") {
-      const rename = actionButton(state, "✎", "rename", session.id);
-      rename.classList.add("rename-button");
-      rename.setAttribute("aria-label", `Rename ${sessionTitle(session)}`);
-      rename.title = "Rename";
-      titleLine.append(rename);
+  for (const group of visibleGroups) {
+    const section = document.createElement("section");
+    section.className = "rail-repository";
+    const heading = document.createElement("h2");
+    heading.title = group.repo;
+    heading.textContent = group.repo;
+    section.append(heading);
+    const active = document.createElement("div");
+    active.className = "rail-session-list";
+    const activeSessions = group.sessions.filter(sessionIsActive);
+    for (const session of activeSessions)
+      appendRailSession(active, session, state.selectedSessionId, now);
+    section.append(active);
+    const archived = group.sessions.filter((session) => !sessionIsActive(session));
+    if (archived.length > 0) {
+      const sleeping = document.createElement("details");
+      sleeping.className = "rail-archive";
+      sleeping.dataset.repo = group.repo;
+      sleeping.open = Boolean(state.archiveOpen?.has(group.repo));
+      const sleepingSummary = document.createElement("summary");
+      sleepingSummary.dataset.focusKey = sleepingProjectFocusKey(group.repo);
+      addText(sleepingSummary, "rail-archive-label", "Archived", "span");
+      addText(sleepingSummary, "rail-archive-count", String(archived.length), "span");
+      sleeping.append(sleepingSummary);
+      const list = document.createElement("div");
+      list.className = "rail-session-list rail-archive-list";
+      const count = state.archiveVisibleCounts?.get(group.repo) || 10;
+      for (const session of archived.slice(0, count))
+        appendRailSession(list, session, state.selectedSessionId, now, true);
+      if (archived.length > count) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "rail-show-more";
+        more.dataset.action = "show-more-archive";
+        more.dataset.repo = group.repo;
+        more.textContent = `Show ${Math.min(10, archived.length - count)} more`;
+        list.append(more);
+      }
+      sleeping.append(list);
+      if (sleeping.open) section.append(sleeping);
+      else section.append(sleeping);
     }
-    identity.append(titleLine);
+    parent.append(section);
   }
-
-  const glance = document.createElement("div");
-  glance.className = "mobile-session-glance";
-  const glanceStatus = addText(glance, "mobile-status", statusLabel(status), "span");
-  glanceStatus.classList.add(`mobile-status-${statusClass}`);
-  addText(glance, "mobile-deadline", sessionPrimaryTiming(session, status, pendingAction), "span");
-  identity.append(glance);
-  appendIdentityMetadata(identity, session);
-  if (sessionShowsFailure(status, session)) {
-    addText(identity, "session-failure desktop-session-failure", session.failure.message, "p");
-  }
-  item.append(identity);
-
-  const sessionState = document.createElement("div");
-  sessionState.className = "session-state";
-  appendStatusLine(sessionState, status);
-  addText(sessionState, "placement", placementLabel(session, status), "span");
-  item.append(sessionState);
-
-  const created = createdRecency(session, now);
-  appendTiming(item, state, session, status, created);
-  appendLifecycleActions(item, state, session, status, { className: "desktop-actions" });
-  appendConfirmation(item, state, session, status, "desktop-confirmation");
-
-  const mobilePrimary = document.createElement("div");
-  mobilePrimary.className = "mobile-primary-action";
-  if (
-    status === "warm" &&
-    state.renamingId !== session.id &&
-    !state.confirmations.has(session.id)
-  ) {
-    addText(mobilePrimary, "session-open-affordance", "Open ›", "span");
-  } else if (status === "sleeping" || (status === "failed" && session.backupId)) {
-    const resume = actionButton(state, "Resume", "resume", session.id, {
-      primary: true,
-      focusPrefix: "mobile-primary-",
-    });
-    mobilePrimary.append(resume);
-  }
-  item.append(mobilePrimary);
-  appendMobileDisclosure(item, state, session, status, created);
-
-  if (state.rowErrors.has(session.id)) {
-    const error = addText(item, "row-error", state.rowErrors.get(session.id));
-    error.setAttribute("role", "alert");
-  }
-  return item;
-}
-
-function projectSummary(projectSessions, state) {
-  const counts = new Map();
-  for (const session of projectSessions) {
-    const status = sessionDisplayStatus(
-      session.status,
-      state.busy.get(session.id),
-      session.deleting,
-    );
-    counts.set(status, (counts.get(status) || 0) + 1);
-  }
-  const parts = [
-    `${projectSessions.length} ${projectSessions.length === 1 ? "sandbox" : "sandboxes"}`,
-  ];
-  for (const status of ["warm", "sleeping", "stopping", "deleting", "failed"]) {
-    const count = counts.get(status);
-    if (count) parts.push(`${count} ${status}`);
-  }
-  return parts.join(" · ");
-}
-
-function renderSessionList(parent, state, projectSessions, label, now) {
-  const list = document.createElement("ul");
-  list.className = "session-list";
-  list.setAttribute("aria-label", label);
-  for (const session of projectSessions) list.append(renderSessionRow(state, session, now));
-  parent.append(list);
 }
 
 function focusRenderedControl(content, focusKey) {
@@ -501,17 +332,53 @@ function focusRenderedControl(content, focusKey) {
   control?.focus();
 }
 
+function renderSessionsHome(parent) {
+  parent.replaceChildren();
+}
+
+function renderManageWorkspace(parent, state, session) {
+  parent.replaceChildren();
+  const page = document.createElement("section");
+  page.className = "workspace-manage-page";
+  const back = document.createElement("a");
+  back.className = "workspace-manage-back";
+  back.href = `/s/${encodeURIComponent(session.id)}`;
+  back.textContent = "Back to session";
+  page.append(back);
+  addText(page, "workspace-manage-title", sessionTitle(session) || "Untitled session", "h1");
+  addText(
+    page,
+    "workspace-manage-meta",
+    `${session.repo || "Unknown repository"} · ${session.branch || session.id}`,
+    "p",
+  );
+  const status = sessionDisplayStatus(session.status, state.busy.get(session.id), session.deleting);
+  const controls = document.createElement("div");
+  controls.className = "workspace-manage-controls";
+  if (state.renamingId === session.id) appendRenameForm(controls, state, session);
+  else
+    appendLifecycleActions(controls, state, session, status, {
+      className: "work-actions",
+      includeRename: true,
+      includePrimary: true,
+    });
+  appendConfirmation(controls, state, session, status);
+  page.append(controls);
+  parent.append(page);
+}
+
 function focusTargetSession(content, state) {
   if (!state.focusTargetSession || !state.targetSessionId) return;
-  const target = content.querySelector(
-    `.session[data-session-id="${CSS.escape(state.targetSessionId)}"]`,
+  const target = (state.repositoryNav || content).querySelector(
+    `[data-select-session="${CSS.escape(state.targetSessionId)}"]`,
   );
   target?.focus({ preventScroll: true });
   target?.scrollIntoView({ block: "center" });
+  // Legacy focus contract: state.targetSessionId === session.id
 }
 
 export function renderSessionsView(state) {
-  const { content, summary, sessions, loaded, fetching } = state;
+  const { content, repositoryNav, summary, sessions, loaded, fetching } = state;
   const activeElement = document.activeElement;
   const focusKey =
     activeElement instanceof HTMLElement && content.contains(activeElement)
@@ -535,6 +402,7 @@ export function renderSessionsView(state) {
     return { preservedDraft: true };
   }
 
+  if (repositoryNav) renderRepositoryRail(repositoryNav, repositoryGroups, state, Date.now());
   content.replaceChildren();
   if (!loaded) {
     const loading = document.createElement("div");
@@ -559,48 +427,11 @@ export function renderSessionsView(state) {
     content.append(empty);
     return { preservedDraft: false };
   }
-
-  const projects = document.createElement("div");
-  projects.className = "project-groups";
-  const now = Date.now();
-  for (const group of repositoryGroups) {
-    const project = document.createElement("section");
-    project.className = "project-group";
-    const header = document.createElement("header");
-    header.className = "project-header";
-    const heading = document.createElement("div");
-    heading.className = "project-heading";
-    addText(heading, "project-name", group.repo, "h2");
-    addText(header, "project-summary", projectSummary(group.sessions, state), "span");
-    header.prepend(heading);
-    project.append(header);
-
-    const activeSessions = group.sessions.filter((session) => session.status !== "sleeping");
-    const sleepingSessions = group.sessions.filter((session) => session.status === "sleeping");
-    if (activeSessions.length > 0) {
-      renderSessionList(project, state, activeSessions, `${group.repo} active sandboxes`, now);
-    }
-    if (sleepingSessions.length > 0) {
-      const sleeping = document.createElement("details");
-      sleeping.className = "sleeping-group";
-      sleeping.dataset.repo = group.repo;
-      sleeping.open = state.expandedSleepingProjects.has(group.repo);
-      const sleepingSummary = document.createElement("summary");
-      sleepingSummary.dataset.focusKey = sleepingProjectFocusKey(group.repo);
-      sleepingSummary.append(
-        document.createTextNode(
-          `${sleepingSessions.length} sleeping ${
-            sleepingSessions.length === 1 ? "sandbox" : "sandboxes"
-          }`,
-        ),
-      );
-      sleeping.append(sleepingSummary);
-      renderSessionList(sleeping, state, sleepingSessions, `${group.repo} sleeping sandboxes`, now);
-      project.append(sleeping);
-    }
-    projects.append(project);
-  }
-  content.append(projects);
+  const managedSession = state.targetSessionId
+    ? sessions.find((session) => session.id === state.targetSessionId)
+    : undefined;
+  if (managedSession) renderManageWorkspace(content, state, managedSession);
+  else renderSessionsHome(content);
   focusTargetSession(content, state);
   focusRenderedControl(content, focusKey);
   return { preservedDraft: false };

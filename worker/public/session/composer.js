@@ -28,8 +28,13 @@ export function shouldSubmitComposerKey(event) {
   return event.key === "Enter" && !event.shiftKey && !event.isComposing;
 }
 
-const queueText = (item) =>
-  typeof item === "string" ? item : typeof item?.text === "string" ? item.text : undefined;
+const queueText = (item) => {
+  if (typeof item === "string") return item;
+  if (typeof item?.text === "string") return item.text;
+  if (typeof item?.message === "string") return item.message;
+  if (typeof item?.prompt === "string") return item.prompt;
+  return undefined;
+};
 
 const messageText = (message) => {
   if (typeof message?.content === "string") return message.content;
@@ -45,6 +50,55 @@ const boundedQueueMessage = (message, maximum = 52) => {
     .trim();
   return compact.length > maximum ? `${compact.slice(0, maximum).trimEnd()}…` : compact;
 };
+
+export function queuePresentation(projection, maximum = 3) {
+  const limit = Number.isSafeInteger(maximum) ? Math.max(0, maximum) : 3;
+  const queue = projection?.queue;
+  const items = [
+    ...(Array.isArray(queue?.steer)
+      ? queue.steer.map((item) => ({ mode: "steer", label: "Steer", text: queueText(item) }))
+      : []),
+    ...(Array.isArray(queue?.followUp)
+      ? queue.followUp.map((item) => ({
+          mode: "follow_up",
+          label: "Queued",
+          text: queueText(item),
+        }))
+      : []),
+  ].filter((item) => item.text);
+  return {
+    items: items.slice(0, limit).map((item) => ({
+      ...item,
+      text: boundedQueueMessage(item.text, 88),
+    })),
+    overflow: Math.max(0, items.length - limit),
+  };
+}
+
+export function renderComposerQueue(root, presentation) {
+  root.replaceChildren();
+  root.hidden = presentation.items.length === 0;
+  presentation.items.forEach((item, index) => {
+    const row = root.ownerDocument.createElement("li");
+    row.className = `composer-queue-item queue-${item.mode}`;
+    const order = root.ownerDocument.createElement("span");
+    order.className = "composer-queue-order";
+    order.textContent = String(index + 1);
+    const text = root.ownerDocument.createElement("span");
+    text.className = "composer-queue-text";
+    text.textContent = item.text;
+    const label = root.ownerDocument.createElement("small");
+    label.textContent = item.label;
+    row.append(order, text, label);
+    root.append(row);
+  });
+  if (presentation.overflow > 0) {
+    const more = root.ownerDocument.createElement("li");
+    more.className = "composer-queue-more";
+    more.textContent = `+${presentation.overflow} more`;
+    root.append(more);
+  }
+}
 
 const activityForTool = (name) => {
   const normalized = String(name ?? "").toLowerCase();
@@ -106,10 +160,9 @@ const sendLabel = (active, deliveryMode, submitting) => {
 };
 
 const queuedDeliveryHint = (delivery, activity) => {
-  const message = boundedQueueMessage(delivery?.message);
   return delivery?.kind === "steer"
-    ? `Steer queued · delivers after ${activity ?? "current action"} · “${message}”`
-    : `Follow-up queued · sends after Pi finishes · “${message}”`;
+    ? `Steer queued · delivers after ${activity ?? "current action"}`
+    : "Follow-up queued · sends after Pi finishes";
 };
 
 export function composerPresentation({ projection, lane, draft, delivery, deliveryMode }) {
@@ -149,7 +202,11 @@ export function renderComposerPresentation(elements, presentation) {
   elements.stopButton.hidden = !presentation.active;
   elements.stopButton.disabled = presentation.stopDisabled;
   elements.sendButton.disabled = presentation.sendDisabled;
-  elements.sendButton.textContent = presentation.sendLabel;
+  elements.sendButton.setAttribute?.("aria-label", presentation.sendLabel);
+  elements.sendButton.setAttribute?.("title", presentation.sendLabel);
+  const sendLabel = elements.sendButton.querySelector?.(".button-label");
+  if (sendLabel) sendLabel.textContent = presentation.sendLabel;
+  else elements.sendButton.textContent = presentation.sendLabel;
   elements.hint.dataset.state = presentation.status;
   if (elements.hint.textContent !== presentation.hint)
     elements.hint.textContent = presentation.hint;

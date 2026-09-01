@@ -87,6 +87,10 @@ class TestElement {
     this.open = true;
   }
 
+  show(): void {
+    this.open = true;
+  }
+
   close(): void {
     this.open = false;
     const event = { target: this, preventDefault: () => undefined };
@@ -151,13 +155,11 @@ describe("session changes viewer", () => {
     });
   });
 
-  it("switches automatically from split to unified without a preference or mode toggle", () => {
+  it("uses a compact unified diff without a preference or mode toggle", () => {
     assert.include(changesCss, ".changes-split");
     assert.include(changesCss, ".changes-unified");
-    assert.match(
-      changesCss,
-      /@media \(max-width: 1099px\)[\s\S]*?\.changes-split \{[\s\S]*?display: none;[\s\S]*?\.changes-unified \{[\s\S]*?display: block;/u,
-    );
+    assert.match(changesCss, /\.changes-unified\s*\{\s*display: block;/u);
+    assert.match(changesCss, /\.changes-split\s*\{\s*display: none;/u);
     assert.notInclude(changesSource, "localStorage");
     assert.notInclude(changesSource, "mode-toggle");
   });
@@ -176,7 +178,7 @@ describe("session changes viewer", () => {
     assert.notInclude(changesSource, "setTimeout");
   });
 
-  it("lazily loads a patch and behaviorally fences stale session responses", async () => {
+  it("opens the first patch and behaviorally fences stale session responses", async () => {
     const document = new TestDocument();
     const headerActions = new TestElement("div");
     document.body.append(headerActions);
@@ -224,9 +226,6 @@ describe("session changes viewer", () => {
     staleJson.resolve({ files: [file("stale.ts")], truncated: false });
     await flush();
     assert.strictEqual(byClass(document.body, "changes-file-path").textContent, "new.ts");
-    assert.lengthOf(requests, 2, "patch fetch remains lazy until selection");
-
-    byClass(document.body, "changes-file").click();
     assert.lengthOf(requests, 3);
     assert.include(requests[2].url, "/changes/patch?path=new.ts");
     const stalePatchJson = deferred<unknown>();

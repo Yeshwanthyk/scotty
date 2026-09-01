@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#01060c" />
+    <meta name="theme-color" content="#0a0a0a" />
     <meta name="referrer" content="same-origin" />
     <title>Scotty cloud agent</title>
     <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
@@ -31,18 +31,28 @@
             ×
           </button>
         </header>
-        <div class="directory-heading">
-          <h2>Cloud agents</h2>
-          <span id="agent-count"></span>
-        </div>
+        <span id="agent-count" class="visually-hidden"></span>
+        <label class="agent-filter" for="agent-filter">
+          <span class="visually-hidden">Filter cloud agents</span>
+          <input
+            id="agent-filter"
+            type="search"
+            autocomplete="off"
+            placeholder="Filter sessions…"
+          />
+        </label>
         <nav id="agent-list" class="agent-list" aria-label="Cloud agents">
           <p class="directory-state">Loading cloud agents…</p>
         </nav>
         <footer class="sidebar-footer">
-          <a class="new-agent-link" href="/sessions"
-            ><span aria-hidden="true">＋</span> New cloud agent</a
+          <a class="sessions-link" href="/sessions">All sessions</a>
+          <a
+            class="new-agent-link"
+            href="/sessions"
+            aria-label="New cloud agent"
+            title="New cloud agent"
+            ><span aria-hidden="true">＋</span></a
           >
-          <a class="sessions-link" href="/sessions">Manage sessions</a>
         </footer>
       </aside>
 
@@ -56,39 +66,56 @@
             aria-expanded="false"
           >
             <span class="agent-switcher-mark" aria-hidden="true">☰</span>
-            <span
+            <span class="agent-switcher-copy"
               ><strong id="active-agent-title">Cloud agent</strong
               ><small id="active-agent-repo">Connecting to Pi</small></span
             >
+            <span
+              id="mobile-connection-state"
+              class="mobile-connection-state"
+              data-state="connecting"
+              aria-label="Connecting"
+              ><span class="connection-dot" aria-hidden="true"></span
+            ></span>
           </button>
           <div class="active-agent-copy">
             <h1 id="agent-title">Cloud agent</h1>
             <p id="agent-meta">Connecting to Pi</p>
           </div>
-          <div class="agent-header-actions">
+          <div class="agent-header-utilities">
             <div id="connection-state" class="connection-state" data-state="connecting">
               <span class="connection-dot" aria-hidden="true"></span>
               <span id="connection-label">Connecting</span>
             </div>
-            <button
-              id="open-terminal"
-              class="terminal-toggle"
-              type="button"
-              aria-controls="terminal-drawer"
-              aria-expanded="false"
-            >
-              Terminal
-            </button>
-            <a id="manage-session" class="manage-session-link" href="/sessions"> Manage session </a>
-            <button
-              id="open-summary"
-              class="summary-toggle"
-              type="button"
-              aria-controls="summary-panel"
-              aria-expanded="false"
-            >
-              Summary
-            </button>
+            <div class="agent-header-actions" role="group" aria-label="Session tools">
+              <button
+                id="open-summary"
+                class="summary-toggle"
+                type="button"
+                aria-controls="summary-panel"
+                aria-expanded="false"
+              >
+                <span class="header-action-icon" aria-hidden="true">≡</span>
+                <span class="header-action-label">Summary</span>
+              </button>
+              <button
+                id="open-terminal"
+                class="terminal-toggle"
+                type="button"
+                aria-controls="terminal-drawer"
+                aria-expanded="false"
+              >
+                <span class="header-action-icon" aria-hidden="true">›_</span>
+                <span class="header-action-label">Terminal</span>
+              </button>
+              <a
+                id="manage-session"
+                class="manage-session-link"
+                href="/sessions"
+                aria-label="Manage session"
+                >Manage</a
+              >
+            </div>
           </div>
         </header>
 
@@ -121,8 +148,8 @@
             <span id="composer-hint" class="composer-hint" role="status" aria-live="polite">
               Loading session state…
             </span>
-            <button id="stop-agent" class="button button-stop" type="button" hidden>Stop Pi</button>
           </div>
+          <ol id="composer-queue" class="composer-queue" aria-label="Queued messages" hidden></ol>
           <form id="composer" class="composer" aria-label="Message Pi">
             <label class="visually-hidden" for="composer-input">Message Pi</label>
             <textarea
@@ -146,11 +173,11 @@
                       value="follow_up"
                       checked
                     />
-                    <span><strong>Follow-up</strong><small>After Pi finishes</small></span>
+                    <span title="Send after Pi finishes"><strong>Queue</strong></span>
                   </label>
                   <label for="delivery-steer">
                     <input id="delivery-steer" type="radio" name="delivery-mode" value="steer" />
-                    <span><strong>Steer</strong><small>Guide the next turn</small></span>
+                    <span title="Guide the current turn"><strong>Steer</strong></span>
                   </label>
                 </div>
               </fieldset>
@@ -160,8 +187,30 @@
               <span id="composer-keyboard-instructions" class="visually-hidden">
                 Enter sends the message. Shift plus Enter inserts a new line.
               </span>
-              <button id="send-message" class="button button-primary" type="submit" disabled>
-                Send
+              <button
+                id="stop-agent"
+                class="composer-action button-stop"
+                type="button"
+                aria-label="Stop Pi"
+                title="Stop Pi"
+                hidden
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="4" y="4" width="8" height="8" rx="1" />
+                </svg>
+              </button>
+              <button
+                id="send-message"
+                class="composer-action button-primary"
+                type="submit"
+                aria-label="Send"
+                title="Send"
+                disabled
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M8 12.5v-9m0 0L4.5 7M8 3.5 11.5 7" />
+                </svg>
+                <span class="button-label visually-hidden">Send</span>
               </button>
             </div>
           </form>

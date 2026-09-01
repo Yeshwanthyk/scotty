@@ -1,4 +1,7 @@
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const ACTIVE_STATUSES = new Set(["booting", "warm"]);
+
+export const isActiveCloudAgent = (agent) => ACTIVE_STATUSES.has(agent.status);
 
 export function normalizeCloudAgent(value) {
   if (!isObject(value) || typeof value.id !== "string") return undefined;
@@ -15,7 +18,7 @@ export function normalizeCloudAgent(value) {
   };
 }
 
-export function groupCloudAgents(agents) {
+export function groupCloudAgents(agents, currentSessionId) {
   const groups = new Map();
   for (const agent of agents) {
     const group = groups.get(agent.repo) ?? [];
@@ -23,11 +26,48 @@ export function groupCloudAgents(agents) {
     groups.set(agent.repo, group);
   }
   return [...groups.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left, leftAgents], [right, rightAgents]) => {
+      const leftCurrent = leftAgents.some((agent) => agent.id === currentSessionId);
+      const rightCurrent = rightAgents.some((agent) => agent.id === currentSessionId);
+      if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1;
+      return left.localeCompare(right);
+    })
     .map(([repo, items]) => ({
       repo,
-      agents: items.sort((left, right) => left.title.localeCompare(right.title)),
+      agents: items.sort((left, right) => {
+        const rank = (agent) =>
+          agent.id === currentSessionId ? 0 : agent.status === "warm" ? 1 : 2;
+        return rank(left) - rank(right) || left.title.localeCompare(right.title);
+      }),
     }));
+}
+
+export function cloudAgentGroupWindow(
+  agents,
+  currentSessionId,
+  { expanded = false, maximumSleeping = 6 } = {},
+) {
+  if (expanded) return { agents: [...agents], hidden: 0 };
+  const pinned = agents.filter(
+    (agent) => agent.id === currentSessionId || agent.status !== "sleeping",
+  );
+  const sleeping = agents.filter(
+    (agent) => agent.id !== currentSessionId && agent.status === "sleeping",
+  );
+  const visible = [...pinned, ...sleeping.slice(0, maximumSleeping)];
+  return { agents: visible, hidden: Math.max(0, agents.length - visible.length) };
+}
+
+export function filterCloudAgents(agents, query) {
+  const needle = String(query ?? "")
+    .trim()
+    .toLocaleLowerCase("en-US");
+  if (!needle) return [...agents];
+  return agents.filter((agent) =>
+    [agent.title, agent.repo, agent.branch]
+      .filter(Boolean)
+      .some((value) => value.toLocaleLowerCase("en-US").includes(needle)),
+  );
 }
 
 export function cloudAgentSignature(agents, currentSessionId) {
@@ -52,15 +92,27 @@ function appendText(document, parent, tag, className, text) {
   return element;
 }
 
-export function renderCloudAgents(document, target, agents, currentSessionId) {
+export function renderCloudAgents(
+  document,
+  target,
+  agents,
+  currentSessionId,
+  emptyMessage = "No cloud agents yet. Start one from Sessions.",
+  { expandedRepositories = new Set(), maximumSleeping = 6, filtering = false } = {},
+) {
+  const activeAgents = agents.filter(isActiveCloudAgent);
   const fragment = document.createDocumentFragment();
-  for (const group of groupCloudAgents(agents)) {
+  for (const group of groupCloudAgents(activeAgents, currentSessionId)) {
     const section = document.createElement("section");
     section.className = "agent-group";
     appendText(document, section, "h3", "agent-group-title", group.repo);
     const list = document.createElement("div");
     list.className = "agent-group-list";
-    for (const agent of group.agents) {
+    const window = cloudAgentGroupWindow(group.agents, currentSessionId, {
+      expanded: filtering || expandedRepositories.has(group.repo),
+      maximumSleeping,
+    });
+    for (const agent of window.agents) {
       const warm = agent.status === "warm" && agent.provider !== "runner";
       const row = document.createElement(warm ? "button" : "a");
       row.className = `agent-row status-${agent.status}`;
@@ -88,17 +140,19 @@ export function renderCloudAgents(document, target, agents, currentSessionId) {
       row.append(signal, copy);
       list.append(row);
     }
+    if (window.hidden > 0) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "agent-group-more";
+      more.dataset.expandRepo = group.repo;
+      more.textContent = `Show ${window.hidden} more`;
+      list.append(more);
+    }
     section.append(list);
     fragment.append(section);
   }
-  if (agents.length === 0) {
-    appendText(
-      document,
-      fragment,
-      "p",
-      "directory-state",
-      "No cloud agents yet. Start one from Sessions.",
-    );
+  if (activeAgents.length === 0) {
+    appendText(document, fragment, "p", "directory-state", emptyMessage);
   }
   target.replaceChildren(fragment);
 }
@@ -107,6 +161,7 @@ export function createCloudAgentDirectory({
   document,
   target,
   count,
+  filter,
   fetch,
   onSelect,
   onChange = () => {},
@@ -115,15 +170,26 @@ export function createCloudAgentDirectory({
   let agents = [];
   let currentSessionId;
   let signature = "";
+  let filterValue = "";
+  const expandedRepositories = new Set();
   let timer;
   let fetching = false;
 
   const render = () => {
-    const next = cloudAgentSignature(agents, currentSessionId);
+    const activeAgents = agents.filter(isActiveCloudAgent);
+    const visibleAgents = filterCloudAgents(activeAgents, filterValue);
+    const next = `${filterValue}\n${[...expandedRepositories].sort().join("\n")}\n${cloudAgentSignature(visibleAgents, currentSessionId)}`;
     if (next === signature) return false;
     signature = next;
-    renderCloudAgents(document, target, agents, currentSessionId);
-    count.textContent = String(agents.length);
+    renderCloudAgents(
+      document,
+      target,
+      visibleAgents,
+      currentSessionId,
+      filterValue ? "No sessions match this filter." : undefined,
+      { expandedRepositories, filtering: Boolean(filterValue) },
+    );
+    count.textContent = String(activeAgents.length);
     return true;
   };
 
@@ -158,11 +224,24 @@ export function createCloudAgentDirectory({
     if (!document.hidden) void refresh();
   };
   const click = (event) => {
+    const expander = event.target.closest?.("[data-expand-repo]");
+    if (expander && target.contains(expander)) {
+      expandedRepositories.add(expander.dataset.expandRepo);
+      signature = "";
+      render();
+      return;
+    }
     const row = event.target.closest?.("[data-session-id]");
     if (!row || !target.contains(row)) return;
     onSelect(row.dataset.sessionId);
   };
+  const input = () => {
+    filterValue = filter?.value ?? "";
+    signature = "";
+    render();
+  };
   target.addEventListener("click", click);
+  filter?.addEventListener("input", input);
   document.addEventListener("visibilitychange", visibility);
   schedule();
 
@@ -181,6 +260,7 @@ export function createCloudAgentDirectory({
     dispose() {
       clearInterval(timer);
       target.removeEventListener("click", click);
+      filter?.removeEventListener("input", input);
       document.removeEventListener("visibilitychange", visibility);
     },
   };

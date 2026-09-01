@@ -2,7 +2,6 @@ import { assert, describe, it } from "vitest";
 import {
   deletionActionLabel,
   focusKeyNeedsStableDraft,
-  lifecycleActionLabel,
   normalizeSessionListItem,
   sessionPrimaryTiming,
   sessionsRenderSignature,
@@ -75,19 +74,20 @@ describe("sessions page", () => {
     assert.include(sessionsScript, "preserveFocusedDraft: options.actionId === undefined");
   });
 
-  it("renders phone disclosure as an explicit, labelled control", () => {
+  it("renders session actions as an explicit, labelled disclosure", () => {
     assert.include(sessionListSource, 'toggle.className = "session-disclosure-toggle"');
     assert.include(sessionListSource, 'toggle.setAttribute("aria-expanded"');
     assert.include(sessionListSource, 'toggle.setAttribute("aria-controls"');
-    assert.include(sessionListSource, 'detail.className = "mobile-session-detail"');
+    assert.include(sessionListSource, 'detail.className = "session-detail"');
   });
 
-  it("labels the phone lifecycle disclosure as Actions", () => {
-    assert.strictEqual(lifecycleActionLabel(false), "Actions");
-    assert.strictEqual(lifecycleActionLabel(true), "Hide actions");
+  it("uses a compact overflow trigger for lifecycle actions", () => {
+    assert.include(sessionListSource, 'actionButton(state, "⋯", "toggle-details"');
     assert.include(sessionListSource, 'toggle.className = "session-disclosure-toggle"');
     assert.include(sessionListSource, 'toggle.setAttribute("aria-expanded"');
-    assert.include(sessionListSource, 'detail.className = "mobile-session-detail"');
+    assert.include(sessionListSource, 'detail.className = "session-detail"');
+    assert.include(sessionsScript, "expandedSessionDetails.clear()");
+    assert.include(sessionsScript, "mobileUtilities.open = false");
   });
 
   it("lets keyboard users close phone actions and restores disclosure focus", () => {
@@ -203,6 +203,8 @@ describe("sessions page", () => {
       "sleepingSummary.dataset.focusKey = sleepingProjectFocusKey(group.repo)",
     );
     assert.include(sessionListSource, "focusRenderedControl(content, focusKey)");
+    assert.include(sessionListSource, "if (sleeping.open)");
+    assert.include(sessionsScript, "if (changed) render()");
   });
 
   it("keeps passive session renders stable within a minute", () => {

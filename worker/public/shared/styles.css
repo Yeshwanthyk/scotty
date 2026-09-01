@@ -1,16 +1,16 @@
 :root {
-  --space: #01060c;
-  --shell: #030e14;
-  --panel: #07131a;
-  --panel-raised: #0b1a21;
-  --control: #020b10;
-  --ink: #eee7d3;
-  --muted: #b5ad95;
-  --quiet: #847d6a;
-  --line: #2b373b;
-  --line-soft: rgb(238 231 211 / 0.09);
-  --line-hover: rgb(238 231 211 / 0.17);
-  --beam: #d8cfb2;
+  --space: #0a0a0a;
+  --shell: #0d0d0d;
+  --panel: #121212;
+  --panel-raised: #181818;
+  --control: #101010;
+  --ink: #f5f5f5;
+  --muted: rgb(255 255 255 / 0.62);
+  --quiet: rgb(255 255 255 / 0.46);
+  --line: rgb(255 255 255 / 0.12);
+  --line-soft: rgb(255 255 255 / 0.08);
+  --line-hover: rgb(255 255 255 / 0.16);
+  --beam: #f5f5f5;
   --accent: #cf633f;
   --accent-strong: #e07954;
   --warm: #c69a5d;
@@ -51,7 +51,7 @@ body.scotty-ui {
   top: 0;
   border-bottom: 1px solid var(--line);
   border-color: var(--line);
-  background: rgb(3 16 23 / 0.94);
+  background: rgb(13 13 13 / 0.96);
   box-shadow: none;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -72,6 +72,10 @@ body.scotty-ui {
 .standard-page main {
   width: min(100%, var(--content-width-standard));
   margin-inline: auto;
+}
+
+.sessions-page main {
+  width: min(100%, 920px);
 }
 
 .standard-page .masthead-inner {
@@ -105,7 +109,7 @@ body.scotty-ui {
 
 .app-page .masthead-nav .button:hover,
 .app-page .masthead-nav .button[aria-current="page"] {
-  background: rgb(238 231 211 / 0.05);
+  background: rgb(255 255 255 / 0.05);
   box-shadow: none;
   color: var(--ink);
 }
@@ -145,7 +149,7 @@ body.scotty-ui {
   height: 30px;
   flex: none;
   border-radius: 8px;
-  box-shadow: 0 0 0 1px rgb(238 231 211 / 0.12);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.12);
 }
 
 .scotty-ui .wordmark {
@@ -202,7 +206,7 @@ body.scotty-ui {
 }
 
 .scotty-ui .button-quiet:hover {
-  background: rgb(238 231 211 / 0.05);
+  background: rgb(255 255 255 / 0.05);
   box-shadow: none;
   color: var(--ink);
 }
@@ -233,7 +237,7 @@ body.scotty-ui {
   border-color: transparent;
   background: var(--beam);
   box-shadow: none;
-  color: #091117;
+  color: #0a0a0a;
 }
 
 .scotty-ui .button-primary:hover {
@@ -289,7 +293,7 @@ body.scotty-ui {
 }
 
 .sessions-page.has-no-sessions .page-heading .button-primary:hover {
-  background: rgb(238 231 211 / 0.05);
+  background: rgb(255 255 255 / 0.05);
   box-shadow: var(--ring-hover);
   color: var(--ink);
 }
@@ -311,7 +315,7 @@ body.scotty-ui {
   background: var(--panel);
   box-shadow:
     0 12px 32px rgb(0 0 0 / 0.22),
-    inset 0 1px 0 rgb(238 231 211 / 0.03);
+    inset 0 1px 0 rgb(255 255 255 / 0.03);
 }
 
 .sessions-page .composer-heading h2 {
@@ -366,14 +370,27 @@ body.scotty-ui {
 }
 
 .sessions-page .session {
-  border: 1px solid var(--line-soft);
-  background: var(--panel);
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
 }
 
 .sessions-page .session:hover {
-  border-color: var(--line-hover);
-  background: #091820;
+  border-color: var(--line-soft);
+  background: rgb(255 255 255 / 0.025);
+  box-shadow: none;
+}
+
+.sessions-page .session-list {
+  gap: 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.sessions-page .masthead-nav .button:hover,
+.sessions-page .masthead-nav .button[aria-current="page"] {
+  background: transparent;
   box-shadow: none;
 }
 
@@ -383,22 +400,39 @@ body.scotty-ui {
 }
 
 .scotty-ui .masthead-nav .button:hover {
-  background: rgb(238 231 211 / 0.05);
+  background: rgb(255 255 255 / 0.05);
   box-shadow: none;
 }
 
 .sessions-page .status-line {
-  background: rgb(181 173 149 / 0.08);
+  min-height: auto;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .sessions-page .status-warm .status-line {
-  background: rgb(207 99 63 / 0.11);
+  background: transparent;
   color: var(--accent-strong);
 }
 
 .sessions-page .status-warm .signal {
+  width: 6px;
+  height: 6px;
   background: var(--accent);
-  box-shadow: 0 0 0 3px rgb(207 99 63 / 0.13);
+  box-shadow: none;
+}
+
+.sessions-page .actions .button {
+  min-height: 32px;
+  padding-inline: 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.sessions-page .actions .button:hover {
+  background: rgb(255 255 255 / 0.045);
+  box-shadow: none;
 }
 
 .sessions-page .status-sleeping .status-line,
@@ -518,7 +552,7 @@ body.scotty-ui {
   border: 0;
   background: var(--beam);
   box-shadow: none;
-  color: #091117;
+  color: #0a0a0a;
 }
 
 .pair-page .button:hover {
@@ -601,7 +635,7 @@ body.scotty-ui {
 
   .app-page .mobile-utilities summary:hover,
   .app-page .mobile-utilities[open] summary {
-    background: rgb(238 231 211 / 0.05);
+    background: rgb(255 255 255 / 0.05);
     color: var(--ink);
   }
 
@@ -625,6 +659,20 @@ body.scotty-ui {
       0 16px 36px rgb(0 0 0 / 0.42);
   }
 
+  .sessions-page .mobile-utilities summary {
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    font-size: 1rem;
+    font-weight: 700;
+  }
+
+  .sessions-page .mobile-utilities nav {
+    width: 132px;
+    border: 1px solid var(--line-hover);
+    box-shadow: 0 4px 8px rgb(0 0 0 / 0.28);
+  }
+
   .app-page .mobile-utilities nav a {
     min-height: 44px;
     padding: 13px 16px;
@@ -635,12 +683,12 @@ body.scotty-ui {
   }
 
   .app-page .mobile-utilities nav a:hover {
-    background: rgb(238 231 211 / 0.05);
+    background: rgb(255 255 255 / 0.05);
     color: var(--ink);
   }
 
   .app-page .mobile-utilities nav a[aria-current="page"] {
-    background: rgb(238 231 211 / 0.08);
+    background: rgb(255 255 255 / 0.08);
     color: var(--ink);
   }
 }
@@ -694,7 +742,7 @@ body.scotty-ui {
   .sessions-page .composer {
     padding: 14px;
     border-radius: 8px;
-    box-shadow: inset 0 1px 0 rgb(238 231 211 / 0.03);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.03);
   }
 
   .sessions-page .composer::before {

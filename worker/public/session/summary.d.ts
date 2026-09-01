@@ -1,7 +1,9 @@
 import type { Artifact } from "./artifacts.js";
 
 export interface SummaryProjection {
+  readonly objective: string;
   readonly update: string;
+  readonly previousUpdates: ReadonlyArray<string>;
   readonly artifacts: ReadonlyArray<Artifact & { readonly reference: string }>;
 }
 

@@ -30,8 +30,12 @@ export type ComposerProjection = {
       | ReadonlyArray<string | { readonly type?: string; readonly text?: string }>;
   }>;
   readonly queue?: {
-    readonly steer?: ReadonlyArray<string | { readonly text?: string }>;
-    readonly followUp?: ReadonlyArray<string | { readonly text?: string }>;
+    readonly steer?: ReadonlyArray<
+      string | { readonly text?: string; readonly message?: string; readonly prompt?: string }
+    >;
+    readonly followUp?: ReadonlyArray<
+      string | { readonly text?: string; readonly message?: string; readonly prompt?: string }
+    >;
   };
 };
 export type ComposerPresentation = {
@@ -48,8 +52,21 @@ export type ComposerElements = {
   readonly recovery: { hidden: boolean };
   readonly deliveryControls: { hidden: boolean; disabled: boolean };
   readonly stopButton: { hidden: boolean; disabled: boolean };
-  readonly sendButton: { disabled: boolean; textContent: string | null };
+  readonly sendButton: {
+    disabled: boolean;
+    textContent: string | null;
+    setAttribute?(name: string, value: string): void;
+    querySelector?(selector: string): { textContent: string | null } | null;
+  };
   readonly hint: { dataset: Record<string, string>; textContent: string | null };
+};
+export type ComposerQueuePresentation = {
+  readonly items: ReadonlyArray<{
+    readonly mode: DeliveryMode;
+    readonly label: string;
+    readonly text: string;
+  }>;
+  readonly overflow: number;
 };
 export declare function createSessionMemory(): {
   entry(sessionId: string): SessionMemoryEntry;
@@ -84,4 +101,12 @@ export declare function composerPresentation(input: {
 export declare function renderComposerPresentation(
   elements: ComposerElements,
   presentation: ComposerPresentation,
+): void;
+export declare function queuePresentation(
+  projection: ComposerProjection | undefined,
+  maximum?: number,
+): ComposerQueuePresentation;
+export declare function renderComposerQueue(
+  root: Element & { hidden: boolean; ownerDocument: Document },
+  presentation: ComposerQueuePresentation,
 ): void;
