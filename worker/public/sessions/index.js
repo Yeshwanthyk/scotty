@@ -115,7 +115,7 @@ function setComposerOpen(open) {
   composerRegion.toggleAttribute("inert", !open);
   composerRegion.setAttribute("aria-hidden", open ? "false" : "true");
   newSessionButton.setAttribute("aria-expanded", open ? "true" : "false");
-  newSessionButton.textContent = open ? "Close" : "New session";
+  newSessionButton.textContent = open ? "Close" : "Create session";
   newSessionButton.classList.toggle("button-primary", !open);
   if (open) requestAnimationFrame(() => titleInput.focus());
   else newSessionButton.focus();

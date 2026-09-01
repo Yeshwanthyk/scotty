@@ -2144,6 +2144,14 @@ body.sessions-page .composer-region.is-open .composer {
     height: 100dvh;
   }
 
+  body.sessions-page.composer-open .sessions-rail {
+    display: none;
+  }
+
+  body.sessions-page.composer-open .workspace-shell {
+    display: grid;
+  }
+
   body.sessions-page.mobile-session-open .sessions-rail {
     display: none;
   }
