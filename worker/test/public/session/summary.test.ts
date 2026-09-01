@@ -349,7 +349,9 @@ describe("agent Summary projection", () => {
         configured: true,
         hatchId: "hatch-1",
         serviceName: "Preview",
+        desiredStatus: "open",
         observedStatus: "running",
+        exposure: "active",
         available: true,
       },
     );
@@ -370,10 +372,67 @@ describe("agent Summary projection", () => {
         configured: true,
         hatchId: "hatch-1",
         serviceName: "Preview",
+        desiredStatus: "open",
         observedStatus: "running",
+        exposure: "closed",
         available: false,
       },
     );
+  });
+
+  it("keeps an unconfigured Hatch absent from the summary", async () => {
+    const document = new TestDocument();
+    const root = new TestNode("div");
+    const view = createSummaryView({
+      document: document as never,
+      root: root as never,
+      baseUrl: "https://scotty.example/",
+      fetch: (() => Promise.resolve(response({ status: "not_configured" }))) as never,
+    });
+
+    view.render(
+      projectionFromSnapshot(
+        snapshot([{ id: "update", role: "assistant", content: "No preview configured." }]),
+      ),
+      sessionId,
+    );
+    assert.equal(root.children.length, 2);
+    assert.equal(root.children[1]?.children.length, 0);
+    assert.equal((root.children[1] as TestNode & { hidden: boolean }).hidden, true);
+    await flush();
+    assert.notInclude(renderedText(root), "Hatch");
+    assert.equal((root.children[1] as TestNode & { hidden: boolean }).hidden, true);
+  });
+
+  it("explains configured Hatch states instead of presenting a dead open link", async () => {
+    const document = new TestDocument();
+    const root = new TestNode("div");
+    const view = createSummaryView({
+      document: document as never,
+      root: root as never,
+      baseUrl: "https://scotty.example/",
+      fetch: (() =>
+        Promise.resolve(
+          response({
+            status: "configured",
+            hatchId: "hatch-1",
+            service: { name: "Preview", port: 4173 },
+            desiredStatus: "open",
+            observedStatus: "starting",
+            exposure: "not_exposed",
+          }),
+        )) as never,
+    });
+
+    view.render(
+      projectionFromSnapshot(
+        snapshot([{ id: "update", role: "assistant", content: "Preview is starting." }]),
+      ),
+      sessionId,
+    );
+    await flush();
+    assert.include(renderedText(root), "Hatch is starting");
+    assert.notInclude(renderedText(root), "Open Hatch");
   });
 
   it("fences stale fetches and constructs only authenticated same-origin routes", () => {

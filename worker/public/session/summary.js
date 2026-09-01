@@ -238,7 +238,9 @@ export function decodeSummaryHatch(value) {
     configured: true,
     hatchId: value.hatchId,
     serviceName: sanitizeText(value.service.name, 120),
+    desiredStatus: value.desiredStatus,
     observedStatus: value.observedStatus,
+    exposure: value.exposure,
     available:
       value.desiredStatus === "open" &&
       value.observedStatus === "running" &&
@@ -313,20 +315,35 @@ function renderEvidence(document, target, sessionId, evidence) {
   target.append(link);
 }
 
+function hatchStateCopy(hatch) {
+  if (hatch.desiredStatus === "closed" || hatch.exposure === "closed")
+    return "Hatch is closed. Ask Pi to open it when you need public access.";
+  if (hatch.observedStatus === "starting")
+    return "Hatch is starting. Public access will appear when the service is healthy.";
+  if (hatch.observedStatus === "sleeping")
+    return "Hatch is asleep. Public access will return when the service wakes.";
+  if (hatch.observedStatus === "unhealthy")
+    return "Hatch is unhealthy. Public access is paused until the service recovers.";
+  if (hatch.observedStatus === "stopped")
+    return "Hatch is stopped. Ask Pi to start it when you need public access.";
+  if (hatch.observedStatus === "failed")
+    return "Hatch failed to start. Ask Pi to inspect the application service before trying again.";
+  return "Hatch is configured, but public access is not ready yet.";
+}
 function renderHatch(document, target, sessionId, hatch) {
   if (!hatch.configured) {
-    target.replaceChildren(
-      sectionHeading(document, "Hatch", "Not configured"),
-      summaryState(document, "No Hatch is configured for this session."),
-    );
+    target.hidden = true;
+    target.replaceChildren();
     return;
   }
+  target.hidden = false;
   const meta = document.createElement("p");
   meta.className = "summary-meta";
   meta.textContent = hatch.available
     ? `${hatch.observedStatus} · public HTTPS ready`
     : `${hatch.observedStatus} · public HTTPS unavailable`;
   target.replaceChildren(sectionHeading(document, "Hatch", hatch.serviceName), meta);
+  if (!hatch.available) target.append(summaryState(document, hatchStateCopy(hatch)));
   if (hatch.available) {
     const link = document.createElement("a");
     link.className = "summary-link summary-link-primary";
@@ -466,32 +483,39 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
       fragment.append(update);
       const hatchTarget = document.createElement("section");
       hatchTarget.className = "summary-section summary-hatch";
+      hatchTarget.hidden = true;
       hatchTarget.dataset.currentHatch = "";
       const currentHatch = hatchStatus.current(sessionId);
       if (currentHatch) renderHatch(document, hatchTarget, sessionId, currentHatch);
-      else
-        hatchTarget.append(
-          sectionHeading(document, "Hatch", "Loading…"),
-          summaryState(document, "Checking the current authenticated session state…"),
-        );
+      else hatchTarget.replaceChildren();
       fragment.append(hatchTarget);
       void hatchStatus
         .refresh(sessionId)
         .then((hatch) => {
           if (generation !== currentGeneration) return;
           if (hatch) renderHatch(document, hatchTarget, sessionId, hatch);
-          else
+          else {
+            hatchTarget.hidden = false;
             hatchTarget.replaceChildren(
-              sectionHeading(document, "Hatch", "Unavailable"),
-              summaryState(document, "Current Hatch status could not be verified."),
+              sectionHeading(document, "Hatch", "Status unavailable"),
+              summaryState(
+                document,
+                "Hatch status could not be verified. No Hatch action was taken.",
+              ),
             );
+          }
         })
         .catch(() => {
-          if (generation === currentGeneration && !hatchStatus.current(sessionId))
+          if (generation === currentGeneration && !hatchStatus.current(sessionId)) {
+            hatchTarget.hidden = false;
             hatchTarget.replaceChildren(
               sectionHeading(document, "Hatch", "Unavailable"),
-              summaryState(document, "Current Hatch status could not be loaded."),
+              summaryState(
+                document,
+                "Hatch status could not be loaded. No Hatch action was taken.",
+              ),
             );
+          }
         });
       for (const artifact of summary.artifacts) {
         const target = document.createElement("section");

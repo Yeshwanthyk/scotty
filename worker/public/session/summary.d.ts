@@ -37,7 +37,9 @@ export type SummaryHatch =
       readonly configured: true;
       readonly hatchId: string;
       readonly serviceName: string;
+      readonly desiredStatus: "open" | "closed";
       readonly observedStatus: string;
+      readonly exposure: "not_exposed" | "active" | "unexpose_pending" | "closed";
       readonly available: boolean;
     };
 

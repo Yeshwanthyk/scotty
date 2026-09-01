@@ -1,6 +1,17 @@
 [hatch]
 service = "web"
-argv = ["pnpm", "exec", "vite", "dev", "--host", "0.0.0.0", "--port", "4173"]
+argv = [
+  "npm",
+  "--workspace",
+  "@scotty/worker",
+  "run",
+  "dev",
+  "--",
+  "--ip",
+  "0.0.0.0",
+  "--port",
+  "4173",
+]
 cwd = "."
 port = 4173
-health_path = "/"
+health_path = "/health"
