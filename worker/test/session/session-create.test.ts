@@ -106,6 +106,12 @@ describe("Sandbox actor create boundary", () => {
     assert.ok(firstProviderIndex >= 0);
     assert.ok(hardCapIndex < firstProviderIndex);
     assert.ok(harness.schedules.some((schedule) => schedule.callback === "sessionActorDeadline"));
+    const cloneCommand = harness.commands.find(
+      (command) => command.startsWith("rm -rf ") && command.includes(" git -c http.extraHeader="),
+    );
+    assert.isDefined(cloneCommand);
+    assert.include(cloneCommand, btoa("x-access-token:scotty-managed://github/github/git-https"));
+    assert.notInclude(cloneCommand, "test-github-token");
   });
 
   it("scrubs the private prompt after settlement and journals only safe causal fields", async () => {
