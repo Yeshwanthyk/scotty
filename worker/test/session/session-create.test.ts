@@ -105,6 +105,14 @@ describe("Sandbox actor create boundary", () => {
     assert.deepStrictEqual(diagnostics.journal.at(-1), diagnostics.journalTail);
     assert.isFalse(diagnostics.journalTruncated);
 
+    harness.memory.values.set(sessionHarnessKeys.actorJournalTail, {
+      ...diagnostics.journalTail,
+      resultCode: "mismatched_tail",
+    });
+    const invalidDiagnostics = await rejection(harness.sandbox.getScottyActorDiagnostics());
+    assert.ok(invalidDiagnostics instanceof ScottyError);
+    assert.strictEqual(invalidDiagnostics.code, "upstream");
+
     const hardCapIndex = harness.events.indexOf("schedule:sessionActorHardCap");
     const firstProviderIndex = harness.events.findIndex((event) =>
       event.startsWith("host:exec:workspace"),

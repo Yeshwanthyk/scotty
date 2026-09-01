@@ -158,6 +158,7 @@ owned session is gone.
 After each supported lifecycle action, the lab reads the authenticated actor diagnostics endpoint
 and retains the validated authority, revision, bounded immutable journal, and journal tail. The
 journal response declares when its 256-event window is truncated. Provider snapshots remain
-`not-available`; the lab therefore proves the public HTTP/CLI result and its matching actor commit,
-but it does not by itself prove provider state, fault recovery, hard-cap alarm behavior, deployed
-behavior, or absence of post-response provider ambiguity.
+`not-available`; the lab therefore retains the public HTTP/CLI result and a later actor observation,
+but it does not yet correlate them by operation identity. It also does not by itself prove provider
+state, fault recovery, hard-cap alarm behavior, deployed behavior, or absence of post-response
+provider ambiguity.

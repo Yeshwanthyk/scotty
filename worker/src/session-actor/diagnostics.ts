@@ -1,4 +1,4 @@
-import { Result, Schema } from "effect";
+import { Equal, Result, Schema } from "effect";
 import { SessionAuthoritySchema, type SessionAuthority } from "./authority";
 import {
   decodeLifecycleJournalEvent,
@@ -39,7 +39,8 @@ export const makeSessionActorDiagnostics = (
       return previous !== undefined && event.sequence !== previous.sequence + 1;
     }) ||
     last.sequence !== journalSequence ||
-    journalTail.sequence !== journalSequence
+    journalTail.sequence !== journalSequence ||
+    !Equal.equals(last, journalTail)
   )
     return Result.fail("invalid_journal");
   return Result.succeed({
