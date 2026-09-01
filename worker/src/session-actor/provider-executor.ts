@@ -12,6 +12,7 @@ import {
 } from "./transitions/checkpoint";
 import { ResumeTransitionProvider, executeResumeTransition } from "./transitions/resume";
 import { SleepTransitionProvider, executeSleepTransition } from "./transitions/sleep";
+import { executeVaporizeTransition, VaporizeTransitionProvider } from "./transitions/vaporize";
 
 const unsupported = (
   committed: CommittedProviderEffectIntent,
@@ -35,6 +36,7 @@ export const sessionProviderEffectExecutorLayer: Layer.Layer<
   | CheckpointTransitionProvider
   | SleepTransitionProvider
   | ResumeTransitionProvider
+  | VaporizeTransitionProvider
 > = Layer.effect(
   ProviderEffectExecutor,
   Effect.gen(function* () {
@@ -42,6 +44,7 @@ export const sessionProviderEffectExecutorLayer: Layer.Layer<
     const checkpoint = yield* CheckpointTransitionProvider;
     const sleep = yield* SleepTransitionProvider;
     const resume = yield* ResumeTransitionProvider;
+    const vaporize = yield* VaporizeTransitionProvider;
     return ProviderEffectExecutor.of({
       execute: (committed) => {
         if (!AuthorityStateSchema.guards.Transitioning(committed.authority.state))
@@ -52,7 +55,7 @@ export const sessionProviderEffectExecutorLayer: Layer.Layer<
           Sleep: () => executeSleepTransition(sleep, committed),
           Resume: () => executeResumeTransition(resume, committed),
           WarmWork: () => Effect.fail(unsupported(committed, "warm_work_not_implemented")),
-          Vaporize: () => Effect.fail(unsupported(committed, "vaporize_not_implemented")),
+          Vaporize: () => executeVaporizeTransition(vaporize, committed),
         });
       },
     });

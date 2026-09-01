@@ -244,6 +244,7 @@ export const WarmWorkProofSchema = Schema.Struct({
 });
 export const VaporizeProofSchema = Schema.Struct({
   revokedAt: Schema.NullOr(Schema.String),
+  ownedBackupIds: Schema.Array(Schema.String),
   cleanup: CleanupProofSchema,
 });
 

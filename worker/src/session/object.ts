@@ -123,7 +123,6 @@ import {
   ContainerAuth,
   containerAuthLayer,
   PI_SESSION_PORT,
-  PI_SESSION_PROCESS_ID,
   PI_SESSION_TOKEN_HEADER,
   piSessionTransportToken,
 } from "../sandbox/auth";
@@ -202,6 +201,11 @@ import {
   recoverySandboxLayer,
 } from "../session-actor/transitions/recovery-sandbox";
 import {
+  VaporizeProviderFailure,
+  VaporizeTransitionProvider,
+  type VaporizeProviderResult,
+} from "../session-actor/transitions/vaporize";
+import {
   SessionActorMetadataStore,
   sessionActorMetadataStoreLayer,
 } from "../session-actor/metadata-store";
@@ -227,11 +231,7 @@ import {
   type SessionAuthority,
 } from "../session-actor/authority";
 import { sessionProjectionFromActor, sessionViewFromActor } from "../session-actor/public-view";
-import {
-  SESSION_SCHEDULE_CALLBACKS,
-  sessionAllowsRuntimeAccess,
-  VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS,
-} from "./lifecycle";
+import { SESSION_SCHEDULE_CALLBACKS, sessionAllowsRuntimeAccess } from "./lifecycle";
 import {
   errorName,
   SandboxRuntime,
@@ -249,7 +249,6 @@ import { SANDBOX_CONFIG_OBJECT_NAME } from "../sandbox/config-object";
 import {
   kvSessionProjectionStorage,
   projectSessionBestEffort,
-  removeSessionProjection,
   SessionProjection,
   sessionProjectionLayer,
 } from "./projection";
@@ -263,8 +262,6 @@ import {
 } from "../changes/git";
 import { parseChangedPath, type ChangedFilePatch, type ChangedFiles } from "../changes/contracts";
 
-const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
-const HARD_CAP_GRACE_MS = 30_000;
 const ABANDONED_OPERATION_MS = 5 * 60_000;
 const ACTIVITY_OBSERVATION_TTL_MS = 90_000;
 const DESTROY_DEADLINE_MS = 30_000;
@@ -403,6 +400,38 @@ const decodeCreateHardCapFence = Schema.decodeUnknownOption(CreateHardCapFenceSc
   onExcessProperty: "error",
 });
 
+const vaporizeObservedAt = Effect.map(Clock.currentTimeMillis, (now) =>
+  new Date(now).toISOString(),
+);
+
+const vaporizeUnknown = (safeResultCode: string) => () =>
+  Effect.flatMap(
+    vaporizeObservedAt,
+    (observedAt) =>
+      new VaporizeProviderFailure({
+        outcome: "unknown_after_admission",
+        safeResultCode,
+        observedAt,
+      }),
+  );
+
+const vaporizeRejected = (safeResultCode: string) =>
+  Effect.flatMap(
+    vaporizeObservedAt,
+    (observedAt) =>
+      new VaporizeProviderFailure({
+        outcome: "rejected_before_admission",
+        safeResultCode,
+        observedAt,
+      }),
+  );
+
+const vaporizeResult = (
+  tag: VaporizeProviderResult["_tag"],
+  resultCode: string,
+): Effect.Effect<VaporizeProviderResult> =>
+  Effect.map(vaporizeObservedAt, (observedAt) => ({ _tag: tag, observedAt, resultCode }));
+
 const actorReadiness = (authority: SessionAuthority): ReadinessProgress | null => {
   if (AuthorityStateSchema.guards.Stable(authority.state))
     return StableStateSchema.guards.Warm(authority.state.stable)
@@ -411,11 +440,6 @@ const actorReadiness = (authority: SessionAuthority): ReadinessProgress | null =
   const proof = authority.state.transition.proof;
   return "readiness" in proof ? proof.readiness : null;
 };
-
-interface VaporizeRetryPayload {
-  id: string;
-  nonce: string;
-}
 
 interface EvidenceDeadlinePayload {
   readonly nonce: string;
@@ -796,6 +820,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     const artifacts = artifactStoreLayer(r2ArtifactStoreCapabilities(env.ARTIFACT_BUCKET));
+    const sessionProjection = sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS));
     const legacyRuntimeAccess = this.assertRuntimeAccessProgram().pipe(
       Effect.asVoid,
       Effect.provide(store),
@@ -1103,9 +1128,138 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const recovery = recoverySandboxLayer.pipe(
       Layer.provide(Layer.mergeAll(actorRuntimeAndContainerAuth, recoveryDestroy)),
     );
+    const vaporizeProvider = Layer.effect(
+      VaporizeTransitionProvider,
+      Effect.gen({ self: this }, function* () {
+        const backups = yield* BackupStore;
+        const evidenceStore = yield* EvidenceStore;
+        const artifactStore = yield* ArtifactStore;
+        const hatchStore = yield* HatchStore;
+        const metadataStore = yield* SessionActorMetadataStore;
+        const sessionStore = yield* SessionStore;
+        const projection = yield* SessionProjection;
+        return VaporizeTransitionProvider.of({
+          revokeRuntimeAccess: () =>
+            Effect.sync(() => {
+              this.deleteSchedules("expireEvidenceJob");
+              this.deleteSchedules("expireRetainedEvidence");
+              this.deleteSchedules("retryHatchCleanup");
+              this.deleteSchedules("sessionActorHardCap");
+            }).pipe(
+              Effect.andThen(vaporizeResult("RuntimeAccessRevoked", "runtime_access_revoked")),
+            ),
+          closeHatch: ({ transition }) =>
+            this.cleanupHatchProgram(transition.nonce, "gone", true, "operation").pipe(
+              Effect.provideService(HatchStore, hatchStore),
+              Effect.andThen(hatchStore.clearAfterVaporize(transition.nonce)),
+              Effect.andThen(vaporizeResult("HatchAbsent", "hatch_absent_confirmed")),
+              Effect.catch(vaporizeUnknown("hatch_absence_unknown")),
+            ),
+          interruptEvidence: () =>
+            Effect.gen({ self: this }, function* () {
+              const state = yield* evidenceStore.read;
+              const active = state.activeJob;
+              if (active !== undefined) {
+                yield* this.cleanupEvidencePreviewProgram(
+                  active.operationNonce,
+                  "interrupted",
+                ).pipe(Effect.provideService(EvidenceStore, evidenceStore));
+                yield* evidenceStore.interrupt(active.operationNonce, "interrupted");
+              }
+              return yield* vaporizeResult("EvidenceInterrupted", "evidence_interrupted");
+            }).pipe(Effect.catch(vaporizeUnknown("evidence_interruption_unknown"))),
+          destroyRuntime: ({ authority }) =>
+            authority.session.execution.provider === "runner"
+              ? vaporizeRejected("runner_vaporize_not_enabled")
+              : Effect.tryPromise({
+                  try: () => this.destroy(),
+                  catch: () => undefined,
+                }).pipe(
+                  Effect.catch(vaporizeUnknown("runtime_destroy_outcome_unknown")),
+                  Effect.andThen(vaporizeResult("RuntimeAbsent", "runtime_absent_confirmed")),
+                ),
+          deleteBackups: ({ transition }) =>
+            Effect.gen(function* () {
+              for (const backupId of new Set(transition.proof.ownedBackupIds))
+                yield* backups.delete(backupId);
+              return yield* vaporizeResult("BackupsAbsent", "backups_absent_confirmed");
+            }).pipe(Effect.catch(vaporizeUnknown("backup_absence_unknown"))),
+          deleteEvidence: ({ transition }) =>
+            Effect.gen(function* () {
+              const state = yield* evidenceStore.read;
+              const hasEvidenceAuthority =
+                state.activeJob !== undefined ||
+                state.jobs.length > 0 ||
+                state.artifacts.length > 0 ||
+                state.pendingDeletes.length > 0;
+              if (!hasEvidenceAuthority)
+                return yield* vaporizeResult("EvidenceAbsent", "evidence_absent_confirmed");
+              const pending = yield* evidenceStore.prepareVaporizeDeletes(transition.nonce);
+              for (const artifact of pending) {
+                yield* artifactStore.deleteArtifact(artifact);
+                yield* evidenceStore.confirmDelete(artifact.objectKey);
+              }
+              yield* evidenceStore.clearForVaporize(transition.nonce);
+              return yield* vaporizeResult("EvidenceAbsent", "evidence_absent_confirmed");
+            }).pipe(Effect.catch(vaporizeUnknown("evidence_absence_unknown"))),
+          releaseGrants: ({ authority }) =>
+            Effect.gen({ self: this }, function* () {
+              const metadata = yield* metadataStore.read(authority);
+              const grants = metadata?.createObservations.credentialGrants?.grants ?? [];
+              if (grants.length > 0) {
+                const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+                if (registry === undefined)
+                  return yield* vaporizeRejected("credential_registry_unavailable");
+                const released = yield* Effect.tryPromise({
+                  try: () => registry.release({ sessionId: authority.session.id, grants }),
+                  catch: () => undefined,
+                });
+                if (!released.ok || !released.value.released)
+                  return yield* vaporizeUnknown("credential_release_unconfirmed")();
+              }
+              yield* metadataStore.deleteForVaporize(authority);
+              yield* sessionStore.clearCreateIdempotency;
+              return yield* vaporizeResult("GrantsReleased", "owned_authority_released");
+            }).pipe(Effect.catch(vaporizeUnknown("owned_authority_release_unknown"))),
+          confirmAbsence: ({ authority }) =>
+            Effect.gen({ self: this }, function* () {
+              const metadata = yield* metadataStore.read(authority);
+              if (metadata !== undefined) return yield* vaporizeUnknown("metadata_still_present")();
+              yield* Effect.sync(() => this.cancelAllSessionSchedules());
+              yield* projection.remove(authority.session.id);
+              const deleteLegacyRecord = this.authoritativeStorage.delete;
+              if (deleteLegacyRecord === undefined)
+                return yield* vaporizeRejected("legacy_record_delete_unavailable");
+              yield* Effect.tryPromise({
+                try: deleteLegacyRecord,
+                catch: () => undefined,
+              });
+              return yield* vaporizeResult("AbsenceConfirmed", "owned_state_absent_confirmed");
+            }).pipe(Effect.catch(vaporizeUnknown("absence_confirmation_unknown"))),
+        });
+      }),
+    ).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          actorBackup,
+          evidence,
+          artifacts,
+          hatch,
+          actorMetadata,
+          store,
+          sessionProjection,
+        ),
+      ),
+    );
     const providerExecutor = sessionProviderEffectExecutorLayer.pipe(
       Layer.provide(
-        Layer.mergeAll(createProvider, checkpointProvider, sleepProvider, resumeProvider),
+        Layer.mergeAll(
+          createProvider,
+          checkpointProvider,
+          sleepProvider,
+          resumeProvider,
+          vaporizeProvider,
+        ),
       ),
     );
     const actorRunner = actorEffectRunnerLayer.pipe(
@@ -1146,7 +1300,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       evidence,
       hatch,
       artifacts,
-      sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS)),
+      sessionProjection,
       backup,
       runtimeAndContainerAuth,
       rolloutDiscoveryLayer.pipe(Layer.provide(runtime)),
@@ -2965,6 +3119,60 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return publicState.view;
   });
 
+  private readonly actorVaporizeProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const store = yield* ActorStore;
+    const actor = yield* SessionActor;
+    const before = yield* store.read;
+    const authority = before.authority;
+    if (authority === undefined)
+      return yield* new ScottyError("not_found", "Session not found", {
+        httpStatus: 404,
+        exitCode: 3,
+      });
+    if (
+      AuthorityStateSchema.guards.Stable(authority.state) &&
+      StableStateSchema.guards.Gone(authority.state.stable)
+    )
+      return { id: authority.session.id, status: "gone" as const };
+
+    const now = yield* Clock.currentTimeMillis;
+    const timestamp = new Date(now).toISOString();
+    if (
+      AuthorityStateSchema.guards.Transitioning(authority.state) &&
+      TransitionSchema.guards.Vaporize(authority.state.transition)
+    ) {
+      yield* actor.resume({ timestamp, correlationId: crypto.randomUUID() });
+    } else {
+      yield* actor.handle({
+        _tag: "VaporizeCommand",
+        expectedRevision: before.revision,
+        correlationId: crypto.randomUUID(),
+        nonce: crypto.randomUUID(),
+        attempt: crypto.randomUUID(),
+        timestamp,
+        deadlineAt: new Date(now + ABANDONED_OPERATION_MS).toISOString(),
+      });
+    }
+
+    const after = yield* store.read;
+    const settled = after.authority;
+    if (
+      settled !== undefined &&
+      AuthorityStateSchema.guards.Stable(settled.state) &&
+      StableStateSchema.guards.Gone(settled.state.stable)
+    )
+      return { id: settled.session.id, status: "gone" as const };
+    const phase =
+      settled !== undefined && AuthorityStateSchema.guards.Transitioning(settled.state)
+        ? settled.state.transition.phase
+        : "unknown";
+    return yield* this.upstreamError(
+      "Session vaporize outcome is being reconciled",
+      phase,
+      authority.session.id,
+    );
+  });
+
   private readonly actorLifecycleProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     kind: LifecycleCommandKind,
@@ -3248,162 +3456,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return sleeping;
   });
 
-  private readonly armVaporizeRetryProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    payload: VaporizeRetryPayload,
-  ) {
-    yield* Effect.sync(() => this.deleteSchedules("retryVaporizeSession"));
-    yield* hostEffect("schedule", () =>
-      this.schedule(DESTROY_RETRY_SECONDS, "retryVaporizeSession", payload),
-    );
-  });
-
-  private readonly continueVaporizeSessionProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    payload: VaporizeRetryPayload,
-  ) {
-    const backups = yield* BackupStore;
-    const store = yield* SessionStore;
-    const current = yield* this.readRecordProgram();
-    if (!current) return yield* notFound(payload.id);
-    if (current.status === "gone") return yield* this.repairGoneSessionProgram(current);
-    if (current.operation?.kind !== "vaporize" || current.operation.nonce !== payload.nonce)
-      return yield* conflict("Session vaporize lease changed");
-
-    yield* projectSessionBestEffort(current);
-    yield* Effect.sync(() => this.cancelVaporizeConflictingSchedules());
-    const hatchCleanup = yield* Effect.result(
-      this.cleanupHatchProgram(payload.nonce, "gone", true, "operation"),
-    );
-    if (Result.isFailure(hatchCleanup)) {
-      yield* this.armVaporizeRetryProgram(payload);
-      return yield* hatchCleanup.failure;
-    }
-    const destroyed =
-      current.execution.provider === "runner"
-        ? yield* this.removeRunnerRuntimeProgram(current, `vaporize-${payload.nonce}`).pipe(
-            Effect.as(true),
-          )
-        : this.rawContainer?.running !== true
-          ? true
-          : yield* Effect.raceFirst(
-              hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
-              Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
-            );
-    if (!destroyed) {
-      yield* this.armVaporizeRetryProgram(payload);
-      yield* Effect.sync(() => this.ctx.abort(`Sandbox destroy exceeded ${DESTROY_DEADLINE_MS}ms`));
-      return yield* new ScottyError("upstream", "Sandbox destruction timed out", {
-        httpStatus: 502,
-        exitCode: 1,
-      });
-    }
-    if (hatchCleanup.success)
-      yield* Effect.flatMap(HatchStore, (hatch) => hatch.clearAfterVaporize(payload.nonce));
-
-    for (const backupId of new Set(current.ownedBackupIds)) yield* backups.delete(backupId);
-    const evidence = yield* EvidenceStore;
-    const evidenceState = yield* evidence.read;
-    const hasEvidenceAuthority =
-      evidenceState.activeJob !== undefined ||
-      evidenceState.jobs.length > 0 ||
-      evidenceState.artifacts.length > 0 ||
-      evidenceState.pendingDeletes.length > 0;
-    if (hasEvidenceAuthority) {
-      const pending = yield* evidence.prepareVaporizeDeletes(payload.nonce);
-      yield* this.deleteEvidenceArtifactsProgram(pending);
-      yield* evidence.clearForVaporize(payload.nonce);
-    }
-    yield* this.releasePiGrantProgram(current);
-    yield* store.clearCreateIdempotency;
-    const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-    const gone = yield* this.updateForOperationProgram(payload.nonce, (record) => {
-      const { credentialGrant: _credentialGrant, ...withoutCredentialGrant } = record;
-      return {
-        ...withoutCredentialGrant,
-        status: "gone",
-        operation: null,
-        backup: undefined,
-        ownedBackupIds: [],
-        backupExpiresAt: undefined,
-        codexThreadId: undefined,
-        agentState: undefined,
-        lastAgentEventAt: undefined,
-        failure: undefined,
-        updatedAt,
-      };
-    });
-    yield* removeSessionProjection(gone.id);
-    yield* Effect.sync(() => this.cancelAllSessionSchedules());
-    return { id: gone.id, status: "gone" as const };
-  });
-
-  private readonly vaporizeScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    let existing = yield* this.readRecordProgram();
-    if (!existing) return yield* notFound("unknown");
-    if (existing.status === "gone") {
-      const repaired = yield* Effect.result(this.repairGoneSessionProgram(existing));
-      if (Result.isSuccess(repaired)) return repaired.success;
-      yield* this.armVaporizeRetryProgram({ id: existing.id, nonce: "gone" });
-      return yield* this.upstreamError(
-        "Vaporize projection repair failed",
-        repaired.failure,
-        existing.id,
-      );
-    }
-    if (existing.operation?.kind === "evidence") {
-      const evidence = yield* EvidenceStore;
-      yield* this.cleanupEvidencePreviewProgram(existing.operation.nonce, "interrupted");
-      yield* evidence.interrupt(existing.operation.nonce, "interrupted");
-      existing = yield* this.requireRecordProgram();
-    }
-    const operation =
-      existing.operation?.kind === "vaporize"
-        ? existing.operation
-        : yield* this.acquireOperationProgram(
-            "vaporize",
-            ["booting", "warm", "sleeping", "failed"],
-            ABANDONED_OPERATION_MS,
-          );
-    const payload = { id: existing.id, nonce: operation.nonce } satisfies VaporizeRetryPayload;
-    const armed = yield* Effect.result(this.armVaporizeRetryProgram(payload));
-    if (Result.isFailure(armed)) {
-      yield* this.releaseOperationIfHeldProgram(operation.nonce);
-      return yield* this.upstreamError(
-        "Vaporize retry scheduling failed",
-        armed.failure,
-        existing.id,
-      );
-    }
-    const vaporized = yield* Effect.result(this.continueVaporizeSessionProgram(payload));
-    if (Result.isFailure(vaporized))
-      return yield* this.upstreamError("Vaporize failed", vaporized.failure);
-    return vaporized.success;
-  });
-
-  private readonly repairGoneSessionProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    record: SessionRecord,
-  ) {
-    const store = yield* SessionStore;
-    if (record.execution.provider === "cloudflare" && this.rawContainer?.running === true) {
-      const destroyed = yield* Effect.raceFirst(
-        hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
-        Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
-      );
-      if (!destroyed)
-        return yield* new ScottyError("upstream", "Sandbox destruction timed out", {
-          httpStatus: 502,
-          exitCode: 1,
-        });
-    }
-    yield* this.releasePiGrantProgram(record);
-    yield* store.clearCreateIdempotency;
-    yield* removeSessionProjection(record.id);
-    yield* Effect.sync(() => this.cancelAllSessionSchedules());
-    return { id: record.id, status: "gone" as const };
-  });
-
   private readonly prepareDownArchiveProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const authoritative = yield* this.requireRecordProgram();
     if (authoritative.execution.provider === "runner")
@@ -3484,45 +3536,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       this.schedule(DESTROY_RETRY_SECONDS, "retryHardCapDestroy", sessionId),
     );
     yield* Effect.sync(() => this.ctx.abort(`Sandbox destroy did not complete for ${sessionId}`));
-  });
-
-  private readonly retryVaporizeSessionProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    payload: VaporizeRetryPayload,
-  ) {
-    const record = yield* this.readRecordProgram();
-    if (!record || record.id !== payload.id) return;
-    if (record.status !== "gone" && record.operation?.nonce !== payload.nonce) return;
-    const armed = yield* Effect.result(this.armVaporizeRetryProgram(payload));
-    if (Result.isFailure(armed)) {
-      const released = yield* Effect.result(this.releaseOperationIfHeldProgram(payload.nonce));
-      if (Result.isFailure(released)) {
-        yield* Effect.sync(() =>
-          console.error("Vaporize schedule failure lease release failed", {
-            sessionId: payload.id,
-            error: errorName(released.failure),
-          }),
-        );
-      }
-      yield* Effect.sync(() =>
-        console.error("Vaporize retry scheduling failed", {
-          sessionId: payload.id,
-          error: errorName(armed.failure),
-        }),
-      );
-      return;
-    }
-    const continued = yield* Effect.result(this.continueVaporizeSessionProgram(payload));
-    if (Result.isFailure(continued)) {
-      const stateError = decodeEvidenceStateError(continued.failure);
-      yield* Effect.sync(() =>
-        console.error("Vaporize reconciliation failed", {
-          sessionId: payload.id,
-          error: errorName(continued.failure),
-          ...(Option.isSome(stateError) ? { evidenceStateReason: stateError.value.reason } : {}),
-        }),
-      );
-    }
   });
 
   private readonly previewForwardingRoute = (
@@ -4968,11 +4981,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   async vaporizeScottySession(): Promise<{ id: string; status: "gone" }> {
-    return this.#run(this.vaporizeScottySessionProgram());
-  }
-
-  async retryVaporizeSession(payload: VaporizeRetryPayload): Promise<void> {
-    return this.#run(this.retryVaporizeSessionProgram(payload));
+    return this.#run(this.actorVaporizeProgram());
   }
 
   async renameScottySession(title: string): Promise<SessionView> {
@@ -5129,12 +5138,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
   override onError(error: unknown): void {
     super.onError(error);
     this.enqueueRuntimeLifecycleObservation("started");
-  }
-
-  private cancelVaporizeConflictingSchedules(): void {
-    for (const callback of VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS) {
-      this.deleteSchedules(callback);
-    }
   }
 
   private cancelAllSessionSchedules(): void {

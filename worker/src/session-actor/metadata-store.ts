@@ -23,6 +23,10 @@ export type MetadataStorageMutation =
   | {
       readonly _tag: "NoWrite";
       readonly outcome: MetadataMutationOutcome | MetadataMutationFailure;
+    }
+  | {
+      readonly _tag: "Delete";
+      readonly outcome: MetadataMutationOutcome;
     };
 
 export type MetadataMutationOutcome =
@@ -31,7 +35,9 @@ export type MetadataMutationOutcome =
   | { readonly _tag: "ObservationRecorded"; readonly metadata: SessionActorMetadata }
   | { readonly _tag: "ObservationReplay"; readonly metadata: SessionActorMetadata }
   | { readonly _tag: "PrivateInputScrubbed"; readonly metadata: SessionActorMetadata }
-  | { readonly _tag: "PrivateInputAlreadyScrubbed"; readonly metadata: SessionActorMetadata };
+  | { readonly _tag: "PrivateInputAlreadyScrubbed"; readonly metadata: SessionActorMetadata }
+  | { readonly _tag: "DeletedForVaporize" }
+  | { readonly _tag: "AlreadyDeletedForVaporize" };
 
 export type MetadataCreateInspection =
   | { readonly _tag: "Missing" }
@@ -57,7 +63,7 @@ export class MetadataStoreReadFailure extends Schema.TaggedError<MetadataStoreRe
 export class MetadataStoreMutationOutcomeUnknown extends Schema.TaggedError<MetadataStoreMutationOutcomeUnknown>()(
   "MetadataStoreMutationOutcomeUnknown",
   {
-    operation: Schema.Literals(["admit", "observe", "scrub"]),
+    operation: Schema.Literals(["admit", "observe", "scrub", "vaporize"]),
     sessionId: Schema.String,
     attempt: Schema.String,
   },
@@ -106,6 +112,9 @@ export interface SessionActorMetadataStoreShape {
     observation: CreateMetadataObservation,
   ) => Effect.Effect<MetadataMutationOutcome, MetadataStoreMutationError>;
   readonly scrubSettledCreate: (
+    authority: SessionAuthority,
+  ) => Effect.Effect<MetadataMutationOutcome, MetadataStoreMutationError>;
+  readonly deleteForVaporize: (
     authority: SessionAuthority,
   ) => Effect.Effect<MetadataMutationOutcome, MetadataStoreMutationError>;
 }
@@ -199,7 +208,7 @@ export const makeSessionActorMetadataStore = (
   );
 
   const mutate = Effect.fnUntraced(function* (
-    operation: "admit" | "observe" | "scrub",
+    operation: "admit" | "observe" | "scrub" | "vaporize",
     authority: SessionAuthority,
     decide: (current: unknown | undefined) => MetadataStorageMutation,
   ) {
@@ -319,12 +328,23 @@ export const makeSessionActorMetadataStore = (
     });
   });
 
+  const deleteForVaporize = Effect.fnUntraced(function* (authority: SessionAuthority) {
+    return yield* mutate("vaporize", authority, (raw) => {
+      if (raw === undefined)
+        return { _tag: "NoWrite", outcome: { _tag: "AlreadyDeletedForVaporize" } };
+      const current = validatedCurrent(raw, authority, "read");
+      if (Result.isFailure(current)) return { _tag: "NoWrite", outcome: current.failure };
+      return { _tag: "Delete", outcome: { _tag: "DeletedForVaporize" } };
+    });
+  });
+
   return SessionActorMetadataStore.of({
     inspectCreate,
     read,
     admitCreate,
     recordObservation,
     scrubSettledCreate,
+    deleteForVaporize,
   });
 };
 

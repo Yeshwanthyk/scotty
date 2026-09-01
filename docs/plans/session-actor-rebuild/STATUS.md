@@ -57,9 +57,21 @@ surfaces in order.
   - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
   - [x] Slice 6 commit
 
+- [x] Slice 7 — vaporize (local implementation and focused proof)
+  - [x] actor-owned ordered cleanup from admission through absence confirmation
+  - [x] owned backup identities retained across Vaporize admission and restart
+  - [x] real Sandbox destroy, R2 backup, Hatch, evidence, grant, metadata, schedule, and KV boundaries
+  - [x] ambiguous provider outcomes retain the Vaporize nonce and enter reconciliation
+  - [x] Gone requires confirmed absence of runtime, backups, evidence, grants, Hatch, idempotency, and schedules
+  - [x] old vaporize acquire/release/retry programs and gone-repair lifecycle removed
+  - [x] actor create → Warm → vaporize → Gone host flow and idempotent replay proof
+  - [x] focused actor/provider/host tests, worker typecheck, and lint
+  - [ ] full Worker suite (95 legacy Slice 8/9 fixture failures still omit actor authority)
+  - [ ] guarded deployed canary (explicit deployment inputs remain incomplete)
+  - [x] Slice 7 commit
+
 ## Remaining
 
-- [ ] Slice 7 — vaporize
 - [ ] Slice 8 — evidence, Hatch, and other warm work
 - [ ] Slice 9 — cutover and delete old lifecycle
 - [ ] Slice 10 — Quint alignment and complete proof

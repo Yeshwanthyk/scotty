@@ -1035,7 +1035,7 @@ describe("evidence session lifecycle", () => {
       assert.strictEqual(harness.artifactKeys().length, 1);
 
       harness.clearFailure("artifactDelete");
-      yield* Effect.promise(() => harness.sandbox.retryVaporizeSession({ id: SESSION_ID, nonce }));
+      yield* Effect.promise(() => harness.sandbox.vaporizeScottySession());
       assert.strictEqual(harness.readRecord()?.status, "gone");
       assert.strictEqual(harness.read<EvidenceState>(sessionHarnessKeys.evidence), undefined);
       assert.deepStrictEqual(harness.artifactKeys(), []);

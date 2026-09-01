@@ -156,6 +156,7 @@ const providerLayer = (
           observation,
         }),
       scrubSettledCreate: () => Effect.die("unused"),
+      deleteForVaporize: () => Effect.die("unused"),
     }),
   );
   const boundary = createSandboxBoundaryLayer({

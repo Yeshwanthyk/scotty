@@ -98,6 +98,10 @@ const fakeStorage = (initial?: unknown): FakeMetadataStorage => {
         stored = mutation.value;
         writes += 1;
       }
+      if (Predicate.isTagged(mutation, "Delete")) {
+        stored = undefined;
+        writes += 1;
+      }
       if (rejectAfterApply) {
         rejectAfterApply = false;
         return Promise.reject(new Error("simulated lost transaction response"));
@@ -113,6 +117,22 @@ const fakeStorage = (initial?: unknown): FakeMetadataStorage => {
 };
 
 describe("session actor metadata store", () => {
+  it.effect("deletes create metadata idempotently for actor vaporize", () =>
+    Effect.gen(function* () {
+      const storage = fakeStorage();
+      const store = makeSessionActorMetadataStore(storage);
+      yield* store.admitCreate(createAuthority(), input());
+      yield* store.scrubSettledCreate(stableAuthority());
+
+      const deleted = yield* store.deleteForVaporize(stableAuthority());
+      assert.ok(Predicate.isTagged(deleted, "DeletedForVaporize"));
+      assert.strictEqual(storage.inspect(), undefined);
+
+      const replay = yield* store.deleteForVaporize(stableAuthority());
+      assert.ok(Predicate.isTagged(replay, "AlreadyDeletedForVaporize"));
+      assert.strictEqual(storage.writeCount(), 3);
+    }),
+  );
   it.effect("admits once and replays only matching safe idempotency digests", () =>
     Effect.gen(function* () {
       const port = fakeStorage();

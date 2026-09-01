@@ -2,7 +2,6 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   SESSION_SCHEDULE_CALLBACKS,
   sessionAllowsRuntimeAccess,
-  VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS,
 } from "../../src/session/lifecycle";
 import { makeSessionRecord as record } from "../support";
 
@@ -24,16 +23,8 @@ describe("session lifecycle invariants", () => {
     assert.isFalse(sessionAllowsRuntimeAccess(undefined));
   });
 
-  it("tracks every callback and preserves only vaporize retry during cleanup", () => {
+  it("tracks every actor-owned session callback", () => {
     assert.deepStrictEqual(SESSION_SCHEDULE_CALLBACKS, [
-      "expireEvidenceJob",
-      "expireRetainedEvidence",
-      "retryHatchCleanup",
-      "retryVaporizeSession",
-      "sessionActorDeadline",
-      "sessionActorHardCap",
-    ]);
-    assert.deepStrictEqual(VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS, [
       "expireEvidenceJob",
       "expireRetainedEvidence",
       "retryHatchCleanup",

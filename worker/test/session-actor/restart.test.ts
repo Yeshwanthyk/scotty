@@ -165,6 +165,7 @@ const transition = (kind: TransitionKind, phase: string): Transition => {
           phase: phase as (typeof phases.Vaporize)[number],
           proof: {
             revokedAt: T1,
+            ownedBackupIds: ["backup-1"],
             cleanup: {
               absent: [
                 "runtime",

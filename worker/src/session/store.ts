@@ -98,6 +98,7 @@ export interface InitialSessionTransaction {
 export interface SessionRecordStorage {
   readonly get: () => Promise<unknown | undefined>;
   readonly put: (record: SessionRecord) => Promise<void>;
+  readonly delete?: () => Promise<void>;
   readonly deleteCreateIdempotency?: () => Promise<void>;
   readonly transaction: <A>(
     operation: (transaction: SessionRecordTransaction) => Promise<A>,
@@ -222,6 +223,7 @@ export const durableObjectSessionRecordStorage = (
   controlGate: SessionControlGate = makeSessionControlGate(),
 ): SessionRecordStorage => ({
   get: () => storage.get(SESSION_RECORD_KEY),
+  delete: () => storage.delete(SESSION_RECORD_KEY).then(() => undefined),
   put: (record) =>
     controlGate.run(() =>
       storage.transaction((transaction) => writeRecordWithNextControlRevision(transaction, record)),
@@ -340,6 +342,8 @@ export const durableObjectSessionActorMetadataStorage = (
         const mutation = decide(await transaction.get<unknown>(SESSION_ACTOR_METADATA_KEY));
         if (Predicate.isTagged(mutation, "Put"))
           await transaction.put(SESSION_ACTOR_METADATA_KEY, mutation.value);
+        if (Predicate.isTagged(mutation, "Delete"))
+          await transaction.delete(SESSION_ACTOR_METADATA_KEY);
         return mutation.outcome;
       }),
     ),

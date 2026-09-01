@@ -227,6 +227,7 @@ describe("session actor public projection", () => {
           phase: "RuntimeAccessRevoked",
           proof: {
             revokedAt: UPDATED_AT,
+            ownedBackupIds: [],
             cleanup: { absent: [], lastObservedAt: UPDATED_AT },
           },
         },

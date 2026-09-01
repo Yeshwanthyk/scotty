@@ -266,6 +266,7 @@ const validWarmWorkTransition = (transition: TransitionCase<"WarmWork">, index: 
 
 const validVaporizeTransition = (transition: TransitionCase<"Vaporize">, index: number): boolean =>
   validCleanup(transition.proof.cleanup, false) &&
+  new Set(transition.proof.ownedBackupIds).size === transition.proof.ownedBackupIds.length &&
   (index < 1 || transition.proof.revokedAt !== null);
 
 const validTransitionProof = (transition: Transition): boolean => {
@@ -315,6 +316,26 @@ const originOf = (current: SessionAuthority): Transition["origin"] =>
         Gone: () => "Gone" as const,
       }),
     Transitioning: ({ transition }) => transition.origin,
+  });
+
+const ownedBackupsOf = (current: SessionAuthority): ReadonlyArray<string> =>
+  Match.valueTags(current.state, {
+    Stable: ({ stable }) =>
+      Match.valueTags(stable, {
+        Warm: ({ backups }) => backups.ownedBackupIds,
+        Sleeping: ({ ownedBackupIds }) => ownedBackupIds,
+        Failed: ({ ownedBackupIds }) => ownedBackupIds,
+        Gone: () => [],
+      }),
+    Transitioning: ({ transition }) =>
+      Match.valueTags(transition, {
+        Create: () => [],
+        Checkpoint: ({ proof }) => proof.backup.ownedBackupIds,
+        Sleep: ({ proof }) => proof.backup.ownedBackupIds,
+        Resume: ({ proof }) => proof.ownedBackupIds,
+        WarmWork: ({ proof }) => proof.backups.ownedBackupIds,
+        Vaporize: ({ proof }) => proof.ownedBackupIds,
+      }),
   });
 
 const base = (command: SessionCommand, origin: Transition["origin"]) => ({
@@ -445,7 +466,11 @@ const commandTransition = (
         _tag: "Vaporize",
         ...base(value, originOf(current)),
         phase: "Admitted",
-        proof: { revokedAt: null, cleanup: emptyCleanupProof(value.timestamp) },
+        proof: {
+          revokedAt: null,
+          ownedBackupIds: [...ownedBackupsOf(current)],
+          cleanup: emptyCleanupProof(value.timestamp),
+        },
       } satisfies Transition;
     },
   });

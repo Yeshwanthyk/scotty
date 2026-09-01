@@ -129,6 +129,7 @@ const proofAt = (transition: Transition, nextIndex: number): TransitionProof => 
     WarmWork: (value) => ({ ...value.proof, resultCode: nextIndex >= 2 ? "settled" : null }),
     Vaporize: (): TransitionProof => ({
       revokedAt: nextIndex >= 1 ? T1 : null,
+      ownedBackupIds: [],
       cleanup: {
         absent:
           nextIndex >= 8

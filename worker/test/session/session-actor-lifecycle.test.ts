@@ -58,6 +58,30 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.ok(harness.events.includes("host:restoreBackup"));
   });
 
+  it("vaporizes through actor authority and removes every owned projection", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    const result = await harness.sandbox.vaporizeScottySession();
+
+    assert.deepStrictEqual(result, { id: SESSION_ID, status: "gone" });
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.isDefined(authority);
+    assert.ok(
+      Predicate.isTagged(authority.state, "Stable") &&
+        Predicate.isTagged(authority.state.stable, "Gone"),
+    );
+    assert.strictEqual(harness.read(sessionHarnessKeys.actorMetadata), undefined);
+    assert.strictEqual(harness.read(sessionHarnessKeys.createIdempotency), undefined);
+    assert.strictEqual(harness.readRecord(), undefined);
+    assert.ok(harness.events.includes("host:destroy"));
+    assert.includeMembers(harness.deletedSchedules, [
+      "sessionActorHardCap",
+      "sessionActorDeadline",
+    ]);
+    assert.deepStrictEqual(await harness.sandbox.vaporizeScottySession(), result);
+  });
+
   it("commits hard-cap failure before destroying the runtime and ignores stale fences", async () => {
     const harness = await createSessionHarness();
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
