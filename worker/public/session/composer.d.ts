@@ -37,6 +37,7 @@ export type ComposerProjection = {
 export type ComposerPresentation = {
   readonly active: boolean;
   readonly recovery: boolean;
+  readonly deliveryDisabled: boolean;
   readonly sendDisabled: boolean;
   readonly stopDisabled: boolean;
   readonly sendLabel: string;
@@ -45,7 +46,7 @@ export type ComposerPresentation = {
 };
 export type ComposerElements = {
   readonly recovery: { hidden: boolean };
-  readonly deliveryControls: { hidden: boolean };
+  readonly deliveryControls: { hidden: boolean; disabled: boolean };
   readonly stopButton: { hidden: boolean; disabled: boolean };
   readonly sendButton: { disabled: boolean; textContent: string | null };
   readonly hint: { dataset: Record<string, string>; textContent: string | null };
@@ -64,6 +65,11 @@ export declare function reconcileDelivery(
   delivery: DeliveryState | undefined,
   projection: ComposerProjection | undefined,
   event?: { readonly message?: { readonly role?: string; readonly content?: unknown } },
+): DeliveryState | undefined;
+export declare function reconcileAcceptedDelivery(
+  delivery: DeliveryState | undefined,
+  accepted: DeliveryState,
+  projection: ComposerProjection | undefined,
 ): DeliveryState | undefined;
 export declare function currentActivity(
   projection: ComposerProjection | undefined,
