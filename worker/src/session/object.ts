@@ -3812,7 +3812,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       {
         status: "unavailable",
         reason,
-        retryable: false,
+        retryable: reason === "session_operation_active",
       } satisfies PiConsoleUnavailable,
       { status, headers: { "cache-control": "no-store" } },
     );

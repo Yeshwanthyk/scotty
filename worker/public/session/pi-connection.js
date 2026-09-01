@@ -58,6 +58,10 @@ async function responseBody(response) {
 function requestError(response, body, fallback) {
   const error = new Error(body.value?.error?.message ?? fallback);
   error.status = response.status;
+  if (body.value?.status === "unavailable") {
+    error.reason = body.value.reason;
+    error.retryable = body.value.retryable === true;
+  }
   return error;
 }
 

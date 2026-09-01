@@ -30,6 +30,32 @@ const accepted = async (envelope: CommandEnvelope): Promise<CommandTransportResu
 });
 
 describe("Pi connection", () => {
+  it("preserves a retryable active-operation snapshot response", async () => {
+    const transport = createConsoleTransport({
+      fetch: async () =>
+        Response.json(
+          {
+            status: "unavailable",
+            reason: "session_operation_active",
+            retryable: true,
+          },
+          { status: 409 },
+        ),
+      eventSource: () => ({ addEventListener() {}, close() {} }),
+      origin: "https://scotty.example",
+    });
+
+    const result = await transport.snapshot("agent-a").then(
+      () => undefined,
+      (error) => error,
+    );
+
+    assert.instanceOf(result, Error);
+    assert.strictEqual(Reflect.get(result, "status"), 409);
+    assert.strictEqual(Reflect.get(result, "reason"), "session_operation_active");
+    assert.strictEqual(Reflect.get(result, "retryable"), true);
+  });
+
   it("uses an explicit same-origin mutation to prepare a missing runtime", async () => {
     const fetch = vi.fn(async () => new Response(null, { status: 204 }));
     const transport = createConsoleTransport({

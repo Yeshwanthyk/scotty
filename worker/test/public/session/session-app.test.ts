@@ -52,6 +52,10 @@ describe("cloud-agent session application", () => {
     assert.include(appSource, "syncDeliveredUiResponses");
     assert.include(appSource, '"This agent runtime stopped"');
     assert.include(appSource, '"Recover runtime"');
+    assert.include(appSource, '"Session operation in progress"');
+    assert.include(appSource, "Scotty will reconnect automatically.");
+    assert.include(appSource, "OPERATION_RETRY_WINDOW_MS = 90_000");
+    assert.include(appSource, "preserveOperationRetry: true");
     assert.include(appSource, "await transport.prepare(sessionId)");
     assert.include(appSource, "connection.discard(sessionId)");
     assert.include(sessionHtml, "Scotty will never replay it automatically");

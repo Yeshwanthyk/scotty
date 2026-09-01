@@ -80,6 +80,9 @@ let currentSessionId;
 let projection;
 let renderFrame;
 let loadGeneration = 0;
+let operationRetryTimer;
+let operationRetryDeadline;
+let operationRetryAttempt = 0;
 let sidebarOpener;
 let summaryOpener;
 let terminalDrawer;
@@ -212,11 +215,51 @@ function syncDeliveredUiResponses(sessionId, nextProjection) {
   }
 }
 
+const OPERATION_RETRY_WINDOW_MS = 90_000;
+const OPERATION_RETRY_MAX_DELAY_MS = 4_000;
+
+function clearOperationRetry() {
+  if (operationRetryTimer !== undefined) clearTimeout(operationRetryTimer);
+  operationRetryTimer = undefined;
+  operationRetryDeadline = undefined;
+  operationRetryAttempt = 0;
+}
+
+function scheduleOperationRetry(sessionId) {
+  if (!sessionId) return false;
+  operationRetryDeadline ??= Date.now() + OPERATION_RETRY_WINDOW_MS;
+  const remaining = operationRetryDeadline - Date.now();
+  if (remaining <= 0) return false;
+  const delay = Math.min(remaining, OPERATION_RETRY_MAX_DELAY_MS, 500 * 2 ** operationRetryAttempt);
+  operationRetryAttempt += 1;
+  operationRetryTimer = setTimeout(() => {
+    operationRetryTimer = undefined;
+    if (currentSessionId === sessionId)
+      void loadSession(sessionId, { preserveOperationRetry: true });
+  }, delay);
+  return true;
+}
+
+function isRetryableOperationConflict(error) {
+  return (
+    error?.status === 409 &&
+    error?.reason === "session_operation_active" &&
+    error?.retryable === true
+  );
+}
+
 function showLoadError(error) {
+  const operationActive = isRetryableOperationConflict(error);
   const recoverableRuntime = error?.status === 502 || error?.status === 503;
+  if (!operationActive) clearOperationRetry();
+  const reconnecting = operationActive && scheduleOperationRetry(currentSessionId);
   setConnection(
-    "unavailable",
-    error instanceof Error ? error.message : "This cloud agent is unavailable",
+    operationActive ? "reconnecting" : "unavailable",
+    operationActive
+      ? "Session operation in progress"
+      : error instanceof Error
+        ? error.message
+        : "This cloud agent is unavailable",
   );
   feed.removeAttribute("aria-busy");
   summaryView.reset();
@@ -224,22 +267,35 @@ function showLoadError(error) {
   const state = document.createElement("div");
   state.className = "conversation-state";
   const heading = document.createElement("strong");
-  heading.textContent = recoverableRuntime
-    ? "This agent runtime stopped"
-    : "Could not load this conversation";
+  heading.textContent = operationActive
+    ? "Session operation in progress"
+    : recoverableRuntime
+      ? "This agent runtime stopped"
+      : "Could not load this conversation";
   const copy = document.createElement("p");
-  copy.textContent = recoverableRuntime
-    ? "Scotty can restart the runtime and reconnect from a fresh snapshot. Pending commands will not be replayed."
-    : error instanceof Error
-      ? error.message
-      : "Try this cloud agent again.";
+  copy.textContent = operationActive
+    ? reconnecting
+      ? "Hatch, Evidence, or another session operation is finishing. Scotty will reconnect automatically."
+      : "The session operation is taking longer than expected. Retry when you are ready."
+    : recoverableRuntime
+      ? "Scotty can restart the runtime and reconnect from a fresh snapshot. Pending commands will not be replayed."
+      : error instanceof Error
+        ? error.message
+        : "Try this cloud agent again.";
   const retry = document.createElement("button");
   retry.type = "button";
   retry.className = "button button-secondary";
-  retry.textContent = recoverableRuntime ? "Recover runtime" : "Retry";
+  retry.textContent = recoverableRuntime
+    ? "Recover runtime"
+    : operationActive
+      ? "Retry now"
+      : "Retry";
   retry.addEventListener("click", () => {
     if (recoverableRuntime) void recoverRuntime(currentSessionId, retry);
-    else void loadSession(currentSessionId);
+    else {
+      clearOperationRetry();
+      void loadSession(currentSessionId);
+    }
   });
   state.append(heading, copy, retry);
   feed.append(state);
@@ -302,6 +358,7 @@ const directory = createCloudAgentDirectory({
 
 async function loadSession(sessionId, options = {}) {
   if (!sessionId) return showLoadError(new Error("This URL does not identify a Scotty session"));
+  if (!options.preserveOperationRetry) clearOperationRetry();
   const generation = ++loadGeneration;
   projection = undefined;
   chatView.reset();
@@ -312,6 +369,7 @@ async function loadSession(sessionId, options = {}) {
     const snapshot = await connection.open(sessionId);
     if (generation !== loadGeneration || currentSessionId !== sessionId || snapshot === undefined)
       return;
+    clearOperationRetry();
     projection = projectionFromSnapshot(snapshot);
     syncDeliveredUiResponses(sessionId, projection);
     const entry = memoryEntry(sessionId);

@@ -521,7 +521,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
       assert.deepStrictEqual(await response.json(), {
         status: "unavailable",
         reason,
-        retryable: false,
+        retryable: reason === "session_operation_active",
       });
       assert.strictEqual(relayCalls, 0);
       assert.deepStrictEqual(harness.piRequests, []);
