@@ -26,7 +26,15 @@ import type { RepoVerifier } from "../../src/repos/verifier";
 import type { SandboxConfigStatus } from "../../src/sandbox/config-contracts";
 import type { SandboxConfigRpcResult } from "../../src/sandbox/config-object";
 import { sandboxBundleTarGzKey } from "../../src/sandbox/bundle-store";
-import { HATCH_STATE_KEY, SESSION_CONTROL_REVISION_KEY } from "../../src/session/store";
+import {
+  HATCH_STATE_KEY,
+  SESSION_ACTOR_AUTHORITY_KEY,
+  SESSION_ACTOR_JOURNAL_SEQUENCE_KEY,
+  SESSION_ACTOR_JOURNAL_TAIL_KEY,
+  SESSION_ACTOR_METADATA_KEY,
+  SESSION_ACTOR_REVISION_KEY,
+  SESSION_CONTROL_REVISION_KEY,
+} from "../../src/session/store";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
   SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
@@ -1242,6 +1250,12 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   rawPiContainerRunning = options.rawPiContainerRunning ?? false;
 
   Object.defineProperties(sandbox, {
+    getState: {
+      value: async () => ({ status: "running" as const }),
+    },
+    getContainerPlacementId: {
+      value: async () => `placement-${SESSION_ID}`,
+    },
     acceptScottyEvidenceJob: {
       value: (value: unknown) => sandbox[SANDBOX_TEST_ACCEPT_EVIDENCE](value),
     },
@@ -1431,6 +1445,9 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         }
         events.push(`host:pi:fetch:${port}:${pathname}`);
         if (pathname === "/quiesce") events.push("host:hatch:extension-shutdown");
+        if (pathname === "/health")
+          return Response.json({ status: "ready", epoch: `pi-${SESSION_ID}` });
+        if (pathname === "/snapshot") return Response.json({ epoch: `pi-${SESSION_ID}` });
         return failures.has("terminalStop") && pathname === "/quiesce"
           ? Response.json({ error: "injected Pi quiesce failure" }, { status: 502 })
           : Response.json({ status: "quiesced" });
@@ -1463,7 +1480,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
             failures.delete("evidenceRetentionSchedulePreInsertOnce"))
         )
           throw injectedHarnessFailure("injected pre-insert evidence retention schedule failure");
-        if (failures.has("hardCapSchedule") && callback === "enforceHardCap") {
+        if (
+          failures.has("hardCapSchedule") &&
+          (callback === "enforceHardCap" || callback === "sessionActorHardCap")
+        ) {
           throw injectedHarnessFailure("injected hard-cap schedule failure");
         }
         if (failures.has("vaporizeRetrySchedule") && callback === "retryVaporizeSession")
@@ -1556,6 +1576,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 }
 
 export const sessionHarnessKeys = {
+  actorAuthority: SESSION_ACTOR_AUTHORITY_KEY,
+  actorJournalSequence: SESSION_ACTOR_JOURNAL_SEQUENCE_KEY,
+  actorJournalTail: SESSION_ACTOR_JOURNAL_TAIL_KEY,
+  actorMetadata: SESSION_ACTOR_METADATA_KEY,
+  actorRevision: SESSION_ACTOR_REVISION_KEY,
   createIdempotency: CREATE_IDEMPOTENCY_KEY,
   evidence: EVIDENCE_RECORD_KEY,
   hatch: HATCH_STATE_KEY,

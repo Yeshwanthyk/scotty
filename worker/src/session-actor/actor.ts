@@ -31,6 +31,10 @@ interface SessionActorShape {
     input: SessionActorInput,
     evidence?: EvidenceMutation,
   ) => Effect.Effect<ActorHandleResult, ActorHandleError>;
+  readonly resume: (input: {
+    readonly timestamp: string;
+    readonly correlationId: string;
+  }) => Effect.Effect<ActorHandleResult | undefined, ActorHandleError>;
 }
 
 export class SessionActor extends Context.Service<SessionActor, SessionActorShape>()(
@@ -161,6 +165,28 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
         }
       });
 
-      return SessionActor.of({ handle });
+      const resume = Effect.fnUntraced(function* (input: {
+        readonly timestamp: string;
+        readonly correlationId: string;
+      }) {
+        const snapshot = yield* store.read;
+        const authority = snapshot.authority;
+        if (authority === undefined || !AuthorityStateSchema.guards.Transitioning(authority.state))
+          return undefined;
+        const transition = authority.state.transition;
+        return yield* handle({
+          _tag: "UnknownProviderOutcome",
+          revision: authority.revision,
+          transitionNonce: transition.nonce,
+          attempt: transition.attempt,
+          expectedPhase: transition.phase,
+          timestamp: input.timestamp,
+          correlationId: input.correlationId,
+          expectedProviderRuntimeId: providerRuntimeId(authority),
+          resultCode: "actor_restart_reconcile",
+        });
+      });
+
+      return SessionActor.of({ handle, resume });
     }),
   );

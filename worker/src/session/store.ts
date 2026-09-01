@@ -1,4 +1,4 @@
-import { Clock, Context, Data, Effect, Layer, Option, Result } from "effect";
+import { Clock, Context, Data, Effect, Layer, Option, Predicate, Result } from "effect";
 import {
   conflict,
   decodeSessionRecordResult,
@@ -18,12 +18,25 @@ import {
   type CreateIdempotencyMetadata,
 } from "./create-idempotency";
 import { hardCapObservationIsCurrent } from "./lifecycle";
+import type {
+  ActorStoragePort,
+  ActorStorageTransactionPlan,
+  RawActorStorageSnapshot,
+} from "../session-actor/store";
+import type { MetadataStoragePort } from "../session-actor/metadata-store";
 
 export const SESSION_RECORD_KEY = "scotty:session";
 export const EVIDENCE_RECORD_KEY = "scotty:evidence";
 export const HATCH_STATE_KEY = "scotty:hatch";
 export const RUNTIME_EPOCH_KEY = "scotty:runtime-epoch";
 export const SESSION_CONTROL_REVISION_KEY = "scotty:session-control-revision";
+export const SESSION_ACTOR_AUTHORITY_KEY = "scotty:session-actor:authority";
+export const SESSION_ACTOR_REVISION_KEY = "scotty:session-actor:revision";
+export const SESSION_ACTOR_JOURNAL_SEQUENCE_KEY = "scotty:session-actor:journal-sequence";
+export const SESSION_ACTOR_JOURNAL_TAIL_KEY = "scotty:session-actor:journal-tail";
+export const SESSION_ACTOR_EVIDENCE_KEY = "scotty:session-actor:evidence";
+export const SESSION_ACTOR_METADATA_KEY = "scotty:session-actor:metadata";
+const SESSION_ACTOR_JOURNAL_PREFIX = "scotty:session-actor:journal:";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
 const INVALID_RECORD = new ScottyError("internal", "Authoritative session record is invalid", {
   httpStatus: 500,
@@ -270,6 +283,78 @@ export const durableObjectSessionRecordStorage = (
             transaction.delete(CREATE_IDEMPOTENCY_KEY).then(() => undefined),
         }),
       ),
+    ),
+});
+
+const sessionActorJournalKey = (sequence: number): string =>
+  `${SESSION_ACTOR_JOURNAL_PREFIX}${String(sequence).padStart(16, "0")}`;
+
+const readActorStorageSnapshot = async (
+  storage: DurableObjectStorage | DurableObjectTransaction,
+): Promise<RawActorStorageSnapshot> => {
+  const [authority, revision, journalSequence, journalTail, evidence] = await Promise.all([
+    storage.get<unknown>(SESSION_ACTOR_AUTHORITY_KEY),
+    storage.get<unknown>(SESSION_ACTOR_REVISION_KEY),
+    storage.get<unknown>(SESSION_ACTOR_JOURNAL_SEQUENCE_KEY),
+    storage.get<unknown>(SESSION_ACTOR_JOURNAL_TAIL_KEY),
+    storage.get<unknown>(SESSION_ACTOR_EVIDENCE_KEY),
+  ]);
+  return { authority, revision, journalSequence, journalTail, evidence };
+};
+
+const applyActorStorageCommit = async (
+  transaction: DurableObjectTransaction,
+  plan: Extract<ActorStorageTransactionPlan, { readonly _tag: "Commit" }>,
+): Promise<void> => {
+  const journalKey = sessionActorJournalKey(plan.write.journalSequence);
+  const existingJournal = await transaction.get<unknown>(journalKey);
+  if (existingJournal !== undefined) {
+    // oxlint-disable-next-line scotty/no-promise-reject -- boundary: rejecting the native transaction prevents overwriting an immutable journal event
+    return Promise.reject(new SessionControlRevisionFailure({ reason: "invalid" }));
+  }
+  const writes: Array<Promise<void>> = [
+    transaction.put(SESSION_ACTOR_AUTHORITY_KEY, plan.write.authority),
+    transaction.put(SESSION_ACTOR_REVISION_KEY, plan.write.revision),
+    transaction.put(SESSION_ACTOR_JOURNAL_SEQUENCE_KEY, plan.write.journalSequence),
+    transaction.put(SESSION_ACTOR_JOURNAL_TAIL_KEY, plan.write.appendJournal),
+    transaction.put(journalKey, plan.write.appendJournal),
+  ];
+  if (Predicate.isTagged(plan.write.evidence, "Put"))
+    writes.push(transaction.put(SESSION_ACTOR_EVIDENCE_KEY, plan.write.evidence.value));
+  if (Predicate.isTagged(plan.write.evidence, "Delete"))
+    writes.push(transaction.delete(SESSION_ACTOR_EVIDENCE_KEY).then(() => undefined));
+  await Promise.all(writes);
+};
+
+export const durableObjectSessionActorStorage = (
+  storage: DurableObjectStorage,
+  controlGate: SessionControlGate = makeSessionControlGate(),
+): ActorStoragePort => ({
+  read: () => storage.transaction((transaction) => readActorStorageSnapshot(transaction)),
+  transaction: (operation) =>
+    controlGate.run(() =>
+      storage.transaction(async (transaction) => {
+        const plan = operation(await readActorStorageSnapshot(transaction));
+        if (Predicate.isTagged(plan, "NoCommit")) return plan.outcome;
+        await applyActorStorageCommit(transaction, plan);
+        return plan.outcome;
+      }),
+    ),
+});
+
+export const durableObjectSessionActorMetadataStorage = (
+  storage: DurableObjectStorage,
+  controlGate: SessionControlGate = makeSessionControlGate(),
+): MetadataStoragePort => ({
+  read: () => storage.get<unknown>(SESSION_ACTOR_METADATA_KEY),
+  transaction: (decide) =>
+    controlGate.run(() =>
+      storage.transaction(async (transaction) => {
+        const mutation = decide(await transaction.get<unknown>(SESSION_ACTOR_METADATA_KEY));
+        if (Predicate.isTagged(mutation, "Put"))
+          await transaction.put(SESSION_ACTOR_METADATA_KEY, mutation.value);
+        return mutation.outcome;
+      }),
     ),
 });
 

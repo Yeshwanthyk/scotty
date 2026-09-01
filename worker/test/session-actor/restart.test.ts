@@ -6,7 +6,7 @@ import {
   type ActorAlarmFence,
 } from "../../src/session-actor/alarm";
 import { SessionActor, sessionActorLayer } from "../../src/session-actor/actor";
-import { actorEffectRunnerLayer } from "../../src/session-actor/effect-runner";
+import { ActorEffectRunner, actorEffectRunnerLayer } from "../../src/session-actor/effect-runner";
 import {
   ProviderEffectBoundaryFailure,
   providerEffectExecutorLayer,
@@ -190,6 +190,157 @@ const authority = (transition: Transition): SessionAuthority => ({
 });
 
 describe("session actor restart", () => {
+  it.effect("rejects committed effects whose authority no longer owns a transition", () =>
+    Effect.gen(function* () {
+      let alarmCalls = 0;
+      let providerCalls = 0;
+      const runner = actorEffectRunnerLayer.pipe(
+        Layer.provide(
+          Layer.merge(
+            actorAlarmSchedulerLayer(() => {
+              alarmCalls += 1;
+              return Effect.void;
+            }),
+            providerEffectExecutorLayer(() => {
+              providerCalls += 1;
+              return Effect.succeed(createCommand());
+            }),
+          ),
+        ),
+      );
+      const service = yield* ActorEffectRunner.pipe(Effect.provide(runner));
+      const result = yield* Effect.result(
+        service.run({
+          authority: {
+            session,
+            revision: 1,
+            state: {
+              _tag: "Stable",
+              stable: {
+                _tag: "Gone",
+                cleanup: {
+                  absent: [
+                    "runtime",
+                    "backups",
+                    "evidence",
+                    "grants",
+                    "hatch",
+                    "idempotency",
+                    "schedules",
+                  ],
+                  lastObservedAt: T1,
+                },
+              },
+            },
+          },
+          journalEvent: {
+            sequence: 1,
+            revision: 1,
+            timestamp: T1,
+            correlationId: "correlation-invariant",
+            transitionNonce: null,
+            eventType: "completed",
+            transitionKind: null,
+            transitionPhase: null,
+            resultCode: "gone",
+            causeSequence: null,
+            causeAttempt: null,
+          },
+          intent: {
+            _tag: "ArmDeadline",
+            transitionNonce: "nonce-create",
+            attempt: "attempt-create",
+            deadlineAt: DEADLINE,
+          },
+        }),
+      );
+      assert.ok(Result.isFailure(result));
+      assert.ok(Predicate.isTagged(result.failure, "ActorEffectRunnerInvariantFailure"));
+      assert.strictEqual(alarmCalls, 0);
+      assert.strictEqual(providerCalls, 0);
+    }),
+  );
+
+  it.effect("restarts an executing phase through a committed reconciliation boundary", () =>
+    Effect.gen(function* () {
+      const persistedTransition = transition("Create", "WorkspacePreparing");
+      const persisted = authority(persistedTransition);
+      const memory = actorPort(undefined, false, {
+        authority: persisted,
+        revision: 1,
+        journalSequence: 1,
+        journalTail: {
+          sequence: 1,
+          revision: 1,
+          timestamp: T1,
+          correlationId: "correlation-before-restart",
+          transitionNonce: persistedTransition.nonce,
+          eventType: "progressed",
+          transitionKind: "Create",
+          transitionPhase: "WorkspacePreparing",
+          resultCode: "workspace_intent_committed",
+          causeSequence: null,
+          causeAttempt: persistedTransition.attempt,
+        },
+      });
+      const dispatched: string[] = [];
+      const runner = actorEffectRunnerLayer.pipe(
+        Layer.provide(
+          Layer.merge(
+            actorAlarmSchedulerLayer(() => {
+              dispatched.push("ArmDeadline");
+              return Effect.void;
+            }),
+            providerEffectExecutorLayer((committed) => {
+              dispatched.push(
+                Match.valueTags(committed.intent, {
+                  ExecutePhase: () => "ExecutePhase",
+                  ReconcileTransition: () => "ReconcileTransition",
+                }),
+              );
+              assert.ok(AuthorityStateSchema.guards.Transitioning(committed.authority.state));
+              if (!AuthorityStateSchema.guards.Transitioning(committed.authority.state))
+                return Effect.succeed(createCommand());
+              const current = committed.authority.state.transition;
+              return Effect.succeed({
+                _tag: "TransitionFailed",
+                revision: committed.authority.revision,
+                transitionNonce: current.nonce,
+                attempt: current.attempt,
+                expectedPhase: current.phase,
+                timestamp: T1,
+                correlationId: committed.journalEvent.correlationId,
+                failureCode: "workspace_absent_after_restart",
+                actionable: false,
+                backup: null,
+                ownedBackupIds: [],
+                wakeSource: null,
+                resultCode: "workspace_absent_after_restart",
+              });
+            }),
+          ),
+        ),
+      );
+      const actor = sessionActorLayer.pipe(
+        Layer.provide(Layer.merge(actorStoreLayer(memory.port), runner)),
+      );
+      const result = yield* Effect.flatMap(SessionActor, (service) =>
+        service.resume({ timestamp: T1, correlationId: "correlation-restart" }),
+      ).pipe(Effect.provide(actor));
+
+      assert.ok(result !== undefined);
+      assert.deepStrictEqual(dispatched, ["ArmDeadline", "ReconcileTransition"]);
+      assert.strictEqual(result.committed.length, 2);
+      const reconciling = result.committed[0];
+      const failed = result.committed[1];
+      assert.ok(reconciling !== undefined);
+      assert.ok(failed !== undefined);
+      assert.ok(AuthorityStateSchema.guards.Transitioning(reconciling.authority.state));
+      assert.strictEqual(reconciling.authority.state.transition.mode, "reconciling");
+      assert.ok(AuthorityStateSchema.guards.Stable(failed.authority.state));
+    }),
+  );
+
   it.effect("reconstructs every transition phase from storage without runtime-memory state", () =>
     Effect.gen(function* () {
       for (const kind of Object.keys(phases) as ReadonlyArray<TransitionKind>) {
@@ -238,8 +389,12 @@ describe("session actor restart", () => {
     session,
   });
 
-  const actorPort = (cutTransaction: number | undefined, afterCommit: boolean) => {
-    let raw: RawActorStorageSnapshot = {};
+  const actorPort = (
+    cutTransaction: number | undefined,
+    afterCommit: boolean,
+    initial: RawActorStorageSnapshot = {},
+  ) => {
+    let raw: RawActorStorageSnapshot = initial;
     let transactionCount = 0;
     const port: ActorStoragePort = {
       read: () => Promise.resolve(raw),

@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Match } from "effect";
+import { Context, Effect, Layer, Match, Schema } from "effect";
 import { AuthorityStateSchema } from "./authority";
 import { ActorAlarmScheduler, type ActorAlarmOutcomeUnknown } from "./alarm";
 import {
@@ -7,7 +7,12 @@ import {
   ProviderEffectExecutor,
 } from "./effects";
 
-export type EffectRunnerError = ActorAlarmOutcomeUnknown;
+export class ActorEffectRunnerInvariantFailure extends Schema.TaggedError<ActorEffectRunnerInvariantFailure>()(
+  "ActorEffectRunnerInvariantFailure",
+  { code: Schema.Literal("committed_authority_not_transitioning") },
+) {}
+
+export type EffectRunnerError = ActorAlarmOutcomeUnknown | ActorEffectRunnerInvariantFailure;
 
 const boundaryFailureObservation = (
   committed: CommittedEffectIntent,
@@ -20,8 +25,6 @@ const boundaryFailureObservation = (
   outcome: "rejected_before_admission" | "unknown_after_admission",
   observedAt: string,
 ): EffectObservation => {
-  if (!AuthorityStateSchema.guards.Transitioning(committed.authority.state))
-    return { _tag: "NoObservation" };
   return {
     _tag: "Observation",
     input:
@@ -76,6 +79,11 @@ export const actorEffectRunnerLayer: Layer.Layer<
     const provider = yield* ProviderEffectExecutor;
     return ActorEffectRunner.of({
       run: Effect.fnUntraced(function* (committed) {
+        if (!AuthorityStateSchema.guards.Transitioning(committed.authority.state))
+          return yield* new ActorEffectRunnerInvariantFailure({
+            code: "committed_authority_not_transitioning",
+          });
+        const transition = committed.authority.state.transition;
         return yield* Match.valueTags(committed.intent, {
           ArmDeadline: (intent) =>
             alarms
@@ -84,9 +92,7 @@ export const actorEffectRunnerLayer: Layer.Layer<
                 revision: committed.authority.revision,
                 transitionNonce: intent.transitionNonce,
                 attempt: intent.attempt,
-                expectedPhase: AuthorityStateSchema.guards.Transitioning(committed.authority.state)
-                  ? committed.authority.state.transition.phase
-                  : "",
+                expectedPhase: transition.phase,
                 expectedDeadlineAt: intent.deadlineAt,
                 correlationId: committed.journalEvent.correlationId,
               })

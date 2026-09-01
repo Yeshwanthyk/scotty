@@ -206,8 +206,7 @@ const validCreateTransition = (transition: TransitionCase<"Create">, index: numb
   transition.origin === "Absent" &&
   validReadinessProgress(transition.proof.readiness) &&
   (index < 3 || transition.proof.readiness.runtime !== null) &&
-  (index < 5 || transition.proof.readiness.supervisor !== null) &&
-  (index < 6 || transition.proof.readiness.transport !== null);
+  (index < 6 || transition.proof.readiness.supervisor !== null);
 
 const validCheckpointTransition = (
   transition: TransitionCase<"Checkpoint">,
@@ -727,6 +726,12 @@ const reconcile = (
     { _tag: "Transitioning", transition: reconciling },
     journal(input, reconciling, eventType, resultCode),
     [
+      {
+        _tag: "ArmDeadline",
+        deadlineAt: transition.deadlineAt,
+        transitionNonce: transition.nonce,
+        attempt: transition.attempt,
+      },
       {
         _tag: "ReconcileTransition",
         transitionKind: transitionKind(transition),

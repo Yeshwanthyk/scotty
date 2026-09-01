@@ -329,11 +329,9 @@ describe("session actor reducer", () => {
     assert.deepStrictEqual(mismatched, { _tag: "Rejected", code: "stale_phase" });
     const reconciled = accepted(decide(created, alarm));
     assert.strictEqual(transitioning(reconciled.nextAuthority).transition.mode, "reconciling");
-    assert.strictEqual(reconciled.effectIntents.length, 1);
-    assert.strictEqual(
-      Predicate.isTagged(reconciled.effectIntents[0], "ReconcileTransition"),
-      true,
-    );
+    assert.strictEqual(reconciled.effectIntents.length, 2);
+    assert.ok(Predicate.isTagged(reconciled.effectIntents[0], "ArmDeadline"));
+    assert.ok(Predicate.isTagged(reconciled.effectIntents[1], "ReconcileTransition"));
   });
 
   it("reconciles an unknown provider outcome without advancing phase", () => {
@@ -564,6 +562,51 @@ describe("session actor reducer", () => {
       },
     };
     assert.strictEqual(validateAuthority(gone), false);
+  });
+
+  it("commits transport verification intent before transport proof exists", () => {
+    const verifying: SessionAuthority = {
+      session,
+      revision: 6,
+      state: {
+        _tag: "Transitioning",
+        transition: {
+          _tag: "Create",
+          nonce: "nonce-create",
+          origin: "Absent",
+          attempt: "attempt-create",
+          startedAt: T0,
+          lastProgressAt: T1,
+          deadlineAt: DEADLINE,
+          mode: "executing",
+          phase: "TransportVerifying",
+          proof: {
+            workspaceId: "workspace-1",
+            readiness: {
+              runtime: readiness().runtime,
+              supervisor: readiness().supervisor,
+              transport: null,
+            },
+          },
+        },
+      },
+    };
+    assert.strictEqual(validateAuthority(verifying), true);
+    const transition = transitioning(verifying).transition;
+    assert.deepStrictEqual(
+      decide(verifying, {
+        _tag: "TransitionCompleted",
+        revision: verifying.revision,
+        transitionNonce: transition.nonce,
+        attempt: transition.attempt,
+        expectedPhase: transition.phase,
+        timestamp: T1,
+        correlationId: "correlation-transport-incomplete",
+        proof: transition.proof,
+        resultCode: "transport_not_verified",
+      }),
+      { _tag: "Rejected", code: "invalid_progress" },
+    );
   });
 
   it("increments an accepted decision exactly once and invalidates activity on generation changes", () => {
