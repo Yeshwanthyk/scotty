@@ -347,6 +347,54 @@ async function fetchJson(fetch, path) {
   return response.json();
 }
 
+export function createEvidenceLoader(load) {
+  let activeSessionId;
+  const values = new Map();
+  const pending = new Map();
+  const select = (sessionId) => {
+    if (activeSessionId === sessionId) return;
+    activeSessionId = sessionId;
+    values.clear();
+    pending.clear();
+  };
+  return {
+    current(sessionId, jobId) {
+      select(sessionId);
+      return values.get(jobId);
+    },
+    load(sessionId, jobId) {
+      select(sessionId);
+      const value = values.get(jobId);
+      if (value !== undefined) return Promise.resolve(value);
+      const inFlight = pending.get(jobId);
+      if (inFlight) return inFlight;
+      const ownedSessionId = sessionId;
+      const request = Promise.resolve()
+        .then(() => load(sessionId, jobId))
+        .then((next) => {
+          if (
+            next !== undefined &&
+            activeSessionId === ownedSessionId &&
+            pending.get(jobId) === request
+          )
+            values.set(jobId, next);
+          return next;
+        })
+        .finally(() => {
+          if (activeSessionId === ownedSessionId && pending.get(jobId) === request)
+            pending.delete(jobId);
+        });
+      pending.set(jobId, request);
+      return request;
+    },
+    reset() {
+      activeSessionId = undefined;
+      values.clear();
+      pending.clear();
+    },
+  };
+}
+
 export function createHatchStatusLoader(load) {
   let activeSessionId;
   let value;
@@ -394,10 +442,16 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
       decodeSummaryHatch,
     ),
   );
+  const evidenceStatus = createEvidenceLoader((sessionId, jobId) =>
+    fetchJson(
+      fetch,
+      `/api/sessions/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(jobId)}`,
+    ).then((value) => decodeSummaryEvidence(value, jobId)),
+  );
   return {
     render(projection, sessionId) {
       const summary = summaryProjection(projection, sessionId);
-      const signature = JSON.stringify([sessionId, projection.sequence, summary]);
+      const signature = JSON.stringify([sessionId, summary]);
       if (signature === renderedSignature) return;
       renderedSignature = signature;
       const currentGeneration = ++generation;
@@ -448,25 +502,31 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
           fragment.append(target);
           continue;
         }
-        target.append(
-          sectionHeading(
-            document,
-            artifact.kind === "evidence" ? "Browser evidence" : "Hatch",
-            "Loading…",
-          ),
-          summaryState(document, "Checking the authenticated session state…"),
-        );
+        const currentEvidence = evidenceStatus.current(sessionId, artifact.jobId);
+        if (currentEvidence) renderEvidence(document, target, sessionId, currentEvidence);
+        else
+          target.append(
+            sectionHeading(
+              document,
+              artifact.kind === "evidence" ? "Browser evidence" : "Hatch",
+              "Loading…",
+            ),
+            summaryState(document, "Checking the authenticated session state…"),
+          );
         fragment.append(target);
-        const path = `/api/sessions/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(artifact.jobId)}`;
-        void fetchJson(fetch, path)
-          .then((value) => {
+        void evidenceStatus
+          .load(sessionId, artifact.jobId)
+          .then((evidence) => {
             if (generation !== currentGeneration) return;
-            const evidence = decodeSummaryEvidence(value, artifact.jobId);
             if (evidence) renderEvidence(document, target, sessionId, evidence);
             else renderUnavailable(document, target, artifact);
           })
           .catch(() => {
-            if (generation === currentGeneration) renderUnavailable(document, target, artifact);
+            if (
+              generation === currentGeneration &&
+              !evidenceStatus.current(sessionId, artifact.jobId)
+            )
+              renderUnavailable(document, target, artifact);
           });
       }
       root.replaceChildren(fragment);
@@ -474,6 +534,7 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
     reset() {
       generation += 1;
       renderedSignature = "";
+      evidenceStatus.reset();
       hatchStatus.reset();
       root.replaceChildren(summaryState(document, "Loading the latest agent update…"));
     },
