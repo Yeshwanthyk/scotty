@@ -17,6 +17,7 @@ import { AuthProviders } from "alchemy/Auth/AuthProvider";
 import { CredentialsStoreLive } from "alchemy/Auth/Credentials";
 import { ProfileLive } from "alchemy/Auth/Profile";
 import { Cli as AlchemyCli } from "alchemy/Cli/Cli";
+import type { StatusChangeEvent } from "alchemy/Cli/Event";
 import { LoggingCli } from "alchemy/Cli/LoggingCli";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Apply from "alchemy/Apply";
@@ -79,6 +80,7 @@ import {
 import type {
   InstallationApplyRequest,
   InstallationDeploymentReadinessTarget,
+  InstallationDeploymentProgress,
   InstallationCreateRequest,
   InstallationDeployRequest,
   InstallationInspectRequest,
@@ -290,6 +292,51 @@ export const assertContainerBaselineSettled = (
   return Effect.void;
 };
 
+export const assessCreatedContainerSettlement = (snapshot: ContainerControlPlaneSnapshot) => {
+  const activeRollout = snapshot.rollouts.find(
+    (rollout) => rollout.status === "pending" || rollout.status === "progressing",
+  );
+  if (snapshot.application.activeRolloutId !== null || activeRollout !== undefined)
+    return { status: "waiting" as const, message: "Created Container rollout is propagating." };
+  const failedRollout = snapshot.rollouts.find((rollout) => rollout.status === "failed");
+  if (failedRollout !== undefined)
+    return { status: "failed" as const, message: "Created Container rollout finished as failed." };
+  const completed = snapshot.rollouts.find(
+    (rollout) =>
+      rollout.status === "completed" && rollout.targetVersion === snapshot.application.version,
+  );
+  if (completed === undefined)
+    return {
+      status: "waiting" as const,
+      message: "Waiting for the created Container rollout receipt.",
+    };
+  const applicationHealth = snapshot.application.health;
+  const applicationReadyInstances = applicationHealth.active + applicationHealth.healthy;
+  const rolloutReadyInstances = applicationHealth.active + completed.health.healthy;
+  const settled =
+    completed.progress.totalInstances > 0 &&
+    completed.progress.updatedInstances === completed.progress.totalInstances &&
+    completed.health.failed === 0 &&
+    completed.health.scheduling === 0 &&
+    completed.health.starting === 0 &&
+    applicationReadyInstances === completed.progress.totalInstances &&
+    rolloutReadyInstances === completed.progress.totalInstances &&
+    applicationHealth.assigned === 0 &&
+    applicationHealth.stopped === 0 &&
+    applicationHealth.failed === 0 &&
+    applicationHealth.scheduling === 0 &&
+    applicationHealth.starting === 0;
+  return settled
+    ? {
+        status: "settled" as const,
+        message: `Created Container rollout completed at version ${completed.targetVersion}.`,
+      }
+    : {
+        status: "waiting" as const,
+        message: "Created Container rollout completed but health has not converged.",
+      };
+};
+
 const defaultReadControlPlane: ContainerControlPlaneReader<
   typeof DistilledCredentials | typeof Cloudflare.CloudflareEnvironment
 > = (input) =>
@@ -304,7 +351,7 @@ const defaultReadControlPlane: ContainerControlPlaneReader<
   );
 
 export const waitForContainerRollout = Effect.fnUntraced(function* <R = never>(
-  before: ContainerControlPlaneSnapshot,
+  before: ContainerControlPlaneSnapshot | undefined,
   target: { readonly accountId: string; readonly applicationId: string },
   options: {
     readonly containerAction?: "updated" | "noop" | "unknown";
@@ -323,9 +370,11 @@ export const waitForContainerRollout = Effect.fnUntraced(function* <R = never>(
 
   const startedAt = yield* Clock.currentTimeMillis;
   let lastObservation =
-    `${before.application.version}:${before.application.updatedAt}:` +
-    `${before.application.activeRolloutId}:${before.application.configurationDigest}:` +
-    `${JSON.stringify(before.application.health)}`;
+    before === undefined
+      ? ""
+      : `${before.application.version}:${before.application.updatedAt}:` +
+        `${before.application.activeRolloutId}:${before.application.configurationDigest}:` +
+        `${JSON.stringify(before.application.health)}`;
   let lastObservationAt = startedAt;
   let lastReportedProgress: string | undefined = undefined;
 
@@ -335,7 +384,7 @@ export const waitForContainerRollout = Effect.fnUntraced(function* <R = never>(
     const elapsedMs = observedAt - startedAt;
 
     const newRollout = current.rollouts.find(
-      (rollout) => !before.rollouts.some((previous) => previous.id === rollout.id),
+      (rollout) => !before?.rollouts.some((previous) => previous.id === rollout.id),
     );
     const observation = newRollout
       ? `${newRollout.id}:${newRollout.status}:${newRollout.lastUpdatedAt}:` +
@@ -350,9 +399,12 @@ export const waitForContainerRollout = Effect.fnUntraced(function* <R = never>(
       lastObservationAt = observedAt;
     }
 
-    const assessment = assessContainerSettlement(before, current, containerAction, {
-      quietMs: observedAt - lastObservationAt,
-    });
+    const assessment =
+      before === undefined
+        ? assessCreatedContainerSettlement(current)
+        : assessContainerSettlement(before, current, containerAction, {
+            quietMs: observedAt - lastObservationAt,
+          });
 
     if (observation !== lastReportedProgress) {
       reportProgress?.(assessment.message);
@@ -442,19 +494,42 @@ const prepareInstallationContainerContext = async (root: string): Promise<void> 
   await prepareContainerContext(root, { inputs: CONTAINER_INPUTS });
 };
 
-const quietAlchemyCli = Layer.succeed(
-  AlchemyCli,
-  AlchemyCli.of({
-    approvePlan: () => Effect.succeed(false),
-    displayPlan: () => Effect.void,
-    startApplySession: () => Effect.succeed({ emit: () => Effect.void, done: () => Effect.void }),
-  }),
-);
+export interface DeploymentProviderReceipt {
+  readonly succeeded: Set<string>;
+}
 
-const alchemyRuntimeLayer = (quiet: boolean) =>
+const succeededProviderOperation = (event: StatusChangeEvent): boolean =>
+  event.status === "created" ||
+  event.status === "updated" ||
+  event.status === "deleted" ||
+  event.status === "replaced" ||
+  event.status === "ran";
+
+export const makeQuietAlchemyCli = (receipt?: DeploymentProviderReceipt) =>
+  Layer.succeed(
+    AlchemyCli,
+    AlchemyCli.of({
+      approvePlan: () => Effect.succeed(false),
+      displayPlan: () => Effect.void,
+      startApplySession: () =>
+        Effect.succeed({
+          emit: (event) =>
+            Effect.sync(() => {
+              if (!receipt || event.kind !== "status-change" || !succeededProviderOperation(event))
+                return;
+              receipt.succeeded.add(
+                `${event.id}\u0000${event.bindingId ?? ""}\u0000${event.status}`,
+              );
+            }),
+          done: () => Effect.void,
+        }),
+    }),
+  );
+
+const alchemyRuntimeLayer = (quiet: boolean, receipt?: DeploymentProviderReceipt) =>
   Layer.provideMerge(
     Layer.mergeAll(
-      quiet ? quietAlchemyCli : LoggingCli,
+      quiet ? makeQuietAlchemyCli(receipt) : LoggingCli,
       AlchemyContextLive,
       ...(quiet
         ? [Logger.layer([], { mergeWithExisting: false }), Layer.succeed(MinimumLogLevel, "None")]
@@ -487,12 +562,16 @@ const cloudflareApiLive = () => {
   );
 };
 
-const provideAlchemy = <A, E, R>(program: Effect.Effect<A, E, R>, quiet = false) =>
+const provideAlchemy = <A, E, R>(
+  program: Effect.Effect<A, E, R>,
+  quiet = false,
+  receipt?: DeploymentProviderReceipt,
+) =>
   program.pipe(
     Effect.provide(Cloudflare.state()),
     Effect.provideService(ArtifactStore, createArtifactStore()),
     Effect.provideService(AuthProviders, {}),
-    Effect.provide(alchemyRuntimeLayer(quiet)),
+    Effect.provide(alchemyRuntimeLayer(quiet, receipt)),
   );
 
 const DOCKER_CONTEXT_INSPECT_ARGS = [
@@ -748,8 +827,10 @@ const deployWithProfile = async (
   credentialWrappingKey?: string,
   readinessTarget?: InstallationDeploymentReadinessTarget,
   quiet = false,
+  progress?: InstallationDeploymentProgress,
 ): Promise<InstallationResult> => {
   const { installation, stack } = makeStack(request, prebuiltWorkers);
+  const providerReceipt: DeploymentProviderReceipt = { succeeded: new Set() };
   return runWithProfile(
     request.profile,
     root,
@@ -809,17 +890,31 @@ const deployWithProfile = async (
               }
 
               const output = yield* Apply.apply(plan);
+              progress?.providerOperationsSucceeded(providerReceipt.succeeded.size);
               if (!output.url)
                 return yield* new InstallationDeploymentError({
                   message: "Deployed Worker has no URL.",
                 });
 
-              if (beforeSnapshot !== undefined && containerAppId !== undefined) {
+              if (containerChanged) {
+                if (containerAppId === undefined) {
+                  const applications = yield* Containers.listContainerApplications({ accountId });
+                  containerAppId = applications.find(
+                    (candidate) => candidate.name === installation.containerName,
+                  )?.id;
+                  if (containerAppId === undefined)
+                    return yield* new InstallationDeploymentError({
+                      message:
+                        "Container application was not observable after provider application.",
+                    });
+                }
                 yield* waitForContainerRollout(beforeSnapshot, {
                   accountId,
                   applicationId: containerAppId,
                 });
               }
+
+              progress?.readinessVerified();
 
               return {
                 installationName: request.installationName,
@@ -847,6 +942,7 @@ const deployWithProfile = async (
           { stage: CLOUDFLARE_STAGE },
         ),
         quiet,
+        providerReceipt,
       ),
     { credentialWrappingKey },
   );
@@ -913,6 +1009,7 @@ const requireCredentialWrappingKeyWithProfile = async (
   profile: string,
   root: string,
   input: { readonly accountId?: string; readonly scriptName: string },
+  quiet = false,
 ): Promise<void> =>
   runWithProfile(profile, root, () =>
     provideAlchemy(
@@ -925,6 +1022,7 @@ const requireCredentialWrappingKeyWithProfile = async (
           });
         yield* requireCredentialWrappingKeyBinding({ accountId, scriptName: input.scriptName });
       }).pipe(Effect.provide(cloudflareApiLive())),
+      quiet,
     ),
   );
 
@@ -1078,11 +1176,14 @@ export async function planInstallation(
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
-    await requireCredentialWrappingKeyWithProfile(request.profile, deployment.root, {
-      scriptName: installation.workerName,
-    });
+    await requireCredentialWrappingKeyWithProfile(
+      request.profile,
+      deployment.root,
+      { scriptName: installation.workerName },
+      true,
+    );
     await prepareInstallationDeployment(deployment, installation);
-    return await planWithProfile(request, deployment.root, deployment.prebuiltWorkers);
+    return await planWithProfile(request, deployment.root, deployment.prebuiltWorkers, true);
   } finally {
     await deployment.cleanup();
   }
@@ -1091,6 +1192,7 @@ export async function planInstallation(
 export async function deployInstallation(
   request: InstallationApplyRequest,
   readinessTarget?: InstallationDeploymentReadinessTarget,
+  progress?: InstallationDeploymentProgress,
 ): Promise<InstallationResult> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
@@ -1100,10 +1202,15 @@ export async function deployInstallation(
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
-    await requireCredentialWrappingKeyWithProfile(request.profile, deployment.root, {
-      accountId: request.expectedAccountId,
-      scriptName: installation.workerName,
-    });
+    await requireCredentialWrappingKeyWithProfile(
+      request.profile,
+      deployment.root,
+      {
+        accountId: request.expectedAccountId,
+        scriptName: installation.workerName,
+      },
+      true,
+    );
     await prepareInstallationDeployment(deployment, installation);
     return await deployWithProfile(
       request,
@@ -1111,6 +1218,8 @@ export async function deployInstallation(
       deployment.prebuiltWorkers,
       undefined,
       readinessTarget,
+      true,
+      progress,
     );
   } finally {
     await deployment.cleanup();

@@ -2,8 +2,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assert, describe, it } from "@effect/vitest";
+import { Cli as AlchemyCli } from "alchemy/Cli/Cli";
 import { Effect, Fiber, Predicate, Result } from "effect";
-import { TestClock } from "effect/testing";
+import { TestClock, TestConsole } from "effect/testing";
 import type { Plan } from "alchemy";
 import { EXIT } from "../src/core.ts";
 import { installationCommandFailure } from "../src/installation-diagnostics.ts";
@@ -13,6 +14,7 @@ import {
   readDeploymentSessionReadiness,
   InstallationDeploymentError,
   isContainerPlanChanged,
+  makeQuietAlchemyCli,
   waitForContainerRollout,
   type ContainerControlPlaneReader,
 } from "../src/installation-deployment.ts";
@@ -113,6 +115,41 @@ const makeSyntheticPlan = (resources: Record<string, "create" | "update" | "noop
 });
 
 describe("installation container rollout settlement", () => {
+  it.effect(
+    "quiet Alchemy sessions suppress chatter and count unique successful operations",
+    () => {
+      const receipt = { succeeded: new Set<string>() };
+      return Effect.gen(function* () {
+        const cli = yield* AlchemyCli;
+        const session = yield* cli.startApplySession(makeSyntheticPlan({ Worker: "update" }));
+        yield* session.emit({
+          kind: "status-change",
+          id: "Worker",
+          type: "Cloudflare.Worker",
+          status: "updating",
+        });
+        yield* session.emit({
+          kind: "status-change",
+          id: "Worker",
+          type: "Cloudflare.Worker",
+          status: "updated",
+        });
+        yield* session.emit({
+          kind: "status-change",
+          id: "Worker",
+          type: "Cloudflare.Worker",
+          status: "updated",
+        });
+        yield* session.emit({ kind: "annotate", id: "Worker", message: "secret provider detail" });
+        yield* session.done();
+
+        assert.strictEqual(receipt.succeeded.size, 1);
+        assert.isEmpty(yield* TestConsole.logLines);
+        assert.isEmpty(yield* TestConsole.errorLines);
+      }).pipe(Effect.provide(makeQuietAlchemyCli(receipt)), Effect.provide(TestConsole.layer));
+    },
+  );
+
   it.effect("reads authoritative session readiness with the bearer token", () =>
     Effect.gen(function* () {
       let request: Request | undefined;
@@ -226,6 +263,48 @@ describe("installation container rollout settlement", () => {
     }),
   );
 
+  it.effect("created container rollout must converge before readiness is reported", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1_000_000);
+      let callCount = 0;
+      const readControlPlane: ContainerControlPlaneReader = () =>
+        Effect.sync(() => {
+          callCount++;
+          if (callCount === 1)
+            return makeSnapshot({
+              version: 1,
+              activeRolloutId: "rollout-1",
+              rollouts: [
+                makeRollout({ status: "progressing", currentVersion: 0, targetVersion: 1 }),
+              ],
+            });
+          return makeSnapshot({
+            version: 1,
+            activeRolloutId: null,
+            rollouts: [
+              makeRollout({
+                status: "completed",
+                currentVersion: 0,
+                targetVersion: 1,
+                updatedInstances: 1,
+                totalInstances: 1,
+              }),
+            ],
+          });
+        });
+
+      const fiber = yield* waitForContainerRollout(
+        undefined,
+        { accountId: "acc-1", applicationId: "app-test-123" },
+        { readControlPlane, pollMs: 5_000 },
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* TestClock.adjust(5_000);
+      const settled = yield* Fiber.join(fiber);
+      assert.strictEqual(settled.application.version, 1);
+      assert.strictEqual(callCount, 2);
+    }),
+  );
   it.effect("rollout reported failed yields a typed error", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(1_000_000);

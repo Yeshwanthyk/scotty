@@ -75,6 +75,7 @@ export interface CliDependencies {
   deployInstallation: (
     request: InstallationApplyRequest,
     readinessTarget?: InstallationDeploymentReadinessTarget,
+    progress?: InstallationDeploymentProgress,
   ) => Promise<InstallationResult>;
   inspectInstallation: (request: InstallationInspectRequest) => Promise<InstallationResult>;
   recoverInstallation: (request: InstallationRecoverRequest) => Promise<InstallationResult>;
@@ -108,6 +109,11 @@ export interface InstallationApplyRequest extends InstallationDeployRequest {
 export interface InstallationDeploymentReadinessTarget {
   readonly host: string;
   readonly token: string;
+}
+
+export interface InstallationDeploymentProgress {
+  readonly providerOperationsSucceeded: (count: number) => void;
+  readonly readinessVerified: () => void;
 }
 
 export interface InstallationInspectRequest {
@@ -268,6 +274,7 @@ interface InstallationDeployerShape {
   readonly deploy: (
     request: InstallationApplyRequest,
     readinessTarget?: InstallationDeploymentReadinessTarget,
+    progress?: InstallationDeploymentProgress,
   ) => Effect.Effect<InstallationResult, CliError>;
 }
 
@@ -534,9 +541,9 @@ export const defaultDependencies = (): CliDependencies => ({
     const { planInstallation } = await import("./installation-deployment.ts");
     return planInstallation(request);
   },
-  deployInstallation: async (request, readinessTarget) => {
+  deployInstallation: async (request, readinessTarget, progress) => {
     const { deployInstallation } = await import("./installation-deployment.ts");
-    return deployInstallation(request, readinessTarget);
+    return deployInstallation(request, readinessTarget, progress);
   },
   inspectInstallation: async (request) => {
     const { inspectInstallation } = await import("./installation-deployment.ts");
@@ -662,9 +669,9 @@ export const cliLayer = (
                 }),
           ),
         ),
-      deploy: (request, readinessTarget) =>
+      deploy: (request, readinessTarget, progress) =>
         Effect.tryPromise({
-          try: () => dependencies.deployInstallation(request, readinessTarget),
+          try: () => dependencies.deployInstallation(request, readinessTarget, progress),
           catch: (cause) =>
             isDeploymentSessionSafetyError(cause) ? cause : new InstallationHostFailure({ cause }),
         }).pipe(
