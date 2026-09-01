@@ -1169,7 +1169,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (options.host || options.tokenFile)
           return yield* usage("deploy does not accept --host or --token-file");
         yield* validateDeploymentMode(planOnly, yes);
-        const interactive = !options.json && runtime.stdinIsTTY && runtime.stdoutIsTTY;
+        const interactive = !options.json && runtime.stdoutIsTTY;
         const deployUi = interactive ? makeDeployUi(runtime.stdout) : makeSilentDeployUi();
         deployUi.start();
         const prerequisitePhase = deployUi.phase("Checking deployment prerequisites");

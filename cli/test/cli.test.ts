@@ -1847,7 +1847,7 @@ describe("configuration and transport", () => {
     expect(h.error().error.code).toBe("deployment_readiness_receipt_missing");
   });
 
-  test("deploy TTY apply separates provider success, readiness, synchronization, and completion", async () => {
+  test("deploy --yes with TTY stdout and non-TTY stdin keeps human apply output", async () => {
     const home = await temporaryDirectory();
     await writeScottyToml(home);
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
@@ -1855,14 +1855,14 @@ describe("configuration and transport", () => {
     });
     const h = harness({
       home,
-      stdinIsTTY: true,
+      stdinIsTTY: false,
       stdoutIsTTY: true,
       fetch: acceptingSandboxSyncFetch(),
       planInstallation: async () => ({
         installationName: "home",
         accountId: "0123456789abcdef0123456789abcdef",
         hasExistingResources: true,
-        fingerprint: "tty-apply",
+        fingerprint: "mixed-tty-apply",
         changes: [
           { id: "Scotty-home/Worker", action: "update" },
           { id: "Scotty-home/Runner", action: "update" },
