@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -27,7 +27,6 @@ import {
   removeLocalHarnessContainersForWorker,
   requireLocalInputs,
   ROOT,
-  startWrangler,
   stopProcessGroup,
   terminateProcessGroup,
   waitForWorker,
@@ -122,6 +121,7 @@ export function evidencePathsForRunId(runId, evidenceDirectory = EVIDENCE_DIRECT
     directory,
     manifest: path.join(directory, "run.json"),
     commands: path.join(directory, "commands.jsonl"),
+    workerLog: path.join(directory, "worker.log"),
   };
 }
 
@@ -281,6 +281,28 @@ export function recordActorDiagnostics(manifest, observation, evidenceDirectory)
   );
 }
 
+export function assertStableActorObservation(diagnostics, expectedStable) {
+  const { authority, journalSequence, journalTail, revision } = diagnostics;
+  if (
+    authority.revision !== revision ||
+    journalTail.revision !== revision ||
+    journalTail.sequence !== journalSequence
+  )
+    throw new Error("Actor authority and journal revisions do not agree");
+  const proofField = {
+    Warm: "readiness",
+    Sleeping: "wakeSource",
+    Failed: "code",
+    Gone: "cleanup",
+  }[expectedStable];
+  if (
+    !Object.hasOwn(authority.state, "stable") ||
+    !Object.hasOwn(authority.state.stable, proofField)
+  )
+    throw new Error(`Expected Stable(${expectedStable}) actor authority`);
+  return diagnostics;
+}
+
 export function appendEvidenceCommand(manifest, record, evidenceDirectory) {
   const paths = ensureEvidenceRun(manifest, evidenceDirectory);
   privateRegularFile(paths.commands, "Lab evidence command log");
@@ -299,11 +321,56 @@ export function appendEvidenceCommand(manifest, record, evidenceDirectory) {
   }
 }
 
+export function preserveWorkerLog(manifest, evidenceDirectory = EVIDENCE_DIRECTORY) {
+  validateLabManifestPaths(manifest);
+  let contents;
+  try {
+    privateRegularFile(manifest.logFile, "Lab Worker log");
+    contents = readFileSync(manifest.logFile, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+  const paths = ensureEvidenceRun(manifest, evidenceDirectory);
+  const temporaryPath = `${paths.workerLog}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, contents, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    chmodSync(temporaryPath, 0o600);
+    renameSync(temporaryPath, paths.workerLog);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+  return true;
+}
+
 export function assertLifecycleSessionId(sessionId) {
   if (sessionId === PROTECTED_SESSION_ID)
     throw new Error(`Session ${PROTECTED_SESSION_ID} is protected and must never be targeted`);
   if (!SESSION_ID_PATTERN.test(sessionId)) throw new Error("Session ID is invalid");
   return sessionId;
+}
+
+export function recoverPendingCreateSessionId(manifest, body) {
+  validateLabManifestPaths(manifest);
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify([manifest.host, body]))
+    .digest("hex");
+  const pendingPath = path.join(manifest.cliHome, ".scotty", "pending-up", `${fingerprint}.json`);
+  privateRegularFile(pendingPath, "Lab pending create request");
+  const pending = JSON.parse(readFileSync(pendingPath, "utf8"));
+  if (
+    !pending ||
+    typeof pending !== "object" ||
+    Array.isArray(pending) ||
+    typeof pending.key !== "string" ||
+    !/^[0-9a-f-]{36}$/u.test(pending.key) ||
+    typeof pending.createdAt !== "string" ||
+    !Number.isFinite(Date.parse(pending.createdAt))
+  )
+    throw new Error("Lab pending create request is invalid");
+  return assertLifecycleSessionId(
+    createHash("sha256").update(pending.key).digest("hex").slice(0, 12),
+  );
 }
 
 function generatedPaths(tempRoot) {
@@ -429,6 +496,28 @@ export function readProcessSnapshot(pid) {
   }
 }
 
+export function readProcessGroupSnapshots(pgid) {
+  if (!isSafePid(pgid)) return [];
+  const output = execFileSync("ps", ["-axo", "pid=,ppid=,pgid=,lstart=,command="], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return output.split("\n").flatMap((line) => {
+    const match =
+      /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/u.exec(line);
+    if (!match || Number(match[3]) !== pgid) return [];
+    return [
+      {
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        pgid: Number(match[3]),
+        startTime: match[4],
+        command: match[5],
+      },
+    ];
+  });
+}
+
 export function validateLabProcess(manifest, snapshot) {
   if (!snapshot) return { status: "missing" };
   const expectedFragments = [
@@ -448,6 +537,28 @@ export function validateLabProcess(manifest, snapshot) {
     return { status: "mismatch" };
   }
   return { status: "owned" };
+}
+
+export function validateOrphanedLabProcessGroup(manifest, snapshots) {
+  if (snapshots.length === 0) return { status: "missing" };
+  const leaderStartedAt = Date.parse(manifest.processStartTime);
+  const allowedCommands = [
+    `${path.join(ROOT, "node_modules/@esbuild/")}`,
+    `${path.join(ROOT, "node_modules/@cloudflare/workerd-")}`,
+  ];
+  const owned =
+    Number.isFinite(leaderStartedAt) &&
+    snapshots.every(
+      (snapshot) =>
+        isSafePid(snapshot.pid) &&
+        snapshot.pid !== manifest.pid &&
+        snapshot.pgid === manifest.pid &&
+        Date.parse(snapshot.startTime) >= leaderStartedAt &&
+        allowedCommands.some((prefix) => snapshot.command.startsWith(prefix)) &&
+        (snapshot.command.includes("/bin/esbuild --service=") ||
+          snapshot.command.includes("/bin/workerd serve ")),
+    );
+  return { status: owned ? "owned" : "mismatch" };
 }
 
 export function cleanupOwnedFiles(manifest, manifestPath = MANIFEST_PATH, remove = rmSync) {
@@ -540,18 +651,41 @@ export async function prepareStart(manifest) {
 }
 
 export async function launchWrangler(manifest, prepared) {
-  const started = startWrangler({
-    envFile: manifest.envFile,
-    persistPath: manifest.persistPath,
-    port: PORT,
-    name: manifest.workerName,
-    env: labSystemEnvironment(manifest.cliHome, {
-      DOCKER_CONFIG: prepared.dockerConfig,
-      DOCKER_HOST: prepared.dockerHost,
-    }),
-    logFile: manifest.logFile,
-    secrets: prepared.secrets,
-  });
+  const log = [];
+  const child = spawn(
+    process.execPath,
+    [
+      path.join(ROOT, "scripts/scotty-lab-wrangler-supervisor.mjs"),
+      "worker/wrangler.jsonc",
+      manifest.envFile,
+      manifest.persistPath,
+      manifest.workerName,
+      String(PORT),
+      manifest.logFile,
+    ],
+    {
+      cwd: ROOT,
+      detached: true,
+      env: labSystemEnvironment(manifest.cliHome, {
+        DOCKER_CONFIG: prepared.dockerConfig,
+        DOCKER_HOST: prepared.dockerHost,
+      }),
+      stdio: "ignore",
+    },
+  );
+  const flushLog = () => {
+    try {
+      const contents = readFileSync(manifest.logFile, "utf8");
+      log.splice(0, log.length, contents);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  };
+  const started = {
+    child,
+    log,
+    flushLog,
+  };
   try {
     if (!started.child.pid) throw new Error("Wrangler did not return a process ID");
     const snapshot = readProcessSnapshot(started.child.pid);
@@ -604,10 +738,32 @@ export async function terminateManifestProcess(manifest) {
     if (isSafePid(manifest.pid) && processGroupAlive(manifest.pid))
       await new Promise((resolve) => setTimeout(resolve, 250));
     if (isSafePid(manifest.pid) && processGroupAlive(manifest.pid)) {
+      const orphanValidation = validateOrphanedLabProcessGroup(
+        manifest,
+        readProcessGroupSnapshots(manifest.pid),
+      );
+      if (orphanValidation.status !== "owned")
+        return {
+          validation: orphanValidation,
+          stopped: false,
+          error: `Refusing to signal process group ${manifest.pid}: orphan ownership validation failed`,
+        };
+      try {
+        await terminateProcessGroup(manifest.pid);
+      } catch (error) {
+        return {
+          validation: orphanValidation,
+          stopped: !processGroupAlive(manifest.pid),
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      const stopped = !processGroupAlive(manifest.pid);
       return {
-        validation,
-        stopped: false,
-        error: `Refusing to signal process group ${manifest.pid}: the owned leader is gone`,
+        validation: orphanValidation,
+        stopped,
+        ...(stopped
+          ? {}
+          : { error: "Orphaned Wrangler process group is still running after termination" }),
       };
     }
     return { validation, stopped: true };

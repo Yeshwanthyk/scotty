@@ -406,14 +406,14 @@ describe("SandboxRuntime", () => {
       const capabilities: SandboxRuntimeCapabilities = {
         ...sandboxRuntimeCapabilitiesFake(),
         getState: () => Promise.resolve({ status: "running", lastChange: 12 }),
-        getContainerPlacementId: () => Promise.resolve("placement-1"),
+        getContainerIncarnationId: () => Promise.resolve("placement-1"),
         fetchPort: () =>
           Promise.resolve(Response.json({ status: "ready", epoch: "epoch-1" }, { status: 200 })),
       };
       const program = Effect.gen(function* () {
         const runtime = yield* SandboxRuntime;
         assert.deepStrictEqual(yield* runtime.getState(), { status: "running", lastChange: 12 });
-        assert.strictEqual(yield* runtime.getContainerPlacementId(), "placement-1");
+        assert.strictEqual(yield* runtime.getContainerIncarnationId(), "placement-1");
         assert.deepStrictEqual(yield* runtime.fetchPortBody("/health", 43_117, "GET", 128), {
           status: 200,
           body: '{"status":"ready","epoch":"epoch-1"}',

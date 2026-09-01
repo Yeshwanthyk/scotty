@@ -131,6 +131,7 @@ const providerLayer = (
     ensureTerminal: () => Effect.void,
     ensurePiSession: () => Effect.void,
     startPiSession: () => Effect.succeed("scotty-pi-session"),
+    waitForPiSessionReady: () => Effect.void,
     readPiSessionHealth: () => Effect.succeed({ processId: "scotty-pi-session", epoch: "epoch-1" }),
     verifyPiSessionSnapshot: () =>
       Effect.succeed({ processId: "scotty-pi-session", epoch: "epoch-1" }),
@@ -199,12 +200,12 @@ const runProvider = <A, E>(
   );
 
 describe("Cloudflare create transition provider", () => {
-  it.effect("uses public runtime state and placement with the Scotty-owned generation", () =>
+  it.effect("uses public runtime state and container incarnation with the actor generation", () =>
     Effect.gen(function* () {
       const capabilities: SandboxRuntimeCapabilities = {
         ...sandboxRuntimeCapabilitiesFake(),
         getState: () => Promise.resolve({ status: "running", lastChange: 1 }),
-        getContainerPlacementId: () => Promise.resolve("placement-1"),
+        getContainerIncarnationId: () => Promise.resolve("placement-1"),
       };
       const result = yield* runProvider(capabilities, (provider) =>
         provider.confirmRuntimeReady(context("RuntimeReady")),
@@ -215,18 +216,41 @@ describe("Cloudflare create transition provider", () => {
     }),
   );
 
+  it.effect("keeps a missing production container incarnation unknown", () =>
+    Effect.gen(function* () {
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        getState: () => Promise.resolve({ status: "running", lastChange: 1 }),
+        getContainerIncarnationId: () => Promise.resolve(null),
+      };
+      const result = yield* Effect.result(
+        runProvider(capabilities, (provider) =>
+          provider.confirmRuntimeReady(context("RuntimeReady")),
+        ),
+      );
+
+      assert.ok(Result.isFailure(result));
+      assert.strictEqual(result.failure.outcome, "unknown_after_admission");
+      assert.strictEqual(result.failure.safeResultCode, "create_container_incarnation_unobserved");
+    }),
+  );
+
   it.effect("splits supervisor admission from health and transport readiness", () =>
     Effect.gen(function* () {
       const calls: string[] = [];
       const capabilities: SandboxRuntimeCapabilities = {
         ...sandboxRuntimeCapabilitiesFake(),
         getState: () => Promise.resolve({ status: "running", lastChange: 1 }),
-        getContainerPlacementId: () => Promise.resolve("placement-1"),
+        getContainerIncarnationId: () => Promise.resolve("placement-1"),
       };
       const authOverrides: Partial<ContainerAuth["Service"]> = {
         startPiSession: () => {
           calls.push("start");
           return Effect.succeed("scotty-pi-session");
+        },
+        waitForPiSessionReady: () => {
+          calls.push("wait");
+          return Effect.void;
         },
         readPiSessionHealth: () => {
           calls.push("health");
@@ -252,7 +276,7 @@ describe("Cloudflare create transition provider", () => {
         (provider) => provider.confirmSupervisorReady(context("SupervisorReady")),
         authOverrides,
       );
-      assert.deepStrictEqual(calls, ["start", "health"]);
+      assert.deepStrictEqual(calls, ["start", "wait", "health"]);
       assert.ok(Predicate.isTagged(ready, "SupervisorReadyConfirmed"));
       assert.deepStrictEqual(ready.supervisor, supervisorProof);
 
@@ -261,7 +285,7 @@ describe("Cloudflare create transition provider", () => {
         (provider) => provider.verifyTransport(context("TransportVerifying", supervisorProof)),
         authOverrides,
       );
-      assert.deepStrictEqual(calls, ["start", "health", "snapshot:epoch-1"]);
+      assert.deepStrictEqual(calls, ["start", "wait", "health", "snapshot:epoch-1"]);
       assert.ok(Predicate.isTagged(transport, "TransportVerified"));
       assert.strictEqual(transport.transport.supervisorEpoch, "epoch-1");
       assert.strictEqual(transport.transport.runtimeGeneration, runtimeProof.runtimeGeneration);
@@ -274,7 +298,7 @@ describe("Cloudflare create transition provider", () => {
       const capabilities: SandboxRuntimeCapabilities = {
         ...sandboxRuntimeCapabilitiesFake(),
         getState: () => Promise.reject(new Error("provider response lost")),
-        getContainerPlacementId: () => Promise.resolve("placement-1"),
+        getContainerIncarnationId: () => Promise.resolve("placement-1"),
       };
       const result = yield* Effect.result(
         runProvider(capabilities, (provider) =>
@@ -329,7 +353,7 @@ describe("Cloudflare create transition provider", () => {
         const capabilities: SandboxRuntimeCapabilities = {
           ...sandboxRuntimeCapabilitiesFake(),
           getState: () => Promise.resolve({ status: "running", lastChange: 1 }),
-          getContainerPlacementId: () => Promise.resolve("placement-1"),
+          getContainerIncarnationId: () => Promise.resolve("placement-1"),
           writeFile: (_path, content) => {
             if (typeof content === "string") marker = content;
             return Promise.resolve();
@@ -390,7 +414,7 @@ describe("Cloudflare create transition provider", () => {
       const capabilities: SandboxRuntimeCapabilities = {
         ...sandboxRuntimeCapabilitiesFake(),
         getState: () => Promise.resolve({ status: "running", lastChange: 1 }),
-        getContainerPlacementId: () => Promise.resolve("placement-1"),
+        getContainerIncarnationId: () => Promise.resolve("placement-1"),
         readFileStream: () =>
           Promise.resolve(
             new ReadableStream({

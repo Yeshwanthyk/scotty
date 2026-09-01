@@ -119,16 +119,25 @@ commands require that exact session ID in the active run's evidence manifest. Se
 `6ffa0a512819` is protected and is rejected by both lifecycle commands and the general lab `exec`
 path. Vaporize can target only a session recorded as owned by the active run.
 
+If `beam` fails after admission, the lab derives the session ID only from that exact command's
+private pending idempotency request in the run-owned CLI home. It records the recovered ID as owned
+and captures actor diagnostics before returning the CLI failure. It never scans session lists or
+chooses a latest session. Use the recovered ID from the retained scenario result for targeted
+vaporize before stopping the run.
+
 `checkpoint` invokes the real CLI `snapshot` command. A manual snapshot stops Pi and interactive
 terminals while writing the backup, then restores the warm runtime; it is not the sleep transition.
 `sleep-resume` uses the authenticated public `POST /api/sessions/:id/sleep` route through the exact
 loopback lab host and root token, records its sanitized response and HTTP status, then invokes the
-real CLI `resume` command. It never writes Durable Object storage or desired state directly.
+real CLI `resume` command. If the route truthfully reports a reconciling outcome, the lab waits for
+the actor authority to settle `Sleeping`; it does not treat the response as success by itself. It
+never writes Durable Object storage or desired state directly.
 
 Every run retains private evidence under `.scotty-lab/evidence/RUN_ID/`, outside the ephemeral
-temporary root. Directories are mode `0700`; `run.json` and `commands.jsonl` are mode `0600` and
-updated by atomic replacement. The run manifest records session ownership, scenario results, and
-the final stop cleanup result. Command records contain only the driver's allow-listed argv,
+temporary root. Directories are mode `0700`; `run.json`, `commands.jsonl`, and the redacted
+`worker.log` snapshot are mode `0600`. Stop preserves the Worker log before deleting the temporary
+root. The run manifest records session ownership, scenario results, and the final stop cleanup
+result. Command records contain only the driver's allow-listed argv,
 sanitized stdout and stderr, exit code or signal, Effect-clock timestamps, scenario, and ownership
 context. They do not capture the process environment, credential values, authorization headers, or
 arbitrary forwarded `exec` traffic. `stop` removes the runtime temporary root but preserves this
@@ -157,7 +166,9 @@ owned session is gone.
 
 After each supported lifecycle action, the lab reads the authenticated actor diagnostics endpoint
 and retains the validated authority, revision, bounded immutable journal, and journal tail. The
-journal response declares when its 256-event window is truncated. Provider snapshots remain
+journal response declares when its 256-event window is truncated. A scenario succeeds only when
+the public result and actor authority agree on the expected stable state, and the authority,
+diagnostics, and journal tail revisions agree. Provider snapshots remain
 `not-available`; the lab therefore retains the public HTTP/CLI result and a later actor observation,
 but it does not yet correlate them by operation identity. It also does not by itself prove provider
 state, fault recovery, hard-cap alarm behavior, deployed behavior, or absence of post-response

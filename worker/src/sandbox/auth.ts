@@ -345,6 +345,9 @@ interface ContainerAuthShape {
     id: SessionRecord["id"],
     credentials: SessionRuntimeCredentials,
   ) => Effect.Effect<string, SandboxRuntimeFailure>;
+  readonly waitForPiSessionReady: (
+    id: SessionRecord["id"],
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly readPiSessionHealth: (
     id: SessionRecord["id"],
   ) => Effect.Effect<PiSessionProcessProof, SandboxRuntimeFailure>;
@@ -543,6 +546,25 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         });
       return process;
     });
+    const waitForPiSessionReady = Effect.fnUntraced(function* (_id: SessionRecord["id"]) {
+      const process = yield* currentPiProcess();
+      const ready = yield* Effect.result(
+        process.waitForPort(PI_SESSION_PORT, {
+          path: "/health",
+          status: 200,
+          timeout: 30_000,
+        }),
+      );
+      if (Result.isSuccess(ready)) return;
+
+      const observed = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
+      if (observed === null || (observed.status !== "starting" && observed.status !== "running"))
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Pi session process exited before readiness",
+        });
+      return yield* ready.failure;
+    });
     const readPiSessionHealth = Effect.fnUntraced(function* (_id: SessionRecord["id"]) {
       const process = yield* currentPiProcess();
       const response = yield* runtime.fetchPortBody("/health", PI_SESSION_PORT, "GET", 4_096);
@@ -605,25 +627,17 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         yield* seed(id, credentials);
       }),
       startPiSession,
+      waitForPiSessionReady,
       readPiSessionHealth,
       verifyPiSessionSnapshot,
       ensurePiSession: Effect.fnUntraced(function* (id, credentials) {
         const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
         if (existing?.status === "starting" || existing?.status === "running") {
-          yield* existing.waitForPort(PI_SESSION_PORT, {
-            path: "/health",
-            status: 200,
-            timeout: 30_000,
-          });
+          yield* waitForPiSessionReady(id);
           return;
         }
         yield* startPiSession(id, credentials);
-        const process = yield* currentPiProcess();
-        yield* process.waitForPort(PI_SESSION_PORT, {
-          path: "/health",
-          status: 200,
-          timeout: 30_000,
-        });
+        yield* waitForPiSessionReady(id);
         const healthStatus = yield* runtime.fetchPortStatus("/health", PI_SESSION_PORT, "GET");
         if (healthStatus !== 200)
           return yield* new SandboxRuntimeFailure({

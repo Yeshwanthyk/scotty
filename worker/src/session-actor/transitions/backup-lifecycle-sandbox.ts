@@ -216,15 +216,15 @@ const runtimeReadyProof = Effect.fnUntraced(function* (
     (decoded.success.status !== "running" && decoded.success.status !== "healthy")
   )
     return yield* boundaryFailure("rejected_before_admission", "runtime_not_ready");
-  const placementId = yield* runtime
-    .getContainerPlacementId()
-    .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "runtime_placement_unknown")));
-  if (placementId === null || placementId.length === 0)
-    return yield* boundaryFailure("unknown_after_admission", "runtime_placement_unobserved");
+  const incarnationId = yield* runtime
+    .getContainerIncarnationId()
+    .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "runtime_incarnation_unknown")));
+  if (incarnationId === null || incarnationId.length === 0)
+    return yield* boundaryFailure("unknown_after_admission", "runtime_incarnation_unobserved");
   return {
     providerRuntimeId: input.providerRuntimeId,
     runtimeGeneration: input.runtimeGeneration,
-    containerIncarnation: placementId,
+    containerIncarnation: incarnationId,
   } satisfies RuntimeProof;
 });
 
@@ -415,6 +415,9 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     ) {
       if (input.runtime.runtimeGeneration !== input.runtimeGeneration)
         return yield* boundaryFailure("rejected_before_admission", "runtime_generation_mismatch");
+      yield* auth
+        .waitForPiSessionReady(input.sessionId)
+        .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "supervisor_readiness_unknown")));
       const health = yield* auth
         .readPiSessionHealth(input.sessionId)
         .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "supervisor_health_unknown")));

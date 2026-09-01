@@ -28,6 +28,7 @@ import {
   acquireLifecycleLock,
   activeRunManifest,
   appendEvidenceCommand,
+  assertStableActorObservation,
   assertLifecycleSessionId,
   awaitWrangler,
   cleanupOwnedFiles,
@@ -39,8 +40,10 @@ import {
   markCleanupPending,
   prepareCredentialSetup,
   prepareStart,
+  preserveWorkerLog,
   PROTECTED_SESSION_ID,
   readActorDiagnostics,
+  recoverPendingCreateSessionId,
   recordCleanupResult,
   recordActorDiagnostics,
   recordOwnedSession,
@@ -104,6 +107,7 @@ const decodeActorDiagnosticsJson = Schema.decodeUnknownEffect(
 export class LabFailure extends Data.TaggedError("LabFailure")<{
   readonly message: string;
   readonly cause?: unknown;
+  readonly sessionId?: string;
 }> {}
 
 export class LabUsageError extends Data.TaggedError("LabUsageError")<{
@@ -158,6 +162,11 @@ const cleanupResources = Effect.fnUntraced(function* (manifest: Manifest, starte
     processStopped = Result.isSuccess(result) && result.success.stopped;
     if (Result.isSuccess(result) && result.success.error) errors.push(result.success.error);
   }
+
+  yield* appendFailure(
+    errors,
+    attempt("Unable to preserve the lab Worker log", () => preserveWorkerLog(manifest)),
+  );
 
   if (processStopped)
     yield* appendFailure(
@@ -435,6 +444,7 @@ const runRecordedCli = Effect.fnUntraced(function* (
   scenario: LifecycleScenario,
   argv: ReadonlyArray<string>,
   sessionId?: string,
+  recoverSessionId?: () => Effect.Effect<string, LabFailure>,
 ) {
   const startedAt = yield* nowIso;
   const child = yield* attempt("Unable to start the Scotty CLI", () =>
@@ -442,6 +452,25 @@ const runRecordedCli = Effect.fnUntraced(function* (
   );
   const captured = yield* waitForCapturedChild(child);
   const finishedAt = yield* nowIso;
+  let evidenceSessionId = sessionId;
+  let recoveryFailure: LabFailure | undefined;
+  if (
+    (captured.signal !== undefined || captured.code !== 0) &&
+    evidenceSessionId === undefined &&
+    recoverSessionId !== undefined
+  ) {
+    const recovered = yield* Effect.result(recoverSessionId());
+    if (Result.isFailure(recovered)) recoveryFailure = recovered.failure;
+    else {
+      const recorded = yield* Effect.result(
+        attempt("Unable to record failed create ownership", () =>
+          recordOwnedSession(manifest, recovered.success, finishedAt),
+        ),
+      );
+      if (Result.isFailure(recorded)) recoveryFailure = recorded.failure;
+      else evidenceSessionId = recovered.success;
+    }
+  }
   const stdout = yield* attempt("Unable to sanitize lifecycle stdout", () =>
     sanitizeEvidenceText(manifest, captured.stdout),
   );
@@ -458,18 +487,21 @@ const runRecordedCli = Effect.fnUntraced(function* (
       stderr,
       exitCode: captured.code ?? null,
       signal: captured.signal ?? null,
-      sessionId: sessionId ?? null,
-      sessionOwned: sessionId === undefined ? "pending-create" : true,
+      sessionId: evidenceSessionId ?? null,
+      sessionOwned: evidenceSessionId === undefined ? "pending-create" : true,
     }),
   );
   if (captured.signal !== undefined || captured.code !== 0) {
+    const reason = `CLI exited with ${captured.signal ?? captured.code ?? "an unknown status"}.${
+      recoveryFailure === undefined ? "" : ` ${recoveryFailure.message}`
+    }`;
     yield* persistScenarioResult(manifest, {
       scenario,
       status: "failed",
       startedAt,
       finishedAt,
-      ...(sessionId === undefined ? {} : { sessionId }),
-      reason: `CLI exited with ${captured.signal ?? captured.code ?? "an unknown status"}.`,
+      ...(evidenceSessionId === undefined ? {} : { sessionId: evidenceSessionId }),
+      reason,
     });
     return yield* Effect.fail(
       new LabFailure({
@@ -479,7 +511,10 @@ const runRecordedCli = Effect.fnUntraced(function* (
           exitCode: captured.code ?? null,
           signal: captured.signal ?? null,
           stderr,
+          ...(evidenceSessionId === undefined ? {} : { sessionId: evidenceSessionId }),
+          ...(recoveryFailure === undefined ? {} : { recoveryError: recoveryFailure.message }),
         }),
+        ...(evidenceSessionId === undefined ? {} : { sessionId: evidenceSessionId }),
       }),
     );
   }
@@ -507,27 +542,7 @@ const runRecordedSleep = Effect.fnUntraced(function* (manifest: Manifest, sessio
       sessionOwned: true,
     }),
   );
-  if (response.status < 200 || response.status >= 300) {
-    yield* persistScenarioResult(manifest, {
-      scenario: "sleep-resume",
-      status: "failed",
-      startedAt,
-      finishedAt,
-      sessionId,
-      reason: `Sleep returned HTTP ${response.status}.`,
-    });
-    return yield* Effect.fail(
-      new LabFailure({
-        message: JSON.stringify({
-          scenario: "sleep-resume",
-          status: "failed",
-          httpStatus: response.status,
-          body: response.body,
-        }),
-      }),
-    );
-  }
-  return response.body;
+  return response;
 });
 
 const captureActorDiagnostics = Effect.fnUntraced(function* (
@@ -550,6 +565,27 @@ const captureActorDiagnostics = Effect.fnUntraced(function* (
     recordActorDiagnostics(manifest, { scenario, sessionId, observedAt, diagnostics }),
   );
   return diagnostics;
+});
+
+const awaitStableActorDiagnostics = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  scenario: LifecycleScenario,
+  sessionId: string,
+  expected: "Sleeping" | "Warm",
+) {
+  let attemptIndex = 0;
+  while (true) {
+    const diagnostics = yield* captureActorDiagnostics(manifest, scenario, sessionId);
+    const stable = yield* Effect.result(
+      attempt(`Actor authority did not settle ${expected.toLowerCase()}`, () =>
+        assertStableActorObservation(diagnostics, expected),
+      ),
+    );
+    if (Result.isSuccess(stable)) return diagnostics;
+    if (attemptIndex >= 19) return yield* stable.failure;
+    attemptIndex += 1;
+    yield* Effect.sleep("500 millis");
+  }
 });
 
 const decodeOperation = (json: string) =>
@@ -581,21 +617,54 @@ const createAndReady = Effect.fnUntraced(function* (
 ) {
   const startedAt = yield* nowIso;
   yield* requestedFaultUnavailable(manifest, "create-and-ready", fault, startedAt);
-  const output = yield* runRecordedCli(manifest, "create-and-ready", [
-    "beam",
-    "Reply with exactly SCOTTY_LAB_READY.",
-    "--title",
-    "Scotty lifecycle lab",
-    "--repo",
+  const request = {
+    title: "Scotty lifecycle lab",
+    prompt: "Reply with exactly SCOTTY_LAB_READY.",
+    provider: "cloudflare",
     repo,
-    "--provider",
-    "cloudflare",
-    "--cap",
-    "30m",
-    "--detach",
-    "--json",
-  ]);
-  const identity = yield* decodeSessionIdentityJson(output).pipe(
+    cap: "30m",
+    hardCapSeconds: 1_800,
+  } as const;
+  const output = yield* Effect.result(
+    runRecordedCli(
+      manifest,
+      "create-and-ready",
+      [
+        "beam",
+        request.prompt,
+        "--title",
+        request.title,
+        "--repo",
+        request.repo,
+        "--provider",
+        request.provider,
+        "--cap",
+        request.cap,
+        "--detach",
+        "--json",
+      ],
+      undefined,
+      () =>
+        attempt("Unable to recover failed create ownership", () =>
+          recoverPendingCreateSessionId(manifest, request),
+        ),
+    ),
+  );
+  if (Result.isFailure(output)) {
+    if (output.failure.sessionId !== undefined) {
+      const diagnostics = yield* Effect.result(
+        captureActorDiagnostics(manifest, "create-and-ready", output.failure.sessionId),
+      );
+      if (Result.isFailure(diagnostics))
+        return yield* new LabFailure({
+          message: `${output.failure.message}; ${diagnostics.failure.message}`,
+          sessionId: output.failure.sessionId,
+        });
+    }
+    return yield* output.failure;
+  }
+  const stdout = output.success;
+  const identity = yield* decodeSessionIdentityJson(stdout).pipe(
     Effect.mapError((cause) => failure(cause, "Scotty CLI returned invalid session identity JSON")),
   );
   if (identity.id === PROTECTED_SESSION_ID)
@@ -611,8 +680,8 @@ const createAndReady = Effect.fnUntraced(function* (
   yield* attempt("Unable to record lifecycle session ownership", () =>
     recordOwnedSession(manifest, identity.id, ownershipRecordedAt),
   );
-  yield* captureActorDiagnostics(manifest, "create-and-ready", identity.id);
-  const created = yield* decodeOperation(output);
+  const diagnostics = yield* captureActorDiagnostics(manifest, "create-and-ready", identity.id);
+  const created = yield* decodeOperation(stdout);
   if (created.status !== "warm")
     return yield* failScenario(manifest, {
       scenario: "create-and-ready",
@@ -622,6 +691,9 @@ const createAndReady = Effect.fnUntraced(function* (
       sessionId: created.id,
       reason: `Expected a warm session, received ${created.status}.`,
     });
+  yield* attempt("Create actor authority did not settle warm", () =>
+    assertStableActorObservation(diagnostics, "Warm"),
+  );
   return {
     sessionId: created.id,
     result: yield* finishScenario(manifest, "create-and-ready", startedAt, created.id),
@@ -639,7 +711,7 @@ const checkpoint = Effect.fnUntraced(function* (
   const operation = yield* decodeOperation(
     yield* runRecordedCli(manifest, "checkpoint", ["snapshot", ownedId, "--json"], ownedId),
   );
-  yield* captureActorDiagnostics(manifest, "checkpoint", ownedId);
+  const diagnostics = yield* captureActorDiagnostics(manifest, "checkpoint", ownedId);
   if (operation.id !== ownedId || operation.status !== "warm")
     return yield* failScenario(manifest, {
       scenario: "checkpoint",
@@ -649,6 +721,9 @@ const checkpoint = Effect.fnUntraced(function* (
       sessionId: ownedId,
       reason: "Snapshot did not return the owned session in warm state.",
     });
+  yield* attempt("Checkpoint actor authority did not settle warm", () =>
+    assertStableActorObservation(diagnostics, "Warm"),
+  );
   return yield* finishScenario(manifest, "checkpoint", startedAt, ownedId);
 });
 
@@ -660,21 +735,40 @@ const sleepResume = Effect.fnUntraced(function* (
   const startedAt = yield* nowIso;
   const ownedId = yield* requireOwnedSession(manifest, "sleep-resume", sessionId, startedAt);
   yield* requestedFaultUnavailable(manifest, "sleep-resume", fault, startedAt, ownedId);
-  const slept = yield* decodeOperation(yield* runRecordedSleep(manifest, ownedId));
-  yield* captureActorDiagnostics(manifest, "sleep-resume", ownedId);
-  if (slept.id !== ownedId || slept.status !== "sleeping")
+  const sleepResponse = yield* runRecordedSleep(manifest, ownedId);
+  const sleeping = yield* Effect.result(
+    awaitStableActorDiagnostics(manifest, "sleep-resume", ownedId, "Sleeping"),
+  );
+  if (Result.isFailure(sleeping))
     return yield* failScenario(manifest, {
       scenario: "sleep-resume",
       status: "failed",
       startedAt,
       finishedAt: yield* nowIso,
       sessionId: ownedId,
-      reason: "Sleep did not return the owned session in sleeping state.",
+      reason: `Sleep returned HTTP ${sleepResponse.status} and authority did not settle sleeping: ${sleeping.failure.message}`,
     });
+  if (sleepResponse.status >= 200 && sleepResponse.status < 300) {
+    const slept = yield* decodeOperation(sleepResponse.body);
+    if (slept.id !== ownedId || slept.status !== "sleeping")
+      return yield* failScenario(manifest, {
+        scenario: "sleep-resume",
+        status: "failed",
+        startedAt,
+        finishedAt: yield* nowIso,
+        sessionId: ownedId,
+        reason: "Sleep did not return the owned session in sleeping state.",
+      });
+  }
   const resumed = yield* decodeOperation(
     yield* runRecordedCli(manifest, "sleep-resume", ["resume", ownedId, "--json"], ownedId),
   );
-  yield* captureActorDiagnostics(manifest, "sleep-resume", ownedId);
+  const warmDiagnostics = yield* awaitStableActorDiagnostics(
+    manifest,
+    "sleep-resume",
+    ownedId,
+    "Warm",
+  );
   if (resumed.id !== ownedId || resumed.status !== "warm")
     return yield* failScenario(manifest, {
       scenario: "sleep-resume",
@@ -684,6 +778,9 @@ const sleepResume = Effect.fnUntraced(function* (
       sessionId: ownedId,
       reason: "Resume did not return the owned session in warm state.",
     });
+  yield* attempt("Resume actor authority did not settle warm", () =>
+    assertStableActorObservation(warmDiagnostics, "Warm"),
+  );
   return yield* finishScenario(manifest, "sleep-resume", startedAt, ownedId);
 });
 
@@ -717,7 +814,7 @@ const vaporize = Effect.fnUntraced(function* (
   const operation = yield* decodeOperation(
     yield* runRecordedCli(manifest, "vaporize", ["vaporize", ownedId, "--yes", "--json"], ownedId),
   );
-  yield* captureActorDiagnostics(manifest, "vaporize", ownedId);
+  const diagnostics = yield* captureActorDiagnostics(manifest, "vaporize", ownedId);
   if (operation.id !== ownedId || operation.status !== "gone")
     return yield* failScenario(manifest, {
       scenario: "vaporize",
@@ -727,6 +824,9 @@ const vaporize = Effect.fnUntraced(function* (
       sessionId: ownedId,
       reason: "Vaporize did not return the owned session as gone.",
     });
+  yield* attempt("Vaporize actor authority did not settle gone", () =>
+    assertStableActorObservation(diagnostics, "Gone"),
+  );
   return yield* finishScenario(manifest, "vaporize", startedAt, ownedId);
 });
 
@@ -789,6 +889,10 @@ const stopLab = Effect.fnUntraced(function* (runId: string) {
       terminateManifestProcess(manifest),
     );
     const errors = processResult.error ? [processResult.error] : [];
+    yield* appendFailure(
+      errors,
+      attempt("Unable to preserve the lab Worker log", () => preserveWorkerLog(manifest)),
+    );
     if (processResult.stopped)
       yield* appendFailure(
         errors,

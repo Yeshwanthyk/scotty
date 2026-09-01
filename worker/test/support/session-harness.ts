@@ -41,6 +41,7 @@ import {
   SESSION_ACTOR_REVISION_KEY,
   sessionRecordFromActor,
 } from "../../src/session/store";
+import { LOCAL_CONTAINER_INCARNATION_STORAGE_KEY } from "../../src/sandbox/runtime-incarnation-store";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
   SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
@@ -554,6 +555,7 @@ export interface HarnessOptions {
   readonly clock?: SandboxEffectOptions["clock"];
   readonly commandStdout?: (command: string) => string | undefined;
   readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
+  readonly containerPlacementId?: string | null;
   readonly destroyBehavior?: "pending" | "reject" | "success";
   readonly evidenceEnabled?: boolean;
   readonly evidencePreviewHostTimeoutMillis?: number;
@@ -567,6 +569,7 @@ export interface HarnessOptions {
     : never;
   readonly runnerFetch?: (request: Request) => Promise<Response>;
   readonly initialProjections?: InitialProjections;
+  readonly localE2E?: boolean;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly piSessionRunning?: boolean;
   readonly previewBase?: string;
@@ -1495,6 +1498,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     ),
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
+    ...(options.localE2E === true ? { SCOTTY_LOCAL_E2E: "1" } : {}),
     ...(options.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
     ...(options.previewBase === undefined ? {} : { SCOTTY_PREVIEW_BASE: options.previewBase }),
     // The legacy provider bindings remain in the excluded Worker binding adapter (3A); this
@@ -1539,7 +1543,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: async () => ({ status: runtimeStatus }),
     },
     getContainerPlacementId: {
-      value: async () => `placement-${SESSION_ID}`,
+      value: async () =>
+        options.containerPlacementId === undefined
+          ? `placement-${SESSION_ID}`
+          : options.containerPlacementId,
     },
     acceptScottyEvidenceJob: {
       value: (value: unknown) => sandbox[SANDBOX_TEST_ACCEPT_EVIDENCE](value),
@@ -1876,4 +1883,5 @@ export const sessionHarnessKeys = {
   hatch: HATCH_STATE_KEY,
   actorFixtureSession: ACTOR_FIXTURE_SESSION_KEY,
   actorFixtureRuntimeGeneration: ACTOR_FIXTURE_RUNTIME_GENERATION_KEY,
+  localContainerIncarnation: LOCAL_CONTAINER_INCARNATION_STORAGE_KEY,
 } as const;

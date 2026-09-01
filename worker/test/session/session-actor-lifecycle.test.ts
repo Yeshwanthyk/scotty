@@ -11,6 +11,43 @@ import {
 } from "../support/session-harness";
 
 describe("Sandbox actor checkpoint, sleep, and resume", () => {
+  it("uses and rotates a durable local incarnation when Cloudflare placement is absent", async () => {
+    const harness = await createSessionHarness({
+      containerPlacementId: null,
+      localE2E: true,
+    });
+    await harness.startRuntime();
+    const first = harness.read<{ readonly version: 1; readonly id: string }>(
+      sessionHarnessKeys.localContainerIncarnation,
+    )?.id;
+    assert.isDefined(first);
+    assert.match(first, /^local:[0-9a-f-]{36}$/u);
+
+    await harness.stopRuntime();
+    assert.strictEqual(harness.read(sessionHarnessKeys.localContainerIncarnation), undefined);
+    await harness.startRuntime();
+    const second = harness.read<{ readonly version: 1; readonly id: string }>(
+      sessionHarnessKeys.localContainerIncarnation,
+    )?.id;
+    assert.isDefined(second);
+    assert.match(second, /^local:[0-9a-f-]{36}$/u);
+    assert.notStrictEqual(second, first);
+
+    const created = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+    assert.strictEqual(created.status, "warm");
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined &&
+        Predicate.isTagged(authority.state, "Stable") &&
+        Predicate.isTagged(authority.state.stable, "Warm"),
+    );
+    assert.strictEqual(authority.state.stable.readiness.runtime.containerIncarnation, second);
+  });
+
   it("runs Hatch and Beam-down under WarmWork actor authority", async () => {
     const harness = await createSessionHarness({
       previewBase: "preview.example.test",

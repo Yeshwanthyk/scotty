@@ -190,23 +190,23 @@ const runtimeProof = Effect.fnUntraced(function* (
     (decoded.success.status !== "running" && decoded.success.status !== "healthy")
   )
     return yield* failure("rejected_before_admission", "create_runtime_not_running", observedAt);
-  const placementId = yield* runtime
-    .getContainerPlacementId()
+  const incarnationId = yield* runtime
+    .getContainerIncarnationId()
     .pipe(
       Effect.mapError((error) =>
-        mapRuntimeFailure(error, "create_container_placement_unknown", observedAt),
+        mapRuntimeFailure(error, "create_container_incarnation_unknown", observedAt),
       ),
     );
-  if (placementId === null || placementId.length === 0)
+  if (incarnationId === null || incarnationId.length === 0)
     return yield* failure(
       "unknown_after_admission",
-      "create_container_placement_unobserved",
+      "create_container_incarnation_unobserved",
       observedAt,
     );
   return {
     providerRuntimeId: context.authority.session.execution.runtimeName,
     runtimeGeneration,
-    containerIncarnation: placementId,
+    containerIncarnation: incarnationId,
   } satisfies RuntimeProof;
 });
 
@@ -506,6 +506,17 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const confirmSupervisorReady = Effect.fnUntraced(function* (context: CreateProviderContext) {
       const observedAt = yield* timestamp;
       const runtimeProofValue = yield* currentRuntime(context, observedAt);
+      yield* beforeTransitionDeadline(
+        context,
+        "create_supervisor_readiness_timeout",
+        auth.waitForPiSessionReady(context.authority.session.id),
+      ).pipe(
+        Effect.mapError((error) =>
+          Predicate.isTagged(error, "CreateProviderFailure")
+            ? error
+            : mapRuntimeFailure(error, "create_supervisor_readiness_failed", observedAt),
+        ),
+      );
       const health = yield* auth
         .readPiSessionHealth(context.authority.session.id)
         .pipe(
