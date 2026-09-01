@@ -34,7 +34,7 @@ const runtimeCapabilities = (
   overrides: Partial<SandboxRuntimeCapabilities> = {},
 ): SandboxRuntimeCapabilities => ({
   getState: async () => ({ status: "running" }),
-  getContainerPlacementId: async () => "placement-2",
+  getContainerIncarnationId: async () => "placement-2",
   exec: async (command) => success(command),
   mkdir: async () => undefined,
   writeFile: async () => undefined,
@@ -56,6 +56,7 @@ const authService = (overrides: Partial<ContainerAuth["Service"]> = {}): Contain
     ensureTerminal: () => Effect.void,
     ensurePiSession: () => Effect.void,
     startPiSession: () => Effect.succeed("scotty-pi-session"),
+    waitForPiSessionReady: () => Effect.void,
     readPiSessionHealth: () =>
       Effect.succeed({ processId: "scotty-pi-session", epoch: "supervisor-1" }),
     verifyPiSessionSnapshot: () =>

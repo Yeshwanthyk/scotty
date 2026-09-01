@@ -241,11 +241,19 @@ export function wranglerInvocation({ envFile, persistPath, port, name }) {
   };
 }
 
-export function spawnWrangler({ envFile, persistPath, port, name, env = process.env, stdio }) {
+export function spawnWrangler({
+  envFile,
+  persistPath,
+  port,
+  name,
+  env = process.env,
+  stdio,
+  detached = true,
+}) {
   const invocation = wranglerInvocation({ envFile, persistPath, port, name });
   const child = spawn(invocation.command, invocation.args, {
     cwd: ROOT,
-    detached: true,
+    detached,
     env,
     stdio: stdio ?? ["ignore", "pipe", "pipe"],
   });

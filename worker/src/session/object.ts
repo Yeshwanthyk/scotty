@@ -254,6 +254,10 @@ import { RolloutDiscovery, rolloutDiscoveryLayer } from "../runner/discovery";
 import { RepoVerifier, repoVerifierLayer } from "../repos/verifier";
 import { sessionRoot, Workspace, workspaceLayer } from "../sandbox/workspace";
 import {
+  durableObjectSandboxRuntimeIncarnationStore,
+  type SandboxRuntimeIncarnationStore,
+} from "../sandbox/runtime-incarnation-store";
+import {
   findGitWorktreeChange,
   listGitWorktreeChanges,
   readGitWorktreePatch,
@@ -705,6 +709,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly sessionControlGate: SessionControlGate;
   private readonly terminalSessionControl: TerminalSessionControl;
   private readonly evidenceEnabled: boolean;
+  private readonly localE2E: boolean;
+  private readonly runtimeIncarnationStore: SandboxRuntimeIncarnationStore;
   private readonly evidencePreviewHostTimeoutMillis: number;
   private readonly hatchPublicProbe: (
     url: string,
@@ -726,6 +732,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.clock = options.clock;
     this.rawContainer = ctx.container;
     this.evidenceEnabled = env.SCOTTY_EVIDENCE_ENABLED === "true";
+    this.localE2E = env.SCOTTY_LOCAL_E2E === "1";
+    this.runtimeIncarnationStore = durableObjectSandboxRuntimeIncarnationStore(
+      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning Sandbox provider-observation adapter
+      ctx.storage,
+    );
     this.evidencePreviewHostTimeoutMillis =
       options.evidencePreviewHostTimeoutMillis ?? EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS;
     this.hatchPublicProbe =
@@ -837,7 +848,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     const runtimeCapabilities = {
       getState: () => this.getState(),
-      getContainerPlacementId: () => this.getContainerPlacementId(),
+      getContainerIncarnationId: async () => {
+        const placementId = await this.getContainerPlacementId();
+        if (typeof placementId === "string" && placementId.length > 0) return placementId;
+        if (!this.localE2E) return placementId;
+        return this.runtimeIncarnationStore.readLocal();
+      },
       exec: (command: string, execOptions?: Parameters<SandboxRuntime["Service"]["exec"]>[1]) =>
         this.exec(command, execOptions),
       mkdir: (path: string, mkdirOptions?: { readonly recursive?: boolean }) =>
@@ -4751,11 +4767,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   override async onStart(): Promise<void> {
     await super.onStart();
+    if (this.localE2E) await this.runtimeIncarnationStore.markLocalStarted();
     this.enqueueRuntimeLifecycleObservation("started");
   }
 
   override async onStop(): Promise<void> {
     await super.onStop();
+    if (this.localE2E) await this.runtimeIncarnationStore.clearLocal();
     this.enqueueRuntimeLifecycleObservation("stopped");
   }
 

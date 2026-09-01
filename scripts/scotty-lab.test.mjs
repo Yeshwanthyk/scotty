@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -15,18 +17,22 @@ import test from "node:test";
 import {
   cleanupOwnedFiles,
   appendEvidenceCommand,
+  assertStableActorObservation,
   assertLifecycleSessionId,
   ensureEvidenceRun,
   evidencePathsForRunId,
   isOwnedSession,
   prepareCredentialSetup,
+  preserveWorkerLog,
   readLabManifest,
   readEvidenceManifest,
   readPrivateToken,
+  recoverPendingCreateSessionId,
   recordActorDiagnostics,
   recordCleanupResult,
   recordOwnedSession,
   recordScenarioResult,
+  validateOrphanedLabProcessGroup,
   stopManifest,
   validateLabExecManifest,
   validateLabManifestPaths,
@@ -88,6 +94,46 @@ test("lab manifests are private, atomically replaceable, and contain no credenti
     assert.throws(() => readLabManifest(manifestDirectory), /regular file/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed create ownership is recovered only from the exact private pending request", () => {
+  const tempRoot = mkdtempSync(path.join(tmpdir(), `scotty-lab-${RUN_ID}-pending-`));
+  try {
+    const manifest = fixtureManifest(tempRoot);
+    const body = {
+      title: "Scotty lifecycle lab",
+      prompt: "Reply with exactly SCOTTY_LAB_READY.",
+      provider: "cloudflare",
+      repo: "owner/repo",
+      cap: "30m",
+      hardCapSeconds: 1_800,
+    };
+    const key = "12345678-1234-4123-8123-123456789abc";
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify([manifest.host, body]))
+      .digest("hex");
+    const pendingDirectory = path.join(manifest.cliHome, ".scotty", "pending-up");
+    const pendingPath = path.join(pendingDirectory, `${fingerprint}.json`);
+    mkdirSync(pendingDirectory, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      pendingPath,
+      `${JSON.stringify({ key, createdAt: "2026-09-01T00:00:00.000Z" })}\n`,
+      { mode: 0o600 },
+    );
+
+    assert.equal(
+      recoverPendingCreateSessionId(manifest, body),
+      createHash("sha256").update(key).digest("hex").slice(0, 12),
+    );
+    assert.throws(
+      () => recoverPendingCreateSessionId(manifest, { ...body, repo: "other/repo" }),
+      /ENOENT/u,
+    );
+    chmodSync(pendingPath, 0o644);
+    assert.throws(() => recoverPendingCreateSessionId(manifest, body), /mode 0600/u);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 
@@ -234,6 +280,52 @@ test("lifecycle evidence is private, atomic, retained, and explicit about unavai
   }
 });
 
+test("cleanup evidence preserves the private Worker log outside the temporary root", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "scotty-lab-log-test-"));
+  const tempRoot = mkdtempSync(path.join(tmpdir(), `scotty-lab-${RUN_ID}-`));
+  try {
+    const manifest = fixtureManifest(tempRoot);
+    writeFileSync(manifest.logFile, "redacted worker failure\n", { mode: 0o600 });
+    const evidenceRoot = path.join(root, "evidence");
+    assert.equal(preserveWorkerLog(manifest, evidenceRoot), true);
+    const log = evidencePathsForRunId(RUN_ID, evidenceRoot).workerLog;
+    assert.equal(readFileSync(log, "utf8"), "redacted worker failure\n");
+    assert.equal(statSync(log).mode & 0o777, 0o600);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle success requires matching stable authority and journal revisions", () => {
+  const diagnostics = {
+    authority: {
+      revision: 7,
+      state: { _tag: "Stable", stable: { _tag: "Warm", readiness: {} } },
+    },
+    revision: 7,
+    journalSequence: 9,
+    journalTail: { revision: 7, sequence: 9 },
+  };
+  assert.equal(assertStableActorObservation(diagnostics, "Warm"), diagnostics);
+  assert.throws(
+    () =>
+      assertStableActorObservation(
+        { ...diagnostics, authority: { revision: 7, state: { _tag: "Transitioning" } } },
+        "Warm",
+      ),
+    /Stable\(Warm\)/u,
+  );
+  assert.throws(
+    () =>
+      assertStableActorObservation(
+        { ...diagnostics, journalTail: { revision: 6, sequence: 9 } },
+        "Warm",
+      ),
+    /revisions do not agree/u,
+  );
+});
+
 test("lab stop recovers a persisted starting reservation", () => {
   const root = mkdtempSync(path.join(tmpdir(), "scotty-lab-starting-test-"));
   const tempRoot = mkdtempSync(path.join(tmpdir(), `scotty-lab-${RUN_ID}-`));
@@ -315,6 +407,35 @@ test("lab process validation requires the recorded PID, group, start time, worke
   assert.deepEqual(validateLabProcess(manifest, { ...owned, command: "unrelated process" }), {
     status: "mismatch",
   });
+});
+
+test("orphan cleanup accepts only known repo-local Wrangler children", () => {
+  const manifest = fixtureManifest(path.join(tmpdir(), `scotty-lab-${RUN_ID}-fixture`));
+  const child = {
+    pid: 4322,
+    ppid: 1,
+    pgid: manifest.pid,
+    startTime: "Thu Aug 27 00:00:01 2026",
+    command: `${path.join(
+      process.cwd(),
+      "node_modules/@cloudflare/workerd-darwin-arm64/bin/workerd",
+    )} serve --binary`,
+  };
+  assert.deepEqual(validateOrphanedLabProcessGroup(manifest, [child]), { status: "owned" });
+  assert.deepEqual(validateOrphanedLabProcessGroup(manifest, []), { status: "missing" });
+  assert.deepEqual(
+    validateOrphanedLabProcessGroup(manifest, [{ ...child, command: "/usr/bin/unrelated" }]),
+    { status: "mismatch" },
+  );
+  assert.deepEqual(validateOrphanedLabProcessGroup(manifest, [{ ...child, pgid: 7 }]), {
+    status: "mismatch",
+  });
+  assert.deepEqual(
+    validateOrphanedLabProcessGroup(manifest, [
+      { ...child, startTime: "Wed Aug 26 23:59:59 2026" },
+    ]),
+    { status: "mismatch" },
+  );
 });
 
 test("lab token files must be private regular files", () => {

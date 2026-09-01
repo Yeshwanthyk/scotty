@@ -34,7 +34,7 @@ export type SandboxWriteContent = string | Uint8Array | ReadableStream<Uint8Arra
 
 export interface SandboxRuntimeCapabilities {
   readonly getState?: () => Promise<unknown>;
-  readonly getContainerPlacementId?: () => Promise<string | null | undefined>;
+  readonly getContainerIncarnationId?: () => Promise<string | null | undefined>;
   readonly exec: (command: string, options?: SandboxExecOptions) => Promise<ExecResult>;
   readonly mkdir: (path: string, options?: { readonly recursive?: boolean }) => Promise<unknown>;
   readonly readFileStream?: (path: string) => Promise<ReadableStream<Uint8Array>>;
@@ -70,7 +70,7 @@ export interface SandboxProcess {
 
 interface SandboxRuntimeShape {
   readonly getState: () => Effect.Effect<unknown, SandboxRuntimeFailure>;
-  readonly getContainerPlacementId: () => Effect.Effect<string | null, SandboxRuntimeFailure>;
+  readonly getContainerIncarnationId: () => Effect.Effect<string | null, SandboxRuntimeFailure>;
   readonly exec: (
     command: string,
     options?: SandboxExecOptions,
@@ -148,18 +148,18 @@ const makeSandboxRuntime = <E>(
         ),
       );
     },
-    getContainerPlacementId: () => {
-      const getContainerPlacementId = capabilities.getContainerPlacementId;
-      if (getContainerPlacementId === undefined)
-        return Effect.fail(transportFailure("Sandbox placement transport is unavailable"));
-      return guardOperation(beforeOperation, "Sandbox placement transport failed").pipe(
+    getContainerIncarnationId: () => {
+      const getContainerIncarnationId = capabilities.getContainerIncarnationId;
+      if (getContainerIncarnationId === undefined)
+        return Effect.fail(transportFailure("Sandbox incarnation transport is unavailable"));
+      return guardOperation(beforeOperation, "Sandbox incarnation transport failed").pipe(
         Effect.andThen(
           Effect.tryPromise({
-            try: getContainerPlacementId,
-            catch: () => transportFailure("Sandbox placement transport failed"),
+            try: getContainerIncarnationId,
+            catch: () => transportFailure("Sandbox incarnation transport failed"),
           }),
         ),
-        Effect.map((placementId) => placementId ?? null),
+        Effect.map((incarnationId) => incarnationId ?? null),
       );
     },
     exec: (command, options) => exec(capabilities, beforeOperation, command, options),

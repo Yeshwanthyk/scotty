@@ -200,14 +200,14 @@ export const recoverySandboxLayer: Layer.Layer<
           Result.isFailure(decoded) ? "runtime_state_unknown" : "runtime_not_started",
         );
       const placement = yield* runtime
-        .getContainerPlacementId()
+        .getContainerIncarnationId()
         .pipe(
           Effect.mapError((error) =>
             mapReadFailure(
               "observe_runtime",
               error,
-              "runtime_placement_unavailable",
-              "runtime_placement_unknown",
+              "runtime_incarnation_unavailable",
+              "runtime_incarnation_unknown",
             ),
           ),
         );
@@ -215,7 +215,7 @@ export const recoverySandboxLayer: Layer.Layer<
         return yield* failure(
           "observe_runtime",
           "unknown_after_admission",
-          "runtime_placement_unknown",
+          "runtime_incarnation_unknown",
         );
       return {
         _tag: "RuntimeLifecycleObserved" as const,

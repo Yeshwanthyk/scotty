@@ -37,6 +37,14 @@ export interface ProcessResult {
   readonly error?: string;
 }
 
+export interface ProcessSnapshot {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly pgid: number;
+  readonly startTime: string;
+  readonly command: string;
+}
+
 export interface CredentialSetupInputs {
   readonly piAuthPath: string;
   readonly githubConfigDir: string;
@@ -74,6 +82,7 @@ export interface EvidencePaths {
   readonly directory: string;
   readonly manifest: string;
   readonly commands: string;
+  readonly workerLog: string;
 }
 
 export const EVIDENCE_DIRECTORY: string;
@@ -112,12 +121,21 @@ export function recordActorDiagnostics(
   },
   evidenceDirectory?: string,
 ): EvidenceManifest;
+export function assertStableActorObservation(
+  diagnostics: SessionActorDiagnostics,
+  expectedStable: "Warm" | "Sleeping" | "Failed" | "Gone",
+): SessionActorDiagnostics;
 export function appendEvidenceCommand(
   manifest: LabManifest,
   record: Readonly<Record<string, unknown>>,
   evidenceDirectory?: string,
 ): void;
+export function preserveWorkerLog(manifest: LabManifest, evidenceDirectory?: string): boolean;
 export function assertLifecycleSessionId(sessionId: string): string;
+export function recoverPendingCreateSessionId(
+  manifest: LabManifest,
+  body: Readonly<Record<string, unknown>>,
+): string;
 
 export function acquireLifecycleLock(): number;
 export function releaseLifecycleLock(descriptor: number): void;
@@ -141,6 +159,11 @@ export function startupFailureDetails(
   cleanupErrors: ReadonlyArray<string>,
 ): string;
 export function terminateManifestProcess(manifest: LabManifest): Promise<ProcessResult>;
+export function readProcessGroupSnapshots(pgid: number): ReadonlyArray<ProcessSnapshot>;
+export function validateOrphanedLabProcessGroup(
+  manifest: LabManifest,
+  snapshots: ReadonlyArray<ProcessSnapshot>,
+): { readonly status: "owned" | "missing" | "mismatch" };
 export function removeWorkerContainers(manifest: LabManifest): ReadonlyArray<string>;
 export function cleanupOwnedFiles(manifest: LabManifest): ReadonlyArray<string>;
 export function removeOwnedTempRoot(manifest: LabManifest): void;
