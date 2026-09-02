@@ -20,7 +20,7 @@ import sessionsHtml from "../../../public/sessions/index.html?raw";
 import sessionsScript from "../../../public/sessions/index.js?raw";
 
 const sharedStyles = readFileSync(
-  new URL("../../../public/shared/styles.css", import.meta.url),
+  decodeURIComponent(new URL("../../../public/shared/styles.css", import.meta.url).pathname),
   "utf8",
 );
 
