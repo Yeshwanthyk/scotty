@@ -12,6 +12,7 @@ import {
 } from "../../../public/sessions/list.js";
 import {
   createRefreshCoordinator,
+  createSessionRequested,
   focusedSessionId,
   focusedSessionPath,
   reconcileCleanupProjection,
@@ -164,6 +165,19 @@ describe("sessions page", () => {
       /window\.addEventListener\("popstate"[\s\S]*?else void refresh\(\);/u,
     );
     assert.include(sessionsScript, "refreshFocusedSession(targetSessionId).then(() => refresh())");
+  });
+
+  it("opens the shared create-session composer from a session workspace", () => {
+    assert.isTrue(createSessionRequested("?create=1"));
+    assert.isFalse(createSessionRequested("?create=0"));
+    assert.include(sessionsScript, "createSessionRequested(window.location.search)");
+    assert.include(sessionsHtml, 'id="new-session"');
+  });
+
+  it("keeps the rail action as the only create-session entry point", () => {
+    assert.strictEqual(sessionsHtml.match(/id="new-session"/gu)?.length, 1);
+    assert.notInclude(sessionListSource, '"open-composer"');
+    assert.notInclude(sessionListSource, "Start a session");
   });
 
   it("keeps an authoritative focused session when the list projection is unavailable", () => {

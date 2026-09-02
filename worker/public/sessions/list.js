@@ -480,7 +480,6 @@ function renderLoadedWorkspace(content, state) {
       "Start with a repository and tell Codex what outcome you want.",
       "p",
     );
-    empty.append(actionButton(state, "Start a session", "open-composer", "", { primary: true }));
     content.append(empty);
     return;
   }

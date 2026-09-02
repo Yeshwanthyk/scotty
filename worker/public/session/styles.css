@@ -132,10 +132,31 @@ select:focus-visible {
 .sidebar-close {
   display: none;
 }
+.new-agent-link {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 5px;
+  margin: 10px 8px 0;
+  padding: 0 10px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+.new-agent-link:hover {
+  background: rgb(255 255 255 / 0.055);
+  color: var(--ink);
+}
+.new-agent-link span:first-child {
+  color: var(--ink);
+  font-size: 1rem;
+}
 .agent-filter {
   display: block;
   flex: none;
-  padding: 10px 8px 2px;
+  padding: 8px 8px 2px;
 }
 .agent-filter input {
   width: 100%;
@@ -295,20 +316,9 @@ select:focus-visible {
   background: rgb(255 255 255 / 0.05);
   color: var(--ink);
 }
-.new-agent-link span {
-  margin: 0;
-  color: var(--beam);
-  font-size: 1rem;
-}
 .sessions-link {
   flex: 1;
   color: var(--quiet) !important;
-}
-.new-agent-link {
-  width: 36px;
-  flex: none;
-  justify-content: center;
-  padding: 0 !important;
 }
 .agent-workspace {
   display: flex;
