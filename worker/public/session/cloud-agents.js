@@ -1,6 +1,14 @@
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const ACTIVE_STATUSES = new Set(["booting", "warm"]);
 
+const createdAtMillis = (agent) => {
+  const timestamp = Date.parse(agent.createdAt);
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+};
+
+const compareCloudAgentsNewestFirst = (left, right) =>
+  createdAtMillis(right) - createdAtMillis(left) || left.id.localeCompare(right.id);
+
 export const isActiveCloudAgent = (agent) => ACTIVE_STATUSES.has(agent.status);
 
 export function normalizeCloudAgent(value) {
@@ -15,10 +23,11 @@ export function normalizeCloudAgent(value) {
     branch: typeof value.branch === "string" ? value.branch : "",
     status: typeof value.status === "string" ? value.status : "unknown",
     provider: typeof value.provider === "string" ? value.provider : "unknown",
+    createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
   };
 }
 
-export function groupCloudAgents(agents, currentSessionId) {
+export function groupCloudAgents(agents) {
   const groups = new Map();
   for (const agent of agents) {
     const group = groups.get(agent.repo) ?? [];
@@ -26,20 +35,15 @@ export function groupCloudAgents(agents, currentSessionId) {
     groups.set(agent.repo, group);
   }
   return [...groups.entries()]
-    .sort(([left, leftAgents], [right, rightAgents]) => {
-      const leftCurrent = leftAgents.some((agent) => agent.id === currentSessionId);
-      const rightCurrent = rightAgents.some((agent) => agent.id === currentSessionId);
-      if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1;
-      return left.localeCompare(right);
-    })
     .map(([repo, items]) => ({
       repo,
-      agents: items.sort((left, right) => {
-        const rank = (agent) =>
-          agent.id === currentSessionId ? 0 : agent.status === "warm" ? 1 : 2;
-        return rank(left) - rank(right) || left.title.localeCompare(right.title);
-      }),
-    }));
+      agents: items.sort(compareCloudAgentsNewestFirst),
+    }))
+    .sort(
+      (left, right) =>
+        compareCloudAgentsNewestFirst(left.agents[0], right.agents[0]) ||
+        left.repo.localeCompare(right.repo),
+    );
 }
 
 export function cloudAgentGroupWindow(
@@ -73,13 +77,14 @@ export function filterCloudAgents(agents, query) {
 export function cloudAgentSignature(agents, currentSessionId) {
   return JSON.stringify([
     currentSessionId,
-    agents.map(({ id, title, repo, branch, status, provider }) => [
+    agents.map(({ id, title, repo, branch, status, provider, createdAt }) => [
       id,
       title,
       repo,
       branch,
       status,
       provider,
+      createdAt,
     ]),
   ]);
 }
@@ -102,7 +107,7 @@ export function renderCloudAgents(
 ) {
   const activeAgents = agents.filter(isActiveCloudAgent);
   const fragment = document.createDocumentFragment();
-  for (const group of groupCloudAgents(activeAgents, currentSessionId)) {
+  for (const group of groupCloudAgents(activeAgents)) {
     const section = document.createElement("section");
     section.className = "agent-group";
     appendText(document, section, "h3", "agent-group-title", group.repo);
