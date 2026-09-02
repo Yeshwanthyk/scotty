@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { assert, describe, it } from "vitest";
 import {
   deletionActionLabel,
@@ -20,7 +21,7 @@ import sessionsHtml from "../../../public/sessions/index.html?raw";
 import sessionsScript from "../../../public/sessions/index.js?raw";
 
 const sharedStyles = readFileSync(
-  decodeURIComponent(new URL("../../../public/shared/styles.css", import.meta.url).pathname),
+  fileURLToPath(new URL("../../../public/shared/styles.css", import.meta.url).href),
   "utf8",
 );
 
