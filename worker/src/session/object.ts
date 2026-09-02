@@ -151,6 +151,7 @@ import {
   type DownArchive,
   type DownManifest,
   type SessionCredentialGrant,
+  type SessionProjection as SessionListProjection,
   type SessionRecord,
   type SessionView,
   SESSION_KV_PREFIX,
@@ -2661,18 +2662,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return { authority, metadata, projection, view };
   });
 
+  private readonly publishSessionProjectionBestEffortProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    projection: SessionListProjection,
+  ) {
+    yield* Effect.tryPromise({
+      try: () =>
+        this.env.SESSIONS.put(`${SESSION_KV_PREFIX}${projection.id}`, JSON.stringify(projection)),
+      catch: () => undefined,
+    }).pipe(Effect.ignore);
+  });
+
   private readonly publishActorSessionProjectionBestEffortProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
       const state = yield* Effect.result(this.readActorSessionStateProgram());
       if (Result.isFailure(state)) return;
-      yield* Effect.tryPromise({
-        try: () =>
-          this.env.SESSIONS.put(
-            `${SESSION_KV_PREFIX}${state.success.projection.id}`,
-            JSON.stringify(state.success.projection),
-          ),
-        catch: () => undefined,
-      }).pipe(Effect.ignore);
+      yield* this.publishSessionProjectionBestEffortProgram(state.success.projection);
     },
   );
 
@@ -3038,7 +3043,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly getScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    return (yield* this.readActorSessionStateProgram()).view;
+    const state = yield* this.readActorSessionStateProgram();
+    yield* this.publishSessionProjectionBestEffortProgram(state.projection);
+    return state.view;
   });
 
   private readonly getScottyActorDiagnosticsProgram = Effect.fnUntraced(function* (this: Sandbox) {

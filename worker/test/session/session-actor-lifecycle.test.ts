@@ -154,6 +154,22 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     );
     assert.strictEqual(afterSleep.state.stable.wakeSource.backupId, "backup-1");
 
+    const projectionEventsBeforeRead = harness.events.filter((event) =>
+      event.startsWith("projection:"),
+    ).length;
+    assert.strictEqual(
+      await harness.sandbox.getScottySession().then((view) => view.status),
+      "sleeping",
+    );
+    assert.strictEqual(
+      harness.events.filter((event) => event.startsWith("projection:")).length,
+      projectionEventsBeforeRead + 1,
+    );
+    assert.strictEqual(
+      harness.events.filter((event) => event.startsWith("projection:")).at(-1),
+      "projection:sleeping",
+    );
+
     const resumed = await harness.sandbox.resumeScottySession();
     assert.strictEqual(resumed.status, "warm");
     const afterResume = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);

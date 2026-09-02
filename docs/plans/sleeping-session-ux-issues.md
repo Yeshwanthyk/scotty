@@ -38,11 +38,14 @@ state from the hard-cap timer.
   not regress a newer projection.
 - Resolution: actor deadlines, hard-cap decisions, and runtime lifecycle callbacks now publish a
   best-effort projection by rereading current actor authority. Publication derives from current
-  authority rather than directly from the triggering callback. Durable retry and monotonic
-  ordering between concurrent publications remain follow-up projection contracts; this incident
-  fix does not claim them.
+  authority rather than directly from the triggering callback. An authoritative point read also
+  republishes its actor-derived projection, so opening either already-stale session repairs its KV
+  row before the browser follows the focused-session redirect. Durable retry and monotonic ordering
+  between concurrent publications remain follow-up projection contracts; this incident fix does
+  not claim them.
 - Local proof: lifecycle tests assert `projection:failed` after hard-cap and unexpected-stop
-  decisions and `projection:sleeping` after activity-expiry callback settlement.
+  decisions, `projection:sleeping` after activity-expiry callback settlement, and a fresh sleeping
+  projection after the actor's public point read.
 
 ## SLEEP-002: sleeping session links lose session context
 
