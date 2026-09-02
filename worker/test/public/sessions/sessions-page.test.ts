@@ -13,7 +13,9 @@ import {
 import {
   createRefreshCoordinator,
   focusedSessionId,
+  focusedSessionPath,
   reconcileCleanupProjection,
+  reconcileFocusedSession,
   unavailableSessionId,
 } from "../../../public/sessions/lifecycle.js";
 import sessionListSource from "../../../public/sessions/list.js?raw";
@@ -147,6 +149,37 @@ describe("sessions page", () => {
     assert.isUndefined(focusedSessionId("?focus=../../devices"));
     assert.include(sessionListSource, "state.targetSessionId === session.id");
     assert.include(sessionListSource, "target?.focus({ preventScroll: true })");
+  });
+
+  it("opens rail sessions directly in the focused management route", () => {
+    assert.strictEqual(focusedSessionPath("a0b1c2d3e4f5"), "/sessions?focus=a0b1c2d3e4f5");
+    assert.include(
+      sessionListSource,
+      "compact ? focusedSessionPath(session.id) : `/s/${encodeURIComponent(session.id)}`",
+    );
+    assert.include(sessionsScript, 'event.target.closest("a[data-manage-session]")');
+    assert.include(sessionsScript, "window.history.pushState");
+    assert.match(
+      sessionsScript,
+      /window\.addEventListener\("popstate"[\s\S]*?else void refresh\(\);/u,
+    );
+    assert.include(sessionsScript, "refreshFocusedSession(targetSessionId).then(() => refresh())");
+  });
+
+  it("keeps an authoritative focused session when the list projection is unavailable", () => {
+    const focused = { id: "session-1", status: "sleeping", backupId: "backup-1" };
+    assert.deepStrictEqual(
+      reconcileFocusedSession(
+        [
+          { id: "session-2", status: "warm" },
+          { id: "session-1", status: "warm" },
+        ],
+        focused,
+      ),
+      [focused, { id: "session-2", status: "warm" }],
+    );
+    assert.include(sessionsScript, "await fetch(sessionPath(id)");
+    assert.include(sessionsScript, "loaded = true");
   });
 
   it("keeps a server-confirmed missing session unavailable despite stale list data", () => {

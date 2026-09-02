@@ -2,6 +2,11 @@ import type { SessionListItem } from "./list.js";
 
 export function focusedSessionId(search: string): string | undefined;
 export function unavailableSessionId(search: string): string | undefined;
+export function focusedSessionPath(id: string): string;
+export function reconcileFocusedSession(
+  sessions: ReadonlyArray<SessionListItem>,
+  focusedSession: SessionListItem,
+): ReadonlyArray<SessionListItem>;
 export function reconcileCleanupProjection(
   sessions: ReadonlyArray<SessionListItem>,
   cleanupIds: ReadonlyArray<string>,
