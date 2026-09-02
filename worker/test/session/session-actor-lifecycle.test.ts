@@ -154,6 +154,22 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     );
     assert.strictEqual(afterSleep.state.stable.wakeSource.backupId, "backup-1");
 
+    const projectionEventsBeforeRead = harness.events.filter((event) =>
+      event.startsWith("projection:"),
+    ).length;
+    assert.strictEqual(
+      await harness.sandbox.getScottySession().then((view) => view.status),
+      "sleeping",
+    );
+    assert.strictEqual(
+      harness.events.filter((event) => event.startsWith("projection:")).length,
+      projectionEventsBeforeRead + 1,
+    );
+    assert.strictEqual(
+      harness.events.filter((event) => event.startsWith("projection:")).at(-1),
+      "projection:sleeping",
+    );
+
     const resumed = await harness.sandbox.resumeScottySession();
     assert.strictEqual(resumed.status, "warm");
     const afterResume = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
@@ -230,6 +246,10 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         Predicate.isTagged(failed.state.stable, "Failed"),
     );
     assert.strictEqual(failed.state.stable.code, "hard_cap_elapsed");
+    assert.strictEqual(
+      harness.events.filter((event) => event.startsWith("projection:")).at(-1),
+      "projection:failed",
+    );
     const events = harness.events.slice(start);
     const committed = events.indexOf(`storage:put:${sessionHarnessKeys.actorAuthority}`);
     const destroyed = events.indexOf("host:destroy");
@@ -251,6 +271,10 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         Predicate.isTagged(authority.state.stable, "Failed"),
     );
     assert.strictEqual(authority.state.stable.code, "runtime_stopped");
+    assert.strictEqual(
+      harness.events.filter((event) => event.startsWith("projection:")).at(-1),
+      "projection:failed",
+    );
   });
 
   it("routes activity expiry through actor checkpoint and sleep", async () => {
@@ -268,5 +292,9 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     );
     assert.strictEqual(authority.state.stable.wakeSource.backupId, "backup-1");
     assert.include(harness.events, "host:stop");
+    assert.strictEqual(
+      harness.events.filter((event) => event.startsWith("projection:")).at(-1),
+      "projection:sleeping",
+    );
   });
 });

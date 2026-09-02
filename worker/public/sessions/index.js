@@ -14,6 +14,7 @@ import {
   createRefreshCoordinator,
   focusedSessionId,
   reconcileCleanupProjection,
+  unavailableSessionId,
 } from "./lifecycle.js";
 
 const POLL_INTERVAL = 5000;
@@ -77,6 +78,7 @@ let renamingId;
 let renameDraft = "";
 let renderedSessionsSignature;
 const targetSessionId = focusedSessionId(window.location.search);
+const missingSessionId = unavailableSessionId(window.location.search);
 let focusTargetSession = targetSessionId !== undefined;
 let selectedSessionId = targetSessionId;
 
@@ -281,6 +283,7 @@ function render(options = {}) {
     renameDraft,
     preserveFocusedDraft: options.preserveFocusedDraft === true,
     targetSessionId,
+    missingSessionId,
     focusTargetSession,
     selectedSessionId,
     searchQuery: sessionSearch?.value || "",

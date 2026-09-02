@@ -95,7 +95,7 @@ import { createDeterministicTarGz } from "../../../cli/src/sandbox-archive";
 import { app } from "../../src/index";
 import type { Bindings } from "../../src/shared/bindings";
 import { commandIntentDigest, decodePiConsoleCommandPromise } from "../../../protocol/pi-console";
-import { conflict, toProjection } from "../../src/session/contracts";
+import { conflict, ScottyError, toProjection } from "../../src/session/contracts";
 import type { EvidenceState } from "../../src/evidence/contracts";
 import { orderedEvidenceFrames } from "../../public/evidence/view.js";
 import evidenceHtml from "../../public/evidence/index.html?raw";
@@ -3450,7 +3450,7 @@ describe("real Hono boundary", () => {
     expect((await app.request(path, { headers }, testEnv)).status).toBe(409);
   });
 
-  it("returns non-warm Cloudflare session pages to Home for explicit resume", async () => {
+  it("returns non-warm Cloudflare session pages to focused management for explicit resume", async () => {
     sandbox.getScottySession.mockResolvedValueOnce({
       id: "a0b1c2d3e4f5",
       status: "sleeping",
@@ -3467,7 +3467,7 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("http://localhost/sessions");
+    expect(response.headers.get("location")).toBe("http://localhost/sessions?focus=a0b1c2d3e4f5");
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
@@ -3863,8 +3863,28 @@ describe("real Hono boundary", () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("http://localhost/sessions");
+    expect(response.headers.get("location")).toBe("http://localhost/sessions?focus=a0b1c2d3e4f5");
     expect(sandbox.fetch).not.toHaveBeenCalled();
+  });
+
+  it("redirects missing session page routes to an HTML recovery surface", async () => {
+    sandbox.getScottySession.mockRejectedValueOnce(
+      new ScottyError("not_found", "Session unknown was not found", {
+        httpStatus: 404,
+        exitCode: 3,
+      }),
+    );
+
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "http://localhost/sessions?unavailable=a0b1c2d3e4f5",
+    );
   });
 
   it("returns not found for session application subpaths", async () => {

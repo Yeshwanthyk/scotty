@@ -2090,14 +2090,84 @@ body.sessions-page .workspace-manage-title {
 }
 
 body.sessions-page .workspace-manage-meta {
-  margin: 6px 0 28px;
+  margin: 6px 0 24px;
+  color: var(--quiet);
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.68rem;
+}
+
+body.sessions-page .workspace-manage-state {
+  display: grid;
+  gap: 7px;
+  padding: 18px 0 22px;
+  border-top: 1px solid var(--line);
+}
+
+body.sessions-page .workspace-manage-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+body.sessions-page .workspace-manage-label::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  content: "";
+}
+
+body.sessions-page .workspace-manage-state.status-sleeping .workspace-manage-label,
+body.sessions-page .workspace-manage-state.status-stopping .workspace-manage-label {
+  color: #dab77e;
+}
+
+body.sessions-page .workspace-manage-state.status-sleeping .workspace-manage-label::before,
+body.sessions-page .workspace-manage-state.status-stopping .workspace-manage-label::before {
+  background: var(--warm);
+}
+
+body.sessions-page .workspace-manage-state.status-failed .workspace-manage-label,
+body.sessions-page .workspace-manage-state.status-deleting .workspace-manage-label {
+  color: var(--danger);
+}
+
+body.sessions-page .workspace-manage-state.status-failed .workspace-manage-label::before,
+body.sessions-page .workspace-manage-state.status-deleting .workspace-manage-label::before {
+  background: var(--danger);
+}
+
+body.sessions-page .workspace-manage-state-title {
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+body.sessions-page .workspace-manage-state-copy,
+body.sessions-page .workspace-unavailable-copy {
+  max-width: 56ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+body.sessions-page .workspace-unavailable-copy {
+  margin-top: 12px;
+}
+
+body.sessions-page .workspace-unavailable-id {
+  margin: 18px 0 24px;
   color: var(--quiet);
   font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.68rem;
 }
 
 body.sessions-page .workspace-manage-controls {
-  padding-top: 16px;
+  padding-top: 18px;
   border-top: 1px solid var(--line);
 }
 

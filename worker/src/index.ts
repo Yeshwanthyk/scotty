@@ -1427,12 +1427,33 @@ async function serveScottySessionPage(
   request: Request,
   sessionId: string,
 ): Promise<Response> {
-  const session = await sessionSandbox(env, sessionId).getScottySession();
+  const sessionResult = await sessionSandbox(env, sessionId)
+    .getScottySession()
+    .then(Result.succeed, Result.fail);
+  if (Result.isFailure(sessionResult)) {
+    const error = normalizeError(sessionResult.failure);
+    if (error.code === "not_found")
+      return Response.redirect(unavailableSessionUrl(request, sessionId), 302);
+    throw error;
+  }
+  const session = sessionResult.success;
   if (session.status !== "warm")
-    return Response.redirect(new URL("/sessions", request.url).toString(), 302);
+    return Response.redirect(focusedSessionUrl(request, sessionId), 302);
   if (session.provider === "runner")
-    return Response.redirect(new URL("/sessions", request.url).toString(), 302);
+    return Response.redirect(focusedSessionUrl(request, sessionId), 302);
   return secureAsset(env, request, "/session/index.html", true);
+}
+
+function focusedSessionUrl(request: Request, sessionId: string): string {
+  const url = new URL("/sessions", request.url);
+  url.searchParams.set("focus", sessionId);
+  return url.toString();
+}
+
+function unavailableSessionUrl(request: Request, sessionId: string): string {
+  const url = new URL("/sessions", request.url);
+  url.searchParams.set("unavailable", sessionId);
+  return url.toString();
 }
 
 async function serveScottySessionSubpath(
