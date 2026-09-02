@@ -159,6 +159,10 @@ describe("sessions page", () => {
     );
     assert.include(sessionsScript, 'event.target.closest("a[data-manage-session]")');
     assert.include(sessionsScript, "window.history.pushState");
+    assert.match(
+      sessionsScript,
+      /window\.addEventListener\("popstate"[\s\S]*?else void refresh\(\);/u,
+    );
     assert.include(sessionsScript, "refreshFocusedSession(targetSessionId).then(() => refresh())");
   });
 

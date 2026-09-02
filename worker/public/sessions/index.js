@@ -808,6 +808,7 @@ window.addEventListener("popstate", () => {
   selectedSessionId = targetSessionId;
   render();
   if (targetSessionId) void refreshFocusedSession(targetSessionId);
+  else void refresh();
 });
 document.addEventListener("keydown", (event) => {
   const target = event.target;
