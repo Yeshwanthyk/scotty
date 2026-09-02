@@ -10,6 +10,14 @@ export function unavailableSessionId(search) {
   return typeof value === "string" && SESSION_ID.test(value) ? value : undefined;
 }
 
+export function focusedSessionPath(id) {
+  return `/sessions?focus=${encodeURIComponent(id)}`;
+}
+
+export function reconcileFocusedSession(sessions, focusedSession) {
+  return [focusedSession, ...sessions.filter((session) => session.id !== focusedSession.id)];
+}
+
 export function reconcileCleanupProjection(sessions, cleanupIds) {
   const visibleIds = new Set(sessions.map((session) => session.id));
   const pendingIds = cleanupIds.filter((id) => visibleIds.has(id));

@@ -222,7 +222,13 @@ const server = createServer(async (request, response) => {
   else if (pathname === "/api/auth/me") json(response, { client: { role: "owner" } });
   else if (pathname === "/api/repos") json(response, []);
   else if (pathname === "/api/sessions") json(response, sessions);
-  else if (pathname === `/s/${PREVIEW_SESSION_ID}/console/snapshot`)
+  else if (request.method === "GET" && /^\/api\/sessions\/[^/]+$/u.test(pathname)) {
+    const session = sessions.find(
+      (candidate) => pathname === `/api/sessions/${encodeURIComponent(candidate.id)}`,
+    );
+    if (session) json(response, session);
+    else json(response, { error: { code: "not_found", message: "Session was not found" } }, 404);
+  } else if (pathname === `/s/${PREVIEW_SESSION_ID}/console/snapshot`)
     json(response, previewSession.snapshot());
   else if (pathname === `/s/${PREVIEW_SESSION_ID}/console/events`) {
     response.writeHead(200, {

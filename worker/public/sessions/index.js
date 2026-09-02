@@ -13,7 +13,9 @@ import { normalizeSessionListItem, renderSessionsView, sessionsRenderSignature }
 import {
   createRefreshCoordinator,
   focusedSessionId,
+  focusedSessionPath,
   reconcileCleanupProjection,
+  reconcileFocusedSession,
   unavailableSessionId,
 } from "./lifecycle.js";
 
@@ -77,8 +79,8 @@ const suppressedRepositories = new Set();
 let renamingId;
 let renameDraft = "";
 let renderedSessionsSignature;
-const targetSessionId = focusedSessionId(window.location.search);
-const missingSessionId = unavailableSessionId(window.location.search);
+let targetSessionId = focusedSessionId(window.location.search);
+let missingSessionId = unavailableSessionId(window.location.search);
 let focusTargetSession = targetSessionId !== undefined;
 let selectedSessionId = targetSessionId;
 
@@ -493,6 +495,55 @@ async function runRefresh(options = {}) {
 
 const { refresh, waitForIdle: waitForRefresh } = createRefreshCoordinator(runRefresh);
 
+async function refreshFocusedSession(id) {
+  try {
+    const response = await fetch(sessionPath(id), {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (response.status === 404) {
+      if (targetSessionId !== id) return false;
+      missingSessionId = id;
+      loaded = true;
+      notice.hidden = true;
+      render();
+      return false;
+    }
+    if (!response.ok)
+      throw new Error(await errorMessage(response, "This session could not be loaded."));
+    const focused = normalizeSessionListItem(await response.json());
+    if (!focused) throw new Error("Scotty returned an unexpected response.");
+    sessions = reconcileFocusedSession(sessions, focused);
+    if (targetSessionId === id) {
+      missingSessionId = undefined;
+      selectedSessionId = id;
+      loaded = true;
+      notice.hidden = true;
+      render();
+    }
+    return true;
+  } catch (error) {
+    if (targetSessionId !== id) return false;
+    noticeText.textContent =
+      error instanceof Error ? error.message : "This session could not be loaded.";
+    notice.hidden = false;
+    render();
+    return false;
+  }
+}
+
+function selectFocusedSession(id, options = {}) {
+  targetSessionId = id;
+  missingSessionId = undefined;
+  focusTargetSession = true;
+  selectedSessionId = id;
+  notice.hidden = true;
+  if (options.pushHistory !== false) window.history.pushState({}, "", focusedSessionPath(id));
+  render();
+  void refreshFocusedSession(id).then(() => refresh());
+}
+
 function pendingLifecycleAction(current, id, action) {
   if (action !== "delete") return action;
   return current?.deleting || cleanupPending.has(id) ? "retry-delete" : "delete";
@@ -665,6 +716,10 @@ repositoryNav?.addEventListener("click", (event) => {
     }
     return;
   }
+  const sessionLink = event.target.closest("a[data-manage-session]");
+  if (!sessionLink?.dataset.manageSession) return;
+  event.preventDefault();
+  selectFocusedSession(sessionLink.dataset.manageSession);
 });
 
 repositoryNav?.addEventListener(
@@ -746,6 +801,14 @@ document.addEventListener("visibilitychange", () => {
   schedulePoll();
   if (!document.hidden) void refresh();
 });
+window.addEventListener("popstate", () => {
+  targetSessionId = focusedSessionId(window.location.search);
+  missingSessionId = unavailableSessionId(window.location.search);
+  focusTargetSession = targetSessionId !== undefined;
+  selectedSessionId = targetSessionId;
+  render();
+  if (targetSessionId) void refreshFocusedSession(targetSessionId);
+});
 document.addEventListener("keydown", (event) => {
   const target = event.target;
   if (
@@ -781,7 +844,10 @@ document.addEventListener("keydown", (event) => {
   if (action.type === "open") sessionLink.click();
   else sessionLink.focus();
 });
-retryButton.addEventListener("click", () => void refresh());
+retryButton.addEventListener("click", () => {
+  if (targetSessionId) void refreshFocusedSession(targetSessionId).then(() => refresh());
+  else void refresh();
+});
 newSessionButton.addEventListener("click", () => {
   const open = composerRegion.classList.contains("is-open");
   if (open && creating) abortCreate("cancel");
@@ -829,4 +895,5 @@ fetch("/api/auth/me", {
 
 schedulePoll();
 void refreshRepositories();
-void refresh();
+if (targetSessionId) void refreshFocusedSession(targetSessionId).then(() => refresh());
+else void refresh();

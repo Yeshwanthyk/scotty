@@ -1,4 +1,5 @@
 import { groupSessionsByRepository, sessionDisplayStatus, sessionTitle } from "./form.js";
+import { focusedSessionPath } from "./lifecycle.js";
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -286,8 +287,9 @@ function sessionAgeLabel(session, now) {
 function appendRailSession(parent, session, selectedSessionId, now, compact = false) {
   const link = document.createElement("a");
   link.className = `rail-session${compact ? " rail-session-archived" : ""}`;
-  link.href = `/s/${encodeURIComponent(session.id)}`;
+  link.href = compact ? focusedSessionPath(session.id) : `/s/${encodeURIComponent(session.id)}`;
   link.dataset.selectSession = session.id;
+  if (compact) link.dataset.manageSession = session.id;
   if (session.id === selectedSessionId) link.setAttribute("aria-current", "page");
   const signal = document.createElement("span");
   signal.className = `rail-session-signal rail-signal-${sessionIsActive(session) ? "active" : "archived"}`;
