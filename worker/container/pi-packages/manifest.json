@@ -5,7 +5,7 @@
     {
       "name": "scotty-browser-test",
       "order": 0,
-      "sourceSha256": "6595a7287024e70cbcb42fa37f4179eabcabc1db65aba0b11f094b7344080684",
+      "sourceSha256": "067deb6fa58c67df9d32c75643281101ea899d3e11c0679e3ee68e01ee6d1c28",
       "sourcePath": "worker/container/pi-packages/sources/scotty-browser-test",
       "imagePath": "/opt/scotty/pi-packages/sources/scotty-browser-test"
     },
