@@ -18,6 +18,7 @@ RUN node scripts/apply-dependency-patches.mjs
 COPY cli/scotty.ts cli/scotty.ts
 COPY cli/src cli/src
 COPY skills/scotty/SKILL.md skills/scotty/SKILL.md
+COPY skills/scotty-live-observability/SKILL.md skills/scotty-live-observability/SKILL.md
 COPY infra infra
 COPY protocol protocol
 COPY worker/src worker/src

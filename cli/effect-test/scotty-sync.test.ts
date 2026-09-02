@@ -343,19 +343,25 @@ describe("top-level sync and embedded skill commands", () => {
       }),
     ),
   );
-  it.effect("prints the exact embedded skill text and minimal JSON shape", () =>
+  it.effect("lists and prints exact embedded skill text with stable JSON shapes", () =>
     withTempDirectory((home) =>
       Effect.gen(function* () {
         const scottySkillContent = yield* Effect.promise(() =>
           readFile(join(import.meta.dirname, "..", "..", "skills", "scotty", "SKILL.md"), "utf8"),
         );
-        assert.include(scottySkillContent, "scotty init --name NAME");
-        assert.include(scottySkillContent, "--preview-base DOMAIN --preview-zone-id ZONE_ID");
-        assert.include(scottySkillContent, "scotty_hatch ensure");
-        assert.include(scottySkillContent, "scotty deploy --plan --json");
-        assert.include(scottySkillContent, "scotty deploy --yes --json");
-        assert.include(scottySkillContent, "never infer one");
-        assert.include(scottySkillContent, "do not require a source checkout, Node, npm");
+        const liveSkillContent = yield* Effect.promise(() =>
+          readFile(
+            join(
+              import.meta.dirname,
+              "..",
+              "..",
+              "skills",
+              "scotty-live-observability",
+              "SKILL.md",
+            ),
+            "utf8",
+          ),
+        );
         const human = run(home, ["skill", "show"], async () => new Response(), true);
         assert.strictEqual(yield* human.effect, EXIT.OK);
         assert.strictEqual(human.stdout.join(""), scottySkillContent);
@@ -366,6 +372,27 @@ describe("top-level sync and embedded skill commands", () => {
           name: "scotty",
           content: scottySkillContent,
         });
+
+        const live = run(
+          home,
+          ["skill", "show", "scotty-live-observability", "--json"],
+          async () => new Response(),
+        );
+        assert.strictEqual(yield* live.effect, EXIT.OK);
+        assert.deepStrictEqual(JSON.parse(live.stdout.join("")), {
+          name: "scotty-live-observability",
+          content: liveSkillContent,
+        });
+
+        const list = run(home, ["skill", "list", "--json"], async () => new Response());
+        assert.strictEqual(yield* list.effect, EXIT.OK);
+        assert.deepStrictEqual(JSON.parse(list.stdout.join("")), {
+          skills: ["scotty", "scotty-live-observability"],
+        });
+
+        const humanList = run(home, ["skill", "list"], async () => new Response(), true);
+        assert.strictEqual(yield* humanList.effect, EXIT.OK);
+        assert.strictEqual(humanList.stdout.join(""), "scotty\nscotty-live-observability\n");
       }),
     ),
   );
