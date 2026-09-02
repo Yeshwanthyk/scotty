@@ -90,6 +90,19 @@ describe("cloud-agent session application", () => {
     assert.include(appSource, "updateManageSessionLink(sessionId)");
   });
 
+  it("places one labeled create-session action above the session filter", () => {
+    const createIndex = sessionHtml.indexOf('class="new-agent-link"');
+    const filterIndex = sessionHtml.indexOf('class="agent-filter"');
+    const footerIndex = sessionHtml.indexOf('class="sidebar-footer"');
+
+    assert.isAtLeast(createIndex, 0);
+    assert.isAbove(filterIndex, createIndex);
+    assert.isAbove(footerIndex, filterIndex);
+    assert.include(sessionHtml, 'href="/sessions?create=1"');
+    assert.include(sessionHtml, "Create session");
+    assert.strictEqual(sessionHtml.match(/class="new-agent-link"/gu)?.length, 1);
+  });
+
   it("reconciles accepted or queued delivery state from each authoritative reload", () => {
     assert.match(
       appSource,

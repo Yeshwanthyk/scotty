@@ -12,6 +12,7 @@ import {
 import { normalizeSessionListItem, renderSessionsView, sessionsRenderSignature } from "./list.js";
 import {
   createRefreshCoordinator,
+  createSessionRequested,
   focusedSessionId,
   focusedSessionPath,
   reconcileCleanupProjection,
@@ -673,9 +674,7 @@ content.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-action]");
   if (!button) return;
   const { action, id } = button.dataset;
-  if (action === "open-composer") {
-    setComposerOpen(true);
-  } else if (action === "rename") {
+  if (action === "rename") {
     const session = sessions.find((candidate) => candidate.id === id);
     if (!session) return;
     renamingId = id;
@@ -894,6 +893,7 @@ fetch("/api/auth/me", {
   })
   .catch(() => undefined);
 
+if (createSessionRequested(window.location.search)) setComposerOpen(true);
 schedulePoll();
 void refreshRepositories();
 if (targetSessionId) void refreshFocusedSession(targetSessionId).then(() => refresh());

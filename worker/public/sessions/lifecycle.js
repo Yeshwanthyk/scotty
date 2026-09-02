@@ -10,6 +10,10 @@ export function unavailableSessionId(search) {
   return typeof value === "string" && SESSION_ID.test(value) ? value : undefined;
 }
 
+export function createSessionRequested(search) {
+  return new URLSearchParams(search).get("create") === "1";
+}
+
 export function focusedSessionPath(id) {
   return `/sessions?focus=${encodeURIComponent(id)}`;
 }

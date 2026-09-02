@@ -2,6 +2,7 @@ import type { SessionListItem } from "./list.js";
 
 export function focusedSessionId(search: string): string | undefined;
 export function unavailableSessionId(search: string): string | undefined;
+export function createSessionRequested(search: string): boolean;
 export function focusedSessionPath(id: string): string;
 export function reconcileFocusedSession(
   sessions: ReadonlyArray<SessionListItem>,
