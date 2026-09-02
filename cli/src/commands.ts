@@ -18,7 +18,7 @@ import {
   writeDeploymentPlan,
   type DeploymentPlan,
 } from "./deployment-plan";
-import { loadEmbeddedScottySkill } from "./embedded-scotty-skill";
+import { EMBEDDED_SCOTTY_SKILL_NAMES, loadEmbeddedScottySkill } from "./embedded-scotty-skill";
 import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
 import {
   decodeInitJournalJson,
@@ -1732,23 +1732,47 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     }),
   ).pipe(Command.withDescription("Build and synchronize the configured TOML bundle"));
 
-  const skillShow = Command.make("show", {}, () =>
+  const skillShow = Command.make(
+    "show",
+    {
+      name: Argument.choice("name", EMBEDDED_SCOTTY_SKILL_NAMES).pipe(
+        Argument.optional,
+        Argument.withDescription(
+          `Embedded skill name: ${EMBEDDED_SCOTTY_SKILL_NAMES.join(", ")}; defaults to scotty`,
+        ),
+      ),
+    },
+    ({ name }) =>
+      Effect.gen(function* () {
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (options.host !== undefined || options.tokenFile !== undefined)
+          return yield* usage(
+            "skill show does not accept --host or --token-file",
+            "This command prints the embedded Scotty skill.",
+          );
+        const selectedName = Option.getOrElse(name, () => "scotty" as const);
+        const content = yield* loadEmbeddedScottySkill(selectedName);
+        if (autoJson) outputJson(runtime.stdout, { name: selectedName, content });
+        else runtime.stdout(content);
+      }),
+  ).pipe(Command.withDescription("Print the embedded Scotty agent skill"));
+
+  const skillList = Command.make("list", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
       if (options.host !== undefined || options.tokenFile !== undefined)
         return yield* usage(
-          "skill show does not accept --host or --token-file",
-          "This command prints the embedded Scotty skill.",
+          "skill list does not accept --host or --token-file",
+          "This command lists the embedded Scotty skills.",
         );
-      const scottySkillContent = yield* loadEmbeddedScottySkill();
-      if (autoJson) outputJson(runtime.stdout, { name: "scotty", content: scottySkillContent });
-      else runtime.stdout(scottySkillContent);
+      if (autoJson) outputJson(runtime.stdout, { skills: EMBEDDED_SCOTTY_SKILL_NAMES });
+      else runtime.stdout(`${EMBEDDED_SCOTTY_SKILL_NAMES.join("\n")}\n`);
     }),
-  ).pipe(Command.withDescription("Print the embedded Scotty agent skill"));
+  ).pipe(Command.withDescription("List embedded Scotty agent skills"));
 
   const skill = Command.make("skill").pipe(
-    Command.withDescription("Inspect Scotty's embedded agent skill"),
-    Command.withSubcommands([skillShow]),
+    Command.withDescription("Inspect Scotty's embedded agent skills"),
+    Command.withSubcommands([skillList, skillShow]),
   );
 
   const doctor = Command.make("doctor", {}, () =>

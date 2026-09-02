@@ -88,8 +88,14 @@ describe("Effect command tree", () => {
 
         const skill = run(["skill", "--help"]);
         assert.strictEqual(yield* skill.effect, EXIT.OK);
+        assert.include(skill.stdout.join(""), "list");
         assert.include(skill.stdout.join(""), "show");
         assert.strictEqual(skill.stderr.join(""), "");
+
+        const skillShow = run(["skill", "show", "--help"]);
+        assert.strictEqual(yield* skillShow.effect, EXIT.OK);
+        assert.include(skillShow.stdout.join(""), "scotty-live-observability");
+        assert.strictEqual(skillShow.stderr.join(""), "");
 
         assert.strictEqual(root.stderr.join(""), "");
 
@@ -645,6 +651,12 @@ describe("Effect command tree", () => {
       assert.strictEqual(error.exitCode, EXIT.USAGE);
       assert.strictEqual(invocation.stdout.join(""), "");
       assert.strictEqual(invocation.stderr.join(""), "");
+
+      const unknownSkill = run(["skill", "show", "unknown"]);
+      const unknownSkillError = failure(yield* Effect.result(unknownSkill.effect));
+      assert.strictEqual(unknownSkillError.code, "bad_usage");
+      assert.strictEqual(unknownSkill.stdout.join(""), "");
+      assert.strictEqual(unknownSkill.stderr.join(""), "");
     }),
   );
 

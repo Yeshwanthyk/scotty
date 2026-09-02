@@ -22,6 +22,7 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
   entry("cli/scotty.ts", "archive", "cliSource"),
   entry("cli/src", "archive", "cliSource"),
   entry("skills/scotty/SKILL.md", "archive", "containerStatic"),
+  entry("skills/scotty-live-observability/SKILL.md", "archive", "containerStatic"),
   entry("infra", "archive", "cliSource"),
   entry("protocol", "archive", "cliSource"),
   entry("worker/package.json", "archive", "containerStatic"),

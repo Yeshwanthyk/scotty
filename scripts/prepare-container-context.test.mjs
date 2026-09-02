@@ -118,10 +118,18 @@ test("the Container context contains only static runtime assets and CLI graph in
       },
     );
     assert.ok(CONTAINER_STATIC_INPUTS.includes("skills/scotty/SKILL.md"));
+    assert.ok(CONTAINER_STATIC_INPUTS.includes("skills/scotty-live-observability/SKILL.md"));
     assert.equal(CONTAINER_STATIC_INPUTS.includes("skills"), false);
     assert.equal(
       await readFile(join(root, CONTAINER_CONTEXT_PATH, "skills/scotty/SKILL.md"), "utf8"),
       "skills/scotty/SKILL.md\n",
+    );
+    assert.equal(
+      await readFile(
+        join(root, CONTAINER_CONTEXT_PATH, "skills/scotty-live-observability/SKILL.md"),
+        "utf8",
+      ),
+      "skills/scotty-live-observability/SKILL.md\n",
     );
     for (const input of [
       "scripts/apply-dependency-patches.mjs",
