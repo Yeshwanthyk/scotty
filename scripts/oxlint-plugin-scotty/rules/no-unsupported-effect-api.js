@@ -3,22 +3,22 @@ import { addEffectNamespaceImport, getPropertyName, isIdentifier } from "../util
 const unsupported = new Map([
   [
     "async",
-    "Effect.async is absent from Scotty's pinned Effect 4.0.0-rc.109. Use Effect.callback for callback adapters.",
+    "Effect.async is absent from Scotty's pinned Effect 4.0.0-rc.112. Use Effect.callback for callback adapters.",
   ],
   [
     "zipRight",
-    "Effect.zipRight is absent from Scotty's pinned Effect 4.0.0-rc.109. Use Effect.andThen or Effect.gen sequencing.",
+    "Effect.zipRight is absent from Scotty's pinned Effect 4.0.0-rc.112. Use Effect.andThen or Effect.gen sequencing.",
   ],
   [
     "timeoutFail",
-    "Effect.timeoutFail is absent from Scotty's pinned Effect 4.0.0-rc.109. Use Effect.timeoutOrElse or Effect.timeoutOption.",
+    "Effect.timeoutFail is absent from Scotty's pinned Effect 4.0.0-rc.112. Use Effect.timeoutOrElse or Effect.timeoutOption.",
   ],
 ]);
 
 export default {
   meta: {
     type: "problem",
-    docs: { description: "Disallow Effect APIs absent from pinned rc.109." },
+    docs: { description: "Disallow Effect APIs absent from pinned rc.112." },
   },
   create(context) {
     const effectNames = new Set();

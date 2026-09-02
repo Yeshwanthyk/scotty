@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 
 type SandboxHost = Pick<Worker, "LogicalId" | "bind" | "durableObjectNamespaces">;
 
-type SandboxContainer = Pick<ContainerApplication, "LogicalId" | "bind" | "dev">;
+type SandboxContainer = Pick<ContainerApplication, "LogicalId" | "bind" | "dev" | "hash">;
 
 export interface ExternalSandboxContainerBinding {
   readonly worker: SandboxHost;
@@ -36,15 +36,16 @@ export const bindExternalSandboxContainer = Effect.fnUntraced(function* ({
     }),
   );
 
-  yield* container.bind(durableObject.name, {
+  yield* container.bind`${durableObject.name}`({
     durableObjects: { namespaceId },
   });
 
-  yield* worker.bind(container.LogicalId, {
+  yield* worker.bind`${container.LogicalId}`({
     containers: [
       {
         className,
         dev: container.dev,
+        hash: container.hash.pipe(Output.map((value) => value?.image)),
       },
     ],
   });

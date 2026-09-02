@@ -133,7 +133,7 @@ test("the Container context contains only static runtime assets and CLI graph in
     );
     for (const input of [
       "scripts/apply-dependency-patches.mjs",
-      "patches/alchemy+2.0.0-beta.72.patch",
+      "patches/alchemy+2.0.0-beta.76.patch",
     ]) {
       assert.equal(await readFile(join(root, CONTAINER_CONTEXT_PATH, input), "utf8"), `${input}\n`);
     }

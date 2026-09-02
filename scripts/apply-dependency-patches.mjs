@@ -6,8 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const DEPENDENCY_PATCHES = Object.freeze([
-  "patches/alchemy+2.0.0-beta.72.patch",
-  "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
+  "patches/alchemy+2.0.0-beta.76.patch",
+  "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch",
 ]);
 
 export const defaultGitApply = (args, patch, cwd = root) =>

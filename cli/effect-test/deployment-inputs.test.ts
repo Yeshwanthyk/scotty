@@ -180,8 +180,8 @@ describe("standalone deployment archive", () => {
       "scripts/container-control-plane.mjs",
       "scripts/deploy-production.mjs",
       "scripts/is-direct-run.mjs",
-      "patches/alchemy+2.0.0-beta.72.patch",
-      "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
+      "patches/alchemy+2.0.0-beta.76.patch",
+      "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch",
     ] as const;
     for (const file of files) {
       expect(DEPLOYMENT_INPUTS).toContain(file);
@@ -198,10 +198,10 @@ describe("standalone deployment archive", () => {
       "COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs",
     );
     expect(dockerfile).toContain(
-      "COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch",
+      "COPY patches/alchemy+2.0.0-beta.76.patch patches/alchemy+2.0.0-beta.76.patch",
     );
     expect(dockerfile).toContain(
-      "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
+      "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch",
     );
     expect(
       dockerfile.indexOf(
@@ -210,12 +210,12 @@ describe("standalone deployment archive", () => {
     ).toBeLessThan(npmCiIndex);
     expect(
       dockerfile.indexOf(
-        "COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch",
+        "COPY patches/alchemy+2.0.0-beta.76.patch patches/alchemy+2.0.0-beta.76.patch",
       ),
     ).toBeLessThan(npmCiIndex);
     expect(
       dockerfile.indexOf(
-        "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
+        "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch",
       ),
     ).toBeLessThan(npmCiIndex);
     expect(dockerfile.indexOf("RUN node scripts/apply-dependency-patches.mjs")).toBeGreaterThan(

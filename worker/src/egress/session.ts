@@ -31,7 +31,7 @@ import {
 } from "../hatch/contracts";
 import { scottyErrorResponse } from "../session/passive";
 
-// Deployed-canary gate: cloudflare/sandbox:0.12.3 must prove that its TLS trust store
+// Deployed-canary gate: cloudflare/sandbox:0.12.9 must prove that its TLS trust store
 // accepts the SDK interception certificate for this reserved host.
 export const SCOTTY_INTERNAL_HOST = "scotty.internal";
 export const SCOTTY_EVIDENCE_JOB_ROUTE = "/api/evidence/jobs";

@@ -1,22 +1,22 @@
-diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts
+diff --git a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts
 index 37d5e1a..5783beb 100644
---- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts
-+++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts
+--- a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts
++++ b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts
 @@ -27 +27,2 @@
 +import { WorkerdLoadError } from "./workerd/Workerd.mjs";
  import "./registry/index.mjs";
 @@ -48,2 +49,2 @@
--declare const layerProxy: () => Layer.Layer<WorkerProxy, never, import("effect/FileSystem").FileSystem>;
-+declare const layerProxy: () => Layer.Layer<WorkerProxy, WorkerdLoadError, import("effect/FileSystem").FileSystem>;
+-declare const layerProxy: () => Layer.Layer<WorkerProxy, never, never>;
++declare const layerProxy: () => Layer.Layer<WorkerProxy, WorkerdLoadError, never>;
  declare const layerRegistry: () => Layer.Layer<RegistryProxy, import("effect/PlatformError").PlatformError | SystemError, import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path | Paths>;
 @@ -50,2 +51,2 @@
 -declare const layerRuntime: (config: RuntimeConfig) => Layer.Layer<AnalyticsEngine | Assets | Browser | Cache | D1 | DispatchNamespace | Hyperdrive | Images | KvNamespace | Loopback | Queue | R2Bucket | RateLimit | RegistryProxy | RemoteBindings | Runtime | SecretsStore | SendEmail | Stream | WorkerProxy | Workflows, import("effect/Config").ConfigError | ConfigError | import("effect/PlatformError").PlatformError | SystemError, import("effect/unstable/process/ChildProcessSpawner").ChildProcessSpawner | import("@distilled.cloud/cloudflare/Credentials").Credentials | import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path>;
 +declare const layerRuntime: (config: RuntimeConfig) => Layer.Layer<AnalyticsEngine | Assets | Browser | Cache | D1 | DispatchNamespace | Hyperdrive | Images | KvNamespace | Loopback | Queue | R2Bucket | RateLimit | RegistryProxy | RemoteBindings | Runtime | SecretsStore | SendEmail | Stream | WorkerProxy | Workflows, WorkerdLoadError | import("effect/Config").ConfigError | ConfigError | import("effect/PlatformError").PlatformError | SystemError, import("effect/unstable/process/ChildProcessSpawner").ChildProcessSpawner | import("@distilled.cloud/cloudflare/Credentials").Credentials | import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path>;
  //#endregion
-diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts
+diff --git a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts
 index c08bb75..68faeec 100644
---- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts
-+++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts
+--- a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts
++++ b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts
 @@ -4 +4,2 @@
 +import * as Data from "effect/Data";
  import * as Effect from "effect/Effect";
@@ -38,10 +38,10 @@ index c08bb75..68faeec 100644
 +export { OutputSink, ServeOptions, Workerd, WorkerdLive, WorkerdLoadError, WorkerdPorts, Workerd_d_exports, isAddressInUseError };
  //# sourceMappingURL=Workerd.d.mts.map
 \ No newline at end of file
-diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs
+diff --git a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs
 index 03eb955..e32ae72 100644
---- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs
-+++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs
+--- a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs
++++ b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs
 @@ -4,2 +4,2 @@
 -import { bin, compatibilityDate } from "./internal/workerd.mjs";
 +import { load } from "./internal/workerd.mjs";
@@ -57,7 +57,7 @@ index 03eb955..e32ae72 100644
 @@ -18 +20,2 @@
 +var WorkerdLoadError = class extends Data.TaggedError("WorkerdLoadError") {};
  var Workerd = class extends Context.Service()("cloudflare-runtime/workerd/Workerd") {};
-@@ -19,36 +22,36 @@
+@@ -19,34 +22,34 @@
 -const make = (spawn) => Workerd.of({
 -	compatibilityDate,
 -	serve: Effect.fn("Workerd.serve")(function* (config, args, options) {
@@ -76,10 +76,8 @@ index 03eb955..e32ae72 100644
 -			...Object.entries(args ?? {}).map(([key, value]) => typeof value === "boolean" ? `--${key}` : `--${key}=${value}`),
 -			"-"
 -		], Buffer.from(serializeConfig(config)));
--		const unregister = exitHook(() => handle.kill());
 -		yield* Effect.addFinalizer(() => Effect.sync(() => {
 -			handle.kill();
--			unregister();
 -		}));
 -		if (handle.configure) yield* handle.configure();
 -		const count = (config.sockets?.length ?? 0) + (typeof args?.["debug-port"] !== "undefined" ? 1 : 0) + (typeof args?.["inspector-addr"] !== "undefined" ? 1 : 0);
@@ -111,10 +109,8 @@ index 03eb955..e32ae72 100644
 +			...Object.entries(args ?? {}).map(([key, value]) => typeof value === "boolean" ? `--${key}` : `--${key}=${value}`),
 +			"-"
 +		], Buffer.from(serializeConfig(config)));
-+		const unregister = exitHook(() => handle.kill());
 +		yield* Effect.addFinalizer(() => Effect.sync(() => {
 +			handle.kill();
-+			unregister();
 +		}));
 +		if (handle.configure) yield* handle.configure();
 +		const count = (config.sockets?.length ?? 0) + (typeof args?.["debug-port"] !== "undefined" ? 1 : 0) + (typeof args?.["inspector-addr"] !== "undefined" ? 1 : 0);
@@ -195,10 +191,10 @@ index 03eb955..e32ae72 100644
 +
  //# sourceMappingURL=Workerd.mjs.map
 \ No newline at end of file
-diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts
+diff --git a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts
 index 40fac1d..cf8be02 100644
---- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts
-+++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts
+--- a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts
++++ b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts
 @@ -2,4 +2,7 @@
 -declare const bin: string;
 -declare const compatibilityDate: string;
@@ -215,10 +211,10 @@ index 40fac1d..cf8be02 100644
 +export { WorkerdPackage, load };
  //# sourceMappingURL=workerd.d.mts.map
 \ No newline at end of file
-diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs
+diff --git a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs
 index 38a52e8..b704446 100644
---- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs
-+++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs
+--- a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs
++++ b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs
 @@ -1,2 +1 @@
 -import * as Workerd from "workerd";
  //#region src/core/workerd/internal/workerd.ts
@@ -243,10 +239,10 @@ index 38a52e8..b704446 100644
 +
  //# sourceMappingURL=workerd.mjs.map
 \ No newline at end of file
-diff --git a/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts b/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts
+diff --git a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts
 index f2ef4af..a792a78 100644
---- a/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts
-+++ b/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts
+--- a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts
++++ b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts
 @@ -3 +3,2 @@
 +import * as Data from "effect/Data";
  import * as Effect from "effect/Effect";
@@ -299,10 +295,10 @@ index f2ef4af..a792a78 100644
 +    ),
 +  ),
  );
-diff --git a/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts b/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts
+diff --git a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts
 index e282cc0..1a65379 100644
---- a/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts
-+++ b/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts
+--- a/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts
++++ b/node_modules/alchemy/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts
 @@ -1,8 +1,20 @@
 -import * as Workerd from "workerd";
 -

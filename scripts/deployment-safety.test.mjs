@@ -116,7 +116,7 @@ describe("production deployment ownership", () => {
 
   it("keeps the pinned Alchemy deployment backports installed and deterministic", async () => {
     const rootPackage = JSON.parse(read("package.json"));
-    const patch = read("patches/alchemy+2.0.0-beta.72.patch");
+    const patch = read("patches/alchemy+2.0.0-beta.76.patch");
     const installedApply = read("node_modules/alchemy/lib/Apply.js");
     const installedWorkerProvider = read(
       "node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js",
@@ -129,7 +129,7 @@ describe("production deployment ownership", () => {
     );
     const installedDocker = read("node_modules/alchemy/lib/Docker/Docker.js");
 
-    assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.72");
+    assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.76");
     assert.equal(rootPackage.scripts.postinstall, "node scripts/apply-dependency-patches.mjs");
     assert.match(patch, /const oldDoBindings = oldBindings\.flatMap/u);
     assert.doesNotMatch(patch, /bindings: bindingOutputs/u);
@@ -145,21 +145,17 @@ describe("production deployment ownership", () => {
     assert.match(patch, /Context is cyclic in Effect v4/u);
     assert.match(installedWorkerRuntimeContext, /if \(phase === "plan"\)/u);
 
-    // Registry credentials are minted for a short window and Docker
-    // authenticates in isolation: `docker login --username ... --password-stdin`
-    // streams the password on a Stream-backed stdin (via TextEncoder) and writes
-    // only into a scoped temp DOCKER_CONFIG dir, so no credential reaches argv,
-    // logs, or the shared credential helper. There is no argv `--password`
-    // form, no inline `Buffer.from(user:pass)` auth encoding, and no Wrangler
-    // handoff.
+    // Registry credentials are minted for a short window and Docker authenticates
+    // only through a scoped temporary DOCKER_CONFIG. Credentials are written to
+    // that isolated config, never argv, logs, or the shared credential helper.
     assert.match(installedContainerProvider, /expirationMinutes: 15/u);
     assert.doesNotMatch(installedContainerProvider, /expirationMinutes: 60/u);
-    assert.match(installedDocker, /"login",\s*"--username",/u);
-    assert.match(installedDocker, /"--password-stdin",/u);
-    assert.match(installedDocker, /Stream\.succeed\(new TextEncoder\(\)\.encode\(input\)\)/u);
+    assert.match(installedDocker, /makeTempDirectoryScoped/u);
+    assert.match(installedDocker, /auths:/u);
+    assert.match(installedDocker, /writeFileString\(path\.join\(dir, "config\.json"\), config\)/u);
     assert.match(installedDocker, /DOCKER_CONFIG: dir/u);
     assert.doesNotMatch(installedDocker, /"--password",/u);
-    assert.doesNotMatch(installedDocker, /Buffer\.from\(/u);
+    assert.doesNotMatch(installedDocker, /"login",\s*"--username",/u);
     assert.doesNotMatch(installedDocker, /wrangler/u);
     // The backported provider pushes through Docker; neither it nor the Scotty
     // deployment steps hand the release to `wrangler deploy`.

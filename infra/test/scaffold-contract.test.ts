@@ -22,20 +22,20 @@ describe("pinned Task 4 contracts", () => {
     const workerPackage = await readPackageManifest("worker/package.json");
 
     expect(rootPackage.devDependencies).toMatchObject({
-      "@effect/vitest": "4.0.0-rc.109",
+      "@effect/vitest": "4.0.0-rc.112",
       typescript: "7.0.2",
       vitest: "4.1.10",
-      wrangler: "4.112.0",
+      wrangler: "4.128.0",
     });
     expect(rootPackage.dependencies).toMatchObject({
-      "@effect/platform-node": "4.0.0-rc.109",
-      alchemy: "2.0.0-beta.72",
-      effect: "4.0.0-rc.109",
+      "@effect/platform-node": "4.0.0-rc.112",
+      alchemy: "2.0.0-beta.76",
+      effect: "4.0.0-rc.112",
     });
     expect(workerPackage.dependencies).toEqual({
-      "@cloudflare/containers": "0.3.5",
-      "@cloudflare/sandbox": "0.12.3",
-      effect: "4.0.0-rc.109",
+      "@cloudflare/containers": "0.3.7",
+      "@cloudflare/sandbox": "0.12.9",
+      effect: "4.0.0-rc.112",
       hono: "4.12.31",
       "qrcode-generator": "1.4.4",
     });
@@ -45,7 +45,9 @@ describe("pinned Task 4 contracts", () => {
     const dockerfile = await readFile(new URL("worker/container/Dockerfile", root), "utf8");
     const dockerignore = await readFile(new URL(".dockerignore", root), "utf8");
 
-    expect(dockerfile).toContain("cloudflare/sandbox:0.12.3@sha256:");
+    expect(dockerfile).toContain(
+      "cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe",
+    );
     expect(dockerfile).not.toContain("ARG CODEX_VERSION=");
     expect(dockerfile).toContain("ARG GO_VERSION=1.26.1");
     expect(dockerfile).not.toContain("@openai/codex");

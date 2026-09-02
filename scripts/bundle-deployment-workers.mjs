@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-// Upgrade-sensitive boundary: Alchemy 2.0.0-beta.72 exposes no public bundler API, so use
+// Upgrade-sensitive boundary: Alchemy 2.0.0-beta.76 exposes no public bundler API, so use
 // its exact-pinned compiled WorkerBundle provider rather than maintaining a parallel bundler.
 import { WorkerBundle } from "../node_modules/alchemy/lib/Cloudflare/Workers/Sources/Rolldown.js";
 import * as Context from "effect/Context";

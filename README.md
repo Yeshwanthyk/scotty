@@ -429,7 +429,7 @@ allows a different target only when both authoritative session records have exac
 repository identity. This coordination is request-scoped; it has no mailbox or persisted
 coordination state.
 
-The installed `cloudflare/sandbox:0.12.3` HTTPS interceptor's trust of the reserved origin cannot be
+The installed `cloudflare/sandbox:0.12.9` HTTPS interceptor's trust of the reserved origin cannot be
 proven by local tests. A deployed same-repository inspect/steer canary remains a production gate; the
 local suite is not production proof.
 
