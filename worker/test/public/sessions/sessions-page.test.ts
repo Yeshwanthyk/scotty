@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { assert, describe, it } from "vitest";
 import {
   deletionActionLabel,
@@ -17,6 +19,11 @@ import {
 import sessionListSource from "../../../public/sessions/list.js?raw";
 import sessionsHtml from "../../../public/sessions/index.html?raw";
 import sessionsScript from "../../../public/sessions/index.js?raw";
+
+const sharedStyles = readFileSync(
+  fileURLToPath(new URL("../../../public/shared/styles.css", import.meta.url).href),
+  "utf8",
+);
 
 describe("sessions page", () => {
   it("normalizes the current session projection shape at the fetch boundary", () => {
@@ -193,6 +200,13 @@ describe("sessions page", () => {
       title: "Removing workspace",
       copy: "Scotty is removing this session and its backups.",
     });
+  });
+
+  it("keeps the focused resume action visually primary", () => {
+    assert.match(
+      sharedStyles,
+      /\.sessions-page \.actions \.button-primary \{[\s\S]*?background: var\(--beam\);[\s\S]*?color: #0a0a0a;/u,
+    );
   });
 
   it("recognizes focused rename drafts as stable controls", () => {
