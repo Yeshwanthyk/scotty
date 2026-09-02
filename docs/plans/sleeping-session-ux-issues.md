@@ -38,8 +38,9 @@ state from the hard-cap timer.
   not regress a newer projection.
 - Resolution: actor deadlines, hard-cap decisions, and runtime lifecycle callbacks now publish a
   best-effort projection by rereading current actor authority. Publication derives from current
-  authority rather than the triggering callback, so a stale or retried observation cannot regress
-  the projection.
+  authority rather than directly from the triggering callback. Durable retry and monotonic
+  ordering between concurrent publications remain follow-up projection contracts; this incident
+  fix does not claim them.
 - Local proof: lifecycle tests assert `projection:failed` after hard-cap and unexpected-stop
   decisions and `projection:sleeping` after activity-expiry callback settlement.
 
