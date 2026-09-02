@@ -14,6 +14,8 @@ const ASSERTION_POLL_INTERVAL_MILLIS = 100;
 const NAVIGATION_TIMEOUT_MILLIS = 15_000;
 const PROCESS_START_TIMEOUT_MILLIS = 5_000;
 const PROCESS_STOP_TIMEOUT_MILLIS = 15_000;
+const VIDEO_STEP_HOLD_MILLIS = 650;
+const VIDEO_FINAL_HOLD_MILLIS = 1_250;
 const MAX_FRAME_BYTES = 5 * 1_024 * 1_024;
 const MAX_VIDEO_BYTES = 25 * 1_024 * 1_024;
 const PNG_SIGNATURE = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -553,6 +555,15 @@ const normalizeFailure = (error: unknown, step?: number): BrowserTestFailure =>
     ? error
     : new BrowserTestFailure("interrupted", "interrupted", step);
 
+const holdVerifiedVideoState = async (
+  recordVideo: boolean,
+  finalStep: boolean,
+  runtime: BrowserTestRuntime,
+): Promise<void> => {
+  if (!recordVideo) return;
+  await runtime.sleep(finalStep ? VIDEO_FINAL_HOLD_MILLIS : VIDEO_STEP_HOLD_MILLIS);
+};
+
 export async function runBrowserEvidenceJob(
   job: BrowserEvidenceJob,
   outputDirectory: string,
@@ -636,6 +647,7 @@ export async function runBrowserEvidenceJob(
         failure = new BrowserTestFailure("failed", "assertion_mismatch", index);
         break;
       }
+      await holdVerifiedVideoState(job.capture.video, index === job.steps.length - 1, runtime);
     }
   } catch (error) {
     failure = normalizeFailure(error, activeStep);

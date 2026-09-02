@@ -188,6 +188,7 @@ test("registers exactly one scotty_browser_test tool with safe reference guidanc
   assert.deepEqual(tools.map(({ name }) => name), ["scotty_browser_test"]);
   assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /exact scotty-evidence:<jobId>/u);
   assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /once/u);
+  assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /holds each verified state/u);
   assert.match(
     tools[0]?.promptGuidelines.join("\n") ?? "",
     /do not publish the authenticated summary URL/u,

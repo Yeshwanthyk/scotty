@@ -336,6 +336,7 @@ export default function scottyBrowserTest(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use scotty_browser_test only after starting the repository app on 0.0.0.0 at an allowed port; use relative paths and declarative assertions.",
       "For user-visible work, run the same viewport, steps, and assertions before and after the change. Set video false for the before run and true for the after run so Scotty can build one matched Showcase.",
+      "Keep recorded flows concise and representative, with a visible outcome asserted after every action. The runner briefly holds each verified state and holds the final state longer for a readable recording.",
       "In the next meaningful progress or final update, include the exact scotty-evidence:<jobId> reference derived from the structured result once. Never invent or repeat a reference, and do not publish the authenticated summary URL.",
     ],
     parameters: BrowserEvidenceJobParameters,

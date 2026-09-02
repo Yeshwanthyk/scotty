@@ -79,7 +79,9 @@ const fakeRuntime = (options: { readonly browserCloseFails?: boolean } = {}) => 
       clock += 100;
       return clock;
     },
-    sleep: async () => undefined,
+    sleep: async (millis) => {
+      events.push(`sleep:${millis}`);
+    },
     prepareOutput: async () => {
       events.push("output:prepare");
     },
@@ -187,10 +189,15 @@ test("runs every action and assertion, blocks cross-origin traffic, and finalize
   assert.ok(events.indexOf("context:close") < events.indexOf("browser:close"));
   assert.ok(events.indexOf("browser:close") < events.indexOf("display:close"));
   assert.ok(events.indexOf("display:close") < events.findIndex((event) => event.startsWith("move:")));
+  assert.deepEqual(
+    events.filter((event) => event.startsWith("sleep:")),
+    ["sleep:650", "sleep:650", "sleep:650", "sleep:1250"],
+  );
+  assert.ok(events.indexOf("sleep:1250") < events.indexOf("recorder:stop"));
 });
 
 test("disables finite animations at the screenshot capture boundary", async () => {
-  const { runtime, screenshots } = fakeRuntime();
+  const { events, runtime, screenshots } = fakeRuntime();
   const result = await runBrowserEvidenceJob(
     job(false),
     "/tmp/scotty-browser-runner-test",
@@ -200,6 +207,7 @@ test("disables finite animations at the screenshot capture boundary", async () =
   assert.equal(result.status, "succeeded");
   assert.equal(screenshots.length, 4);
   assert.ok(screenshots.every((options) => options.animations === "disabled"));
+  assert.equal(events.some((event) => event.startsWith("sleep:")), false);
 });
 
 test("retains the mismatch step PNG and omits video", async () => {
@@ -225,6 +233,7 @@ test("retains the mismatch step PNG and omits video", async () => {
   assert.equal(result.video, undefined);
   assert.ok(events.includes("recorder:stop"));
   assert.ok(events.filter((event) => event === "text").length > 1);
+  assert.equal(events.some((event) => event === "sleep:650" || event === "sleep:1250"), false);
   assert.equal(events.some((event) => event.startsWith("move:")), false);
 });
 
