@@ -15,12 +15,14 @@ describe("cloud-agent directory", () => {
     title: "Ship browser chat",
     repo: "openai/scotty",
     branch: "scotty/browser-chat",
+    createdAt: "2026-08-04T14:00:00.000Z",
     status: "warm",
     provider: "cloudflare",
   });
   const sleeping = normalizeCloudAgent({
     id: "f0e1d2c3b4a5",
     title: "Audit routes",
+    createdAt: "2026-08-04T13:00:00.000Z",
     repo: "openai/scotty",
     status: "sleeping",
     provider: "cloudflare",
@@ -33,6 +35,54 @@ describe("cloud-agent directory", () => {
       { repo: "openai/scotty", agents: [warm, sleeping] },
     ]);
     assert.isUndefined(normalizeCloudAgent({ title: "missing id" }));
+  });
+
+  it("keeps creation order fixed when the selected session changes", () => {
+    const newest = {
+      id: "newest",
+      title: "Newest",
+      repo: "openai/scotty",
+      branch: "",
+      status: "warm",
+      provider: "cloudflare",
+      createdAt: "2026-08-04T15:00:00.000Z",
+    };
+    const middle = {
+      ...newest,
+      id: "middle",
+      title: "Middle",
+      repo: "openai/agents",
+      createdAt: "2026-08-04T14:00:00.000Z",
+    };
+    const oldest = {
+      ...newest,
+      id: "oldest",
+      title: "Oldest",
+      createdAt: "2026-08-04T13:00:00.000Z",
+    };
+
+    const expected = [
+      { repo: "openai/scotty", agents: [newest, oldest] },
+      { repo: "openai/agents", agents: [middle] },
+    ];
+    assert.deepStrictEqual(groupCloudAgents([oldest, middle, newest], newest.id), expected);
+    assert.deepStrictEqual(groupCloudAgents([oldest, middle, newest], oldest.id), expected);
+  });
+
+  it("orders equal or invalid creation times deterministically by id", () => {
+    const base = {
+      title: "Session",
+      repo: "openai/scotty",
+      branch: "",
+      status: "warm",
+      provider: "cloudflare",
+      createdAt: "not-a-time",
+    };
+    const first = { ...base, id: "a" };
+    const second = { ...base, id: "b" };
+    assert.deepStrictEqual(groupCloudAgents([second, first], second.id), [
+      { repo: "openai/scotty", agents: [first, second] },
+    ]);
   });
 
   it("keeps only booting and warm sessions in the in-session directory", () => {
@@ -55,6 +105,7 @@ describe("cloud-agent directory", () => {
       branch: "",
       status: "sleeping",
       provider: "cloudflare",
+      createdAt: `2026-08-03T${String(12 - index).padStart(2, "0")}:00:00.000Z`,
     }));
     assert.deepStrictEqual(cloudAgentGroupWindow([warm, ...sleepers], warm.id), {
       agents: [warm, ...sleepers.slice(0, 6)],

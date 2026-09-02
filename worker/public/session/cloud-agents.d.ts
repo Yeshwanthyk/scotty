@@ -5,6 +5,7 @@ export type CloudAgent = {
   readonly branch: string;
   readonly status: string;
   readonly provider: string;
+  readonly createdAt: string;
 };
 export declare function normalizeCloudAgent(value: unknown): CloudAgent | undefined;
 export declare function isActiveCloudAgent(agent: CloudAgent): boolean;
