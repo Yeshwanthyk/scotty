@@ -3,6 +3,7 @@ import {
   deletionActionLabel,
   focusKeyNeedsStableDraft,
   normalizeSessionListItem,
+  sessionManagementPresentation,
   sessionPrimaryTiming,
   sessionsRenderSignature,
   sleepingProjectFocusKey,
@@ -11,6 +12,7 @@ import {
   createRefreshCoordinator,
   focusedSessionId,
   reconcileCleanupProjection,
+  unavailableSessionId,
 } from "../../../public/sessions/lifecycle.js";
 import sessionListSource from "../../../public/sessions/list.js?raw";
 import sessionsHtml from "../../../public/sessions/index.html?raw";
@@ -140,6 +142,16 @@ describe("sessions page", () => {
     assert.include(sessionListSource, "target?.focus({ preventScroll: true })");
   });
 
+  it("keeps a server-confirmed missing session unavailable despite stale list data", () => {
+    assert.strictEqual(unavailableSessionId("?unavailable=a0b1c2d3e4f5"), "a0b1c2d3e4f5");
+    assert.isUndefined(unavailableSessionId("?unavailable=../../devices"));
+    assert.include(sessionListSource, "if (state.missingSessionId)");
+    assert.include(
+      sessionListSource,
+      "renderUnavailableWorkspace(content, state.missingSessionId)",
+    );
+  });
+
   it("summarizes the next relevant session event", () => {
     const session = {
       id: "session-1",
@@ -160,6 +172,27 @@ describe("sessions page", () => {
       sessionPrimaryTiming(session, "deleting", "delete"),
       "Deleting session and backups",
     );
+  });
+
+  it("presents sleeping sessions as safe, resumable workspaces", () => {
+    assert.deepStrictEqual(
+      sessionManagementPresentation({ status: "sleeping", backupId: "backup-1" }, "sleeping"),
+      {
+        label: "Sleeping",
+        title: "Workspace safely asleep",
+        copy: "Your checkpoint is ready. Resume the workspace to continue where you left off.",
+      },
+    );
+    assert.deepStrictEqual(sessionManagementPresentation({ status: "sleeping" }, "sleeping"), {
+      label: "Sleeping",
+      title: "Workspace asleep",
+      copy: "This workspace stopped without a usable checkpoint and cannot be resumed.",
+    });
+    assert.deepStrictEqual(sessionManagementPresentation({ status: "warm" }, "deleting"), {
+      label: "Deleting",
+      title: "Removing workspace",
+      copy: "Scotty is removing this session and its backups.",
+    });
   });
 
   it("recognizes focused rename drafts as stable controls", () => {
@@ -217,5 +250,12 @@ describe("sessions page", () => {
   it("guards passive polling before replacing session nodes", () => {
     assert.include(sessionsScript, "signature === renderedSessionsSignature");
     assert.include(sessionsScript, "preserveUnchanged: options.actionId === undefined");
+  });
+
+  it("opens focused recovery surfaces on mobile and explains missing sessions", () => {
+    assert.include(sessionListSource, '"mobile-session-open"');
+    assert.include(sessionListSource, "Session unavailable");
+    assert.include(sessionListSource, "It may have been deleted");
+    assert.include(sessionListSource, "Resume & open");
   });
 });

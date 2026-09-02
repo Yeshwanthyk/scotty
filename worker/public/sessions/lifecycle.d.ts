@@ -1,6 +1,7 @@
 import type { SessionListItem } from "./list.js";
 
 export function focusedSessionId(search: string): string | undefined;
+export function unavailableSessionId(search: string): string | undefined;
 export function reconcileCleanupProjection(
   sessions: ReadonlyArray<SessionListItem>,
   cleanupIds: ReadonlyArray<string>,

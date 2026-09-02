@@ -63,6 +63,59 @@ export function sessionPrimaryTiming(session, status, pendingAction) {
     : "Session limit reached";
 }
 
+export function sessionManagementPresentation(session, status) {
+  if (status === "sleeping")
+    return session?.backupId
+      ? {
+          label: "Sleeping",
+          title: "Workspace safely asleep",
+          copy: "Your checkpoint is ready. Resume the workspace to continue where you left off.",
+        }
+      : {
+          label: "Sleeping",
+          title: "Workspace asleep",
+          copy: "This workspace stopped without a usable checkpoint and cannot be resumed.",
+        };
+  if (status === "failed")
+    return session?.backupId
+      ? {
+          label: "Recovery available",
+          title: "Workspace needs attention",
+          copy: "A checkpoint is ready. Resume the workspace to recover your session.",
+        }
+      : {
+          label: "Unavailable",
+          title: "Workspace could not recover",
+          copy: "No usable checkpoint is available for this session.",
+        };
+  if (status === "stopping")
+    return {
+      label: "Stopping",
+      title: "Preparing your checkpoint",
+      copy: "Scotty is saving the workspace before it goes to sleep.",
+    };
+  if (status === "deleting")
+    return {
+      label: "Deleting",
+      title: "Removing workspace",
+      copy: "Scotty is removing this session and its backups.",
+    };
+  if (status !== "warm" && status !== "booting")
+    return {
+      label: "Unavailable",
+      title: "Workspace state unavailable",
+      copy: "Scotty could not determine a usable state for this workspace.",
+    };
+  return {
+    label: status === "booting" ? "Starting" : "Active",
+    title: status === "booting" ? "Workspace is starting" : "Workspace is running",
+    copy:
+      status === "booting"
+        ? "Scotty is preparing the runtime and connecting Codex."
+        : "Open the session to continue working, or stop it to save a checkpoint.",
+  };
+}
+
 export function focusKeyNeedsStableDraft(value) {
   return typeof value === "string" && value.startsWith("rename:");
 }
@@ -161,7 +214,7 @@ function appendLifecycleActions(parent, state, session, status, options = {}) {
       actions.append(actionButton(state, "Stop", "sleep", session.id, { focusPrefix }));
     } else if (
       options.includePrimary !== false &&
-      (status === "sleeping" || (status === "failed" && session.backupId))
+      ((status === "sleeping" && session.backupId) || (status === "failed" && session.backupId))
     ) {
       actions.append(
         actionButton(state, "Resume & open", "resume", session.id, {
@@ -335,8 +388,8 @@ function renderManageWorkspace(parent, state, session) {
   page.className = "workspace-manage-page";
   const back = document.createElement("a");
   back.className = "workspace-manage-back";
-  back.href = `/s/${encodeURIComponent(session.id)}`;
-  back.textContent = "Back to session";
+  back.href = "/sessions";
+  back.textContent = "← All sessions";
   page.append(back);
   addText(page, "workspace-manage-title", sessionTitle(session) || "Untitled session", "h1");
   addText(
@@ -346,6 +399,14 @@ function renderManageWorkspace(parent, state, session) {
     "p",
   );
   const status = sessionDisplayStatus(session.status, state.busy.get(session.id), session.deleting);
+  const presentation = sessionManagementPresentation(session, status);
+  const lifecycle = document.createElement("section");
+  lifecycle.className = `workspace-manage-state status-${status}`;
+  lifecycle.setAttribute("aria-label", `${presentation.label} workspace`);
+  addText(lifecycle, "workspace-manage-label", presentation.label, "span");
+  addText(lifecycle, "workspace-manage-state-title", presentation.title, "strong");
+  addText(lifecycle, "workspace-manage-state-copy", presentation.copy, "p");
+  page.append(lifecycle);
   const controls = document.createElement("div");
   controls.className = "workspace-manage-controls";
   if (state.renamingId === session.id) appendRenameForm(controls, state, session);
@@ -360,6 +421,31 @@ function renderManageWorkspace(parent, state, session) {
   parent.append(page);
 }
 
+function renderUnavailableWorkspace(parent, sessionId) {
+  parent.replaceChildren();
+  const page = document.createElement("section");
+  page.className = "workspace-manage-page workspace-unavailable-page";
+  const back = document.createElement("a");
+  back.className = "workspace-manage-back";
+  back.href = "/sessions";
+  back.textContent = "← All sessions";
+  page.append(back);
+  addText(page, "workspace-manage-title", "Session unavailable", "h1");
+  addText(
+    page,
+    "workspace-unavailable-copy",
+    "Scotty could not find this session. It may have been deleted, or this link may no longer be valid.",
+    "p",
+  );
+  addText(page, "workspace-unavailable-id", `Session ${sessionId}`, "p");
+  const sessionsLink = document.createElement("a");
+  sessionsLink.className = "button button-primary";
+  sessionsLink.href = "/sessions";
+  sessionsLink.textContent = "View all sessions";
+  page.append(sessionsLink);
+  parent.append(page);
+}
+
 function focusTargetSession(content, state) {
   if (!state.focusTargetSession || !state.targetSessionId) return;
   const target = (state.repositoryNav || content).querySelector(
@@ -368,6 +454,36 @@ function focusTargetSession(content, state) {
   target?.focus({ preventScroll: true });
   target?.scrollIntoView({ block: "center" });
   // Legacy focus contract: state.targetSessionId === session.id
+}
+
+function renderLoadedWorkspace(content, state) {
+  if (state.missingSessionId) {
+    renderUnavailableWorkspace(content, state.missingSessionId);
+    return;
+  }
+  const managedSession = state.targetSessionId
+    ? state.sessions.find((session) => session.id === state.targetSessionId)
+    : undefined;
+  if (state.targetSessionId && !managedSession) {
+    renderUnavailableWorkspace(content, state.targetSessionId);
+    return;
+  }
+  if (state.sessions.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "state state-empty";
+    addText(empty, "", "No cloud workspaces yet", "strong");
+    addText(
+      empty,
+      "state-copy",
+      "Start with a repository and tell Codex what outcome you want.",
+      "p",
+    );
+    empty.append(actionButton(state, "Start a session", "open-composer", "", { primary: true }));
+    content.append(empty);
+    return;
+  }
+  if (managedSession) renderManageWorkspace(content, state, managedSession);
+  else renderSessionsHome(content);
 }
 
 export function renderSessionsView(state) {
@@ -380,6 +496,10 @@ export function renderSessionsView(state) {
       : undefined;
 
   content.setAttribute("aria-busy", fetching ? "true" : "false");
+  document.body.classList.toggle(
+    "mobile-session-open",
+    Boolean(state.targetSessionId || state.missingSessionId),
+  );
   document.body.classList.toggle("has-no-sessions", loaded && sessions.length === 0);
   const repositoryGroups = loaded ? groupSessionsByRepository(sessions) : [];
   summary.textContent = loaded
@@ -407,25 +527,7 @@ export function renderSessionsView(state) {
     return { preservedDraft: false };
   }
 
-  if (sessions.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "state state-empty";
-    addText(empty, "", "No cloud workspaces yet", "strong");
-    addText(
-      empty,
-      "state-copy",
-      "Start with a repository and tell Codex what outcome you want.",
-      "p",
-    );
-    empty.append(actionButton(state, "Start a session", "open-composer", "", { primary: true }));
-    content.append(empty);
-    return { preservedDraft: false };
-  }
-  const managedSession = state.targetSessionId
-    ? sessions.find((session) => session.id === state.targetSessionId)
-    : undefined;
-  if (managedSession) renderManageWorkspace(content, state, managedSession);
-  else renderSessionsHome(content);
+  renderLoadedWorkspace(content, state);
   focusTargetSession(content, state);
   focusRenderedControl([content, ...(repositoryNav ? [repositoryNav] : [])], focusKey);
   return { preservedDraft: false };

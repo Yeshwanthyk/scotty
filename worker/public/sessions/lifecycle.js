@@ -5,6 +5,11 @@ export function focusedSessionId(search) {
   return typeof value === "string" && SESSION_ID.test(value) ? value : undefined;
 }
 
+export function unavailableSessionId(search) {
+  const value = new URLSearchParams(search).get("unavailable");
+  return typeof value === "string" && SESSION_ID.test(value) ? value : undefined;
+}
+
 export function reconcileCleanupProjection(sessions, cleanupIds) {
   const visibleIds = new Set(sessions.map((session) => session.id));
   const pendingIds = cleanupIds.filter((id) => visibleIds.has(id));

@@ -2661,6 +2661,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return { authority, metadata, projection, view };
   });
 
+  private readonly publishActorSessionProjectionBestEffortProgram = Effect.fnUntraced(
+    function* (this: Sandbox) {
+      const state = yield* Effect.result(this.readActorSessionStateProgram());
+      if (Result.isFailure(state)) return;
+      yield* Effect.tryPromise({
+        try: () =>
+          this.env.SESSIONS.put(
+            `${SESSION_KV_PREFIX}${state.success.projection.id}`,
+            JSON.stringify(state.success.projection),
+          ),
+        catch: () => undefined,
+      }).pipe(Effect.ignore);
+    },
+  );
+
   private readonly createScottySessionProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     input: CreateSessionInput,
@@ -4638,7 +4653,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const fence = decodeActorAlarmFence(payload);
     if (Option.isNone(fence)) return;
     return this.#run(
-      Effect.gen(function* () {
+      Effect.gen({ self: this }, function* () {
         const now = yield* Clock.currentTimeMillis;
         const actor = yield* SessionActor;
         yield* actor.handle({
@@ -4652,6 +4667,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           alarmId: fence.value.alarmId,
           expectedDeadlineAt: fence.value.expectedDeadlineAt,
         });
+        yield* this.publishActorSessionProjectionBestEffortProgram();
       }),
     );
   }
@@ -4678,6 +4694,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           }),
         );
         if (Result.isFailure(handled)) return yield* retry;
+        yield* this.publishActorSessionProjectionBestEffortProgram();
 
         const store = yield* ActorStore;
         const after = yield* store.read;
@@ -4703,7 +4720,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const background = Promise.resolve()
       .then(() =>
         this.#run(
-          Effect.gen(function* () {
+          Effect.gen({ self: this }, function* () {
             const store = yield* ActorStore;
             const snapshot = yield* store.read;
             const authority = snapshot.authority;
@@ -4734,6 +4751,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             yield* actor
               .handle(observed.success)
               .pipe(Effect.catchTag("ActorStoreConflict", () => actor.handle(observed.success)));
+            yield* this.publishActorSessionProjectionBestEffortProgram();
           }),
         ),
       )

@@ -40,6 +40,7 @@ export interface SessionListRenderState {
   readonly renameDraft: string;
   readonly preserveFocusedDraft: boolean;
   readonly targetSessionId?: string;
+  readonly missingSessionId?: string;
   readonly focusTargetSession: boolean;
   readonly selectedSessionId?: string;
   readonly searchQuery?: string;
@@ -53,6 +54,15 @@ export function sessionPrimaryTiming(
   status: string,
   pendingAction?: unknown,
 ): string;
+export interface SessionManagementPresentation {
+  readonly label: string;
+  readonly title: string;
+  readonly copy: string;
+}
+export function sessionManagementPresentation(
+  session: Pick<SessionListItem, "status" | "backupId">,
+  status: string,
+): SessionManagementPresentation;
 export function focusKeyNeedsStableDraft(value: unknown): boolean;
 export function sleepingProjectFocusKey(repository: string): string;
 export function sessionsRenderSignature(
