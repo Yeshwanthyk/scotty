@@ -435,6 +435,15 @@ body.scotty-ui {
   box-shadow: none;
 }
 
+.sessions-page .actions .button-primary {
+  background: var(--beam);
+  color: #0a0a0a;
+}
+
+.sessions-page .actions .button-primary:hover {
+  background: #ece3c8;
+}
+
 .sessions-page .status-sleeping .status-line,
 .sessions-page .status-stopping .status-line {
   background: rgb(198 154 93 / 0.11);
