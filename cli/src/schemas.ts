@@ -116,61 +116,65 @@ export const OperationResponseSchema = Schema.Struct({
   backupId: Schema.optionalKey(Schema.Unknown),
   status: Schema.NonEmptyString,
 });
-export const RawSessionFailureSchema = Schema.Struct({
-  code: Schema.optionalKey(Schema.Unknown),
-  message: Schema.optionalKey(Schema.Unknown),
-  recoverable: Schema.optionalKey(Schema.Unknown),
-});
-const SessionSandboxBundleSchema = Schema.Struct({
-  digest: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
-});
-export const SessionResponseSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  title: Schema.NonEmptyString,
-  status: Schema.NonEmptyString,
-  provider: ProviderSchema,
-  repo: Schema.NonEmptyString,
-  defaultBranch: Schema.NonEmptyString,
-  branch: Schema.NonEmptyString,
-  createdAt: Schema.NonEmptyString,
-  updatedAt: Schema.NonEmptyString,
-  hardCapAt: Schema.NonEmptyString,
-  ageSeconds: Schema.Finite,
-  capRemainingSeconds: Schema.Finite,
-  projectedAt: Schema.optionalKey(Schema.Unknown),
-  codexThreadId: Schema.optionalKey(Schema.Unknown),
-  agentState: Schema.optionalKey(Schema.Unknown),
-  lastAgentEventAt: Schema.optionalKey(Schema.Unknown),
-  failure: Schema.optionalKey(Schema.Unknown),
-  sandboxBundle: SessionSandboxBundleSchema,
-});
-export const SessionsResponseSchema = Schema.Array(SessionResponseSchema);
-const StableSessionFailureSchema = Schema.Struct({
+const SessionLifecycleSchema = Schema.Literals(["warm", "sleeping", "failed", "gone"]);
+const SessionActionSchema = Schema.Literals([
+  "create",
+  "checkpoint",
+  "sleep",
+  "resume",
+  "work",
+  "evidence",
+  "hatch",
+  "down",
+  "vaporize",
+]);
+const SessionFailureSchema = Schema.Struct({
   code: Schema.NonEmptyString,
-  message: Schema.NonEmptyString,
   recoverable: Schema.Boolean,
 });
-export const StableSessionSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  title: Schema.NonEmptyString,
-  status: Schema.NonEmptyString,
-  provider: ProviderSchema,
-  repo: Schema.NonEmptyString,
-  defaultBranch: Schema.NonEmptyString,
-  branch: Schema.NonEmptyString,
-  createdAt: Schema.NonEmptyString,
-  updatedAt: Schema.NonEmptyString,
-  hardCapAt: Schema.NonEmptyString,
-  ageSeconds: Schema.Finite,
-  capRemainingSeconds: Schema.Finite,
-  projectedAt: Schema.optionalKey(Schema.NonEmptyString),
-  codexThreadId: Schema.optionalKey(Schema.NonEmptyString),
-  agentState: Schema.optionalKey(Schema.NonEmptyString),
-  lastAgentEventAt: Schema.optionalKey(Schema.NonEmptyString),
-  failure: Schema.optionalKey(StableSessionFailureSchema),
-  sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
+const SessionAuthoritySchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("stable"),
+    lifecycle: SessionLifecycleSchema,
+    failure: Schema.NullOr(SessionFailureSchema),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("transitioning"),
+    action: SessionActionSchema,
+    phase: Schema.NonEmptyString,
+    mode: Schema.Literals(["executing", "reconciling"]),
+    startedAt: Schema.NonEmptyString,
+  }),
+]);
+const SessionCapabilitiesSchema = Schema.Struct({
+  checkpoint: Schema.Boolean,
+  sleep: Schema.Boolean,
+  resume: Schema.Boolean,
+  work: Schema.Boolean,
+  vaporize: Schema.Boolean,
 });
-export type StableSession = typeof StableSessionSchema.Type;
+export const SessionResponseSchema = Schema.Struct({
+  identity: Schema.Struct({ id: Schema.NonEmptyString }),
+  authority: SessionAuthoritySchema,
+  runtime: Schema.Struct({
+    provider: ProviderSchema,
+    readiness: Schema.Literals(["unchecked", "not-applicable"]),
+  }),
+  capabilities: SessionCapabilitiesSchema,
+  display: Schema.Struct({
+    title: Schema.NonEmptyString,
+    repository: Schema.NonEmptyString,
+    branch: Schema.NullOr(Schema.NonEmptyString),
+    defaultBranch: Schema.NullOr(Schema.NonEmptyString),
+  }),
+  times: Schema.Struct({ capRemainingSeconds: Schema.Finite }),
+  projection: Schema.Struct({ projectedAt: Schema.NonEmptyString }),
+});
+export const SessionsResponseSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  sessions: Schema.Array(SessionResponseSchema),
+});
+export type SessionsResponse = typeof SessionsResponseSchema.Type;
 export const InspectResponseSchema = PiConsoleSnapshotSchema;
 export type InspectResponse = typeof InspectResponseSchema.Type;
 const SteerAcceptedResponseSchema = Schema.Struct({
@@ -302,8 +306,9 @@ export const decodeInitJournalJson = (input: unknown): Option.Option<InitJournal
 export const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);
 export const decodeRecoveryGrantResponse = Schema.decodeUnknownOption(RecoveryGrantResponseSchema);
 export const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);
-export const decodeRawSessionFailure = Schema.decodeUnknownOption(RawSessionFailureSchema);
-export const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema);
+export const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema, {
+  onExcessProperty: "error",
+});
 export const decodeInspectResponse = Schema.decodeUnknownOption(InspectResponseSchema, {
   onExcessProperty: "ignore",
 });

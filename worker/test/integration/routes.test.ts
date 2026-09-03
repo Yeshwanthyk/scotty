@@ -17,7 +17,7 @@ const sandbox = vi.hoisted(() => ({
   closeScottyHatch: vi.fn(),
   getScottyHatchOpenRoute: vi.fn(),
   renameScottySession: vi.fn(),
-  snapshotScottySession: vi.fn(),
+  checkpointScottySession: vi.fn(),
   sleepScottySession: vi.fn(),
   resumeScottySession: vi.fn(),
   prepareDownArchive: vi.fn(),
@@ -30,6 +30,37 @@ const sandbox = vi.hoisted(() => ({
   prepareTerminalAccess: vi.fn(),
   restartScottyTerminal: vi.fn(),
 }));
+
+const sessionResponse = (
+  lifecycle: "warm" | "sleeping" = "warm",
+  provider: "cloudflare" | "runner" = "cloudflare",
+) => ({
+  version: 1 as const,
+  session: {
+    identity: { id: "a0b1c2d3e4f5" },
+    authority: { kind: "stable" as const, lifecycle, failure: null },
+    runtime: {
+      provider,
+      readiness: lifecycle === "warm" && provider === "cloudflare" ? "unchecked" : "not-applicable",
+    },
+    capabilities: {
+      checkpoint: lifecycle === "warm",
+      sleep: lifecycle === "warm",
+      resume: lifecycle === "sleeping",
+      work: lifecycle === "warm",
+      vaporize: true,
+    },
+    display: {
+      title: "Test session",
+      repository: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+      defaultBranch: "main",
+    },
+    times: {
+      capRemainingSeconds: 3_600,
+    },
+  },
+});
 
 const sandboxTarget = vi.hoisted((): { current: unknown } => ({
   current: sandbox,
@@ -450,14 +481,7 @@ describe("real Hono boundary", () => {
       steps: [],
       frameCount: 0,
     });
-    sandbox.getScottySession.mockResolvedValue({
-      id: "a0b1c2d3e4f5",
-      title: "Test session",
-      status: "warm",
-      provider: "cloudflare",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+    sandbox.getScottySession.mockResolvedValue(sessionResponse());
     sandbox.listScottyChanges.mockResolvedValue({ files: [], truncated: false });
     sandbox.getScottyChangedFilePatch.mockResolvedValue({
       path: "src/app.ts",
@@ -816,6 +840,56 @@ describe("real Hono boundary", () => {
         message: "Authentication required",
         hint: "Open a fresh pairing or recovery link, or configure the CLI root token.",
       },
+    });
+  });
+
+  it("returns the canonical session-list envelope instead of the KV projection shape", async () => {
+    const record = makeSessionRecord({
+      id: "a0b1c2d3e4f5",
+      title: "Canonical list",
+      status: "sleeping",
+      backup: {
+        current: { id: "backup-1", dir: "/workspace/a0b1c2d3e4f5" },
+      },
+    });
+    const projectedAt = "2026-08-30T12:00:00.000Z";
+    const sessions = new Map<string, unknown>([
+      [`session:${record.id}`, JSON.stringify(toProjection(record, new Date(projectedAt)))],
+    ]);
+
+    const response = await app.request(
+      "/api/sessions",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { ...env(), SESSIONS: emptySessionsNamespace(sessions) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      version: 1,
+      sessions: [
+        {
+          identity: { id: record.id },
+          authority: { kind: "stable", lifecycle: "sleeping", failure: null },
+          runtime: { provider: "cloudflare", readiness: "not-applicable" },
+          capabilities: {
+            checkpoint: false,
+            sleep: false,
+            resume: true,
+            work: false,
+            vaporize: true,
+          },
+          display: {
+            title: record.title,
+            repository: record.repo,
+            branch: record.branch,
+            defaultBranch: record.defaultBranch,
+          },
+          times: {
+            capRemainingSeconds: expect.any(Number),
+          },
+          projection: { projectedAt },
+        },
+      ],
     });
   });
 
@@ -1860,12 +1934,12 @@ describe("real Hono boundary", () => {
         method: "GET",
         path: "/api/sessions/a0b1c2d3e4f5",
         mock: sandbox.getScottySession,
-        output: { id: "a0b1c2d3e4f5", status: "warm", ageSeconds: 1 },
+        output: sessionResponse(),
       },
       {
         method: "POST",
-        path: "/api/sessions/a0b1c2d3e4f5/snapshot",
-        mock: sandbox.snapshotScottySession,
+        path: "/api/sessions/a0b1c2d3e4f5/checkpoint",
+        mock: sandbox.checkpointScottySession,
         output: { id: "a0b1c2d3e4f5", status: "warm", backupId: "backup-1" },
       },
       {
@@ -1934,6 +2008,151 @@ describe("real Hono boundary", () => {
     expect(sandbox.fetch).toHaveBeenCalledOnce();
     expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
     expect(sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it("serves a sessions:read client the strict canonical conversation snapshot", async () => {
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: { ...REGISTERED_CLIENT, scopes: ["sessions:read"] },
+        renewed: false,
+      },
+    });
+    const snapshot = {
+      epoch: "epoch-1",
+      baseSequence: 4,
+      sequence: 4,
+      sessionRevision: 7,
+      state: { isStreaming: false, privateState: "must-not-leak" },
+      messages: [
+        {
+          id: "user-1",
+          role: "user",
+          content: [{ type: "text", text: "Inspect the worktree" }],
+        },
+        {
+          id: "assistant-1",
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private reasoning" },
+            { type: "toolCall", id: "tool-1", name: "read", arguments: { path: "README.md" } },
+            { type: "text", text: "The worktree is ready." },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "tool-1",
+          toolName: "read",
+          content: { status: "ok", token: "ghp_secret" },
+        },
+      ],
+      overlapEvents: [],
+      activeTools: [],
+      queue: { steer: [], followUp: [] },
+      pendingUi: [],
+      pendingUiAuthority: {
+        status: "partial",
+        reason: "pi_0_83_signal_cancellation_unobservable",
+      },
+      extensionSurface: { statuses: {}, widgets: [], title: "private extension" },
+      capabilities: { models: [], thinkingLevels: [], commands: [] },
+      truncated: { messages: false, values: false },
+    };
+    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe("/_scotty/pi-console/snapshot");
+      expect(request.method).toBe("GET");
+      expect(request.headers.get("accept")).toBe("application/json");
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      return Response.json(snapshot);
+    });
+
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/conversation",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const body = await response.json();
+    expect(body).toEqual({
+      version: 1,
+      transport: {
+        epoch: "epoch-1",
+        baseSequence: 4,
+        sequence: 4,
+        sessionRevision: 7,
+      },
+      turns: [
+        {
+          id: "user-1",
+          state: "completed",
+          user: "Inspect the worktree",
+          assistant: "The worktree is ready.",
+          activitySummary: "1 action",
+          tools: [
+            {
+              id: "tool-1",
+              state: "completed",
+              label: "Reading project",
+              invocation: 'read({"path":"README.md"})',
+              output: '{"status":"ok","token":"[credential]"}',
+            },
+          ],
+        },
+      ],
+      truncated: { turns: false, values: false },
+    });
+    const encoded = JSON.stringify(body);
+    expect(encoded).not.toContain("privateState");
+    expect(encoded).not.toContain("private reasoning");
+    expect(encoded).not.toContain("extensionSurface");
+    expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it("returns typed wrong_state for stopped conversation content without waking the runtime", async () => {
+    sandbox.fetch.mockResolvedValueOnce(
+      Response.json(
+        { status: "unavailable", reason: "session_not_warm", retryable: false },
+        { status: 409 },
+      ),
+    );
+
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/conversation",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "wrong_state",
+        message: "Conversation history is unavailable while the session is not warm",
+        hint: "Resume the session before opening live conversation content.",
+      },
+    });
+    expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it("requires sessions:read before attempting the canonical conversation snapshot", async () => {
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: { ...REGISTERED_CLIENT, scopes: [] },
+        renewed: false,
+      },
+    });
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/conversation",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(response.status).toBe(401);
+    expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
   it("submits authenticated steer through a fresh passive snapshot without forwarding credentials", async () => {
@@ -2316,7 +2535,7 @@ describe("real Hono boundary", () => {
     expect(harness.events).not.toContain(`projection:delete:stats:workspace-created:${SESSION_ID}`);
   });
 
-  it("lists only fully decoded KV projections and preserves valid optional fields", async () => {
+  it("lists only fully decoded KV projections through the canonical public contract", async () => {
     const values = new Map<string, unknown>([
       [`session:${projection.id}`, projection],
       ["session:malformed", { ...projection, id: "malformed", backupId: 123 }],
@@ -2336,15 +2555,23 @@ describe("real Hono boundary", () => {
     );
     expect(response.status).toBe(200);
     const body = await response.json();
-    if (!Array.isArray(body)) throw new TypeError("Expected session list array");
-    expect(body).toHaveLength(1);
-    expect(body[0]).toMatchObject({
-      id: projection.id,
-      backupId: projection.backupId,
-      codexThreadId: projection.codexThreadId,
-      failure: projection.failure,
+    expect(body).toMatchObject({
+      version: 1,
+      sessions: [
+        {
+          identity: { id: projection.id },
+          authority: {
+            kind: "stable",
+            lifecycle: "failed",
+            failure: { code: projection.failure.code, recoverable: true },
+          },
+          projection: { projectedAt: projection.projectedAt },
+        },
+      ],
     });
-    expect(body[0]).not.toHaveProperty("secret");
+    expect(body).not.toHaveProperty("sessions.0.backupId");
+    expect(body).not.toHaveProperty("sessions.0.codexThreadId");
+    expect(body).not.toHaveProperty("sessions.0.secret");
   });
 
   it("serves authenticated creation stats joined to current session statuses", async () => {
@@ -3136,7 +3363,7 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("content-length")).toBeNull();
     expect(response.headers.get("etag")).toBeNull();
     expect(sandbox.fetch).not.toHaveBeenCalled();
-    expect(assetPaths[0]).toBe("/session/index.html");
+    expect(assetPaths[0]).toBe("/app/_shell.html");
 
     const sessions = await app.request(
       "/sessions",
@@ -3146,6 +3373,14 @@ describe("real Hono boundary", () => {
     expect(sessions.status).toBe(200);
     expect(sessions.headers.get("cache-control")).toBe("no-store");
     expect(sessions.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+
+    const createSession = await app.request(
+      "/sessions/create",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(createSession.status).toBe(200);
+    expect(await createSession.text()).toContain("<title>Scotty</title>");
 
     const stats = await app.request(
       "/stats",
@@ -3450,14 +3685,8 @@ describe("real Hono boundary", () => {
     expect((await app.request(path, { headers }, testEnv)).status).toBe(409);
   });
 
-  it("returns non-warm Cloudflare session pages to focused management for explicit resume", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "sleeping",
-      provider: "cloudflare",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+  it("serves the application shell for non-warm sessions so they can be resumed", async () => {
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("sleeping"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       {
@@ -3466,8 +3695,9 @@ describe("real Hono boundary", () => {
       },
       env(),
     );
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("http://localhost/sessions?focus=a0b1c2d3e4f5");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("<title>Scotty</title>");
+    expect(sandbox.getScottySession).not.toHaveBeenCalled();
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
@@ -3530,13 +3760,7 @@ describe("real Hono boundary", () => {
   });
 
   it("rejects Cloudflare terminal access when the session is sleeping", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "sleeping",
-      provider: "cloudflare",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("sleeping"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5/terminal",
       {
@@ -3714,11 +3938,7 @@ describe("real Hono boundary", () => {
   });
 
   it("prepares a missing Pi runtime only through an explicit authenticated mutation", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      provider: "cloudflare",
-      status: "warm",
-    });
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse());
     sandbox.preparePiSessionAccess.mockResolvedValueOnce(undefined);
 
     const response = await app.request(
@@ -3822,13 +4042,7 @@ describe("real Hono boundary", () => {
   });
 
   it("does not expose the Cloudflare terminal on runner sessions", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("warm", "runner"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5/terminal",
       {
@@ -3848,26 +4062,21 @@ describe("real Hono boundary", () => {
     expect(proxyTerminal).not.toHaveBeenCalled();
   });
 
-  it("redirects runner session roots to the session list", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+  it("serves the same application shell for runner session roots", async () => {
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("warm", "runner"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("http://localhost/sessions?focus=a0b1c2d3e4f5");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("<title>Scotty</title>");
+    expect(sandbox.getScottySession).not.toHaveBeenCalled();
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
-  it("redirects missing session page routes to an HTML recovery surface", async () => {
+  it("serves the application shell before the selected actor is read", async () => {
     sandbox.getScottySession.mockRejectedValueOnce(
       new ScottyError("not_found", "Session unknown was not found", {
         httpStatus: 404,
@@ -3881,10 +4090,9 @@ describe("real Hono boundary", () => {
       env(),
     );
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe(
-      "http://localhost/sessions?unavailable=a0b1c2d3e4f5",
-    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("<title>Scotty</title>");
+    expect(sandbox.getScottySession).not.toHaveBeenCalled();
   });
 
   it("returns not found for session application subpaths", async () => {

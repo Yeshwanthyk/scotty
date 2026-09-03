@@ -113,7 +113,9 @@ import {
   type ScottySandboxConfigStub,
 } from "./sandbox/config-object";
 import { inspectPassiveSession, steerPassiveSession } from "./session/passive";
+import { inspectCanonicalConversation } from "./session/conversation";
 import { Sandbox as ScottySandbox } from "./session/object";
+import { uiSessionListResponseFromProjections } from "./ui/session-view";
 import {
   CREDENTIAL_REGISTRY_OBJECT_NAME,
   ScottyCredentialRegistry,
@@ -677,12 +679,18 @@ app.get("/api/sessions", async (c) => {
       Effect.result,
     ),
   );
+  const sessions = Result.match(result, {
+    onFailure: (error) => {
+      throw error;
+    },
+    onSuccess: (value) => value,
+  });
   return c.json(
-    Result.match(result, {
+    Result.match(uiSessionListResponseFromProjections(sessions), {
       onFailure: (error) => {
         throw error;
       },
-      onSuccess: (sessions) => sessions,
+      onSuccess: (response) => response,
     }),
   );
 });
@@ -779,6 +787,12 @@ app.get("/api/sessions/:id/inspect", async (c) => {
   return inspectPassiveSession(sessionSandbox(c.env, id));
 });
 
+app.get("/api/sessions/:id/conversation", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const id = parseSessionId(c.req.param("id"));
+  return inspectCanonicalConversation(sessionSandbox(c.env, id));
+});
+
 app.post("/api/sessions/:id/steer", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
@@ -799,10 +813,10 @@ app.patch("/api/sessions/:id", async (c) => {
   return c.json(await sessionSandbox(c.env, id).renameScottySession(title));
 });
 
-app.post("/api/sessions/:id/snapshot", async (c) => {
+app.post("/api/sessions/:id/checkpoint", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
-  return c.json(await sessionSandbox(c.env, id).snapshotScottySession());
+  return c.json(await sessionSandbox(c.env, id).checkpointScottySession());
 });
 
 app.post("/api/sessions/:id/sleep", async (c) => {
@@ -1052,11 +1066,11 @@ app.all(`/s/:id/${PI_CONSOLE_PUBLIC_PATH_SEGMENT}/:action`, async (c) => {
 });
 
 app.all("/s/:id", async (c) => {
-  const id = parseSessionId(c.req.param("id"));
+  parseSessionId(c.req.param("id"));
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return serveScottySessionPage(c.env, c.req.raw, id);
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html", true);
 });
 
 app.all("/s/:id/*", async (c) => {
@@ -1074,7 +1088,17 @@ app.get("/sessions", async (c) => {
   if (principal.kind !== "client" || principal.source !== "cookie")
     await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return secureAsset(c.env, c.req.raw, "/sessions/index.html");
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html");
+});
+
+app.get("/sessions/*", async (c) => {
+  rejectRootQuery(c.req.raw);
+  const principal = await authenticateRequest(c.req.raw, c.env);
+  if (principal === undefined) return authAsset(c.env, c.req.raw, "/auth/locked.html");
+  if (principal.kind !== "client" || principal.source !== "cookie")
+    await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html");
 });
 
 app.get("/stats", async (c) => {
@@ -1422,40 +1446,6 @@ function sessionSandbox(env: Bindings, id: string): ScottySandbox {
   });
 }
 
-async function serveScottySessionPage(
-  env: Bindings,
-  request: Request,
-  sessionId: string,
-): Promise<Response> {
-  const sessionResult = await sessionSandbox(env, sessionId)
-    .getScottySession()
-    .then(Result.succeed, Result.fail);
-  if (Result.isFailure(sessionResult)) {
-    const error = normalizeError(sessionResult.failure);
-    if (error.code === "not_found")
-      return Response.redirect(unavailableSessionUrl(request, sessionId), 302);
-    throw error;
-  }
-  const session = sessionResult.success;
-  if (session.status !== "warm")
-    return Response.redirect(focusedSessionUrl(request, sessionId), 302);
-  if (session.provider === "runner")
-    return Response.redirect(focusedSessionUrl(request, sessionId), 302);
-  return secureAsset(env, request, "/session/index.html", true);
-}
-
-function focusedSessionUrl(request: Request, sessionId: string): string {
-  const url = new URL("/sessions", request.url);
-  url.searchParams.set("focus", sessionId);
-  return url.toString();
-}
-
-function unavailableSessionUrl(request: Request, sessionId: string): string {
-  const url = new URL("/sessions", request.url);
-  url.searchParams.set("unavailable", sessionId);
-  return url.toString();
-}
-
 async function serveScottySessionSubpath(
   env: Bindings,
   _request: Request,
@@ -1473,16 +1463,18 @@ async function serveScottySessionSubpath(
 
 async function assertCloudflareTerminalAccess(sandbox: ScottySandbox): Promise<void> {
   const session = await sandbox.getScottySession();
-  if (session.provider === "runner")
+  if (session.session.runtime.provider === "runner")
     throw new ScottyError("not_found", "Terminal route not found", {
       httpStatus: 404,
       exitCode: 3,
     });
-  if (session.status !== "warm")
+  if (session.session.authority.kind === "transitioning")
+    throw conflict(`Session is already running ${session.session.authority.action}`);
+  if (session.session.authority.lifecycle !== "warm")
     throw wrongState(
-      session.status,
+      session.session.authority.lifecycle,
       "access",
-      session.status === "sleeping"
+      session.session.authority.lifecycle === "sleeping"
         ? "Resume the session from Home before opening the terminal"
         : undefined,
     );
@@ -1491,16 +1483,18 @@ async function assertCloudflareTerminalAccess(sandbox: ScottySandbox): Promise<v
 
 async function assertCloudflarePiAccess(sandbox: ScottySandbox): Promise<void> {
   const session = await sandbox.getScottySession();
-  if (session.provider === "runner")
+  if (session.session.runtime.provider === "runner")
     throw new ScottyError("not_found", "Pi session route not found", {
       httpStatus: 404,
       exitCode: 3,
     });
-  if (session.status !== "warm")
+  if (session.session.authority.kind === "transitioning")
+    throw conflict(`Session is already running ${session.session.authority.action}`);
+  if (session.session.authority.lifecycle !== "warm")
     throw wrongState(
-      session.status,
+      session.session.authority.lifecycle,
       "access",
-      session.status === "sleeping"
+      session.session.authority.lifecycle === "sleeping"
         ? "Resume the session from Home before opening the worklog"
         : undefined,
     );

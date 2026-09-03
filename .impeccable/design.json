@@ -1,0 +1,12 @@
+{
+  "product": "Scotty",
+  "direction": "Live Workshop",
+  "personality": ["calm", "precise", "responsive"],
+  "surfaceModel": "tonal-layers",
+  "controls": "quiet-and-immediate",
+  "antiReference": "generic-saas-dashboard",
+  "source": {
+    "product": "PRODUCT.md",
+    "design": "DESIGN.md"
+  }
+}

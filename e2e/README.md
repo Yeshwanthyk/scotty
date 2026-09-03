@@ -106,7 +106,7 @@ provider values are not Worker environment variables. The local-live run exercis
 Registry sync and grant path against local Durable Objects. The crypto/store unit tests prove the
 Registry at-rest encryption boundary. The deployed canary does not expose an internal credential
 inspection endpoint or inspect deployed Durable Object, container, KV, or R2 storage; it instead
-checks known disposable values only across externally observed CLI, HTTP, terminal, snapshot,
+checks known disposable values only across externally observed CLI, HTTP, terminal, checkpoint,
 archive, and repository-operation artifacts.
 
 Use a disposable clone of the repository. The canary pushes one random `scotty/<id>` branch and
@@ -129,7 +129,7 @@ npm run test:e2e:deployed
 ```
 
 The test performs the real lifecycle sequence
-`beam → root recovery on the disposable stage → Pi worklog/RPC boundary → snapshot → scheduled
+`beam → root recovery on the disposable stage → Pi worklog/RPC boundary → checkpoint → scheduled
 hard-cap sleep → resume → Worker /down → vaporize`, then runs isolated local and peer inspect/steer
 proofs.
 The root-authenticated local CLI first steers a same-repository target and verifies its exact

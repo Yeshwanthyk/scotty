@@ -232,6 +232,7 @@ import {
   type SessionAuthority,
 } from "../session-actor/authority";
 import { sessionProjectionFromActor, sessionViewFromActor } from "../session-actor/public-view";
+import { uiSessionResponseFromActor, type UiSessionResponse } from "../ui/session-view";
 import { SESSION_SCHEDULE_CALLBACKS, sessionAllowsRuntimeAccess } from "./lifecycle";
 import {
   errorName,
@@ -3069,9 +3070,37 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly getScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const state = yield* this.readActorSessionStateProgram();
-    yield* this.publishSessionProjectionBestEffortProgram(state.projection);
-    return state.view;
+    const store = yield* ActorStore;
+    const metadataStore = yield* SessionActorMetadataStore;
+    const snapshot = yield* store.read.pipe(
+      Effect.mapError((failure) =>
+        this.upstreamError("Session actor authority is unavailable", failure),
+      ),
+    );
+    const authority = snapshot.authority;
+    if (authority === undefined) return yield* notFound("unknown");
+    const metadata = yield* metadataStore
+      .read(authority)
+      .pipe(
+        Effect.mapError((failure) =>
+          this.upstreamError(
+            "Session actor metadata is unavailable",
+            failure,
+            authority.session.id,
+          ),
+        ),
+      );
+    const gone =
+      AuthorityStateSchema.guards.Stable(authority.state) &&
+      StableStateSchema.guards.Gone(authority.state.stable);
+    if (metadata === undefined && !gone)
+      return yield* new ScottyError("internal", "Session actor metadata is unavailable", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    const now = yield* Clock.currentTimeMillis;
+    yield* this.publishActorSessionProjectionBestEffortProgram();
+    return uiSessionResponseFromActor(authority, metadata, now);
   });
 
   private readonly getScottyActorDiagnosticsProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -3476,7 +3505,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return promise;
   }
 
-  async getScottySession(): Promise<SessionView> {
+  async getScottySession(): Promise<UiSessionResponse> {
     return this.#run(this.getScottySessionProgram());
   }
 
@@ -3958,7 +3987,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         .then(Result.succeed, () => Result.fail(undefined));
       if (Result.isFailure(targetSession))
         return scottyErrorResponse(notFound(decoded.value.targetId));
-      if (targetSession.success.repo !== sourceRepository)
+      if (targetSession.success.session.display.repository !== sourceRepository)
         return scottyErrorResponse(
           new ScottyError("auth", "Container session access denied", {
             httpStatus: 401,
@@ -4647,7 +4676,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return plaintext;
   });
 
-  async snapshotScottySession(): Promise<SessionView> {
+  async checkpointScottySession(): Promise<SessionView> {
     return this.#run(this.actorLifecycleProgram("Checkpoint"));
   }
 

@@ -150,6 +150,8 @@ const managedConfig = () => ({
   token: "root-secret",
 });
 
+const emptySessionList = () => ({ version: 1, sessions: [] });
+
 function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
   let revision = 0;
   let activeDigest: string | null = null;
@@ -575,18 +577,26 @@ describe("configuration and transport", () => {
       }
       if (url.pathname === "/api/sessions/abcdef012345" && request.method === "GET") {
         return Response.json({
-          id: "abcdef012345",
-          title: "Fix build",
-          status: "warm",
-          provider: "cloudflare",
-          repo: "owner/project",
-          defaultBranch: "main",
-          branch: "scotty/abcdef012345",
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-          hardCapAt: "2026-01-02T00:00:00.000Z",
-          ageSeconds: 0,
-          capRemainingSeconds: 86_400,
+          version: 1,
+          session: {
+            identity: { id: "abcdef012345" },
+            authority: { kind: "stable", lifecycle: "warm", failure: null },
+            runtime: { provider: "cloudflare", readiness: "unchecked" },
+            capabilities: {
+              checkpoint: true,
+              sleep: true,
+              resume: false,
+              work: true,
+              vaporize: true,
+            },
+            display: {
+              title: "Fix build",
+              repository: "owner/project",
+              branch: "scotty/abcdef012345",
+              defaultBranch: "main",
+            },
+            times: { capRemainingSeconds: 86_400 },
+          },
         });
       }
       return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
@@ -618,7 +628,7 @@ describe("configuration and transport", () => {
       fetch: async (input, init) => {
         const request = new Request(input, init);
         seen.push(`${request.url} ${request.headers.get("authorization")}`);
-        return Response.json([]);
+        return Response.json(emptySessionList());
       },
     });
     expect(await main(["list"], h.deps)).toBe(EXIT.OK);
@@ -629,7 +639,7 @@ describe("configuration and transport", () => {
       fetch: async (input, init) => {
         const request = new Request(input, init);
         seen.push(`${request.url} ${request.headers.get("authorization")}`);
-        return Response.json([]);
+        return Response.json(emptySessionList());
       },
     });
     expect(await main(["list"], fallback.deps)).toBe(EXIT.OK);
@@ -669,9 +679,9 @@ describe("configuration and transport", () => {
   test("complete overrides bypass a malformed config for stateless agents", async () => {
     const home = await temporaryDirectory();
     await writeFile(managedInstallationPath(home), "not-json", { mode: 0o600 });
-    const h = harness({ home, fetch: async () => Response.json([]) });
+    const h = harness({ home, fetch: async () => Response.json(emptySessionList()) });
     expect(await main(["list", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
-    expect(h.json()).toEqual([]);
+    expect(h.json()).toEqual(emptySessionList());
   });
 
   test("config fields decode independently and unknown fields are ignored", async () => {
@@ -691,7 +701,7 @@ describe("configuration and transport", () => {
       env: { SCOTTY_HOST: "https://env.example" },
       fetch: async (input, init) => {
         request = new Request(input, init);
-        return Response.json([]);
+        return Response.json(emptySessionList());
       },
     });
 
@@ -2904,7 +2914,7 @@ describe("configuration and transport", () => {
       fetch: async (input, init) => {
         const request = new Request(input, init);
         authorization = request.headers.get("authorization");
-        return Response.json([]);
+        return Response.json(emptySessionList());
       },
     });
     expect(await main(["doctor"], h.deps)).toBe(EXIT.OK);
@@ -2919,6 +2929,14 @@ describe("configuration and transport", () => {
       workerName: "scotty-home-worker",
     });
     expect(h.stdout.join("")).not.toContain("root-secret");
+
+    const legacy = harness({
+      home,
+      env: {},
+      fetch: async () => Response.json([]),
+    });
+    expect(await main(["doctor"], legacy.deps)).toBe(EXIT.GENERIC);
+    expect(legacy.error().error.message).toBe("Server response is not a valid session list");
   });
 
   test("network and malformed responses fail without leaking implementation errors", async () => {
@@ -2959,95 +2977,56 @@ describe("configuration and transport", () => {
     });
   });
 
-  test("list exposes only the stable public projection", async () => {
+  test("list prints the canonical session envelope unchanged", async () => {
     const session = {
-      id: "s1",
-      title: "Fix build",
-      status: "warm",
-      provider: "cloudflare",
-      repo: "owner/project",
-      defaultBranch: "dev",
-      branch: "scotty/s1",
-      createdAt: "2026-07-20T12:00:00Z",
-      updatedAt: "2026-07-20T12:01:00Z",
-      hardCapAt: "2026-07-20T16:00:00Z",
-      projectedAt: "2026-07-20T12:01:01Z",
-      agentState: "working",
-      lastAgentEventAt: "2026-07-20T12:00:59Z",
-      sandboxBundle: { digest: null },
-      ageSeconds: 60,
-      capRemainingSeconds: 14340,
-      operation: { kind: "snapshot", nonce: "internal" },
-      backup: { current: "must-not-leak" },
-      webToken: "must-not-leak",
-    };
-    const h = harness({ fetch: async () => Response.json([session]) });
-    expect(await main(["list", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
-    expect(h.json()).toEqual([
-      {
-        id: "s1",
-        title: "Fix build",
-        status: "warm",
-        provider: "cloudflare",
-        repo: "owner/project",
-        defaultBranch: "dev",
-        branch: "scotty/s1",
-        createdAt: "2026-07-20T12:00:00Z",
-        updatedAt: "2026-07-20T12:01:00Z",
-        hardCapAt: "2026-07-20T16:00:00Z",
-        ageSeconds: 60,
-        capRemainingSeconds: 14340,
-        projectedAt: "2026-07-20T12:01:01Z",
-        agentState: "working",
-        lastAgentEventAt: "2026-07-20T12:00:59Z",
-        sandboxBundle: { digest: null },
+      identity: { id: "session-1" },
+      authority: { kind: "stable", lifecycle: "warm", failure: null },
+      runtime: { provider: "cloudflare", readiness: "unchecked" },
+      capabilities: {
+        checkpoint: true,
+        sleep: true,
+        resume: false,
+        work: true,
+        vaporize: true,
       },
-    ]);
-    expect(h.stdout.join("")).not.toContain("must-not-leak");
+      display: {
+        title: "Fix build",
+        repository: "owner/project",
+        branch: "scotty/session-1",
+        defaultBranch: "dev",
+      },
+      times: { capRemainingSeconds: 14_340 },
+      projection: { projectedAt: "2026-07-20T12:01:01Z" },
+    };
+    const envelope = { version: 1, sessions: [session] };
+    const h = harness({ fetch: async () => Response.json(envelope) });
+    expect(await main(["list", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
+    expect(h.json()).toEqual(envelope);
+
+    const human = harness({
+      stdoutIsTTY: true,
+      fetch: async () => Response.json(envelope),
+    });
+    expect(await main(["list", "--host", "https://worker.example"], human.deps)).toBe(EXIT.OK);
+    expect(human.stdout.join("")).toContain("session-1");
+    expect(human.stdout.join("")).toContain("owner/project");
+    expect(human.stdout.join("")).toContain("warm");
   });
 
-  test("list omits invalid optionals and applies failure defaults field by field", async () => {
-    const session = {
-      id: "s1",
-      title: "Fix build",
-      status: "failed",
-      provider: "cloudflare",
-      repo: "owner/project",
-      defaultBranch: "dev",
-      branch: "scotty/s1",
-      createdAt: "2026-07-20T12:00:00Z",
-      updatedAt: "2026-07-20T12:01:00Z",
-      hardCapAt: "2026-07-20T16:00:00Z",
-      ageSeconds: 60,
-      capRemainingSeconds: 14340,
-      projectedAt: null,
-      codexThreadId: 42,
-      failure: { code: 9, message: null, recoverable: "yes", secret: "must-not-leak" },
-      sandboxBundle: { digest: null },
-      secret: "must-not-leak",
-    };
-    const h = harness({ fetch: async () => Response.json([session]) });
+  test("list rejects legacy arrays and excess canonical fields", async () => {
+    const legacy = harness({ fetch: async () => Response.json([]) });
+    expect(await main(["list", "--host", "https://worker.example"], legacy.deps)).toBe(
+      EXIT.GENERIC,
+    );
+    expect(legacy.error().error.message).toBe("Server response is not a valid session list");
 
-    expect(await main(["list", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
-    expect(h.json()).toEqual([
-      {
-        id: "s1",
-        title: "Fix build",
-        status: "failed",
-        provider: "cloudflare",
-        repo: "owner/project",
-        defaultBranch: "dev",
-        branch: "scotty/s1",
-        createdAt: "2026-07-20T12:00:00Z",
-        updatedAt: "2026-07-20T12:01:00Z",
-        hardCapAt: "2026-07-20T16:00:00Z",
-        ageSeconds: 60,
-        capRemainingSeconds: 14340,
-        failure: { code: "unknown", message: "Session failed", recoverable: false },
-        sandboxBundle: { digest: null },
-      },
-    ]);
-    expect(h.stdout.join("")).not.toContain("must-not-leak");
+    const excess = harness({
+      fetch: async () => Response.json({ version: 1, sessions: [], secret: "must-not-leak" }),
+    });
+    expect(await main(["list", "--host", "https://worker.example"], excess.deps)).toBe(
+      EXIT.GENERIC,
+    );
+    expect(excess.stderr.join("")).not.toContain("must-not-leak");
   });
 });
 
@@ -3641,10 +3620,10 @@ describe("commands and schemas", () => {
     expect(calls).toBe(0);
   });
 
-  test("snapshot and resume emit minimal stable schemas", async () => {
+  test("checkpoint and resume emit minimal stable schemas", async () => {
     for (const [args, reply, expected] of [
       [
-        ["snapshot", "s1"],
+        ["checkpoint", "s1"],
         { id: "s1", status: "warm", backupId: "backup-1", ignored: true },
         { id: "s1", status: "warm", backupId: "backup-1" },
       ],
@@ -3674,7 +3653,7 @@ describe("commands and schemas", () => {
   test("operation optionals omit nulls and missing response IDs use the requested ID", async () => {
     for (const [args, reply, expected] of [
       [
-        ["snapshot", "requested"],
+        ["checkpoint", "requested"],
         { status: "warm", id: null, backupId: null, url: null, branch: null, ignored: true },
         { id: "requested", status: "warm" },
       ],
@@ -3690,8 +3669,27 @@ describe("commands and schemas", () => {
     }
   });
 
+  test("checkpoint uses the canonical CLI name and Worker transport route", async () => {
+    let request: Request | undefined;
+    const h = harness({
+      stdoutIsTTY: true,
+      fetch: async (input, init) => {
+        request = new Request(input, init);
+        return Response.json({ id: "s1", status: "warm" });
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(request?.method).toBe("POST");
+    expect(new URL(request?.url ?? "https://invalid.example").pathname).toBe(
+      "/api/sessions/s1/checkpoint",
+    );
+    expect(h.stdout.join(""), "human lifecycle output").toBe("Checkpoint s1: warm\n");
+  });
+
   test("removed commands and top-level lifecycle aliases fail as unknown commands", async () => {
-    for (const command of ["pr", "publish", "up", "down", "ls", "skills", "tui"]) {
+    for (const command of ["pr", "publish", "up", "down", "ls", "skills", "tui", "snapshot"]) {
       const h = harness();
       expect(await main([command, "s1"], h.deps)).toBe(EXIT.USAGE);
       expect(h.error().error.code).toBe("bad_usage");

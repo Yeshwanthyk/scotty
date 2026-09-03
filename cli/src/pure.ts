@@ -2,16 +2,13 @@ import { Option, Result } from "effect";
 import { CliError, EXIT, type ExitCode, type Writer } from "./core";
 import {
   decodeNonEmptyString,
-  decodeRawSessionFailure,
   decodeRecoveryGrantResponse,
-  decodeString,
   decodeUpResponse,
   type AttachOutput,
   type BeamUpOutput,
   type InspectResponse,
   type SessionResponse,
   type SessionOperationOutput,
-  type StableSession,
   type SteerResponse,
   type VaporizeOutput,
 } from "./schemas";
@@ -178,48 +175,6 @@ export function stableUp(
   });
 }
 
-export function stableSession(record: SessionResponse): StableSession {
-  const projectedAt = optionalString(record.projectedAt);
-  const codexThreadId = optionalString(record.codexThreadId);
-  const agentState = optionalString(record.agentState);
-  const lastAgentEventAt = optionalString(record.lastAgentEventAt);
-  const failure = decodeRawSessionFailure(record.failure);
-  const sandboxBundle =
-    record.sandboxBundle === undefined
-      ? undefined
-      : {
-          digest: record.sandboxBundle.digest,
-        };
-  return {
-    id: record.id,
-    title: record.title,
-    status: record.status,
-    provider: record.provider,
-    repo: record.repo,
-    defaultBranch: record.defaultBranch,
-    branch: record.branch,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    hardCapAt: record.hardCapAt,
-    ageSeconds: record.ageSeconds,
-    capRemainingSeconds: record.capRemainingSeconds,
-    ...(projectedAt ? { projectedAt } : {}),
-    ...(codexThreadId ? { codexThreadId } : {}),
-    ...(agentState ? { agentState } : {}),
-    ...(lastAgentEventAt ? { lastAgentEventAt } : {}),
-    ...(Option.isSome(failure)
-      ? {
-          failure: {
-            code: Option.getOrUndefined(decodeString(failure.value.code)) ?? "unknown",
-            message: Option.getOrUndefined(decodeString(failure.value.message)) ?? "Session failed",
-            recoverable: failure.value.recoverable === true,
-          },
-        }
-      : {}),
-    ...(sandboxBundle ? { sandboxBundle } : {}),
-  };
-}
-
 export function humanInspect(id: string, snapshot: InspectResponse): string {
   const queued = snapshot.queue.steer.length + snapshot.queue.followUp.length;
   const truncated = snapshot.truncated.messages || snapshot.truncated.values ? "yes" : "no";
@@ -334,20 +289,14 @@ export function humanSteer(result: SteerResponse): string {
   return `Steer outcome is ambiguous for ${result.id}: ${result.reason}; do not retry automatically.\n`;
 }
 
-export function humanSession(record: StableSession): string {
-  const id = String(record.id ?? "-");
-  const title = String(record.title ?? "-");
-  const status = String(record.status ?? "-");
-  const provider = String(record.provider ?? "-");
-  const repo = String(record.repo ?? "-");
-  const branch = String(record.branch ?? "-");
-  const age =
-    typeof record.ageSeconds === "number" ? `${Math.max(0, Math.floor(record.ageSeconds))}s` : "-";
-  const cap =
-    typeof record.capRemainingSeconds === "number"
-      ? `${Math.max(0, Math.floor(record.capRemainingSeconds))}s`
-      : "-";
-  return `${id.padEnd(14)} ${title.padEnd(24)} ${status.padEnd(10)} ${provider.padEnd(12)} ${repo.padEnd(28)} ${branch.padEnd(24)} age ${age.padStart(7)} cap ${cap.padStart(7)}`;
+export function humanSession(record: SessionResponse): string {
+  const status =
+    record.authority.kind === "stable"
+      ? record.authority.lifecycle
+      : `${record.authority.action}:${record.authority.mode}`;
+  const branch = record.display.branch ?? "-";
+  const cap = `${Math.max(0, Math.floor(record.times.capRemainingSeconds))}s`;
+  return `${record.identity.id.padEnd(14)} ${record.display.title.padEnd(24)} ${status.padEnd(22)} ${record.runtime.provider.padEnd(12)} ${record.display.repository.padEnd(28)} ${branch.padEnd(24)} cap ${cap.padStart(7)}`;
 }
 
 export function durationSeconds(value: string): Result.Result<number, CliError> {
@@ -362,7 +311,7 @@ export function durationSeconds(value: string): Result.Result<number, CliError> 
 type HumanResultInput =
   | { readonly command: "beam"; readonly value: BeamUpOutput }
   | { readonly command: "attach"; readonly value: AttachOutput }
-  | { readonly command: "snapshot" | "resume"; readonly value: SessionOperationOutput }
+  | { readonly command: "checkpoint" | "resume"; readonly value: SessionOperationOutput }
   | { readonly command: "vaporize"; readonly value: VaporizeOutput };
 
 const formatHumanResult = (input: HumanResultInput): string => {
@@ -370,7 +319,7 @@ const formatHumanResult = (input: HumanResultInput): string => {
   if (command === "beam")
     return `${String(value.id)}  ${String(value.status)}  ${String(value.branch)}\n${String(value.url)}\n`;
   if (command === "attach") return `Opened ${String(value.url)}\n`;
-  if (command === "snapshot") return `Snapshot ${String(value.id)}: ${String(value.status)}\n`;
+  if (command === "checkpoint") return `Checkpoint ${String(value.id)}: ${String(value.status)}\n`;
   if (command === "resume")
     return `Session ${String(value.id)}: ${String(value.status)}${value.url ? `\n${String(value.url)}` : ""}\n`;
   return `Vaporized ${String(value.id)}\n`;

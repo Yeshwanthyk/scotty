@@ -11,6 +11,7 @@
     "**/*.tsbuildinfo",
     "vendor/**",
     "work/**",
+    "ui/src/routeTree.gen.ts",
     "worker/container/pi-packages/sources/scotty-browser-test/**",
     "worker/public/vendor/**",
     "*.tldraw",

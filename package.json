@@ -8,12 +8,13 @@
     "url": "git+https://github.com/Yeshwanthyk/scotty.git"
   },
   "workspaces": [
-    "worker"
+    "worker",
+    "ui"
   ],
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/apply-dependency-patches.mjs",
-    "check": "npm run check:effect-version && npm run check:pi-packages && npm run check:patches && npm run check:wrangler-bindings && npm run check:cli-compiled && npm run fmt:check && npm run lint && npm run knip:check && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
+    "check": "npm run ui:build && npm run check:effect-version && npm run check:pi-packages && npm run check:patches && npm run check:wrangler-bindings && npm run check:cli-compiled && npm run fmt:check && npm run lint && npm run knip:check && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
     "check:cli-compiled": "node scripts/check-cli-compiled.mjs",
     "check:patches": "node scripts/apply-dependency-patches.mjs --check",
     "check:wrangler-bindings": "node scripts/check-wrangler-bindings.mjs",
@@ -29,11 +30,12 @@
     "lab": "bun scripts/scotty-lab.ts",
     "preview:ui": "node scripts/ui-preview.mjs",
     "test:ui-preview": "node --test scripts/ui-preview-state.test.mjs",
-    "typecheck": "npm run typecheck:worker && npm run typecheck:contracts && npm run typecheck:cli && npm run typecheck:lab",
+    "typecheck": "npm run typecheck:worker && npm run typecheck:contracts && npm run typecheck:cli && npm run typecheck:lab && npm run typecheck:ui",
     "typecheck:worker": "tsc -p worker/tsconfig.json",
     "typecheck:contracts": "tsc -p tsconfig.contracts.json",
     "typecheck:cli": "tsc -p cli/tsconfig.json",
     "typecheck:lab": "tsc -p scripts/tsconfig.lab.json",
+    "typecheck:ui": "npm run typecheck --workspace @scotty/ui",
     "test": "npm run test:contracts",
     "test:contracts": "vitest run infra/test e2e/canary scripts/oxlint-plugin-scotty/plugin.test.js",
     "test:worker": "vitest run worker/test",
@@ -45,13 +47,16 @@
     "test:e2e:deployed": "SCOTTY_E2E_EXPLICIT=1 node --test e2e/tests/deployed.test.mjs",
     "test:lab": "vitest run scripts/scotty-lab.test.ts",
     "test:ops": "node --test scripts/*.test.mjs",
-    "test:all": "npm run test:contracts && npm run test:worker && npm run test:cli && npm run test:lab && npm run test:e2e:static && npm run test:e2e:local-live:helpers && npm run test:ops",
+    "test:all": "npm run test:contracts && npm run test:worker && npm run test:cli && npm run test:lab && npm run ui:test && npm run test:e2e:static && npm run test:e2e:local-live:helpers && npm run test:ops",
     "audit:containers": "node scripts/reconcile-containers.mjs",
     "build": "npm run build:cli",
     "build:cli": "bun scripts/build-cli.mjs",
     "deploy:production": "node scripts/deploy-production.mjs",
     "probe:dry-run": "wrangler deploy --dry-run --config worker/wrangler.jsonc",
     "worker:dev": "npm run dev --workspace @scotty/worker",
+    "ui:dev": "npm run dev --workspace @scotty/ui",
+    "ui:build": "npm run build --workspace @scotty/ui",
+    "ui:test": "npm run test --workspace @scotty/ui",
     "knip": "knip",
     "knip:check": "knip --exclude exports,types"
   },

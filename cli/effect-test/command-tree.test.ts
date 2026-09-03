@@ -687,10 +687,10 @@ describe("Effect command tree", () => {
     Effect.gen(function* () {
       const list = run(["--host", "https://worker.example", "list", "--json"], {
         env: { SCOTTY_TOKEN: "secret" },
-        fetch: async () => Response.json([]),
+        fetch: async () => Response.json({ version: 1, sessions: [] }),
       });
       assert.strictEqual(yield* list.effect, EXIT.OK);
-      assert.strictEqual(list.stdout.join(""), "[]\n");
+      assert.strictEqual(list.stdout.join(""), '{"version":1,"sessions":[]}\n');
       assert.strictEqual(list.stderr.join(""), "");
 
       const version = run(["-V"]);

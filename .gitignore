@@ -1,6 +1,7 @@
 /work/
 **/node_modules/
 /dist/
+**/dist/
 .wrangler/
 .alchemy/
 .dev.vars
@@ -8,5 +9,7 @@
 /.pi/
 /.scotty-build/
 /worker/prebuilt/
+/worker/public/app/
+/ui/.tanstack/
 /vendor/
 .scotty-lab/

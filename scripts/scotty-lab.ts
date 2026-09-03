@@ -709,7 +709,7 @@ const checkpoint = Effect.fnUntraced(function* (
   const ownedId = yield* requireOwnedSession(manifest, "checkpoint", sessionId, startedAt);
   yield* requestedFaultUnavailable(manifest, "checkpoint", fault, startedAt, ownedId);
   const operation = yield* decodeOperation(
-    yield* runRecordedCli(manifest, "checkpoint", ["snapshot", ownedId, "--json"], ownedId),
+    yield* runRecordedCli(manifest, "checkpoint", ["checkpoint", ownedId, "--json"], ownedId),
   );
   const diagnostics = yield* captureActorDiagnostics(manifest, "checkpoint", ownedId);
   if (operation.id !== ownedId || operation.status !== "warm")
@@ -719,7 +719,7 @@ const checkpoint = Effect.fnUntraced(function* (
       startedAt,
       finishedAt: yield* nowIso,
       sessionId: ownedId,
-      reason: "Snapshot did not return the owned session in warm state.",
+      reason: "Checkpoint did not return the owned session in warm state.",
     });
   yield* attempt("Checkpoint actor authority did not settle warm", () =>
     assertStableActorObservation(diagnostics, "Warm"),
