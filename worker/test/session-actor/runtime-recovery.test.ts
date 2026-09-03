@@ -144,6 +144,36 @@ describe("session actor runtime recovery", () => {
     assert.deepStrictEqual(observed.nextAuthority.state, warm().state);
   });
 
+  it("ignores a current-runtime confirmation without advancing the Sleep revision", () => {
+    const current = warm();
+    const sleeping = accepted(
+      decide(current, {
+        _tag: "SleepCommand",
+        expectedRevision: current.revision,
+        correlationId: "sleep",
+        nonce: "sleep-nonce",
+        attempt: "sleep-attempt",
+        timestamp: T0,
+        deadlineAt: CAP,
+      }),
+    ).nextAuthority;
+    assert.deepStrictEqual(
+      decide(
+        sleeping,
+        runtimeInput({
+          lifecycle: "started",
+          runtime: readiness.runtime,
+          resultCode: "runtime_started_confirmed",
+        }),
+      ),
+      { _tag: "Rejected", code: "duplicate" },
+    );
+    assert.strictEqual(sleeping.revision, current.revision + 1);
+    assert.ok(AuthorityStateSchema.guards.Transitioning(sleeping.state));
+    assert.strictEqual(sleeping.state.transition.mode, "executing");
+    assert.strictEqual(sleeping.state.transition.phase, "Quiescing");
+  });
+
   it("enters exact reconciliation when availability is lost during an owned transition", () => {
     const current = warm();
     const checkpoint = accepted(
@@ -200,6 +230,20 @@ describe("session actor runtime recovery", () => {
         },
       },
     };
+    const stillStarted = accepted(
+      decide(
+        sleepingTransition,
+        runtimeInput({
+          lifecycle: "started",
+          runtime: readiness.runtime,
+          resultCode: "runtime_started_confirmed",
+        }),
+      ),
+    );
+    assert.strictEqual(stillStarted.journalEvent.eventType, "availability_lost");
+    assert.strictEqual(stillStarted.effectIntents.length, 1);
+    assert.ok(AuthorityStateSchema.guards.Transitioning(stillStarted.nextAuthority.state));
+    assert.strictEqual(stillStarted.nextAuthority.state.transition.mode, "reconciling");
     assert.deepStrictEqual(decide(sleepingTransition, runtimeInput()), {
       _tag: "Rejected",
       code: "duplicate",

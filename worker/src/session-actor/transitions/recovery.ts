@@ -240,6 +240,29 @@ const settleStoppedSleep = (
   );
 };
 
+const confirmsCurrentRuntime = (
+  runtime: ReadinessProgress["runtime"],
+  input: Extract<RecoveryInput, { readonly _tag: "RuntimeLifecycleObserved" }>,
+): boolean =>
+  input.lifecycle === "started" &&
+  input.runtime !== null &&
+  runtime !== null &&
+  input.runtime.providerRuntimeId === runtime.providerRuntimeId &&
+  input.runtime.runtimeGeneration === runtime.runtimeGeneration &&
+  input.runtime.containerIncarnation === runtime.containerIncarnation;
+
+const observesCurrentRuntimeDuring = (
+  transition: Transition,
+  runtime: ReadinessProgress["runtime"],
+  input: Extract<RecoveryInput, { readonly _tag: "RuntimeLifecycleObserved" }>,
+): boolean =>
+  !TransitionSchema.guards.Vaporize(transition) &&
+  !(
+    TransitionSchema.guards.Sleep(transition) &&
+    (transition.phase === "StopRequested" || transition.phase === "RuntimeStopped")
+  ) &&
+  confirmsCurrentRuntime(runtime, input);
+
 const handleRuntime = (
   authority: SessionAuthority,
   input: Extract<RecoveryInput, { readonly _tag: "RuntimeLifecycleObserved" }>,
@@ -263,16 +286,11 @@ const handleRuntime = (
       return reject("duplicate");
     const settledSleep = settleStoppedSleep(authority, input);
     if (settledSleep !== undefined) return settledSleep;
+    if (observesCurrentRuntimeDuring(transition, runtime, input)) return reject("duplicate");
     return reconcileTransition(authority, input);
   }
   if (!StableStateSchema.guards.Warm(authority.state.stable)) return reject("not_admissible");
-  if (
-    input.lifecycle === "started" &&
-    input.runtime !== null &&
-    input.runtime.providerRuntimeId === runtime.providerRuntimeId &&
-    input.runtime.runtimeGeneration === runtime.runtimeGeneration &&
-    input.runtime.containerIncarnation === runtime.containerIncarnation
-  )
+  if (confirmsCurrentRuntime(runtime, input))
     return accept(
       authority.revision,
       authority.session,
