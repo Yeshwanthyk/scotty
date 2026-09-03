@@ -175,7 +175,11 @@ import {
 import type { SessionActorDiagnostics } from "../session-actor/diagnostics";
 import { ActorStore, actorStoreLayer } from "../session-actor/store";
 import { SessionActor, sessionActorLayer } from "../session-actor/actor";
-import { ActorAlarmOutcomeUnknown, actorAlarmSchedulerLayer } from "../session-actor/alarm";
+import {
+  actorAlarmId,
+  ActorAlarmOutcomeUnknown,
+  actorAlarmSchedulerLayer,
+} from "../session-actor/alarm";
 import { actorEffectRunnerLayer } from "../session-actor/effect-runner";
 import { sessionProviderEffectExecutorLayer } from "../session-actor/provider-executor";
 import {
@@ -772,6 +776,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
   private createInFlight: InFlightCreate | undefined;
+  private readonly activeActorMutationNonces = new Set<string>();
   private readonly previewExposureReconciliations = new Map<string, InFlightPreviewExposure>();
   private readonly previewRequests = new Map<string, InFlightPreviewRequest>();
   private readonly hatchRequests = new Map<string, AbortController>();
@@ -2777,6 +2782,91 @@ export class Sandbox extends BaseSandbox<Bindings> {
     },
   );
 
+  private readonly recoverTransitioningActorForRequestProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    expectedKind: LifecycleCommandKind | "Create",
+  ) {
+    const store = yield* ActorStore;
+    const before = yield* store.read;
+    const authority = before.authority;
+    if (authority === undefined || !AuthorityStateSchema.guards.Transitioning(authority.state))
+      return { snapshot: before, recovery: "not_needed" as const };
+    const transition = authority.state.transition;
+    if (!Predicate.isTagged(transition, expectedKind))
+      return { snapshot: before, recovery: "not_target" as const };
+    const publishProjection = this.publishActorSessionProjectionBestEffortProgram();
+    const recovered = yield* this.withExclusiveActorMutation(
+      transition.nonce,
+      Effect.gen(function* () {
+        const actor = yield* SessionActor;
+        const now = yield* Clock.currentTimeMillis;
+        const timestamp = new Date(now).toISOString();
+        const correlationId = crypto.randomUUID();
+        const resume = yield* actor.resume({
+          timestamp,
+          correlationId,
+          expectedTransition: {
+            revision: authority.revision,
+            transitionNonce: transition.nonce,
+            attempt: transition.attempt,
+            expectedPhase: transition.phase,
+          },
+          ...(now >= Date.parse(transition.deadlineAt)
+            ? {
+                fence: {
+                  kind: "deadline" as const,
+                  alarmId: actorAlarmId(
+                    "deadline",
+                    transition.nonce,
+                    transition.attempt,
+                    transition.deadlineAt,
+                  ),
+                  revision: authority.revision,
+                  transitionNonce: transition.nonce,
+                  attempt: transition.attempt,
+                  expectedPhase: transition.phase,
+                  expectedDeadlineAt: transition.deadlineAt,
+                  correlationId,
+                },
+              }
+            : {}),
+        });
+        if (resume === undefined)
+          return { snapshot: yield* store.read, recovery: "stale" as const };
+        yield* publishProjection;
+        return { snapshot: yield* store.read, recovery: "attempted" as const };
+      }),
+    );
+    return recovered === undefined ? { snapshot: before, recovery: "active" as const } : recovered;
+  });
+
+  private readonly withExclusiveActorMutation = <A, E, R>(
+    nonce: string,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A | undefined, E, R> =>
+    Effect.sync(() => {
+      if (this.activeActorMutationNonces.has(nonce)) return false;
+      this.activeActorMutationNonces.add(nonce);
+      return true;
+    }).pipe(
+      Effect.flatMap((acquired) =>
+        acquired
+          ? effect.pipe(
+              Effect.ensuring(Effect.sync(() => this.activeActorMutationNonces.delete(nonce))),
+            )
+          : Effect.succeed(undefined),
+      ),
+    );
+
+  private readonly withActiveActorMutation = <A, E, R>(
+    nonce: string,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    Effect.sync(() => this.activeActorMutationNonces.add(nonce)).pipe(
+      Effect.flatMap(() => effect),
+      Effect.ensuring(Effect.sync(() => this.activeActorMutationNonces.delete(nonce))),
+    );
+
   private readonly cancelSessionSchedulesAfterGoneProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
       const store = yield* ActorStore;
@@ -2824,7 +2914,49 @@ export class Sandbox extends BaseSandbox<Bindings> {
         generation: crypto.randomUUID(),
       },
     };
-    const outcome = yield* controller.create(request).pipe(
+    const recoverCreateReplay = Effect.fnUntraced(function* (sandbox: Sandbox) {
+      const recovered = yield* sandbox.recoverTransitioningActorForRequestProgram("Create");
+      if (recovered.recovery === "stale")
+        return { recovery: recovered.recovery, outcome: yield* controller.create(request) };
+      const authority = recovered.snapshot.authority;
+      if (authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state))
+        return {
+          recovery: recovered.recovery,
+          outcome: {
+            _tag: "Reconciling" as const,
+            replay: true,
+            authority,
+            phase: authority.state.transition.phase,
+          },
+        };
+      return { recovery: recovered.recovery, outcome: yield* controller.create(request) };
+    });
+    const outcome = yield* this.withActiveActorMutation(
+      request.nonce,
+      controller.create(request).pipe(
+        Effect.flatMap((initial) => {
+          if (!Predicate.isTagged(initial, "Reconciling") || !initial.replay)
+            return Effect.succeed(initial);
+          return recoverCreateReplay(this).pipe(
+            Effect.map((recovered) =>
+              recovered.recovery === "active" || recovered.recovery === "not_target"
+                ? initial
+                : recovered.outcome,
+            ),
+          );
+        }),
+        Effect.catchTag("CreateControllerInvariantFailure", (failure) => {
+          if (failure.code !== "create_finished_in_unexpected_state") return Effect.fail(failure);
+          return recoverCreateReplay(this).pipe(
+            Effect.flatMap((recovered) =>
+              recovered.recovery === "active" || recovered.recovery === "not_target"
+                ? Effect.fail(failure)
+                : Effect.succeed(recovered.outcome),
+            ),
+          );
+        }),
+      ),
+    ).pipe(
       Effect.mapError((failure) => {
         if (
           Predicate.isTagged(failure, "CreateControllerConflict") ||
@@ -2936,6 +3068,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
     kind: LifecycleCommandKind,
   ) {
     const controller = yield* LifecycleController;
+    const recovered = yield* this.recoverTransitioningActorForRequestProgram(kind).pipe(
+      Effect.mapError((failure) =>
+        this.upstreamError(`Session ${kind.toLowerCase()} failed`, failure),
+      ),
+    );
+    if (
+      recovered.recovery === "attempted" &&
+      recovered.snapshot.authority !== undefined &&
+      AuthorityStateSchema.guards.Transitioning(recovered.snapshot.authority.state)
+    )
+      return yield* this.upstreamError(
+        `Session ${kind.toLowerCase()} outcome is being reconciled`,
+        recovered.snapshot.authority.state.transition.phase,
+        recovered.snapshot.authority.session.id,
+      );
     const now = yield* Clock.currentTimeMillis;
     const baseRequest = {
       correlationId: crypto.randomUUID(),
@@ -2967,7 +3114,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
             };
           })
         : { ...baseRequest, kind };
-    const outcome = yield* controller.run(request).pipe(
+    const outcome = yield* this.withActiveActorMutation(
+      request.nonce,
+      controller.run(request),
+    ).pipe(
       Effect.catchTag("LifecycleControllerRejected", () =>
         Effect.flatMap(this.readActorSessionStateProgram(), ({ view }) =>
           wrongState(view.status, kind.toLowerCase()),

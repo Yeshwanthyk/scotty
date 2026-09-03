@@ -532,6 +532,7 @@ export type HarnessFailureStage =
   | "artifactDeleteAmbiguous"
   | "artifactPutAmbiguous"
   | "actorAlarmSchedule"
+  | "actorAlarmScheduleOnce"
   | "actorCommitAfterAbsence"
   | "backupDelete"
   | "backupList"
@@ -560,6 +561,7 @@ export type HarnessFailureStage =
 
 export interface HarnessOptions {
   readonly clock?: SandboxEffectOptions["clock"];
+  readonly commandGate?: (command: string) => Promise<void> | undefined;
   readonly commandStdout?: (command: string) => string | undefined;
   readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
   readonly containerPlacementId?: string | null;
@@ -1126,6 +1128,7 @@ const makeHarnessExec =
     context.commands.push(command);
     const stage = harnessExecStage(command);
     context.events.push(`host:exec:${stage === "downRollout" ? "exec" : stage}`);
+    await context.options.commandGate?.(command);
     const injected = injectedExecResult(command, stage, context);
     if (injected !== undefined) return injected;
     const archive = applyHarnessArchiveCommand(command, context.runtimeFiles);
@@ -1789,7 +1792,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         payload: unknown,
       ): Promise<RecordedSchedule> => {
         events.push(`schedule:${callback}`);
-        if (failures.has("actorAlarmSchedule") && callback === "sessionActorDeadline")
+        if (
+          callback === "sessionActorDeadline" &&
+          (failures.has("actorAlarmSchedule") || failures.delete("actorAlarmScheduleOnce"))
+        )
           throw injectedHarnessFailure("injected actor alarm schedule failure");
         if (
           callback === "expireRetainedEvidence" &&

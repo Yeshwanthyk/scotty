@@ -4,6 +4,7 @@ import { TestClock } from "effect/testing";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import type { EvidenceState } from "../../src/evidence/contracts";
 import type { HatchState } from "../../src/hatch/contracts";
+import { ScottyError } from "../../src/session/contracts";
 import {
   CREATE_IDEMPOTENCY,
   CREATE_INPUT,
@@ -21,6 +22,14 @@ const decodeDrainFence = Schema.decodeUnknownOption(
   }),
   { onExcessProperty: "error" },
 );
+
+const deferred = <A>() => {
+  let resolve = (_value: A): void => undefined;
+  const promise = new Promise<A>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+};
 
 describe("Sandbox actor checkpoint, sleep, and resume", () => {
   it("arms the strict final payload before the derived drain and stops create when drain arming fails", async () => {
@@ -377,6 +386,151 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.ok(harness.events.includes("host:createBackup"));
     assert.ok(harness.events.includes("host:stop"));
     assert.ok(harness.events.includes("host:restoreBackup"));
+  });
+
+  it("rearms reconciliation on lifecycle request retry after ambiguous deadline scheduling", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const before = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.isDefined(before);
+    harness.injectFailure("actorAlarmScheduleOnce");
+
+    const first = await harness.sandbox.checkpointScottySession().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    assert.ok(first instanceof ScottyError);
+    assert.strictEqual(first.code, "upstream");
+    const committed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(committed !== undefined && Predicate.isTagged(committed.state, "Transitioning"));
+    assert.strictEqual(committed.state.transition.mode, "executing");
+    assert.strictEqual(committed.revision, before.revision + 1);
+    const backupCalls = harness.events.filter((event) => event === "host:createBackup").length;
+
+    const retry = await harness.sandbox.checkpointScottySession().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    assert.ok(retry instanceof ScottyError);
+    assert.strictEqual(retry.code, "upstream");
+    const recovering = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(recovering !== undefined && Predicate.isTagged(recovering.state, "Transitioning"));
+    assert.strictEqual(recovering.state.transition.mode, "reconciling");
+    assert.strictEqual(recovering.revision, committed.revision + 1);
+    const recoveryAlarm = harness.schedules
+      .filter((schedule) => schedule.callback === "sessionActorDeadline")
+      .at(-1);
+    assert.deepInclude(recoveryAlarm?.payload, {
+      kind: "reconcile",
+      revision: recovering.revision,
+    });
+    assert.strictEqual(
+      harness.events.filter((event) => event === "host:createBackup").length,
+      backupCalls,
+    );
+  });
+
+  it("does not treat an overlapping lifecycle request as restart residue", async () => {
+    const syncEntered = deferred<void>();
+    const releaseSync = deferred<void>();
+    let gateSync = true;
+    const harness = await createSessionHarness({
+      commandGate: (command) => {
+        if (command !== "sync" || !gateSync) return undefined;
+        gateSync = false;
+        syncEntered.resolve();
+        return releaseSync.promise;
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    const first = harness.sandbox.checkpointScottySession();
+    await syncEntered.promise;
+    const executing = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(executing !== undefined && Predicate.isTagged(executing.state, "Transitioning"));
+
+    const overlap = await harness.sandbox.checkpointScottySession().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    assert.ok(overlap instanceof ScottyError);
+    assert.strictEqual(overlap.code, "wrong_state");
+    const afterOverlap = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      afterOverlap !== undefined && Predicate.isTagged(afterOverlap.state, "Transitioning"),
+    );
+    assert.strictEqual(afterOverlap.revision, executing.revision);
+    assert.strictEqual(afterOverlap.state.transition.mode, "executing");
+
+    releaseSync.resolve();
+    const settled = await first;
+    assert.strictEqual(settled.status, "warm");
+  });
+
+  it("does not recover a different lifecycle transition kind", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    harness.injectFailure("actorAlarmScheduleOnce");
+    await harness.sandbox.checkpointScottySession().then(
+      () => undefined,
+      () => undefined,
+    );
+    const checkpoint = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(checkpoint !== undefined && Predicate.isTagged(checkpoint.state, "Transitioning"));
+
+    const sleep = await harness.sandbox.sleepScottySession().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    assert.ok(sleep instanceof ScottyError);
+    assert.strictEqual(sleep.code, "wrong_state");
+    const retained = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.strictEqual(retained?.revision, checkpoint.revision);
+    assert.ok(
+      retained !== undefined &&
+        Predicate.isTagged(retained.state, "Transitioning") &&
+        Predicate.isTagged(retained.state.transition, "Checkpoint"),
+    );
+  });
+
+  it("does not recover live WarmWork from an overlapping lifecycle request", async () => {
+    const archiveEntered = deferred<void>();
+    const releaseArchive = deferred<void>();
+    const harness = await createSessionHarness({
+      commandGate: (command) => {
+        if (!command.startsWith("tar -cf ")) return undefined;
+        archiveEntered.resolve();
+        return releaseArchive.promise;
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    const archive = harness.sandbox.prepareDownArchive();
+    await archiveEntered.promise;
+    const warmWork = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      warmWork !== undefined &&
+        Predicate.isTagged(warmWork.state, "Transitioning") &&
+        Predicate.isTagged(warmWork.state.transition, "WarmWork"),
+    );
+
+    const checkpoint = await harness.sandbox.checkpointScottySession().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    assert.ok(checkpoint instanceof ScottyError);
+    assert.strictEqual(checkpoint.code, "wrong_state");
+    assert.strictEqual(
+      harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority)?.revision,
+      warmWork.revision,
+    );
+    releaseArchive.resolve();
+    await archive;
   });
 
   it("closes Hatch for sleep and restores the exact service through Pi on resume", async () => {

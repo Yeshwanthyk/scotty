@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import {
   commandIntentDigest,
   decodePiConsoleCommandPromise,
@@ -284,6 +285,114 @@ describe("Sandbox actor create boundary", () => {
       workspaceCalls,
     );
   });
+
+  it("rearms reconciliation on create request retry after ambiguous deadline scheduling", async () => {
+    const harness = await createSessionHarness({ failureStage: "actorAlarmScheduleOnce" });
+
+    const first = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(first instanceof ScottyError);
+    assert.strictEqual(first.code, "upstream");
+    const committed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      committed !== undefined && AuthorityStateSchema.guards.Transitioning(committed.state),
+    );
+    assert.strictEqual(committed.state.transition.mode, "executing");
+    assert.strictEqual(committed.revision, 1);
+    assert.isFalse(harness.events.some((event) => event.startsWith("host:exec:workspace")));
+
+    const replay = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(replay instanceof ScottyError);
+    assert.strictEqual(replay.code, "upstream");
+    const recovering = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      recovering !== undefined && AuthorityStateSchema.guards.Transitioning(recovering.state),
+    );
+    assert.strictEqual(recovering.state.transition.mode, "reconciling");
+    assert.strictEqual(recovering.revision, 2);
+    const recoveryAlarm = harness.schedules
+      .filter((schedule) => schedule.callback === "sessionActorDeadline")
+      .at(-1);
+    assert.deepInclude(recoveryAlarm?.payload, { kind: "reconcile", revision: 2 });
+    assert.isFalse(harness.events.some((event) => event.startsWith("host:exec:workspace")));
+  });
+
+  it("does not recover a lifecycle transition from a create replay", async () => {
+    const harness = await createWarmHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    harness.injectFailure("actorAlarmScheduleOnce");
+    await rejection(harness.sandbox.checkpointScottySession());
+    const checkpoint = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      checkpoint !== undefined && AuthorityStateSchema.guards.Transitioning(checkpoint.state),
+    );
+    assert.ok(Predicate.isTagged(checkpoint.state.transition, "Checkpoint"));
+    const scheduleCalls = harness.events.filter(
+      (event) => event === "schedule:sessionActorDeadline",
+    ).length;
+
+    const replay = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(replay instanceof ScottyError);
+    assert.strictEqual(replay.code, "upstream");
+    const retained = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(retained !== undefined && AuthorityStateSchema.guards.Transitioning(retained.state));
+    assert.ok(Predicate.isTagged(retained.state.transition, "Checkpoint"));
+    assert.strictEqual(retained.revision, checkpoint.revision);
+    assert.strictEqual(
+      harness.events.filter((event) => event === "schedule:sessionActorDeadline").length,
+      scheduleCalls,
+    );
+  });
+
+  it.effect("settles an expired reconciling create without reconciling provider success", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({ clock, failureStage: "workspacePrepare" }),
+      );
+      const first = yield* Effect.promise(() =>
+        rejection(
+          harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+        ),
+      );
+      assert.ok(first instanceof ScottyError);
+      const reconciling = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        reconciling !== undefined && AuthorityStateSchema.guards.Transitioning(reconciling.state),
+      );
+      assert.strictEqual(reconciling.state.transition.mode, "reconciling");
+      const workspaceCalls = harness.events.filter((event) =>
+        event.startsWith("host:exec:workspace"),
+      ).length;
+      yield* clock.setTime(Date.parse(reconciling.state.transition.deadlineAt));
+
+      const replay = yield* Effect.promise(() =>
+        rejection(
+          harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+        ),
+      );
+
+      assert.ok(replay instanceof ScottyError);
+      assert.strictEqual(replay.code, "upstream");
+      const expired = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(expired !== undefined && AuthorityStateSchema.guards.Stable(expired.state));
+      assert.ok(Predicate.isTagged(expired.state.stable, "Failed"));
+      assert.strictEqual(expired.state.stable.code, "transition_deadline_elapsed");
+      assert.strictEqual(
+        harness.events.filter((event) => event.startsWith("host:exec:workspace")).length,
+        workspaceCalls,
+      );
+    }),
+  );
 
   it("resolves a committed GitHub grant while Create is preparing the workspace", async () => {
     const harness = await createSessionHarness({ failureStage: "workspacePrepare" });
