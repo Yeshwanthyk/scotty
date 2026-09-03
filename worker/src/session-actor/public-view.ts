@@ -1,5 +1,5 @@
 import { Match, Result, Schema } from "effect";
-import type { SessionProjection, SessionView } from "../session/contracts";
+import type { SessionOperation, SessionProjection, SessionView } from "../session/contracts";
 import type {
   ActivityProof,
   BackupIdentity,
@@ -7,6 +7,7 @@ import type {
   StableState,
   Transition,
 } from "./authority";
+import { AuthorityStateSchema } from "./authority";
 import type { SessionActorMetadata } from "./metadata";
 
 export type PublicStatus = "booting" | "warm" | "sleeping" | "failed" | "gone";
@@ -51,6 +52,34 @@ const transitionStatus = (transition: Transition): PublicStatus =>
     Vaporize: (value) => originStatus(value.origin),
   });
 
+export const sessionOperationFromActor = (authority: SessionAuthority): SessionOperation | null => {
+  if (!AuthorityStateSchema.guards.Transitioning(authority.state)) return null;
+  const transition = authority.state.transition;
+  const kind = Match.valueTags(transition, {
+    Create: () => "create" as const,
+    Checkpoint: () => "snapshot" as const,
+    Sleep: () => "sleep" as const,
+    Resume: () => "resume" as const,
+    WarmWork: (value) =>
+      value.workKind === "Evidence"
+        ? ("evidence" as const)
+        : value.workKind === "Hatch"
+          ? ("hatch" as const)
+          : value.workKind === "Down"
+            ? ("down" as const)
+            : ("snapshot" as const),
+    Vaporize: () => "vaporize" as const,
+  });
+  return {
+    kind,
+    nonce: transition.nonce,
+    startedAt: transition.startedAt,
+    mode: transition.mode,
+    phase: transition.phase,
+    ...(kind === "create" ? { createPhase: "runtime" as const } : {}),
+  };
+};
+
 const actions = (
   status: PublicStatus,
   deleting: boolean,
@@ -91,7 +120,7 @@ export const publicView = (
         WarmWork: () => false,
         Vaporize: () => true,
       });
-      return { status, deleting, availableActions: actions(status, deleting, false) };
+      return { status, deleting, availableActions: [] };
     },
   });
 };
@@ -162,11 +191,13 @@ export const sessionProjectionFromActor = (
       ? details.activity
       : undefined;
   const execution = authority.session.execution;
+  const operation = sessionOperationFromActor(authority);
   return Result.succeed({
     id: authority.session.id,
     title: authority.session.title,
     status: view.status,
     ...(view.deleting ? { deleting: true } : {}),
+    ...(operation === null ? {} : { operation }),
     provider: execution.provider,
     ...(execution.provider === "runner" ? { runner: execution.runnerName } : {}),
     repo: workspace.repository,

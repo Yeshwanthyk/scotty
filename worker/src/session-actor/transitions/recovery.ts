@@ -77,7 +77,7 @@ const confirmedBackup = (
     currentBackupId !== backup.backupId ||
     !ownedBackupIds.includes(backup.backupId)
   )
-    return { backup: null, ownedBackupIds: [], wakeSource: null };
+    return { backup: null, ownedBackupIds, wakeSource: null };
   return {
     backup,
     ownedBackupIds,
@@ -86,7 +86,7 @@ const confirmedBackup = (
 };
 
 const fromBackupProof = (proof: BackupProof) =>
-  confirmedBackup(proof.prepared, proof.ownedBackupIds, proof.currentBackupId);
+  confirmedBackup(proof.confirmed ?? proof.prepared, proof.ownedBackupIds, proof.currentBackupId);
 
 const recoveryBackup = (authority: SessionAuthority) => {
   if (AuthorityStateSchema.guards.Stable(authority.state)) {
@@ -152,7 +152,7 @@ const fail = (
     origin: origin.origin,
     lastStable: origin.lastStable,
     backup: actionable ? backup.backup : null,
-    ownedBackupIds: actionable ? backup.ownedBackupIds : [],
+    ownedBackupIds: backup.ownedBackupIds,
     wakeSource: actionable ? backup.wakeSource : null,
   };
   return accept(
@@ -186,9 +186,8 @@ const reconcileTransition = (
     journal(authority, input, "availability_lost", input.resultCode),
     [
       {
-        _tag: "ReconcileTransition",
-        transitionKind: transitionKind(transition),
-        phase: transition.phase,
+        _tag: "ArmReconciliation",
+        deadlineAt: transition.deadlineAt,
         transitionNonce: transition.nonce,
         attempt: transition.attempt,
       },

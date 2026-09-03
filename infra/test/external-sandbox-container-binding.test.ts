@@ -35,6 +35,7 @@ interface ProofContainer extends AlchemyResource<
     applicationId: string;
     durableObjects: { namespaceId: string } | undefined;
     dev: DevContainerImage | undefined;
+    hash: { image: string } | undefined;
   },
   { durableObjects?: { namespaceId: string } }
 > {}
@@ -128,6 +129,7 @@ const proofContainerProvider = Provider.succeed(ProofContainer, {
       applicationId: `precreated:${id}`,
       durableObjects: undefined,
       dev: undefined,
+      hash: undefined,
     }),
   reconcile: Effect.fn(function* ({ id, bindings, output }) {
     cloud.calls.push(`container:reconcile:${id}`);
@@ -149,6 +151,7 @@ const proofContainerProvider = Provider.succeed(ProofContainer, {
         : (observed?.applicationId ?? `application:${cloud.nextApplicationId++}`),
       durableObjects,
       dev: undefined,
+      hash: undefined,
     };
     cloud.containers.set(id, copy(attributes));
     if (replacingAssociation) {

@@ -43,6 +43,29 @@ const run = (
 };
 
 describe("Effect command tree", () => {
+  it.effect("defaults omitted boolean switches on ordinary command execution", () =>
+    Effect.gen(function* () {
+      const requests: Request[] = [];
+      const invocation = run(["runner", "list"], {
+        env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "root-secret" },
+        fetch: async (input, init) => {
+          requests.push(new Request(input, init));
+          return Response.json([]);
+        },
+      });
+
+      assert.strictEqual(yield* invocation.effect, EXIT.OK);
+      assert.deepStrictEqual(JSON.parse(invocation.stdout.join("")), []);
+      assert.strictEqual(invocation.stderr.join(""), "");
+      assert.strictEqual(requests.length, 1);
+
+      const version = run(["--version"]);
+      assert.strictEqual(yield* version.effect, EXIT.OK);
+      assert.strictEqual(version.stdout.join(""), `${VERSION}\n`);
+      assert.strictEqual(version.stderr.join(""), "");
+    }),
+  );
+
   it.effect(
     "generates root and nested help from one tree with an explicit built-in allowlist",
     () =>

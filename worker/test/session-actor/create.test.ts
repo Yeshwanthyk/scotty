@@ -69,9 +69,11 @@ const accepted = (decision: Decision): AcceptedDecision => {
 
 const providerIntent = (
   decision: AcceptedDecision,
-): Exclude<EffectIntent, { _tag: "ArmDeadline" }> => {
+): Exclude<EffectIntent, { _tag: "ArmDeadline" | "ArmReconciliation" }> => {
   const intent = decision.effectIntents.find(
-    (candidate) => !Predicate.isTagged(candidate, "ArmDeadline"),
+    (candidate) =>
+      !Predicate.isTagged(candidate, "ArmDeadline") &&
+      !Predicate.isTagged(candidate, "ArmReconciliation"),
   );
   assert.ok(intent !== undefined);
   return intent;
@@ -305,7 +307,23 @@ describe("create transition executor", () => {
       assert.ok(Predicate.isTagged(reconciling.nextAuthority.state, "Transitioning"));
       assert.strictEqual(reconciling.nextAuthority.state.transition.mode, "reconciling");
 
-      const reconciledInput = yield* execute(provider, committed(reconciling));
+      assert.ok(Predicate.isTagged(reconciling.nextAuthority.state, "Transitioning"));
+      const reconcilingTransition = reconciling.nextAuthority.state.transition;
+      const reconciledInput = yield* execute(
+        provider,
+        committed({
+          ...reconciling,
+          effectIntents: [
+            {
+              _tag: "ReconcileTransition",
+              transitionKind: "Create",
+              phase: reconcilingTransition.phase,
+              transitionNonce: reconcilingTransition.nonce,
+              attempt: reconcilingTransition.attempt,
+            },
+          ],
+        }),
+      );
       const progressed = accepted(decide(reconciling.nextAuthority, reconciledInput));
       assert.ok(Predicate.isTagged(progressed.nextAuthority.state, "Transitioning"));
       assert.strictEqual(progressed.nextAuthority.state.transition.phase, "RuntimeMaterializing");

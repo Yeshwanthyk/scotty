@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import { Predicate } from "effect";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import type { EvidenceState } from "../../src/evidence/contracts";
@@ -211,6 +211,77 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.deepStrictEqual(await harness.sandbox.vaporizeScottySession(), result);
   });
 
+  it("retains the hard-cap driver until Gone commits after final absence", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const hardCap = harness.schedules.find(
+      (schedule) => schedule.callback === "sessionActorHardCap",
+    );
+    assert.isDefined(hardCap);
+
+    harness.injectFailure("actorCommitAfterAbsence");
+    harness.injectFailure("actorAlarmSchedule");
+    await expect(harness.sandbox.vaporizeScottySession()).rejects.toBeDefined();
+
+    const retained = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      retained !== undefined &&
+        Predicate.isTagged(retained.state, "Transitioning") &&
+        Predicate.isTagged(retained.state.transition, "Vaporize"),
+    );
+    assert.notInclude(harness.deletedSchedules, "sessionActorHardCap");
+
+    if (!Predicate.isTagged(retained.state, "Transitioning")) return;
+    const elapsedDeadline = retained.state.transition.startedAt;
+    harness.memory.values.set(sessionHarnessKeys.actorAuthority, {
+      ...retained,
+      hardCap: { ...retained.hardCap, deadlineAt: elapsedDeadline },
+      state: {
+        ...retained.state,
+        transition: { ...retained.state.transition, deadlineAt: elapsedDeadline },
+      },
+    });
+    const elapsedHardCap = {
+      sessionId: SESSION_ID,
+      generation: retained.hardCap.generation,
+      deadlineAt: elapsedDeadline,
+    };
+    harness.clearFailure();
+    harness.injectFailure("vaporizeDestroy");
+    harness.injectFailure("hardCapScheduleOnce");
+    const schedulesBeforeRetry = harness.schedules.filter(
+      (schedule) => schedule.callback === "sessionActorHardCap",
+    ).length;
+    await harness.sandbox.sessionActorHardCap(elapsedHardCap);
+    assert.isAbove(
+      harness.schedules.filter((schedule) => schedule.callback === "sessionActorHardCap").length,
+      schedulesBeforeRetry,
+    );
+    assert.isAtLeast(
+      harness.events.filter((event) => event === "schedule:sessionActorHardCap").length,
+      3,
+    );
+    harness.clearFailure("vaporizeDestroy");
+    let gone = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    for (let retry = 0; retry < 32; retry += 1) {
+      await harness.sandbox.sessionActorHardCap(elapsedHardCap);
+      gone = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      if (
+        gone !== undefined &&
+        Predicate.isTagged(gone.state, "Stable") &&
+        Predicate.isTagged(gone.state.stable, "Gone")
+      )
+        break;
+    }
+    assert.ok(
+      gone !== undefined &&
+        Predicate.isTagged(gone.state, "Stable") &&
+        Predicate.isTagged(gone.state.stable, "Gone"),
+      JSON.stringify(gone),
+    );
+    assert.include(harness.deletedSchedules, "sessionActorHardCap");
+  });
+
   it("commits hard-cap failure before destroying the runtime and ignores stale fences", async () => {
     const harness = await createSessionHarness();
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
@@ -255,6 +326,105 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     const destroyed = events.indexOf("host:destroy");
     assert.ok(committed >= 0);
     assert.ok(destroyed > committed);
+  });
+
+  it("destroys an already-failed runtime when its matching hard cap arrives", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const current = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.isDefined(current);
+    assert.ok(
+      Predicate.isTagged(current.state, "Stable") &&
+        Predicate.isTagged(current.state.stable, "Warm"),
+    );
+    const expired = {
+      ...current,
+      hardCap: { ...current.hardCap, deadlineAt: "2020-01-01T00:00:00.000Z" },
+      state: {
+        _tag: "Stable" as const,
+        stable: {
+          _tag: "Failed" as const,
+          code: "transition_deadline_elapsed",
+          actionable: current.state.stable.backups.prepared?.confirmedAt != null,
+          origin: "Warm" as const,
+          lastStable: "Warm" as const,
+          backup: current.state.stable.backups.prepared,
+          ownedBackupIds: current.state.stable.backups.ownedBackupIds,
+          wakeSource:
+            current.state.stable.backups.prepared?.confirmedAt == null
+              ? null
+              : {
+                  backupId: current.state.stable.backups.prepared.backupId,
+                  confirmedAt: current.state.stable.backups.prepared.confirmedAt,
+                },
+        },
+      },
+    } satisfies SessionAuthority;
+    harness.memory.values.set(sessionHarnessKeys.actorAuthority, expired);
+
+    await harness.sandbox.sessionActorHardCap({
+      sessionId: SESSION_ID,
+      generation: expired.hardCap.generation,
+      deadlineAt: expired.hardCap.deadlineAt,
+    });
+
+    assert.ok(harness.events.includes("host:destroy"));
+    const retained = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      retained !== undefined &&
+        Predicate.isTagged(retained.state, "Stable") &&
+        Predicate.isTagged(retained.state.stable, "Failed"),
+    );
+    assert.strictEqual(retained.state.stable.code, "transition_deadline_elapsed");
+  });
+
+  it("uses the hard-cap callback as a fallback driver for Vaporize reconciliation", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const current = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.isDefined(current);
+    assert.ok(
+      Predicate.isTagged(current.state, "Stable") &&
+        Predicate.isTagged(current.state.stable, "Warm"),
+    );
+    const deadlineAt = "2020-01-01T00:00:00.000Z";
+    const vaporizing: SessionAuthority = {
+      ...current,
+      hardCap: { ...current.hardCap, deadlineAt },
+      state: {
+        _tag: "Transitioning",
+        transition: {
+          _tag: "Vaporize",
+          nonce: crypto.randomUUID(),
+          origin: "Warm",
+          attempt: crypto.randomUUID(),
+          startedAt: deadlineAt,
+          lastProgressAt: deadlineAt,
+          deadlineAt,
+          mode: "reconciling",
+          phase: "Admitted",
+          proof: {
+            revokedAt: null,
+            ownedBackupIds: current.state.stable.backups.ownedBackupIds,
+            cleanup: { absent: [], lastObservedAt: deadlineAt },
+          },
+        },
+      },
+    };
+    harness.memory.values.set(sessionHarnessKeys.actorAuthority, vaporizing);
+
+    await harness.sandbox.sessionActorHardCap({
+      sessionId: SESSION_ID,
+      generation: vaporizing.hardCap.generation,
+      deadlineAt,
+    });
+
+    const settled = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      settled !== undefined &&
+        Predicate.isTagged(settled.state, "Stable") &&
+        Predicate.isTagged(settled.state.stable, "Gone"),
+    );
   });
 
   it("feeds runtime-stop callbacks into the actor without synchronous re-entry", async () => {

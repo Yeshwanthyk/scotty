@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Keep this image version paired with @cloudflare/sandbox in worker/package.json.
-FROM docker.io/cloudflare/sandbox:0.12.3@sha256:23f67e16131b780865a5fa5aa3c8607408a730105c248836409f4e02bb6bf042 AS scotty-cli-build
+FROM docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe AS scotty-cli-build
 
 WORKDIR /build
 COPY package.json package-lock.json ./
@@ -11,8 +11,9 @@ COPY scripts/cloudflare-topology-data.mjs scripts/cloudflare-topology-data.mjs
 COPY scripts/container-control-plane.mjs scripts/container-control-plane.mjs
 COPY scripts/deploy-production.mjs scripts/deploy-production.mjs
 COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs
-COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch
-COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch
+COPY patches/@cloudflare+sandbox+0.12.9.patch patches/@cloudflare+sandbox+0.12.9.patch
+COPY patches/alchemy+2.0.0-beta.76.patch patches/alchemy+2.0.0-beta.76.patch
+COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 RUN node scripts/apply-dependency-patches.mjs
 COPY cli/scotty.ts cli/scotty.ts
@@ -27,7 +28,7 @@ RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
   && test "$(stat -c '%a' /out/scotty)" = "755" \
   && /out/scotty --version
 
-FROM docker.io/cloudflare/sandbox:0.12.3@sha256:23f67e16131b780865a5fa5aa3c8607408a730105c248836409f4e02bb6bf042 AS scotty-package-image
+FROM docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe AS scotty-package-image
 
 ARG AST_GREP_VERSION=0.45.0
 ARG COREPACK_VERSION=0.35.0

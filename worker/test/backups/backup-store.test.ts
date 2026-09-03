@@ -149,29 +149,16 @@ describe("BackupStore", () => {
     }),
   );
 
-  it.effect("deletes every paginated object under only the requested backup prefix", () =>
+  it.effect("delegates deletion to the Sandbox backup queue", () =>
     Effect.gen(function* () {
       const memory = new InMemoryFaultInjectableFake();
       const capabilities = backupCapabilitiesFake(memory, backup);
-      memory.pages.push(
-        { keys: ["backups/backup-1/archive", "backups/backup-1/meta.json"], cursor: "next" },
-        { keys: [], cursor: "empty" },
-        { keys: ["backups/backup-1/part"] },
-      );
       yield* withStore(
         capabilities,
         Effect.flatMap(BackupStore, (store) => store.delete("backup-1")),
       );
 
-      assert.deepStrictEqual(memory.calls("list"), [
-        ["backups/backup-1/", undefined],
-        ["backups/backup-1/", "next"],
-        ["backups/backup-1/", "empty"],
-      ]);
-      assert.deepStrictEqual(memory.calls("delete"), [
-        [["backups/backup-1/archive", "backups/backup-1/meta.json"]],
-        [["backups/backup-1/part"]],
-      ]);
+      assert.deepStrictEqual(memory.calls("delete"), [["backup-1"]]);
     }),
   );
 
@@ -180,13 +167,11 @@ describe("BackupStore", () => {
       for (const [operation, expectedCreateCalls] of [
         ["create", 1],
         ["restore", 0],
-        ["list", 0],
         ["delete", 0],
       ] as const) {
         const memory = new InMemoryFaultInjectableFake();
         const capabilities = backupCapabilitiesFake(memory, backup);
         memory.injectFailure(operation, { error: `provider ${operation} details` });
-        if (operation === "delete") memory.pages.push({ keys: ["backups/backup-1/a"] });
         const effect =
           operation === "create"
             ? Effect.flatMap(BackupStore, (store) => store.create({ dir: backup.dir }))
@@ -213,13 +198,12 @@ describe("BackupStore", () => {
         capabilities,
         Effect.flatMap(BackupStore, (store) => store.restore(structuredClone(created))),
       );
-      memory.pages.push({ keys: ["backups/backup-1/archive"] });
       yield* withStore(
         capabilities,
         Effect.flatMap(BackupStore, (store) => store.delete(created.id)),
       );
       assert.deepStrictEqual(memory.calls("restore"), [[backup]]);
-      assert.deepStrictEqual(memory.calls("delete"), [[["backups/backup-1/archive"]]]);
+      assert.deepStrictEqual(memory.calls("delete"), [["backup-1"]]);
     }),
   );
 });

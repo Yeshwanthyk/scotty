@@ -409,6 +409,7 @@ type SetExitCode = (code: ExitCode) => Effect.Effect<void>;
 export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const version = GlobalFlag.action({
     flag: Flag.boolean("version").pipe(
+      Flag.withDefault(false),
       Flag.withAlias("V"),
       Flag.withDescription("Show version information"),
     ),
@@ -425,7 +426,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Read a Scotty bearer token from a private file"),
       ),
-      json: Flag.boolean("json").pipe(Flag.withDescription("Emit stable machine-readable output")),
+      json: Flag.boolean("json").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Emit stable machine-readable output"),
+      ),
     }),
     Command.withGlobalFlags([version]),
     Command.withDescription("Run durable coding-agent sessions"),
@@ -635,7 +639,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Cloudflare zone ID owning the Hatch and Evidence preview base"),
       ),
-      yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed installation")),
+      yes: Flag.boolean("yes").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Confirm the displayed installation"),
+      ),
     },
     ({ name, previewBase, previewZoneId, profile, yes }) =>
       Effect.gen(function* () {
@@ -892,9 +899,13 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Explicit Cloudflare zone ID owning the preview base"),
       ),
       enableEvidence: Flag.boolean("enable-evidence").pipe(
+        Flag.withDefault(false),
         Flag.withDescription("Explicitly preserve an enabled preview-backed evidence gate"),
       ),
-      yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed resource mapping")),
+      yes: Flag.boolean("yes").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Confirm the displayed resource mapping"),
+      ),
     },
     ({ enableEvidence, name, previewBase, previewZoneId, profile, yes }) =>
       Effect.gen(function* () {
@@ -1038,11 +1049,15 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     "uninstall",
     {
       deleteData: Flag.boolean("delete-data").pipe(
+        Flag.withDefault(false),
         Flag.withDescription(
           "Also delete the retained KV session index, R2 backups, and evidence artifacts",
         ),
       ),
-      yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm installation removal")),
+      yes: Flag.boolean("yes").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Confirm installation removal"),
+      ),
     },
     ({ deleteData, yes }) =>
       Effect.gen(function* () {
@@ -1159,9 +1174,13 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     "deploy",
     {
       plan: Flag.boolean("plan").pipe(
+        Flag.withDefault(false),
         Flag.withDescription("Save and print the exact deployment plan without applying it"),
       ),
-      yes: Flag.boolean("yes").pipe(Flag.withDescription("Apply the saved exact deployment plan")),
+      yes: Flag.boolean("yes").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Apply the saved exact deployment plan"),
+      ),
     },
     ({ plan: planOnly, yes }) =>
       Effect.gen(function* () {
@@ -1406,6 +1425,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       title: Flag.string("title").pipe(Flag.withDescription("Short task or outcome title")),
       repo: Flag.string("repo").pipe(Flag.withDescription("GitHub repository as OWNER/NAME")),
       newRepo: Flag.boolean("new-repo").pipe(
+        Flag.withDefault(false),
         Flag.withDescription("Create a local workspace when the GitHub repository is missing"),
       ),
       provider: Flag.choice("provider", ["cloudflare"] as const).pipe(
@@ -1415,7 +1435,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Hard cap such as 30m, 4h, or 1d"),
       ),
-      detach: Flag.boolean("detach").pipe(Flag.withDescription("Do not open the session browser")),
+      detach: Flag.boolean("detach").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Do not open the session browser"),
+      ),
     },
     ({ cap, detach, newRepo, prompt, provider, repo, title }) =>
       Effect.gen(function* () {
@@ -1598,6 +1621,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
       ),
       follow: Flag.boolean("follow").pipe(
+        Flag.withDefault(false),
         Flag.withDescription("Keep reading new or changed messages"),
       ),
     },
@@ -2031,6 +2055,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
       ),
       replace: Flag.boolean("replace").pipe(
+        Flag.withDefault(false),
         Flag.withDescription("Rotate an existing registration before reinstalling"),
       ),
     },
@@ -2107,7 +2132,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     "remove",
     {
       name: Argument.string("name").pipe(Argument.withDescription("Registered runner name")),
-      yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm runner removal")),
+      yes: Flag.boolean("yes").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Confirm runner removal"),
+      ),
     },
     ({ name, yes }) =>
       Effect.gen(function* () {
@@ -2226,7 +2254,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     "vaporize",
     {
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
-      yes: Flag.boolean("yes").pipe(Flag.withDescription("Skip the TTY confirmation")),
+      yes: Flag.boolean("yes").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Skip the TTY confirmation"),
+      ),
     },
     ({ id, yes }) => sessionOperation("vaporize", id, yes),
   ).pipe(Command.withDescription("Permanently delete a session"));

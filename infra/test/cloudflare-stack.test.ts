@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -252,7 +252,7 @@ describe("Cloudflare stack source contract", () => {
   it("bundles the Worker and full-stack canary without managed browser code or credentials", () => {
     const root = new URL("../../", import.meta.url);
     const outputDirectory = mkdtempSync(join(tmpdir(), "scotty-worker-bundle-"));
-    const syntheticMaterial = randomBytes(48).toString("base64url");
+    const syntheticMaterial = randomUUID();
     const entries = [
       ["worker/src/index.ts", "worker.js"],
       ["e2e/canary/full-stack-canary-worker.ts", "canary.js"],

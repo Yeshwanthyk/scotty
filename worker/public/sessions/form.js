@@ -103,8 +103,13 @@ export function safeSessionPath(value, id, origin) {
   }
 }
 
-export function sessionDisplayStatus(value, pendingAction, deleting = false) {
+export function sessionDisplayStatus(value, pendingAction, deleting = false, operation) {
   const status = typeof value === "string" ? value : "unknown";
+  if (operation?.kind === "vaporize") return "deleting";
+  if (operation?.kind === "sleep") return "stopping";
+  if (operation?.kind === "snapshot") return "saving";
+  if (operation?.kind === "resume") return "resuming";
+  if (operation?.kind === "create") return "booting";
   if (deleting || pendingAction === "delete" || pendingAction === "retry-delete") return "deleting";
   return pendingAction === "sleep" && status === "warm" ? "stopping" : status;
 }

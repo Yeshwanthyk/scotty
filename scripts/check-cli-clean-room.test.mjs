@@ -131,7 +131,7 @@ describe("clean-room CLI image gate", () => {
     assert.match(release, /release:\n    needs: attest/u);
     assert.match(
       dockerfile,
-      /FROM docker\.io\/cloudflare\/sandbox:0\.12\.3@sha256:[0-9a-f]{64} AS scotty-cli-build/u,
+      /FROM docker\.io\/cloudflare\/sandbox:0\.12\.9@sha256:[0-9a-f]{64} AS scotty-cli-build/u,
     );
     assert.doesNotMatch(dockerfile, /bun-version/u);
     assert.match(dockerfile, /npm ci --omit=dev --ignore-scripts --no-audit --no-fund/u);

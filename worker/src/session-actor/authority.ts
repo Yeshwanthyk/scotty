@@ -79,6 +79,7 @@ export const BackupProofSchema = Schema.Struct({
   ownedBackupIds: Schema.Array(Schema.String),
   prepared: Schema.NullOr(BackupIdentitySchema),
   currentBackupId: Schema.NullOr(Schema.String),
+  confirmed: Schema.optionalKey(Schema.NullOr(BackupIdentitySchema)),
 });
 export type BackupProof = typeof BackupProofSchema.Type;
 
@@ -311,6 +312,7 @@ export const emptyBackupProof = (): BackupProof => ({
   ownedBackupIds: [],
   prepared: null,
   currentBackupId: null,
+  confirmed: null,
 });
 
 export const emptyCleanupProof = (timestamp: string): CleanupProof => ({

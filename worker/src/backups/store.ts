@@ -2,22 +2,16 @@ import type { BackupOptions, RestoreBackupResult } from "@cloudflare/sandbox";
 import { Context, Data, Effect, Layer } from "effect";
 import type { DirectoryBackup } from "../session/contracts";
 
-type BackupOperation = "create" | "delete" | "list" | "restore";
+type BackupOperation = "create" | "delete" | "restore";
 
 export class BackupStoreFailure extends Data.TaggedError("BackupStoreFailure")<{
   readonly operation: BackupOperation;
 }> {}
 
-export interface BackupObjectPage {
-  readonly keys: ReadonlyArray<string>;
-  readonly cursor?: string;
-}
-
 export interface BackupCapabilities {
   readonly createBackup: (options: BackupOptions) => Promise<DirectoryBackup>;
   readonly restoreBackup: (backup: DirectoryBackup) => Promise<RestoreBackupResult>;
-  readonly listObjects: (prefix: string, cursor?: string) => Promise<BackupObjectPage>;
-  readonly deleteObjects: (keys: ReadonlyArray<string>) => Promise<void>;
+  readonly deleteBackup: (backupId: string) => Promise<void>;
 }
 
 interface BackupStoreShape {
@@ -65,22 +59,14 @@ const makeBackupStore = <E>(
         ),
         Effect.asVoid,
       ),
-    delete: Effect.fnUntraced(function* (backupId) {
-      const prefix = `backups/${backupId}/`;
-      let cursor: string | undefined;
-      do {
-        const page = yield* Effect.tryPromise({
-          try: () => capabilities.listObjects(prefix, cursor),
-          catch: () => failure("list"),
-        });
-        if (page.keys.length > 0) {
-          yield* Effect.tryPromise({
-            try: () => capabilities.deleteObjects(page.keys),
+    delete: (backupId) =>
+      guard("delete").pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () => capabilities.deleteBackup(backupId),
             catch: () => failure("delete"),
-          });
-        }
-        cursor = page.cursor;
-      } while (cursor !== undefined);
-    }),
+          }),
+        ),
+      ),
   });
 };

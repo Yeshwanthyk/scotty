@@ -3,14 +3,13 @@ import {
   AuthorityStateSchema,
   decodeSessionAuthority,
   StableStateSchema,
-  TransitionSchema,
   type ActivityProof,
   type BackupIdentity,
   type SessionAuthority,
 } from "../session-actor/authority";
 import { decodeSessionActorMetadata, type SessionActorMetadata } from "../session-actor/metadata";
 import type { MetadataStoragePort } from "../session-actor/metadata-store";
-import { publicView } from "../session-actor/public-view";
+import { publicView, sessionOperationFromActor } from "../session-actor/public-view";
 import type {
   ActorStoragePort,
   ActorStorageTransactionPlan,
@@ -76,32 +75,6 @@ export interface SessionAuxiliaryStorage {
   ) => Promise<A>;
 }
 
-const actorOperation = (authority: SessionAuthority): SessionRecord["operation"] => {
-  if (!AuthorityStateSchema.guards.Transitioning(authority.state)) return null;
-  const transition = authority.state.transition;
-  const kind = TransitionSchema.guards.Create(transition)
-    ? "create"
-    : TransitionSchema.guards.Checkpoint(transition) || TransitionSchema.guards.Sleep(transition)
-      ? "snapshot"
-      : TransitionSchema.guards.Resume(transition)
-        ? "resume"
-        : TransitionSchema.guards.Vaporize(transition)
-          ? "vaporize"
-          : transition.workKind === "Evidence"
-            ? "evidence"
-            : transition.workKind === "Hatch"
-              ? "hatch"
-              : transition.workKind === "Down"
-                ? "down"
-                : "snapshot";
-  return {
-    kind,
-    nonce: transition.nonce,
-    startedAt: transition.startedAt,
-    ...(kind === "create" ? { createPhase: "runtime" as const } : {}),
-  };
-};
-
 interface ActorStableRecordDetails {
   readonly ownedBackupIds: ReadonlyArray<string>;
   readonly currentBackup: BackupIdentity | null;
@@ -151,7 +124,7 @@ export const sessionRecordFromActor = (
     id: authority.session.id,
     title: authority.session.title,
     status: view.status,
-    operation: actorOperation(authority),
+    operation: sessionOperationFromActor(authority),
     execution:
       authority.session.execution.provider === "cloudflare"
         ? { provider: "cloudflare" }

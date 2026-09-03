@@ -1,7 +1,7 @@
 import type { BackupOptions, RestoreBackupResult } from "@cloudflare/sandbox";
 import { assert } from "@effect/vitest";
 import { Schema } from "effect";
-import type { BackupCapabilities, BackupObjectPage } from "../../src/backups/store";
+import type { BackupCapabilities } from "../../src/backups/store";
 import { DirectoryBackupSchema, type DirectoryBackup } from "../../src/session/contracts";
 
 declare const process: {
@@ -16,14 +16,9 @@ const RestoreBackupResultSchema = Schema.Struct({
   dir: Schema.String,
   id: Schema.String,
 });
-const BackupObjectPageSchema = Schema.Struct({
-  keys: Schema.Array(Schema.String),
-  cursor: Schema.optionalKey(Schema.String),
-});
 const decodeAck = Schema.decodeUnknownPromise(AckSchema);
 const decodeDirectoryBackup = Schema.decodeUnknownPromise(DirectoryBackupSchema);
 const decodeRestoreBackupResult = Schema.decodeUnknownPromise(RestoreBackupResultSchema);
-const decodeBackupObjectPage = Schema.decodeUnknownPromise(BackupObjectPageSchema);
 
 const deployedGateEnabled =
   env.SCOTTY_E2E_DEPLOYED === "1" &&
@@ -98,26 +93,14 @@ export const makeDeployedBackupCapabilities = (): BackupCapabilitiesContract => 
           }),
         );
       },
-      listObjects: async (prefix: string, cursor?: string): Promise<BackupObjectPage> => {
-        await initialize();
-        return decodeBackupObjectPage(
-          await request(url, {
-            adapter: "backup-store",
-            operation: "list",
-            namespace,
-            prefix,
-            ...(cursor === undefined ? {} : { cursor }),
-          }),
-        );
-      },
-      deleteObjects: async (keys: ReadonlyArray<string>): Promise<void> => {
+      deleteBackup: async (backupId: string): Promise<void> => {
         await initialize();
         await decodeAck(
           await request(url, {
             adapter: "backup-store",
             operation: "delete",
             namespace,
-            keys,
+            backupId,
           }),
         );
       },

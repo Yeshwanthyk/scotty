@@ -61,7 +61,7 @@ const transport = {
 };
 const readiness: ReadinessProof = { runtime, supervisor, transport };
 const backup: BackupIdentity = {
-  backupId: "backup-attempt-1",
+  backupId: "1ed4a6f4-7d9f-46b9-8a07-ef6d9c1dd64c",
   preparedAt: T1,
   confirmedAt: T2,
   sourceRuntimeGeneration: runtime.runtimeGeneration,
@@ -90,7 +90,7 @@ const command = (
     expectedRevision,
     correlationId: `${tag}-correlation`,
     nonce: `${tag}-nonce`,
-    attempt: `${tag}-attempt`,
+    attempt: backup.backupId,
     timestamp: T0,
     deadlineAt: DEADLINE,
   };
@@ -106,9 +106,11 @@ const accepted = (decision: Decision): AcceptedDecision => {
 
 const providerIntent = (
   decision: AcceptedDecision,
-): Exclude<EffectIntent, { readonly _tag: "ArmDeadline" }> => {
+): Exclude<EffectIntent, { readonly _tag: "ArmDeadline" | "ArmReconciliation" }> => {
   const intent = decision.effectIntents.find(
-    (candidate) => !Predicate.isTagged(candidate, "ArmDeadline"),
+    (candidate) =>
+      !Predicate.isTagged(candidate, "ArmDeadline") &&
+      !Predicate.isTagged(candidate, "ArmReconciliation"),
   );
   assert.ok(intent !== undefined);
   return intent;
@@ -311,12 +313,14 @@ describe("checkpoint, sleep, and resume transition executors", () => {
       let decision = accepted(decide(warm(), command("CheckpointCommand", 1)));
       const visited: string[] = [];
       const currentBackupIds: Array<string | null> = [];
+      const ownedBackupIds: Array<ReadonlyArray<string>> = [];
       for (let index = 0; index < 7; index += 1) {
         assert.ok(Predicate.isTagged(decision.nextAuthority.state, "Transitioning"));
         const transition = decision.nextAuthority.state.transition;
         visited.push(transition.phase);
         assert.ok(Predicate.isTagged(transition, "Checkpoint"));
         currentBackupIds.push(transition.proof.backup.currentBackupId);
+        ownedBackupIds.push(transition.proof.backup.ownedBackupIds);
         const input = yield* executeCheckpointTransition(checkpointProvider(), committed(decision));
         decision = accepted(decide(decision.nextAuthority, input));
       }
@@ -338,6 +342,7 @@ describe("checkpoint, sleep, and resume transition executors", () => {
         backup.backupId,
         backup.backupId,
       ]);
+      assert.deepStrictEqual(ownedBackupIds[2], [backup.backupId]);
       assert.ok(Predicate.isTagged(decision.nextAuthority.state, "Stable"));
       assert.ok(Predicate.isTagged(decision.nextAuthority.state.stable, "Warm"));
       assert.strictEqual(

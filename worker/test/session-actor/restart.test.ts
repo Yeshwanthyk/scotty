@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Match, Predicate, Result, Schema } from "effect";
 import {
+  actorAlarmId,
   ActorAlarmOutcomeUnknown,
   actorAlarmSchedulerLayer,
   type ActorAlarmFence,
@@ -291,8 +292,8 @@ describe("session actor restart", () => {
       const runner = actorEffectRunnerLayer.pipe(
         Layer.provide(
           Layer.merge(
-            actorAlarmSchedulerLayer(() => {
-              dispatched.push("ArmDeadline");
+            actorAlarmSchedulerLayer((fence) => {
+              dispatched.push(fence.kind === "deadline" ? "ArmDeadline" : "ArmReconciliation");
               return Effect.void;
             }),
             providerEffectExecutorLayer((committed) => {
@@ -333,15 +334,12 @@ describe("session actor restart", () => {
       ).pipe(Effect.provide(actor));
 
       assert.ok(result !== undefined);
-      assert.deepStrictEqual(dispatched, ["ReconcileTransition"]);
-      assert.strictEqual(result.committed.length, 2);
+      assert.deepStrictEqual(dispatched, ["ArmReconciliation"]);
+      assert.strictEqual(result.committed.length, 1);
       const reconciling = result.committed[0];
-      const failed = result.committed[1];
       assert.ok(reconciling !== undefined);
-      assert.ok(failed !== undefined);
       assert.ok(AuthorityStateSchema.guards.Transitioning(reconciling.authority.state));
       assert.strictEqual(reconciling.authority.state.transition.mode, "reconciling");
-      assert.ok(AuthorityStateSchema.guards.Stable(failed.authority.state));
     }),
   );
 
@@ -422,7 +420,171 @@ describe("session actor restart", () => {
       }),
   );
 
-  it.effect("handles a current deadline with one reconciliation observation", () =>
+  it.effect("resolves a prompt alarm against the current reconciling revision and phase", () =>
+    Effect.gen(function* () {
+      const persistedTransition = {
+        ...transition("Create", "WorkspacePreparing"),
+        mode: "reconciling" as const,
+      };
+      const persisted = { ...authority(persistedTransition), revision: 4 };
+      const memory = actorPort(undefined, false, {
+        authority: persisted,
+        revision: 4,
+        journalSequence: 4,
+        journalTail: {
+          sequence: 4,
+          revision: 4,
+          timestamp: T1,
+          correlationId: "correlation-current",
+          transitionNonce: persistedTransition.nonce,
+          eventType: "provider_reconciling",
+          transitionKind: "Create",
+          transitionPhase: "WorkspacePreparing",
+          resultCode: "unknown",
+          causeSequence: null,
+          causeAttempt: persistedTransition.attempt,
+        },
+      });
+      const observedPhases: string[] = [];
+      const armed: ActorAlarmFence[] = [];
+      const runner = actorEffectRunnerLayer.pipe(
+        Layer.provide(
+          Layer.merge(
+            actorAlarmSchedulerLayer((fence) => {
+              armed.push(fence);
+              return Effect.void;
+            }),
+            providerEffectExecutorLayer((committed) => {
+              observedPhases.push(committed.intent.phase);
+              const current = persistedTransition;
+              return Effect.succeed({
+                _tag: "TransitionFailed",
+                revision: committed.authority.revision,
+                transitionNonce: current.nonce,
+                attempt: current.attempt,
+                expectedPhase: current.phase,
+                timestamp: T1,
+                correlationId: committed.journalEvent.correlationId,
+                failureCode: "workspace_absent",
+                actionable: false,
+                backup: null,
+                ownedBackupIds: [],
+                wakeSource: null,
+                resultCode: "workspace_absent",
+              });
+            }),
+          ),
+        ),
+      );
+      const actor = sessionActorLayer.pipe(
+        Layer.provide(Layer.merge(actorStoreLayer(memory.port), runner)),
+      );
+      const result = yield* Effect.flatMap(SessionActor, (service) =>
+        service.resume({
+          timestamp: T1,
+          correlationId: "correlation-alarm",
+          fence: {
+            kind: "reconcile",
+            alarmId: actorAlarmId(
+              "reconcile",
+              persistedTransition.nonce,
+              persistedTransition.attempt,
+              DEADLINE,
+              "WorkspacePreparing",
+            ),
+            revision: 4,
+            transitionNonce: persistedTransition.nonce,
+            attempt: persistedTransition.attempt,
+            expectedPhase: "WorkspacePreparing",
+            expectedDeadlineAt: DEADLINE,
+            correlationId: "correlation-old",
+          },
+        }),
+      ).pipe(Effect.provide(actor));
+
+      assert.ok(result !== undefined);
+      assert.deepStrictEqual(observedPhases, ["WorkspacePreparing"]);
+      assert.deepStrictEqual(
+        armed.map(({ kind }) => kind),
+        ["reconcile"],
+      );
+      assert.ok(AuthorityStateSchema.guards.Stable(result.committed[0]?.authority.state));
+    }),
+  );
+
+  it.effect(
+    "ignores stale prompt fences and delayed prompt alarms after phase execution resumes",
+    () =>
+      Effect.gen(function* () {
+        for (const mode of ["reconciling", "executing"] as const) {
+          const persistedTransition = { ...transition("Create", "WorkspacePreparing"), mode };
+          const persisted = authority(persistedTransition);
+          const memory = actorPort(undefined, false, {
+            authority: persisted,
+            revision: 1,
+            journalSequence: 1,
+            journalTail: {
+              sequence: 1,
+              revision: 1,
+              timestamp: T1,
+              correlationId: "correlation-current",
+              transitionNonce: persistedTransition.nonce,
+              eventType: "provider_reconciling",
+              transitionKind: "Create",
+              transitionPhase: "WorkspacePreparing",
+              resultCode: "unknown",
+              causeSequence: null,
+              causeAttempt: persistedTransition.attempt,
+            },
+          });
+          let calls = 0;
+          const runner = actorEffectRunnerLayer.pipe(
+            Layer.provide(
+              Layer.merge(
+                actorAlarmSchedulerLayer(() => {
+                  calls += 1;
+                  return Effect.void;
+                }),
+                providerEffectExecutorLayer(() => {
+                  calls += 1;
+                  return Effect.succeed(createCommand());
+                }),
+              ),
+            ),
+          );
+          const actor = sessionActorLayer.pipe(
+            Layer.provide(Layer.merge(actorStoreLayer(memory.port), runner)),
+          );
+          const staleAttempt =
+            mode === "reconciling" ? "stale-attempt" : persistedTransition.attempt;
+          const result = yield* Effect.flatMap(SessionActor, (service) =>
+            service.resume({
+              timestamp: T1,
+              correlationId: "correlation-alarm",
+              fence: {
+                kind: "reconcile",
+                alarmId: actorAlarmId(
+                  "reconcile",
+                  persistedTransition.nonce,
+                  staleAttempt,
+                  DEADLINE,
+                ),
+                revision: 1,
+                transitionNonce: persistedTransition.nonce,
+                attempt: staleAttempt,
+                expectedPhase: persistedTransition.phase,
+                expectedDeadlineAt: DEADLINE,
+                correlationId: "correlation-old",
+              },
+            }),
+          ).pipe(Effect.provide(actor));
+          assert.strictEqual(result, undefined);
+          assert.strictEqual(calls, 0);
+        }
+      }),
+  );
+
+  it.effect("terminalizes an ordinary operation at the current deadline without redispatch", () =>
     Effect.gen(function* () {
       const persistedTransition = transition("Create", "WorkspacePreparing");
       const persisted = authority(persistedTransition);
@@ -485,16 +647,14 @@ describe("session actor restart", () => {
         }),
       ).pipe(Effect.provide(actor));
 
-      assert.strictEqual(providerCalls, 1);
+      assert.strictEqual(providerCalls, 0);
       assert.strictEqual(result.committed.length, 1);
       const retained = result.committed[0]?.authority;
-      assert.ok(
-        retained !== undefined && AuthorityStateSchema.guards.Transitioning(retained.state),
-      );
-      assert.strictEqual(retained.state.transition.mode, "reconciling");
+      assert.ok(retained !== undefined && AuthorityStateSchema.guards.Stable(retained.state));
+      assert.ok(StableStateSchema.guards.Failed(retained.state.stable));
       assert.deepInclude(result.committed[0]?.journalEvent, {
-        eventType: "deadline_reconciling",
-        resultCode: "deadline_elapsed",
+        eventType: "completed",
+        resultCode: "transition_deadline_elapsed",
       });
     }),
   );
@@ -699,7 +859,7 @@ describe("session actor restart", () => {
             : staleObservation(committed),
         );
       });
-      assert.deepStrictEqual(providerIntents, ["ExecutePhase", "ReconcileTransition"]);
+      assert.deepStrictEqual(providerIntents, ["ExecutePhase"]);
       assert.strictEqual(result.committed.length, 2);
       const reconciled = result.committed[1]?.authority;
       assert.ok(
@@ -763,7 +923,7 @@ describe("session actor restart", () => {
           }),
         );
       });
-      assert.strictEqual(providerCalls, 2);
+      assert.strictEqual(providerCalls, 1);
       assert.strictEqual(result.committed.length, 2);
       const reconciled = result.committed[1]?.authority;
       assert.strictEqual(reconciled?.revision, 2);
@@ -781,13 +941,25 @@ describe("session actor restart", () => {
   it.effect("fences a provider defect as an unknown admitted outcome", () =>
     Effect.gen(function* () {
       const memory = actorPort(undefined, false);
+      const alarms: ActorAlarmFence[] = [];
       let providerCalls = 0;
-      const result = yield* runActor(memory.port, () => {
-        providerCalls += 1;
-        return Effect.die("provider defect after dispatch");
-      });
+      const result = yield* runActor(
+        memory.port,
+        () => {
+          providerCalls += 1;
+          return Effect.die("provider defect after dispatch");
+        },
+        (fence) => {
+          alarms.push(fence);
+          return Effect.void;
+        },
+      );
 
-      assert.strictEqual(providerCalls, 2);
+      assert.strictEqual(providerCalls, 1);
+      assert.deepStrictEqual(
+        alarms.map(({ kind }) => kind),
+        ["deadline", "reconcile"],
+      );
       assert.strictEqual(result.committed.length, 2);
       assert.deepInclude(result.committed[1]?.journalEvent, {
         eventType: "provider_reconciling",
@@ -804,13 +976,25 @@ describe("session actor restart", () => {
   it.effect("fences provider interruption as an unknown admitted outcome", () =>
     Effect.gen(function* () {
       const memory = actorPort(undefined, false);
+      const alarms: ActorAlarmFence[] = [];
       let providerCalls = 0;
-      const result = yield* runActor(memory.port, () => {
-        providerCalls += 1;
-        return Effect.interrupt;
-      });
+      const result = yield* runActor(
+        memory.port,
+        () => {
+          providerCalls += 1;
+          return Effect.interrupt;
+        },
+        (fence) => {
+          alarms.push(fence);
+          return Effect.void;
+        },
+      );
 
-      assert.strictEqual(providerCalls, 2);
+      assert.strictEqual(providerCalls, 1);
+      assert.deepStrictEqual(
+        alarms.map(({ kind }) => kind),
+        ["deadline", "reconcile"],
+      );
       assert.strictEqual(result.committed.length, 2);
       assert.deepInclude(result.committed[1]?.journalEvent, {
         eventType: "provider_reconciling",
@@ -824,31 +1008,27 @@ describe("session actor restart", () => {
     }),
   );
 
-  it.effect("does not loop when a reconciliation observation commit is ambiguous", () =>
+  it.effect("does not dispatch reconciliation before its durable alarm", () =>
     Effect.gen(function* () {
       const memory = actorPort(3, false);
       let providerCalls = 0;
-      const result = yield* Effect.result(
-        runActor(memory.port, (committed) => {
-          providerCalls += 1;
-          if (providerCalls > 1) return Effect.succeed(validObservation(committed));
-          return Effect.fail(
-            new ProviderEffectBoundaryFailure({
-              expectedRevision: committed.authority.revision,
-              transitionNonce: committed.intent.transitionNonce,
-              attempt: committed.intent.attempt,
-              expectedPhase: committed.intent.phase,
-              expectedProviderRuntimeId: null,
-              outcome: "unknown_after_admission",
-              safeResultCode: "provider_response_lost",
-              observedAt: T1,
-            }),
-          );
-        }),
-      );
-      assert.ok(Result.isFailure(result));
-      assert.ok(Predicate.isTagged(result.failure, "ActorStoreUnconfirmedCommit"));
-      assert.strictEqual(providerCalls, 2);
+      const result = yield* runActor(memory.port, (committed) => {
+        providerCalls += 1;
+        return Effect.fail(
+          new ProviderEffectBoundaryFailure({
+            expectedRevision: committed.authority.revision,
+            transitionNonce: committed.intent.transitionNonce,
+            attempt: committed.intent.attempt,
+            expectedPhase: committed.intent.phase,
+            expectedProviderRuntimeId: null,
+            outcome: "unknown_after_admission",
+            safeResultCode: "provider_response_lost",
+            observedAt: T1,
+          }),
+        );
+      });
+      assert.strictEqual(providerCalls, 1);
+      assert.ok(Predicate.isTagged(result.decision, "Accepted"));
       assert.strictEqual(memory.snapshot().revision, 2);
       const retained = yield* makeActorStore(memory.port).read;
       assert.ok(

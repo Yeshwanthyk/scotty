@@ -1,0 +1,215 @@
+diff --git a/node_modules/@cloudflare/sandbox/dist/sandbox-BtaWcmmG.d.ts b/node_modules/@cloudflare/sandbox/dist/sandbox-BtaWcmmG.d.ts
+index 61e84ac..794a029 100644
+--- a/node_modules/@cloudflare/sandbox/dist/sandbox-BtaWcmmG.d.ts
++++ b/node_modules/@cloudflare/sandbox/dist/sandbox-BtaWcmmG.d.ts
+@@ -1212,6 +1213,8 @@ interface BackupCompressionOptions {
+ interface BackupOptions {
+   /** Directory to back up. Must be absolute and under `/workspace`, `/home`, `/tmp`, `/var/tmp`, or `/app`. */
+   dir: string;
++  /** Caller-owned UUID used to make retries converge on the same immutable backup. Optional. */
++  backupId?: string;
+   /** Human-readable name for this backup. Optional. */
+   name?: string;
+   /** Seconds until automatic garbage collection. Default: 259200 (3 days). No upper limit. */
+@@ -1464,6 +1467,7 @@ interface ISandbox {
+   listCodeContexts(): Promise<CodeContext[]>;
+   deleteCodeContext(contextId: string): Promise<void>;
+   createBackup(options: BackupOptions): Promise<DirectoryBackup>;
++  deleteBackup(backupId: string): Promise<void>;
+   restoreBackup(backup: DirectoryBackup): Promise<RestoreBackupResult>;
+   wsConnect(request: Request, port: number): Promise<Response>;
+ }
+@@ -3622,6 +3626,7 @@ declare class Sandbox<Env = unknown> extends Container<Env> implements ISandbox
+    * under the `backups/` prefix after the desired retention period.
+    */
+   createBackup(options: BackupOptions): Promise<DirectoryBackup>;
++  deleteBackup(backupId: string): Promise<void>;
+   private doCreateBackup;
+   /**
+    * Local-dev implementation of createBackup.
+diff --git a/node_modules/@cloudflare/sandbox/dist/sandbox-D0rNqxlr.js b/node_modules/@cloudflare/sandbox/dist/sandbox-D0rNqxlr.js
+index 63771b5..f74fce3 100644
+--- a/node_modules/@cloudflare/sandbox/dist/sandbox-D0rNqxlr.js
++++ b/node_modules/@cloudflare/sandbox/dist/sandbox-D0rNqxlr.js
+@@ -10891,10 +10891,7 @@ var Sandbox = class Sandbox extends Container {
+ 	* is not interleaved with another backup operation on the same directory.
+ 	*/
+ 	async enqueueBackupOp(fn) {
+-		try {
+-			await this.backupInProgress;
+-		} catch {}
+-		const next = fn();
++		const next = this.backupInProgress.catch(() => {}).then(fn);
+ 		this.backupInProgress = next.catch(() => {});
+ 		return await next;
+ 	}
+@@ -10924,10 +10921,29 @@ var Sandbox = class Sandbox extends Container {
+ 		this.requireBackupBucket();
+ 		return await this.enqueueBackupOp(() => this.doCreateBackup(options));
+ 	}
++	async deleteBackup(backupId) {
++		if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(backupId)) throw new InvalidBackupConfigError({
++			message: "backupId must be a UUID",
++			code: ErrorCode.INVALID_BACKUP_CONFIG,
++			httpStatus: 400,
++			context: { reason: "backupId must be a UUID" },
++			timestamp: (/* @__PURE__ */ new Date()).toISOString()
++		});
++		await this.ctx.storage.put(`backup-tombstone:${backupId}`, true);
++		return await this.enqueueBackupOp(async () => {
++			const bucket = this.requireBackupBucket();
++			let cursor;
++			do {
++				const page = await bucket.list({ prefix: `${BACKUP_STORAGE_PREFIX}/${backupId}/`, cursor });
++				if (page.objects.length > 0) await bucket.delete(page.objects.map((object) => object.key));
++				cursor = page.truncated ? page.cursor : void 0;
++			} while (cursor !== void 0);
++		});
++	}
+ 	async doCreateBackup(options) {
+ 		const bucket = this.requireBackupBucket();
+ 		this.requirePresignedURLSupport();
+-		const { dir, name, ttl = BACKUP_DEFAULT_TTL_SECONDS, gitignore = false, excludes = [], compression, multipart = true } = options;
++		const { dir, backupId: requestedBackupId, name, ttl = BACKUP_DEFAULT_TTL_SECONDS, gitignore = false, excludes = [], compression, multipart = true } = options;
+ 		const backupStartTime = Date.now();
+ 		let backupId;
+ 		let sizeBytes;
+@@ -10936,6 +10952,13 @@ var Sandbox = class Sandbox extends Container {
+ 		let backupSession;
+ 		try {
+ 			Sandbox.validateBackupDir(dir, "BackupOptions.dir");
++			if (requestedBackupId !== void 0 && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedBackupId)) throw new InvalidBackupConfigError({
++				message: "BackupOptions.backupId must be a UUID",
++				code: ErrorCode.INVALID_BACKUP_CONFIG,
++				httpStatus: 400,
++				context: { reason: "backupId must be a UUID" },
++				timestamp: (/* @__PURE__ */ new Date()).toISOString()
++			});
+ 			if (name !== void 0) {
+ 				if (typeof name !== "string" || name.length > BACKUP_MAX_NAME_LENGTH) throw new InvalidBackupConfigError({
+ 					message: `BackupOptions.name must be a string of at most ${BACKUP_MAX_NAME_LENGTH} characters`,
+@@ -10975,8 +10998,35 @@ var Sandbox = class Sandbox extends Container {
+ 			});
+ 			const resolvedCompression = this.resolveBackupCompression(compression);
+ 			const normalizedExcludes = this.normalizeBackupExcludes(excludes);
++			backupId = requestedBackupId ?? crypto.randomUUID();
++			if (await this.ctx.storage.get(`backup-tombstone:${backupId}`)) throw new BackupCreateError({
++				message: "Backup ID has been deleted",
++				code: ErrorCode.BACKUP_CREATE_FAILED,
++				httpStatus: 409,
++				context: { dir, backupId },
++				timestamp: (/* @__PURE__ */ new Date()).toISOString()
++			});
++			const existingMetaKey = `${BACKUP_STORAGE_PREFIX}/${backupId}/${BACKUP_METADATA_OBJECT_NAME}`;
++			const existingMetadataObject = await bucket.get(existingMetaKey);
++			if (existingMetadataObject) {
++				const existingMetadata = await existingMetadataObject.json();
++				const existingArchiveKey = `${BACKUP_STORAGE_PREFIX}/${backupId}/${BACKUP_ARCHIVE_OBJECT_NAME}`;
++				const existingArchive = await bucket.head(existingArchiveKey);
++				const metadataMatchesRequest = existingMetadata && existingMetadata.id === backupId && existingMetadata.dir === dir && existingMetadata.name === (name || null) && Number.isInteger(existingMetadata.sizeBytes) && existingMetadata.sizeBytes >= 0 && existingMetadata.ttl === ttl && typeof existingMetadata.createdAt === "string" && Number.isFinite(Date.parse(existingMetadata.createdAt));
++				if (metadataMatchesRequest && existingArchive?.size === existingMetadata.sizeBytes) {
++					sizeBytes = existingMetadata.sizeBytes;
++					outcome = "success";
++					return { id: backupId, dir };
++				}
++				if (!metadataMatchesRequest || existingArchive?.size !== existingMetadata.sizeBytes) throw new BackupCreateError({
++					message: "Backup ID already has conflicting or incomplete metadata",
++					code: ErrorCode.BACKUP_CREATE_FAILED,
++					httpStatus: 409,
++					context: { dir, backupId },
++					timestamp: (/* @__PURE__ */ new Date()).toISOString()
++				});
++			}
+ 			backupSession = await this.ensureBackupSession();
+-			backupId = crypto.randomUUID();
+ 			const archivePath = `${BACKUP_CONTAINER_DIR}/${backupId}.sqsh`;
+ 			const createResult = await this.client.backup.createArchive(dir, archivePath, backupSession, {
+ 				gitignore,
+@@ -10998,6 +11048,13 @@ var Sandbox = class Sandbox extends Container {
+ 			const metaKey = `${BACKUP_STORAGE_PREFIX}/${backupId}/${BACKUP_METADATA_OBJECT_NAME}`;
+ 			if (multipart && createResult.sizeBytes >= BACKUP_MULTIPART_MIN_SIZE) await this.uploadBackupMultipart(archivePath, r2Key, createResult.sizeBytes, backupId, dir, backupSession);
+ 			else await this.uploadBackupPresigned(archivePath, r2Key, createResult.sizeBytes, backupId, dir, backupSession);
++			if (await this.ctx.storage.get(`backup-tombstone:${backupId}`)) throw new BackupCreateError({
++				message: "Backup ID was deleted while being created",
++				code: ErrorCode.BACKUP_CREATE_FAILED,
++				httpStatus: 409,
++				context: { dir, backupId },
++				timestamp: (/* @__PURE__ */ new Date()).toISOString()
++			});
+ 			const metadata = {
+ 				id: backupId,
+ 				dir,
+@@ -11044,7 +11101,7 @@ var Sandbox = class Sandbox extends Container {
+ 	* Archive format is identical to production (squashfs + meta.json).
+ 	*/
+ 	async doCreateBackupLocal(options) {
+-		const { dir, name, ttl = BACKUP_DEFAULT_TTL_SECONDS, gitignore = false, excludes = [], compression } = options;
++		const { dir, backupId: requestedBackupId, name, ttl = BACKUP_DEFAULT_TTL_SECONDS, gitignore = false, excludes = [], compression } = options;
+ 		const backupStartTime = Date.now();
+ 		let backupId;
+ 		let sizeBytes;
+@@ -11061,6 +11118,13 @@ var Sandbox = class Sandbox extends Container {
+ 		});
+ 		try {
+ 			Sandbox.validateBackupDir(dir, "BackupOptions.dir");
++			if (requestedBackupId !== void 0 && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedBackupId)) throw new InvalidBackupConfigError({
++				message: "BackupOptions.backupId must be a UUID",
++				code: ErrorCode.INVALID_BACKUP_CONFIG,
++				httpStatus: 400,
++				context: { reason: "backupId must be a UUID" },
++				timestamp: (/* @__PURE__ */ new Date()).toISOString()
++			});
+ 			if (name !== void 0) {
+ 				if (typeof name !== "string" || name.length > BACKUP_MAX_NAME_LENGTH) throw new InvalidBackupConfigError({
+ 					message: `BackupOptions.name must be a string of at most ${BACKUP_MAX_NAME_LENGTH} characters`,
+@@ -11100,8 +11164,35 @@ var Sandbox = class Sandbox extends Container {
+ 			});
+ 			const resolvedCompression = this.resolveBackupCompression(compression);
+ 			const normalizedExcludes = this.normalizeBackupExcludes(excludes);
++			backupId = requestedBackupId ?? crypto.randomUUID();
++			if (await this.ctx.storage.get(`backup-tombstone:${backupId}`)) throw new BackupCreateError({
++				message: "Backup ID has been deleted",
++				code: ErrorCode.BACKUP_CREATE_FAILED,
++				httpStatus: 409,
++				context: { dir, backupId },
++				timestamp: (/* @__PURE__ */ new Date()).toISOString()
++			});
++			const existingMetaKey = `${BACKUP_STORAGE_PREFIX}/${backupId}/${BACKUP_METADATA_OBJECT_NAME}`;
++			const existingMetadataObject = await bucket.get(existingMetaKey);
++			if (existingMetadataObject) {
++				const existingMetadata = await existingMetadataObject.json();
++				const existingArchiveKey = `${BACKUP_STORAGE_PREFIX}/${backupId}/${BACKUP_ARCHIVE_OBJECT_NAME}`;
++				const existingArchive = await bucket.head(existingArchiveKey);
++				const metadataMatchesRequest = existingMetadata && existingMetadata.id === backupId && existingMetadata.dir === dir && existingMetadata.name === (name || null) && Number.isInteger(existingMetadata.sizeBytes) && existingMetadata.sizeBytes >= 0 && existingMetadata.ttl === ttl && typeof existingMetadata.createdAt === "string" && Number.isFinite(Date.parse(existingMetadata.createdAt));
++				if (metadataMatchesRequest && existingArchive?.size === existingMetadata.sizeBytes) {
++					sizeBytes = existingMetadata.sizeBytes;
++					outcome = "success";
++					return { id: backupId, dir, localBucket: true };
++				}
++				if (!metadataMatchesRequest || existingArchive?.size !== existingMetadata.sizeBytes) throw new BackupCreateError({
++					message: "Backup ID already has conflicting or incomplete metadata",
++					code: ErrorCode.BACKUP_CREATE_FAILED,
++					httpStatus: 409,
++					context: { dir, backupId },
++					timestamp: (/* @__PURE__ */ new Date()).toISOString()
++				});
++			}
+ 			backupSession = await this.ensureBackupSession();
+-			backupId = crypto.randomUUID();
+ 			const archivePath = `${BACKUP_CONTAINER_DIR}/${backupId}.sqsh`;
+ 			const createResult = await this.client.backup.createArchive(dir, archivePath, backupSession, {
+ 				gitignore,
+@@ -11144,6 +11235,13 @@ var Sandbox = class Sandbox extends Container {
+ 				},
+ 				timestamp: (/* @__PURE__ */ new Date()).toISOString()
+ 			});
++			if (await this.ctx.storage.get(`backup-tombstone:${backupId}`)) throw new BackupCreateError({
++				message: "Backup ID was deleted while being created",
++				code: ErrorCode.BACKUP_CREATE_FAILED,
++				httpStatus: 409,
++				context: { dir, backupId },
++				timestamp: (/* @__PURE__ */ new Date()).toISOString()
++			});
+ 			const metadata = {
+ 				id: backupId,
+ 				dir,

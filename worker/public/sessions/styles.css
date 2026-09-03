@@ -1121,12 +1121,16 @@ textarea.control {
   background: var(--warm);
 }
 
-.status-stopping .status-line {
+.status-stopping .status-line,
+.status-saving .status-line,
+.status-resuming .status-line {
   background: oklch(79% 0.12 78 / 0.09);
   color: var(--warm);
 }
 
-.status-stopping .signal {
+.status-stopping .signal,
+.status-saving .signal,
+.status-resuming .signal {
   background: var(--warm);
 }
 
@@ -2121,12 +2125,16 @@ body.sessions-page .workspace-manage-label::before {
 }
 
 body.sessions-page .workspace-manage-state.status-sleeping .workspace-manage-label,
-body.sessions-page .workspace-manage-state.status-stopping .workspace-manage-label {
+body.sessions-page .workspace-manage-state.status-stopping .workspace-manage-label,
+body.sessions-page .workspace-manage-state.status-saving .workspace-manage-label,
+body.sessions-page .workspace-manage-state.status-resuming .workspace-manage-label {
   color: #dab77e;
 }
 
 body.sessions-page .workspace-manage-state.status-sleeping .workspace-manage-label::before,
-body.sessions-page .workspace-manage-state.status-stopping .workspace-manage-label::before {
+body.sessions-page .workspace-manage-state.status-stopping .workspace-manage-label::before,
+body.sessions-page .workspace-manage-state.status-saving .workspace-manage-label::before,
+body.sessions-page .workspace-manage-state.status-resuming .workspace-manage-label::before {
   background: var(--warm);
 }
 

@@ -1,5 +1,5 @@
 import type { BackupOptions, ExecResult, RestoreBackupResult } from "@cloudflare/sandbox";
-import type { BackupCapabilities, BackupObjectPage } from "../../src/backups/store";
+import type { BackupCapabilities } from "../../src/backups/store";
 import type { DirectoryBackup } from "../../src/session/contracts";
 import type { RepoProjectionStorage } from "../../src/repos/projection";
 import type { SandboxExecOptions, SandboxRuntimeCapabilities } from "../../src/sandbox/runtime";
@@ -17,7 +17,6 @@ type Handler = (...args: ReadonlyArray<unknown>) => unknown | Promise<unknown>;
 export class InMemoryFaultInjectableFake<Operation extends string = string> {
   value: unknown | undefined;
   readonly values = new Map<string, unknown>();
-  readonly pages: BackupObjectPage[] = [];
   private readonly callLog = new Map<Operation, Array<ReadonlyArray<unknown>>>();
   private readonly failures = new Map<Operation, InjectedFailure>();
   private readonly handlers = new Map<Operation, Handler>();
@@ -190,9 +189,7 @@ export const backupCapabilitiesFake = (
       id: value.id,
       dir: value.dir,
     })),
-  listObjects: (prefix, cursor) =>
-    memory.invoke("list", [prefix, cursor], () => memory.pages.shift() ?? { keys: [] }),
-  deleteObjects: (keys) => memory.invoke("delete", [keys]),
+  deleteBackup: (backupId) => memory.invoke("delete", [backupId]),
 });
 
 const defaultExecResult = (): ExecResult => ({

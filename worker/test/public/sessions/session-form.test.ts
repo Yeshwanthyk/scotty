@@ -165,6 +165,22 @@ describe("session form", () => {
     assert.strictEqual(sessionDisplayStatus("warm", undefined, true), "deleting");
     assert.strictEqual(sessionDisplayStatus("sleeping", "sleep"), "sleeping");
     assert.strictEqual(sessionDisplayStatus(undefined, undefined), "unknown");
+    assert.strictEqual(
+      sessionDisplayStatus("warm", undefined, false, { kind: "snapshot" }),
+      "saving",
+    );
+    assert.strictEqual(
+      sessionDisplayStatus("warm", undefined, false, { kind: "sleep" }),
+      "stopping",
+    );
+    assert.strictEqual(
+      sessionDisplayStatus("sleeping", undefined, false, { kind: "resume" }),
+      "resuming",
+    );
+    assert.strictEqual(
+      sessionDisplayStatus("warm", undefined, false, { kind: "vaporize" }),
+      "deleting",
+    );
   });
 
   it("opens digit-selected sessions in visible order", () => {

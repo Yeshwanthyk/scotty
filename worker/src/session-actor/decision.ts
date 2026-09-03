@@ -48,6 +48,12 @@ export type EffectIntent =
       readonly attempt: string;
     }
   | {
+      readonly _tag: "ArmReconciliation";
+      readonly deadlineAt: string;
+      readonly transitionNonce: string;
+      readonly attempt: string;
+    }
+  | {
       readonly _tag: "ExecutePhase";
       readonly transitionKind: TransitionKind;
       readonly phase: TransitionPhase;

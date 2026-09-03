@@ -16,10 +16,29 @@ function normalizedFailure(value) {
   return Object.keys(failure).length === 0 ? undefined : failure;
 }
 
+function normalizedOperation(value) {
+  if (
+    !isObject(value) ||
+    !["create", "snapshot", "sleep", "resume", "evidence", "hatch", "down", "vaporize"].includes(
+      value.kind,
+    ) ||
+    (value.mode !== undefined && !["executing", "reconciling"].includes(value.mode))
+  )
+    return undefined;
+  return {
+    kind: value.kind,
+    ...(typeof value.nonce === "string" ? { nonce: value.nonce } : {}),
+    ...(typeof value.startedAt === "string" ? { startedAt: value.startedAt } : {}),
+    ...(typeof value.mode === "string" ? { mode: value.mode } : {}),
+    ...(typeof value.phase === "string" ? { phase: value.phase } : {}),
+  };
+}
+
 export function normalizeSessionListItem(value) {
   if (!isObject(value) || typeof value.id !== "string") return undefined;
 
   const failure = normalizedFailure(value.failure);
+  const operation = normalizedOperation(value.operation);
 
   return {
     id: value.id,
@@ -29,6 +48,7 @@ export function normalizeSessionListItem(value) {
     ...(typeof value.runner === "string" ? { runner: value.runner } : {}),
     ...(typeof value.status === "string" ? { status: value.status } : {}),
     ...(typeof value.deleting === "boolean" ? { deleting: value.deleting } : {}),
+    ...(operation === undefined ? {} : { operation }),
     ...(typeof value.backupId === "string" ? { backupId: value.backupId } : {}),
     ...(Number.isFinite(value.capRemainingSeconds)
       ? { capRemainingSeconds: value.capRemainingSeconds }
@@ -56,6 +76,8 @@ export function sessionPrimaryTiming(session, status, pendingAction) {
     return "Cleanup retries automatically";
   }
   if (status === "stopping") return "Stopping now";
+  if (status === "saving") return "Saving checkpoint";
+  if (status === "resuming") return "Resuming now";
   if (status === "boot-failed") return "Needs attention";
   if (status === "sleeping") return session?.backupId ? "Backup ready" : "Backup unavailable";
   if (status === "failed") return session?.backupId ? "Backup ready" : "Needs attention";
@@ -94,6 +116,18 @@ export function sessionManagementPresentation(session, status) {
       label: "Stopping",
       title: "Preparing your checkpoint",
       copy: "Scotty is saving the workspace before it goes to sleep.",
+    };
+  if (status === "saving")
+    return {
+      label: "Saving",
+      title: "Saving your checkpoint",
+      copy: "Scotty is preserving the current workspace state.",
+    };
+  if (status === "resuming")
+    return {
+      label: "Resuming",
+      title: "Restoring workspace",
+      copy: "Scotty is restoring the checkpoint and starting the runtime.",
     };
   if (status === "deleting")
     return {
@@ -141,6 +175,10 @@ export function sessionsRenderSignature(sessions, loaded, now = Date.now()) {
         session.runner,
         session.status,
         Boolean(session.deleting),
+        session.operation?.kind,
+        session.operation?.nonce,
+        session.operation?.mode,
+        session.operation?.phase,
         session.backupId,
         Number.isFinite(session.capRemainingSeconds)
           ? Math.floor(session.capRemainingSeconds / 60)
@@ -193,6 +231,11 @@ function appendLifecycleActions(parent, state, session, status, options = {}) {
   actions.className = `actions ${options.className || ""}`.trim();
   const focusPrefix = options.focusPrefix || "";
 
+  if (session.operation) {
+    parent.append(actions);
+    return;
+  }
+
   if (options.includeRename && status !== "deleting") {
     actions.append(
       actionButton(state, "Rename", "rename", session.id, {
@@ -236,7 +279,7 @@ function appendLifecycleActions(parent, state, session, status, options = {}) {
 }
 
 function appendConfirmation(parent, state, session, status) {
-  if (status === "stopping" || !state.confirmations.has(session.id)) return;
+  if (session.operation || status === "stopping" || !state.confirmations.has(session.id)) return;
   const confirmation = document.createElement("div");
   confirmation.className = "confirmation work-confirmation";
   addText(
@@ -274,7 +317,9 @@ function appendRenameForm(parent, state, session) {
 }
 
 function sessionIsActive(session) {
-  return ["warm", "booting", "stopping"].includes(sessionDisplayStatus(session.status));
+  return ["warm", "booting", "stopping", "saving", "resuming"].includes(
+    sessionDisplayStatus(session.status, undefined, session.deleting, session.operation),
+  );
 }
 
 function sessionAgeLabel(session, now) {
@@ -287,7 +332,10 @@ function sessionAgeLabel(session, now) {
 function appendRailSession(parent, session, selectedSessionId, now, compact = false) {
   const link = document.createElement("a");
   link.className = `rail-session${compact ? " rail-session-archived" : ""}`;
-  link.href = compact ? focusedSessionPath(session.id) : `/s/${encodeURIComponent(session.id)}`;
+  link.href =
+    compact || session.operation
+      ? focusedSessionPath(session.id)
+      : `/s/${encodeURIComponent(session.id)}`;
   link.dataset.selectSession = session.id;
   if (compact) link.dataset.manageSession = session.id;
   if (session.id === selectedSessionId) link.setAttribute("aria-current", "page");
@@ -300,7 +348,12 @@ function appendRailSession(parent, session, selectedSessionId, now, compact = fa
   addText(
     copy,
     "rail-session-meta",
-    compact ? sessionAgeLabel(session, now) : sessionPrimaryTiming(session, session.status),
+    compact
+      ? sessionAgeLabel(session, now)
+      : sessionPrimaryTiming(
+          session,
+          sessionDisplayStatus(session.status, undefined, session.deleting, session.operation),
+        ),
     "small",
   );
   link.append(signal, copy);
@@ -400,7 +453,12 @@ function renderManageWorkspace(parent, state, session) {
     `${session.repo || "Unknown repository"} · ${session.branch || session.id}`,
     "p",
   );
-  const status = sessionDisplayStatus(session.status, state.busy.get(session.id), session.deleting);
+  const status = sessionDisplayStatus(
+    session.status,
+    state.busy.get(session.id),
+    session.deleting,
+    session.operation,
+  );
   const presentation = sessionManagementPresentation(session, status);
   const lifecycle = document.createElement("section");
   lifecycle.className = `workspace-manage-state status-${status}`;

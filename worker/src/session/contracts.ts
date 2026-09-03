@@ -77,6 +77,7 @@ export type SessionStatus = typeof SessionStatusSchema.Type;
 export const OperationKindSchema = Schema.Literals([
   "create",
   "snapshot",
+  "sleep",
   "resume",
   "evidence",
   "hatch",
@@ -90,6 +91,8 @@ export const SessionOperationSchema = Schema.Struct({
   nonce: Schema.String,
   startedAt: Schema.String,
   createPhase: Schema.optionalKey(Schema.Literals(["setup", "runtime"])),
+  mode: Schema.optionalKey(Schema.Literals(["executing", "reconciling"])),
+  phase: Schema.optionalKey(Schema.String),
 }).pipe(
   Schema.check(
     Schema.makeFilter(
@@ -195,6 +198,7 @@ export const SessionProjectionSchema = Schema.Struct({
   title: Schema.String,
   status: SessionStatusSchema,
   deleting: Schema.optionalKey(Schema.Boolean),
+  operation: Schema.optionalKey(SessionOperationSchema),
   provider: ProviderSchema,
   runner: Schema.optionalKey(Schema.String),
   repo: Schema.String,
@@ -561,6 +565,7 @@ export function toProjection(record: SessionRecord, now: Date): SessionProjectio
     title: record.title,
     status: record.status,
     deleting: record.operation?.kind === "vaporize" ? true : undefined,
+    ...(record.operation === null ? {} : { operation: record.operation }),
     provider: record.provider,
     runner: record.runner,
     repo: record.repo,

@@ -1,25 +1,26 @@
 # Effect 4 RC and Alchemy upgrade assessment
 
 Date: 2026-08-16
+Updated: 2026-09-02
 
 ## Decision summary
 
-- **Upgrade Effect, but not as a registry fix.** Move Scotty from Effect `4.0.0-beta.103` (`dff25449…`) to the latest tagged RC, `4.0.0-rc.109` (`b5946ece…`), in its own migration. This reduces version drift and moves Scotty onto Effect's presumed-final v4 interfaces.
+- **Upgrade Effect, but not as a registry fix.** Scotty now targets Effect `4.0.0-rc.112` (`2600f62f…`). This reduces version drift and keeps Scotty on Effect's presumed-final v4 interfaces.
 - **Do not expect Effect to fix the Cloudflare Container Registry `401`.** Effect does not own registry credential issuance or Docker authentication.
-- **Alchemy `2.0.0-beta.72` does not contain a fix for this `401`.** It upgrades Alchemy's Effect floor to beta.105 and hardens container pushes for platform selection and transient `500` responses, but its short-lived registry-credential and isolated Docker-config authentication path is materially unchanged.
+- **Alchemy `2.0.0-beta.76` does not contain a fix for this `401`.** Its scoped temporary `DOCKER_CONFIG` preserves Scotty's credential-isolation requirements, but the registry-credential path still requires the narrow TTL backport.
 - **Treat the registry fix separately.** The narrowest supported route is to push the image with Cloudflare's official tooling and pass Alchemy an immutable, already-pushed registry reference through Alchemy's public `image` contract. This keeps Alchemy as the only resource reconciler. Alternatively, fix/upstream Alchemy's registry authentication to match Wrangler's successful login path.
-- **Upgrade Alchemy separately after Effect.** Target `v2.0.0-beta.72` (`4465e353603ab71b279a66c4fcd3ecc1488aa090`) only after re-validating Scotty's beta.67 patch and direct `@distilled.cloud/cloudflare` integration.
+- **Upgrade Alchemy together with its compatibility set.** Target `v2.0.0-beta.76` (`e5b1b598392585e0f2d5fa03ac475cd076dbc0f8`), Effect rc.112, and `@distilled.cloud/cloudflare` rc.8, while retaining only revalidated patches.
 
 ## What the Effect RC changes
 
-The Effect announcement tagged `4.0.0-rc.108` and states that broad breaking changes are no longer planned and interfaces are presumed final. The current RC dist-tag has since advanced to `4.0.0-rc.109` at commit `b5946ece2b33a4468ef927a39821d7c3db463af3`.
+The Effect announcement tagged `4.0.0-rc.108` and states that broad breaking changes are no longer planned and interfaces are presumed final. Scotty's coordinated pin is `4.0.0-rc.112` at commit `2600f62f4532026928454dcea8d1c48557b3f942`.
 
 Primary sources:
 
 - [Effect 4 RC announcement](https://www.effect.website/blog/releases/effect/40-rc)
-- [Effect rc.109 tag](https://github.com/Effect-TS/effect/releases/tag/effect%404.0.0-rc.109)
-- [Effect migration guide](https://github.com/Effect-TS/effect/blob/b5946ece2b33a4468ef927a39821d7c3db463af3/MIGRATION.md)
-- [beta.103 → rc.109 comparison](https://github.com/Effect-TS/effect/compare/dff25449dfc927f2cce912c329f343cfb5365f88...b5946ece2b33a4468ef927a39821d7c3db463af3)
+- [Effect rc.112 tag](https://github.com/Effect-TS/effect/releases/tag/effect%404.0.0-rc.112)
+- [Effect migration guide](https://github.com/Effect-TS/effect/blob/2600f62f4532026928454dcea8d1c48557b3f942/MIGRATION.md)
+- [rc.109 → rc.112 comparison](https://github.com/Effect-TS/effect/compare/b5946ece2b33a4468ef927a39821d7c3db463af3...2600f62f4532026928454dcea8d1c48557b3f942)
 
 Concrete Scotty-facing breaks found in the tagged source:
 
@@ -28,6 +29,7 @@ Concrete Scotty-facing breaks found in the tagged source:
 3. `Schema.toArbitrary` becomes the curried arbitrary factory and replaces `toArbitraryLazy` ([Effect commit `1416ccd4`](https://github.com/Effect-TS/effect/commit/1416ccd474bc9da8979f51b72b5e53fb3ac56edf)). Scotty has no direct production call site, but test guidance should reflect the new form.
 4. Platform package source directories moved under `packages/platform/*`; published npm package names remain unchanged. Any repository-source paths in instructions must be updated.
 5. Upstream testing guidance now states that `it.effect` and `it.live` already provide and close a `Scope`; tests should not wrap those bodies in `Effect.scoped`.
+6. In rc.112, `Flag.boolean` omission produces `MissingOption`; optional switches must use `Flag.withDefault(false)` explicitly.
 
 `Effect.fnUntraced`, the class form of `Context.Service`, core HTTP subpaths, and the `@effect/vitest` public test surface remain available. The migration is real but bounded and mostly mechanical.
 
@@ -38,29 +40,29 @@ The failed deployment established a narrow contrast:
 - Alchemy built the image and uploaded the Worker, but Docker failed a Cloudflare registry blob `HEAD` request with `401 Unauthorized` while using Alchemy-created temporary credentials.
 - `wrangler containers push` successfully pushed the identical image and digest using the existing Cloudflare login.
 
-Effect does not issue Cloudflare registry credentials, create Docker authentication files, or push OCI images. No beta.103 → rc.109 Effect change touches this path. Therefore the Effect upgrade and the registry failure are independent.
+Effect does not issue Cloudflare registry credentials, create Docker authentication files, or push OCI images. No Effect change through rc.112 owns this path. Therefore the Effect upgrade and the registry failure are independent.
 
 ## What changed in Alchemy after beta.67
 
-Scotty pins Alchemy `v2.0.0-beta.67` at `da667f7d46751fe93952cfeb49768e6eb8212693`. The latest tagged v2 release inspected is `v2.0.0-beta.72` at `4465e353603ab71b279a66c4fcd3ecc1488aa090`.
+Scotty previously pinned Alchemy `v2.0.0-beta.72` at `4465e353603ab71b279a66c4fcd3ecc1488aa090`. The coordinated pin inspected here is `v2.0.0-beta.76` at `e5b1b598392585e0f2d5fa03ac475cd076dbc0f8`.
 
 Primary sources:
 
 - [Alchemy releases](https://github.com/alchemy-run/alchemy/releases)
-- [beta.67 → beta.72 comparison](https://github.com/alchemy-run/alchemy/compare/v2.0.0-beta.67...v2.0.0-beta.72)
+- [beta.72 → beta.76 comparison](https://github.com/alchemy-run/alchemy/compare/v2.0.0-beta.72...v2.0.0-beta.76)
 - [Effect beta.105 upgrade commit](https://github.com/alchemy-run/alchemy/commit/6bbadc1b86b0cd3ecdf97fe4f6c34ffc9180eb0b)
 - [Current v2 Container provider](https://github.com/alchemy-run/alchemy/blob/main/packages/alchemy/src/Cloudflare/Containers/ContainerProvider.ts)
 - [Current v2 Docker implementation](https://github.com/alchemy-run/alchemy/blob/main/packages/alchemy/src/Docker/Docker.ts)
 
 Relevant changes:
 
-- beta.71 raises Alchemy's Effect dependency floor to `4.0.0-beta.105`; it does not itself adopt an Effect RC.
+- beta.76 requires Effect `4.0.0-rc.112` or newer.
 - Container pushing gains explicit platform selection and bounded retry for transient `500`/internal-server errors. That does not handle `401`.
 - The push still calls Cloudflare's registry-credentials endpoint with pull/push permissions and a 60-minute expiration, then writes base64 basic auth into an isolated `DOCKER_CONFIG` and invokes Docker push.
 - Wrangler requests registry credentials and performs a real `docker login --password-stdin` against the normal Docker credential path. In this incident, that path succeeded.
 - Alchemy's pre-pushed image support already existed before beta.67. A target-registry image reference is accepted as-is, and Alchemy skips pull/build/push while retaining ownership of the Container application and rollout.
 
-No post-beta.67 release or source change found in the v2 line fixes temporary registry credential rejection, changes the 60-minute TTL, adopts Wrangler login, or retries `401`.
+Beta.76 still does not fix temporary registry credential rejection, shorten the 60-minute TTL, or retry `401`. Its scoped temporary `DOCKER_CONFIG` already isolates the inline registry auth entry from shared Docker configuration and removes it with the enclosing scope; a `docker login --password-stdin` patch is neither necessary nor desirable because it can route through a shared credential helper. Scotty retains four safety backports: stable Durable Object binding diffing, plan-safe Worker export serialization, 15-minute registry credentials, and lazy typed workerd loading.
 
 ## Recommended migration sequence
 
@@ -77,8 +79,8 @@ Do not assume a dependency bump fixed the path without reproducing an Alchemy-ow
 
 Update together:
 
-- `effect`, `@effect/platform-node`, `@effect/platform-bun`, and `@effect/vitest` to `4.0.0-rc.109`.
-- `vendor/effect` to `b5946ece2b33a4468ef927a39821d7c3db463af3`.
+- `effect`, `@effect/platform-node`, `@effect/platform-bun`, and `@effect/vitest` to `4.0.0-rc.112`.
+- `vendor/effect` to `2600f62f4532026928454dcea8d1c48557b3f942`.
 - Root `AGENTS.md` pin and source-path guidance.
 - Scotty's Effect skills and copied patterns, especially error modeling, CLI, and testing.
 - All `Schema.TaggedErrorClass` and `Command.withHidden` usages.
@@ -86,14 +88,14 @@ Update together:
 
 Copy only relevant upstream pattern changes; do not overwrite Scotty-specific invariants.
 
-### 3. Alchemy beta.72 migration
+### 3. Alchemy beta.76 migration
 
 Update together:
 
-- `alchemy` to `2.0.0-beta.72`.
-- `vendor/alchemy` to tag commit `4465e353603ab71b279a66c4fcd3ecc1488aa090`.
-- Direct `@distilled.cloud/cloudflare` to the version required by beta.72, eliminating the current duplicate-version skew.
-- `patches/alchemy+2.0.0-beta.67.patch` and `scripts/apply-dependency-patches.mjs`: verify whether each patch hunk is upstream, re-derive only the remaining behavior, and rename the patch for beta.72.
+- `alchemy` and its `@alchemy.run/*` packages to `2.0.0-beta.76`.
+- `vendor/alchemy` to tag commit `e5b1b598392585e0f2d5fa03ac475cd076dbc0f8`.
+- Direct `@distilled.cloud/cloudflare` to `1.0.0-rc.8`, eliminating duplicate-version skew.
+- Rebase the still-required patch inventory to beta.76 paths and source; do not retain superseded hunks.
 - Pin-asserting deployment tests and generated container context.
 
 This Alchemy migration improves compatibility and reduces skew, but it must not be presented as the registry-auth fix.

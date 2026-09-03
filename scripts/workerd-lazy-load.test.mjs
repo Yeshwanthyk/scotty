@@ -4,18 +4,20 @@ import { constants } from "node:fs";
 import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { NodeServices } from "@effect/platform-node";
-import { Workerd, WorkerdLive } from "@alchemy.run/cloudflare-runtime/core/workerd/Workerd";
 import { Effect, Layer } from "effect";
 import { describe, it } from "node:test";
 
 const execute = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installationDeployment = join(repositoryRoot, "cli/src/installation-deployment.ts");
-const runtimeRoot = dirname(
-  fileURLToPath(import.meta.resolve("@alchemy.run/cloudflare-runtime/package.json")),
+const alchemyRequire = createRequire(import.meta.resolve("alchemy"));
+const runtimeRoot = dirname(alchemyRequire.resolve("@alchemy.run/cloudflare-runtime/package.json"));
+const { Workerd, WorkerdLive } = await import(
+  pathToFileURL(join(runtimeRoot, "dist/core/node/workerd/Workerd.mjs")).href
 );
 const workerdBinary = join(runtimeRoot, "node_modules/workerd/bin/workerd");
 

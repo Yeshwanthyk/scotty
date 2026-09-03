@@ -14,8 +14,9 @@
  *     --invariants=safety
  *
  * Progress claims are conditional. They require logical time to advance, fair actor execution,
- * eventual alarm delivery, and decisive provider observations for any transition claimed to
- * settle. Permanently ambiguous provider behavior intentionally permits Reconciling forever.
+ * eventual alarm delivery, and decisive provider observations for Vaporize to reach Gone.
+ * Repeated ordinary ambiguity and ordinary deadlines terminate as Failed; ambiguous Vaporize
+ * retains cleanup authority until absence is confirmed.
  */
 module session_control {
   type StableKind = NoStable | Warm | Sleeping | Failed | Gone
@@ -235,8 +236,11 @@ module session_control {
     a.transportSupervisorEpoch == a.supervisorEpoch,
   }
 
-  pure def validCurrentBackup(a: Authority): bool =
-    a.backupCurrent implies and { a.backupPrepared, a.backupConfirmed, a.backupOwned }
+  pure def validBackupOwnership(a: Authority): bool = and {
+    a.backupPrepared implies a.backupOwned,
+    a.backupConfirmed implies and { a.backupPrepared, a.backupOwned, a.backupCurrent },
+    a.backupCurrent implies and { a.backupPrepared, a.backupConfirmed, a.backupOwned },
+  }
 
   pure def originStatus(origin: Origin): PublicStatus = match origin {
     | Absent => Booting
@@ -269,7 +273,7 @@ module session_control {
 
   pure def publicActions(a: Authority): Set[PublicAction] = {
     val status = publicStatus(a)
-    if (deleting(a) or status == PublicGone or status == Booting or status == NoPublicStatus) Set()
+    if (isTransitioning(a) or status == PublicGone or status == Booting or status == NoPublicStatus) Set()
     else if (status == PublicWarm)
       Set(PublicCheckpoint, PublicSleep, PublicWork, PublicVaporize)
     else if (status == PublicSleeping)
@@ -534,7 +538,7 @@ module session_control {
 
   action progressCheckpoint = match authority.phase {
     | CheckpointQuiescing => accept({ ...authority, phase: CheckpointPiStopped, piStopped: true }, ProgressedEvent, FencedFact)
-    | CheckpointPiStopped => accept({ ...authority, phase: CheckpointSyncing }, ProgressedEvent, FencedFact)
+    | CheckpointPiStopped => accept({ ...authority, phase: CheckpointSyncing, backupOwned: true }, ProgressedEvent, FencedFact)
     | CheckpointSyncing => accept({
         ...authority,
         phase: CheckpointBackupPrepared,
@@ -554,7 +558,7 @@ module session_control {
 
   action progressSleep = match authority.phase {
     | SleepQuiescing => accept({ ...authority, phase: SleepPiStopped, piStopped: true }, ProgressedEvent, FencedFact)
-    | SleepPiStopped => accept({ ...authority, phase: SleepSyncing }, ProgressedEvent, FencedFact)
+    | SleepPiStopped => accept({ ...authority, phase: SleepSyncing, backupOwned: true }, ProgressedEvent, FencedFact)
     | SleepSyncing => accept({
         ...authority,
         phase: SleepBackupConfirmed,
@@ -798,14 +802,18 @@ module session_control {
 
   action deadlineElapsed = all {
     isTransitioning(authority),
-    authority.mode == Executing,
-    accept({ ...authority, mode: Reconciling }, DeadlineReconcilingEvent, DeadlineInput),
+    if (authority.transition == Vaporize)
+      accept({ ...authority, mode: Reconciling }, DeadlineReconcilingEvent, DeadlineInput)
+    else transitionFailure,
   }
 
   action providerOutcomeUnknown = all {
     isTransitioning(authority),
-    authority.mode == Executing,
-    accept({ ...authority, mode: Reconciling }, ProviderReconcilingEvent, ProviderUnknownInput),
+    if (authority.mode == Executing)
+      accept({ ...authority, mode: Reconciling }, ProviderReconcilingEvent, ProviderUnknownInput)
+    else if (authority.transition == Vaporize)
+      accept(authority, ProviderReconcilingEvent, ProviderUnknownInput)
+    else transitionFailure,
   }
 
   action transitionFailure = all {
@@ -995,7 +1003,13 @@ module session_control {
     authority.activitySupervisorEpoch == authority.supervisorEpoch,
   }
 
-  val currentBackupOwned = validCurrentBackup(authority)
+  val backupOwnershipCoherent = validBackupOwnership(authority)
+
+  val backupReservedBeforeDispatch =
+    (isTransitioning(authority) and
+      ((authority.transition == Checkpoint and authority.phase == CheckpointSyncing) or
+       (authority.transition == Sleep and authority.phase == SleepSyncing)))
+    implies authority.backupOwned
 
   val sleepingWakeSource = isSleeping(authority) implies and {
     authority.backupCurrent,
@@ -1026,14 +1040,18 @@ module session_control {
     authority.transition == Vaporize,
     authority.nonce > 0,
     publicActions(authority) == Set(),
+    (not(authority.absent.contains(Backups)) and authority.backupPrepared) implies authority.backupOwned,
   }
+
+  val transitioningHasNoPublicActions =
+    isTransitioning(authority) implies publicActions(authority) == Set()
 
   val staleFactsNeverCommit = lastInput == StaleFact implies lastOutcome == Rejected
 
   val publicMappingTotal =
     authority.present implies publicStatus(authority) != NoPublicStatus
 
-  val hardCapArmed = authority.present implies authority.hardCapGeneration > 0
+  val hardCapIdentityPresent = authority.present implies authority.hardCapGeneration > 0
 
   val safety = and {
     oneAuthority,
@@ -1043,14 +1061,16 @@ module session_control {
     warmReadinessCoherent,
     readinessDependencies,
     activityFreshness,
-    currentBackupOwned,
+    backupOwnershipCoherent,
+    backupReservedBeforeDispatch,
     sleepingWakeSource,
     actionableFailureHasWakeSource,
     goneIsClean,
     vaporizeRetainsAuthority,
+    transitioningHasNoPublicActions,
     staleFactsNeverCommit,
     publicMappingTotal,
-    hardCapArmed,
+    hardCapIdentityPresent,
   }
 
 
@@ -1099,6 +1119,37 @@ module session_control {
     .then(transitionFailureNonActionable)
     .expect(safety)
     .expect(isFailed(authority))
+
+  run repeatedOrdinaryAmbiguityTerminates = init
+    .then(admitCreate)
+    .then(progress).then(progress).then(progress).then(progress).then(progress).then(progress)
+    .then(complete)
+    .then(admitCheckpoint)
+    .then(providerOutcomeUnknown)
+    .expect(isTransitioning(authority) and authority.mode == Reconciling)
+    .then(providerOutcomeUnknown)
+    .expect(safety)
+    .expect(isFailed(authority))
+
+  run ordinaryDeadlineTerminates = init
+    .then(admitCreate)
+    .then(progress).then(progress).then(progress).then(progress).then(progress).then(progress)
+    .then(complete)
+    .then(admitSleep)
+    .then(deadlineElapsed)
+    .expect(safety)
+    .expect(isFailed(authority))
+
+  run vaporizeAmbiguityRetainsCleanup = init
+    .then(admitCreate)
+    .then(progress).then(progress).then(progress).then(progress).then(progress).then(progress)
+    .then(complete)
+    .then(admitVaporize)
+    .then(providerOutcomeUnknown)
+    .then(providerOutcomeUnknown)
+    .then(deadlineElapsed)
+    .expect(safety)
+    .expect(deleting(authority))
 
   // These properties require the fairness and provider-settlement assumptions documented above.
   temporal eventualSettlement = always(isTransitioning(authority) implies eventually(isStable(authority)))

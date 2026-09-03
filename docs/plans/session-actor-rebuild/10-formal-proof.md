@@ -29,13 +29,16 @@ prepared/confirmed/owned/current ordering, wake-source ownership, and vaporize a
 - Warm has coherent runtime, container, supervisor, and transport generations;
 - activity belongs to the current supervisor epoch;
 - a current backup is prepared, confirmed, and owned;
+- Checkpoint and Sleep own the deterministic backup identity before dispatch from `Syncing`;
 - Sleeping and actionable Failed have an owned wake source;
 - stale facts reject without committing;
-- Vaporize retains authority and publishes no actions;
+- every transitioning authority publishes no actions;
+- Vaporize retains cleanup and backup ownership until the corresponding absence is confirmed;
 - Gone contains every required absence category and no owned runtime, backup, activity, or wake
   source;
 - public state and actions are total;
-- every present authority has an armed hard-cap generation.
+- every present authority retains a hard-cap identity; installed delivery is proven by integration
+  tests rather than the reduced Quint state.
 
 ## Witnesses and exploration
 
@@ -47,7 +50,10 @@ typecheck
 fullLifecycle
 actionableRecovery
 ambiguityRetainsFence
-50,000 randomized samples x 80 steps: no safety violation
+repeatedOrdinaryAmbiguityTerminates
+ordinaryDeadlineTerminates
+vaporizeAmbiguityRetainsCleanup
+20,000 randomized samples x 60 steps: no safety violation
 ```
 
 The full witness executes Create, Checkpoint, WarmWork, Sleep, Resume, and Vaporize through every
@@ -61,10 +67,11 @@ claims. They require:
 - logical time progresses;
 - actor execution is fair;
 - alarms are eventually delivered;
-- providers eventually return decisive observations wherever settlement is claimed;
+- providers eventually return decisive observations wherever Vaporize settlement is claimed;
 - vaporize cleanup eventually succeeds wherever Gone is claimed.
 
-Permanent provider ambiguity may retain Reconciling forever, matching the implemented reducer.
+Repeated ordinary ambiguity and ordinary deadlines terminate as Failed. Permanent cleanup
+ambiguity may retain Vaporize reconciliation authority until the provider confirms absence.
 
 ## Proof limit
 

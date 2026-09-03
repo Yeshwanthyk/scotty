@@ -211,6 +211,7 @@ import {
   createControllerLayer,
   createHardCapControllerLayer,
   createMetadataControllerFromStoresLayer,
+  type CreateHardCapFence,
   type CreateControllerRequest,
 } from "../session-actor/create-controller";
 import {
@@ -380,6 +381,7 @@ type SandboxServices =
   | Workspace;
 
 const ActorAlarmFenceSchema = Schema.Struct({
+  kind: Schema.optionalKey(Schema.Literals(["deadline", "reconcile"])),
   alarmId: Schema.String,
   revision: Schema.Int,
   transitionNonce: Schema.String,
@@ -400,6 +402,17 @@ const CreateHardCapFenceSchema = Schema.Struct({
 const decodeCreateHardCapFence = Schema.decodeUnknownOption(CreateHardCapFenceSchema, {
   onExcessProperty: "error",
 });
+
+const isMatchingVaporizeHardCap = (
+  authority: SessionAuthority | undefined,
+  fence: CreateHardCapFence,
+): boolean =>
+  authority !== undefined &&
+  authority.session.id === fence.sessionId &&
+  authority.hardCap.generation === fence.generation &&
+  authority.hardCap.deadlineAt === fence.deadlineAt &&
+  AuthorityStateSchema.guards.Transitioning(authority.state) &&
+  TransitionSchema.guards.Vaporize(authority.state.transition);
 
 const vaporizeObservedAt = Effect.map(Clock.currentTimeMillis, (now) =>
   new Date(now).toISOString(),
@@ -892,12 +905,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         this.createBackup(backupOptions),
       restoreBackup: (directoryBackup: Parameters<Sandbox["restoreBackup"]>[0]) =>
         this.restoreBackup(directoryBackup),
-      listObjects: (prefix: string, cursor?: string) =>
-        env.BACKUP_BUCKET.list({ prefix, cursor }).then((page) => ({
-          keys: page.objects.map((object) => object.key),
-          cursor: page.truncated ? page.cursor : undefined,
-        })),
-      deleteObjects: (keys: ReadonlyArray<string>) => env.BACKUP_BUCKET.delete([...keys]),
+      deleteBackup: (backupId: string) => this.deleteBackup(backupId),
     };
     const backup = backupStoreLayer(backupCapabilities, runtimeAccess);
     const evidenceRecorder =
@@ -1068,7 +1076,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
     const actorAlarms = actorAlarmSchedulerLayer((fence) =>
       Effect.tryPromise({
-        try: () => this.schedule(new Date(fence.expectedDeadlineAt), "sessionActorDeadline", fence),
+        try: () =>
+          this.schedule(
+            fence.kind === "reconcile" ? 5 : new Date(fence.expectedDeadlineAt),
+            "sessionActorDeadline",
+            fence,
+          ),
         catch: () =>
           new ActorAlarmOutcomeUnknown({
             alarmId: fence.alarmId,
@@ -1120,7 +1133,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
               this.deleteSchedules("expireEvidenceJob");
               this.deleteSchedules("expireRetainedEvidence");
               this.deleteSchedules("retryHatchCleanup");
-              this.deleteSchedules("sessionActorHardCap");
             }).pipe(
               Effect.andThen(vaporizeResult("RuntimeAccessRevoked", "runtime_access_revoked")),
             ),
@@ -1200,7 +1212,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
             Effect.gen({ self: this }, function* () {
               const metadata = yield* metadataStore.read(authority);
               if (metadata !== undefined) return yield* vaporizeUnknown("metadata_still_present")();
-              yield* Effect.sync(() => this.cancelAllSessionSchedules());
               yield* projection.remove(authority.session.id);
               return yield* vaporizeResult("AbsenceConfirmed", "owned_state_absent_confirmed");
             }).pipe(Effect.catch(vaporizeUnknown("absence_confirmation_unknown"))),
@@ -2681,6 +2692,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     },
   );
 
+  private readonly cancelSessionSchedulesAfterGoneProgram = Effect.fnUntraced(
+    function* (this: Sandbox) {
+      const store = yield* ActorStore;
+      const snapshot = yield* store.read;
+      yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(snapshot.authority));
+    },
+  );
+
   private readonly createScottySessionProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     input: CreateSessionInput,
@@ -2740,6 +2759,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         return this.upstreamError("Session setup failed", failure, id);
       }),
     );
+    yield* this.publishActorSessionProjectionBestEffortProgram();
     if (Predicate.isTagged(outcome, "Failed")) {
       if (outcome.code === "create_repository_not_found")
         return yield* new ScottyError(
@@ -2780,8 +2800,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (
       AuthorityStateSchema.guards.Stable(authority.state) &&
       StableStateSchema.guards.Gone(authority.state.stable)
-    )
+    ) {
+      yield* Effect.sync(() => this.cancelAllSessionSchedules());
       return { id: authority.session.id, status: "gone" as const };
+    }
 
     const now = yield* Clock.currentTimeMillis;
     const timestamp = new Date(now).toISOString();
@@ -2808,8 +2830,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
       settled !== undefined &&
       AuthorityStateSchema.guards.Stable(settled.state) &&
       StableStateSchema.guards.Gone(settled.state.stable)
-    )
+    ) {
+      yield* Effect.sync(() => this.cancelAllSessionSchedules());
       return { id: settled.session.id, status: "gone" as const };
+    }
+    yield* this.publishActorSessionProjectionBestEffortProgram();
     const phase =
       settled !== undefined && AuthorityStateSchema.guards.Transitioning(settled.state)
         ? settled.state.transition.phase
@@ -2869,6 +2894,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           : this.upstreamError(`Session ${kind.toLowerCase()} failed`, failure),
       ),
     );
+    yield* this.publishActorSessionProjectionBestEffortProgram();
     if (Predicate.isTagged(outcome, "Reconciling"))
       return yield* this.upstreamError(
         `Session ${kind.toLowerCase()} outcome is being reconciled`,
@@ -4659,22 +4685,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
   async sessionActorDeadline(payload: unknown): Promise<void> {
     const fence = decodeActorAlarmFence(payload);
     if (Option.isNone(fence)) return;
+    const currentFence = { ...fence.value, kind: fence.value.kind ?? ("deadline" as const) };
     return this.#run(
       Effect.gen({ self: this }, function* () {
         const now = yield* Clock.currentTimeMillis;
         const actor = yield* SessionActor;
-        yield* actor.handle({
-          _tag: "DeadlineAlarm",
-          revision: fence.value.revision,
-          transitionNonce: fence.value.transitionNonce,
-          attempt: fence.value.attempt,
-          expectedPhase: fence.value.expectedPhase,
+        yield* actor.resume({
           timestamp: new Date(now).toISOString(),
-          correlationId: fence.value.correlationId,
-          alarmId: fence.value.alarmId,
-          expectedDeadlineAt: fence.value.expectedDeadlineAt,
+          correlationId: currentFence.correlationId,
+          fence: currentFence,
         });
         yield* this.publishActorSessionProjectionBestEffortProgram();
+        yield* this.cancelSessionSchedulesAfterGoneProgram();
       }),
     );
   }
@@ -4684,10 +4706,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (Option.isNone(fence)) return;
     return this.#run(
       Effect.gen({ self: this }, function* () {
-        const retry = Effect.tryPromise({
+        const scheduleSuccessor = Effect.tryPromise({
           try: () => this.schedule(5, "sessionActorHardCap", fence.value).then(() => undefined),
-          catch: () => undefined,
-        }).pipe(Effect.ignore);
+          catch: () =>
+            new CreateControllerBoundaryFailure({
+              boundary: "hard_cap",
+              code: "schedule_outcome_unknown",
+            }),
+        }).pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }));
         const actor = yield* SessionActor;
         const now = yield* Clock.currentTimeMillis;
         const handled = yield* Effect.result(
@@ -4700,11 +4726,31 @@ export class Sandbox extends BaseSandbox<Bindings> {
             timestamp: new Date(now).toISOString(),
           }),
         );
-        if (Result.isFailure(handled)) return yield* retry;
+        if (Result.isFailure(handled)) return yield* scheduleSuccessor;
         yield* this.publishActorSessionProjectionBestEffortProgram();
 
         const store = yield* ActorStore;
-        const after = yield* store.read;
+        let after = yield* store.read;
+        if (yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(after.authority))) return;
+        if (isMatchingVaporizeHardCap(after.authority, fence.value)) {
+          const resumed = yield* Effect.result(
+            actor.resume({
+              timestamp: new Date(now).toISOString(),
+              correlationId: crypto.randomUUID(),
+            }),
+          );
+          if (Result.isFailure(resumed)) return yield* scheduleSuccessor;
+          yield* this.publishActorSessionProjectionBestEffortProgram();
+          after = yield* store.read;
+          if (yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(after.authority)))
+            return;
+          if (
+            after.authority !== undefined &&
+            AuthorityStateSchema.guards.Transitioning(after.authority.state) &&
+            TransitionSchema.guards.Vaporize(after.authority.state.transition)
+          )
+            return yield* scheduleSuccessor;
+        }
         const authority = after.authority;
         if (
           authority === undefined ||
@@ -4712,13 +4758,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
           authority.hardCap.generation !== fence.value.generation ||
           authority.hardCap.deadlineAt !== fence.value.deadlineAt ||
           !AuthorityStateSchema.guards.Stable(authority.state) ||
-          !StableStateSchema.guards.Failed(authority.state.stable) ||
-          authority.state.stable.code !== "hard_cap_elapsed"
+          !StableStateSchema.guards.Failed(authority.state.stable)
         )
           return;
         const recovery = yield* RecoverySandbox;
         const destroyed = yield* Effect.result(recovery.destroyFailedRuntime(authority));
-        if (Result.isFailure(destroyed)) yield* retry;
+        if (Result.isFailure(destroyed)) yield* scheduleSuccessor;
       }),
     );
   }
@@ -4811,6 +4856,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
     for (const callback of SESSION_SCHEDULE_CALLBACKS) {
       this.deleteSchedules(callback);
     }
+  }
+
+  private cancelAllSessionSchedulesIfGone(authority: SessionAuthority | undefined): boolean {
+    if (
+      authority === undefined ||
+      !AuthorityStateSchema.guards.Stable(authority.state) ||
+      !StableStateSchema.guards.Gone(authority.state.stable)
+    )
+      return false;
+    this.cancelAllSessionSchedules();
+    return true;
   }
 
   private async requireRecord(): Promise<SessionRecord> {
