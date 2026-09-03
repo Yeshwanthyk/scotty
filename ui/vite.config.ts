@@ -4,12 +4,14 @@ import viteReact from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  base: "/app/",
+  base: "/",
+  build: { assetsDir: "app/assets" },
   environments: {
     client: {
       build: {
-        emptyOutDir: true,
-        outDir: "../worker/public/app",
+        assetsDir: "app/assets",
+        emptyOutDir: false,
+        outDir: "../worker/public",
       },
     },
   },
@@ -18,7 +20,7 @@ export default defineConfig({
     tanstackStart({
       spa: {
         enabled: true,
-        prerender: { outputPath: "/_shell.html" },
+        prerender: { outputPath: "/app/_shell.html" },
       },
     }),
     viteReact(),
