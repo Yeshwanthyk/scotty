@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import {
   BarChart3,
   ChevronDown,
@@ -56,7 +56,7 @@ const styles = stylex.create({
     paddingBlock: spacing.md,
     paddingInline: spacing.sm,
     display: "grid",
-    gap: spacing.sm,
+    gap: spacing.xs,
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
     borderBottomColor: colors.line,
@@ -127,6 +127,7 @@ const styles = stylex.create({
     ":hover": { backgroundColor: colors.control, color: colors.ink },
     "@media (max-width: 760px)": { minHeight: "44px" },
   },
+  menuItemAction: { color: colors.ink, fontWeight: 650 },
   menuItemLocked: {
     color: colors.quiet,
     cursor: "not-allowed",
@@ -149,16 +150,25 @@ const styles = stylex.create({
     objectFit: "cover",
   },
   search: {
-    height: "36px",
-    paddingInline: spacing.xs,
+    height: "40px",
+    paddingInline: spacing.sm,
     display: "grid",
     gridTemplateColumns: "16px minmax(0, 1fr) auto",
     alignItems: "center",
-    gap: spacing.xs,
+    gap: spacing.sm,
+    borderRadius: "6px",
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
     borderBottomColor: "transparent",
-    ":focus-within": { borderBottomColor: colors.focus },
+    cursor: "text",
+    transitionProperty: "background-color, border-color",
+    transitionDuration: "120ms",
+    transitionTimingFunction: "cubic-bezier(0.22, 1, 0.36, 1)",
+    ":hover": { backgroundColor: colors.panel },
+    ":focus-within": {
+      borderBottomColor: colors.focus,
+      backgroundColor: colors.panelRaised,
+    },
     "@media (max-width: 760px)": { height: "44px" },
   },
   searchIcon: { width: "14px", height: "14px", color: colors.quiet, strokeWidth: 1.8 },
@@ -172,9 +182,9 @@ const styles = stylex.create({
     outline: 0,
     backgroundColor: "transparent",
     color: colors.ink,
-    fontSize: "12px",
+    fontSize: "13px",
     ":focus-visible": { outline: "none" },
-    "::placeholder": { color: colors.quiet },
+    "::placeholder": { color: colors.muted },
     "::-webkit-search-cancel-button": { display: "none" },
   },
   shortcut: { color: colors.quiet, fontSize: "10px", fontVariantNumeric: "tabular-nums" },
@@ -236,7 +246,7 @@ const styles = stylex.create({
     display: "none",
     "@media (max-width: 760px)": { display: "inline-flex" },
   },
-  icon: { width: "14px", height: "14px", marginRight: spacing.sm, strokeWidth: 1.8 },
+  icon: { width: "14px", height: "14px", strokeWidth: 1.8 },
 });
 
 const searchableText = (row: SessionRowProps): string =>
@@ -280,7 +290,6 @@ export function Sidebar({
   readonly open?: boolean;
   readonly repositories: ReadonlyArray<RepositoryGroup>;
 }) {
-  const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [showAllArchived, setShowAllArchived] = useState(false);
   const [owner, setOwner] = useState(false);
@@ -340,6 +349,14 @@ export function Sidebar({
                 <Ellipsis aria-hidden {...stylex.props(styles.menuIcon)} />
               </summary>
               <nav aria-label="Scotty menu" {...stylex.props(styles.menuPanel)}>
+                <Link
+                  to="/sessions/create"
+                  onClick={onClose}
+                  {...stylex.props(styles.menuItem, styles.menuItemAction)}
+                >
+                  <Plus aria-hidden {...stylex.props(styles.menuIcon)} />
+                  <span {...stylex.props(styles.menuLabel)}>Create session</span>
+                </Link>
                 <Link to="/stats" onClick={onClose} {...stylex.props(styles.menuItem)}>
                   <BarChart3 aria-hidden {...stylex.props(styles.menuIcon)} />
                   <span {...stylex.props(styles.menuLabel)}>Stats</span>
@@ -392,18 +409,6 @@ export function Sidebar({
             </span>
           </div>
         </div>
-        <Button
-          fullWidth
-          align="start"
-          variant="quiet"
-          onClick={() => {
-            onClose?.();
-            void navigate({ to: "/sessions/create" });
-          }}
-        >
-          <Plus aria-hidden {...stylex.props(styles.icon)} />
-          Create session
-        </Button>
         <label {...stylex.props(styles.search)}>
           <Search aria-hidden {...stylex.props(styles.searchIcon)} />
           <input
