@@ -1146,14 +1146,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
             ),
           interruptEvidence: () =>
             Effect.gen({ self: this }, function* () {
-              const state = yield* evidenceStore.read;
+              const stateResult = yield* Effect.result(evidenceStore.read);
+              if (Result.isFailure(stateResult)) {
+                if (stateResult.failure.reason !== "invalid") return yield* stateResult.failure;
+                return yield* vaporizeResult("EvidenceInterrupted", "evidence_interrupted");
+              }
+              const state = stateResult.success;
               const active = state.activeJob;
               if (active !== undefined) {
-                yield* this.cleanupEvidencePreviewProgram(
-                  active.operationNonce,
-                  "interrupted",
-                ).pipe(Effect.provideService(EvidenceStore, evidenceStore));
-                yield* evidenceStore.interrupt(active.operationNonce, "interrupted");
+                yield* Effect.result(
+                  this.cleanupEvidencePreviewProgram(active.operationNonce, "interrupted").pipe(
+                    Effect.provideService(EvidenceStore, evidenceStore),
+                  ),
+                );
               }
               return yield* vaporizeResult("EvidenceInterrupted", "evidence_interrupted");
             }).pipe(Effect.catch(vaporizeUnknown("evidence_interruption_unknown"))),
@@ -1175,7 +1180,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
             }).pipe(Effect.catch(vaporizeUnknown("backup_absence_unknown"))),
           deleteEvidence: ({ transition }) =>
             Effect.gen(function* () {
-              const state = yield* evidenceStore.read;
+              const stateResult = yield* Effect.result(evidenceStore.read);
+              if (Result.isFailure(stateResult)) {
+                if (stateResult.failure.reason !== "invalid") return yield* stateResult.failure;
+                return yield* vaporizeResult("EvidenceAbsent", "evidence_absent_confirmed");
+              }
+              const state = stateResult.success;
               const hasEvidenceAuthority =
                 state.activeJob !== undefined ||
                 state.jobs.length > 0 ||
@@ -1188,7 +1198,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 yield* artifactStore.deleteArtifact(artifact);
                 yield* evidenceStore.confirmDelete(artifact.objectKey);
               }
-              yield* evidenceStore.clearForVaporize(transition.nonce);
               return yield* vaporizeResult("EvidenceAbsent", "evidence_absent_confirmed");
             }).pipe(Effect.catch(vaporizeUnknown("evidence_absence_unknown"))),
           releaseGrants: ({ authority }) =>

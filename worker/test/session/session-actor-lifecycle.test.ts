@@ -225,6 +225,47 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.deepStrictEqual(await harness.sandbox.vaporizeScottySession(), result);
   });
 
+  it("vaporizes after preempting active Evidence work", async () => {
+    const harness = await createSessionHarness({
+      evidenceEnabled: true,
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.acceptScottyEvidenceJob({
+      port: 4_173,
+      viewport: { width: 1_280, height: 720 },
+      capture: { screenshots: "after-each-step", video: false },
+      steps: [
+        {
+          name: "Open the app",
+          action: { kind: "goto", path: "/" },
+          expect: [{ kind: "urlPath", expected: "/" }],
+        },
+      ],
+    });
+
+    assert.deepStrictEqual(await harness.sandbox.vaporizeScottySession(), {
+      id: SESSION_ID,
+      status: "gone",
+    });
+    assert.strictEqual(harness.read(sessionHarnessKeys.evidence), undefined);
+    assert.strictEqual(harness.readRecord(), undefined);
+  });
+
+  it("vaporizes an actor-owned session with unreadable legacy Evidence", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    harness.memory.values.set(sessionHarnessKeys.evidence, { version: 2 });
+
+    assert.deepStrictEqual(await harness.sandbox.vaporizeScottySession(), {
+      id: SESSION_ID,
+      status: "gone",
+    });
+    assert.strictEqual(harness.read(sessionHarnessKeys.evidence), undefined);
+    assert.strictEqual(harness.readRecord(), undefined);
+  });
+
   it("retains the hard-cap driver until Gone commits after final absence", async () => {
     const harness = await createSessionHarness();
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);

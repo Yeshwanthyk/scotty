@@ -79,6 +79,18 @@ const providerRuntimeId = (authority: SessionAuthority): string | null => {
     : null;
 };
 
+const evidenceMutationForObservation = (
+  authority: SessionAuthority,
+  input: SessionActorInput,
+): EvidenceMutation =>
+  AuthorityStateSchema.guards.Transitioning(authority.state) &&
+  Predicate.isTagged(authority.state.transition, "Vaporize") &&
+  authority.state.transition.phase === "BackupsDeleting" &&
+  Predicate.isTagged(input, "ProviderObservation") &&
+  input.nextPhase === "EvidenceDeleting"
+    ? { _tag: "Delete" }
+    : { _tag: "Keep" };
+
 const matchesAlarmFence = (
   fence: ActorAlarmFence,
   authority: SessionAuthority,
@@ -190,6 +202,7 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
             });
             if (Predicate.isTagged(result, "Observation")) {
               observation = result.input;
+              evidence = evidenceMutationForObservation(persisted.authority, result.input);
               recoverObservationCommit = Predicate.isTagged(intent, "ExecutePhase");
             }
           }
