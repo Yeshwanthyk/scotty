@@ -21,9 +21,6 @@ test("critical auth pages externalize scripts and strip fragments before fetch",
     assert.match(script, /addEventListener\("click"/u);
     assert.doesNotMatch(script, /localStorage|sessionStorage/u);
   }
-  const devicesHtml = fs.readFileSync(path.join(assets, "auth", "devices.html"), "utf8");
-  assert.match(devicesHtml, /<script type="module" src="\/auth\/devices\.js"><\/script>/u);
-  assert.doesNotMatch(devicesHtml, /<script(?![^>]*\bsrc=)[^>]*>/iu);
   const lockedHtml = fs.readFileSync(path.join(assets, "auth", "locked.html"), "utf8");
   assert.match(lockedHtml, /<code>scotty owner recover<\/code>/u);
   assert.doesNotMatch(lockedHtml, /<script|<form|<input|<textarea/iu);
@@ -33,17 +30,36 @@ test("critical auth pages externalize scripts and strip fragments before fetch",
   );
 });
 
-test("browser chat modules keep protocol, state, view, and transport boundaries explicit", () => {
-  const assets = path.join(ROOT, "worker/public");
-  const app = fs.readFileSync(path.join(assets, "session", "index.js"), "utf8");
-  const connection = fs.readFileSync(path.join(assets, "session", "pi-connection.js"), "utf8");
-  const chat = fs.readFileSync(path.join(assets, "session", "chat.js"), "utf8");
-  const artifacts = fs.readFileSync(path.join(assets, "session", "artifacts.js"), "utf8");
+test("the TanStack session UI keeps protocol, state, and view boundaries explicit", () => {
+  const sources = path.join(ROOT, "ui/src");
+  const reader = fs.readFileSync(path.join(sources, "data/session-reader.ts"), "utf8");
+  const lifecycle = fs.readFileSync(path.join(sources, "data/session-lifecycle.ts"), "utf8");
+  const conversation = fs.readFileSync(path.join(sources, "components/Conversation.tsx"), "utf8");
+  const route = fs.readFileSync(path.join(sources, "routes/s.$sessionId.tsx"), "utf8");
 
-  assert.doesNotMatch(app + connection + chat + artifacts, /\/rpc\//u);
-  assert.match(connection, /\/console\/\$\{operation\}/u);
-  assert.doesNotMatch(connection, /\bdocument\b|\bwindow\b/u);
-  assert.doesNotMatch(artifacts, /\bfetch\b|\bEventSource\b/u);
-  assert.doesNotMatch(chat, /innerHTML|outerHTML|insertAdjacentHTML|srcdoc/u);
-  assert.doesNotMatch(app, /localStorage|sessionStorage|new WebSocket/u);
+  assert.doesNotMatch(reader + lifecycle + conversation + route, /\/rpc\//u);
+  assert.match(reader, /\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}/u);
+  assert.match(lifecycle, /\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}/u);
+  assert.doesNotMatch(conversation, /innerHTML|outerHTML|insertAdjacentHTML|srcdoc/u);
+  assert.doesNotMatch(route, /localStorage|sessionStorage|new WebSocket/u);
+});
+
+test("superseded standalone product pages are absent", () => {
+  const assets = path.join(ROOT, "worker/public");
+  for (const name of ["session", "sessions", "stats"]) {
+    assert.equal(fs.existsSync(path.join(assets, name, "index.html")), false);
+  }
+  for (const name of ["devices", "providers"]) {
+    assert.equal(fs.existsSync(path.join(assets, "auth", `${name}.html`)), false);
+    assert.equal(fs.existsSync(path.join(assets, "auth", `${name}.js`)), false);
+    assert.equal(fs.existsSync(path.join(assets, "auth", `${name}.css`)), false);
+  }
+});
+
+test("the UI build replaces only its bounded app asset directory", () => {
+  const config = fs.readFileSync(path.join(ROOT, "ui/vite.config.ts"), "utf8");
+  assert.match(config, /emptyOutDir:\s*true/u);
+  assert.match(config, /outDir:\s*"\.\.\/worker\/public\/app"/u);
+  assert.match(config, /outputPath:\s*"\/_shell\.html"/u);
+  assert.doesNotMatch(config, /outDir:\s*"\.\.\/worker\/public"/u);
 });

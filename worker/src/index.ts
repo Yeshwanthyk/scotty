@@ -1105,7 +1105,7 @@ app.get("/stats", async (c) => {
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return secureAsset(c.env, c.req.raw, "/stats/index.html");
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html");
 });
 
 app.get("/devices", async (c) => {
@@ -1113,7 +1113,7 @@ app.get("/devices", async (c) => {
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   requireOwnerPrincipal(principal);
   refreshClientAuthCookie(c, principal);
-  return authAsset(c.env, c.req.raw, "/auth/devices.html");
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html");
 });
 
 app.get("/providers", async (c) => {
@@ -1121,7 +1121,7 @@ app.get("/providers", async (c) => {
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   requireOwnerPrincipal(principal);
   refreshClientAuthCookie(c, principal);
-  return authAsset(c.env, c.req.raw, "/auth/providers.html");
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html");
 });
 
 app.get("/pair", (c) => authAsset(c.env, c.req.raw, "/auth/pair.html"));

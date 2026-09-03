@@ -3335,7 +3335,7 @@ describe("real Hono boundary", () => {
     expect(assetPaths).toEqual(["/auth/locked.html", "/auth/locked.html"]);
   });
 
-  it("serves the session shell for Cloudflare sessions with registered-client cookies", async () => {
+  it("serves the application shell for authenticated product routes", async () => {
     const assetPaths: string[] = [];
     const assets = {
       fetch: async (request: Request) => {
@@ -3368,7 +3368,7 @@ describe("real Hono boundary", () => {
     const sessions = await app.request(
       "/sessions",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      env(),
+      env({ assets }),
     );
     expect(sessions.status).toBe(200);
     expect(sessions.headers.get("cache-control")).toBe("no-store");
@@ -3377,7 +3377,7 @@ describe("real Hono boundary", () => {
     const createSession = await app.request(
       "/sessions/create",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      env(),
+      env({ assets }),
     );
     expect(createSession.status).toBe(200);
     expect(await createSession.text()).toContain("<title>Scotty</title>");
@@ -3385,10 +3385,29 @@ describe("real Hono boundary", () => {
     const stats = await app.request(
       "/stats",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      env(),
+      env({ assets }),
     );
     expect(stats.status).toBe(200);
     expect(stats.headers.get("cache-control")).toBe("no-store");
+
+    for (const path of ["/devices", "/providers"]) {
+      const response = await app.request(
+        path,
+        { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+        env({ assets }),
+      );
+      expect(response.status, path).toBe(200);
+      expect(response.headers.get("cache-control"), path).toBe("no-store");
+    }
+
+    expect(assetPaths).toEqual([
+      "/app/_shell.html",
+      "/app/_shell.html",
+      "/app/_shell.html",
+      "/app/_shell.html",
+      "/app/_shell.html",
+      "/app/_shell.html",
+    ]);
 
     const rootBearer = await app.request(
       "/sessions",

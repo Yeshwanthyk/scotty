@@ -1,0 +1,94 @@
+.app-page main {
+  margin-inline: auto;
+  padding: 32px max(24px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom))
+    max(24px, env(safe-area-inset-left));
+}
+
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  text-wrap: balance;
+}
+
+.subtitle {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 11px 13px;
+  border: 1px solid rgb(255 130 120 / 0.58);
+  border-radius: 6px;
+  background: rgb(255 130 120 / 0.08);
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.notice[hidden] {
+  display: none;
+}
+
+.state {
+  padding: 44px 24px;
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--ring);
+  color: var(--muted);
+  text-align: center;
+}
+
+.state strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--ink);
+  font-size: 1.05rem;
+  letter-spacing: -0.012em;
+  text-wrap: balance;
+}
+
+.state .button {
+  display: flex;
+  width: max-content;
+  margin: 22px auto 0;
+}
+
+@media (max-width: 720px) {
+  .app-page main {
+    padding: 24px max(16px, env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+  }
+
+  h1 {
+    font-size: 1.5rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .page-heading,
+  .notice {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .state {
+    padding: 40px 20px;
+  }
+}

@@ -63,10 +63,12 @@ const styles = stylex.create({
 export function AppShell({
   archivedSessions = [],
   children,
+  mobileTitle = "Sessions",
   repositories,
 }: {
   readonly archivedSessions?: ReadonlyArray<RepositoryGroup["sessions"][number]>;
   readonly children: ReactNode;
+  readonly mobileTitle?: string;
   readonly repositories: ReadonlyArray<RepositoryGroup>;
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -113,7 +115,7 @@ export function AppShell({
               <Menu aria-hidden {...stylex.props(styles.mobileIcon)} />
             )}
           </button>
-          <span {...stylex.props(styles.mobileTitle)}>Sessions</span>
+          <span {...stylex.props(styles.mobileTitle)}>{mobileTitle}</span>
         </div>
         {children}
       </main>
