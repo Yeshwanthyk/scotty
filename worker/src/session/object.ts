@@ -278,7 +278,7 @@ import { parseChangedPath, type ChangedFilePatch, type ChangedFiles } from "../c
 type ActorRequestRecovery =
   | { readonly _tag: "NotNeeded"; readonly snapshot: ActorStoreSnapshot }
   | { readonly _tag: "Contended"; readonly snapshot: ActorStoreSnapshot }
-  | { readonly _tag: "Recovered"; readonly snapshot: ActorStoreSnapshot };
+  | { readonly _tag: "Recovered"; readonly provenSnapshot: ActorStoreSnapshot };
 
 const expectedRecoveredStable = (
   authority: SessionAuthority,
@@ -558,6 +558,7 @@ export interface TerminalSessionControl {
 }
 
 export interface SandboxEffectOptions {
+  readonly actorRequestRecoveryAfterResume?: () => Promise<void>;
   readonly actorRequestRecoveryBeforeResume?: () => Promise<void>;
   readonly clock?: Clock.Clock;
   readonly containerEvidenceRecorder?: ContainerEvidenceRecorder["Service"];
@@ -807,6 +808,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly evidenceEnabled: boolean;
   private readonly localE2E: boolean;
   private readonly runtimeIncarnationStore: SandboxRuntimeIncarnationStore;
+  private readonly actorRequestRecoveryAfterResume: () => Promise<void>;
   private readonly actorRequestRecoveryBeforeResume: () => Promise<void>;
   private readonly evidencePreviewHostTimeoutMillis: number;
   private readonly hatchPublicProbe: (
@@ -837,6 +839,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     this.evidencePreviewHostTimeoutMillis =
       options.evidencePreviewHostTimeoutMillis ?? EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS;
+    this.actorRequestRecoveryAfterResume =
+      options.actorRequestRecoveryAfterResume ?? (() => Promise.resolve());
     this.actorRequestRecoveryBeforeResume =
       options.actorRequestRecoveryBeforeResume ?? (() => Promise.resolve());
     this.hatchPublicProbe =
@@ -2768,14 +2772,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* containerAuth.ensurePiSession(record.id, sessionRuntimeCredentials(grant.grants));
   });
 
-  private readonly readActorSessionStateProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const store = yield* ActorStore;
+  private readonly actorSessionStateFromSnapshotProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    snapshot: ActorStoreSnapshot,
+  ) {
     const metadataStore = yield* SessionActorMetadataStore;
-    const snapshot = yield* store.read.pipe(
-      Effect.mapError((failure) =>
-        this.upstreamError("Session actor authority is unavailable", failure),
-      ),
-    );
     const authority = snapshot.authority;
     if (authority === undefined) return yield* notFound("unknown");
     if (
@@ -2823,6 +2824,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return { authority, metadata, projection, view };
   });
 
+  private readonly readActorSessionStateProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const store = yield* ActorStore;
+    const snapshot = yield* store.read.pipe(
+      Effect.mapError((failure) =>
+        this.upstreamError("Session actor authority is unavailable", failure),
+      ),
+    );
+    return yield* this.actorSessionStateFromSnapshotProgram(snapshot);
+  });
+
   private readonly publishSessionProjectionBestEffortProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     projection: SessionListProjection,
@@ -2855,7 +2866,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (!Predicate.isTagged(transition, expectedKind))
       return { _tag: "Contended" as const, snapshot: before } satisfies ActorRequestRecovery;
     yield* Effect.promise(() => this.actorRequestRecoveryBeforeResume());
-    const publishProjection = this.publishActorSessionProjectionBestEffortProgram();
+    const afterResume = this.actorRequestRecoveryAfterResume;
     const recovered = yield* this.withExclusiveActorMutation(
       transition.nonce,
       Effect.gen(function* () {
@@ -2863,7 +2874,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         const now = yield* Clock.currentTimeMillis;
         const timestamp = new Date(now).toISOString();
         const correlationId = crypto.randomUUID();
-        const resume = yield* actor.resume({
+        yield* actor.resume({
           timestamp,
           correlationId,
           expectedTransition: {
@@ -2892,14 +2903,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
               }
             : {}),
         });
-        if (resume === undefined) {
-          const snapshot = yield* store.read;
-          return provesRecoveredTransition(snapshot, expectedKind, transition.nonce)
-            ? { _tag: "Recovered" as const, snapshot }
-            : { _tag: "Contended" as const, snapshot };
-        }
-        yield* publishProjection;
-        return { _tag: "Recovered" as const, snapshot: yield* store.read };
+        yield* Effect.promise(() => afterResume());
+        const snapshot = yield* store.read;
+        return provesRecoveredTransition(snapshot, expectedKind, transition.nonce)
+          ? { _tag: "Recovered" as const, provenSnapshot: snapshot }
+          : { _tag: "Contended" as const, snapshot };
       }),
     );
     return recovered === undefined
@@ -2984,7 +2992,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const recoverCreateReplay = Effect.fnUntraced(function* (sandbox: Sandbox) {
       const recovered = yield* sandbox.recoverTransitioningActorForRequestProgram("Create");
       if (Predicate.isTagged(recovered, "Contended")) return { _tag: "Contended" as const };
-      const authority = recovered.snapshot.authority;
+      const authority = Predicate.isTagged(recovered, "Recovered")
+        ? recovered.provenSnapshot.authority
+        : recovered.snapshot.authority;
       if (
         authority !== undefined &&
         AuthorityStateSchema.guards.Transitioning(authority.state) &&
@@ -3133,8 +3143,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     if (!Predicate.isTagged(recovered, "NotNeeded")) {
-      const authority = recovered.snapshot.authority;
       if (Predicate.isTagged(recovered, "Contended")) {
+        const authority = recovered.snapshot.authority;
         if (
           authority !== undefined &&
           AuthorityStateSchema.guards.Stable(authority.state) &&
@@ -3144,6 +3154,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
         const state = yield* this.readActorSessionStateProgram();
         return yield* wrongState(state.view.status, kind.toLowerCase());
       }
+      const snapshot = recovered.provenSnapshot;
+      const authority = snapshot.authority;
       if (authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state))
         return yield* this.upstreamError(
           `Session ${kind.toLowerCase()} outcome is being reconciled`,
@@ -3160,7 +3172,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           authority.state.stable.code,
           authority.session.id,
         );
-      const state = yield* this.readActorSessionStateProgram();
+      const state = yield* this.actorSessionStateFromSnapshotProgram(snapshot);
       yield* Effect.tryPromise({
         try: () =>
           this.env.SESSIONS.put(
