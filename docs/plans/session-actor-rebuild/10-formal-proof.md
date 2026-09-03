@@ -28,10 +28,14 @@ prepared/confirmed/owned/current ordering, wake-source ownership, and vaporize a
 - every phase belongs to its transition and satisfies its proof prerequisites;
 - Warm has coherent runtime, container, supervisor, and transport generations;
 - activity belongs to the current supervisor epoch;
+- Checkpoint and Sleep discard stale Warm activity on admission, while WarmWork alone carries the
+  current activity through its transition proof;
 - a current backup is prepared, confirmed, and owned;
 - Checkpoint and Sleep own the deterministic backup identity before dispatch from `Syncing`;
 - Sleeping and actionable Failed have an owned wake source;
 - stale facts reject without committing;
+- an exact current-runtime observation is rejected without changing the revision of an ordinary
+  executing transition, except once Sleep is stopping or Vaporize owns cleanup;
 - every transitioning authority publishes no actions;
 - Vaporize retains cleanup and backup ownership until the corresponding absence is confirmed;
 - Gone contains every required absence category and no owned runtime, backup, activity, or wake
@@ -52,12 +56,18 @@ actionableRecovery
 ambiguityRetainsFence
 repeatedOrdinaryAmbiguityTerminates
 ordinaryDeadlineTerminates
+matchingRuntimeObservationPreservesSleep
 vaporizeAmbiguityRetainsCleanup
 20,000 randomized samples x 60 steps: no safety violation
 ```
 
 The full witness executes Create, Checkpoint, WarmWork, Sleep, Resume, and Vaporize through every
 implemented phase and ends in clean Gone.
+
+Before the activity-admission alignment above, TLC found a depth-12 counterexample in which
+Checkpoint retained a Warm activity marker even though the reduced invariant permits activity only
+in Warm or WarmWork. Whole-model TLC exploration is state-explosive and is not claimed complete;
+the model instead retains randomized invariant exploration and named lifecycle witnesses.
 
 ## Liveness boundary
 

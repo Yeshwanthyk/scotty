@@ -424,6 +424,8 @@ module session_control {
       nonce: authority.revision + 1,
       attempt: authority.revision + 1,
       piStopped: false,
+      activityPresent: false,
+      activityFresh: false,
     }, AdmittedEvent, CommandInput),
   }
 
@@ -441,6 +443,8 @@ module session_control {
       piStopped: false,
       stopRequested: false,
       runtimeStopped: false,
+      activityPresent: false,
+      activityFresh: false,
     }, AdmittedEvent, CommandInput),
   }
 
@@ -900,6 +904,14 @@ module session_control {
     accept({ ...authority, mode: Reconciling }, AvailabilityLostEvent, RecoveryInput),
   }
 
+  action transitionRuntimeObserved = all {
+    isTransitioning(authority),
+    authority.transition != Vaporize,
+    not(authority.transition == Sleep and Set(SleepStopRequested, SleepRuntimeStopped).contains(authority.phase)),
+    authority.runtimeReady,
+    reject(RecoveryInput),
+  }
+
   action hardCapElapsed = all {
     authority.present,
     not(isFailed(authority)),
@@ -949,6 +961,7 @@ module session_control {
     observeActivity,
     availabilityLost,
     transitionAvailabilityLost,
+    transitionRuntimeObserved,
     submitHardCapAlarm,
     staleFact,
   }
@@ -998,7 +1011,7 @@ module session_control {
   }
 
   val activityFreshness = authority.activityPresent implies and {
-    isWarm(authority),
+    isWarm(authority) or (isTransitioning(authority) and authority.transition == WarmWork),
     authority.activityFresh,
     authority.activitySupervisorEpoch == authority.supervisorEpoch,
   }
@@ -1139,6 +1152,18 @@ module session_control {
     .then(deadlineElapsed)
     .expect(safety)
     .expect(isFailed(authority))
+
+  run matchingRuntimeObservationPreservesSleep = init
+    .then(admitCreate)
+    .then(progress).then(progress).then(progress).then(progress).then(progress).then(progress)
+    .then(complete)
+    .then(admitSleep)
+    .then(transitionRuntimeObserved)
+    .expect(authority.transition == Sleep and authority.phase == SleepQuiescing and authority.mode == Executing and lastOutcome == Rejected)
+    .then(progress).then(progress).then(progress).then(progress).then(progress)
+    .then(complete)
+    .expect(safety)
+    .expect(isSleeping(authority))
 
   run vaporizeAmbiguityRetainsCleanup = init
     .then(admitCreate)
