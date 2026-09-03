@@ -1140,6 +1140,12 @@ app.get("/health", (c) => c.json({ ok: true }));
 
 app.all("/api/*", (c) => c.json({ error: { code: "not_found", message: "Route not found" } }, 404));
 
+app.all("/assets/*", (c) => {
+  const url = new URL(c.req.url);
+  url.pathname = `/app${url.pathname}`;
+  return c.env.ASSETS.fetch(new Request(url, c.req.raw));
+});
+
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export const workerFetch = async (
