@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --space: #0a0a0a;
   --shell: #0d0d0d;
   --panel: #121212;
@@ -13,25 +14,46 @@
   --beam: #f5f5f5;
   --accent: #cf633f;
   --accent-strong: #e07954;
-  --warm: #c69a5d;
   --danger: #ff8278;
   --focus: #f08a64;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ring: 0 0 0 1px var(--line-soft);
   --ring-hover: 0 0 0 1px var(--line-hover);
   --z-sticky: 10;
-  --content-width-standard: 980px;
-  --standard-gutter: 24px;
-  --standard-gutter-mobile: 16px;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 html {
   background: var(--space);
 }
 
+* {
+  box-sizing: border-box;
+}
+
 body.scotty-ui {
+  min-width: 280px;
+  min-height: 100dvh;
+  margin: 0;
   background: var(--space);
   color: var(--ink);
+}
+
+button,
+a,
+input,
+textarea,
+select {
+  font: inherit;
 }
 
 .scotty-ui ::selection {
@@ -42,7 +64,6 @@ body.scotty-ui {
 .scotty-ui .masthead {
   border-color: var(--line-soft);
   background: var(--shell);
-  box-shadow: 0 1px 0 var(--line-soft);
 }
 
 .app-page .masthead {
@@ -50,9 +71,7 @@ body.scotty-ui {
   z-index: var(--z-sticky);
   top: 0;
   border-bottom: 1px solid var(--line);
-  border-color: var(--line);
   background: rgb(13 13 13 / 0.96);
-  box-shadow: none;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
@@ -68,26 +87,6 @@ body.scotty-ui {
     max(24px, env(safe-area-inset-left));
 }
 
-.standard-page .masthead-inner,
-.standard-page main {
-  width: min(100%, var(--content-width-standard));
-  margin-inline: auto;
-}
-
-.sessions-page main {
-  width: min(100%, 920px);
-}
-
-.standard-page .masthead-inner {
-  padding-right: max(var(--standard-gutter), env(safe-area-inset-right));
-  padding-left: max(var(--standard-gutter), env(safe-area-inset-left));
-}
-
-.standard-page main {
-  padding: 32px max(var(--standard-gutter), env(safe-area-inset-right))
-    max(40px, env(safe-area-inset-bottom)) max(var(--standard-gutter), env(safe-area-inset-left));
-}
-
 .app-page .masthead-actions,
 .app-page .masthead-nav {
   display: flex;
@@ -95,51 +94,13 @@ body.scotty-ui {
   gap: 10px;
 }
 
-.app-page .masthead-nav .button {
-  min-height: 40px;
-  padding-inline: 13px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  box-shadow: none;
-  color: var(--muted);
-  font-size: 0.76rem;
-  font-weight: 700;
-}
-
-.app-page .masthead-nav .button:hover,
-.app-page .masthead-nav .button[aria-current="page"] {
-  background: rgb(255 255 255 / 0.05);
-  box-shadow: none;
-  color: var(--ink);
-}
-
-.app-page .masthead-nav .button[aria-current="page"] {
-  box-shadow: inset 0 -2px 0 var(--ink);
-}
-
-.app-page .masthead-actions > .button-primary {
-  min-height: 40px;
-  padding-inline: 13px;
-  border-radius: 7px;
-  font-size: 0.76rem;
-  font-weight: 700;
-}
-
-.app-page .mobile-utilities {
-  display: none;
-}
-
-.app-page .mobile-utilities[hidden],
-.app-page .mobile-utilities a[hidden] {
-  display: none;
-}
-
 .scotty-ui .identity {
   display: inline-flex;
+  min-width: 0;
   align-items: center;
   gap: 10px;
   color: var(--ink);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   text-decoration: none;
 }
 
@@ -149,45 +110,38 @@ body.scotty-ui {
   height: 30px;
   flex: none;
   border-radius: 8px;
-  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.12);
+  box-shadow: 0 0 0 1px var(--line);
 }
 
 .scotty-ui .wordmark {
-  margin-left: 0;
   color: var(--ink);
-  font-size: 0.78rem;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-}
-
-.app-page .identity {
-  min-width: 0;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-}
-
-.app-page .wordmark {
   font-size: 0.76rem;
   font-weight: 760;
   letter-spacing: 0.1em;
 }
 
-.scotty-ui .section-label,
-.scotty-ui .session-label {
-  margin-left: 0;
-  color: var(--muted);
-}
-
-.scotty-ui .button,
-.scotty-ui button,
-.scotty-ui input,
-.scotty-ui select,
-.scotty-ui textarea {
-  border-color: var(--line);
-}
-
 .scotty-ui .button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 15px;
+  border: 0;
+  border-radius: 6px;
   background: var(--panel-raised);
   box-shadow: var(--ring);
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 680;
+  line-height: 1;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    scale 120ms var(--ease-out),
+    box-shadow 150ms var(--ease-out),
+    background-color 150ms var(--ease-out),
+    color 150ms var(--ease-out),
+    opacity 150ms var(--ease-out);
 }
 
 .scotty-ui .button:hover {
@@ -195,46 +149,16 @@ body.scotty-ui {
   box-shadow: var(--ring-hover);
 }
 
-.scotty-ui .button-quiet,
-.scotty-ui .button-danger {
-  background: transparent;
-  box-shadow: none;
+.scotty-ui .button:active {
+  scale: 0.96;
 }
 
-.scotty-ui .button-quiet {
-  color: var(--muted);
-}
-
-.scotty-ui .button-quiet:hover {
-  background: rgb(255 255 255 / 0.05);
-  box-shadow: none;
-  color: var(--ink);
-}
-
-.scotty-ui .button-danger {
-  color: var(--danger);
-}
-
-.scotty-ui .button-danger:hover {
-  background: rgb(255 130 120 / 0.08);
-  box-shadow: none;
-  color: #ff9a91;
-}
-
-.scotty-ui .button-danger-confirm {
-  background: #3a1914;
-  box-shadow: 0 0 0 1px rgb(255 130 120 / 0.58);
-  color: #ffaca5;
-}
-
-.scotty-ui .button-danger-confirm:hover {
-  background: #481e18;
-  box-shadow: 0 0 0 1px rgb(255 130 120 / 0.72);
-  color: #ffd0cc;
+.scotty-ui .button:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 .scotty-ui .button-primary {
-  border-color: transparent;
   background: var(--beam);
   box-shadow: none;
   color: #0a0a0a;
@@ -245,376 +169,41 @@ body.scotty-ui {
   box-shadow: none;
 }
 
-.standard-page .identity:focus-visible,
+.app-page .masthead-nav .button {
+  min-height: 40px;
+  padding-inline: 13px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.app-page .masthead-nav .button:hover,
+.app-page .masthead-nav .button[aria-current="page"] {
+  background: rgb(255 255 255 / 0.05);
+  box-shadow: none;
+  color: var(--ink);
+}
+
+.app-page .mobile-utilities,
+.app-page .mobile-utilities[hidden],
+.app-page .mobile-utilities a[hidden] {
+  display: none;
+}
+
 .scotty-ui .button:focus-visible,
 .scotty-ui button:focus-visible,
 .scotty-ui input:focus-visible,
 .scotty-ui select:focus-visible,
-.scotty-ui textarea:focus-visible {
+.scotty-ui textarea:focus-visible,
+.scotty-ui .identity:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
-.scotty-ui input,
-.scotty-ui select,
-.scotty-ui textarea,
-.scotty-ui .control {
-  background: var(--control);
-  color: var(--ink);
-}
-
-.scotty-ui input::placeholder,
-.scotty-ui textarea::placeholder,
-.scotty-ui .control::placeholder {
-  color: #99917c;
-  opacity: 1;
-}
-
-.scotty-ui input:focus,
-.scotty-ui select:focus,
-.scotty-ui textarea:focus,
-.scotty-ui .control:focus {
-  border-color: var(--focus);
-  box-shadow: 0 0 0 3px rgb(207 99 63 / 0.18);
-}
-
-.sessions-page {
-  background: var(--space);
-}
-
-.sessions-page .page-heading {
-  margin-bottom: 26px;
-}
-
-.sessions-page.has-no-sessions .page-heading .button-primary {
-  background: transparent;
-  box-shadow: var(--ring);
-  color: var(--muted);
-}
-
-.sessions-page.has-no-sessions .page-heading .button-primary:hover {
-  background: rgb(255 255 255 / 0.05);
-  box-shadow: var(--ring-hover);
-  color: var(--ink);
-}
-
-.sessions-page h1,
-.devices-page h1,
-.pair-page h1 {
-  color: var(--ink);
-  font-weight: 680;
-}
-
-.sessions-page .subtitle {
-  color: var(--muted);
-}
-
-.sessions-page .composer {
-  padding: clamp(20px, 3vw, 28px);
-  border: 1px solid var(--line-soft);
-  background: var(--panel);
-  box-shadow:
-    0 12px 32px rgb(0 0 0 / 0.22),
-    inset 0 1px 0 rgb(255 255 255 / 0.03);
-}
-
-.sessions-page .composer-heading h2 {
-  color: var(--ink);
-  font-size: 1.12rem;
-}
-
-.sessions-page .composer-heading p {
-  color: var(--muted);
-}
-
-.sessions-page .field label {
-  color: var(--ink);
-}
-
-.sessions-page .field-hint,
-.sessions-page .recent-label {
-  color: var(--quiet);
-}
-
-.sessions-page .composer-feedback.is-pending {
-  color: var(--accent-strong);
-}
-
-.sessions-page .repo-suggestion {
-  background: var(--panel-raised);
-}
-
-.sessions-page .repo-suggestion:hover {
-  background: #10232b;
-}
-
-.sessions-page .state {
-  border: 1px solid var(--line-soft);
-  background: var(--panel);
-  box-shadow: none;
-}
-
-.sessions-page .state::before {
-  display: block;
-  width: 76px;
-  height: 76px;
-  margin: 0 auto 18px;
-  border-radius: 12px;
-  background: url("/brand/scotty-wait.png") center / cover no-repeat;
-  box-shadow: 0 0 0 1px var(--line-soft);
-  content: "";
-}
-
-.sessions-page .state-empty::before {
-  background-image: url("/brand/scotty-orchestrate.png");
-}
-
-.sessions-page .session {
-  border: 0;
-  border-bottom: 1px solid var(--line-soft);
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-.sessions-page .session:hover {
-  border-color: var(--line-soft);
-  background: rgb(255 255 255 / 0.025);
-  box-shadow: none;
-}
-
-.sessions-page .session-list {
-  gap: 0;
-  border-top: 1px solid var(--line-soft);
-}
-
-.sessions-page .masthead-nav .button:hover,
-.sessions-page .masthead-nav .button[aria-current="page"] {
-  background: transparent;
-  box-shadow: none;
-}
-
-.scotty-ui .masthead-nav .button {
-  background: transparent;
-  box-shadow: none;
-}
-
-.scotty-ui .masthead-nav .button:hover {
-  background: rgb(255 255 255 / 0.05);
-  box-shadow: none;
-}
-
-.sessions-page .status-line {
-  min-height: auto;
-  padding: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.sessions-page .status-warm .status-line {
-  background: transparent;
-  color: var(--accent-strong);
-}
-
-.sessions-page .status-warm .signal {
-  width: 6px;
-  height: 6px;
-  background: var(--accent);
-  box-shadow: none;
-}
-
-.sessions-page .actions .button {
-  min-height: 32px;
-  padding-inline: 8px;
-  background: transparent;
-  box-shadow: none;
-}
-
-.sessions-page .actions .button:hover {
-  background: rgb(255 255 255 / 0.045);
-  box-shadow: none;
-}
-
-.sessions-page .actions .button-primary {
-  background: var(--beam);
-  color: #0a0a0a;
-}
-
-.sessions-page .actions .button-primary:hover {
-  background: #ece3c8;
-}
-
-.sessions-page .status-sleeping .status-line,
-.sessions-page .status-stopping .status-line {
-  background: rgb(198 154 93 / 0.11);
-  color: #dab77e;
-}
-
-.sessions-page .confirmation {
-  background: #231411;
-}
-
-.devices-page {
-  background: var(--space);
-}
-
-.devices-page .page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 28px;
-  margin-bottom: 24px;
-}
-
-.devices-page .intro {
-  max-width: 64ch;
-  margin-bottom: 0;
-}
-
-.page-symbol {
-  display: block;
-  width: 72px;
-  height: 72px;
-  flex: none;
-  border-radius: 12px;
-  box-shadow: 0 0 0 1px var(--line-soft);
-}
-
-.devices-page .panel {
-  border-color: var(--line-soft);
-  border-radius: 10px;
-  background: var(--panel);
-}
-
-.devices-page .panel + .panel {
-  margin-top: 12px;
-}
-
-.devices-page .qr-shell {
-  border: 6px solid #e9e2d0;
-  background: #fff;
-}
-
-.devices-page .current {
-  color: var(--accent-strong);
-}
-
-.devices-page .client {
-  border-color: var(--line-soft);
-}
-
-.pair-page {
-  position: relative;
-  isolation: isolate;
-  place-items: center start;
-  background: var(--space);
-}
-
-.pair-page::before,
-.pair-page::after {
-  position: fixed;
-  z-index: -2;
-  inset: 0;
-  content: "";
-}
-
-.pair-page::before {
-  background: url("/brand/scotty-hero-16x9.png") center / cover no-repeat;
-}
-
-.pair-page::after {
-  z-index: -1;
-  background: rgb(1 6 12 / 0.22);
-}
-
-.pair-page .card {
-  width: min(100%, 450px);
-  margin-left: clamp(0px, 8vw, 120px);
-  padding: 30px;
-  border: 0;
-  border-radius: 12px;
-  background: #061118;
-  box-shadow: 0 12px 30px rgb(0 0 0 / 0.52);
-}
-
-.pair-page .pair-lockup {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  color: var(--ink);
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 0.72rem;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-}
-
-.pair-page .pair-success-art {
-  display: block;
-  width: 82px;
-  height: 82px;
-  margin-bottom: 20px;
-  border-radius: 12px;
-  box-shadow: 0 0 0 1px var(--line-soft);
-}
-
-.pair-page .button {
-  border: 0;
-  background: var(--beam);
-  box-shadow: none;
-  color: #0a0a0a;
-}
-
-.pair-page .button:hover {
-  background: #ece3c8;
-}
-
-@media (max-width: 620px) {
-  .devices-page .page-heading {
-    align-items: flex-start;
-  }
-
-  .devices-page .page-symbol {
-    width: 58px;
-    height: 58px;
-  }
-
-  .pair-page {
-    place-items: center;
-  }
-
-  .pair-page::before {
-    background-position: 66% center;
-  }
-
-  .pair-page::after {
-    background: rgb(1 6 12 / 0.5);
-  }
-
-  .pair-page .card {
-    margin-left: 0;
-    padding: 24px 20px;
-  }
-}
-
 @media (max-width: 720px) {
-  :root {
-    --standard-gutter: var(--standard-gutter-mobile);
-  }
-  .standard-page main {
-    padding-top: 24px;
-  }
   .app-page .masthead-inner {
     padding-right: max(14px, env(safe-area-inset-right));
     padding-left: max(14px, env(safe-area-inset-left));
-  }
-
-  .standard-page .masthead-inner {
-    padding-right: max(var(--standard-gutter), env(safe-area-inset-right));
-    padding-left: max(var(--standard-gutter), env(safe-area-inset-left));
-  }
-
-  .app-page .masthead-actions {
-    gap: 8px;
   }
 
   .app-page .masthead-nav {
@@ -631,7 +220,6 @@ body.scotty-ui {
     min-width: 44px;
     height: 44px;
     place-items: center;
-    padding-inline: 10px;
     border-radius: 8px;
     color: var(--muted);
     cursor: pointer;
@@ -648,12 +236,6 @@ body.scotty-ui {
     color: var(--ink);
   }
 
-  .app-page .mobile-utilities summary:focus-visible,
-  .app-page .mobile-utilities nav a:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: 2px;
-  }
-
   .app-page .mobile-utilities nav {
     position: absolute;
     top: calc(100% + 8px);
@@ -666,20 +248,6 @@ body.scotty-ui {
     box-shadow:
       var(--ring-hover),
       0 16px 36px rgb(0 0 0 / 0.42);
-  }
-
-  .sessions-page .mobile-utilities summary {
-    width: 44px;
-    min-width: 44px;
-    padding: 0;
-    font-size: 1rem;
-    font-weight: 700;
-  }
-
-  .sessions-page .mobile-utilities nav {
-    width: 132px;
-    border: 1px solid var(--line-hover);
-    box-shadow: 0 4px 8px rgb(0 0 0 / 0.28);
   }
 
   .app-page .mobile-utilities nav a {
@@ -695,302 +263,23 @@ body.scotty-ui {
     background: rgb(255 255 255 / 0.05);
     color: var(--ink);
   }
-
-  .app-page .mobile-utilities nav a[aria-current="page"] {
-    background: rgb(255 255 255 / 0.08);
-    color: var(--ink);
-  }
-}
-
-@media (max-width: 560px) {
-  .sessions-page .masthead-inner {
-    min-height: calc(56px + env(safe-area-inset-top));
-    gap: 10px;
-  }
-
-  .sessions-page .masthead-actions {
-    gap: 6px;
-  }
-
-  .sessions-page .identity {
-    min-height: 44px;
-  }
-
-  .sessions-page .masthead-actions > .button-primary {
-    min-height: 44px;
-    padding-inline: 12px;
-  }
-
-  .sessions-page main {
-    padding-top: 14px;
-    padding-right: max(12px, env(safe-area-inset-right));
-    padding-bottom: max(28px, env(safe-area-inset-bottom));
-    padding-left: max(12px, env(safe-area-inset-left));
-  }
-
-  .sessions-page .page-heading {
-    margin-bottom: 14px;
-  }
-
-  .sessions-page h1 {
-    font-size: 1.25rem;
-    line-height: 1.15;
-  }
-
-  .sessions-page .subtitle {
-    display: block;
-    margin-top: 4px;
-    font-size: 0.75rem;
-    line-height: 1.35;
-  }
-
-  .sessions-page .composer-region.is-open {
-    margin-bottom: 12px;
-  }
-
-  .sessions-page .composer {
-    padding: 14px;
-    border-radius: 8px;
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.03);
-  }
-
-  .sessions-page .composer::before {
-    right: 14px;
-    left: 14px;
-  }
-
-  .sessions-page .composer-heading {
-    margin-bottom: 16px;
-    padding-bottom: 14px;
-  }
-
-  .sessions-page .composer-heading h2 {
-    font-size: 1rem;
-  }
-
-  .sessions-page .composer-heading p {
-    margin-top: 5px;
-    font-size: 0.8rem;
-    line-height: 1.45;
-  }
-
-  .sessions-page .composer-grid {
-    gap: 14px;
-  }
-
-  .sessions-page .field {
-    gap: 6px;
-  }
-
-  .sessions-page .field-prompt {
-    margin-top: 14px;
-  }
-
-  .sessions-page .repo-suggestion,
-  .sessions-page .repo-suggestion-select,
-  .sessions-page .repo-suggestion-remove {
-    min-height: 44px;
-  }
-
-  .sessions-page .repo-suggestion-remove {
-    width: 44px;
-  }
-
-  .sessions-page .field label,
-  .sessions-page .field-hint,
-  .sessions-page .recent-label {
-    font-size: 0.75rem;
-  }
-
-  .sessions-page textarea.control {
-    min-height: 120px;
-  }
-
-  .sessions-page .composer-footer {
-    gap: 10px;
-    margin-top: 14px;
-  }
-
-  .sessions-page .composer-actions .button-primary {
-    flex: 1;
-  }
-
-  .sessions-page .state {
-    padding: 24px 16px;
-    border-radius: 8px;
-  }
-
-  .sessions-page .state::before {
-    width: 56px;
-    height: 56px;
-    margin-bottom: 12px;
-    border-radius: 10px;
-  }
-
-  .sessions-page .state strong {
-    margin-bottom: 6px;
-    font-size: 1rem;
-  }
-
-  .sessions-page .state-copy {
-    font-size: 0.84rem;
-    line-height: 1.5;
-  }
-
-  .sessions-page .state .button {
-    margin-top: 16px;
-  }
-
-  .sessions-page .project-groups {
-    gap: 20px;
-  }
-
-  .sessions-page .project-header {
-    align-items: baseline;
-    flex-direction: row;
-    gap: 10px;
-    margin-bottom: 8px;
-  }
-
-  .sessions-page .project-heading {
-    flex: 1;
-  }
-
-  .sessions-page .project-name {
-    font-size: 0.9rem;
-  }
-
-  .sessions-page .project-summary {
-    max-width: 48%;
-    overflow: hidden;
-    font-size: 0.65rem;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .sessions-page .session-list {
-    gap: 6px;
-  }
-
-  .sessions-page .session {
-    grid-template-areas:
-      "identity identity"
-      "state timing"
-      "actions actions";
-    grid-template-columns: minmax(0, 0.8fr) minmax(132px, 1.2fr);
-    gap: 10px;
-    padding: 12px;
-    border-radius: 6px;
-  }
-
-  .sessions-page .session-title {
-    font-size: 0.9rem;
-  }
-
-  .sessions-page .rename-button {
-    width: 44px;
-    height: 44px;
-  }
-
-  .sessions-page .rename-action {
-    min-height: 44px;
-  }
-
-  .sessions-page .identity-meta {
-    gap: 6px;
-    margin-top: 2px;
-  }
-
-  .sessions-page .branch,
-  .sessions-page .session-id,
-  .sessions-page .placement,
-  .sessions-page .session-timing dd,
-  .sessions-page .status-line {
-    font-size: 0.7rem;
-  }
-
-  .sessions-page .session-state {
-    gap: 6px;
-  }
-
-  .sessions-page .status-line {
-    padding-inline: 7px;
-  }
-
-  .sessions-page .session-timing {
-    gap: 10px;
-  }
-
-  .sessions-page .session-timing dt {
-    margin-bottom: 2px;
-    font-size: 0.58rem;
-    letter-spacing: 0.06em;
-  }
-
-  .sessions-page .actions {
-    gap: 6px;
-  }
-
-  .sessions-page .actions .button-primary {
-    flex: 1;
-  }
-
-  .sessions-page .confirmation {
-    gap: 8px;
-    padding: 10px;
-  }
-
-  .sessions-page .confirmation .button-danger-confirm {
-    flex: 1;
-  }
-
-  .sessions-page .sleeping-group {
-    margin-top: 6px;
-  }
-
-  .sessions-page .sleeping-group summary {
-    min-height: 44px;
-    padding-inline: 10px;
-  }
-
-  .sessions-page .sleeping-group summary:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: 2px;
-  }
-}
-
-@media (max-width: 420px) {
-  .brand-mark {
-    width: 28px;
-    height: 28px;
-  }
-
-  .devices-page .page-symbol {
-    display: none;
-  }
-}
-
-@media (max-width: 350px) {
-  .sessions-page .wordmark {
-    display: none;
-  }
 }
 
 @media (prefers-contrast: more) {
   :root {
-    --muted: #d1c8ad;
-    --quiet: #aaa18b;
-    --line: #596266;
+    --muted: rgb(255 255 255 / 0.78);
+    --quiet: rgb(255 255 255 / 0.68);
+    --line: rgb(255 255 255 / 0.26);
+    --line-soft: rgb(255 255 255 / 0.18);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .scotty-ui *,
-  .scotty-ui *::before,
-  .scotty-ui *::after {
-    scroll-behavior: auto !important;
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
+  .scotty-ui .button {
+    transition: none;
+  }
+
+  .scotty-ui .button:active {
+    scale: none;
   }
 }

@@ -1,8 +1,10 @@
 # Scotty browser assets
 
-`shared/styles.css` and `brand/` apply the committed Scotty painted identity across the session list,
-device manager, and pairing flow. The UI uses the small app mark for persistent
-identity and role glyphs only at meaningful empty, loading, security, and completion states.
+`app/` contains the built TanStack application for sessions, stats, providers, runners, and
+devices. `shared/styles.css`, `shared/artifact-page.css`, and `brand/` support the remaining
+Evidence, Showcase, pairing, recovery, and ownership-transfer handoffs. The UI uses the small app
+mark for persistent identity and role glyphs only at meaningful empty, loading, security, and
+completion states.
 The deployable files in `brand/` mirror or derive from selected source artwork in `assets/brand/`.
 
 Pi runs inside the session container through one loopback-only RPC supervisor. The authenticated
@@ -22,9 +24,9 @@ The terminal presentation vendors the browser distributions from `@xterm/xterm` 
 `auth/locked.html` is the credential-free entry surface for an untrusted browser at `/` or
 `/sessions`; it directs the operator to `scotty owner recover` without accepting secret material.
 
-`auth/devices.html` is the primary-device-only browser manager. It creates five-minute one-use pairing
-links, starts target-bound ownership transfers, distinguishes the server-derived `Primary` role
-from `This device`, and renders capability QR matrices locally. `auth/pair.html`,
+The TanStack `/devices` route is the primary-device-only browser manager. It creates five-minute
+one-use pairing links, starts target-bound ownership transfers, distinguishes the server-derived
+`Primary` role from `This device`, and renders capability QR matrices locally. `auth/pair.html`,
 `auth/owner-transfer.html`, and `auth/recover.html` remove their link fragments before any fetch and require an explicit click.
 Their executable code lives in static JavaScript files so the Worker can apply the strict
 authentication-page CSP without `unsafe-inline` scripts.

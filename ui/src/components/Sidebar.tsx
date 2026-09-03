@@ -1,7 +1,17 @@
 import * as stylex from "@stylexjs/stylex";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ChevronDown, Plus, Search, X } from "lucide-react";
+import {
+  BarChart3,
+  ChevronDown,
+  Ellipsis,
+  MonitorSmartphone,
+  Plus,
+  Search,
+  Server,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { readCurrentPrincipal } from "../data/admin";
 import { Button } from "./Button";
 import { SessionRow, type SessionRowProps } from "./SessionRow";
 import { colors, spacing } from "../theme/tokens.stylex";
@@ -73,6 +83,64 @@ const styles = stylex.create({
     alignItems: "center",
     gap: spacing.xs,
   },
+  brandActions: { position: "relative", display: "flex", alignItems: "center", gap: spacing.xs },
+  menu: { position: "relative" },
+  menuSummary: {
+    width: "36px",
+    height: "36px",
+    display: "grid",
+    placeItems: "center",
+    borderRadius: "7px",
+    color: colors.quiet,
+    cursor: "pointer",
+    listStyle: "none",
+    ":hover": { backgroundColor: colors.panelRaised, color: colors.ink },
+    "::-webkit-details-marker": { display: "none" },
+  },
+  menuPanel: {
+    position: "absolute",
+    zIndex: 20,
+    top: "calc(100% + 6px)",
+    right: 0,
+    width: "224px",
+    padding: spacing.sm,
+    display: "grid",
+    gap: "2px",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colors.line,
+    borderRadius: "8px",
+    backgroundColor: colors.panelRaised,
+    boxShadow: "0 4px 8px rgb(0 0 0 / 35%)",
+  },
+  menuItem: {
+    minHeight: "40px",
+    paddingInline: spacing.sm,
+    display: "grid",
+    gridTemplateColumns: "16px minmax(0, 1fr)",
+    alignItems: "center",
+    gap: spacing.sm,
+    borderRadius: "6px",
+    color: colors.muted,
+    fontSize: "12px",
+    textDecoration: "none",
+    ":hover": { backgroundColor: colors.control, color: colors.ink },
+    "@media (max-width: 760px)": { minHeight: "44px" },
+  },
+  menuItemLocked: {
+    color: colors.quiet,
+    cursor: "not-allowed",
+    ":hover": { backgroundColor: "transparent", color: colors.quiet },
+  },
+  menuLabel: {
+    minWidth: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  menuHint: { color: colors.quiet, fontSize: "10px" },
+  menuIcon: { width: "15px", height: "15px", strokeWidth: 1.8 },
   mark: {
     width: "22px",
     height: "22px",
@@ -215,6 +283,7 @@ export function Sidebar({
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [showAllArchived, setShowAllArchived] = useState(false);
+  const [owner, setOwner] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const visibleRepositories = filterGroups(repositories, query);
   const visibleActiveSessions = visibleRepositories.flatMap((repository) => repository.sessions);
@@ -238,6 +307,16 @@ export function Sidebar({
     return () => window.removeEventListener("keydown", focusSearch);
   }, [onOpen]);
 
+  useEffect(() => {
+    let active = true;
+    void readCurrentPrincipal().then((result) => {
+      if (active && result.ok) setOwner(result.value.role === "owner");
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
     <aside
       id="session-navigation"
@@ -255,16 +334,63 @@ export function Sidebar({
             <img src={scottyMark} alt="" width={22} height={22} {...stylex.props(styles.mark)} />
             <span>Scotty</span>
           </Link>
-          <span {...stylex.props(styles.close)}>
-            <Button
-              aria-label="Close session navigation"
-              iconOnly
-              variant="quiet"
-              onClick={onClose}
-            >
-              <X aria-hidden {...stylex.props(styles.icon)} />
-            </Button>
-          </span>
+          <div {...stylex.props(styles.brandActions)}>
+            <details {...stylex.props(styles.menu)}>
+              <summary aria-label="Open Scotty menu" {...stylex.props(styles.menuSummary)}>
+                <Ellipsis aria-hidden {...stylex.props(styles.menuIcon)} />
+              </summary>
+              <nav aria-label="Scotty menu" {...stylex.props(styles.menuPanel)}>
+                <Link to="/stats" onClick={onClose} {...stylex.props(styles.menuItem)}>
+                  <BarChart3 aria-hidden {...stylex.props(styles.menuIcon)} />
+                  <span {...stylex.props(styles.menuLabel)}>Stats</span>
+                </Link>
+                {owner ? (
+                  <Link to="/providers" onClick={onClose} {...stylex.props(styles.menuItem)}>
+                    <Server aria-hidden {...stylex.props(styles.menuIcon)} />
+                    <span {...stylex.props(styles.menuLabel)}>Providers &amp; runners</span>
+                  </Link>
+                ) : (
+                  <span
+                    aria-disabled="true"
+                    {...stylex.props(styles.menuItem, styles.menuItemLocked)}
+                  >
+                    <Server aria-hidden {...stylex.props(styles.menuIcon)} />
+                    <span {...stylex.props(styles.menuLabel)}>
+                      Providers &amp; runners
+                      <span {...stylex.props(styles.menuHint)}>Primary</span>
+                    </span>
+                  </span>
+                )}
+                {owner ? (
+                  <Link to="/devices" onClick={onClose} {...stylex.props(styles.menuItem)}>
+                    <MonitorSmartphone aria-hidden {...stylex.props(styles.menuIcon)} />
+                    <span {...stylex.props(styles.menuLabel)}>Devices</span>
+                  </Link>
+                ) : (
+                  <span
+                    aria-disabled="true"
+                    {...stylex.props(styles.menuItem, styles.menuItemLocked)}
+                  >
+                    <MonitorSmartphone aria-hidden {...stylex.props(styles.menuIcon)} />
+                    <span {...stylex.props(styles.menuLabel)}>
+                      Devices
+                      <span {...stylex.props(styles.menuHint)}>Primary</span>
+                    </span>
+                  </span>
+                )}
+              </nav>
+            </details>
+            <span {...stylex.props(styles.close)}>
+              <Button
+                aria-label="Close session navigation"
+                iconOnly
+                variant="quiet"
+                onClick={onClose}
+              >
+                <X aria-hidden {...stylex.props(styles.icon)} />
+              </Button>
+            </span>
+          </div>
         </div>
         <Button
           fullWidth

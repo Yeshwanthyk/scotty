@@ -10,7 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as DevicesRouteImport } from './routes/devices'
+import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as SessionsRouteImport } from './routes/sessions'
+import { Route as StatsRouteImport } from './routes/stats'
 import { Route as SSessionIdRouteImport } from './routes/s.$sessionId'
 import { Route as SessionsCreateRouteImport } from './routes/sessions.create'
 
@@ -19,9 +22,24 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DevicesRoute = DevicesRouteImport.update({
+  id: '/devices',
+  path: '/devices',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProvidersRoute = ProvidersRouteImport.update({
+  id: '/providers',
+  path: '/providers',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SessionsRoute = SessionsRouteImport.update({
   id: '/sessions',
   path: '/sessions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StatsRoute = StatsRouteImport.update({
+  id: '/stats',
+  path: '/stats',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SSessionIdRoute = SSessionIdRouteImport.update({
@@ -37,34 +55,68 @@ const SessionsCreateRoute = SessionsCreateRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/devices': typeof DevicesRoute
+  '/providers': typeof ProvidersRoute
   '/sessions': typeof SessionsRouteWithChildren
+  '/stats': typeof StatsRoute
   '/s/$sessionId': typeof SSessionIdRoute
   '/sessions/create': typeof SessionsCreateRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/devices': typeof DevicesRoute
+  '/providers': typeof ProvidersRoute
   '/sessions': typeof SessionsRouteWithChildren
+  '/stats': typeof StatsRoute
   '/s/$sessionId': typeof SSessionIdRoute
   '/sessions/create': typeof SessionsCreateRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/devices': typeof DevicesRoute
+  '/providers': typeof ProvidersRoute
   '/sessions': typeof SessionsRouteWithChildren
+  '/stats': typeof StatsRoute
   '/s/$sessionId': typeof SSessionIdRoute
   '/sessions/create': typeof SessionsCreateRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/sessions' | '/s/$sessionId' | '/sessions/create'
+  fullPaths:
+    | '/'
+    | '/devices'
+    | '/providers'
+    | '/sessions'
+    | '/stats'
+    | '/s/$sessionId'
+    | '/sessions/create'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/sessions' | '/s/$sessionId' | '/sessions/create'
-  id: '__root__' | '/' | '/sessions' | '/s/$sessionId' | '/sessions/create'
+  to:
+    | '/'
+    | '/devices'
+    | '/providers'
+    | '/sessions'
+    | '/stats'
+    | '/s/$sessionId'
+    | '/sessions/create'
+  id:
+    | '__root__'
+    | '/'
+    | '/devices'
+    | '/providers'
+    | '/sessions'
+    | '/stats'
+    | '/s/$sessionId'
+    | '/sessions/create'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  DevicesRoute: typeof DevicesRoute
+  ProvidersRoute: typeof ProvidersRoute
   SessionsRoute: typeof SessionsRouteWithChildren
+  StatsRoute: typeof StatsRoute
   SSessionIdRoute: typeof SSessionIdRoute
 }
 
@@ -77,11 +129,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/devices': {
+      id: '/devices'
+      path: '/devices'
+      fullPath: '/devices'
+      preLoaderRoute: typeof DevicesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/providers': {
+      id: '/providers'
+      path: '/providers'
+      fullPath: '/providers'
+      preLoaderRoute: typeof ProvidersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sessions': {
       id: '/sessions'
       path: '/sessions'
       fullPath: '/sessions'
       preLoaderRoute: typeof SessionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/stats': {
+      id: '/stats'
+      path: '/stats'
+      fullPath: '/stats'
+      preLoaderRoute: typeof StatsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/s/$sessionId': {
@@ -115,7 +188,10 @@ const SessionsRouteWithChildren = SessionsRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  DevicesRoute: DevicesRoute,
+  ProvidersRoute: ProvidersRoute,
   SessionsRoute: SessionsRouteWithChildren,
+  StatsRoute: StatsRoute,
   SSessionIdRoute: SSessionIdRoute,
 }
 export const routeTree = rootRouteImport

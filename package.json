@@ -28,8 +28,6 @@
     "lint": "npm run lint:skills && oxlint --disable-nested-config --deny-warnings .",
     "lint:skills": "node scripts/check-lint-skills.mjs",
     "lab": "bun scripts/scotty-lab.ts",
-    "preview:ui": "node scripts/ui-preview.mjs",
-    "test:ui-preview": "node --test scripts/ui-preview-state.test.mjs",
     "typecheck": "npm run typecheck:worker && npm run typecheck:contracts && npm run typecheck:cli && npm run typecheck:lab && npm run typecheck:ui",
     "typecheck:worker": "tsc -p worker/tsconfig.json",
     "typecheck:contracts": "tsc -p tsconfig.contracts.json",
