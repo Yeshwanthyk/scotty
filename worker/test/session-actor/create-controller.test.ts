@@ -1,10 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Predicate, Result } from "effect";
 import { SessionActor, type ActorHandleResult } from "../../src/session-actor/actor";
-import type {
-  ReadinessProof,
-  SessionAuthority,
-  SessionIdentity,
+import {
+  AuthorityStateSchema,
+  type ExecutionMode,
+  type ReadinessProof,
+  type SessionAuthority,
+  type SessionIdentity,
 } from "../../src/session-actor/authority";
 import {
   CreateController,
@@ -90,6 +92,34 @@ const warmAuthority = (proof: ReadinessProof = readiness): SessionAuthority => (
     },
   },
 });
+
+const createAuthority = (mode: ExecutionMode): SessionAuthority => {
+  const authority = acceptedAdmission().nextAuthority;
+  assert.ok(AuthorityStateSchema.guards.Transitioning(authority.state));
+  assert.ok(Predicate.isTagged(authority.state.transition, "Create"));
+  return {
+    ...authority,
+    state: {
+      _tag: "Transitioning",
+      transition: { ...authority.state.transition, mode },
+    },
+  };
+};
+
+const checkpointAuthority = (): SessionAuthority => {
+  const authority = warmAuthority();
+  const admission = decide(authority, {
+    _tag: "CheckpointCommand",
+    expectedRevision: authority.revision,
+    correlationId: "checkpoint-correlation",
+    nonce: "checkpoint-nonce",
+    attempt: "checkpoint-attempt",
+    timestamp: T0,
+    deadlineAt: DEADLINE,
+  });
+  assert.ok(Predicate.isTagged(admission, "Accepted"));
+  return admission.nextAuthority;
+};
 
 const acceptedAdmission = (value: CreateControllerRequest = request()): AcceptedDecision => {
   const admission = decide(undefined, {
@@ -272,6 +302,48 @@ describe("create controller", () => {
       assert.strictEqual(test.actorCalls(), 0);
       assert.strictEqual(test.hardCapCalls(), 0);
       assert.strictEqual(test.scrubCalls(), 1);
+    }),
+  );
+
+  for (const mode of ["executing", "reconciling"] as const) {
+    it.effect(`classifies a matching ${mode} Create replay as in progress`, () =>
+      Effect.gen(function* () {
+        const authority = createAuthority(mode);
+        const test = harness({
+          reservation: { _tag: "Existing", metadata: metadata(), authority },
+        });
+
+        const outcome = yield* test.run();
+
+        assert.ok(Predicate.isTagged(outcome, "InProgress"));
+        assert.strictEqual(outcome.replay, true);
+        assert.strictEqual(outcome.mode, mode);
+        assert.strictEqual(outcome.phase, "IntentCommitted");
+        assert.strictEqual(test.actorCalls(), 0);
+        assert.strictEqual(test.hardCapCalls(), 0);
+        assert.strictEqual(test.scrubCalls(), 0);
+      }),
+    );
+  }
+
+  it.effect("rejects a matching replay whose authority is transitioning another operation", () =>
+    Effect.gen(function* () {
+      const test = harness({
+        reservation: {
+          _tag: "Existing",
+          metadata: metadata(),
+          authority: checkpointAuthority(),
+        },
+      });
+
+      const outcome = yield* Effect.result(test.run());
+
+      assert.ok(Result.isFailure(outcome));
+      assert.ok(Predicate.isTagged(outcome.failure, "CreateControllerInvariantFailure"));
+      assert.strictEqual(outcome.failure.code, "create_finished_in_unexpected_state");
+      assert.strictEqual(test.actorCalls(), 0);
+      assert.strictEqual(test.hardCapCalls(), 0);
+      assert.strictEqual(test.scrubCalls(), 0);
     }),
   );
 

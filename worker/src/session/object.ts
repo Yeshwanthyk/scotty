@@ -2919,13 +2919,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
       if (recovered.recovery === "stale")
         return { recovery: recovered.recovery, outcome: yield* controller.create(request) };
       const authority = recovered.snapshot.authority;
-      if (authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state))
+      if (
+        authority !== undefined &&
+        AuthorityStateSchema.guards.Transitioning(authority.state) &&
+        Predicate.isTagged(authority.state.transition, "Create")
+      )
         return {
           recovery: recovered.recovery,
           outcome: {
-            _tag: "Reconciling" as const,
+            _tag: "InProgress" as const,
             replay: true,
             authority,
+            mode: authority.state.transition.mode,
             phase: authority.state.transition.phase,
           },
         };
@@ -2935,23 +2940,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
       request.nonce,
       controller.create(request).pipe(
         Effect.flatMap((initial) => {
-          if (!Predicate.isTagged(initial, "Reconciling") || !initial.replay)
+          if (!Predicate.isTagged(initial, "InProgress") || !initial.replay)
             return Effect.succeed(initial);
           return recoverCreateReplay(this).pipe(
             Effect.map((recovered) =>
               recovered.recovery === "active" || recovered.recovery === "not_target"
                 ? initial
                 : recovered.outcome,
-            ),
-          );
-        }),
-        Effect.catchTag("CreateControllerInvariantFailure", (failure) => {
-          if (failure.code !== "create_finished_in_unexpected_state") return Effect.fail(failure);
-          return recoverCreateReplay(this).pipe(
-            Effect.flatMap((recovered) =>
-              recovered.recovery === "active" || recovered.recovery === "not_target"
-                ? Effect.fail(failure)
-                : Effect.succeed(recovered.outcome),
             ),
           );
         }),
@@ -2986,7 +2981,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         );
       return yield* this.upstreamError("Session setup failed", outcome.code, id);
     }
-    if (Predicate.isTagged(outcome, "Reconciling"))
+    if (Predicate.isTagged(outcome, "InProgress"))
       return yield* this.upstreamError(
         "Session setup outcome is being reconciled",
         outcome.phase,

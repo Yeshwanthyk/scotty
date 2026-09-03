@@ -8,6 +8,7 @@ import {
 } from "./actor";
 import {
   AuthorityStateSchema,
+  type ExecutionMode,
   type SessionAuthority,
   type SessionIdentity,
   StableStateSchema,
@@ -62,9 +63,10 @@ export type CreateControllerResult =
       readonly actionable: boolean;
     }
   | {
-      readonly _tag: "Reconciling";
+      readonly _tag: "InProgress";
       readonly replay: boolean;
       readonly authority: SessionAuthority;
+      readonly mode: ExecutionMode;
       readonly phase: string;
     };
 
@@ -321,11 +323,12 @@ const classify = (
 ): Effect.Effect<CreateControllerResult, CreateControllerInvariantFailure> => {
   if (AuthorityStateSchema.guards.Transitioning(authority.state)) {
     const transition = authority.state.transition;
-    return Predicate.isTagged(transition, "Create") && transition.mode === "reconciling"
+    return Predicate.isTagged(transition, "Create")
       ? Effect.succeed({
-          _tag: "Reconciling" as const,
+          _tag: "InProgress" as const,
           replay,
           authority,
+          mode: transition.mode,
           phase: transition.phase,
         })
       : Effect.fail(
