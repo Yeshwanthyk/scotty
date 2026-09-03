@@ -1350,13 +1350,21 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
           session.success.operation.nonce !== nonce
         )
           return Result.fail(new EvidenceStateError({ reason: "lease_changed" }));
+        const withoutActive: EvidenceState = {
+          nextSequence: state.success.nextSequence,
+          jobs: state.success.jobs,
+          artifacts: state.success.artifacts,
+          pendingDeletes: state.success.pendingDeletes,
+          retainedBytes: state.success.retainedBytes,
+        };
         const requested = requestDeletes(
-          state.success,
+          withoutActive,
           state.success.artifacts,
           "vaporize",
           requestedAt,
         );
-        if (state.success.artifacts.length > 0) await transaction.putEvidence(requested);
+        if (state.success.activeJob !== undefined || state.success.artifacts.length > 0)
+          await transaction.putEvidence(requested);
         return Result.succeed(requested.artifacts);
       }) as Effect.Effect<ReadonlyArray<EvidenceArtifact>, EvidenceStateError>;
     }),
