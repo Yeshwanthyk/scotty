@@ -3424,6 +3424,40 @@ describe("real Hono boundary", () => {
     expect(sessionRootBearer.status).toBe(401);
   });
 
+  it("maps absolute shell asset references to the built application directory", async () => {
+    const assetPaths: string[] = [];
+    const shell =
+      '<!doctype html><link rel="stylesheet" href="/assets/app.css"><script src="/assets/app.js"></script>';
+    const assets = {
+      fetch: async (request: Request) => {
+        const path = new URL(request.url).pathname;
+        assetPaths.push(path);
+        return path === "/app/_shell.html"
+          ? new Response(shell, { headers: { "content-type": "text/html" } })
+          : new Response("asset", { headers: { "content-type": "application/octet-stream" } });
+      },
+      connect: () => {
+        throw new RouteTestFailure("ASSETS.connect isn't used by route tests");
+      },
+    } as Fetcher;
+    const bindings = env({ assets });
+    const response = await app.request(
+      "/sessions",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      bindings,
+    );
+    const assetReferences = [
+      ...(await response.text()).matchAll(/(?:href|src)="(\/assets\/[^"]+)"/gu),
+    ].map((match) => match[1]);
+
+    expect(assetReferences).toEqual(["/assets/app.css", "/assets/app.js"]);
+    for (const assetReference of assetReferences) {
+      const assetResponse = await app.request(assetReference, undefined, bindings);
+      expect(assetResponse.status, assetReference).toBe(200);
+    }
+    expect(assetPaths).toEqual(["/app/_shell.html", "/app/assets/app.css", "/app/assets/app.js"]);
+  });
+
   it("shows fake-backed failed evidence frames through authenticated polling", async () => {
     const harness = await createSessionHarness({
       evidenceEnabled: true,
