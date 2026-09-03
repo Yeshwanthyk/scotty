@@ -10,10 +10,12 @@ import { sessionRoot } from "../../sandbox/workspace";
 import type { DirectoryBackup } from "../../session/contracts";
 import type {
   BackupIdentity,
+  ExecutionMode,
   RuntimeProof,
   StopObservation,
   SupervisorProof,
   TransportProof,
+  Transition,
 } from "../authority";
 import { SessionActorMetadataStore } from "../metadata-store";
 import {
@@ -67,7 +69,13 @@ export class BackupLifecycleSandboxFailure extends Schema.TaggedError<BackupLife
 export interface BackupLifecycleAttempt {
   readonly sessionId: string;
   readonly attempt: string;
+  readonly operationNonce: string;
   readonly runtimeGeneration: string;
+  readonly transitionFence: {
+    readonly revision: number;
+    readonly mode: ExecutionMode;
+    readonly phase: Transition["phase"];
+  };
 }
 
 export interface PreparedSandboxBackup {
@@ -148,6 +156,12 @@ export class BackupLifecycleSandbox extends Context.Service<
   BackupLifecycleSandbox,
   BackupLifecycleSandboxShape
 >()("scotty/SessionActor/BackupLifecycleSandbox") {}
+
+export interface BackupLifecycleHatchHooks {
+  readonly afterPiStopped: (input: BackupLifecycleAttempt) => Effect.Effect<void, unknown>;
+  readonly beforeSupervisorStart: (input: BackupLifecycleAttempt) => Effect.Effect<void, unknown>;
+  readonly afterSupervisorReady: (input: BackupLifecycleAttempt) => Effect.Effect<void, unknown>;
+}
 
 const boundaryFailure = (
   outcome: "rejected_before_admission" | "unknown_after_admission",
@@ -476,16 +490,85 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
   }),
 );
 
+export const backupLifecycleSandboxLayerWithHatch = (
+  hooks: BackupLifecycleHatchHooks,
+): Layer.Layer<
+  BackupLifecycleSandbox,
+  never,
+  BackupStore | ContainerAuth | SandboxRuntime | SandboxRuntimeStop
+> =>
+  Layer.effect(
+    BackupLifecycleSandbox,
+    Effect.map(BackupLifecycleSandbox, (sandbox) =>
+      BackupLifecycleSandbox.of({
+        ...sandbox,
+        quiescePi: (input) =>
+          sandbox
+            .quiescePi(input)
+            .pipe(
+              Effect.tap(() =>
+                hooks
+                  .afterPiStopped(input)
+                  .pipe(
+                    Effect.mapError(() =>
+                      boundaryFailure(
+                        "unknown_after_admission",
+                        "hatch_quiesce_cleanup_outcome_unknown",
+                      ),
+                    ),
+                  ),
+              ),
+            ),
+        startSupervisor: (input) =>
+          hooks.beforeSupervisorStart(input).pipe(
+            Effect.mapError(() =>
+              boundaryFailure("unknown_after_admission", "hatch_restore_prepare_outcome_unknown"),
+            ),
+            Effect.andThen(sandbox.startSupervisor(input)),
+          ),
+        confirmSupervisorReady: (input) =>
+          sandbox
+            .confirmSupervisorReady(input)
+            .pipe(
+              Effect.tap(() =>
+                hooks
+                  .afterSupervisorReady(input)
+                  .pipe(
+                    Effect.mapError(() =>
+                      boundaryFailure(
+                        "unknown_after_admission",
+                        "hatch_restore_completion_outcome_unknown",
+                      ),
+                    ),
+                  ),
+              ),
+            ),
+      }),
+    ),
+  ).pipe(Layer.provide(backupLifecycleSandboxLayer));
+
 const checkpointAttempt = (context: CheckpointProviderContext): BackupLifecycleAttempt => ({
   sessionId: context.authority.session.id,
   attempt: context.transition.attempt,
+  operationNonce: context.transition.nonce,
   runtimeGeneration: context.transition.proof.readiness.runtime.runtimeGeneration,
+  transitionFence: {
+    revision: context.authority.revision,
+    mode: context.transition.mode,
+    phase: context.transition.phase,
+  },
 });
 
 const sleepAttempt = (context: SleepProviderContext): BackupLifecycleAttempt => ({
   sessionId: context.authority.session.id,
   attempt: context.transition.attempt,
+  operationNonce: context.transition.nonce,
   runtimeGeneration: context.transition.proof.readiness.runtime.runtimeGeneration,
+  transitionFence: {
+    revision: context.authority.revision,
+    mode: context.transition.mode,
+    phase: context.transition.phase,
+  },
 });
 
 const resumeAttempt = (
@@ -494,7 +577,13 @@ const resumeAttempt = (
 ): BackupLifecycleAttempt => ({
   sessionId: context.authority.session.id,
   attempt: context.transition.attempt,
+  operationNonce: context.transition.nonce,
   runtimeGeneration,
+  transitionFence: {
+    revision: context.authority.revision,
+    mode: context.transition.mode,
+    phase: context.transition.phase,
+  },
 });
 
 const resumedRuntimeGeneration = (context: ResumeProviderContext): string =>

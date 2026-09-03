@@ -2,6 +2,7 @@
 
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import type { ChildProcess } from "node:child_process";
+import packageMetadata from "../package.json" with { type: "json" };
 import {
   Console,
   Context,
@@ -60,7 +61,7 @@ import {
   terminateManifestProcess,
 } from "./scotty-lab.mjs";
 
-const VERSION = "0.3.3";
+export const LAB_VERSION = packageMetadata.version;
 const USAGE =
   "Usage: npm run lab -- start | setup RUN_ID --repo OWNER/REPO | exec RUN_ID -- <scotty argv> | stop RUN_ID | lifecycle <scenario>";
 const RUN_ID_PATTERN = /^lab-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -1136,7 +1137,7 @@ const silentConsole: Console.Console = Object.assign(Object.create(console), {
 
 export const runLab = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
   yield* requireExecSeparator(args);
-  yield* Command.runWith(labCommand, { version: VERSION, renderErrors: false })(args).pipe(
+  yield* Command.runWith(labCommand, { version: LAB_VERSION, renderErrors: false })(args).pipe(
     Effect.provide(CliConfig.layer({ builtIns: [] })),
     Effect.provideService(CliOutput.Formatter, CliOutput.defaultFormatter({ colors: false })),
     Effect.provideService(Console.Console, silentConsole),

@@ -39,6 +39,7 @@ import {
   durableObjectHatchStateStorage,
   hatchStoreLayer,
   type HatchCleanupAuthority,
+  type HatchRestoreFence,
   type HatchWebSocketAuthorization,
 } from "../hatch/store";
 import {
@@ -173,9 +174,13 @@ import {
   type SessionControlGate,
 } from "./store";
 import type { SessionActorDiagnostics } from "../session-actor/diagnostics";
-import { ActorStore, actorStoreLayer } from "../session-actor/store";
+import { ActorStore, actorStoreLayer, type ActorStoreSnapshot } from "../session-actor/store";
 import { SessionActor, sessionActorLayer } from "../session-actor/actor";
-import { ActorAlarmOutcomeUnknown, actorAlarmSchedulerLayer } from "../session-actor/alarm";
+import {
+  actorAlarmId,
+  ActorAlarmOutcomeUnknown,
+  actorAlarmSchedulerLayer,
+} from "../session-actor/alarm";
 import { actorEffectRunnerLayer } from "../session-actor/effect-runner";
 import { sessionProviderEffectExecutorLayer } from "../session-actor/provider-executor";
 import {
@@ -184,7 +189,7 @@ import {
   createSandboxTransitionProviderLayer,
 } from "../session-actor/transitions/create-sandbox";
 import {
-  backupLifecycleSandboxLayer,
+  backupLifecycleSandboxLayerWithHatch,
   checkpointSandboxTransitionProviderLayer,
   resumeSandboxTransitionProviderLayer,
   sandboxRuntimeStopLayer,
@@ -233,11 +238,14 @@ import {
 } from "../session-actor/authority";
 import { sessionProjectionFromActor, sessionViewFromActor } from "../session-actor/public-view";
 import { uiSessionResponseFromActor, type UiSessionResponse } from "../ui/session-view";
-import { SESSION_SCHEDULE_CALLBACKS, sessionAllowsRuntimeAccess } from "./lifecycle";
+import {
+  hardCapDrainAt,
+  SESSION_SCHEDULE_CALLBACKS,
+  sessionAllowsRuntimeAccess,
+} from "./lifecycle";
 import {
   errorName,
   SandboxRuntime,
-  SandboxRuntimeFailure,
   sandboxRuntimeLayer,
   shellQuote,
   type SandboxWriteContent,
@@ -266,6 +274,44 @@ import {
   readGitWorktreePatch,
 } from "../changes/git";
 import { parseChangedPath, type ChangedFilePatch, type ChangedFiles } from "../changes/contracts";
+
+type ActorRequestRecovery =
+  | { readonly _tag: "NotNeeded"; readonly snapshot: ActorStoreSnapshot }
+  | { readonly _tag: "Contended"; readonly snapshot: ActorStoreSnapshot }
+  | { readonly _tag: "Recovered"; readonly provenSnapshot: ActorStoreSnapshot };
+
+const expectedRecoveredStable = (
+  authority: SessionAuthority,
+  expectedKind: LifecycleCommandKind | "Create",
+): boolean => {
+  if (!AuthorityStateSchema.guards.Stable(authority.state)) return false;
+  const stable = authority.state.stable;
+  if (StableStateSchema.guards.Failed(stable)) return true;
+  return expectedKind === "Sleep"
+    ? StableStateSchema.guards.Sleeping(stable)
+    : StableStateSchema.guards.Warm(stable);
+};
+
+const provesRecoveredTransition = (
+  snapshot: ActorStoreSnapshot,
+  expectedKind: LifecycleCommandKind | "Create",
+  transitionNonce: string,
+): boolean => {
+  const authority = snapshot.authority;
+  if (authority === undefined) return false;
+  if (AuthorityStateSchema.guards.Transitioning(authority.state))
+    return (
+      authority.state.transition.nonce === transitionNonce &&
+      Predicate.isTagged(authority.state.transition, expectedKind)
+    );
+  const journal = snapshot.journalTail;
+  return (
+    expectedRecoveredStable(authority, expectedKind) &&
+    journal?.eventType === "completed" &&
+    journal.transitionKind === expectedKind &&
+    journal.transitionNonce === transitionNonce
+  );
+};
 
 const ABANDONED_OPERATION_MS = 5 * 60_000;
 const ACTIVITY_OBSERVATION_TTL_MS = 90_000;
@@ -404,6 +450,39 @@ const decodeCreateHardCapFence = Schema.decodeUnknownOption(CreateHardCapFenceSc
   onExcessProperty: "error",
 });
 
+const CreateHardCapDrainFenceSchema = Schema.Struct({
+  sessionId: Schema.String,
+  generation: Schema.String,
+  deadlineAt: Schema.String,
+  drainAt: Schema.String,
+});
+const decodeCreateHardCapDrainFence = Schema.decodeUnknownOption(CreateHardCapDrainFenceSchema, {
+  onExcessProperty: "error",
+});
+type CreateHardCapDrainFence = typeof CreateHardCapDrainFenceSchema.Type;
+
+const isMatchingHardCapDrain = (
+  authority: SessionAuthority | undefined,
+  fence: CreateHardCapDrainFence,
+): authority is SessionAuthority =>
+  authority !== undefined &&
+  authority.session.id === fence.sessionId &&
+  authority.hardCap.generation === fence.generation &&
+  authority.hardCap.deadlineAt === fence.deadlineAt &&
+  hardCapDrainAt(authority.hardCap.deadlineAt, authority.hardCap.durationSeconds) === fence.drainAt;
+
+const isWarmAuthority = (authority: SessionAuthority): boolean =>
+  AuthorityStateSchema.guards.Stable(authority.state) &&
+  StableStateSchema.guards.Warm(authority.state.stable);
+
+const isTerminalDrainAuthority = (authority: SessionAuthority): boolean =>
+  AuthorityStateSchema.guards.Stable(authority.state) &&
+  !StableStateSchema.guards.Warm(authority.state.stable);
+
+const isVaporizingAuthority = (authority: SessionAuthority): boolean =>
+  AuthorityStateSchema.guards.Transitioning(authority.state) &&
+  TransitionSchema.guards.Vaporize(authority.state.transition);
+
 const isMatchingVaporizeHardCap = (
   authority: SessionAuthority | undefined,
   fence: CreateHardCapFence,
@@ -479,6 +558,8 @@ export interface TerminalSessionControl {
 }
 
 export interface SandboxEffectOptions {
+  readonly actorRequestRecoveryAfterResume?: () => Promise<void>;
+  readonly actorRequestRecoveryBeforeResume?: () => Promise<void>;
   readonly clock?: Clock.Clock;
   readonly containerEvidenceRecorder?: ContainerEvidenceRecorder["Service"];
   readonly evidencePreviewHostTimeoutMillis?: number;
@@ -696,6 +777,7 @@ interface PendingHatchRestore {
   readonly hatch: HatchRecord;
   readonly operationNonce: string;
   readonly runtimeEpoch: string;
+  readonly restoreFence: HatchRestoreFence;
 }
 
 interface PendingHatchWebSocket {
@@ -726,6 +808,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly evidenceEnabled: boolean;
   private readonly localE2E: boolean;
   private readonly runtimeIncarnationStore: SandboxRuntimeIncarnationStore;
+  private readonly actorRequestRecoveryAfterResume: () => Promise<void>;
+  private readonly actorRequestRecoveryBeforeResume: () => Promise<void>;
   private readonly evidencePreviewHostTimeoutMillis: number;
   private readonly hatchPublicProbe: (
     url: string,
@@ -736,6 +820,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
   private createInFlight: InFlightCreate | undefined;
+  private readonly activeActorMutationNonces = new Set<string>();
   private readonly previewExposureReconciliations = new Map<string, InFlightPreviewExposure>();
   private readonly previewRequests = new Map<string, InFlightPreviewRequest>();
   private readonly hatchRequests = new Map<string, AbortController>();
@@ -754,6 +839,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     this.evidencePreviewHostTimeoutMillis =
       options.evidencePreviewHostTimeoutMillis ?? EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS;
+    this.actorRequestRecoveryAfterResume =
+      options.actorRequestRecoveryAfterResume ?? (() => Promise.resolve());
+    this.actorRequestRecoveryBeforeResume =
+      options.actorRequestRecoveryBeforeResume ?? (() => Promise.resolve());
     this.hatchPublicProbe =
       options.hatchPublicProbe ??
       ((url, marker, signal) =>
@@ -1103,9 +1192,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     const actorRuntimeStop = sandboxRuntimeStopLayer({ requestStop: () => this.stop() });
-    const backupLifecycleSandbox = backupLifecycleSandboxLayer.pipe(
-      Layer.provide(Layer.mergeAll(backup, runtimeAndContainerAuth, actorRuntimeStop)),
-    );
+    const backupLifecycleSandbox = backupLifecycleSandboxLayerWithHatch({
+      afterPiStopped: (input) =>
+        this.cleanupHatchProgram(input.operationNonce, "sleeping", false, "operation").pipe(
+          Effect.asVoid,
+          Effect.provide(hatch),
+        ),
+      beforeSupervisorStart: (input) =>
+        this.prepareHatchRestoreProgram(input.operationNonce).pipe(
+          Effect.asVoid,
+          Effect.provide(Layer.mergeAll(actorStore, hatch)),
+        ),
+      afterSupervisorReady: (input) =>
+        this.completePreparedHatchRestoreProgram(
+          input.operationNonce,
+          input.runtimeGeneration,
+          input.transitionFence,
+        ).pipe(Effect.provide(Layer.mergeAll(hatch, runtime))),
+    }).pipe(Layer.provide(Layer.mergeAll(backup, runtimeAndContainerAuth, actorRuntimeStop)));
     const checkpointProvider = checkpointSandboxTransitionProviderLayer.pipe(
       Layer.provide(Layer.merge(backupLifecycleSandbox, actorMetadata)),
     );
@@ -1248,16 +1352,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     const actor = sessionActorLayer.pipe(Layer.provide(Layer.merge(actorStore, actorRunner)));
     const hardCap = createHardCapControllerLayer((fence) =>
-      Effect.tryPromise({
-        try: () =>
-          this.schedule(new Date(fence.deadlineAt), "sessionActorHardCap", fence).then(
-            () => undefined,
-          ),
-        catch: () =>
-          new CreateControllerBoundaryFailure({
-            boundary: "hard_cap",
-            code: "schedule_outcome_unknown",
-          }),
+      Effect.gen({ self: this }, function* () {
+        const finalFence: CreateHardCapFence = {
+          sessionId: fence.sessionId,
+          generation: fence.generation,
+          deadlineAt: fence.deadlineAt,
+        };
+        const schedule = (at: string, callback: string, payload: unknown) =>
+          Effect.tryPromise({
+            try: () => this.schedule(new Date(at), callback, payload).then(() => undefined),
+            catch: () =>
+              new CreateControllerBoundaryFailure({
+                boundary: "hard_cap",
+                code: "schedule_outcome_unknown",
+              }),
+          });
+        yield* schedule(fence.deadlineAt, "sessionActorHardCap", finalFence);
+        const drainAt = hardCapDrainAt(fence.deadlineAt, fence.durationSeconds);
+        yield* schedule(drainAt, "sessionActorHardCapDrain", { ...finalFence, drainAt });
       }),
     );
     const lifecycleController = lifecycleControllerLayer.pipe(
@@ -1421,6 +1533,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     hatch: HatchRecord,
     operationNonce: string,
     runtimeEpoch: string,
+    restoreFence?: HatchRestoreFence,
   ) {
     const previewBase = this.previewBase;
     if (previewBase === undefined)
@@ -1467,6 +1580,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       hatch.hatchId,
       hatch.generation,
       runtimeEpoch,
+      restoreFence,
     );
   });
 
@@ -1491,37 +1605,67 @@ export class Sandbox extends BaseSandbox<Bindings> {
         pending.hatch,
         pending.operationNonce,
         pending.runtimeEpoch,
+        pending.restoreFence,
       ),
     );
     if (Result.isSuccess(restored)) return;
-    yield* this.cleanupHatchProgram(
-      pending.operationNonce,
-      "failed",
-      false,
-      "restore_operation",
-    ).pipe(Effect.ignore);
+    const cleanup = yield* Effect.result(
+      this.cleanupHatchProgram(pending.operationNonce, "failed", false, {
+        kind: "restore_operation",
+        hatchId: pending.hatch.hatchId,
+        generation: pending.hatch.generation,
+        runtimeEpoch: pending.runtimeEpoch,
+      }),
+    );
+    if (Result.isFailure(cleanup))
+      yield* hostEffect("schedule", () =>
+        this.schedule(5, "retryHatchCleanup", {
+          operationNonce: pending.operationNonce,
+          target: "failed",
+          closeDesired: false,
+        } satisfies HatchCleanupRetry),
+      ).pipe(Effect.ignore);
     return yield* restored.failure;
   });
 
-  private readonly restorePiAndHatchProgram = Effect.fnUntraced(function* (
+  private readonly completePreparedHatchRestoreProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     operationNonce: string,
-    restorePi: Effect.Effect<void, SandboxRuntimeFailure>,
+    runtimeEpoch: string,
+    restoreFence: HatchRestoreFence,
   ) {
-    const pending = yield* this.prepareHatchRestoreProgram(operationNonce);
-    const restored = yield* Effect.result(
-      restorePi.pipe(
-        Effect.andThen(
-          pending === undefined ? Effect.void : this.completeHatchRestoreProgram(pending),
-        ),
-      ),
-    );
-    if (Result.isSuccess(restored)) return;
-    if (pending !== undefined)
-      yield* this.cleanupHatchProgram(operationNonce, "failed", false, "restore_operation").pipe(
-        Effect.ignore,
-      );
-    return yield* Effect.fail(restored.failure);
+    const store = yield* HatchStore;
+    const state = yield* store.read;
+    const hatch = state.primary;
+    if (hatch === undefined || hatch.desiredStatus !== "open") return;
+    if (
+      hatch.observedStatus === "running" &&
+      hatch.exposure === "active" &&
+      hatch.publicReadyAt !== undefined &&
+      hatch.runtimeEpoch === runtimeEpoch &&
+      hatch.transitionNonce === undefined &&
+      hatch.cleanup === undefined
+    )
+      return;
+    const descriptor = yield* store.restoreDescriptor;
+    if (
+      descriptor === undefined ||
+      hatch.hatchId !== descriptor.hatchId ||
+      hatch.generation !== descriptor.generation ||
+      hatch.transitionNonce !== operationNonce ||
+      descriptor.runtimeEpoch !== runtimeEpoch ||
+      hatch.runtimeEpoch !== runtimeEpoch
+    )
+      return yield* new HatchStateError({
+        reason: "lease_changed",
+        message: "Hatch transition changed",
+      });
+    yield* this.completeHatchRestoreProgram({
+      hatch,
+      operationNonce,
+      runtimeEpoch,
+      restoreFence,
+    });
   });
 
   private readonly ensureScottyHatchProgram = Effect.fnUntraced(function* (
@@ -2628,14 +2772,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* containerAuth.ensurePiSession(record.id, sessionRuntimeCredentials(grant.grants));
   });
 
-  private readonly readActorSessionStateProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const store = yield* ActorStore;
+  private readonly actorSessionStateFromSnapshotProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    snapshot: ActorStoreSnapshot,
+  ) {
     const metadataStore = yield* SessionActorMetadataStore;
-    const snapshot = yield* store.read.pipe(
-      Effect.mapError((failure) =>
-        this.upstreamError("Session actor authority is unavailable", failure),
-      ),
-    );
     const authority = snapshot.authority;
     if (authority === undefined) return yield* notFound("unknown");
     if (
@@ -2683,6 +2824,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return { authority, metadata, projection, view };
   });
 
+  private readonly readActorSessionStateProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const store = yield* ActorStore;
+    const snapshot = yield* store.read.pipe(
+      Effect.mapError((failure) =>
+        this.upstreamError("Session actor authority is unavailable", failure),
+      ),
+    );
+    return yield* this.actorSessionStateFromSnapshotProgram(snapshot);
+  });
+
   private readonly publishSessionProjectionBestEffortProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     projection: SessionListProjection,
@@ -2701,6 +2852,95 @@ export class Sandbox extends BaseSandbox<Bindings> {
       yield* this.publishSessionProjectionBestEffortProgram(state.success.projection);
     },
   );
+
+  private readonly recoverTransitioningActorForRequestProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    expectedKind: LifecycleCommandKind | "Create",
+  ) {
+    const store = yield* ActorStore;
+    const before = yield* store.read;
+    const authority = before.authority;
+    if (authority === undefined || !AuthorityStateSchema.guards.Transitioning(authority.state))
+      return { _tag: "NotNeeded" as const, snapshot: before } satisfies ActorRequestRecovery;
+    const transition = authority.state.transition;
+    if (!Predicate.isTagged(transition, expectedKind))
+      return { _tag: "Contended" as const, snapshot: before } satisfies ActorRequestRecovery;
+    yield* Effect.promise(() => this.actorRequestRecoveryBeforeResume());
+    const afterResume = this.actorRequestRecoveryAfterResume;
+    const recovered = yield* this.withExclusiveActorMutation(
+      transition.nonce,
+      Effect.gen(function* () {
+        const actor = yield* SessionActor;
+        const now = yield* Clock.currentTimeMillis;
+        const timestamp = new Date(now).toISOString();
+        const correlationId = crypto.randomUUID();
+        yield* actor.resume({
+          timestamp,
+          correlationId,
+          expectedTransition: {
+            revision: authority.revision,
+            transitionNonce: transition.nonce,
+            attempt: transition.attempt,
+            expectedPhase: transition.phase,
+          },
+          ...(now >= Date.parse(transition.deadlineAt)
+            ? {
+                fence: {
+                  kind: "deadline" as const,
+                  alarmId: actorAlarmId(
+                    "deadline",
+                    transition.nonce,
+                    transition.attempt,
+                    transition.deadlineAt,
+                  ),
+                  revision: authority.revision,
+                  transitionNonce: transition.nonce,
+                  attempt: transition.attempt,
+                  expectedPhase: transition.phase,
+                  expectedDeadlineAt: transition.deadlineAt,
+                  correlationId,
+                },
+              }
+            : {}),
+        });
+        yield* Effect.promise(() => afterResume());
+        const snapshot = yield* store.read;
+        return provesRecoveredTransition(snapshot, expectedKind, transition.nonce)
+          ? { _tag: "Recovered" as const, provenSnapshot: snapshot }
+          : { _tag: "Contended" as const, snapshot };
+      }),
+    );
+    return recovered === undefined
+      ? ({ _tag: "Contended" as const, snapshot: before } satisfies ActorRequestRecovery)
+      : recovered;
+  });
+
+  private readonly withExclusiveActorMutation = <A, E, R>(
+    nonce: string,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A | undefined, E, R> =>
+    Effect.sync(() => {
+      if (this.activeActorMutationNonces.has(nonce)) return false;
+      this.activeActorMutationNonces.add(nonce);
+      return true;
+    }).pipe(
+      Effect.flatMap((acquired) =>
+        acquired
+          ? effect.pipe(
+              Effect.ensuring(Effect.sync(() => this.activeActorMutationNonces.delete(nonce))),
+            )
+          : Effect.succeed(undefined),
+      ),
+    );
+
+  private readonly withActiveActorMutation = <A, E, R>(
+    nonce: string,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    Effect.sync(() => this.activeActorMutationNonces.add(nonce)).pipe(
+      Effect.flatMap(() => effect),
+      Effect.ensuring(Effect.sync(() => this.activeActorMutationNonces.delete(nonce))),
+    );
 
   private readonly cancelSessionSchedulesAfterGoneProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
@@ -2749,7 +2989,43 @@ export class Sandbox extends BaseSandbox<Bindings> {
         generation: crypto.randomUUID(),
       },
     };
-    const outcome = yield* controller.create(request).pipe(
+    const recoverCreateReplay = Effect.fnUntraced(function* (sandbox: Sandbox) {
+      const recovered = yield* sandbox.recoverTransitioningActorForRequestProgram("Create");
+      if (Predicate.isTagged(recovered, "Contended")) return { _tag: "Contended" as const };
+      const authority = Predicate.isTagged(recovered, "Recovered")
+        ? recovered.provenSnapshot.authority
+        : recovered.snapshot.authority;
+      if (
+        authority !== undefined &&
+        AuthorityStateSchema.guards.Transitioning(authority.state) &&
+        Predicate.isTagged(authority.state.transition, "Create")
+      )
+        return {
+          _tag: "Available" as const,
+          outcome: {
+            _tag: "InProgress" as const,
+            replay: true,
+            authority,
+            mode: authority.state.transition.mode,
+            phase: authority.state.transition.phase,
+          },
+        };
+      return { _tag: "Available" as const, outcome: yield* controller.create(request) };
+    });
+    const outcome = yield* this.withActiveActorMutation(
+      request.nonce,
+      controller.create(request).pipe(
+        Effect.flatMap((initial) => {
+          if (!Predicate.isTagged(initial, "InProgress") || !initial.replay)
+            return Effect.succeed(initial);
+          return recoverCreateReplay(this).pipe(
+            Effect.map((recovered) =>
+              Predicate.isTagged(recovered, "Contended") ? initial : recovered.outcome,
+            ),
+          );
+        }),
+      ),
+    ).pipe(
       Effect.mapError((failure) => {
         if (
           Predicate.isTagged(failure, "CreateControllerConflict") ||
@@ -2779,7 +3055,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         );
       return yield* this.upstreamError("Session setup failed", outcome.code, id);
     }
-    if (Predicate.isTagged(outcome, "Reconciling"))
+    if (Predicate.isTagged(outcome, "InProgress"))
       return yield* this.upstreamError(
         "Session setup outcome is being reconciled",
         outcome.phase,
@@ -2861,6 +3137,52 @@ export class Sandbox extends BaseSandbox<Bindings> {
     kind: LifecycleCommandKind,
   ) {
     const controller = yield* LifecycleController;
+    const recovered = yield* this.recoverTransitioningActorForRequestProgram(kind).pipe(
+      Effect.mapError((failure) =>
+        this.upstreamError(`Session ${kind.toLowerCase()} failed`, failure),
+      ),
+    );
+    if (!Predicate.isTagged(recovered, "NotNeeded")) {
+      if (Predicate.isTagged(recovered, "Contended")) {
+        const authority = recovered.snapshot.authority;
+        if (
+          authority !== undefined &&
+          AuthorityStateSchema.guards.Stable(authority.state) &&
+          StableStateSchema.guards.Gone(authority.state.stable)
+        )
+          return yield* wrongState("gone", kind.toLowerCase());
+        const state = yield* this.readActorSessionStateProgram();
+        return yield* wrongState(state.view.status, kind.toLowerCase());
+      }
+      const snapshot = recovered.provenSnapshot;
+      const authority = snapshot.authority;
+      if (authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state))
+        return yield* this.upstreamError(
+          `Session ${kind.toLowerCase()} outcome is being reconciled`,
+          authority.state.transition.phase,
+          authority.session.id,
+        );
+      if (
+        authority !== undefined &&
+        AuthorityStateSchema.guards.Stable(authority.state) &&
+        StableStateSchema.guards.Failed(authority.state.stable)
+      )
+        return yield* this.upstreamError(
+          `Session ${kind.toLowerCase()} failed`,
+          authority.state.stable.code,
+          authority.session.id,
+        );
+      const state = yield* this.actorSessionStateFromSnapshotProgram(snapshot);
+      yield* Effect.tryPromise({
+        try: () =>
+          this.env.SESSIONS.put(
+            `${SESSION_KV_PREFIX}${state.projection.id}`,
+            JSON.stringify(state.projection),
+          ),
+        catch: () => undefined,
+      }).pipe(Effect.ignore);
+      return state.view;
+    }
     const now = yield* Clock.currentTimeMillis;
     const baseRequest = {
       correlationId: crypto.randomUUID(),
@@ -2892,7 +3214,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
             };
           })
         : { ...baseRequest, kind };
-    const outcome = yield* controller.run(request).pipe(
+    const outcome = yield* this.withActiveActorMutation(
+      request.nonce,
+      controller.run(request),
+    ).pipe(
       Effect.catchTag("LifecycleControllerRejected", () =>
         Effect.flatMap(this.readActorSessionStateProgram(), ({ view }) =>
           wrongState(view.status, kind.toLowerCase()),
@@ -4802,6 +5127,57 @@ export class Sandbox extends BaseSandbox<Bindings> {
         const recovery = yield* RecoverySandbox;
         const destroyed = yield* Effect.result(recovery.destroyFailedRuntime(authority));
         if (Result.isFailure(destroyed)) yield* scheduleSuccessor;
+      }),
+    );
+  }
+
+  async sessionActorHardCapDrain(payload: unknown): Promise<void> {
+    const fence = decodeCreateHardCapDrainFence(payload);
+    if (Option.isNone(fence)) return;
+    return this.#run(
+      Effect.gen({ self: this }, function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const drainMillis = Date.parse(fence.value.drainAt);
+        const deadlineMillis = Date.parse(fence.value.deadlineAt);
+        if (
+          !Number.isFinite(drainMillis) ||
+          !Number.isFinite(deadlineMillis) ||
+          now < drainMillis ||
+          now >= deadlineMillis
+        )
+          return;
+
+        const store = yield* ActorStore;
+        const before = yield* store.read;
+        const authority = before.authority;
+        if (yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(authority))) return;
+        if (!isMatchingHardCapDrain(authority, fence.value)) return;
+        if (isTerminalDrainAuthority(authority) || isVaporizingAuthority(authority)) return;
+
+        if (
+          isWarmAuthority(authority) ||
+          (AuthorityStateSchema.guards.Transitioning(authority.state) &&
+            TransitionSchema.guards.Sleep(authority.state.transition))
+        )
+          yield* Effect.result(this.actorLifecycleProgram("Sleep"));
+
+        const after = yield* store.read;
+        if (yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(after.authority))) return;
+        const current = after.authority;
+        if (!isMatchingHardCapDrain(current, fence.value)) return;
+        if (isTerminalDrainAuthority(current) || isVaporizingAuthority(current)) return;
+
+        const retryAt = (yield* Clock.currentTimeMillis) + 5_000;
+        if (retryAt >= deadlineMillis) return;
+        yield* Effect.tryPromise({
+          try: () =>
+            this.schedule(5, "sessionActorHardCapDrain", fence.value).then(() => undefined),
+          catch: () =>
+            new CreateControllerBoundaryFailure({
+              boundary: "hard_cap",
+              code: "schedule_outcome_unknown",
+            }),
+        });
       }),
     );
   }

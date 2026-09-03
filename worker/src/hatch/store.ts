@@ -1,4 +1,10 @@
 import { Clock, Context, Effect, Layer, Result } from "effect";
+import {
+  AuthorityStateSchema,
+  decodeSessionAuthority,
+  type ExecutionMode,
+  type Transition,
+} from "../session-actor/authority";
 import { decodeSessionRecordResult, type SessionRecord } from "../session/contracts";
 import {
   decodeHatchStateResult,
@@ -23,6 +29,7 @@ import {
 } from "./contracts";
 import {
   HATCH_STATE_KEY,
+  SESSION_ACTOR_AUTHORITY_KEY,
   readActorSessionRecord,
   readActorRuntimeGeneration,
   type SessionControlGate,
@@ -30,6 +37,7 @@ import {
 
 export interface HatchStateTransaction {
   readonly getHatch: () => Promise<unknown | undefined>;
+  readonly getActorAuthority: () => Promise<unknown | undefined>;
   readonly getRecord: () => Promise<unknown | undefined>;
   readonly getRuntimeEpoch: () => Promise<unknown | undefined>;
   readonly putHatch: (state: HatchState) => Promise<void>;
@@ -53,6 +61,7 @@ export const durableObjectHatchStateStorage = (
       storage.transaction((transaction) =>
         operation({
           getHatch: () => transaction.get(HATCH_STATE_KEY),
+          getActorAuthority: () => transaction.get(SESSION_ACTOR_AUTHORITY_KEY),
           getRecord: () => readActorSessionRecord(transaction),
           getRuntimeEpoch: () => readActorRuntimeGeneration(transaction),
           putHatch: (state) => transaction.put(HATCH_STATE_KEY, state),
@@ -81,6 +90,12 @@ export interface BeginHatchRestore {
   readonly runtimeEpoch: string;
 }
 
+export interface HatchRestoreFence {
+  readonly revision: number;
+  readonly mode: ExecutionMode;
+  readonly phase: Transition["phase"];
+}
+
 export interface HatchWebSocketAuthorization extends HatchRouteAuthorization {
   readonly expiresAt: string;
 }
@@ -102,12 +117,19 @@ export interface HatchHealthCleanupAuthority {
   readonly runtimeEpoch: string;
 }
 
+export interface HatchRestoreCleanupAuthority {
+  readonly kind: "restore_operation";
+  readonly hatchId: string;
+  readonly generation: number;
+  readonly runtimeEpoch: string;
+}
+
 export type HatchCleanupAuthority =
   | "operation"
   | "hard_cap"
   | "runtime_start"
   | "runtime_stop"
-  | "restore_operation"
+  | HatchRestoreCleanupAuthority
   | HatchHealthCleanupAuthority
   | "failed_runtime"
   | "scheduled";
@@ -135,6 +157,7 @@ interface HatchStoreShape {
     hatchId: string,
     generation: number,
     runtimeEpoch: string,
+    restoreFence?: HatchRestoreFence,
   ) => Effect.Effect<HatchRecord, HatchStateError>;
   readonly confirmPublicReady: (
     hatchId: string,
@@ -333,6 +356,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     transaction: HatchStateTransaction,
     sessionId: string,
     operationNonce: string,
+    expectedFence?: HatchRestoreFence,
   ): Promise<Result.Result<SessionRecord, HatchStateError>> => {
     const record = decodeRecord(await transaction.getRecord());
     if (Result.isFailure(record)) return Result.fail(record.failure);
@@ -345,6 +369,18 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
       (record.success.status !== "warm" && record.success.status !== "booting")
     )
       return Result.fail(changed());
+    if (expectedFence !== undefined) {
+      const authority = decodeSessionAuthority(await transaction.getActorAuthority());
+      if (
+        Result.isFailure(authority) ||
+        authority.success.revision !== expectedFence.revision ||
+        !AuthorityStateSchema.guards.Transitioning(authority.success.state) ||
+        authority.success.state.transition.nonce !== operationNonce ||
+        authority.success.state.transition.mode !== expectedFence.mode ||
+        authority.success.state.transition.phase !== expectedFence.phase
+      )
+        return Result.fail(changed());
+    }
     return record;
   };
 
@@ -381,10 +417,15 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     hatch.observedStatus === cleanupObservedStatus(target) &&
     (!closeDesired || hatch.desiredStatus === "closed");
 
-  const expectedCleanupOperation = (
+  const isExpectedCleanupOperation = (
+    operation: SessionRecord["operation"],
     target: HatchCleanupTarget,
-  ): "vaporize" | "snapshot" | "hatch" =>
-    target === "gone" ? "vaporize" : target === "sleeping" ? "snapshot" : "hatch";
+  ): boolean =>
+    target === "gone"
+      ? operation?.kind === "vaporize"
+      : target === "sleeping"
+        ? operation?.kind === "snapshot" || operation?.kind === "sleep"
+        : operation?.kind === "hatch";
 
   const isManagedRestore = (record: SessionRecord): boolean =>
     record.status === "sleeping" ||
@@ -400,7 +441,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     target: HatchCleanupTarget,
   ): boolean =>
     session.operation?.nonce === operationNonce &&
-    session.operation.kind === expectedCleanupOperation(target);
+    isExpectedCleanupOperation(session.operation, target);
 
   const isRuntimeStartCleanupAuthorized = (
     session: SessionRecord,
@@ -430,6 +471,16 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     authority.generation === hatch.generation &&
     authority.runtimeEpoch === hatch.runtimeEpoch;
 
+  const isRestoreCleanupAuthorized = (
+    hatch: HatchRecord,
+    operationNonce: string,
+    authority: HatchRestoreCleanupAuthority,
+  ): boolean =>
+    authority.hatchId === hatch.hatchId &&
+    authority.generation === hatch.generation &&
+    authority.runtimeEpoch === hatch.runtimeEpoch &&
+    hatch.transitionNonce === operationNonce;
+
   const authorizeCleanup = async (
     transaction: HatchStateTransaction,
     hatch: HatchRecord,
@@ -440,14 +491,18 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     const record = decodeRecord(await transaction.getRecord());
     if (Result.isFailure(record)) return Result.fail(record.failure);
     const session = record.success;
-    if (typeof authority !== "string" && authority.kind === "health_check")
-      return cleanupDecision(isHealthCleanupAuthorized(hatch, authority));
+    if (typeof authority !== "string") {
+      if (authority.kind === "health_check")
+        return cleanupDecision(isHealthCleanupAuthorized(hatch, authority));
+      if (!isRestoreCleanupAuthorized(hatch, operationNonce, authority))
+        return Result.fail(changed());
+      const lease = await requireRestoreLease(transaction, hatch.sessionId, operationNonce);
+      return Result.isSuccess(lease) || session.status === "failed"
+        ? Result.succeed(undefined)
+        : Result.fail(lease.failure);
+    }
     if (authority === "operation")
       return cleanupDecision(isOperationCleanupAuthorized(session, operationNonce, target));
-    if (authority === "restore_operation") {
-      const lease = await requireRestoreLease(transaction, hatch.sessionId, operationNonce);
-      return Result.isFailure(lease) ? Result.fail(lease.failure) : Result.succeed(undefined);
-    }
     if (authority === "failed_runtime") return cleanupDecision(session.status === "failed");
     if (authority === "hard_cap")
       return cleanupDecision(target === "stopped" && session.operation?.kind === "evidence");
@@ -649,7 +704,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         service: hatch.service,
       });
     }),
-    publishRunning: (operationNonce, hatchId, generation, runtimeEpoch) =>
+    publishRunning: (operationNonce, hatchId, generation, runtimeEpoch, restoreFence) =>
       transact(async (transaction, state, nowMillis) => {
         const hatch = state.primary;
         if (
@@ -660,6 +715,15 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           hatch.desiredStatus !== "open"
         )
           return Result.fail(changed());
+        if (restoreFence !== undefined) {
+          const lease = await requireRestoreLease(
+            transaction,
+            hatch.sessionId,
+            operationNonce,
+            restoreFence,
+          );
+          if (Result.isFailure(lease)) return Result.fail(lease.failure);
+        }
         const runtime = await currentRuntime(transaction);
         if (Result.isFailure(runtime) || runtime.success !== runtimeEpoch)
           return Result.fail(
@@ -983,12 +1047,13 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
       transact(async (transaction, state, nowMillis) => {
         const hatch = state.primary;
         if (hatch === undefined) return Result.succeed(undefined);
-        if (
-          typeof authority !== "string" &&
-          authority.kind === "health_check" &&
-          !isHealthCleanupAuthorized(hatch, authority)
-        )
-          return Result.fail(changed());
+        if (typeof authority !== "string") {
+          const matches =
+            authority.kind === "health_check"
+              ? isHealthCleanupAuthorized(hatch, authority)
+              : isRestoreCleanupAuthorized(hatch, operationNonce, authority);
+          if (!matches) return Result.fail(changed());
+        }
         if (isCleanupAlreadyPending(hatch, operationNonce, target, closeDesired))
           return Result.succeed(hatch);
         if (isCleanupAlreadySettled(hatch, target, closeDesired)) return Result.succeed(undefined);

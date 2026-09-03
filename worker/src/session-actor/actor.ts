@@ -46,6 +46,12 @@ interface SessionActorShape {
     readonly timestamp: string;
     readonly correlationId: string;
     readonly fence?: ActorAlarmFence;
+    readonly expectedTransition?: {
+      readonly revision: number;
+      readonly transitionNonce: string;
+      readonly attempt: string;
+      readonly expectedPhase: string;
+    };
   }) => Effect.Effect<ActorHandleResult | undefined, ActorHandleError>;
 }
 
@@ -215,12 +221,27 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
         readonly timestamp: string;
         readonly correlationId: string;
         readonly fence?: ActorAlarmFence;
+        readonly expectedTransition?: {
+          readonly revision: number;
+          readonly transitionNonce: string;
+          readonly attempt: string;
+          readonly expectedPhase: string;
+        };
       }) {
         const snapshot = yield* store.read;
         const authority = snapshot.authority;
         if (authority === undefined || !AuthorityStateSchema.guards.Transitioning(authority.state))
           return undefined;
         const transition = authority.state.transition;
+        const expected = input.expectedTransition;
+        if (
+          expected !== undefined &&
+          (expected.revision !== authority.revision ||
+            expected.transitionNonce !== transition.nonce ||
+            expected.attempt !== transition.attempt ||
+            expected.expectedPhase !== transition.phase)
+        )
+          return undefined;
         const fence = input.fence;
         if (fence !== undefined && !matchesAlarmFence(fence, authority, transition))
           return undefined;

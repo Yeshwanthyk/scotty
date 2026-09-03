@@ -8,6 +8,7 @@ import {
 } from "./actor";
 import {
   AuthorityStateSchema,
+  type ExecutionMode,
   type SessionAuthority,
   type SessionIdentity,
   StableStateSchema,
@@ -62,9 +63,10 @@ export type CreateControllerResult =
       readonly actionable: boolean;
     }
   | {
-      readonly _tag: "Reconciling";
+      readonly _tag: "InProgress";
       readonly replay: boolean;
       readonly authority: SessionAuthority;
+      readonly mode: ExecutionMode;
       readonly phase: string;
     };
 
@@ -116,8 +118,12 @@ export interface CreateHardCapFence {
   readonly deadlineAt: string;
 }
 
+export interface CreateHardCapArm extends CreateHardCapFence {
+  readonly durationSeconds: number;
+}
+
 interface CreateHardCapControllerShape {
-  readonly arm: (fence: CreateHardCapFence) => Effect.Effect<void, CreateControllerBoundaryFailure>;
+  readonly arm: (request: CreateHardCapArm) => Effect.Effect<void, CreateControllerBoundaryFailure>;
 }
 
 export class CreateHardCapController extends Context.Service<
@@ -317,11 +323,12 @@ const classify = (
 ): Effect.Effect<CreateControllerResult, CreateControllerInvariantFailure> => {
   if (AuthorityStateSchema.guards.Transitioning(authority.state)) {
     const transition = authority.state.transition;
-    return Predicate.isTagged(transition, "Create") && transition.mode === "reconciling"
+    return Predicate.isTagged(transition, "Create")
       ? Effect.succeed({
-          _tag: "Reconciling" as const,
+          _tag: "InProgress" as const,
           replay,
           authority,
+          mode: transition.mode,
           phase: transition.phase,
         })
       : Effect.fail(
@@ -387,6 +394,7 @@ export const createControllerLayer: Layer.Layer<
         sessionId: request.session.id,
         generation: cap.generation,
         deadlineAt: cap.deadlineAt,
+        durationSeconds: cap.durationSeconds,
       });
 
       const reservation = Predicate.isTagged(inspected, "Existing")
@@ -408,6 +416,7 @@ export const createControllerLayer: Layer.Layer<
           sessionId: request.session.id,
           generation: activeMetadata.hardCap.generation,
           deadlineAt: activeMetadata.hardCap.deadlineAt,
+          durationSeconds: activeMetadata.hardCap.durationSeconds,
         });
 
       const actorResult = yield* actor.handle(command(request, activeMetadata.createAttempt));

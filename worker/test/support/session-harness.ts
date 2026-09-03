@@ -27,7 +27,10 @@ import type {
 } from "../../src/session-actor/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import type { EvidenceArtifact } from "../../src/evidence/contracts";
-import { HATCH_PRIVATE_READINESS_HEADER } from "../../src/hatch/contracts";
+import {
+  HATCH_PRIVATE_READINESS_HEADER,
+  type HatchRestoreDescriptor,
+} from "../../src/hatch/contracts";
 import type { RepoVerifier } from "../../src/repos/verifier";
 import type { SandboxConfigStatus } from "../../src/sandbox/config-contracts";
 import type { SandboxConfigRpcResult } from "../../src/sandbox/config-object";
@@ -529,6 +532,7 @@ export type HarnessFailureStage =
   | "artifactDeleteAmbiguous"
   | "artifactPutAmbiguous"
   | "actorAlarmSchedule"
+  | "actorAlarmScheduleOnce"
   | "actorCommitAfterAbsence"
   | "backupDelete"
   | "backupList"
@@ -543,6 +547,7 @@ export type HarnessFailureStage =
   | "evidenceRetentionSchedulePreInsert"
   | "evidenceRetentionSchedulePreInsertOnce"
   | "hardCapSchedule"
+  | "hardCapDrainSchedule"
   | "hardCapScheduleOnce"
   | "hatchHealth"
   | "previewExpose"
@@ -555,7 +560,10 @@ export type HarnessFailureStage =
   | "workspacePrepare";
 
 export interface HarnessOptions {
+  readonly actorRequestRecoveryAfterResume?: SandboxEffectOptions["actorRequestRecoveryAfterResume"];
+  readonly actorRequestRecoveryBeforeResume?: SandboxEffectOptions["actorRequestRecoveryBeforeResume"];
   readonly clock?: SandboxEffectOptions["clock"];
+  readonly commandGate?: (command: string) => Promise<void> | undefined;
   readonly commandStdout?: (command: string) => string | undefined;
   readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
   readonly containerPlacementId?: string | null;
@@ -646,6 +654,7 @@ export interface SessionHarness {
   readonly sandboxBundleKeys: () => ReadonlyArray<string>;
   readonly sandboxBundleDeletedKeys: ReadonlyArray<string>;
   readonly exposedPreviewPorts: () => ReadonlyArray<number>;
+  readonly piHatchRestoreDescriptors: ReadonlyArray<HatchRestoreDescriptor>;
   readonly stopHatchProcess: (generation: number) => void;
   readonly startRuntime: () => Promise<void>;
   readonly stopRuntime: () => Promise<void>;
@@ -1121,6 +1130,7 @@ const makeHarnessExec =
     context.commands.push(command);
     const stage = harnessExecStage(command);
     context.events.push(`host:exec:${stage === "downRollout" ? "exec" : stage}`);
+    await context.options.commandGate?.(command);
     const injected = injectedExecResult(command, stage, context);
     if (injected !== undefined) return injected;
     const archive = applyHarnessArchiveCommand(command, context.runtimeFiles);
@@ -1154,6 +1164,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const artifactDeletedKeys: string[] = [];
   const sandboxBundleDeletedKeys: string[] = [];
   const exposedPreviewPorts = new Set<number>();
+  const piHatchRestoreDescriptors: HatchRestoreDescriptor[] = [];
   const artifactObjects = initialArtifactObjectMap(options.initialArtifactObjects);
   let piSessionRunning = options.piSessionRunning ?? false;
   let rawPiContainerRunning = false;
@@ -1514,6 +1525,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   } as unknown as Bindings;
 
   const sandbox = new Sandbox(ctx, env, {
+    actorRequestRecoveryAfterResume: options.actorRequestRecoveryAfterResume,
+    actorRequestRecoveryBeforeResume: options.actorRequestRecoveryBeforeResume,
     clock: options.clock,
     containerEvidenceRecorder: options.containerEvidenceRecorder,
     evidencePreviewHostTimeoutMillis: options.evidencePreviewHostTimeoutMillis,
@@ -1694,6 +1707,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         const processId = processOptions?.processId ?? "generated";
         piSessionRunning = true;
         events.push(`host:pi:start:${processId}`);
+        const descriptor = await sandbox.getScottyHatchRestoreDescriptor();
+        if (descriptor !== undefined) {
+          piHatchRestoreDescriptors.push(structuredClone(descriptor));
+          events.push(
+            `host:hatch:extension-restore:${descriptor.hatchId}:${descriptor.generation}:${descriptor.operationNonce}:${descriptor.runtimeEpoch}`,
+          );
+        }
         return {
           id: processId,
           status: "running" as const,
@@ -1706,11 +1726,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
             return { exitCode: 0 };
           },
           waitForPort: async () => {
-            const descriptor = await sandbox.getScottyHatchRestoreDescriptor();
-            if (descriptor !== undefined)
-              events.push(
-                `host:hatch:extension-restore:${descriptor.hatchId}:${descriptor.generation}:${descriptor.operationNonce}:${descriptor.runtimeEpoch}`,
-              );
             events.push("host:pi:ready");
           },
         };
@@ -1781,7 +1796,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         payload: unknown,
       ): Promise<RecordedSchedule> => {
         events.push(`schedule:${callback}`);
-        if (failures.has("actorAlarmSchedule") && callback === "sessionActorDeadline")
+        if (
+          callback === "sessionActorDeadline" &&
+          (failures.has("actorAlarmSchedule") || failures.delete("actorAlarmScheduleOnce"))
+        )
           throw injectedHarnessFailure("injected actor alarm schedule failure");
         if (
           callback === "expireRetainedEvidence" &&
@@ -1795,6 +1813,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         ) {
           throw injectedHarnessFailure("injected hard-cap schedule failure");
         }
+        if (callback === "sessionActorHardCapDrain" && failures.has("hardCapDrainSchedule"))
+          throw injectedHarnessFailure("injected hard-cap drain schedule failure");
         const scheduled = { when, callback, payload };
         schedules.push(scheduled);
         if (
@@ -1852,6 +1872,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     sandboxBundleKeys: () => [...sandboxBundleObjectMap.keys()],
     sandboxBundleDeletedKeys,
     exposedPreviewPorts: () => [...exposedPreviewPorts],
+    piHatchRestoreDescriptors,
     stopHatchProcess: (generation) => {
       failures.add("hatchHealth");
       events.push(`host:hatch:unexpected-stop:generation-${generation}`);

@@ -9,7 +9,10 @@ import {
 } from "../../src/session-actor/lifecycle-controller";
 import { ActorStore, type ActorStoreSnapshot } from "../../src/session-actor/store";
 import type { SessionActorInput } from "../../src/session-actor/input";
-import { createHardCapControllerLayer } from "../../src/session-actor/create-controller";
+import {
+  createHardCapControllerLayer,
+  type CreateHardCapArm,
+} from "../../src/session-actor/create-controller";
 
 const T0 = "2026-09-01T00:00:00.000Z";
 const hardCap = {
@@ -56,8 +59,30 @@ const warm: SessionAuthority = {
     },
   },
 };
+const sleeping: SessionAuthority = {
+  ...warm,
+  state: {
+    _tag: "Stable",
+    stable: {
+      _tag: "Sleeping",
+      backup: {
+        backupId: "backup-1",
+        preparedAt: T0,
+        confirmedAt: T0,
+        sourceRuntimeGeneration: "runtime-generation",
+      },
+      ownedBackupIds: ["backup-1"],
+      stop: { requestedAt: T0, observedAt: T0, runtimeGeneration: "runtime-generation" },
+      wakeSource: { backupId: "backup-1", confirmedAt: T0 },
+    },
+  },
+};
 
-const request = (kind: LifecycleControllerRequest["kind"]): LifecycleControllerRequest => {
+function request(kind: "Resume"): Extract<LifecycleControllerRequest, { readonly kind: "Resume" }>;
+function request(
+  kind: "Checkpoint" | "Sleep",
+): Exclude<LifecycleControllerRequest, { readonly kind: "Resume" }>;
+function request(kind: LifecycleControllerRequest["kind"]): LifecycleControllerRequest {
   const fields = {
     correlationId: "correlation",
     nonce: "nonce",
@@ -68,7 +93,7 @@ const request = (kind: LifecycleControllerRequest["kind"]): LifecycleControllerR
   return kind === "Resume"
     ? { kind, ...fields, nextHardCap: { ...hardCap, generation: "hard-cap-resume" } }
     : { kind, ...fields };
-};
+}
 
 const snapshot = (authority: SessionAuthority): ActorStoreSnapshot => ({
   authority,
@@ -100,6 +125,7 @@ const accepted = (authority: SessionAuthority): ActorHandleResult => ({
 const layer = (
   handle: SessionActor["Service"]["handle"],
   read: ActorStore["Service"]["read"] = Effect.succeed(snapshot(warm)),
+  arm: (request: CreateHardCapArm) => void = () => undefined,
 ) =>
   lifecycleControllerLayer.pipe(
     Layer.provide(
@@ -114,7 +140,7 @@ const layer = (
             reconcileUnknownCommit: () => Effect.die("unused"),
           }),
         ),
-        createHardCapControllerLayer(() => Effect.void),
+        createHardCapControllerLayer((request) => Effect.sync(() => arm(request))),
       ),
     ),
   );
@@ -150,6 +176,30 @@ describe("lifecycle controller", () => {
       assert.ok(Result.isFailure(outcome));
       assert.ok(Predicate.isTagged(outcome.failure, "LifecycleControllerRejected"));
       assert.strictEqual(outcome.failure.code, "not_admissible");
+    });
+  });
+
+  it.effect("arms a resumed hard cap with its internal duration before authority commit", () => {
+    const arms: CreateHardCapArm[] = [];
+    const resumed = request("Resume");
+    return Effect.gen(function* () {
+      yield* Effect.flatMap(LifecycleController, (controller) => controller.run(resumed)).pipe(
+        Effect.provide(
+          layer(
+            () => Effect.succeed(accepted(warm)),
+            Effect.succeed(snapshot(sleeping)),
+            (arm) => arms.push(arm),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(arms, [
+        {
+          sessionId: warm.session.id,
+          generation: resumed.nextHardCap.generation,
+          deadlineAt: resumed.nextHardCap.deadlineAt,
+          durationSeconds: resumed.nextHardCap.durationSeconds,
+        },
+      ]);
     });
   });
 });

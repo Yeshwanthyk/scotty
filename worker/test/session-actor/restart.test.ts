@@ -266,6 +266,67 @@ describe("session actor restart", () => {
     }),
   );
 
+  it.effect("does not recover when the expected transition was replaced before reread", () =>
+    Effect.gen(function* () {
+      const persistedTransition = transition("Create", "WorkspacePreparing");
+      const persisted = authority(persistedTransition);
+      const memory = actorPort(undefined, false, {
+        authority: persisted,
+        revision: persisted.revision,
+        journalSequence: persisted.revision,
+        journalTail: {
+          sequence: persisted.revision,
+          revision: persisted.revision,
+          timestamp: T1,
+          correlationId: "correlation-before-replacement",
+          transitionNonce: persistedTransition.nonce,
+          eventType: "progressed",
+          transitionKind: "Create",
+          transitionPhase: persistedTransition.phase,
+          resultCode: "workspace_intent_committed",
+          causeSequence: null,
+          causeAttempt: persistedTransition.attempt,
+        },
+      });
+      let alarmCalls = 0;
+      let providerCalls = 0;
+      const runner = actorEffectRunnerLayer.pipe(
+        Layer.provide(
+          Layer.merge(
+            actorAlarmSchedulerLayer(() => {
+              alarmCalls += 1;
+              return Effect.void;
+            }),
+            providerEffectExecutorLayer(() => {
+              providerCalls += 1;
+              return Effect.succeed(createCommand());
+            }),
+          ),
+        ),
+      );
+      const actor = sessionActorLayer.pipe(
+        Layer.provide(Layer.merge(actorStoreLayer(memory.port), runner)),
+      );
+      const service = yield* SessionActor.pipe(Effect.provide(actor));
+
+      const resumed = yield* service.resume({
+        timestamp: T1,
+        correlationId: "correlation-stale-recovery",
+        expectedTransition: {
+          revision: persisted.revision + 1,
+          transitionNonce: persistedTransition.nonce,
+          attempt: persistedTransition.attempt,
+          expectedPhase: persistedTransition.phase,
+        },
+      });
+
+      assert.strictEqual(resumed, undefined);
+      assert.strictEqual(alarmCalls, 0);
+      assert.strictEqual(providerCalls, 0);
+      assert.strictEqual(memory.snapshot().revision, persisted.revision);
+    }),
+  );
+
   it.effect("restarts an executing phase through a committed reconciliation boundary", () =>
     Effect.gen(function* () {
       const persistedTransition = transition("Create", "WorkspacePreparing");
