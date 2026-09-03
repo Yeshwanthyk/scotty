@@ -11,6 +11,7 @@
     "work/**",
     "scripts/*.d.mts",
     "worker/container/pi-packages/sources/scotty-browser-test/**",
+    "worker/public/app/**",
     "worker/public/vendor/**"
   ],
   "options": {

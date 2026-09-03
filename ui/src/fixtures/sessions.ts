@@ -73,14 +73,12 @@ const stable = (
 const transition = (
   action: SessionTransitionAction,
   phase: string,
-  origin: "absent" | SessionLifecycle,
   mode: "executing" | "reconciling" = "executing",
   minutesAgo = 12,
 ): SessionAuthority => ({
   kind: "transitioning",
   action,
   phase,
-  origin,
   mode,
   startedAt: new Date(FIXTURE_NOW.getTime() - minutesAgo * 60_000).toISOString(),
 });
@@ -118,25 +116,25 @@ export const failedTerminal = session({
 export const transitionCreate = session({
   id: "transition-create-001",
   title: "Preparing a new cloud workspace",
-  authority: transition("create", "WorkspacePreparing", "absent"),
+  authority: transition("create", "WorkspacePreparing"),
 });
 
 export const transitionSleep = session({
   id: "transition-sleep-001",
   title: "Preserving work before sleep",
-  authority: transition("sleep", "Syncing", "warm", "reconciling"),
+  authority: transition("sleep", "Syncing", "reconciling"),
 });
 
 export const transitionResume = session({
   id: "transition-resume-001",
   title: "Restoring the retained workspace",
-  authority: transition("resume", "BackupRestoring", "sleeping"),
+  authority: transition("resume", "BackupRestoring"),
 });
 
 export const transitionVaporize = session({
   id: "transition-vaporize-001",
   title: "Vaporizing a completed experiment",
-  authority: transition("vaporize", "EvidenceInterrupting", "sleeping", "reconciling"),
+  authority: transition("vaporize", "EvidenceInterrupting", "reconciling"),
 });
 
 export const goneTombstone = session({
@@ -166,15 +164,15 @@ export const runtimeMissing = session({
 });
 
 const transitionSeeds = [
-  ["create", "WorkspacePreparing", "absent", "executing"],
-  ["checkpoint", "BackupPrepared", "warm", "executing"],
-  ["sleep", "Syncing", "warm", "reconciling"],
-  ["resume", "BackupRestoring", "sleeping", "executing"],
-  ["work", "RuntimeStarting", "warm", "executing"],
-  ["evidence", "Running", "warm", "executing"],
-  ["hatch", "Settling", "warm", "reconciling"],
-  ["down", "Admitted", "warm", "executing"],
-  ["vaporize", "EvidenceInterrupting", "sleeping", "reconciling"],
+  ["create", "WorkspacePreparing", "executing"],
+  ["checkpoint", "BackupPrepared", "executing"],
+  ["sleep", "Syncing", "reconciling"],
+  ["resume", "BackupRestoring", "executing"],
+  ["work", "RuntimeStarting", "executing"],
+  ["evidence", "Running", "executing"],
+  ["hatch", "Settling", "reconciling"],
+  ["down", "Admitted", "executing"],
+  ["vaporize", "EvidenceInterrupting", "reconciling"],
 ] as const;
 
 const manySession = (index: number): SessionModel => {
@@ -192,7 +190,7 @@ const manySession = (index: number): SessionModel => {
       id: `many-session-${suffix}`,
       title,
       repository,
-      authority: transition(seed[0], seed[1], seed[2], seed[3], 12 + index),
+      authority: transition(seed[0], seed[1], seed[2], 12 + index),
     });
 
   const stableIndex = index % 5;
@@ -257,6 +255,12 @@ export const sidebarSessions: ReadonlyArray<SessionModel> = [
   transitionResume,
   transitionVaporize,
   goneTombstone,
+];
+
+export const sessionListFixtures: ReadonlyArray<SessionModel> = [
+  ...sidebarSessions,
+  ...manySessions,
+  projectionStale.projected,
 ];
 
 const sessionFixturesById = new Map(

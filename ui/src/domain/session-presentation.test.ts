@@ -24,7 +24,7 @@ describe("presentSession", () => {
       now: FIXTURE_NOW,
       source: "actor",
     });
-    expect(sleeping.authority).toEqual({ kind: "transitioning", origin: "warm" });
+    expect(sleeping.authority).toEqual({ kind: "transitioning" });
     expect(sleeping.railLabel).toBe("Going to sleep");
     expect(sleeping.operation).toMatchObject({
       action: "sleep",
@@ -38,7 +38,7 @@ describe("presentSession", () => {
       now: FIXTURE_NOW,
       source: "actor",
     });
-    expect(waking.authority).toEqual({ kind: "transitioning", origin: "sleeping" });
+    expect(waking.authority).toEqual({ kind: "transitioning" });
     expect(waking.railLabel).toBe("Waking");
   });
 

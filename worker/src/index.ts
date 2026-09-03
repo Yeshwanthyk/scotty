@@ -114,6 +114,7 @@ import {
 } from "./sandbox/config-object";
 import { inspectPassiveSession, steerPassiveSession } from "./session/passive";
 import { Sandbox as ScottySandbox } from "./session/object";
+import { uiSessionListResponseFromProjections } from "./ui/session-view";
 import {
   CREDENTIAL_REGISTRY_OBJECT_NAME,
   ScottyCredentialRegistry,
@@ -677,12 +678,18 @@ app.get("/api/sessions", async (c) => {
       Effect.result,
     ),
   );
+  const sessions = Result.match(result, {
+    onFailure: (error) => {
+      throw error;
+    },
+    onSuccess: (value) => value,
+  });
   return c.json(
-    Result.match(result, {
+    Result.match(uiSessionListResponseFromProjections(sessions), {
       onFailure: (error) => {
         throw error;
       },
-      onSuccess: (sessions) => sessions,
+      onSuccess: (response) => response,
     }),
   );
 });

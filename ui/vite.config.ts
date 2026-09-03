@@ -4,6 +4,15 @@ import viteReact from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  base: "/app/",
+  environments: {
+    client: {
+      build: {
+        emptyOutDir: true,
+        outDir: "../worker/public/app",
+      },
+    },
+  },
   plugins: [
     stylex.vite({ useCSSLayers: true }),
     tanstackStart({

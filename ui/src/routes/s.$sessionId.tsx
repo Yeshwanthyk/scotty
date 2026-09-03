@@ -27,9 +27,10 @@ import {
   type SessionModel,
   type SessionReadFailure,
 } from "../data/session-reader";
+import { readSessionList } from "../data/session-list-reader";
 import { presentSession, type SessionPresentation } from "../domain/session-presentation";
-import { buildFixtureSessionRail } from "../domain/session-rail";
-import { sessionFixtureForId } from "../fixtures/sessions";
+import { buildSessionRail } from "../domain/session-rail";
+import { sessionFixtureForId, sessionListFixtures } from "../fixtures/sessions";
 import { conversationFixture } from "../fixtures/conversation";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 
@@ -39,6 +40,7 @@ interface SessionRouteReady {
   readonly presentation: SessionPresentation;
   readonly eligibility: ConsoleEligibility;
   readonly fixture: boolean;
+  readonly projections: ReadonlyArray<SessionModel>;
 }
 
 interface SessionRouteFailed {
@@ -52,11 +54,18 @@ type SessionRouteData = SessionRouteReady | SessionRouteFailed;
 export const Route = createFileRoute("/s/$sessionId")({
   ssr: false,
   loader: async ({ abortController, params }): Promise<SessionRouteData> => {
-    const result = await readAuthoritativeSession(params.sessionId, {
-      fixture: sessionFixtureForId(params.sessionId),
-      fixtureFallback: import.meta.env.DEV,
-      signal: abortController.signal,
-    });
+    const [result, list] = await Promise.all([
+      readAuthoritativeSession(params.sessionId, {
+        fixture: sessionFixtureForId(params.sessionId),
+        fixtureFallback: import.meta.env.DEV,
+        signal: abortController.signal,
+      }),
+      readSessionList({
+        fixture: sessionListFixtures,
+        fixtureFallback: import.meta.env.DEV,
+        signal: abortController.signal,
+      }),
+    ]);
     if (!result.ok)
       return {
         state: "failed",
@@ -75,6 +84,7 @@ export const Route = createFileRoute("/s/$sessionId")({
       }),
       eligibility,
       fixture: result.session.source === "fixture",
+      projections: list.ok ? list.projections.map(({ session }) => session) : [],
     };
   },
   pendingComponent: SessionPending,
@@ -418,7 +428,7 @@ function SessionReadError({
 
 function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
   const { eligibility, fixture, presentation, session } = data;
-  const rail = buildFixtureSessionRail(session);
+  const rail = buildSessionRail(data.projections, { selectedActor: session });
   return (
     <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>
       <div data-session-source={fixture ? "fixture" : "actor"} {...stylex.props(styles.page)}>

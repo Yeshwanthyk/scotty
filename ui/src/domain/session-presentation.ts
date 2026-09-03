@@ -52,10 +52,7 @@ export type SessionPresentation = PresentationBase &
         readonly operation: null;
       }
     | {
-        readonly authority: {
-          readonly kind: "transitioning";
-          readonly origin: "absent" | SessionLifecycle;
-        };
+        readonly authority: { readonly kind: "transitioning" };
         readonly operation: OperationPresentation;
       }
   );
@@ -157,7 +154,7 @@ const transitioningPresentation = (
   };
   return {
     id: session.id,
-    authority: { kind: "transitioning", origin: authority.origin },
+    authority: { kind: "transitioning" },
     railLabel: operation.label,
     shellTitle: operation.label,
     source: options.source,

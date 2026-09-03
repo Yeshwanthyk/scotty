@@ -1,8 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Schema } from "effect";
+import { Result, Schema } from "effect";
 import type { SessionAuthority, ReadinessProof } from "../../src/session-actor/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
-import { UiSessionResponseSchema, uiSessionResponseFromActor } from "../../src/ui/session-view";
+import {
+  UiSessionListResponseSchema,
+  UiSessionProjectionInvalid,
+  UiSessionResponseSchema,
+  uiSessionListResponseFromProjections,
+  uiSessionResponseFromActor,
+} from "../../src/ui/session-view";
+import type { SessionView } from "../../src/session/contracts";
 
 const CREATED_AT = "2026-09-03T12:00:00.000Z";
 const UPDATED_AT = "2026-09-03T12:02:00.000Z";
@@ -166,6 +173,25 @@ const runtimePreparationAuthority = (): SessionAuthority => ({
 });
 
 const decodeResponse = Schema.decodeUnknownSync(UiSessionResponseSchema);
+const decodeListResponse = Schema.decodeUnknownSync(UiSessionListResponseSchema);
+
+const projected = (overrides: Partial<SessionView> = {}): SessionView => ({
+  id: identity.id,
+  title: identity.title,
+  status: "warm",
+  provider: "cloudflare",
+  repo: identity.repository,
+  defaultBranch: "main",
+  branch: metadata.branch,
+  createdAt: CREATED_AT,
+  updatedAt: UPDATED_AT,
+  hardCapAt: HARD_CAP_AT,
+  projectedAt: UPDATED_AT,
+  ageSeconds: 3_630,
+  capRemainingSeconds: 10_770,
+  sandboxBundle: { digest: null },
+  ...overrides,
+});
 
 describe("UI session authority response", () => {
   it("maps stable warm authority to the v1 response without legacy fields", () => {
@@ -211,7 +237,6 @@ describe("UI session authority response", () => {
       action: "create",
       phase: "WorkspacePreparing",
       mode: "executing",
-      origin: "absent",
       startedAt: CREATED_AT,
     });
     const checkpoint = uiSessionResponseFromActor(checkpointAuthority(), metadata, NOW);
@@ -220,7 +245,6 @@ describe("UI session authority response", () => {
       action: "checkpoint",
       phase: "Syncing",
       mode: "reconciling",
-      origin: "warm",
       startedAt: UPDATED_AT,
     });
     assert.deepStrictEqual(checkpoint.session.capabilities, {
@@ -241,9 +265,71 @@ describe("UI session authority response", () => {
       action: "work",
       phase: "Running",
       mode: "executing",
-      origin: "warm",
       startedAt: UPDATED_AT,
     });
     assert.deepStrictEqual(decodeResponse(response), response);
+  });
+
+  it("maps KV candidates to the same canonical session shape with explicit freshness", () => {
+    const result = uiSessionListResponseFromProjections([
+      projected(),
+      projected({
+        id: "sleeping-session",
+        status: "sleeping",
+        backupId: "backup-1",
+        capRemainingSeconds: 0,
+      }),
+      projected({
+        id: "checkpoint-session",
+        operation: {
+          kind: "snapshot",
+          nonce: "checkpoint-1",
+          startedAt: UPDATED_AT,
+          mode: "reconciling",
+          phase: "Syncing",
+        },
+      }),
+    ]);
+
+    assert.isTrue(Result.isSuccess(result));
+    if (Result.isFailure(result)) return;
+    assert.deepStrictEqual(result.success.sessions[0], {
+      ...uiSessionResponseFromActor(warmAuthority(), metadata, NOW).session,
+      projection: { projectedAt: UPDATED_AT },
+    });
+    assert.deepStrictEqual(result.success.sessions[1].authority, {
+      kind: "stable",
+      lifecycle: "sleeping",
+      failure: null,
+    });
+    assert.deepStrictEqual(result.success.sessions[1].capabilities, {
+      checkpoint: false,
+      sleep: false,
+      resume: true,
+      work: false,
+      vaporize: true,
+    });
+    assert.deepStrictEqual(result.success.sessions[2].authority, {
+      kind: "transitioning",
+      action: "checkpoint",
+      phase: "Syncing",
+      mode: "reconciling",
+      startedAt: UPDATED_AT,
+    });
+    assert.deepStrictEqual(decodeListResponse(result.success), result.success);
+  });
+
+  it("rejects a booting candidate that lost its operation instead of inventing a state", () => {
+    const result = uiSessionListResponseFromProjections([projected({ status: "booting" })]);
+
+    assert.isTrue(Result.isFailure(result));
+    if (Result.isSuccess(result)) return;
+    assert.deepStrictEqual(
+      result.failure,
+      new UiSessionProjectionInvalid({
+        sessionId: identity.id,
+        reason: "booting_without_operation",
+      }),
+    );
   });
 });

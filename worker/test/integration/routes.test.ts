@@ -843,6 +843,56 @@ describe("real Hono boundary", () => {
     });
   });
 
+  it("returns the canonical session-list envelope instead of the KV projection shape", async () => {
+    const record = makeSessionRecord({
+      id: "a0b1c2d3e4f5",
+      title: "Canonical list",
+      status: "sleeping",
+      backup: {
+        current: { id: "backup-1", dir: "/workspace/a0b1c2d3e4f5" },
+      },
+    });
+    const projectedAt = "2026-08-30T12:00:00.000Z";
+    const sessions = new Map<string, unknown>([
+      [`session:${record.id}`, JSON.stringify(toProjection(record, new Date(projectedAt)))],
+    ]);
+
+    const response = await app.request(
+      "/api/sessions",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { ...env(), SESSIONS: emptySessionsNamespace(sessions) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      version: 1,
+      sessions: [
+        {
+          identity: { id: record.id },
+          authority: { kind: "stable", lifecycle: "sleeping", failure: null },
+          runtime: { provider: "cloudflare", readiness: "not-applicable" },
+          capabilities: {
+            checkpoint: false,
+            sleep: false,
+            resume: true,
+            work: false,
+            vaporize: true,
+          },
+          display: {
+            title: record.title,
+            repository: record.repo,
+            branch: record.branch,
+            defaultBranch: record.defaultBranch,
+          },
+          times: {
+            capRemainingSeconds: expect.any(Number),
+          },
+          projection: { projectedAt },
+        },
+      ],
+    });
+  });
+
   it("reads deployment readiness from each authoritative Sandbox DO", async () => {
     const record = makeSessionRecord({
       id: "a0b1c2d3e4f5",
@@ -2340,7 +2390,7 @@ describe("real Hono boundary", () => {
     expect(harness.events).not.toContain(`projection:delete:stats:workspace-created:${SESSION_ID}`);
   });
 
-  it("lists only fully decoded KV projections and preserves valid optional fields", async () => {
+  it("lists only fully decoded KV projections through the canonical public contract", async () => {
     const values = new Map<string, unknown>([
       [`session:${projection.id}`, projection],
       ["session:malformed", { ...projection, id: "malformed", backupId: 123 }],
@@ -2360,15 +2410,23 @@ describe("real Hono boundary", () => {
     );
     expect(response.status).toBe(200);
     const body = await response.json();
-    if (!Array.isArray(body)) throw new TypeError("Expected session list array");
-    expect(body).toHaveLength(1);
-    expect(body[0]).toMatchObject({
-      id: projection.id,
-      backupId: projection.backupId,
-      codexThreadId: projection.codexThreadId,
-      failure: projection.failure,
+    expect(body).toMatchObject({
+      version: 1,
+      sessions: [
+        {
+          identity: { id: projection.id },
+          authority: {
+            kind: "stable",
+            lifecycle: "failed",
+            failure: { code: projection.failure.code, recoverable: true },
+          },
+          projection: { projectedAt: projection.projectedAt },
+        },
+      ],
     });
-    expect(body[0]).not.toHaveProperty("secret");
+    expect(body).not.toHaveProperty("sessions.0.backupId");
+    expect(body).not.toHaveProperty("sessions.0.codexThreadId");
+    expect(body).not.toHaveProperty("sessions.0.secret");
   });
 
   it("serves authenticated creation stats joined to current session statuses", async () => {

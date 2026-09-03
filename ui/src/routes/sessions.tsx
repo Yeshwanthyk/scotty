@@ -1,12 +1,22 @@
 import * as stylex from "@stylexjs/stylex";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { AppShell } from "../components/AppShell";
-import { buildFixtureSessionRail } from "../domain/session-rail";
+import { Button } from "../components/Button";
+import { readSessionList, type SessionListReadResult } from "../data/session-list-reader";
+import { buildSessionRail } from "../domain/session-rail";
+import { sessionListFixtures } from "../fixtures/sessions";
 import { colors, spacing } from "../theme/tokens.stylex";
 
-export const Route = createFileRoute("/sessions")({ component: SessionsHome });
+export const Route = createFileRoute("/sessions")({
+  loader: ({ abortController }): Promise<SessionListReadResult> =>
+    readSessionList({
+      fixture: sessionListFixtures,
+      fixtureFallback: import.meta.env.DEV,
+      signal: abortController.signal,
+    }),
+  component: SessionsHome,
+});
 
-const rail = buildFixtureSessionRail();
 const styles = stylex.create({
   home: {
     minHeight: "100dvh",
@@ -36,13 +46,19 @@ const styles = stylex.create({
 });
 
 function SessionsHome() {
+  const result = Route.useLoaderData();
+  const router = useRouter();
+  const rail = buildSessionRail(result.ok ? result.projections.map(({ session }) => session) : []);
   return (
     <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>
       <section {...stylex.props(styles.home)}>
         <div {...stylex.props(styles.content)}>
           <div>
             <h1 {...stylex.props(styles.heading)}>Sessions</h1>
-            <p {...stylex.props(styles.intro)}>Select a session or create one.</p>
+            <p {...stylex.props(styles.intro)}>
+              {result.ok ? "Select a session or create one." : "Sessions could not be loaded."}
+            </p>
+            {result.ok ? null : <Button onClick={() => void router.invalidate()}>Try again</Button>}
           </div>
         </div>
       </section>

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -18,6 +19,13 @@ const archivePath = join(buildDirectory, "scotty-deployment.tar.gz");
 const entryPath = join(buildDirectory, "standalone.ts");
 const output = resolve(process.argv[2] ?? join(root, "dist", "scotty"));
 const compileTarget = process.env.SCOTTY_COMPILE_TARGET;
+
+const buildBrowserAssets = () => {
+  const result = spawnSync("npm", ["run", "ui:build"], { cwd: root, stdio: "inherit" });
+  if (result.status !== 0) {
+    throw new Error(`UI build failed with exit code ${result.status ?? "unknown"}`);
+  }
+};
 
 const CRITICAL_ARCHIVE_ENTRIES = Object.freeze([
   "package.json",
@@ -56,6 +64,7 @@ await rm(buildDirectory, { recursive: true, force: true });
 await mkdir(buildDirectory, { recursive: true });
 // The finished output is outside these generated input roots and survives cleanup.
 try {
+  buildBrowserAssets();
   await bundleDeploymentWorkers({ projectRoot: root });
   const files = {};
   for (const relativePath of await listPackagedFiles(root, DEPLOYMENT_INPUTS)) {

@@ -24,7 +24,6 @@ export type SessionAuthority =
       readonly action: SessionTransitionAction;
       readonly phase: string;
       readonly mode: "executing" | "reconciling";
-      readonly origin: "absent" | SessionLifecycle;
       readonly startedAt: string;
     };
 
@@ -51,7 +50,7 @@ export interface SessionModel {
     readonly defaultBranch: string | null;
   };
   readonly times: { readonly capRemainingSeconds: number };
-  readonly source: "authority" | "fixture";
+  readonly source: "authority" | "projection" | "fixture";
 }
 
 export interface SessionHttpFailure {
@@ -167,13 +166,12 @@ const stableAuthority = (value: JsonObject): SessionAuthority | undefined => {
 
 const transitioningAuthority = (value: JsonObject): SessionAuthority | undefined => {
   if (
-    !hasOnlyKeys(value, ["kind", "action", "phase", "mode", "origin", "startedAt"]) ||
+    !hasOnlyKeys(value, ["kind", "action", "phase", "mode", "startedAt"]) ||
     value.kind !== "transitioning" ||
     !isTransitionAction(value.action) ||
     typeof value.phase !== "string" ||
     value.phase.length === 0 ||
     (value.mode !== "executing" && value.mode !== "reconciling") ||
-    !(value.origin === "absent" || isLifecycle(value.origin)) ||
     typeof value.startedAt !== "string"
   )
     return undefined;
@@ -182,7 +180,6 @@ const transitioningAuthority = (value: JsonObject): SessionAuthority | undefined
     action: value.action,
     phase: value.phase,
     mode: value.mode,
-    origin: value.origin,
     startedAt: value.startedAt,
   };
 };
@@ -298,15 +295,12 @@ const timesFrom = (value: JsonValue | undefined): SessionModel["times"] | undefi
   return { capRemainingSeconds: value.capRemainingSeconds };
 };
 
-const normalizeWireV1 = (value: unknown): SessionModel | undefined => {
-  if (
-    !isJsonObject(value) ||
-    !hasOnlyKeys(value, ["version", "session"]) ||
-    value.version !== SESSION_WIRE_VERSION ||
-    !isJsonObject(value.session)
-  )
-    return undefined;
-  const wire = value.session;
+export const decodeSessionWireValue = (
+  value: unknown,
+  source: "authority" | "projection",
+): SessionModel | undefined => {
+  if (!isJsonObject(value)) return undefined;
+  const wire = value;
   if (!hasOnlyKeys(wire, ["identity", "authority", "runtime", "capabilities", "display", "times"]))
     return undefined;
   const id = identityFrom(wire.identity);
@@ -332,7 +326,18 @@ const normalizeWireV1 = (value: unknown): SessionModel | undefined => {
     display,
     times,
   };
-  return validSessionContract(session) ? { ...session, source: "authority" } : undefined;
+  return validSessionContract(session) ? { ...session, source } : undefined;
+};
+
+const normalizeWireV1 = (value: unknown): SessionModel | undefined => {
+  if (
+    !isJsonObject(value) ||
+    !hasOnlyKeys(value, ["version", "session"]) ||
+    value.version !== SESSION_WIRE_VERSION ||
+    !isJsonObject(value.session)
+  )
+    return undefined;
+  return decodeSessionWireValue(value.session, "authority");
 };
 
 const noCapabilities: SessionCapabilities = {
@@ -399,7 +404,6 @@ const demoFixtures = new Map<string, SessionModel>([
         action: "resume",
         phase: "Restoring backup",
         mode: "executing",
-        origin: "sleeping",
         startedAt: "2026-09-03T15:48:00.000Z",
       },
       noCapabilities,

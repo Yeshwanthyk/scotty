@@ -59,7 +59,6 @@ import {
   readOutput,
   sanitizeUrl,
   stableRecoveryGrant,
-  stableSession,
   usage,
   type ReadMessage,
 } from "./pure";
@@ -1571,9 +1570,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       const value = yield* requestJson(auth, "/api/sessions");
       const decoded = decodeSessionsResponse(value);
       if (Option.isNone(decoded))
-        return yield* invalidResponse("Server response is not a valid session array");
-      const sessions = decoded.value.map(stableSession);
-      if (autoJson) outputJson(runtime.stdout, sessions);
+        return yield* invalidResponse("Server response is not a valid session list");
+      const sessions = decoded.value.sessions;
+      if (autoJson) outputJson(runtime.stdout, decoded.value);
       else
         runtime.stdout(
           sessions.length ? `${sessions.map(humanSession).join("\n")}\n` : "No sessions.\n",
@@ -1806,7 +1805,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       const auth = yield* credentials(options);
       const value = yield* requestJson(auth, "/api/sessions");
       if (Option.isNone(decodeSessionsResponse(value)))
-        return yield* invalidResponse("Server response is not a valid session array");
+        return yield* invalidResponse("Server response is not a valid session list");
       const result = {
         ok: true,
         mode: config.installationName ? "managed" : "connected",

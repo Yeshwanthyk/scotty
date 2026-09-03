@@ -9,5 +9,6 @@
 /.pi/
 /.scotty-build/
 /worker/prebuilt/
+/worker/public/app/
 /vendor/
 .scotty-lab/

@@ -91,6 +91,51 @@ describe("readAuthoritativeSession", () => {
     expect(result).toMatchObject({ ok: true, session: { display: { branch: null } } });
   });
 
+  it("accepts the public transition shape and rejects actor-internal origin", async () => {
+    const response = wireSession("resume-123");
+    const transition = {
+      ...response,
+      session: {
+        ...response.session,
+        authority: {
+          kind: "transitioning",
+          action: "resume",
+          phase: "BackupRestoring",
+          mode: "executing",
+          startedAt: "2026-09-03T15:48:00.000Z",
+        },
+        runtime: { provider: "cloudflare", readiness: "not-applicable" },
+        capabilities: {
+          checkpoint: false,
+          sleep: false,
+          resume: false,
+          work: false,
+          vaporize: false,
+        },
+      },
+    };
+    const accepted = await readAuthoritativeSession("resume-123", {
+      fetch: vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(transition)),
+    });
+    expect(accepted).toMatchObject({
+      ok: true,
+      session: { authority: { kind: "transitioning", action: "resume" } },
+    });
+
+    const rejected = await readAuthoritativeSession("resume-123", {
+      fetch: vi.fn<typeof fetch>().mockResolvedValueOnce(
+        Response.json({
+          ...transition,
+          session: {
+            ...transition.session,
+            authority: { ...transition.session.authority, origin: "sleeping" },
+          },
+        }),
+      ),
+    });
+    expect(rejected).toMatchObject({ ok: false, classification: "malformed" });
+  });
+
   it("rejects semantically impossible authority, runtime, and capability combinations", async () => {
     const warm = wireSession("abc-123");
     const impossible = [
@@ -117,7 +162,6 @@ describe("readAuthoritativeSession", () => {
             action: "resume",
             phase: "BackupRestoring",
             mode: "executing",
-            origin: "sleeping",
             startedAt: "2026-09-03T15:48:00.000Z",
           },
         },
