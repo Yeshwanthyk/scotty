@@ -24,6 +24,7 @@ const attempt: BackupLifecycleAttempt = {
   attempt: "1ed4a6f4-7d9f-46b9-8a07-ef6d9c1dd64c",
   operationNonce: "operation-1",
   runtimeGeneration: "runtime-generation-1",
+  transitionFence: { revision: 1, mode: "executing", phase: "RuntimeReady" },
 };
 const backup: DirectoryBackup = {
   id: attempt.attempt,
@@ -222,7 +223,7 @@ describe("BackupLifecycleSandbox", () => {
       const restored = yield* withProvider(
         Effect.flatMap(BackupLifecycleSandbox, (provider) =>
           provider.restoreCurrentBackup({
-            sessionId: attempt.sessionId,
+            ...attempt,
             attempt: "e14136de-111f-4f6b-bf71-7cfbe7794544",
             operationNonce: "resume-operation",
             runtimeGeneration: "resume-runtime-generation",

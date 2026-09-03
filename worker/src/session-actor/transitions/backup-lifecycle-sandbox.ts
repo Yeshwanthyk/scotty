@@ -10,10 +10,12 @@ import { sessionRoot } from "../../sandbox/workspace";
 import type { DirectoryBackup } from "../../session/contracts";
 import type {
   BackupIdentity,
+  ExecutionMode,
   RuntimeProof,
   StopObservation,
   SupervisorProof,
   TransportProof,
+  Transition,
 } from "../authority";
 import { SessionActorMetadataStore } from "../metadata-store";
 import {
@@ -69,6 +71,11 @@ export interface BackupLifecycleAttempt {
   readonly attempt: string;
   readonly operationNonce: string;
   readonly runtimeGeneration: string;
+  readonly transitionFence: {
+    readonly revision: number;
+    readonly mode: ExecutionMode;
+    readonly phase: Transition["phase"];
+  };
 }
 
 export interface PreparedSandboxBackup {
@@ -545,6 +552,11 @@ const checkpointAttempt = (context: CheckpointProviderContext): BackupLifecycleA
   attempt: context.transition.attempt,
   operationNonce: context.transition.nonce,
   runtimeGeneration: context.transition.proof.readiness.runtime.runtimeGeneration,
+  transitionFence: {
+    revision: context.authority.revision,
+    mode: context.transition.mode,
+    phase: context.transition.phase,
+  },
 });
 
 const sleepAttempt = (context: SleepProviderContext): BackupLifecycleAttempt => ({
@@ -552,6 +564,11 @@ const sleepAttempt = (context: SleepProviderContext): BackupLifecycleAttempt => 
   attempt: context.transition.attempt,
   operationNonce: context.transition.nonce,
   runtimeGeneration: context.transition.proof.readiness.runtime.runtimeGeneration,
+  transitionFence: {
+    revision: context.authority.revision,
+    mode: context.transition.mode,
+    phase: context.transition.phase,
+  },
 });
 
 const resumeAttempt = (
@@ -562,6 +579,11 @@ const resumeAttempt = (
   attempt: context.transition.attempt,
   operationNonce: context.transition.nonce,
   runtimeGeneration,
+  transitionFence: {
+    revision: context.authority.revision,
+    mode: context.transition.mode,
+    phase: context.transition.phase,
+  },
 });
 
 const resumedRuntimeGeneration = (context: ResumeProviderContext): string =>

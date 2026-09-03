@@ -2,6 +2,7 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Predicate, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import type { SessionAuthority } from "../../src/session-actor/authority";
+import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { EvidenceState } from "../../src/evidence/contracts";
 import type { HatchState } from "../../src/hatch/contracts";
 import { ScottyError } from "../../src/session/contracts";
@@ -529,6 +530,10 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     );
 
     const checkpointed = await restarted.sandbox.checkpointScottySession();
+    const recoveredHatch = harness.read<HatchState>(sessionHarnessKeys.hatch);
+    const unexposeCallsBeforeLateCompletion = harness.events.filter(
+      (event) => event === "host:preview:unexpose:4173",
+    ).length;
     releaseProbe.resolve();
     await original.then(
       () => undefined,
@@ -541,6 +546,131 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         .length,
       1,
     );
+    assert.deepStrictEqual(harness.read<HatchState>(sessionHarnessKeys.hatch), recoveredHatch);
+    assert.strictEqual(
+      harness.events.filter((event) => event === "host:preview:unexpose:4173").length,
+      unexposeCallsBeforeLateCompletion,
+    );
+  });
+
+  it("cleans a late Hatch restore after authority settles Failed and retries unknown unexpose", async () => {
+    const probeEntered = deferred<void>();
+    const releaseProbe = deferred<void>();
+    let gateProbe = false;
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+      hatchPublicProbe: async () => {
+        if (gateProbe) {
+          probeEntered.resolve();
+          await releaseProbe.promise;
+        }
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "cache-control": "no-store",
+            "x-robots-tag": "noindex, nofollow, noarchive",
+            "x-scotty-hatch-readiness": "ready",
+          },
+        });
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    gateProbe = true;
+    const original = harness.sandbox.checkpointScottySession();
+    await probeEntered.promise;
+    const restarted = await createSessionHarness({
+      sharedMemory: harness.memory,
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await restarted.sandbox.checkpointScottySession().then(
+      () => undefined,
+      () => undefined,
+    );
+    const reconciling = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(reconciling !== undefined && Predicate.isTagged(reconciling.state, "Transitioning"));
+    assert.strictEqual(reconciling.state.transition.mode, "reconciling");
+    const restoringState = harness.read<HatchState>(sessionHarnessKeys.hatch);
+    assert.isDefined(restoringState);
+    const restoring = restoringState.primary;
+    assert.isDefined(restoring);
+    assert.ok(Predicate.isTagged(reconciling.state.transition, "Checkpoint"));
+    const failed: SessionAuthority = {
+      ...reconciling,
+      revision: reconciling.revision + 1,
+      state: {
+        _tag: "Stable",
+        stable: {
+          _tag: "Failed",
+          code: "transition_deadline_elapsed",
+          actionable: false,
+          origin: reconciling.state.transition.origin,
+          lastStable: "Warm",
+          backup: null,
+          ownedBackupIds: reconciling.state.transition.proof.backup.ownedBackupIds,
+          wakeSource: null,
+        },
+      },
+    };
+    const journalTail = harness.read<LifecycleJournalEvent>(sessionHarnessKeys.actorJournalTail);
+    assert.isDefined(journalTail);
+    harness.memory.values.set(sessionHarnessKeys.actorAuthority, failed);
+    harness.memory.values.set(sessionHarnessKeys.actorRevision, failed.revision);
+    harness.memory.values.set(sessionHarnessKeys.actorJournalSequence, failed.revision);
+    harness.memory.values.set(sessionHarnessKeys.actorJournalTail, {
+      ...journalTail,
+      sequence: failed.revision,
+      revision: failed.revision,
+      eventType: "hard_cap_elapsed",
+      resultCode: "transition_deadline_elapsed",
+    });
+    harness.injectFailure("previewUnexpose");
+
+    releaseProbe.resolve();
+    const originalFailure = await original.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    const hatchState = harness.read<HatchState>(sessionHarnessKeys.hatch);
+    assert.isDefined(hatchState);
+    const hatch = hatchState.primary;
+    assert.isDefined(hatch);
+    assert.notStrictEqual(hatch.observedStatus, "running");
+    assert.notStrictEqual(hatch.exposure, "active");
+    assert.strictEqual(hatch.hatchId, restoring.hatchId);
+    assert.strictEqual(hatch.generation, restoring.generation + 1);
+    assert.strictEqual(hatch.runtimeEpoch, undefined);
+    assert.strictEqual(hatch.cleanup?.operationNonce, reconciling.state.transition.nonce);
+    assert.strictEqual(hatch.cleanup?.generation, restoring.generation + 1);
+    assert.include(harness.events, "host:preview:unexpose:4173");
+    assert.ok(harness.schedules.some((schedule) => schedule.callback === "retryHatchCleanup"));
+    assert.instanceOf(originalFailure, ScottyError);
+    assert.strictEqual(originalFailure.code, "upstream");
+
+    const cleanupRetry = harness.schedules.find(
+      (schedule) => schedule.callback === "retryHatchCleanup",
+    );
+    assert.isDefined(cleanupRetry);
+    harness.clearFailure("previewUnexpose");
+    await harness.sandbox.retryHatchCleanup(cleanupRetry.payload);
+    const cleanedState = harness.read<HatchState>(sessionHarnessKeys.hatch);
+    assert.isDefined(cleanedState);
+    assert.strictEqual(cleanedState.primary?.observedStatus, "failed");
+    assert.strictEqual(cleanedState.primary?.exposure, "closed");
+    assert.strictEqual(cleanedState.primary?.cleanup, undefined);
   });
 
   it("returns a recovered Sleep without dispatching a second sleep", async () => {

@@ -39,6 +39,7 @@ import {
   durableObjectHatchStateStorage,
   hatchStoreLayer,
   type HatchCleanupAuthority,
+  type HatchRestoreFence,
   type HatchWebSocketAuthorization,
 } from "../hatch/store";
 import {
@@ -741,6 +742,7 @@ interface PendingHatchRestore {
   readonly hatch: HatchRecord;
   readonly operationNonce: string;
   readonly runtimeEpoch: string;
+  readonly restoreFence: HatchRestoreFence;
 }
 
 interface PendingHatchWebSocket {
@@ -1164,6 +1166,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         this.completePreparedHatchRestoreProgram(
           input.operationNonce,
           input.runtimeGeneration,
+          input.transitionFence,
         ).pipe(Effect.provide(Layer.mergeAll(hatch, runtime))),
     }).pipe(Layer.provide(Layer.mergeAll(backup, runtimeAndContainerAuth, actorRuntimeStop)));
     const checkpointProvider = checkpointSandboxTransitionProviderLayer.pipe(
@@ -1489,6 +1492,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     hatch: HatchRecord,
     operationNonce: string,
     runtimeEpoch: string,
+    restoreFence?: HatchRestoreFence,
   ) {
     const previewBase = this.previewBase;
     if (previewBase === undefined)
@@ -1535,6 +1539,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       hatch.hatchId,
       hatch.generation,
       runtimeEpoch,
+      restoreFence,
     );
   });
 
@@ -1559,15 +1564,26 @@ export class Sandbox extends BaseSandbox<Bindings> {
         pending.hatch,
         pending.operationNonce,
         pending.runtimeEpoch,
+        pending.restoreFence,
       ),
     );
     if (Result.isSuccess(restored)) return;
-    yield* this.cleanupHatchProgram(
-      pending.operationNonce,
-      "failed",
-      false,
-      "restore_operation",
-    ).pipe(Effect.ignore);
+    const cleanup = yield* Effect.result(
+      this.cleanupHatchProgram(pending.operationNonce, "failed", false, {
+        kind: "restore_operation",
+        hatchId: pending.hatch.hatchId,
+        generation: pending.hatch.generation,
+        runtimeEpoch: pending.runtimeEpoch,
+      }),
+    );
+    if (Result.isFailure(cleanup))
+      yield* hostEffect("schedule", () =>
+        this.schedule(5, "retryHatchCleanup", {
+          operationNonce: pending.operationNonce,
+          target: "failed",
+          closeDesired: false,
+        } satisfies HatchCleanupRetry),
+      ).pipe(Effect.ignore);
     return yield* restored.failure;
   });
 
@@ -1575,6 +1591,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     operationNonce: string,
     runtimeEpoch: string,
+    restoreFence: HatchRestoreFence,
   ) {
     const store = yield* HatchStore;
     const state = yield* store.read;
@@ -1606,6 +1623,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       hatch,
       operationNonce,
       runtimeEpoch,
+      restoreFence,
     });
   });
 
