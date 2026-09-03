@@ -199,6 +199,55 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
       assert.strictEqual(failed.state.stable.code, "hard_cap_elapsed");
     }),
   );
+
+  it.effect("reconciles its orphaned Sleep on drain retries without repeating provider work", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
+      const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      const drain = harness.schedules.find(
+        (schedule) => schedule.callback === "sessionActorHardCapDrain",
+      );
+      assert.isDefined(drain);
+      const drainPayload = decodeDrainFence(drain.payload);
+      assert.isTrue(Option.isSome(drainPayload));
+      if (Option.isNone(drainPayload)) return;
+
+      yield* clock.setTime(Date.parse(drainPayload.value.drainAt));
+      harness.injectFailure("actorAlarmScheduleOnce");
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      const orphaned = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        orphaned !== undefined &&
+          Predicate.isTagged(orphaned.state, "Transitioning") &&
+          Predicate.isTagged(orphaned.state.transition, "Sleep"),
+      );
+      assert.strictEqual(harness.events.filter((event) => event === "host:createBackup").length, 0);
+
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      const reconciling = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        reconciling !== undefined &&
+          Predicate.isTagged(reconciling.state, "Transitioning") &&
+          Predicate.isTagged(reconciling.state.transition, "Sleep") &&
+          reconciling.state.transition.mode === "reconciling",
+      );
+
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      const settled = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        settled !== undefined &&
+          Predicate.isTagged(settled.state, "Stable") &&
+          Predicate.isTagged(settled.state.stable, "Failed"),
+      );
+      assert.strictEqual(settled.state.stable.code, "reconciliation_outcome_unknown");
+      assert.strictEqual(harness.events.filter((event) => event === "host:createBackup").length, 0);
+      assert.strictEqual(harness.events.filter((event) => event === "host:stop").length, 0);
+    }),
+  );
   it("uses and rotates a durable local incarnation when Cloudflare placement is absent", async () => {
     const harness = await createSessionHarness({
       containerPlacementId: null,
@@ -429,6 +478,185 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.strictEqual(
       harness.events.filter((event) => event === "host:createBackup").length,
       backupCalls,
+    );
+  });
+
+  it("returns a recovered Checkpoint without dispatching a second checkpoint", async () => {
+    const probeEntered = deferred<void>();
+    const releaseProbe = deferred<void>();
+    let gateProbe = false;
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+      hatchPublicProbe: async () => {
+        if (gateProbe) {
+          probeEntered.resolve();
+          await releaseProbe.promise;
+        }
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "cache-control": "no-store",
+            "x-robots-tag": "noindex, nofollow, noarchive",
+            "x-scotty-hatch-readiness": "ready",
+          },
+        });
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    gateProbe = true;
+    const original = harness.sandbox.checkpointScottySession();
+    await probeEntered.promise;
+    const restarted = await createSessionHarness({
+      sharedMemory: harness.memory,
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await restarted.sandbox.checkpointScottySession().then(
+      () => undefined,
+      () => undefined,
+    );
+
+    const checkpointed = await restarted.sandbox.checkpointScottySession();
+    releaseProbe.resolve();
+    await original.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    assert.strictEqual(checkpointed.status, "warm");
+    assert.strictEqual(
+      [...harness.events, ...restarted.events].filter((event) => event === "host:createBackup")
+        .length,
+      1,
+    );
+  });
+
+  it("returns a recovered Sleep without dispatching a second sleep", async () => {
+    let injected = false;
+    let harness: Awaited<ReturnType<typeof createSessionHarness>>;
+    harness = await createSessionHarness({
+      commandGate: (command) => {
+        if (command === "sync" && !injected) {
+          injected = true;
+          harness.memory.injectFailure("transaction", {
+            countdown: 10,
+            error: new Error("injected sleep observation commit failure"),
+            times: 1,
+          });
+        }
+        return undefined;
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.sleepScottySession().then(
+      () => undefined,
+      () => undefined,
+    );
+    const reconciling = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(reconciling !== undefined && Predicate.isTagged(reconciling.state, "Transitioning"));
+    assert.strictEqual(reconciling.state.transition.phase, "StopRequested");
+    await harness.sandbox.sleepScottySession().then(
+      () => undefined,
+      () => undefined,
+    );
+
+    const sleeping = await harness.sandbox.sleepScottySession();
+
+    assert.strictEqual(sleeping.status, "sleeping");
+    assert.strictEqual(harness.events.filter((event) => event === "host:createBackup").length, 1);
+    assert.strictEqual(harness.events.filter((event) => event === "host:stop").length, 1);
+  });
+
+  it("returns a recovered Resume without restoring or rearming the hard cap twice", async () => {
+    const probeEntered = deferred<void>();
+    const releaseProbe = deferred<void>();
+    let gateProbe = false;
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+      hatchPublicProbe: async () => {
+        if (gateProbe) {
+          probeEntered.resolve();
+          await releaseProbe.promise;
+        }
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "cache-control": "no-store",
+            "x-robots-tag": "noindex, nofollow, noarchive",
+            "x-scotty-hatch-readiness": "ready",
+          },
+        });
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    await harness.sandbox.sleepScottySession();
+    const restoreCallsBeforeResume = harness.events.filter(
+      (event) => event === "host:restoreBackup",
+    ).length;
+    const hardCapSchedulesBeforeResume = harness.schedules.filter((schedule) =>
+      schedule.callback.startsWith("sessionActorHardCap"),
+    ).length;
+    gateProbe = true;
+    const original = harness.sandbox.resumeScottySession();
+    await probeEntered.promise;
+    const restarted = await createSessionHarness({
+      sharedMemory: harness.memory,
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await restarted.sandbox.resumeScottySession().then(
+      () => undefined,
+      () => undefined,
+    );
+    const hardCapSchedulesAfterFirstResume = harness.schedules.filter((schedule) =>
+      schedule.callback.startsWith("sessionActorHardCap"),
+    ).length;
+    const resumed = await restarted.sandbox.resumeScottySession();
+    releaseProbe.resolve();
+    await original.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    assert.strictEqual(resumed.status, "warm");
+    assert.strictEqual(
+      [...harness.events, ...restarted.events].filter((event) => event === "host:restoreBackup")
+        .length,
+      restoreCallsBeforeResume + 1,
+    );
+    assert.strictEqual(hardCapSchedulesAfterFirstResume, hardCapSchedulesBeforeResume + 2);
+    assert.strictEqual(
+      harness.schedules.filter((schedule) => schedule.callback.startsWith("sessionActorHardCap"))
+        .length,
+      hardCapSchedulesAfterFirstResume,
+    );
+    assert.lengthOf(
+      restarted.schedules.filter((schedule) => schedule.callback.startsWith("sessionActorHardCap")),
+      0,
     );
   });
 

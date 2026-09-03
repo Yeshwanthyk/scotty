@@ -173,7 +173,7 @@ import {
   type SessionControlGate,
 } from "./store";
 import type { SessionActorDiagnostics } from "../session-actor/diagnostics";
-import { ActorStore, actorStoreLayer } from "../session-actor/store";
+import { ActorStore, actorStoreLayer, type ActorStoreSnapshot } from "../session-actor/store";
 import { SessionActor, sessionActorLayer } from "../session-actor/actor";
 import {
   actorAlarmId,
@@ -273,6 +273,11 @@ import {
   readGitWorktreePatch,
 } from "../changes/git";
 import { parseChangedPath, type ChangedFilePatch, type ChangedFiles } from "../changes/contracts";
+
+type ActorRequestRecovery =
+  | { readonly _tag: "NotNeeded"; readonly snapshot: ActorStoreSnapshot }
+  | { readonly _tag: "Contended"; readonly snapshot: ActorStoreSnapshot }
+  | { readonly _tag: "Recovered"; readonly snapshot: ActorStoreSnapshot };
 
 const ABANDONED_OPERATION_MS = 5 * 60_000;
 const ACTIVITY_OBSERVATION_TTL_MS = 90_000;
@@ -2790,10 +2795,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const before = yield* store.read;
     const authority = before.authority;
     if (authority === undefined || !AuthorityStateSchema.guards.Transitioning(authority.state))
-      return { snapshot: before, recovery: "not_needed" as const };
+      return { _tag: "NotNeeded" as const, snapshot: before } satisfies ActorRequestRecovery;
     const transition = authority.state.transition;
     if (!Predicate.isTagged(transition, expectedKind))
-      return { snapshot: before, recovery: "not_target" as const };
+      return { _tag: "Contended" as const, snapshot: before } satisfies ActorRequestRecovery;
     const publishProjection = this.publishActorSessionProjectionBestEffortProgram();
     const recovered = yield* this.withExclusiveActorMutation(
       transition.nonce,
@@ -2832,12 +2837,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
             : {}),
         });
         if (resume === undefined)
-          return { snapshot: yield* store.read, recovery: "stale" as const };
+          return { _tag: "Recovered" as const, snapshot: yield* store.read };
         yield* publishProjection;
-        return { snapshot: yield* store.read, recovery: "attempted" as const };
+        return { _tag: "Recovered" as const, snapshot: yield* store.read };
       }),
     );
-    return recovered === undefined ? { snapshot: before, recovery: "active" as const } : recovered;
+    return recovered === undefined
+      ? ({ _tag: "Contended" as const, snapshot: before } satisfies ActorRequestRecovery)
+      : recovered;
   });
 
   private readonly withExclusiveActorMutation = <A, E, R>(
@@ -2916,8 +2923,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     };
     const recoverCreateReplay = Effect.fnUntraced(function* (sandbox: Sandbox) {
       const recovered = yield* sandbox.recoverTransitioningActorForRequestProgram("Create");
-      if (recovered.recovery === "stale")
-        return { recovery: recovered.recovery, outcome: yield* controller.create(request) };
+      if (Predicate.isTagged(recovered, "Contended")) return { _tag: "Contended" as const };
       const authority = recovered.snapshot.authority;
       if (
         authority !== undefined &&
@@ -2925,7 +2931,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         Predicate.isTagged(authority.state.transition, "Create")
       )
         return {
-          recovery: recovered.recovery,
+          _tag: "Available" as const,
           outcome: {
             _tag: "InProgress" as const,
             replay: true,
@@ -2934,7 +2940,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             phase: authority.state.transition.phase,
           },
         };
-      return { recovery: recovered.recovery, outcome: yield* controller.create(request) };
+      return { _tag: "Available" as const, outcome: yield* controller.create(request) };
     });
     const outcome = yield* this.withActiveActorMutation(
       request.nonce,
@@ -2944,9 +2950,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             return Effect.succeed(initial);
           return recoverCreateReplay(this).pipe(
             Effect.map((recovered) =>
-              recovered.recovery === "active" || recovered.recovery === "not_target"
-                ? initial
-                : recovered.outcome,
+              Predicate.isTagged(recovered, "Contended") ? initial : recovered.outcome,
             ),
           );
         }),
@@ -3068,16 +3072,39 @@ export class Sandbox extends BaseSandbox<Bindings> {
         this.upstreamError(`Session ${kind.toLowerCase()} failed`, failure),
       ),
     );
-    if (
-      recovered.recovery === "attempted" &&
-      recovered.snapshot.authority !== undefined &&
-      AuthorityStateSchema.guards.Transitioning(recovered.snapshot.authority.state)
-    )
-      return yield* this.upstreamError(
-        `Session ${kind.toLowerCase()} outcome is being reconciled`,
-        recovered.snapshot.authority.state.transition.phase,
-        recovered.snapshot.authority.session.id,
-      );
+    if (!Predicate.isTagged(recovered, "NotNeeded")) {
+      const authority = recovered.snapshot.authority;
+      if (Predicate.isTagged(recovered, "Contended")) {
+        const state = yield* this.readActorSessionStateProgram();
+        return yield* wrongState(state.view.status, kind.toLowerCase());
+      }
+      if (authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state))
+        return yield* this.upstreamError(
+          `Session ${kind.toLowerCase()} outcome is being reconciled`,
+          authority.state.transition.phase,
+          authority.session.id,
+        );
+      if (
+        authority !== undefined &&
+        AuthorityStateSchema.guards.Stable(authority.state) &&
+        StableStateSchema.guards.Failed(authority.state.stable)
+      )
+        return yield* this.upstreamError(
+          `Session ${kind.toLowerCase()} failed`,
+          authority.state.stable.code,
+          authority.session.id,
+        );
+      const state = yield* this.readActorSessionStateProgram();
+      yield* Effect.tryPromise({
+        try: () =>
+          this.env.SESSIONS.put(
+            `${SESSION_KV_PREFIX}${state.projection.id}`,
+            JSON.stringify(state.projection),
+          ),
+        catch: () => undefined,
+      }).pipe(Effect.ignore);
+      return state.view;
+    }
     const now = yield* Clock.currentTimeMillis;
     const baseRequest = {
       correlationId: crypto.randomUUID(),
@@ -5049,7 +5076,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
         if (!isMatchingHardCapDrain(authority, fence.value)) return;
         if (isTerminalDrainAuthority(authority) || isVaporizingAuthority(authority)) return;
 
-        if (isWarmAuthority(authority)) yield* Effect.result(this.actorLifecycleProgram("Sleep"));
+        if (
+          isWarmAuthority(authority) ||
+          (AuthorityStateSchema.guards.Transitioning(authority.state) &&
+            TransitionSchema.guards.Sleep(authority.state.transition))
+        )
+          yield* Effect.result(this.actorLifecycleProgram("Sleep"));
 
         const after = yield* store.read;
         if (yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(after.authority))) return;
