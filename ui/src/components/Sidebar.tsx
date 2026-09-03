@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "./Button";
 import { SessionRow, type SessionRowProps } from "./SessionRow";
 import { colors, spacing } from "../theme/tokens.stylex";
+import scottyMark from "../../../worker/public/brand/scotty-mark-128.png?url";
 
 export interface RepositoryGroup {
   readonly name: string;
@@ -75,13 +76,9 @@ const styles = stylex.create({
   mark: {
     width: "22px",
     height: "22px",
-    display: "grid",
-    placeItems: "center",
+    display: "block",
     borderRadius: "6px",
-    backgroundColor: colors.ink,
-    color: colors.space,
-    fontSize: "11px",
-    fontWeight: 800,
+    objectFit: "cover",
   },
   search: {
     height: "36px",
@@ -254,7 +251,13 @@ export function Sidebar({
             onClick={onClose}
             {...stylex.props(styles.brand)}
           >
-            <span {...stylex.props(styles.mark)}>S</span>
+            <img
+              src={scottyMark}
+              alt=""
+              width={22}
+              height={22}
+              {...stylex.props(styles.mark)}
+            />
             <span>Scotty</span>
           </Link>
           <span {...stylex.props(styles.close)}>
