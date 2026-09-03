@@ -184,7 +184,7 @@ import {
   createSandboxTransitionProviderLayer,
 } from "../session-actor/transitions/create-sandbox";
 import {
-  backupLifecycleSandboxLayer,
+  backupLifecycleSandboxLayerWithHatch,
   checkpointSandboxTransitionProviderLayer,
   resumeSandboxTransitionProviderLayer,
   sandboxRuntimeStopLayer,
@@ -237,7 +237,6 @@ import { SESSION_SCHEDULE_CALLBACKS, sessionAllowsRuntimeAccess } from "./lifecy
 import {
   errorName,
   SandboxRuntime,
-  SandboxRuntimeFailure,
   sandboxRuntimeLayer,
   shellQuote,
   type SandboxWriteContent,
@@ -1103,9 +1102,23 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     const actorRuntimeStop = sandboxRuntimeStopLayer({ requestStop: () => this.stop() });
-    const backupLifecycleSandbox = backupLifecycleSandboxLayer.pipe(
-      Layer.provide(Layer.mergeAll(backup, runtimeAndContainerAuth, actorRuntimeStop)),
-    );
+    const backupLifecycleSandbox = backupLifecycleSandboxLayerWithHatch({
+      afterPiStopped: (input) =>
+        this.cleanupHatchProgram(input.operationNonce, "sleeping", false, "operation").pipe(
+          Effect.asVoid,
+          Effect.provide(hatch),
+        ),
+      beforeSupervisorStart: (input) =>
+        this.prepareHatchRestoreProgram(input.operationNonce).pipe(
+          Effect.asVoid,
+          Effect.provide(Layer.mergeAll(actorStore, hatch)),
+        ),
+      afterSupervisorReady: (input) =>
+        this.completePreparedHatchRestoreProgram(
+          input.operationNonce,
+          input.runtimeGeneration,
+        ).pipe(Effect.provide(Layer.mergeAll(hatch, runtime))),
+    }).pipe(Layer.provide(Layer.mergeAll(backup, runtimeAndContainerAuth, actorRuntimeStop)));
     const checkpointProvider = checkpointSandboxTransitionProviderLayer.pipe(
       Layer.provide(Layer.merge(backupLifecycleSandbox, actorMetadata)),
     );
@@ -1503,25 +1516,42 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return yield* restored.failure;
   });
 
-  private readonly restorePiAndHatchProgram = Effect.fnUntraced(function* (
+  private readonly completePreparedHatchRestoreProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     operationNonce: string,
-    restorePi: Effect.Effect<void, SandboxRuntimeFailure>,
+    runtimeEpoch: string,
   ) {
-    const pending = yield* this.prepareHatchRestoreProgram(operationNonce);
-    const restored = yield* Effect.result(
-      restorePi.pipe(
-        Effect.andThen(
-          pending === undefined ? Effect.void : this.completeHatchRestoreProgram(pending),
-        ),
-      ),
-    );
-    if (Result.isSuccess(restored)) return;
-    if (pending !== undefined)
-      yield* this.cleanupHatchProgram(operationNonce, "failed", false, "restore_operation").pipe(
-        Effect.ignore,
-      );
-    return yield* Effect.fail(restored.failure);
+    const store = yield* HatchStore;
+    const state = yield* store.read;
+    const hatch = state.primary;
+    if (hatch === undefined || hatch.desiredStatus !== "open") return;
+    if (
+      hatch.observedStatus === "running" &&
+      hatch.exposure === "active" &&
+      hatch.publicReadyAt !== undefined &&
+      hatch.runtimeEpoch === runtimeEpoch &&
+      hatch.transitionNonce === undefined &&
+      hatch.cleanup === undefined
+    )
+      return;
+    const descriptor = yield* store.restoreDescriptor;
+    if (
+      descriptor === undefined ||
+      hatch.hatchId !== descriptor.hatchId ||
+      hatch.generation !== descriptor.generation ||
+      hatch.transitionNonce !== operationNonce ||
+      descriptor.runtimeEpoch !== runtimeEpoch ||
+      hatch.runtimeEpoch !== runtimeEpoch
+    )
+      return yield* new HatchStateError({
+        reason: "lease_changed",
+        message: "Hatch transition changed",
+      });
+    yield* this.completeHatchRestoreProgram({
+      hatch,
+      operationNonce,
+      runtimeEpoch,
+    });
   });
 
   private readonly ensureScottyHatchProgram = Effect.fnUntraced(function* (

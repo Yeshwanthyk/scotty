@@ -2,6 +2,7 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import { Predicate } from "effect";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import type { EvidenceState } from "../../src/evidence/contracts";
+import type { HatchState } from "../../src/hatch/contracts";
 import {
   CREATE_IDEMPOTENCY,
   CREATE_INPUT,
@@ -198,6 +199,119 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.ok(harness.events.includes("host:createBackup"));
     assert.ok(harness.events.includes("host:stop"));
     assert.ok(harness.events.includes("host:restoreBackup"));
+  });
+
+  it("closes Hatch for sleep and restores the exact service through Pi on resume", async () => {
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const service = {
+      name: "docs",
+      argv: ["npm", "run", "dev", "--", "--host", "0.0.0.0"],
+      workingDirectory: `/workspace/${SESSION_ID}`,
+      port: 4_173,
+      healthPath: "/health?restored=1",
+    } as const;
+    const ensured = await harness.sandbox.ensureScottyHatch({ service });
+    assert.strictEqual(ensured.status, "configured");
+    const initial = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.isDefined(initial?.runtimeEpoch);
+
+    await harness.sandbox.checkpointScottySession();
+    const afterCheckpoint = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.strictEqual(afterCheckpoint?.observedStatus, "running");
+    assert.strictEqual(afterCheckpoint?.exposure, "active");
+
+    await harness.sandbox.sleepScottySession();
+    const sleeping = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.strictEqual(sleeping?.desiredStatus, "open");
+    assert.strictEqual(sleeping?.observedStatus, "sleeping");
+    assert.strictEqual(sleeping?.exposure, "closed");
+    assert.strictEqual(sleeping?.runtimeEpoch, undefined);
+    assert.strictEqual(sleeping?.transitionNonce, undefined);
+    assert.strictEqual(sleeping?.cleanup, undefined);
+    assert.notInclude(harness.exposedPreviewPorts(), service.port);
+    const restoreCountBeforeResume = harness.piHatchRestoreDescriptors.length;
+
+    const resumed = await harness.sandbox.resumeScottySession();
+    assert.strictEqual(resumed.status, "warm");
+    const running = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.isDefined(running);
+    assert.strictEqual(running.desiredStatus, "open");
+    assert.strictEqual(running.observedStatus, "running");
+    assert.strictEqual(running.exposure, "active");
+    assert.isDefined(running.publicReadyAt);
+    assert.isDefined(running.runtimeEpoch);
+    assert.notStrictEqual(running.runtimeEpoch, initial?.runtimeEpoch);
+    assert.strictEqual(harness.piHatchRestoreDescriptors.length, restoreCountBeforeResume + 1);
+    const consumed = harness.piHatchRestoreDescriptors.at(-1);
+    assert.isDefined(consumed);
+    assert.deepStrictEqual(consumed, {
+      hatchId: running.hatchId,
+      generation: running.generation,
+      operationNonce: consumed.operationNonce,
+      runtimeEpoch: running.runtimeEpoch,
+      service,
+    });
+    const route = await harness.sandbox.getScottyHatchOpenRoute();
+    assert.deepInclude(route, {
+      hatchId: running.hatchId,
+      generation: running.generation,
+      runtimeEpoch: running.runtimeEpoch,
+    });
+    assert.include(harness.exposedPreviewPorts(), service.port);
+    const publicStatus = await harness.sandbox.getScottyHatchStatus();
+    assert.strictEqual(publicStatus.status, "configured");
+    if (publicStatus.status !== "configured") return;
+    assert.strictEqual(publicStatus.observedStatus, "running");
+    assert.strictEqual(publicStatus.exposure, "active");
+  });
+
+  it("does not reconcile lifecycle success after Hatch restore cleanup failed", async () => {
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    harness.injectFailure("hatchHealth");
+
+    await expect(harness.sandbox.checkpointScottySession()).rejects.toBeDefined();
+    const failedHatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.strictEqual(failedHatch?.desiredStatus, "open");
+    assert.strictEqual(failedHatch?.observedStatus, "failed");
+    assert.strictEqual(failedHatch?.exposure, "closed");
+    harness.clearFailure("hatchHealth");
+    const retry = harness.schedules
+      .filter((schedule) => schedule.callback === "sessionActorDeadline")
+      .at(-1);
+    assert.isDefined(retry);
+
+    await harness.sandbox.sessionActorDeadline(retry.payload);
+
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined &&
+        Predicate.isTagged(authority.state, "Stable") &&
+        Predicate.isTagged(authority.state.stable, "Failed"),
+    );
+    assert.strictEqual(authority.state.stable.code, "reconciliation_outcome_unknown");
+    assert.strictEqual(
+      harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary?.observedStatus,
+      "failed",
+    );
   });
 
   it("vaporizes through actor authority and removes every owned projection", async () => {

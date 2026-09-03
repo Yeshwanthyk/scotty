@@ -27,7 +27,10 @@ import type {
 } from "../../src/session-actor/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import type { EvidenceArtifact } from "../../src/evidence/contracts";
-import { HATCH_PRIVATE_READINESS_HEADER } from "../../src/hatch/contracts";
+import {
+  HATCH_PRIVATE_READINESS_HEADER,
+  type HatchRestoreDescriptor,
+} from "../../src/hatch/contracts";
 import type { RepoVerifier } from "../../src/repos/verifier";
 import type { SandboxConfigStatus } from "../../src/sandbox/config-contracts";
 import type { SandboxConfigRpcResult } from "../../src/sandbox/config-object";
@@ -646,6 +649,7 @@ export interface SessionHarness {
   readonly sandboxBundleKeys: () => ReadonlyArray<string>;
   readonly sandboxBundleDeletedKeys: ReadonlyArray<string>;
   readonly exposedPreviewPorts: () => ReadonlyArray<number>;
+  readonly piHatchRestoreDescriptors: ReadonlyArray<HatchRestoreDescriptor>;
   readonly stopHatchProcess: (generation: number) => void;
   readonly startRuntime: () => Promise<void>;
   readonly stopRuntime: () => Promise<void>;
@@ -1154,6 +1158,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const artifactDeletedKeys: string[] = [];
   const sandboxBundleDeletedKeys: string[] = [];
   const exposedPreviewPorts = new Set<number>();
+  const piHatchRestoreDescriptors: HatchRestoreDescriptor[] = [];
   const artifactObjects = initialArtifactObjectMap(options.initialArtifactObjects);
   let piSessionRunning = options.piSessionRunning ?? false;
   let rawPiContainerRunning = false;
@@ -1694,6 +1699,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         const processId = processOptions?.processId ?? "generated";
         piSessionRunning = true;
         events.push(`host:pi:start:${processId}`);
+        const descriptor = await sandbox.getScottyHatchRestoreDescriptor();
+        if (descriptor !== undefined) {
+          piHatchRestoreDescriptors.push(structuredClone(descriptor));
+          events.push(
+            `host:hatch:extension-restore:${descriptor.hatchId}:${descriptor.generation}:${descriptor.operationNonce}:${descriptor.runtimeEpoch}`,
+          );
+        }
         return {
           id: processId,
           status: "running" as const,
@@ -1706,11 +1718,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
             return { exitCode: 0 };
           },
           waitForPort: async () => {
-            const descriptor = await sandbox.getScottyHatchRestoreDescriptor();
-            if (descriptor !== undefined)
-              events.push(
-                `host:hatch:extension-restore:${descriptor.hatchId}:${descriptor.generation}:${descriptor.operationNonce}:${descriptor.runtimeEpoch}`,
-              );
             events.push("host:pi:ready");
           },
         };
@@ -1852,6 +1859,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     sandboxBundleKeys: () => [...sandboxBundleObjectMap.keys()],
     sandboxBundleDeletedKeys,
     exposedPreviewPorts: () => [...exposedPreviewPorts],
+    piHatchRestoreDescriptors,
     stopHatchProcess: (generation) => {
       failures.add("hatchHealth");
       events.push(`host:hatch:unexpected-stop:generation-${generation}`);

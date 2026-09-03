@@ -381,10 +381,15 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     hatch.observedStatus === cleanupObservedStatus(target) &&
     (!closeDesired || hatch.desiredStatus === "closed");
 
-  const expectedCleanupOperation = (
+  const isExpectedCleanupOperation = (
+    operation: SessionRecord["operation"],
     target: HatchCleanupTarget,
-  ): "vaporize" | "snapshot" | "hatch" =>
-    target === "gone" ? "vaporize" : target === "sleeping" ? "snapshot" : "hatch";
+  ): boolean =>
+    target === "gone"
+      ? operation?.kind === "vaporize"
+      : target === "sleeping"
+        ? operation?.kind === "snapshot" || operation?.kind === "sleep"
+        : operation?.kind === "hatch";
 
   const isManagedRestore = (record: SessionRecord): boolean =>
     record.status === "sleeping" ||
@@ -400,7 +405,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     target: HatchCleanupTarget,
   ): boolean =>
     session.operation?.nonce === operationNonce &&
-    session.operation.kind === expectedCleanupOperation(target);
+    isExpectedCleanupOperation(session.operation, target);
 
   const isRuntimeStartCleanupAuthorized = (
     session: SessionRecord,
