@@ -113,6 +113,7 @@ import {
   type ScottySandboxConfigStub,
 } from "./sandbox/config-object";
 import { inspectPassiveSession, steerPassiveSession } from "./session/passive";
+import { inspectCanonicalConversation } from "./session/conversation";
 import { Sandbox as ScottySandbox } from "./session/object";
 import { uiSessionListResponseFromProjections } from "./ui/session-view";
 import {
@@ -786,6 +787,12 @@ app.get("/api/sessions/:id/inspect", async (c) => {
   return inspectPassiveSession(sessionSandbox(c.env, id));
 });
 
+app.get("/api/sessions/:id/conversation", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const id = parseSessionId(c.req.param("id"));
+  return inspectCanonicalConversation(sessionSandbox(c.env, id));
+});
+
 app.post("/api/sessions/:id/steer", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
@@ -1075,6 +1082,16 @@ app.all("/s/:id/*", async (c) => {
 });
 
 app.get("/sessions", async (c) => {
+  rejectRootQuery(c.req.raw);
+  const principal = await authenticateRequest(c.req.raw, c.env);
+  if (principal === undefined) return authAsset(c.env, c.req.raw, "/auth/locked.html");
+  if (principal.kind !== "client" || principal.source !== "cookie")
+    await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html");
+});
+
+app.get("/sessions/*", async (c) => {
   rejectRootQuery(c.req.raw);
   const principal = await authenticateRequest(c.req.raw, c.env);
   if (principal === undefined) return authAsset(c.env, c.req.raw, "/auth/locked.html");

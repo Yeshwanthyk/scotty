@@ -10,5 +10,6 @@
 /.scotty-build/
 /worker/prebuilt/
 /worker/public/app/
+/ui/.tanstack/
 /vendor/
 .scotty-lab/

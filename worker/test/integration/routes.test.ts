@@ -2010,6 +2010,151 @@ describe("real Hono boundary", () => {
     expect(sandbox.containerFetch).not.toHaveBeenCalled();
   });
 
+  it("serves a sessions:read client the strict canonical conversation snapshot", async () => {
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: { ...REGISTERED_CLIENT, scopes: ["sessions:read"] },
+        renewed: false,
+      },
+    });
+    const snapshot = {
+      epoch: "epoch-1",
+      baseSequence: 4,
+      sequence: 4,
+      sessionRevision: 7,
+      state: { isStreaming: false, privateState: "must-not-leak" },
+      messages: [
+        {
+          id: "user-1",
+          role: "user",
+          content: [{ type: "text", text: "Inspect the worktree" }],
+        },
+        {
+          id: "assistant-1",
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private reasoning" },
+            { type: "toolCall", id: "tool-1", name: "read", arguments: { path: "README.md" } },
+            { type: "text", text: "The worktree is ready." },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "tool-1",
+          toolName: "read",
+          content: { status: "ok", token: "ghp_secret" },
+        },
+      ],
+      overlapEvents: [],
+      activeTools: [],
+      queue: { steer: [], followUp: [] },
+      pendingUi: [],
+      pendingUiAuthority: {
+        status: "partial",
+        reason: "pi_0_83_signal_cancellation_unobservable",
+      },
+      extensionSurface: { statuses: {}, widgets: [], title: "private extension" },
+      capabilities: { models: [], thinkingLevels: [], commands: [] },
+      truncated: { messages: false, values: false },
+    };
+    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe("/_scotty/pi-console/snapshot");
+      expect(request.method).toBe("GET");
+      expect(request.headers.get("accept")).toBe("application/json");
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      return Response.json(snapshot);
+    });
+
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/conversation",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const body = await response.json();
+    expect(body).toEqual({
+      version: 1,
+      transport: {
+        epoch: "epoch-1",
+        baseSequence: 4,
+        sequence: 4,
+        sessionRevision: 7,
+      },
+      turns: [
+        {
+          id: "user-1",
+          state: "completed",
+          user: "Inspect the worktree",
+          assistant: "The worktree is ready.",
+          activitySummary: "1 action",
+          tools: [
+            {
+              id: "tool-1",
+              state: "completed",
+              label: "Reading project",
+              invocation: 'read({"path":"README.md"})',
+              output: '{"status":"ok","token":"[credential]"}',
+            },
+          ],
+        },
+      ],
+      truncated: { turns: false, values: false },
+    });
+    const encoded = JSON.stringify(body);
+    expect(encoded).not.toContain("privateState");
+    expect(encoded).not.toContain("private reasoning");
+    expect(encoded).not.toContain("extensionSurface");
+    expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it("returns typed wrong_state for stopped conversation content without waking the runtime", async () => {
+    sandbox.fetch.mockResolvedValueOnce(
+      Response.json(
+        { status: "unavailable", reason: "session_not_warm", retryable: false },
+        { status: 409 },
+      ),
+    );
+
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/conversation",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "wrong_state",
+        message: "Conversation history is unavailable while the session is not warm",
+        hint: "Resume the session before opening live conversation content.",
+      },
+    });
+    expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it("requires sessions:read before attempting the canonical conversation snapshot", async () => {
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: { ...REGISTERED_CLIENT, scopes: [] },
+        renewed: false,
+      },
+    });
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/conversation",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(response.status).toBe(401);
+    expect(sandbox.fetch).not.toHaveBeenCalled();
+  });
+
   it("submits authenticated steer through a fresh passive snapshot without forwarding credentials", async () => {
     const snapshot = {
       epoch: "epoch-1",
@@ -3228,6 +3373,14 @@ describe("real Hono boundary", () => {
     expect(sessions.status).toBe(200);
     expect(sessions.headers.get("cache-control")).toBe("no-store");
     expect(sessions.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+
+    const createSession = await app.request(
+      "/sessions/create",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(createSession.status).toBe(200);
+    expect(await createSession.text()).toContain("<title>Scotty</title>");
 
     const stats = await app.request(
       "/stats",

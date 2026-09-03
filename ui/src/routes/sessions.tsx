@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useMatchRoute, useRouter } from "@tanstack/react-router";
 import { AppShell } from "../components/AppShell";
 import { Button } from "../components/Button";
 import { readSessionList, type SessionListReadResult } from "../data/session-list-reader";
@@ -48,20 +48,28 @@ const styles = stylex.create({
 function SessionsHome() {
   const result = Route.useLoaderData();
   const router = useRouter();
+  const matchRoute = useMatchRoute();
+  const createRouteActive = matchRoute({ to: "/sessions/create", fuzzy: false }) !== false;
   const rail = buildSessionRail(result.ok ? result.projections.map(({ session }) => session) : []);
   return (
     <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>
-      <section {...stylex.props(styles.home)}>
-        <div {...stylex.props(styles.content)}>
-          <div>
-            <h1 {...stylex.props(styles.heading)}>Sessions</h1>
-            <p {...stylex.props(styles.intro)}>
-              {result.ok ? "Select a session or create one." : "Sessions could not be loaded."}
-            </p>
-            {result.ok ? null : <Button onClick={() => void router.invalidate()}>Try again</Button>}
+      {createRouteActive ? (
+        <Outlet />
+      ) : (
+        <section {...stylex.props(styles.home)}>
+          <div {...stylex.props(styles.content)}>
+            <div>
+              <h1 {...stylex.props(styles.heading)}>Sessions</h1>
+              <p {...stylex.props(styles.intro)}>
+                {result.ok ? "Select a session or create one." : "Sessions could not be loaded."}
+              </p>
+              {result.ok ? null : (
+                <Button onClick={() => void router.invalidate()}>Try again</Button>
+              )}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
     </AppShell>
   );
 }

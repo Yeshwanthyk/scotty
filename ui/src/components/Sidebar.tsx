@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronDown, Plus, Search, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./Button";
@@ -212,6 +212,7 @@ export function Sidebar({
   readonly open?: boolean;
   readonly repositories: ReadonlyArray<RepositoryGroup>;
 }) {
+  const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [showAllArchived, setShowAllArchived] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -251,13 +252,7 @@ export function Sidebar({
             onClick={onClose}
             {...stylex.props(styles.brand)}
           >
-            <img
-              src={scottyMark}
-              alt=""
-              width={22}
-              height={22}
-              {...stylex.props(styles.mark)}
-            />
+            <img src={scottyMark} alt="" width={22} height={22} {...stylex.props(styles.mark)} />
             <span>Scotty</span>
           </Link>
           <span {...stylex.props(styles.close)}>
@@ -271,7 +266,15 @@ export function Sidebar({
             </Button>
           </span>
         </div>
-        <Button fullWidth align="start" variant="quiet">
+        <Button
+          fullWidth
+          align="start"
+          variant="quiet"
+          onClick={() => {
+            onClose?.();
+            void navigate({ to: "/sessions/create" });
+          }}
+        >
           <Plus aria-hidden {...stylex.props(styles.icon)} />
           Create session
         </Button>

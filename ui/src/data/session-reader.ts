@@ -437,7 +437,9 @@ const demoFixtures = new Map<string, SessionModel>([
 export const fixtureSessionForId = (sessionId: string): SessionModel | undefined =>
   demoFixtures.get(sessionId);
 
-const classifyFailure = (failure: SessionHttpFailure): SessionFailureClassification => {
+export const classifySessionHttpFailure = (
+  failure: SessionHttpFailure,
+): SessionFailureClassification => {
   if (failure.code === "conflict") return "conflict";
   if (failure.code === "wrong_state") return "wrong-state";
   if (
@@ -446,6 +448,7 @@ const classifyFailure = (failure: SessionHttpFailure): SessionFailureClassificat
     failure.reason === "pi_quiescing"
   )
     return "non-warm";
+  if (failure.status === 409) return "conflict";
   return "other";
 };
 
@@ -499,7 +502,7 @@ export const readAuthoritativeSession = async (
   const body = await readJson(response);
   if (!response.ok) {
     const failure = decodeSessionHttpFailure(response.status, body);
-    return { ok: false, failure, classification: classifyFailure(failure) };
+    return { ok: false, failure, classification: classifySessionHttpFailure(failure) };
   }
   const session = normalizeWireV1(body);
   return session === undefined || session.id !== sessionId
@@ -514,7 +517,7 @@ export const refetchSessionAfterConsoleConflict = async (
 ): Promise<SessionReadResult | undefined> => {
   if (response.status !== 409) return undefined;
   const failure = decodeSessionHttpFailure(response.status, await readJson(response));
-  if (classifyFailure(failure) === "other") return undefined;
+  if (classifySessionHttpFailure(failure) === "other") return undefined;
   return readAuthoritativeSession(sessionId, options);
 };
 
