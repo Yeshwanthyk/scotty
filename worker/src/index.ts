@@ -1059,11 +1059,11 @@ app.all(`/s/:id/${PI_CONSOLE_PUBLIC_PATH_SEGMENT}/:action`, async (c) => {
 });
 
 app.all("/s/:id", async (c) => {
-  const id = parseSessionId(c.req.param("id"));
+  parseSessionId(c.req.param("id"));
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return serveScottySessionPage(c.env, c.req.raw, id);
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html", true);
 });
 
 app.all("/s/:id/*", async (c) => {
@@ -1081,7 +1081,7 @@ app.get("/sessions", async (c) => {
   if (principal.kind !== "client" || principal.source !== "cookie")
     await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return secureAsset(c.env, c.req.raw, "/sessions/index.html");
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html");
 });
 
 app.get("/stats", async (c) => {
@@ -1427,40 +1427,6 @@ function sessionSandbox(env: Bindings, id: string): ScottySandbox {
     enableDefaultSession: false,
     normalizeId: true,
   });
-}
-
-async function serveScottySessionPage(
-  env: Bindings,
-  request: Request,
-  sessionId: string,
-): Promise<Response> {
-  const sessionResult = await sessionSandbox(env, sessionId)
-    .getScottySession()
-    .then(Result.succeed, Result.fail);
-  if (Result.isFailure(sessionResult)) {
-    const error = normalizeError(sessionResult.failure);
-    if (error.code === "not_found")
-      return Response.redirect(unavailableSessionUrl(request, sessionId), 302);
-    throw error;
-  }
-  const session = sessionResult.success;
-  if (session.session.authority.kind !== "stable" || session.session.authority.lifecycle !== "warm")
-    return Response.redirect(focusedSessionUrl(request, sessionId), 302);
-  if (session.session.runtime.provider === "runner")
-    return Response.redirect(focusedSessionUrl(request, sessionId), 302);
-  return secureAsset(env, request, "/session/index.html", true);
-}
-
-function focusedSessionUrl(request: Request, sessionId: string): string {
-  const url = new URL("/sessions", request.url);
-  url.searchParams.set("focus", sessionId);
-  return url.toString();
-}
-
-function unavailableSessionUrl(request: Request, sessionId: string): string {
-  const url = new URL("/sessions", request.url);
-  url.searchParams.set("unavailable", sessionId);
-  return url.toString();
 }
 
 async function serveScottySessionSubpath(

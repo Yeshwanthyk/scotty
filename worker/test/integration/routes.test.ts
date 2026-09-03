@@ -3218,7 +3218,7 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("content-length")).toBeNull();
     expect(response.headers.get("etag")).toBeNull();
     expect(sandbox.fetch).not.toHaveBeenCalled();
-    expect(assetPaths[0]).toBe("/session/index.html");
+    expect(assetPaths[0]).toBe("/app/_shell.html");
 
     const sessions = await app.request(
       "/sessions",
@@ -3532,7 +3532,7 @@ describe("real Hono boundary", () => {
     expect((await app.request(path, { headers }, testEnv)).status).toBe(409);
   });
 
-  it("returns non-warm Cloudflare session pages to focused management for explicit resume", async () => {
+  it("serves the application shell for non-warm sessions so they can be resumed", async () => {
     sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("sleeping"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
@@ -3542,8 +3542,9 @@ describe("real Hono boundary", () => {
       },
       env(),
     );
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("http://localhost/sessions?focus=a0b1c2d3e4f5");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("<title>Scotty</title>");
+    expect(sandbox.getScottySession).not.toHaveBeenCalled();
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
@@ -3908,7 +3909,7 @@ describe("real Hono boundary", () => {
     expect(proxyTerminal).not.toHaveBeenCalled();
   });
 
-  it("redirects runner session roots to the session list", async () => {
+  it("serves the same application shell for runner session roots", async () => {
     sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("warm", "runner"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
@@ -3916,12 +3917,13 @@ describe("real Hono boundary", () => {
       env(),
     );
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("http://localhost/sessions?focus=a0b1c2d3e4f5");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("<title>Scotty</title>");
+    expect(sandbox.getScottySession).not.toHaveBeenCalled();
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
-  it("redirects missing session page routes to an HTML recovery surface", async () => {
+  it("serves the application shell before the selected actor is read", async () => {
     sandbox.getScottySession.mockRejectedValueOnce(
       new ScottyError("not_found", "Session unknown was not found", {
         httpStatus: 404,
@@ -3935,10 +3937,9 @@ describe("real Hono boundary", () => {
       env(),
     );
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe(
-      "http://localhost/sessions?unavailable=a0b1c2d3e4f5",
-    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("<title>Scotty</title>");
+    expect(sandbox.getScottySession).not.toHaveBeenCalled();
   });
 
   it("returns not found for session application subpaths", async () => {
