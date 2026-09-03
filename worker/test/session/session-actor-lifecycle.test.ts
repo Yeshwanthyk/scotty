@@ -134,7 +134,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     );
     assert.strictEqual(created.status, "warm");
 
-    const checkpointed = await harness.sandbox.snapshotScottySession();
+    const checkpointed = await harness.sandbox.checkpointScottySession();
     assert.strictEqual(checkpointed.status, "warm");
     const afterCheckpoint = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
     assert.isDefined(afterCheckpoint);
@@ -158,7 +158,13 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
       event.startsWith("projection:"),
     ).length;
     assert.strictEqual(
-      await harness.sandbox.getScottySession().then((view) => view.status),
+      await harness.sandbox
+        .getScottySession()
+        .then((view) =>
+          view.session.authority.kind === "stable"
+            ? view.session.authority.lifecycle
+            : "transitioning",
+        ),
       "sleeping",
     );
     assert.strictEqual(
@@ -180,7 +186,13 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     );
     assert.match(afterResume.state.stable.readiness.runtime.runtimeGeneration, /^resume-/u);
     assert.strictEqual(
-      await harness.sandbox.getScottySession().then((view) => view.status),
+      await harness.sandbox
+        .getScottySession()
+        .then((view) =>
+          view.session.authority.kind === "stable"
+            ? view.session.authority.lifecycle
+            : "transitioning",
+        ),
       "warm",
     );
     assert.ok(harness.events.includes("host:createBackup"));

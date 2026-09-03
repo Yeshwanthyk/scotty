@@ -17,7 +17,7 @@ const sandbox = vi.hoisted(() => ({
   closeScottyHatch: vi.fn(),
   getScottyHatchOpenRoute: vi.fn(),
   renameScottySession: vi.fn(),
-  snapshotScottySession: vi.fn(),
+  checkpointScottySession: vi.fn(),
   sleepScottySession: vi.fn(),
   resumeScottySession: vi.fn(),
   prepareDownArchive: vi.fn(),
@@ -30,6 +30,37 @@ const sandbox = vi.hoisted(() => ({
   prepareTerminalAccess: vi.fn(),
   restartScottyTerminal: vi.fn(),
 }));
+
+const sessionResponse = (
+  lifecycle: "warm" | "sleeping" = "warm",
+  provider: "cloudflare" | "runner" = "cloudflare",
+) => ({
+  version: 1 as const,
+  session: {
+    identity: { id: "a0b1c2d3e4f5" },
+    authority: { kind: "stable" as const, lifecycle, failure: null },
+    runtime: {
+      provider,
+      readiness: lifecycle === "warm" && provider === "cloudflare" ? "unchecked" : "not-applicable",
+    },
+    capabilities: {
+      checkpoint: lifecycle === "warm",
+      sleep: lifecycle === "warm",
+      resume: lifecycle === "sleeping",
+      work: lifecycle === "warm",
+      vaporize: true,
+    },
+    display: {
+      title: "Test session",
+      repository: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+      defaultBranch: "main",
+    },
+    times: {
+      capRemainingSeconds: 3_600,
+    },
+  },
+});
 
 const sandboxTarget = vi.hoisted((): { current: unknown } => ({
   current: sandbox,
@@ -450,14 +481,7 @@ describe("real Hono boundary", () => {
       steps: [],
       frameCount: 0,
     });
-    sandbox.getScottySession.mockResolvedValue({
-      id: "a0b1c2d3e4f5",
-      title: "Test session",
-      status: "warm",
-      provider: "cloudflare",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+    sandbox.getScottySession.mockResolvedValue(sessionResponse());
     sandbox.listScottyChanges.mockResolvedValue({ files: [], truncated: false });
     sandbox.getScottyChangedFilePatch.mockResolvedValue({
       path: "src/app.ts",
@@ -1860,12 +1884,12 @@ describe("real Hono boundary", () => {
         method: "GET",
         path: "/api/sessions/a0b1c2d3e4f5",
         mock: sandbox.getScottySession,
-        output: { id: "a0b1c2d3e4f5", status: "warm", ageSeconds: 1 },
+        output: sessionResponse(),
       },
       {
         method: "POST",
-        path: "/api/sessions/a0b1c2d3e4f5/snapshot",
-        mock: sandbox.snapshotScottySession,
+        path: "/api/sessions/a0b1c2d3e4f5/checkpoint",
+        mock: sandbox.checkpointScottySession,
         output: { id: "a0b1c2d3e4f5", status: "warm", backupId: "backup-1" },
       },
       {
@@ -3451,13 +3475,7 @@ describe("real Hono boundary", () => {
   });
 
   it("returns non-warm Cloudflare session pages to focused management for explicit resume", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "sleeping",
-      provider: "cloudflare",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("sleeping"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       {
@@ -3530,13 +3548,7 @@ describe("real Hono boundary", () => {
   });
 
   it("rejects Cloudflare terminal access when the session is sleeping", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "sleeping",
-      provider: "cloudflare",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("sleeping"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5/terminal",
       {
@@ -3714,11 +3726,7 @@ describe("real Hono boundary", () => {
   });
 
   it("prepares a missing Pi runtime only through an explicit authenticated mutation", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      provider: "cloudflare",
-      status: "warm",
-    });
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse());
     sandbox.preparePiSessionAccess.mockResolvedValueOnce(undefined);
 
     const response = await app.request(
@@ -3822,13 +3830,7 @@ describe("real Hono boundary", () => {
   });
 
   it("does not expose the Cloudflare terminal on runner sessions", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("warm", "runner"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5/terminal",
       {
@@ -3849,13 +3851,7 @@ describe("real Hono boundary", () => {
   });
 
   it("redirects runner session roots to the session list", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
+    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("warm", "runner"));
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },

@@ -5,6 +5,7 @@
     ".pi/**",
     ".wrangler/**",
     "dist/**",
+    "**/dist/**",
     "**/node_modules/**",
     "vendor/**",
     "work/**",

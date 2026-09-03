@@ -377,7 +377,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
       },
     });
 
-    await harness.sandbox.snapshotScottySession();
+    await harness.sandbox.checkpointScottySession();
     const piRequestCount = harness.piRequests.length;
     const response = await harness.sandbox.fetch(
       new Request("http://scotty.internal/_scotty/pi-console/command", {
@@ -424,7 +424,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     await relayEntered.promise;
 
     let lifecycleSettled = false;
-    const lifecyclePromise = harness.sandbox.snapshotScottySession().then((result) => {
+    const lifecyclePromise = harness.sandbox.checkpointScottySession().then((result) => {
       lifecycleSettled = true;
       return result;
     });

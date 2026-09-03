@@ -1,6 +1,7 @@
 /work/
 **/node_modules/
 /dist/
+**/dist/
 .wrangler/
 .alchemy/
 .dev.vars

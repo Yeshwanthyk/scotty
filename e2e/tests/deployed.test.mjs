@@ -210,7 +210,7 @@ const noOrphans = (value) =>
   value.createIdempotency === false;
 
 test(
-  "deployed canary: beam/Pi terminal/snapshot/hard-cap/resume/archive/vaporize leaves no orphans",
+  "deployed canary: beam/Pi terminal/checkpoint/hard-cap/resume/archive/vaporize leaves no orphans",
   { skip: skipReason, timeout: 20 * 60_000 },
   async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-deployed-e2e-home-"));
@@ -327,13 +327,13 @@ test(
       { timeoutMs: 180_000, intervalMs: 2_000 },
     );
 
-    const snapshot = await runCli(["snapshot", id, "--json"], {
+    const checkpoint = await runCli(["checkpoint", id, "--json"], {
       env,
       cwd,
       timeoutMs: 180_000,
     });
-    assert.equal(snapshot.code, 0, snapshot.stderr);
-    assertCliResponseClean(snapshot, knownValues, "snapshot response");
+    assert.equal(checkpoint.code, 0, checkpoint.stderr);
+    assertCliResponseClean(checkpoint, knownValues, "checkpoint response");
     const wrongResume = await runCli(["resume", id, "--json"], { env, cwd });
     assert.equal(wrongResume.code, 5, wrongResume.stderr);
 

@@ -184,9 +184,9 @@ describe("Sandbox actor create boundary", () => {
     );
 
     const read = await harness.sandbox.getScottySession();
-    assert.strictEqual(read.id, created.id);
-    assert.strictEqual(read.repo, created.repo);
-    assert.strictEqual(read.status, "warm");
+    assert.strictEqual(read.session.identity.id, created.id);
+    assert.strictEqual(read.session.display.repository, created.repo);
+    assert.deepInclude(read.session.authority, { kind: "stable", lifecycle: "warm" });
 
     const response = await steerPassiveSession(harness.sandbox, SESSION_ID, "continue");
     assert.strictEqual(response.status, 200);

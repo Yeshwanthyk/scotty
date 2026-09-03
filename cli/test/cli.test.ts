@@ -575,18 +575,26 @@ describe("configuration and transport", () => {
       }
       if (url.pathname === "/api/sessions/abcdef012345" && request.method === "GET") {
         return Response.json({
-          id: "abcdef012345",
-          title: "Fix build",
-          status: "warm",
-          provider: "cloudflare",
-          repo: "owner/project",
-          defaultBranch: "main",
-          branch: "scotty/abcdef012345",
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-          hardCapAt: "2026-01-02T00:00:00.000Z",
-          ageSeconds: 0,
-          capRemainingSeconds: 86_400,
+          version: 1,
+          session: {
+            identity: { id: "abcdef012345" },
+            authority: { kind: "stable", lifecycle: "warm", failure: null },
+            runtime: { provider: "cloudflare", readiness: "unchecked" },
+            capabilities: {
+              checkpoint: true,
+              sleep: true,
+              resume: false,
+              work: true,
+              vaporize: true,
+            },
+            display: {
+              title: "Fix build",
+              repository: "owner/project",
+              branch: "scotty/abcdef012345",
+              defaultBranch: "main",
+            },
+            times: { capRemainingSeconds: 86_400 },
+          },
         });
       }
       return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
@@ -2977,7 +2985,7 @@ describe("configuration and transport", () => {
       sandboxBundle: { digest: null },
       ageSeconds: 60,
       capRemainingSeconds: 14340,
-      operation: { kind: "snapshot", nonce: "internal" },
+      operation: { kind: "checkpoint", nonce: "internal" },
       backup: { current: "must-not-leak" },
       webToken: "must-not-leak",
     };
@@ -3641,10 +3649,10 @@ describe("commands and schemas", () => {
     expect(calls).toBe(0);
   });
 
-  test("snapshot and resume emit minimal stable schemas", async () => {
+  test("checkpoint and resume emit minimal stable schemas", async () => {
     for (const [args, reply, expected] of [
       [
-        ["snapshot", "s1"],
+        ["checkpoint", "s1"],
         { id: "s1", status: "warm", backupId: "backup-1", ignored: true },
         { id: "s1", status: "warm", backupId: "backup-1" },
       ],
@@ -3674,7 +3682,7 @@ describe("commands and schemas", () => {
   test("operation optionals omit nulls and missing response IDs use the requested ID", async () => {
     for (const [args, reply, expected] of [
       [
-        ["snapshot", "requested"],
+        ["checkpoint", "requested"],
         { status: "warm", id: null, backupId: null, url: null, branch: null, ignored: true },
         { id: "requested", status: "warm" },
       ],
@@ -3690,8 +3698,27 @@ describe("commands and schemas", () => {
     }
   });
 
+  test("checkpoint uses the canonical CLI name and Worker transport route", async () => {
+    let request: Request | undefined;
+    const h = harness({
+      stdoutIsTTY: true,
+      fetch: async (input, init) => {
+        request = new Request(input, init);
+        return Response.json({ id: "s1", status: "warm" });
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(request?.method).toBe("POST");
+    expect(new URL(request?.url ?? "https://invalid.example").pathname).toBe(
+      "/api/sessions/s1/checkpoint",
+    );
+    expect(h.stdout.join(""), "human lifecycle output").toBe("Checkpoint s1: warm\n");
+  });
+
   test("removed commands and top-level lifecycle aliases fail as unknown commands", async () => {
-    for (const command of ["pr", "publish", "up", "down", "ls", "skills", "tui"]) {
+    for (const command of ["pr", "publish", "up", "down", "ls", "skills", "tui", "snapshot"]) {
       const h = harness();
       expect(await main([command, "s1"], h.deps)).toBe(EXIT.USAGE);
       expect(h.error().error.code).toBe("bad_usage");

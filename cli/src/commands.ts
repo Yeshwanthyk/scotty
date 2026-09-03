@@ -2178,7 +2178,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   );
 
   const sessionOperation = Effect.fnUntraced(function* (
-    command: "snapshot" | "resume" | "vaporize",
+    command: "checkpoint" | "resume" | "vaporize",
     id: string,
     yes: boolean,
   ) {
@@ -2197,7 +2197,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         );
     }
     const auth = yield* credentials(options);
-    const path = `/api/sessions/${encodeURIComponent(sessionId)}${command === "vaporize" ? "" : `/${command}`}`;
+    const path =
+      `/api/sessions/${encodeURIComponent(sessionId)}` +
+      (command === "vaporize" ? "" : command === "checkpoint" ? "/checkpoint" : `/${command}`);
     const method = command === "vaporize" ? "DELETE" : "POST";
     const raw = yield* requestJson(auth, path, { method });
     if (command === "vaporize") {
@@ -2234,12 +2236,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     else runtime.stdout(humanResult({ command, value: result }));
   });
 
-  const snapshot = Command.make(
-    "snapshot",
+  const checkpoint = Command.make(
+    "checkpoint",
     {
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
     },
-    ({ id }) => sessionOperation("snapshot", id, false),
+    ({ id }) => sessionOperation("checkpoint", id, false),
   ).pipe(Command.withDescription("Checkpoint a warm session"));
 
   const resume = Command.make(
@@ -2281,7 +2283,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       doctor,
       attach,
       owner,
-      snapshot,
+      checkpoint,
       resume,
       vaporize,
       runner,

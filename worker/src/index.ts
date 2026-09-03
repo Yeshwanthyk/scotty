@@ -799,10 +799,10 @@ app.patch("/api/sessions/:id", async (c) => {
   return c.json(await sessionSandbox(c.env, id).renameScottySession(title));
 });
 
-app.post("/api/sessions/:id/snapshot", async (c) => {
+app.post("/api/sessions/:id/checkpoint", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
-  return c.json(await sessionSandbox(c.env, id).snapshotScottySession());
+  return c.json(await sessionSandbox(c.env, id).checkpointScottySession());
 });
 
 app.post("/api/sessions/:id/sleep", async (c) => {
@@ -1437,9 +1437,9 @@ async function serveScottySessionPage(
     throw error;
   }
   const session = sessionResult.success;
-  if (session.status !== "warm")
+  if (session.session.authority.kind !== "stable" || session.session.authority.lifecycle !== "warm")
     return Response.redirect(focusedSessionUrl(request, sessionId), 302);
-  if (session.provider === "runner")
+  if (session.session.runtime.provider === "runner")
     return Response.redirect(focusedSessionUrl(request, sessionId), 302);
   return secureAsset(env, request, "/session/index.html", true);
 }
@@ -1473,16 +1473,18 @@ async function serveScottySessionSubpath(
 
 async function assertCloudflareTerminalAccess(sandbox: ScottySandbox): Promise<void> {
   const session = await sandbox.getScottySession();
-  if (session.provider === "runner")
+  if (session.session.runtime.provider === "runner")
     throw new ScottyError("not_found", "Terminal route not found", {
       httpStatus: 404,
       exitCode: 3,
     });
-  if (session.status !== "warm")
+  if (session.session.authority.kind === "transitioning")
+    throw conflict(`Session is already running ${session.session.authority.action}`);
+  if (session.session.authority.lifecycle !== "warm")
     throw wrongState(
-      session.status,
+      session.session.authority.lifecycle,
       "access",
-      session.status === "sleeping"
+      session.session.authority.lifecycle === "sleeping"
         ? "Resume the session from Home before opening the terminal"
         : undefined,
     );
@@ -1491,16 +1493,18 @@ async function assertCloudflareTerminalAccess(sandbox: ScottySandbox): Promise<v
 
 async function assertCloudflarePiAccess(sandbox: ScottySandbox): Promise<void> {
   const session = await sandbox.getScottySession();
-  if (session.provider === "runner")
+  if (session.session.runtime.provider === "runner")
     throw new ScottyError("not_found", "Pi session route not found", {
       httpStatus: 404,
       exitCode: 3,
     });
-  if (session.status !== "warm")
+  if (session.session.authority.kind === "transitioning")
+    throw conflict(`Session is already running ${session.session.authority.action}`);
+  if (session.session.authority.lifecycle !== "warm")
     throw wrongState(
-      session.status,
+      session.session.authority.lifecycle,
       "access",
-      session.status === "sleeping"
+      session.session.authority.lifecycle === "sleeping"
         ? "Resume the session from Home before opening the worklog"
         : undefined,
     );

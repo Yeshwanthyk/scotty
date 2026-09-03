@@ -8,7 +8,8 @@
     "url": "git+https://github.com/Yeshwanthyk/scotty.git"
   },
   "workspaces": [
-    "worker"
+    "worker",
+    "ui"
   ],
   "type": "module",
   "scripts": {
@@ -52,6 +53,9 @@
     "deploy:production": "node scripts/deploy-production.mjs",
     "probe:dry-run": "wrangler deploy --dry-run --config worker/wrangler.jsonc",
     "worker:dev": "npm run dev --workspace @scotty/worker",
+    "ui:dev": "npm run dev --workspace @scotty/ui",
+    "ui:build": "npm run build --workspace @scotty/ui",
+    "ui:test": "npm run test --workspace @scotty/ui",
     "knip": "knip",
     "knip:check": "knip --exclude exports,types"
   },

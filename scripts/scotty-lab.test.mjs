@@ -153,7 +153,7 @@ test("lifecycle evidence is private, atomic, retained, and explicit about unavai
       manifest,
       {
         scenario: "checkpoint",
-        argv: ["snapshot", "a0b1c2d3e4f5", "--json"],
+        argv: ["checkpoint", "a0b1c2d3e4f5", "--json"],
         stdout: '{"id":"a0b1c2d3e4f5","status":"warm"}\n',
         stderr: "",
         exitCode: 0,
@@ -183,7 +183,7 @@ test("lifecycle evidence is private, atomic, retained, and explicit about unavai
     );
     const commands = readFileSync(paths.commands, "utf8").trim().split("\n").map(JSON.parse);
     assert.equal(commands.length, 2);
-    assert.deepEqual(commands[0].argv, ["snapshot", "a0b1c2d3e4f5", "--json"]);
+    assert.deepEqual(commands[0].argv, ["checkpoint", "a0b1c2d3e4f5", "--json"]);
     assert.equal(commands[0].stdout.includes("warm"), true);
     assert.equal(commands[0].stderr, "");
     assert.equal(commands[0].exitCode, 0);

@@ -64,6 +64,52 @@ const sessions = [
   }),
 ];
 
+const canonicalSessionResponse = (session) => {
+  const warm = session.status === "warm";
+  const sleeping = session.status === "sleeping";
+  const creating = session.status === "booting";
+  return {
+    version: 1,
+    session: {
+      identity: { id: session.id },
+      authority: creating
+        ? {
+            kind: "transitioning",
+            action: "create",
+            phase: "WorkspacePreparing",
+            mode: "executing",
+            origin: "absent",
+            startedAt: session.createdAt,
+          }
+        : {
+            kind: "stable",
+            lifecycle: session.status,
+            failure: null,
+          },
+      runtime: {
+        provider: session.provider,
+        readiness: session.provider === "cloudflare" && warm ? "unchecked" : "not-applicable",
+      },
+      capabilities: {
+        checkpoint: !creating && warm,
+        sleep: !creating && warm,
+        resume: !creating && sleeping,
+        work: !creating && warm,
+        vaporize: !creating && session.status !== "gone",
+      },
+      display: {
+        title: session.title,
+        repository: session.repo,
+        branch: session.branch ?? null,
+        defaultBranch: session.defaultBranch ?? null,
+      },
+      times: {
+        capRemainingSeconds: session.capRemainingSeconds ?? 3_600,
+      },
+    },
+  };
+};
+
 const changes = {
   files: [
     {
@@ -226,7 +272,7 @@ const server = createServer(async (request, response) => {
     const session = sessions.find(
       (candidate) => pathname === `/api/sessions/${encodeURIComponent(candidate.id)}`,
     );
-    if (session) json(response, session);
+    if (session) json(response, canonicalSessionResponse(session));
     else json(response, { error: { code: "not_found", message: "Session was not found" } }, 404);
   } else if (pathname === `/s/${PREVIEW_SESSION_ID}/console/snapshot`)
     json(response, previewSession.snapshot());
