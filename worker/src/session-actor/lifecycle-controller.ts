@@ -130,6 +130,7 @@ export const lifecycleControllerLayer: Layer.Layer<
             sessionId: proposed.nextAuthority.session.id,
             generation: request.nextHardCap.generation,
             deadlineAt: request.nextHardCap.deadlineAt,
+            durationSeconds: request.nextHardCap.durationSeconds,
           });
         }
         const handled = yield* actor.handle(input);

@@ -116,8 +116,12 @@ export interface CreateHardCapFence {
   readonly deadlineAt: string;
 }
 
+export interface CreateHardCapArm extends CreateHardCapFence {
+  readonly durationSeconds: number;
+}
+
 interface CreateHardCapControllerShape {
-  readonly arm: (fence: CreateHardCapFence) => Effect.Effect<void, CreateControllerBoundaryFailure>;
+  readonly arm: (request: CreateHardCapArm) => Effect.Effect<void, CreateControllerBoundaryFailure>;
 }
 
 export class CreateHardCapController extends Context.Service<
@@ -387,6 +391,7 @@ export const createControllerLayer: Layer.Layer<
         sessionId: request.session.id,
         generation: cap.generation,
         deadlineAt: cap.deadlineAt,
+        durationSeconds: cap.durationSeconds,
       });
 
       const reservation = Predicate.isTagged(inspected, "Existing")
@@ -408,6 +413,7 @@ export const createControllerLayer: Layer.Layer<
           sessionId: request.session.id,
           generation: activeMetadata.hardCap.generation,
           deadlineAt: activeMetadata.hardCap.deadlineAt,
+          durationSeconds: activeMetadata.hardCap.durationSeconds,
         });
 
       const actorResult = yield* actor.handle(command(request, activeMetadata.createAttempt));

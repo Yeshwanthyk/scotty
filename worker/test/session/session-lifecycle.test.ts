@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  hardCapDrainAt,
   SESSION_SCHEDULE_CALLBACKS,
   sessionAllowsRuntimeAccess,
 } from "../../src/session/lifecycle";
@@ -29,7 +30,16 @@ describe("session lifecycle invariants", () => {
       "expireRetainedEvidence",
       "retryHatchCleanup",
       "sessionActorDeadline",
+      "sessionActorHardCapDrain",
       "sessionActorHardCap",
     ]);
+  });
+
+  it("derives the drain time from half of short caps and five minutes of longer caps", () => {
+    assert.strictEqual(
+      hardCapDrainAt("2026-01-01T01:00:00.000Z", 3_600),
+      "2026-01-01T00:55:00.000Z",
+    );
+    assert.strictEqual(hardCapDrainAt("2026-01-01T00:01:00.000Z", 60), "2026-01-01T00:00:30.000Z");
   });
 });

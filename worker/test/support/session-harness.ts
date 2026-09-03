@@ -546,6 +546,7 @@ export type HarnessFailureStage =
   | "evidenceRetentionSchedulePreInsert"
   | "evidenceRetentionSchedulePreInsertOnce"
   | "hardCapSchedule"
+  | "hardCapDrainSchedule"
   | "hardCapScheduleOnce"
   | "hatchHealth"
   | "previewExpose"
@@ -1802,6 +1803,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         ) {
           throw injectedHarnessFailure("injected hard-cap schedule failure");
         }
+        if (callback === "sessionActorHardCapDrain" && failures.has("hardCapDrainSchedule"))
+          throw injectedHarnessFailure("injected hard-cap drain schedule failure");
         const scheduled = { when, callback, payload };
         schedules.push(scheduled);
         if (

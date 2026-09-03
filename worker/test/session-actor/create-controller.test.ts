@@ -12,6 +12,7 @@ import {
   createControllerLayer,
   createHardCapControllerLayer,
   createMetadataControllerLayer,
+  type CreateHardCapArm,
   type CreateControllerRequest,
   type CreateMetadataReservation,
 } from "../../src/session-actor/create-controller";
@@ -167,6 +168,7 @@ const harness = (options: HarnessOptions = {}) => {
   const events = options.events ?? [];
   let actorCalls = 0;
   let hardCapCalls = 0;
+  const hardCapArms: CreateHardCapArm[] = [];
   let scrubCalls = 0;
   const actorLayer = Layer.succeed(SessionActor)(
     SessionActor.of({
@@ -178,8 +180,9 @@ const harness = (options: HarnessOptions = {}) => {
       resume: () => Effect.succeed(undefined),
     }),
   );
-  const capLayer = createHardCapControllerLayer(() => {
+  const capLayer = createHardCapControllerLayer((arm) => {
     hardCapCalls += 1;
+    hardCapArms.push(arm);
     events.push("hard_cap_armed");
     return options.hardCapFailure
       ? Effect.fail(
@@ -216,6 +219,7 @@ const harness = (options: HarnessOptions = {}) => {
     run,
     actorCalls: () => actorCalls,
     hardCapCalls: () => hardCapCalls,
+    hardCapArms,
     scrubCalls: () => scrubCalls,
     events,
   };
@@ -246,6 +250,14 @@ describe("create controller", () => {
         "metadata_scrubbed",
       ]);
       assert.strictEqual(test.scrubCalls(), 1);
+      assert.deepStrictEqual(test.hardCapArms, [
+        {
+          sessionId: session.id,
+          generation: request().hardCap.generation,
+          deadlineAt: request().hardCap.deadlineAt,
+          durationSeconds: request().hardCap.durationSeconds,
+        },
+      ]);
     }),
   );
 

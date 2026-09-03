@@ -233,7 +233,11 @@ import {
 } from "../session-actor/authority";
 import { sessionProjectionFromActor, sessionViewFromActor } from "../session-actor/public-view";
 import { uiSessionResponseFromActor, type UiSessionResponse } from "../ui/session-view";
-import { SESSION_SCHEDULE_CALLBACKS, sessionAllowsRuntimeAccess } from "./lifecycle";
+import {
+  hardCapDrainAt,
+  SESSION_SCHEDULE_CALLBACKS,
+  sessionAllowsRuntimeAccess,
+} from "./lifecycle";
 import {
   errorName,
   SandboxRuntime,
@@ -402,6 +406,39 @@ const CreateHardCapFenceSchema = Schema.Struct({
 const decodeCreateHardCapFence = Schema.decodeUnknownOption(CreateHardCapFenceSchema, {
   onExcessProperty: "error",
 });
+
+const CreateHardCapDrainFenceSchema = Schema.Struct({
+  sessionId: Schema.String,
+  generation: Schema.String,
+  deadlineAt: Schema.String,
+  drainAt: Schema.String,
+});
+const decodeCreateHardCapDrainFence = Schema.decodeUnknownOption(CreateHardCapDrainFenceSchema, {
+  onExcessProperty: "error",
+});
+type CreateHardCapDrainFence = typeof CreateHardCapDrainFenceSchema.Type;
+
+const isMatchingHardCapDrain = (
+  authority: SessionAuthority | undefined,
+  fence: CreateHardCapDrainFence,
+): authority is SessionAuthority =>
+  authority !== undefined &&
+  authority.session.id === fence.sessionId &&
+  authority.hardCap.generation === fence.generation &&
+  authority.hardCap.deadlineAt === fence.deadlineAt &&
+  hardCapDrainAt(authority.hardCap.deadlineAt, authority.hardCap.durationSeconds) === fence.drainAt;
+
+const isWarmAuthority = (authority: SessionAuthority): boolean =>
+  AuthorityStateSchema.guards.Stable(authority.state) &&
+  StableStateSchema.guards.Warm(authority.state.stable);
+
+const isTerminalDrainAuthority = (authority: SessionAuthority): boolean =>
+  AuthorityStateSchema.guards.Stable(authority.state) &&
+  !StableStateSchema.guards.Warm(authority.state.stable);
+
+const isVaporizingAuthority = (authority: SessionAuthority): boolean =>
+  AuthorityStateSchema.guards.Transitioning(authority.state) &&
+  TransitionSchema.guards.Vaporize(authority.state.transition);
 
 const isMatchingVaporizeHardCap = (
   authority: SessionAuthority | undefined,
@@ -1261,16 +1298,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     const actor = sessionActorLayer.pipe(Layer.provide(Layer.merge(actorStore, actorRunner)));
     const hardCap = createHardCapControllerLayer((fence) =>
-      Effect.tryPromise({
-        try: () =>
-          this.schedule(new Date(fence.deadlineAt), "sessionActorHardCap", fence).then(
-            () => undefined,
-          ),
-        catch: () =>
-          new CreateControllerBoundaryFailure({
-            boundary: "hard_cap",
-            code: "schedule_outcome_unknown",
-          }),
+      Effect.gen({ self: this }, function* () {
+        const finalFence: CreateHardCapFence = {
+          sessionId: fence.sessionId,
+          generation: fence.generation,
+          deadlineAt: fence.deadlineAt,
+        };
+        const schedule = (at: string, callback: string, payload: unknown) =>
+          Effect.tryPromise({
+            try: () => this.schedule(new Date(at), callback, payload).then(() => undefined),
+            catch: () =>
+              new CreateControllerBoundaryFailure({
+                boundary: "hard_cap",
+                code: "schedule_outcome_unknown",
+              }),
+          });
+        yield* schedule(fence.deadlineAt, "sessionActorHardCap", finalFence);
+        const drainAt = hardCapDrainAt(fence.deadlineAt, fence.durationSeconds);
+        yield* schedule(drainAt, "sessionActorHardCapDrain", { ...finalFence, drainAt });
       }),
     );
     const lifecycleController = lifecycleControllerLayer.pipe(
@@ -4832,6 +4877,52 @@ export class Sandbox extends BaseSandbox<Bindings> {
         const recovery = yield* RecoverySandbox;
         const destroyed = yield* Effect.result(recovery.destroyFailedRuntime(authority));
         if (Result.isFailure(destroyed)) yield* scheduleSuccessor;
+      }),
+    );
+  }
+
+  async sessionActorHardCapDrain(payload: unknown): Promise<void> {
+    const fence = decodeCreateHardCapDrainFence(payload);
+    if (Option.isNone(fence)) return;
+    return this.#run(
+      Effect.gen({ self: this }, function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const drainMillis = Date.parse(fence.value.drainAt);
+        const deadlineMillis = Date.parse(fence.value.deadlineAt);
+        if (
+          !Number.isFinite(drainMillis) ||
+          !Number.isFinite(deadlineMillis) ||
+          now < drainMillis ||
+          now >= deadlineMillis
+        )
+          return;
+
+        const store = yield* ActorStore;
+        const before = yield* store.read;
+        const authority = before.authority;
+        if (yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(authority))) return;
+        if (!isMatchingHardCapDrain(authority, fence.value)) return;
+        if (isTerminalDrainAuthority(authority) || isVaporizingAuthority(authority)) return;
+
+        if (isWarmAuthority(authority)) yield* Effect.result(this.actorLifecycleProgram("Sleep"));
+
+        const after = yield* store.read;
+        if (yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(after.authority))) return;
+        const current = after.authority;
+        if (!isMatchingHardCapDrain(current, fence.value)) return;
+        if (isTerminalDrainAuthority(current) || isVaporizingAuthority(current)) return;
+
+        const retryAt = (yield* Clock.currentTimeMillis) + 5_000;
+        if (retryAt >= deadlineMillis) return;
+        yield* Effect.tryPromise({
+          try: () =>
+            this.schedule(5, "sessionActorHardCapDrain", fence.value).then(() => undefined),
+          catch: () =>
+            new CreateControllerBoundaryFailure({
+              boundary: "hard_cap",
+              code: "schedule_outcome_unknown",
+            }),
+        });
       }),
     );
   }

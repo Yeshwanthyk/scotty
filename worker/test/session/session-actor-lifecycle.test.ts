@@ -1,5 +1,6 @@
 import { assert, describe, expect, it } from "@effect/vitest";
-import { Predicate } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import type { EvidenceState } from "../../src/evidence/contracts";
 import type { HatchState } from "../../src/hatch/contracts";
@@ -11,7 +12,184 @@ import {
   sessionHarnessKeys,
 } from "../support/session-harness";
 
+const decodeDrainFence = Schema.decodeUnknownOption(
+  Schema.Struct({
+    sessionId: Schema.String,
+    generation: Schema.String,
+    deadlineAt: Schema.String,
+    drainAt: Schema.String,
+  }),
+  { onExcessProperty: "error" },
+);
+
 describe("Sandbox actor checkpoint, sleep, and resume", () => {
+  it("arms the strict final payload before the derived drain and stops create when drain arming fails", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const hardCaps = harness.schedules.filter((schedule) =>
+      schedule.callback.startsWith("sessionActorHardCap"),
+    );
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.isDefined(authority);
+    const drainPayload = decodeDrainFence(hardCaps[1]?.payload);
+    assert.isTrue(Option.isSome(drainPayload));
+    if (Option.isNone(drainPayload)) return;
+    assert.lengthOf(hardCaps, 2);
+    assert.strictEqual(hardCaps[0]?.callback, "sessionActorHardCap");
+    assert.deepStrictEqual(hardCaps[0]?.payload, {
+      sessionId: SESSION_ID,
+      generation: authority.hardCap.generation,
+      deadlineAt: authority.hardCap.deadlineAt,
+    });
+    assert.strictEqual(hardCaps[1]?.callback, "sessionActorHardCapDrain");
+    const finalWhen = hardCaps[0]?.when;
+    assert.instanceOf(finalWhen, Date);
+    if (!(finalWhen instanceof Date)) return;
+    assert.strictEqual(
+      drainPayload.value.drainAt,
+      new Date(finalWhen.getTime() - 5 * 60_000).toISOString(),
+    );
+    assert.isBelow(
+      harness.events.indexOf("schedule:sessionActorHardCap"),
+      harness.events.indexOf("schedule:sessionActorHardCapDrain"),
+    );
+    assert.isBelow(
+      harness.events.indexOf("schedule:sessionActorHardCapDrain"),
+      harness.events.indexOf(`storage:put:${sessionHarnessKeys.actorAuthority}`),
+    );
+
+    const failed = await createSessionHarness({ failureStage: "hardCapDrainSchedule" });
+    await expect(
+      failed.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    ).rejects.toBeDefined();
+    assert.strictEqual(failed.read(sessionHarnessKeys.actorAuthority), undefined);
+    assert.deepStrictEqual(
+      failed.schedules
+        .filter((schedule) => schedule.callback.startsWith("sessionActorHardCap"))
+        .map((schedule) => schedule.callback),
+      ["sessionActorHardCap"],
+    );
+  });
+
+  it.effect("drains Warm to Sleeping only at its matching derived fence", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
+      const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      const drain = harness.schedules.find(
+        (schedule) => schedule.callback === "sessionActorHardCapDrain",
+      );
+      assert.isDefined(drain);
+      const drainPayload = decodeDrainFence(drain.payload);
+      assert.isTrue(Option.isSome(drainPayload));
+      if (Option.isNone(drainPayload)) return;
+
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      let authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        authority !== undefined &&
+          Predicate.isTagged(authority.state, "Stable") &&
+          Predicate.isTagged(authority.state.stable, "Warm"),
+      );
+
+      const stale = { ...drainPayload.value, drainAt: "2026-09-03T00:00:01.000Z" };
+      yield* clock.setTime(Date.parse(drainPayload.value.drainAt));
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(stale));
+      authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        authority !== undefined &&
+          Predicate.isTagged(authority.state, "Stable") &&
+          Predicate.isTagged(authority.state.stable, "Warm"),
+      );
+
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        authority !== undefined &&
+          Predicate.isTagged(authority.state, "Stable") &&
+          Predicate.isTagged(authority.state.stable, "Sleeping"),
+      );
+      assert.strictEqual(authority.state.stable.backup.confirmedAt !== null, true);
+      assert.strictEqual(authority.state.stable.wakeSource.backupId, "backup-1");
+      const eventsAfterSleep = harness.events.length;
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      assert.strictEqual(harness.events.length, eventsAfterSleep);
+    }),
+  );
+
+  it.effect("retries contended drain work only while a retry fits before final fallback", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          evidenceEnabled: true,
+          piSessionRunning: true,
+          rawPiContainerRunning: true,
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.acceptScottyEvidenceJob({
+          port: 4_173,
+          viewport: { width: 1_280, height: 720 },
+          capture: { screenshots: "after-each-step", video: false },
+          steps: [
+            {
+              name: "Keep the lease contended",
+              action: { kind: "goto", path: "/" },
+              expect: [{ kind: "urlPath", expected: "/" }],
+            },
+          ],
+        }),
+      );
+      const drain = harness.schedules.find(
+        (schedule) => schedule.callback === "sessionActorHardCapDrain",
+      );
+      const final = harness.schedules.find(
+        (schedule) => schedule.callback === "sessionActorHardCap",
+      );
+      assert.isDefined(drain);
+      assert.isDefined(final);
+      const drainPayload = decodeDrainFence(drain.payload);
+      assert.isTrue(Option.isSome(drainPayload));
+      if (Option.isNone(drainPayload)) return;
+
+      yield* clock.setTime(Date.parse(drainPayload.value.drainAt));
+      const retriesBefore = harness.schedules.filter(
+        (schedule) => schedule.callback === "sessionActorHardCapDrain",
+      ).length;
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      const retriesAfter = harness.schedules.filter(
+        (schedule) => schedule.callback === "sessionActorHardCapDrain",
+      );
+      assert.lengthOf(retriesAfter, retriesBefore + 1);
+      assert.strictEqual(retriesAfter.at(-1)?.when, 5);
+
+      yield* clock.setTime(Date.parse(drainPayload.value.deadlineAt) - 4_000);
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      assert.lengthOf(
+        harness.schedules.filter((schedule) => schedule.callback === "sessionActorHardCapDrain"),
+        retriesBefore + 1,
+      );
+
+      yield* clock.setTime(Date.parse(drainPayload.value.deadlineAt));
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCap(final.payload));
+      const failed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        failed !== undefined &&
+          Predicate.isTagged(failed.state, "Stable") &&
+          Predicate.isTagged(failed.state.stable, "Failed"),
+      );
+      assert.strictEqual(failed.state.stable.code, "hard_cap_elapsed");
+    }),
+  );
   it("uses and rotates a durable local incarnation when Cloudflare placement is absent", async () => {
     const harness = await createSessionHarness({
       containerPlacementId: null,
@@ -333,6 +511,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.ok(harness.events.includes("host:destroy"));
     assert.ok(harness.events.includes("host:deleteBackup"));
     assert.includeMembers(harness.deletedSchedules, [
+      "sessionActorHardCapDrain",
       "sessionActorHardCap",
       "sessionActorDeadline",
     ]);
