@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "../components/AppShell";
 import { Button } from "../components/Button";
+import { Conversation } from "../components/Conversation";
 import {
   decideConsoleEligibility,
   readAuthoritativeSession,
@@ -29,6 +30,7 @@ import {
 import { presentSession, type SessionPresentation } from "../domain/session-presentation";
 import { buildFixtureSessionRail } from "../domain/session-rail";
 import { sessionFixtureForId } from "../fixtures/sessions";
+import { conversationFixture } from "../fixtures/conversation";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 
 interface SessionRouteReady {
@@ -285,7 +287,8 @@ const styles = stylex.create({
     animationTimingFunction: motion.easeOut,
   },
   surface: {
-    minHeight: "320px",
+    height: "min(680px, calc(100dvh - 280px))",
+    minHeight: "420px",
     display: "grid",
     gridTemplateRows: "auto minmax(0, 1fr)",
     borderWidth: "1px",
@@ -293,6 +296,10 @@ const styles = stylex.create({
     borderColor: colors.line,
     borderRadius: "12px",
     backgroundColor: colors.panel,
+    "@media (max-width: 720px)": {
+      height: "calc(100dvh - 230px)",
+      minHeight: "460px",
+    },
   },
   surfaceHeader: {
     minHeight: "48px",
@@ -454,7 +461,11 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
             <header {...stylex.props(styles.surfaceHeader)}>
               <h2 {...stylex.props(styles.surfaceTitle)}>Conversation</h2>
             </header>
-            <SessionSurface eligibility={eligibility} presentation={presentation} />
+            <SessionSurface
+              eligibility={eligibility}
+              presentation={presentation}
+              simulateConversation={fixture && session.id === "warm-working-001"}
+            />
           </section>
         </div>
       </div>
@@ -552,10 +563,13 @@ function LifecycleButton({
 function SessionSurface({
   eligibility,
   presentation,
+  simulateConversation,
 }: {
   readonly eligibility: ConsoleEligibility;
   readonly presentation: SessionPresentation;
+  readonly simulateConversation: boolean;
 }) {
+  if (simulateConversation) return <Conversation turns={conversationFixture} />;
   if (eligibility.eligible)
     return (
       <div {...stylex.props(styles.body)}>
