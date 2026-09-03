@@ -2,7 +2,14 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
 import { spawn } from "node:child_process";
 import { Effect, Layer, Predicate, Result } from "effect";
-import { LabOperations, LabUsageError, runLab, waitForCapturedChild } from "./scotty-lab.ts";
+import packageMetadata from "../package.json" with { type: "json" };
+import {
+  LAB_VERSION,
+  LabOperations,
+  LabUsageError,
+  runLab,
+  waitForCapturedChild,
+} from "./scotty-lab.ts";
 
 const RUN_ID = "lab-12345678-1234-4123-8123-123456789abc";
 
@@ -57,6 +64,10 @@ const assertUsageFailure = (result: Result.Result<void, unknown>): void => {
 };
 
 describe("Effect Scotty lab command grammar", () => {
+  it("uses the package version", () => {
+    assert.strictEqual(LAB_VERSION, packageMetadata.version);
+  });
+
   it.effect("runs exactly start, exec, and stop", () =>
     Effect.gen(function* () {
       const calls: string[] = [];
