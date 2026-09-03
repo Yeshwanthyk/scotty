@@ -191,6 +191,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
   it("vaporizes through actor authority and removes every owned projection", async () => {
     const harness = await createSessionHarness();
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.sleepScottySession();
 
     const result = await harness.sandbox.vaporizeScottySession();
 
@@ -204,6 +205,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.strictEqual(harness.read(sessionHarnessKeys.actorMetadata), undefined);
     assert.strictEqual(harness.readRecord(), undefined);
     assert.ok(harness.events.includes("host:destroy"));
+    assert.ok(harness.events.includes("host:deleteBackup"));
     assert.includeMembers(harness.deletedSchedules, [
       "sessionActorHardCap",
       "sessionActorDeadline",
