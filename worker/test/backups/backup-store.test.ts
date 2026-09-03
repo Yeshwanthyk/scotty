@@ -107,7 +107,7 @@ describe("BackupStore", () => {
     }),
   );
 
-  it.effect("denies access inside the Effect adapter before invoking the backup capability", () =>
+  it.effect("denies runtime access before invoking restore", () =>
     Effect.gen(function* () {
       let calls = 0;
       const capabilities: BackupCapabilities = {

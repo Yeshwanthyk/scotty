@@ -1632,6 +1632,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         return makeResumeBackup();
       },
     },
+    deleteBackup: {
+      value: async (_backupId: string): Promise<void> => {
+        events.push("host:deleteBackup");
+        if (failures.has("backupDelete"))
+          throw injectedHarnessFailure("injected backup delete failure");
+      },
+    },
     restoreBackup: {
       value: async (backup: DirectoryBackup): Promise<RestoreBackupResult> => {
         events.push("host:restoreBackup");

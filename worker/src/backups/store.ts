@@ -26,18 +26,18 @@ export class BackupStore extends Context.Service<BackupStore, BackupStoreShape>(
 
 export const backupStoreLayer = <E = never>(
   capabilities: BackupCapabilities,
-  beforeOperation?: Effect.Effect<void, E>,
+  beforeRuntimeOperation?: Effect.Effect<void, E>,
 ): Layer.Layer<BackupStore> =>
-  Layer.succeed(BackupStore)(makeBackupStore(capabilities, beforeOperation ?? Effect.void));
+  Layer.succeed(BackupStore)(makeBackupStore(capabilities, beforeRuntimeOperation ?? Effect.void));
 
 const makeBackupStore = <E>(
   capabilities: BackupCapabilities,
-  beforeOperation: Effect.Effect<void, E>,
+  beforeRuntimeOperation: Effect.Effect<void, E>,
 ): BackupStoreShape => {
   const failure = (operation: BackupOperation): BackupStoreFailure =>
     new BackupStoreFailure({ operation });
   const guard = (operation: BackupOperation): Effect.Effect<void, BackupStoreFailure> =>
-    beforeOperation.pipe(Effect.mapError(() => failure(operation)));
+    beforeRuntimeOperation.pipe(Effect.mapError(() => failure(operation)));
 
   return BackupStore.of({
     create: (options) =>
@@ -60,13 +60,9 @@ const makeBackupStore = <E>(
         Effect.asVoid,
       ),
     delete: (backupId) =>
-      guard("delete").pipe(
-        Effect.andThen(
-          Effect.tryPromise({
-            try: () => capabilities.deleteBackup(backupId),
-            catch: () => failure("delete"),
-          }),
-        ),
-      ),
+      Effect.tryPromise({
+        try: () => capabilities.deleteBackup(backupId),
+        catch: () => failure("delete"),
+      }),
   });
 };
