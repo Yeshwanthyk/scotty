@@ -362,7 +362,8 @@ const handleHardCap = (
     return reject("stale_phase");
   if (
     (AuthorityStateSchema.guards.Stable(authority.state) &&
-      (StableStateSchema.guards.Failed(authority.state.stable) ||
+      (StableStateSchema.guards.Sleeping(authority.state.stable) ||
+        StableStateSchema.guards.Failed(authority.state.stable) ||
         StableStateSchema.guards.Gone(authority.state.stable))) ||
     (AuthorityStateSchema.guards.Transitioning(authority.state) &&
       TransitionSchema.guards.Vaporize(authority.state.transition))

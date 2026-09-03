@@ -383,6 +383,46 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.ok(destroyed > committed);
   });
 
+  it("preserves a sleeping session and its backup at the matching hard cap", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.sleepScottySession();
+    const sleeping = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.isDefined(sleeping);
+    assert.ok(
+      Predicate.isTagged(sleeping.state, "Stable") &&
+        Predicate.isTagged(sleeping.state.stable, "Sleeping"),
+    );
+    const expired = {
+      ...sleeping,
+      hardCap: { ...sleeping.hardCap, deadlineAt: "2020-01-01T00:00:00.000Z" },
+    } satisfies SessionAuthority;
+    harness.memory.values.set(sessionHarnessKeys.actorAuthority, expired);
+    const start = harness.events.length;
+
+    await harness.sandbox.sessionActorHardCap({
+      sessionId: SESSION_ID,
+      generation: expired.hardCap.generation,
+      deadlineAt: expired.hardCap.deadlineAt,
+    });
+
+    assert.deepStrictEqual(
+      harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority),
+      expired,
+    );
+    const events = harness.events.slice(start);
+    assert.notInclude(events, "host:destroy");
+    assert.notInclude(events, "projection:failed");
+    assert.strictEqual(
+      events.filter((event) => event.startsWith("projection:")).at(-1),
+      "projection:sleeping",
+    );
+
+    const resumed = await harness.sandbox.resumeScottySession();
+    assert.strictEqual(resumed.status, "warm");
+    assert.include(harness.events, "host:restoreBackup");
+  });
+
   it("destroys an already-failed runtime when its matching hard cap arrives", async () => {
     const harness = await createSessionHarness();
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
