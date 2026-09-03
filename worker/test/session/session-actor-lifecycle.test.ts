@@ -855,6 +855,67 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     );
   });
 
+  it("does not report a stale Checkpoint recovery after Vaporize settles Gone", async () => {
+    let recoveryHookCalls = 0;
+    let replacement: { readonly id: string; readonly status: "gone" } | undefined;
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    harness.injectFailure("actorAlarmScheduleOnce");
+    await harness.sandbox.checkpointScottySession().then(
+      () => undefined,
+      () => undefined,
+    );
+    const checkpoint = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      checkpoint !== undefined &&
+        Predicate.isTagged(checkpoint.state, "Transitioning") &&
+        Predicate.isTagged(checkpoint.state.transition, "Checkpoint"),
+    );
+    const checkpointNonce = checkpoint.state.transition.nonce;
+    const backupCalls = harness.events.filter((event) => event === "host:createBackup").length;
+    let restarted: Awaited<ReturnType<typeof createSessionHarness>>;
+    restarted = await createSessionHarness({
+      sharedMemory: harness.memory,
+      actorRequestRecoveryBeforeResume: async () => {
+        recoveryHookCalls += 1;
+        replacement = await restarted.sandbox.vaporizeScottySession();
+      },
+    });
+    const beforeRetry = restarted.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      beforeRetry !== undefined &&
+        Predicate.isTagged(beforeRetry.state, "Transitioning") &&
+        Predicate.isTagged(beforeRetry.state.transition, "Checkpoint"),
+    );
+
+    const retry = await restarted.sandbox.checkpointScottySession().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    assert.strictEqual(recoveryHookCalls, 1);
+    assert.deepStrictEqual(replacement, { id: SESSION_ID, status: "gone" });
+    assert.instanceOf(retry, ScottyError);
+    assert.strictEqual(retry.code, "wrong_state");
+    assert.strictEqual(
+      [...harness.events, ...restarted.events].filter((event) => event === "host:createBackup")
+        .length,
+      backupCalls,
+    );
+    const gone = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      gone !== undefined &&
+        Predicate.isTagged(gone.state, "Stable") &&
+        Predicate.isTagged(gone.state.stable, "Gone"),
+    );
+    const journal = harness.read<LifecycleJournalEvent>(sessionHarnessKeys.actorJournalTail);
+    assert.deepInclude(journal, {
+      eventType: "completed",
+      transitionKind: "Vaporize",
+    });
+    assert.notStrictEqual(journal?.transitionNonce, checkpointNonce);
+  });
+
   it("does not recover live WarmWork from an overlapping lifecycle request", async () => {
     const archiveEntered = deferred<void>();
     const releaseArchive = deferred<void>();

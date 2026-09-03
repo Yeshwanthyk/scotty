@@ -280,6 +280,39 @@ type ActorRequestRecovery =
   | { readonly _tag: "Contended"; readonly snapshot: ActorStoreSnapshot }
   | { readonly _tag: "Recovered"; readonly snapshot: ActorStoreSnapshot };
 
+const expectedRecoveredStable = (
+  authority: SessionAuthority,
+  expectedKind: LifecycleCommandKind | "Create",
+): boolean => {
+  if (!AuthorityStateSchema.guards.Stable(authority.state)) return false;
+  const stable = authority.state.stable;
+  if (StableStateSchema.guards.Failed(stable)) return true;
+  return expectedKind === "Sleep"
+    ? StableStateSchema.guards.Sleeping(stable)
+    : StableStateSchema.guards.Warm(stable);
+};
+
+const provesRecoveredTransition = (
+  snapshot: ActorStoreSnapshot,
+  expectedKind: LifecycleCommandKind | "Create",
+  transitionNonce: string,
+): boolean => {
+  const authority = snapshot.authority;
+  if (authority === undefined) return false;
+  if (AuthorityStateSchema.guards.Transitioning(authority.state))
+    return (
+      authority.state.transition.nonce === transitionNonce &&
+      Predicate.isTagged(authority.state.transition, expectedKind)
+    );
+  const journal = snapshot.journalTail;
+  return (
+    expectedRecoveredStable(authority, expectedKind) &&
+    journal?.eventType === "completed" &&
+    journal.transitionKind === expectedKind &&
+    journal.transitionNonce === transitionNonce
+  );
+};
+
 const ABANDONED_OPERATION_MS = 5 * 60_000;
 const ACTIVITY_OBSERVATION_TTL_MS = 90_000;
 const PASSIVE_PI_CONSOLE_MAX_HEADER_BYTES = 8 * 1024;
@@ -525,6 +558,7 @@ export interface TerminalSessionControl {
 }
 
 export interface SandboxEffectOptions {
+  readonly actorRequestRecoveryBeforeResume?: () => Promise<void>;
   readonly clock?: Clock.Clock;
   readonly containerEvidenceRecorder?: ContainerEvidenceRecorder["Service"];
   readonly evidencePreviewHostTimeoutMillis?: number;
@@ -773,6 +807,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly evidenceEnabled: boolean;
   private readonly localE2E: boolean;
   private readonly runtimeIncarnationStore: SandboxRuntimeIncarnationStore;
+  private readonly actorRequestRecoveryBeforeResume: () => Promise<void>;
   private readonly evidencePreviewHostTimeoutMillis: number;
   private readonly hatchPublicProbe: (
     url: string,
@@ -802,6 +837,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     this.evidencePreviewHostTimeoutMillis =
       options.evidencePreviewHostTimeoutMillis ?? EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS;
+    this.actorRequestRecoveryBeforeResume =
+      options.actorRequestRecoveryBeforeResume ?? (() => Promise.resolve());
     this.hatchPublicProbe =
       options.hatchPublicProbe ??
       ((url, marker, signal) =>
@@ -2817,6 +2854,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const transition = authority.state.transition;
     if (!Predicate.isTagged(transition, expectedKind))
       return { _tag: "Contended" as const, snapshot: before } satisfies ActorRequestRecovery;
+    yield* Effect.promise(() => this.actorRequestRecoveryBeforeResume());
     const publishProjection = this.publishActorSessionProjectionBestEffortProgram();
     const recovered = yield* this.withExclusiveActorMutation(
       transition.nonce,
@@ -2854,8 +2892,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
               }
             : {}),
         });
-        if (resume === undefined)
-          return { _tag: "Recovered" as const, snapshot: yield* store.read };
+        if (resume === undefined) {
+          const snapshot = yield* store.read;
+          return provesRecoveredTransition(snapshot, expectedKind, transition.nonce)
+            ? { _tag: "Recovered" as const, snapshot }
+            : { _tag: "Contended" as const, snapshot };
+        }
         yield* publishProjection;
         return { _tag: "Recovered" as const, snapshot: yield* store.read };
       }),
@@ -3093,6 +3135,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (!Predicate.isTagged(recovered, "NotNeeded")) {
       const authority = recovered.snapshot.authority;
       if (Predicate.isTagged(recovered, "Contended")) {
+        if (
+          authority !== undefined &&
+          AuthorityStateSchema.guards.Stable(authority.state) &&
+          StableStateSchema.guards.Gone(authority.state.stable)
+        )
+          return yield* wrongState("gone", kind.toLowerCase());
         const state = yield* this.readActorSessionStateProgram();
         return yield* wrongState(state.view.status, kind.toLowerCase());
       }

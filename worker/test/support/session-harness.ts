@@ -560,6 +560,7 @@ export type HarnessFailureStage =
   | "workspacePrepare";
 
 export interface HarnessOptions {
+  readonly actorRequestRecoveryBeforeResume?: SandboxEffectOptions["actorRequestRecoveryBeforeResume"];
   readonly clock?: SandboxEffectOptions["clock"];
   readonly commandGate?: (command: string) => Promise<void> | undefined;
   readonly commandStdout?: (command: string) => string | undefined;
@@ -1523,6 +1524,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   } as unknown as Bindings;
 
   const sandbox = new Sandbox(ctx, env, {
+    actorRequestRecoveryBeforeResume: options.actorRequestRecoveryBeforeResume,
     clock: options.clock,
     containerEvidenceRecorder: options.containerEvidenceRecorder,
     evidencePreviewHostTimeoutMillis: options.evidencePreviewHostTimeoutMillis,
