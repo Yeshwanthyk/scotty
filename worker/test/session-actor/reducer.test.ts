@@ -80,6 +80,13 @@ const warmStable = (authority: SessionAuthority) => {
   return state.stable;
 };
 
+const failedStable = (authority: SessionAuthority) => {
+  const state = authority.state;
+  assert.ok(AuthorityStateSchema.guards.Stable(state));
+  assert.ok(StableStateSchema.guards.Failed(state.stable));
+  return state.stable;
+};
+
 const createCommand = (expectedRevision = 0): SessionCommand => ({
   _tag: "CreateCommand",
   expectedRevision,
@@ -164,6 +171,22 @@ const fact = (
     proof,
     resultCode: "ok",
     ...overrides,
+  };
+};
+
+const unknown = (authority: SessionAuthority, resultCode = "provider_outcome_unknown") => {
+  const transition = transitioning(authority).transition;
+  const proof = "readiness" in transition.proof ? transition.proof.readiness.runtime : null;
+  return {
+    _tag: "UnknownProviderOutcome" as const,
+    revision: authority.revision,
+    transitionNonce: transition.nonce,
+    attempt: transition.attempt,
+    expectedPhase: transition.phase,
+    timestamp: T1,
+    correlationId: "correlation-provider-unknown",
+    expectedProviderRuntimeId: proof?.providerRuntimeId ?? null,
+    resultCode,
   };
 };
 
@@ -346,7 +369,7 @@ describe("session actor reducer", () => {
     assert.deepStrictEqual(duplicate, { _tag: "Rejected", code: "duplicate" });
   });
 
-  it("keeps deadline ownership and enters reconciliation", () => {
+  it("fails an ordinary transition at its deadline", () => {
     const created = accepted(decide(undefined, createCommand())).nextAuthority;
     const createdTransition = transitioning(created).transition;
     const alarm: SessionActorInput = {
@@ -364,10 +387,9 @@ describe("session actor reducer", () => {
     assert.deepStrictEqual(early, { _tag: "Rejected", code: "stale_phase" });
     const mismatched = decide(created, { ...alarm, expectedDeadlineAt: T1 });
     assert.deepStrictEqual(mismatched, { _tag: "Rejected", code: "stale_phase" });
-    const reconciled = accepted(decide(created, alarm));
-    assert.strictEqual(transitioning(reconciled.nextAuthority).transition.mode, "reconciling");
-    assert.strictEqual(reconciled.effectIntents.length, 1);
-    assert.ok(Predicate.isTagged(reconciled.effectIntents[0], "ReconcileTransition"));
+    const failed = accepted(decide(created, alarm));
+    assert.strictEqual(failedStable(failed.nextAuthority).code, "transition_deadline_elapsed");
+    assert.deepStrictEqual(failed.effectIntents, []);
   });
 
   it("reconciles an unknown provider outcome without advancing phase", () => {
@@ -399,6 +421,149 @@ describe("session actor reducer", () => {
       ),
     );
     assert.strictEqual(transitioning(progressed.nextAuthority).transition.mode, "executing");
+  });
+
+  it("fails a repeated unknown while preserving the last confirmed backup", () => {
+    const initial = accepted(
+      decide(warmAuthority(), command("CheckpointCommand", warmAuthority().revision)),
+    ).nextAuthority;
+    const admittedTransition = transitioning(initial).transition;
+    assert.ok(TransitionSchema.guards.Checkpoint(admittedTransition));
+    const candidate: BackupIdentity = {
+      backupId: "backup-2",
+      preparedAt: T1,
+      confirmedAt: null,
+      sourceRuntimeGeneration: "runtime-1",
+    };
+    const admitted: SessionAuthority = {
+      ...initial,
+      state: {
+        _tag: "Transitioning",
+        transition: {
+          ...admittedTransition,
+          phase: "BackupPrepared",
+          proof: {
+            ...admittedTransition.proof,
+            piStoppedAt: T1,
+            backup: {
+              ownedBackupIds: ["backup-1", "backup-2"],
+              prepared: candidate,
+              currentBackupId: "backup-1",
+              confirmed: backup(),
+            },
+          },
+        },
+      },
+    };
+    assert.strictEqual(validateAuthority(admitted), true);
+    const reconciling = accepted(decide(admitted, unknown(admitted))).nextAuthority;
+    const failed = accepted(decide(reconciling, unknown(reconciling))).nextAuthority;
+    assert.deepStrictEqual(failedStable(failed), {
+      _tag: "Failed",
+      code: "reconciliation_outcome_unknown",
+      actionable: true,
+      origin: "Warm",
+      lastStable: "Warm",
+      backup: backup(),
+      ownedBackupIds: ["backup-1", "backup-2"],
+      wakeSource: { backupId: "backup-1", confirmedAt: T1 },
+    });
+  });
+
+  it("retains the reserved backup attempt when Syncing becomes ambiguous", () => {
+    const initial = accepted(
+      decide(warmAuthority(), command("CheckpointCommand", warmAuthority().revision)),
+    ).nextAuthority;
+    const transition = transitioning(initial).transition;
+    assert.ok(TransitionSchema.guards.Checkpoint(transition));
+    const syncing: SessionAuthority = {
+      ...initial,
+      state: {
+        _tag: "Transitioning",
+        transition: {
+          ...transition,
+          phase: "Syncing",
+          proof: {
+            ...transition.proof,
+            piStoppedAt: T1,
+            backup: {
+              ...transition.proof.backup,
+              ownedBackupIds: [...transition.proof.backup.ownedBackupIds, transition.attempt],
+            },
+          },
+        },
+      },
+    };
+    assert.isTrue(validateAuthority(syncing));
+
+    const reconciling = accepted(decide(syncing, unknown(syncing))).nextAuthority;
+    const failed = accepted(decide(reconciling, unknown(reconciling))).nextAuthority;
+    assert.include(failedStable(failed).ownedBackupIds, transition.attempt);
+
+    const vaporizing = accepted(
+      decide(failed, command("VaporizeCommand", failed.revision)),
+    ).nextAuthority;
+    const vaporize = transitioning(vaporizing).transition;
+    assert.ok(TransitionSchema.guards.Vaporize(vaporize));
+    assert.include(vaporize.proof.ownedBackupIds, transition.attempt);
+  });
+
+  it("does not let a provider failure discard authoritative backup ownership", () => {
+    const admitted = accepted(
+      decide(warmAuthority(), command("CheckpointCommand", warmAuthority().revision)),
+    ).nextAuthority;
+    const transition = transitioning(admitted).transition;
+    const failed = accepted(
+      decide(admitted, {
+        _tag: "TransitionFailed",
+        revision: admitted.revision,
+        transitionNonce: transition.nonce,
+        attempt: transition.attempt,
+        expectedPhase: transition.phase,
+        timestamp: T1,
+        correlationId: "correlation-failed",
+        failureCode: "provider_rejected",
+        actionable: false,
+        backup: null,
+        ownedBackupIds: [],
+        wakeSource: null,
+        resultCode: "provider_rejected",
+      }),
+    ).nextAuthority;
+    assert.deepInclude(failedStable(failed), {
+      code: "provider_rejected",
+      actionable: true,
+      backup: backup(),
+      ownedBackupIds: ["backup-1"],
+      wakeSource: { backupId: "backup-1", confirmedAt: T1 },
+    });
+  });
+
+  it("keeps Vaporize ownership across repeated unknown outcomes and its deadline", () => {
+    const admitted = accepted(
+      decide(warmAuthority(), command("VaporizeCommand", warmAuthority().revision)),
+    ).nextAuthority;
+    const reconciling = accepted(decide(admitted, unknown(admitted))).nextAuthority;
+    const repeated = accepted(decide(reconciling, unknown(reconciling))).nextAuthority;
+    assert.ok(TransitionSchema.guards.Vaporize(transitioning(repeated).transition));
+    assert.strictEqual(transitioning(repeated).transition.mode, "reconciling");
+
+    const current = transitioning(repeated).transition;
+    const deadline = accepted(
+      decide(repeated, {
+        _tag: "DeadlineAlarm",
+        revision: repeated.revision,
+        transitionNonce: current.nonce,
+        attempt: current.attempt,
+        expectedPhase: current.phase,
+        timestamp: DEADLINE,
+        correlationId: "correlation-vaporize-deadline",
+        alarmId: "alarm-vaporize",
+        expectedDeadlineAt: DEADLINE,
+      }),
+    ).nextAuthority;
+    assert.ok(TransitionSchema.guards.Vaporize(transitioning(deadline).transition));
+    assert.strictEqual(transitioning(deadline).transition.mode, "reconciling");
   });
 
   it("commits only current-generation activity observations", () => {
@@ -522,6 +687,7 @@ describe("session actor reducer", () => {
       decide(warmAuthority(), command("CheckpointCommand", 7)),
     ).nextAuthority;
     assert.strictEqual(publicView(checkpoint)?.status, "warm");
+    assert.deepStrictEqual(publicView(checkpoint)?.availableActions, []);
     const vaporize = accepted(decide(checkpoint, command("VaporizeCommand", 8))).nextAuthority;
     assert.deepStrictEqual(publicView(vaporize), {
       status: "warm",
@@ -535,7 +701,40 @@ describe("session actor reducer", () => {
   });
 
   it("validates readiness coherence, backup ownership, wake proof, and gone cleanup", () => {
-    assert.strictEqual(validateAuthority(warmAuthority()), true);
+    const validWarm = warmAuthority();
+    assert.strictEqual(validateAuthority(validWarm), true);
+    const validWarmState = warmStable(validWarm);
+    assert.strictEqual(
+      validateAuthority({
+        ...validWarm,
+        state: {
+          _tag: "Stable",
+          stable: {
+            ...validWarmState,
+            backups: { ownedBackupIds: [], prepared: backup(), currentBackupId: null },
+          },
+        },
+      }),
+      false,
+    );
+    assert.strictEqual(
+      validateAuthority({
+        ...validWarm,
+        state: {
+          _tag: "Stable",
+          stable: {
+            ...validWarmState,
+            backups: {
+              ownedBackupIds: ["backup-1", "backup-2"],
+              prepared: backup(),
+              confirmed: { ...backup(), backupId: "backup-2" },
+              currentBackupId: "backup-1",
+            },
+          },
+        },
+      }),
+      false,
+    );
     const incoherent: SessionAuthority = {
       session,
       hardCap,

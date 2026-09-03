@@ -289,6 +289,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
       const handle = yield* backups
         .create({
           dir: sessionRoot(input.sessionId),
+          backupId: input.attempt,
           name: sandboxBackupAttemptName(input),
           ttl: BACKUP_TTL_SECONDS,
           localBucket: true,
@@ -678,15 +679,14 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
       context: CheckpointProviderContext,
     ): Effect.fn.Return<CheckpointProviderResult, CheckpointProviderFailure> {
       return yield* Match.value(context.transition.phase).pipe(
-        Match.when("Quiescing", () => quiescePi(context)),
-        Match.when("PiStopped", () => syncWorkspace(context)),
-        Match.when("Syncing", () =>
+        Match.whenOr("Quiescing", "PiStopped", "Syncing", "BackupPrepared", "BackupConfirmed", () =>
           checkpointFailure(
-            boundaryFailure("unknown_after_admission", "checkpoint_backup_handle_unobserved"),
+            boundaryFailure(
+              "unknown_after_admission",
+              "checkpoint_reconciliation_requires_decisive_observation",
+            ),
           ),
         ),
-        Match.when("BackupPrepared", () => confirmBackup(context)),
-        Match.when("BackupConfirmed", () => restartSupervisor(context)),
         Match.when("SupervisorRestarting", () => confirmTransportReady(context)),
         Match.when("TransportReady", () => verifyTransport(context)),
         Match.exhaustive,
@@ -810,14 +810,14 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
       context: SleepProviderContext,
     ): Effect.fn.Return<SleepProviderResult, SleepProviderFailure> {
       return yield* Match.value(context.transition.phase).pipe(
-        Match.when("Quiescing", () => quiescePi(context)),
-        Match.when("PiStopped", () => syncWorkspace(context)),
-        Match.when("Syncing", () =>
+        Match.whenOr("Quiescing", "PiStopped", "Syncing", "BackupConfirmed", () =>
           sleepFailure(
-            boundaryFailure("unknown_after_admission", "sleep_backup_handle_unobserved"),
+            boundaryFailure(
+              "unknown_after_admission",
+              "sleep_reconciliation_requires_decisive_observation",
+            ),
           ),
         ),
-        Match.when("BackupConfirmed", () => requestRuntimeStop(context)),
         Match.when("StopRequested", () => observeRuntimeStopped(context)),
         Match.when("RuntimeStopped", () => confirmRuntimeStopped(context)),
         Match.exhaustive,
@@ -952,9 +952,15 @@ export const resumeSandboxTransitionProviderLayer: Layer.Layer<
       context: ResumeProviderContext,
     ): Effect.fn.Return<ResumeProviderResult, ResumeProviderFailure> {
       return yield* Match.value(context.transition.phase).pipe(
-        Match.when("WatchdogArmed", () => restoreCurrentBackup(context)),
+        Match.whenOr("WatchdogArmed", "RuntimeReady", () =>
+          resumeFailure(
+            boundaryFailure(
+              "unknown_after_admission",
+              "resume_reconciliation_requires_decisive_observation",
+            ),
+          ),
+        ),
         Match.when("BackupRestoring", () => confirmRuntimeReady(context)),
-        Match.when("RuntimeReady", () => startSupervisor(context)),
         Match.when("SupervisorStarting", () => confirmSupervisorReady(context)),
         Match.when("SupervisorReady", () => verifyTransport(context)),
         Match.when("TransportReady", () => confirmTransportReady(context)),

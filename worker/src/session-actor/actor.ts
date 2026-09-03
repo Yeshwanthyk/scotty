@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, Predicate } from "effect";
+import { actorAlarmId, type ActorAlarmFence } from "./alarm";
 import { AuthorityStateSchema, type SessionAuthority } from "./authority";
 import { transitionOf } from "./control";
 import type { Decision } from "./decision";
@@ -44,6 +45,7 @@ interface SessionActorShape {
   readonly resume: (input: {
     readonly timestamp: string;
     readonly correlationId: string;
+    readonly fence?: ActorAlarmFence;
   }) => Effect.Effect<ActorHandleResult | undefined, ActorHandleError>;
 }
 
@@ -76,6 +78,27 @@ const providerRuntimeId = (authority: SessionAuthority): string | null => {
     ? proof.readiness.runtime.providerRuntimeId
     : null;
 };
+
+const matchesAlarmFence = (
+  fence: ActorAlarmFence,
+  authority: SessionAuthority,
+  transition: Extract<SessionAuthority["state"], { readonly _tag: "Transitioning" }>["transition"],
+): boolean =>
+  fence.transitionNonce === transition.nonce &&
+  fence.attempt === transition.attempt &&
+  fence.expectedDeadlineAt === transition.deadlineAt &&
+  fence.alarmId ===
+    actorAlarmId(
+      fence.kind,
+      transition.nonce,
+      transition.attempt,
+      transition.deadlineAt,
+      fence.expectedPhase,
+    ) &&
+  (fence.kind === "deadline" ||
+    (transition.mode === "reconciling" &&
+      fence.revision === authority.revision &&
+      fence.expectedPhase === transition.phase));
 
 const unknownObservationCommit = (
   authority: SessionAuthority,
@@ -178,15 +201,45 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
       const resume = Effect.fnUntraced(function* (input: {
         readonly timestamp: string;
         readonly correlationId: string;
+        readonly fence?: ActorAlarmFence;
       }) {
         const snapshot = yield* store.read;
         const authority = snapshot.authority;
         if (authority === undefined || !AuthorityStateSchema.guards.Transitioning(authority.state))
           return undefined;
         const transition = authority.state.transition;
+        const fence = input.fence;
+        if (fence !== undefined && !matchesAlarmFence(fence, authority, transition))
+          return undefined;
+        if (
+          fence?.kind === "deadline" ||
+          (fence?.kind === "reconcile" &&
+            Date.parse(input.timestamp) >= Date.parse(transition.deadlineAt))
+        )
+          return yield* handle({
+            _tag: "DeadlineAlarm",
+            revision: authority.revision,
+            transitionNonce: transition.nonce,
+            attempt: transition.attempt,
+            expectedPhase: transition.phase,
+            timestamp: input.timestamp,
+            correlationId: input.correlationId,
+            alarmId: fence.alarmId,
+            expectedDeadlineAt: transition.deadlineAt,
+          });
         if (transition.mode === "reconciling") {
           const journalEvent = snapshot.journalTail;
           if (journalEvent === undefined) return undefined;
+          yield* runner.run({
+            authority,
+            journalEvent,
+            intent: {
+              _tag: "ArmReconciliation",
+              deadlineAt: transition.deadlineAt,
+              transitionNonce: transition.nonce,
+              attempt: transition.attempt,
+            },
+          });
           const observation = yield* runner.run({
             authority,
             journalEvent,

@@ -6,6 +6,13 @@ export interface SessionListItem {
   readonly runner?: string;
   readonly status?: string;
   readonly deleting?: boolean;
+  readonly operation?: {
+    readonly kind: string;
+    readonly nonce?: string;
+    readonly startedAt?: string;
+    readonly mode?: string;
+    readonly phase?: string;
+  };
   readonly backupId?: string;
   readonly capRemainingSeconds?: number;
   readonly hardCapAt?: string;

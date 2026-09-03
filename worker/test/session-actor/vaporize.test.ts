@@ -119,9 +119,11 @@ const vaporizeTransition = (
 
 const providerIntent = (
   decision: AcceptedDecision,
-): Exclude<EffectIntent, { readonly _tag: "ArmDeadline" }> => {
+): Exclude<EffectIntent, { readonly _tag: "ArmDeadline" | "ArmReconciliation" }> => {
   const intent = decision.effectIntents.find(
-    (candidate) => !Predicate.isTagged(candidate, "ArmDeadline"),
+    (candidate) =>
+      !Predicate.isTagged(candidate, "ArmDeadline") &&
+      !Predicate.isTagged(candidate, "ArmReconciliation"),
   );
   assert.ok(intent !== undefined);
   return intent;

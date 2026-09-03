@@ -40,6 +40,12 @@ describe("sessions page", () => {
       createdAt: "2026-08-04T14:00:00.000Z",
       hardCapAt: "2026-08-04T18:00:00.000Z",
       capRemainingSeconds: 5_430,
+      operation: {
+        kind: "snapshot",
+        nonce: "checkpoint-1",
+        mode: "reconciling",
+        phase: "Syncing",
+      },
       failure: { code: "internal", message: "hidden", recoverable: true },
     });
     assert.deepStrictEqual(session, {
@@ -52,6 +58,12 @@ describe("sessions page", () => {
       createdAt: "2026-08-04T14:00:00.000Z",
       hardCapAt: "2026-08-04T18:00:00.000Z",
       capRemainingSeconds: 5_430,
+      operation: {
+        kind: "snapshot",
+        nonce: "checkpoint-1",
+        mode: "reconciling",
+        phase: "Syncing",
+      },
       failure: { code: "internal", message: "hidden", recoverable: true },
     });
     assert.deepStrictEqual(
@@ -154,10 +166,7 @@ describe("sessions page", () => {
 
   it("opens rail sessions directly in the focused management route", () => {
     assert.strictEqual(focusedSessionPath("a0b1c2d3e4f5"), "/sessions?focus=a0b1c2d3e4f5");
-    assert.include(
-      sessionListSource,
-      "compact ? focusedSessionPath(session.id) : `/s/${encodeURIComponent(session.id)}`",
-    );
+    assert.include(sessionListSource, "compact || session.operation");
     assert.include(sessionsScript, 'event.target.closest("a[data-manage-session]")');
     assert.include(sessionsScript, "window.history.pushState");
     assert.match(
@@ -247,6 +256,21 @@ describe("sessions page", () => {
       title: "Removing workspace",
       copy: "Scotty is removing this session and its backups.",
     });
+  });
+
+  it("renders lifecycle ownership from the server and withholds incompatible controls", () => {
+    assert.deepStrictEqual(sessionManagementPresentation({ status: "warm" }, "saving"), {
+      label: "Saving",
+      title: "Saving your checkpoint",
+      copy: "Scotty is preserving the current workspace state.",
+    });
+    assert.deepStrictEqual(sessionManagementPresentation({ status: "sleeping" }, "resuming"), {
+      label: "Resuming",
+      title: "Restoring workspace",
+      copy: "Scotty is restoring the checkpoint and starting the runtime.",
+    });
+    assert.include(sessionListSource, "if (session.operation)");
+    assert.include(sessionListSource, "compact || session.operation");
   });
 
   it("keeps the focused resume action visually primary", () => {

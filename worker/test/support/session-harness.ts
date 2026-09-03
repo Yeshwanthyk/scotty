@@ -528,6 +528,8 @@ export type HarnessFailureStage =
   | "artifactDelete"
   | "artifactDeleteAmbiguous"
   | "artifactPutAmbiguous"
+  | "actorAlarmSchedule"
+  | "actorCommitAfterAbsence"
   | "backupDelete"
   | "backupList"
   | "checkpointDefect"
@@ -541,6 +543,7 @@ export type HarnessFailureStage =
   | "evidenceRetentionSchedulePreInsert"
   | "evidenceRetentionSchedulePreInsertOnce"
   | "hardCapSchedule"
+  | "hardCapScheduleOnce"
   | "hatchHealth"
   | "previewExpose"
   | "previewUnexpose"
@@ -1243,6 +1246,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         throw injectedHarnessFailure("injected projection deletion failure");
       projections.delete(key);
       events.push(`projection:delete:${key}`);
+      if (failures.delete("actorCommitAfterAbsence"))
+        storage.memory.injectFailure("transaction", {
+          error: new Error("injected actor commit failure after absence confirmation"),
+          times: 1,
+        });
     },
     list: async (): Promise<{
       readonly keys: ReadonlyArray<{ readonly name: string }>;
@@ -1766,13 +1774,18 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         payload: unknown,
       ): Promise<RecordedSchedule> => {
         events.push(`schedule:${callback}`);
+        if (failures.has("actorAlarmSchedule") && callback === "sessionActorDeadline")
+          throw injectedHarnessFailure("injected actor alarm schedule failure");
         if (
           callback === "expireRetainedEvidence" &&
           (failures.has("evidenceRetentionSchedulePreInsert") ||
             failures.delete("evidenceRetentionSchedulePreInsertOnce"))
         )
           throw injectedHarnessFailure("injected pre-insert evidence retention schedule failure");
-        if (failures.has("hardCapSchedule") && callback === "sessionActorHardCap") {
+        if (
+          callback === "sessionActorHardCap" &&
+          (failures.has("hardCapSchedule") || failures.delete("hardCapScheduleOnce"))
+        ) {
           throw injectedHarnessFailure("injected hard-cap schedule failure");
         }
         const scheduled = { when, callback, payload };

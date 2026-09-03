@@ -1,9 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Result } from "effect";
-import type { SessionAuthority } from "../../src/session-actor/authority";
+import {
+  AuthorityStateSchema,
+  StableStateSchema,
+  type SessionAuthority,
+} from "../../src/session-actor/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
+import { validateAuthority } from "../../src/session-actor/reducer";
 import {
   SessionActorProjectionUnavailable,
+  publicView,
   sessionProjectionFromActor,
   sessionViewFromActor,
 } from "../../src/session-actor/public-view";
@@ -237,5 +243,55 @@ describe("session actor public projection", () => {
     assert.ok(Result.isSuccess(result));
     assert.strictEqual(result.success.status, "warm");
     assert.strictEqual(result.success.deleting, true);
+    assert.deepStrictEqual(result.success.operation, {
+      kind: "vaporize",
+      nonce: "vaporize-nonce",
+      startedAt: UPDATED_AT,
+      mode: "executing",
+      phase: "RuntimeAccessRevoked",
+    });
+  });
+
+  it("projects a reconciling checkpoint as an owned operation with no public actions", () => {
+    const warm = warmAuthority();
+    assert.ok(AuthorityStateSchema.guards.Stable(warm.state));
+    assert.ok(StableStateSchema.guards.Warm(warm.state.stable));
+    const checkpoint: SessionAuthority = {
+      ...warm,
+      revision: 9,
+      state: {
+        _tag: "Transitioning",
+        transition: {
+          _tag: "Checkpoint",
+          nonce: "checkpoint-nonce",
+          origin: "Warm",
+          attempt: "checkpoint-attempt",
+          startedAt: UPDATED_AT,
+          lastProgressAt: UPDATED_AT,
+          deadlineAt: HARD_CAP_AT,
+          mode: "reconciling",
+          phase: "Syncing",
+          proof: {
+            readiness: warm.state.stable.readiness,
+            piStoppedAt: UPDATED_AT,
+            backup: warm.state.stable.backups,
+          },
+        },
+      },
+    };
+    assert.isTrue(validateAuthority(checkpoint));
+    const result = sessionProjectionFromActor(checkpoint, metadata(), UPDATED_AT, PROJECTED_AT);
+    assert.ok(Result.isSuccess(result));
+    assert.deepInclude(result.success, {
+      status: "warm",
+      operation: {
+        kind: "snapshot",
+        nonce: "checkpoint-nonce",
+        startedAt: UPDATED_AT,
+        mode: "reconciling",
+        phase: "Syncing",
+      },
+    });
+    assert.deepStrictEqual(publicView(checkpoint)?.availableActions, []);
   });
 });

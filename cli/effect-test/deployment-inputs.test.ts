@@ -180,6 +180,7 @@ describe("standalone deployment archive", () => {
       "scripts/container-control-plane.mjs",
       "scripts/deploy-production.mjs",
       "scripts/is-direct-run.mjs",
+      "patches/@cloudflare+sandbox+0.12.9.patch",
       "patches/alchemy+2.0.0-beta.76.patch",
       "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch",
     ] as const;
@@ -198,6 +199,9 @@ describe("standalone deployment archive", () => {
       "COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs",
     );
     expect(dockerfile).toContain(
+      "COPY patches/@cloudflare+sandbox+0.12.9.patch patches/@cloudflare+sandbox+0.12.9.patch",
+    );
+    expect(dockerfile).toContain(
       "COPY patches/alchemy+2.0.0-beta.76.patch patches/alchemy+2.0.0-beta.76.patch",
     );
     expect(dockerfile).toContain(
@@ -206,6 +210,11 @@ describe("standalone deployment archive", () => {
     expect(
       dockerfile.indexOf(
         "COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs",
+      ),
+    ).toBeLessThan(npmCiIndex);
+    expect(
+      dockerfile.indexOf(
+        "COPY patches/@cloudflare+sandbox+0.12.9.patch patches/@cloudflare+sandbox+0.12.9.patch",
       ),
     ).toBeLessThan(npmCiIndex);
     expect(

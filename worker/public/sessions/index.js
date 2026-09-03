@@ -444,7 +444,9 @@ function applyProjectedSessions(next) {
   if (!sessions.some((session) => session.id === selectedSessionId)) {
     selectedSessionId =
       sessions.find((session) =>
-        ["warm", "booting", "stopping"].includes(sessionDisplayStatus(session.status)),
+        ["warm", "booting", "stopping", "saving", "resuming"].includes(
+          sessionDisplayStatus(session.status, undefined, session.deleting, session.operation),
+        ),
       )?.id || sessions[0]?.id;
   }
   finishProjectedCleanup(cleanup.completedIds);

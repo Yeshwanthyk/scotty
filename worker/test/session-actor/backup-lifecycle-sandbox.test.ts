@@ -21,11 +21,11 @@ import {
 
 const attempt: BackupLifecycleAttempt = {
   sessionId: "session-backup",
-  attempt: "checkpoint-attempt-1",
+  attempt: "1ed4a6f4-7d9f-46b9-8a07-ef6d9c1dd64c",
   runtimeGeneration: "runtime-generation-1",
 };
 const backup: DirectoryBackup = {
-  id: "backup-1",
+  id: attempt.attempt,
   dir: "/workspace/session-backup",
   localBucket: true,
 };
@@ -73,8 +73,7 @@ const authService = (overrides: Partial<ContainerAuth["Service"]> = {}): Contain
 const backupCapabilities = (overrides: Partial<BackupCapabilities> = {}): BackupCapabilities => ({
   createBackup: async () => backup,
   restoreBackup: async (value) => ({ success: true, id: value.id, dir: value.dir }),
-  listObjects: async () => ({ keys: [] }),
-  deleteObjects: async () => undefined,
+  deleteBackup: async () => undefined,
   ...overrides,
 });
 
@@ -161,12 +160,14 @@ describe("BackupLifecycleSandbox", () => {
       );
 
       assert.strictEqual(options?.name, sandboxBackupAttemptName(attempt));
+      assert.match(attempt.attempt, /^[0-9a-f-]{36}$/u);
+      assert.strictEqual(options?.backupId, attempt.attempt);
       assert.deepStrictEqual(calls, [
         "mkdir",
         "marker",
         "sync",
         "create",
-        "restore:backup-1",
+        `restore:${backup.id}`,
         "read-marker",
       ]);
       assert.strictEqual(confirmed.backupId, backup.id);
@@ -221,7 +222,7 @@ describe("BackupLifecycleSandbox", () => {
         Effect.flatMap(BackupLifecycleSandbox, (provider) =>
           provider.restoreCurrentBackup({
             sessionId: attempt.sessionId,
-            attempt: "resume-attempt-1",
+            attempt: "e14136de-111f-4f6b-bf71-7cfbe7794544",
             runtimeGeneration: "resume-runtime-generation",
             backup: {
               backupId: backup.id,
@@ -238,7 +239,7 @@ describe("BackupLifecycleSandbox", () => {
               stream(
                 `${JSON.stringify({
                   sessionId: attempt.sessionId,
-                  attempt: "source-checkpoint-attempt",
+                  attempt: "8a650fe2-bc8b-42fc-a163-7df0eb28ae18",
                   runtimeGeneration: sourceRuntimeGeneration,
                 })}\n`,
               ),

@@ -373,16 +373,8 @@ export const createControllerLayer: Layer.Layer<
         yield* validateExistingMetadata(inspected.metadata, request);
       if (Predicate.isTagged(inspected, "Existing") && inspected.authority !== null) {
         const existing = yield* validateResultAuthority(inspected.authority, request.session.id);
-        const resumed = AuthorityStateSchema.guards.Transitioning(existing.state)
-          ? yield* actor.resume({
-              timestamp: request.timestamp,
-              correlationId: request.correlationId,
-            })
-          : undefined;
-        const authority =
-          resumed === undefined ? existing : yield* authorityFromActor(resumed, existing);
-        yield* scrubIfSettled(metadataStore, authority, inspected.metadata.createAttempt);
-        return yield* classify(authority, true);
+        yield* scrubIfSettled(metadataStore, existing, inspected.metadata.createAttempt);
+        return yield* classify(existing, true);
       }
 
       const proposedMetadata = yield* Effect.fromResult(
@@ -404,16 +396,8 @@ export const createControllerLayer: Layer.Layer<
         yield* validateExistingMetadata(reservation.metadata, request);
       if (Predicate.isTagged(reservation, "Existing") && reservation.authority !== null) {
         const existing = yield* validateResultAuthority(reservation.authority, request.session.id);
-        const resumed = AuthorityStateSchema.guards.Transitioning(existing.state)
-          ? yield* actor.resume({
-              timestamp: request.timestamp,
-              correlationId: request.correlationId,
-            })
-          : undefined;
-        const authority =
-          resumed === undefined ? existing : yield* authorityFromActor(resumed, existing);
-        yield* scrubIfSettled(metadataStore, authority, reservation.metadata.createAttempt);
-        return yield* classify(authority, true);
+        yield* scrubIfSettled(metadataStore, existing, reservation.metadata.createAttempt);
+        return yield* classify(existing, true);
       }
       const activeMetadata = reservation.metadata;
       if (

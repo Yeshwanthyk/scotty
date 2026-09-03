@@ -1173,7 +1173,7 @@ describe("production deployment ownership", () => {
   it("tracks every scheduled session callback in the cancellation inventory", () => {
     const session = read("worker/src/session/object.ts");
     const lifecycle = read("worker/src/session/lifecycle.ts");
-    const scheduled = [...session.matchAll(/this\.schedule\([\s\S]{0,120}?"([^"]+)"/gu)].map(
+    const scheduled = [...session.matchAll(/this\.schedule\([\s\S]{0,200}?,\s*"([^"]+)"/gu)].map(
       (match) => match[1],
     );
     const inventoryBlock =

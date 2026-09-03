@@ -47,6 +47,7 @@ export function sessionDisplayStatus(
   value: unknown,
   pendingAction: unknown,
   deleting?: unknown,
+  operation?: { readonly kind?: unknown },
 ): string;
 export function sessionKeyboardAction(
   key: unknown,

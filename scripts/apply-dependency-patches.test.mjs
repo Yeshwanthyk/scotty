@@ -17,6 +17,7 @@ const script = fileURLToPath(new URL("./apply-dependency-patches.mjs", import.me
 describe("dependency patch verification", () => {
   it("keeps one first-party apply command and a non-mutating check mode", () => {
     assert.deepEqual(DEPENDENCY_PATCHES, [
+      "patches/@cloudflare+sandbox+0.12.9.patch",
       "patches/alchemy+2.0.0-beta.76.patch",
       "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch",
     ]);

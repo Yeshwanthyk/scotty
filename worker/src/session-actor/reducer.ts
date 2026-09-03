@@ -133,16 +133,35 @@ const validBackupIdentity = (backup: BackupIdentity): boolean =>
     (validTimestamp(backup.confirmedAt) &&
       Date.parse(backup.preparedAt) <= Date.parse(backup.confirmedAt)));
 
+const confirmedBackup = (backup: BackupProof): BackupIdentity | null => {
+  const confirmed = backup.confirmed ?? backup.prepared;
+  return confirmed !== null &&
+    confirmed.confirmedAt !== null &&
+    confirmed.backupId === backup.currentBackupId
+    ? confirmed
+    : null;
+};
+
 const validBackup = (backup: BackupProof, currentRequired: boolean): boolean => {
   if (new Set(backup.ownedBackupIds).size !== backup.ownedBackupIds.length) return false;
-  if (backup.prepared !== null && !validBackupIdentity(backup.prepared)) return false;
-  if (backup.currentBackupId === null) return !currentRequired;
-  return (
+  if (
     backup.prepared !== null &&
-    backup.prepared.confirmedAt !== null &&
-    backup.prepared.backupId === backup.currentBackupId &&
-    backup.ownedBackupIds.includes(backup.currentBackupId)
-  );
+    (!validBackupIdentity(backup.prepared) ||
+      !backup.ownedBackupIds.includes(backup.prepared.backupId))
+  )
+    return false;
+  if (backup.confirmed !== undefined && backup.confirmed !== null) {
+    if (
+      !validBackupIdentity(backup.confirmed) ||
+      backup.confirmed.confirmedAt === null ||
+      !backup.ownedBackupIds.includes(backup.confirmed.backupId) ||
+      backup.confirmed.backupId !== backup.currentBackupId
+    )
+      return false;
+  }
+  if (backup.currentBackupId === null)
+    return !currentRequired && (backup.confirmed === undefined || backup.confirmed === null);
+  return confirmedBackup(backup) !== null && backup.ownedBackupIds.includes(backup.currentBackupId);
 };
 
 const validCleanup = (cleanup: CleanupProof, complete: boolean): boolean =>
@@ -187,7 +206,7 @@ const validSleeping = (stable: StableCase<"Sleeping">): boolean =>
   stable.stop.requestedAt <= stable.stop.observedAt;
 
 const validFailedBackup = (stable: StableCase<"Failed">): boolean =>
-  (stable.backup === null && stable.ownedBackupIds.length === 0 && stable.wakeSource === null) ||
+  (stable.backup === null && stable.wakeSource === null) ||
   (stable.backup !== null &&
     stable.backup.confirmedAt !== null &&
     validBackupIdentity(stable.backup) &&
@@ -195,6 +214,7 @@ const validFailedBackup = (stable: StableCase<"Failed">): boolean =>
 
 const validFailed = (stable: StableCase<"Failed">): boolean =>
   nonEmpty(stable.code) &&
+  new Set(stable.ownedBackupIds).size === stable.ownedBackupIds.length &&
   ((stable.origin === "Absent" && stable.lastStable === null) ||
     (stable.origin !== "Absent" && stable.lastStable !== null)) &&
   validFailedBackup(stable) &&
@@ -828,7 +848,10 @@ const reconcile = (
   const reconciling = {
     ...transition,
     mode: "reconciling" as const,
-    lastProgressAt: input.timestamp,
+    lastProgressAt:
+      Date.parse(input.timestamp) > Date.parse(transition.deadlineAt)
+        ? transition.deadlineAt
+        : input.timestamp,
   };
   if (!validTransitionProof(reconciling)) return reject("invalid_progress");
   return accept(
@@ -839,14 +862,50 @@ const reconcile = (
     journal(input, reconciling, eventType, resultCode),
     [
       {
-        _tag: "ReconcileTransition",
-        transitionKind: transitionKind(transition),
-        phase: transition.phase,
+        _tag: "ArmReconciliation",
+        deadlineAt: transition.deadlineAt,
         transitionNonce: transition.nonce,
         attempt: transition.attempt,
       },
     ],
   );
+};
+
+const confirmedBackupOf = (transition: Transition): BackupIdentity | null =>
+  Match.valueTags(transition, {
+    Create: () => null,
+    Checkpoint: ({ proof }) => confirmedBackup(proof.backup),
+    Sleep: ({ proof }) => confirmedBackup(proof.backup),
+    Resume: ({ proof }) => proof.backup,
+    WarmWork: ({ proof }) => confirmedBackup(proof.backups),
+    Vaporize: () => null,
+  });
+
+const ownedBackupsOfTransition = (transition: Transition): ReadonlyArray<string> =>
+  Match.valueTags(transition, {
+    Create: () => [],
+    Checkpoint: ({ proof }) => proof.backup.ownedBackupIds,
+    Sleep: ({ proof }) => proof.backup.ownedBackupIds,
+    Resume: ({ proof }) => proof.ownedBackupIds,
+    WarmWork: ({ proof }) => proof.backups.ownedBackupIds,
+    Vaporize: ({ proof }) => proof.ownedBackupIds,
+  });
+
+const failedFrom = (transition: Transition, code: string): StableCase<"Failed"> => {
+  const backup = confirmedBackupOf(transition);
+  return {
+    _tag: "Failed",
+    code,
+    actionable: backup !== null,
+    origin: transition.origin,
+    lastStable: failedLastStable(transition),
+    backup,
+    ownedBackupIds: [...ownedBackupsOfTransition(transition)],
+    wakeSource:
+      backup?.confirmedAt === null || backup === null
+        ? null
+        : { backupId: backup.backupId, confirmedAt: backup.confirmedAt },
+  };
 };
 
 type DeadlineInput = Extract<SessionActorInput, { _tag: "DeadlineAlarm" }>;
@@ -855,12 +914,23 @@ const handleDeadline = (
   input: DeadlineInput,
   transition: Transition,
 ): Decision => {
-  if (transition.mode === "reconciling") return reject("duplicate");
   if (
     input.expectedDeadlineAt !== transition.deadlineAt ||
     Date.parse(input.timestamp) < Date.parse(transition.deadlineAt)
   )
     return reject("stale_phase");
+  if (!TransitionSchema.guards.Vaporize(transition)) {
+    const failed = failedFrom(transition, "transition_deadline_elapsed");
+    if (!validStable(failed)) return reject("invalid_progress");
+    return accept(
+      current.revision,
+      current.session,
+      current.hardCap,
+      { _tag: "Stable", stable: failed },
+      journal(input, transition, "completed", "transition_deadline_elapsed"),
+      [],
+    );
+  }
   return reconcile(current, input, transition, "deadline_reconciling", "deadline_elapsed");
 };
 
@@ -873,13 +943,24 @@ const handleUnknown = (
   input: UnknownInput,
   transition: Transition,
 ): Decision => {
-  if (transition.mode === "reconciling") return reject("duplicate");
   const runtime = runtimeProof(transition);
   if (
     input.expectedProviderRuntimeId !== null &&
     (runtime === null || input.expectedProviderRuntimeId !== runtime.providerRuntimeId)
   )
     return reject("stale_generation");
+  if (transition.mode === "reconciling" && !TransitionSchema.guards.Vaporize(transition)) {
+    const failed = failedFrom(transition, "reconciliation_outcome_unknown");
+    if (!validStable(failed)) return reject("invalid_progress");
+    return accept(
+      current.revision,
+      current.session,
+      current.hardCap,
+      { _tag: "Stable", stable: failed },
+      journal(input, transition, "completed", "reconciliation_outcome_unknown"),
+      [],
+    );
+  }
   return reconcile(current, input, transition, "provider_reconciling", input.resultCode);
 };
 
@@ -901,15 +982,10 @@ const handleFailure = (
 ): Decision => {
   if (TransitionSchema.guards.Vaporize(transition))
     return reconcile(current, input, transition, "provider_reconciling", input.resultCode);
+  const retained = failedFrom(transition, input.failureCode);
   const failed: StableState = {
-    _tag: "Failed",
-    code: input.failureCode,
-    actionable: input.actionable,
-    origin: transition.origin,
-    lastStable: failedLastStable(transition),
-    backup: input.backup,
-    ownedBackupIds: input.ownedBackupIds,
-    wakeSource: input.wakeSource,
+    ...retained,
+    ownedBackupIds: [...new Set([...retained.ownedBackupIds, ...input.ownedBackupIds])],
   };
   if (!validStable(failed)) return reject("invalid_progress");
   return accept(

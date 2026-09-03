@@ -11,6 +11,7 @@ COPY scripts/cloudflare-topology-data.mjs scripts/cloudflare-topology-data.mjs
 COPY scripts/container-control-plane.mjs scripts/container-control-plane.mjs
 COPY scripts/deploy-production.mjs scripts/deploy-production.mjs
 COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs
+COPY patches/@cloudflare+sandbox+0.12.9.patch patches/@cloudflare+sandbox+0.12.9.patch
 COPY patches/alchemy+2.0.0-beta.76.patch patches/alchemy+2.0.0-beta.76.patch
 COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund

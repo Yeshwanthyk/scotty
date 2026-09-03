@@ -1,6 +1,7 @@
 import { Context, Effect, Layer, Schema } from "effect";
 
 export interface ActorAlarmFence {
+  readonly kind: "deadline" | "reconcile";
   readonly alarmId: string;
   readonly revision: number;
   readonly transitionNonce: string;
@@ -9,6 +10,17 @@ export interface ActorAlarmFence {
   readonly expectedDeadlineAt: string;
   readonly correlationId: string;
 }
+
+export const actorAlarmId = (
+  kind: ActorAlarmFence["kind"],
+  transitionNonce: string,
+  attempt: string,
+  deadlineAt: string,
+  expectedPhase?: string,
+): string =>
+  kind === "deadline"
+    ? `${transitionNonce}:${attempt}:${deadlineAt}`
+    : `${transitionNonce}:${attempt}:reconcile:${expectedPhase ?? "unknown"}:${deadlineAt}`;
 
 export class ActorAlarmOutcomeUnknown extends Schema.TaggedError<ActorAlarmOutcomeUnknown>()(
   "ActorAlarmOutcomeUnknown",

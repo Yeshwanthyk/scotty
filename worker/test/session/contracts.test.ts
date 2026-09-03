@@ -129,7 +129,7 @@ describe("request contracts", () => {
     assert.throws(() => parseSessionId("ABCDEF"), /session id/u);
   });
 
-  it("derives projection freshness without exposing operations", () => {
+  it("derives projection freshness with the authoritative active operation", () => {
     const record: SessionRecord = {
       id: "a0b1c2d3e4f5",
       title: "Package Pi extensions",
@@ -149,7 +149,7 @@ describe("request contracts", () => {
       sandboxBundle: { digest: null },
     };
     const projection = toProjection(record, new Date("2026-01-01T00:00:02.000Z"));
-    assert.ok(!("operation" in projection));
+    assert.deepStrictEqual(projection.operation, record.operation);
     assert.isUndefined(projection.deleting);
     assert.deepInclude(toSessionView(projection, Date.parse("2026-01-01T01:00:00.000Z")), {
       title: "Package Pi extensions",
@@ -169,7 +169,11 @@ describe("request contracts", () => {
       new Date("2026-01-01T00:00:04.000Z"),
     );
     assert.strictEqual(deleting.deleting, true);
-    assert.ok(!("operation" in deleting));
+    assert.deepStrictEqual(deleting.operation, {
+      kind: "vaporize",
+      nonce: "private-delete",
+      startedAt: "2026-01-01T00:00:03.000Z",
+    });
   });
 
   it("floors partial seconds in session views", () => {

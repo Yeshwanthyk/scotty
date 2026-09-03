@@ -203,7 +203,15 @@ const applyResult = (
               committed,
               transition,
               "Syncing",
-              transition.proof,
+              {
+                ...transition.proof,
+                backup: {
+                  ...transition.proof.backup,
+                  ownedBackupIds: [
+                    ...new Set([...transition.proof.backup.ownedBackupIds, transition.attempt]),
+                  ],
+                },
+              },
               value.observedAt,
               value.resultCode,
             ),
@@ -224,6 +232,7 @@ const applyResult = (
                   ],
                   prepared: value.backup,
                   currentBackupId: value.backup.backupId,
+                  confirmed: value.backup,
                 },
               },
               value.observedAt,

@@ -4,7 +4,10 @@ import type { EffectIntent } from "./decision";
 import type { SessionActorInput } from "./input";
 import type { LifecycleJournalEvent } from "./journal";
 
-export type ProviderEffectIntent = Exclude<EffectIntent, { readonly _tag: "ArmDeadline" }>;
+export type ProviderEffectIntent = Exclude<
+  EffectIntent,
+  { readonly _tag: "ArmDeadline" | "ArmReconciliation" }
+>;
 
 export interface CommittedEffectIntent {
   readonly authority: SessionAuthority;

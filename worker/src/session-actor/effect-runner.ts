@@ -1,6 +1,6 @@
 import { Context, Effect, Exit, Layer, Match, Schema } from "effect";
 import { AuthorityStateSchema, type Transition } from "./authority";
-import { ActorAlarmScheduler, type ActorAlarmOutcomeUnknown } from "./alarm";
+import { actorAlarmId, ActorAlarmScheduler, type ActorAlarmOutcomeUnknown } from "./alarm";
 import {
   type CommittedEffectIntent,
   type CommittedProviderEffectIntent,
@@ -127,7 +127,32 @@ export const actorEffectRunnerLayer: Layer.Layer<
           ArmDeadline: (intent) =>
             alarms
               .arm({
-                alarmId: `${intent.transitionNonce}:${intent.attempt}:${intent.deadlineAt}`,
+                kind: "deadline",
+                alarmId: actorAlarmId(
+                  "deadline",
+                  intent.transitionNonce,
+                  intent.attempt,
+                  intent.deadlineAt,
+                ),
+                revision: committed.authority.revision,
+                transitionNonce: intent.transitionNonce,
+                attempt: intent.attempt,
+                expectedPhase: transition.phase,
+                expectedDeadlineAt: intent.deadlineAt,
+                correlationId: committed.journalEvent.correlationId,
+              })
+              .pipe(Effect.as({ _tag: "NoObservation" } as const)),
+          ArmReconciliation: (intent) =>
+            alarms
+              .arm({
+                kind: "reconcile",
+                alarmId: actorAlarmId(
+                  "reconcile",
+                  intent.transitionNonce,
+                  intent.attempt,
+                  intent.deadlineAt,
+                  transition.phase,
+                ),
                 revision: committed.authority.revision,
                 transitionNonce: intent.transitionNonce,
                 attempt: intent.attempt,
