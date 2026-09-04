@@ -8,8 +8,9 @@ import {
   type ConversationTurn,
   type ToolActivity,
 } from "../domain/conversation";
-import { colors, spacing } from "../theme/tokens.stylex";
+import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { Button } from "./Button";
+import { Markdown } from "./Markdown";
 
 const styles = stylex.create({
   viewport: {
@@ -37,6 +38,9 @@ const styles = stylex.create({
     color: colors.muted,
     cursor: "pointer",
     listStyle: "none",
+    transitionProperty: "background-color, color",
+    transitionDuration: motion.fast,
+    transitionTimingFunction: motion.easeOut,
     ":hover": { color: colors.ink },
     "::-webkit-details-marker": { display: "none" },
     "@media (max-width: 720px)": {
@@ -99,6 +103,12 @@ const styles = stylex.create({
     paddingBlock: "28px 8px",
     display: "grid",
     gap: spacing.lg,
+    animationName: stylex.keyframes({
+      from: { opacity: 0, transform: "translateY(6px)" },
+      to: { opacity: 1, transform: "translateY(0)" },
+    }),
+    animationDuration: motion.standard,
+    animationTimingFunction: motion.easeOut,
   },
   userMessage: {
     maxWidth: "min(620px, 92%)",
@@ -111,14 +121,15 @@ const styles = stylex.create({
     fontSize: "14px",
     lineHeight: 1.55,
     whiteSpace: "pre-wrap",
+    animationName: stylex.keyframes({
+      from: { opacity: 0, transform: "translateY(4px)" },
+      to: { opacity: 1, transform: "translateY(0)" },
+    }),
+    animationDuration: motion.standard,
+    animationTimingFunction: motion.easeOut,
   },
   assistantMessage: {
     maxWidth: "68ch",
-    margin: 0,
-    color: colors.ink,
-    fontSize: "14px",
-    lineHeight: 1.7,
-    whiteSpace: "pre-wrap",
   },
   workingHeader: {
     display: "flex",
@@ -164,6 +175,12 @@ const styles = stylex.create({
   tool: {
     position: "relative",
     borderRadius: "7px",
+    animationName: stylex.keyframes({
+      from: { opacity: 0, transform: "translateY(3px)" },
+      to: { opacity: 1, transform: "translateY(0)" },
+    }),
+    animationDuration: motion.fast,
+    animationTimingFunction: motion.easeOut,
     backgroundColor: "transparent",
   },
   toolSummary: {
@@ -176,6 +193,9 @@ const styles = stylex.create({
     cursor: "pointer",
     listStyle: "none",
     borderRadius: "7px",
+    transitionProperty: "background-color",
+    transitionDuration: motion.fast,
+    transitionTimingFunction: motion.easeOut,
     ":hover": { backgroundColor: "rgb(255 255 255 / 0.035)" },
     "::-webkit-details-marker": { display: "none" },
   },
@@ -301,7 +321,9 @@ function TurnContent({
         </div>
       )}
       {assistant.length === 0 ? null : (
-        <p {...stylex.props(styles.assistantMessage)}>{assistant}</p>
+        <div {...stylex.props(styles.assistantMessage)}>
+          <Markdown source={assistant} />
+        </div>
       )}
     </>
   );
@@ -409,7 +431,12 @@ export function Conversation({
           <CompletedTurn key={turn.id} turn={turn} />
         ))}
         {active === undefined ? null : (
-          <article aria-label="Current turn" aria-busy="true" {...stylex.props(styles.activeTurn)}>
+          <article
+            aria-label="Current turn"
+            aria-busy="true"
+            key={active.id}
+            {...stylex.props(styles.activeTurn)}
+          >
             <div {...stylex.props(styles.workingHeader)}>
               <span {...stylex.props(styles.workingLabel)}>
                 <LoaderCircle aria-hidden {...stylex.props(styles.spin)} />
@@ -428,12 +455,12 @@ export function Conversation({
               </Button>
             </div>
             <TurnContent assistant="" turn={active} />
-            <p aria-live="polite" {...stylex.props(styles.assistantMessage)}>
-              {streamedTextAt(active.assistant, visibleCharacters)}
+            <div aria-live="polite" {...stylex.props(styles.assistantMessage)}>
+              <Markdown source={streamedTextAt(active.assistant, visibleCharacters)} />
               {visibleCharacters < active.assistant.length ? (
                 <span aria-hidden {...stylex.props(styles.caret)} />
               ) : null}
-            </p>
+            </div>
           </article>
         )}
       </div>

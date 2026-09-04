@@ -134,10 +134,16 @@ const styles = stylex.create({
     animationTimingFunction: motion.easeOut,
   },
   page: {
+    height: "100dvh",
     minHeight: "100dvh",
     display: "grid",
     gridTemplateRows: "auto minmax(0, 1fr)",
+    overflow: "hidden",
     backgroundColor: colors.space,
+    "@media (max-width: 760px)": {
+      height: "calc(100dvh - 52px)",
+      minHeight: "calc(100dvh - 52px)",
+    },
   },
   topbar: {
     minHeight: "64px",
@@ -174,13 +180,17 @@ const styles = stylex.create({
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   },
   workspace: {
-    width: "min(1040px, 100%)",
-    marginInline: "auto",
-    padding: "clamp(24px, 5vw, 64px)",
+    minHeight: 0,
+    width: "100%",
+    padding: "clamp(22px, 3vw, 40px) clamp(24px, 4vw, 52px) 0",
     display: "grid",
-    alignContent: "start",
-    gap: spacing.xxl,
-    "@media (max-width: 720px)": { padding: spacing.lg, gap: spacing.xl },
+    gridTemplateRows: "auto minmax(0, 1fr)",
+    gap: spacing.xl,
+    overflow: "hidden",
+    "@media (max-width: 720px)": {
+      padding: `${spacing.lg} ${spacing.lg} 0`,
+      gap: spacing.lg,
+    },
   },
   headingRow: {
     display: "flex",
@@ -317,32 +327,9 @@ const styles = stylex.create({
     animationTimingFunction: motion.easeOut,
   },
   surface: {
-    height: "min(680px, calc(100dvh - 280px))",
-    minHeight: "420px",
-    display: "grid",
-    gridTemplateRows: "auto minmax(0, 1fr)",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: colors.line,
-    borderRadius: "12px",
-    backgroundColor: colors.panel,
-    "@media (max-width: 720px)": {
-      height: "calc(100dvh - 230px)",
-      minHeight: "460px",
-    },
+    minHeight: 0,
+    overflow: "hidden",
   },
-  surfaceHeader: {
-    minHeight: "48px",
-    paddingInline: spacing.lg,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.md,
-    borderBottomWidth: "1px",
-    borderBottomStyle: "solid",
-    borderBottomColor: colors.line,
-  },
-  surfaceTitle: { margin: 0, color: colors.muted, fontSize: "12px", fontWeight: 650 },
   body: {
     padding: "clamp(24px, 6vw, 56px)",
     display: "grid",
@@ -491,10 +478,7 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
             <LifecycleControls presentation={presentation} sessionId={session.id} />
           </section>
 
-          <section {...stylex.props(styles.surface)}>
-            <header {...stylex.props(styles.surfaceHeader)}>
-              <h2 {...stylex.props(styles.surfaceTitle)}>Conversation</h2>
-            </header>
+          <section aria-label="Conversation" {...stylex.props(styles.surface)}>
             <SessionSurface
               eligibility={eligibility}
               presentation={presentation}
