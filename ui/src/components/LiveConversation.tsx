@@ -4,6 +4,7 @@ import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useStat
 import {
   type ConversationFailure,
   type ConversationSnapshot,
+  isConversationLifecycleMismatch,
   readConversation,
   steerConversation,
 } from "../data/conversation-client";
@@ -21,9 +22,10 @@ type ConnectionState =
   | {
       readonly kind: "ready";
       readonly snapshot: ConversationSnapshot;
-      readonly connection: "connected" | "reconnecting";
+      readonly connection: "connected" | "paused" | "reconnecting";
       readonly detail?: string;
     }
+  | { readonly kind: "paused"; readonly detail: string }
   | { readonly kind: "unavailable"; readonly failure: ConversationFailure };
 
 type DeliveryState =
@@ -203,7 +205,11 @@ function UnavailableConversation({
   );
 }
 
-function useConversationConnection(sessionId: string) {
+function useConversationConnection(
+  sessionId: string,
+  runtimeAvailable: boolean,
+  onLifecycleMismatch: () => void,
+) {
   const [connection, setConnection] = useState<ConnectionState>({ kind: "loading" });
   const [refreshGeneration, setRefreshGeneration] = useState(0);
   const verifiedSnapshot = useRef<
@@ -219,6 +225,20 @@ function useConversationConnection(sessionId: string) {
         ? verifiedSnapshot.current.snapshot
         : undefined;
 
+    if (!runtimeAvailable) {
+      setConnection(
+        lastSnapshot === undefined
+          ? { kind: "paused", detail: "Resume this session to continue the conversation." }
+          : {
+              kind: "ready",
+              snapshot: lastSnapshot,
+              connection: "paused",
+              detail: "The transcript is retained. Resume to continue.",
+            },
+      );
+      return;
+    }
+
     const poll = async (): Promise<void> => {
       controller = new AbortController();
       const result = await readConversation(sessionId, { signal: controller.signal });
@@ -228,6 +248,20 @@ function useConversationConnection(sessionId: string) {
         verifiedSnapshot.current = { sessionId, snapshot: result.snapshot };
         setConnection({ kind: "ready", snapshot: result.snapshot, connection: "connected" });
         timer = window.setTimeout(() => void poll(), conversationPollDelay(result.snapshot));
+        return;
+      }
+      if (isConversationLifecycleMismatch(result.failure)) {
+        setConnection(
+          lastSnapshot === undefined
+            ? { kind: "paused", detail: failureMessage(result.failure) }
+            : {
+                kind: "ready",
+                snapshot: lastSnapshot,
+                connection: "paused",
+                detail: "The transcript is retained. Resume to continue.",
+              },
+        );
+        onLifecycleMismatch();
         return;
       }
       if (lastSnapshot === undefined)
@@ -249,7 +283,7 @@ function useConversationConnection(sessionId: string) {
       controller?.abort();
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [refreshGeneration, sessionId]);
+  }, [onLifecycleMismatch, refreshGeneration, runtimeAvailable, sessionId]);
 
   return {
     connection,
@@ -259,7 +293,9 @@ function useConversationConnection(sessionId: string) {
 
 const connectionLabelFor = (connection: ConnectionState, active: boolean): string => {
   if (connection.kind === "loading") return "Connecting";
+  if (connection.kind === "paused") return "Session paused";
   if (connection.kind === "unavailable") return "Unavailable";
+  if (connection.connection === "paused") return "Session paused";
   if (connection.connection === "reconnecting") return "Reconnecting";
   return active ? "Live · working" : "Live · ready";
 };
@@ -277,7 +313,7 @@ function ConnectionStatus({
   return (
     <div role="status" aria-live="polite" {...stylex.props(styles.connection)}>
       <span {...stylex.props(styles.connectionIdentity)}>
-        {connection.kind === "unavailable" ? (
+        {connection.kind === "unavailable" || connection.kind === "paused" ? (
           <WifiOff aria-hidden {...stylex.props(styles.connectionIcon, styles.unavailableIcon)} />
         ) : (
           <Wifi
@@ -302,6 +338,16 @@ function ConversationContent({
   readonly retry: () => void;
 }) {
   if (connection.kind === "loading") return <ConversationSkeleton />;
+  if (connection.kind === "paused")
+    return (
+      <div {...stylex.props(styles.empty)}>
+        <div {...stylex.props(styles.emptyInner)}>
+          <WifiOff aria-hidden {...stylex.props(styles.emptyIcon)} />
+          <h3 {...stylex.props(styles.emptyTitle)}>Conversation retained</h3>
+          <p {...stylex.props(styles.emptyCopy)}>{connection.detail}</p>
+        </div>
+      </div>
+    );
   if (connection.kind === "unavailable")
     return <UnavailableConversation failure={connection.failure} retry={retry} />;
   if (connection.snapshot.turns.length === 0) return <EmptyConversation />;
@@ -395,8 +441,20 @@ function ConversationComposer({
   );
 }
 
-export function LiveConversation({ sessionId }: { readonly sessionId: string }) {
-  const { connection, refresh } = useConversationConnection(sessionId);
+export function LiveConversation({
+  onLifecycleMismatch,
+  runtimeAvailable,
+  sessionId,
+}: {
+  readonly onLifecycleMismatch: () => void;
+  readonly runtimeAvailable: boolean;
+  readonly sessionId: string;
+}) {
+  const { connection, refresh } = useConversationConnection(
+    sessionId,
+    runtimeAvailable,
+    onLifecycleMismatch,
+  );
 
   const snapshot = connection.kind === "ready" ? connection.snapshot : undefined;
   const active = snapshot?.turns.some((turn) => turn.state === "streaming") ?? false;
@@ -407,7 +465,7 @@ export function LiveConversation({ sessionId }: { readonly sessionId: string }) 
       <ConversationContent connection={connection} retry={refresh} />
       <ConversationComposer
         active={active}
-        enabled={connection.kind === "ready"}
+        enabled={connection.kind === "ready" && connection.connection === "connected"}
         onAccepted={refresh}
         sessionId={sessionId}
       />

@@ -51,6 +51,9 @@ export type ConversationReadResult =
   | { readonly ok: true; readonly snapshot: ConversationSnapshot }
   | { readonly ok: false; readonly failure: ConversationFailure };
 
+export const isConversationLifecycleMismatch = (failure: ConversationFailure): boolean =>
+  failure.kind === "http" && failure.status === 409 && failure.code === "wrong_state";
+
 export type ConversationSteerResult =
   | { readonly ok: true; readonly status: "accepted" }
   | {

@@ -38,5 +38,12 @@ describe("conversation presentation", () => {
   it("keeps folded previews compact", () => {
     expect(turnPreview(turn({ user: "one\n\n two   three" }))).toBe("one two three");
     expect(turnPreview(turn({ user: "x".repeat(100) }), 12)).toBe(`${"x".repeat(11)}…`);
+    expect(turnPreview(turn({ user: "", assistant: "Research complete." }))).toBe(
+      "Research complete.",
+    );
+    expect(
+      turnPreview(turn({ user: "", assistant: "", activitySummary: "Compacting context" })),
+    ).toBe("Compacting context");
+    expect(turnPreview(turn({ user: "", assistant: "" }))).toBe("Conversation turn");
   });
 });
