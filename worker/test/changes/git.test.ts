@@ -28,6 +28,13 @@ const result = (command: string, stdout: string): ExecResult => ({
   timestamp: "2026-01-01T00:00:00.000Z",
 });
 
+const encodeGitTransport = (value: string): string => {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+};
+
 type ExecOptions = Parameters<SandboxRuntime["Service"]["execChecked"]>[1];
 
 const fakeRuntime = (outputs: ReadonlyMap<string, string>) => {
@@ -82,8 +89,8 @@ describe("Git changed-files adapter", () => {
       const untrackedCommand = gitUntrackedNumstatCommand([statusFile]);
       const fake = fakeRuntime(
         new Map([
-          [GIT_STATUS_COMMAND, status],
-          [trackedCommand, "1\t1\tsrc/app.ts\0"],
+          [GIT_STATUS_COMMAND, encodeGitTransport(status)],
+          [trackedCommand, encodeGitTransport("1\t1\tsrc/app.ts\0")],
           [untrackedCommand, ""],
         ]),
       );
@@ -102,7 +109,8 @@ describe("Git changed-files adapter", () => {
       assert.include(GIT_STATUS_COMMAND, "--no-optional-locks");
       assert.include(trackedCommand, "--literal-pathspecs");
       assert.include(trackedCommand, "--no-ext-diff");
-      assert.strictEqual(untrackedCommand, "printf ''");
+      assert.include(untrackedCommand, "head -c");
+      assert.include(untrackedCommand, "base64");
     }),
   );
 
@@ -113,7 +121,7 @@ describe("Git changed-files adapter", () => {
         { length: 6_000 },
         (_, index) => `1 .M N... 100644 100644 100644 ${hash} ${hash} src/file-${index}.ts\0`,
       ).join("");
-      const fake = fakeRuntime(new Map([[GIT_STATUS_COMMAND, status]]));
+      const fake = fakeRuntime(new Map([[GIT_STATUS_COMMAND, encodeGitTransport(status)]]));
 
       const changes = yield* listGitWorktreeChanges(fake.runtime, "/workspace/session");
 
