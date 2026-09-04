@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import {
+  decodeSessionInventory,
   namedInstallationPath,
   readSessions,
   reconcileContainerInventory,
@@ -38,6 +39,25 @@ const session = (overrides = {}) => ({
 });
 
 describe("Container reconciliation", () => {
+  it("decodes the canonical public session envelope into audit rows", () => {
+    assert.deepEqual(
+      decodeSessionInventory({
+        version: 1,
+        sessions: [
+          {
+            identity: { id: "5794c31210f3" },
+            authority: { kind: "stable", lifecycle: "warm", failure: null },
+            runtime: { provider: "cloudflare", readiness: "unchecked" },
+            times: { capRemainingSeconds: 3_600 },
+            projection: { projectedAt: "2026-07-23T04:00:00.000Z" },
+          },
+        ],
+      }),
+      [session({ hardCapAt: "2026-07-23T05:00:00.000Z" })],
+    );
+    assert.equal(decodeSessionInventory({ version: 1, sessions: [{}] }), undefined);
+  });
+
   it("reads session authority from the explicitly named installation", async () => {
     const home = await mkdtemp(join(tmpdir(), "scotty-container-audit-"));
     const configPath = namedInstallationPath(home, "baseline-v1");
@@ -69,6 +89,28 @@ describe("Container reconciliation", () => {
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  });
+
+  it("reads and projects the canonical public session envelope", async () => {
+    const sessions = await readSessions(
+      { SCOTTY_HOST: "https://baseline.example", SCOTTY_TOKEN: "root-token" },
+      {
+        request: async () =>
+          Response.json({
+            version: 1,
+            sessions: [
+              {
+                identity: { id: "5794c31210f3" },
+                authority: { kind: "transitioning", action: "resume" },
+                runtime: { provider: "cloudflare", readiness: "not-applicable" },
+                times: { capRemainingSeconds: 60 },
+                projection: { projectedAt: "2026-07-23T04:00:00.000Z" },
+              },
+            ],
+          }),
+      },
+    );
+    assert.deepEqual(sessions, [session({ hardCapAt: "2026-07-23T04:01:00.000Z" })]);
   });
 
   it("rejects a named config owned by another installation", async () => {
