@@ -3,6 +3,7 @@ import { CircleAlert, RefreshCw, Send, Wifi, WifiOff } from "lucide-react";
 import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   type ConversationFailure,
+  type ConversationQueueItem,
   type ConversationSnapshot,
   isConversationLifecycleMismatch,
   readConversation,
@@ -100,7 +101,7 @@ const styles = stylex.create({
     lineHeight: 1.6,
   },
   composer: {
-    padding: `${spacing.md} 0 ${spacing.lg}`,
+    padding: `${spacing.md} clamp(0px, 3vw, 32px) ${spacing.lg}`,
     display: "grid",
     justifyItems: "center",
     gap: spacing.sm,
@@ -125,10 +126,12 @@ const styles = stylex.create({
     borderRadius: "14px",
     backgroundColor: colors.control,
     boxShadow: "0 1px 0 rgb(255 255 255 / 0.04) inset, 0 10px 28px rgb(0 0 0 / 0.2)",
-    transitionProperty: "border-color, background-color, box-shadow",
-    transitionDuration: motion.fast,
+    transitionProperty: "width, min-height, border-color, background-color, box-shadow",
+    transitionDuration: motion.standard,
     transitionTimingFunction: motion.easeOut,
     ":focus-within": {
+      width: "min(1040px, 100%)",
+      minHeight: "92px",
       borderColor: colors.focus,
       backgroundColor: colors.panelRaised,
       boxShadow:
@@ -148,10 +151,14 @@ const styles = stylex.create({
     color: colors.ink,
     fontSize: "13px",
     lineHeight: 1.5,
+    transitionProperty: "min-height",
+    transitionDuration: motion.standard,
+    transitionTimingFunction: motion.easeOut,
+    ":focus": { minHeight: "68px" },
     "::placeholder": { color: colors.muted },
   },
   composerFooter: {
-    width: "min(840px, 100%)",
+    width: "min(1040px, 100%)",
     minHeight: "16px",
     display: "flex",
     alignItems: "center",
@@ -163,6 +170,37 @@ const styles = stylex.create({
   deliveryError: { color: colors.danger },
   deliveryWarning: { color: colors.warning },
   sendIcon: { width: "14px", height: "14px", strokeWidth: 1.8 },
+  queue: {
+    width: "min(1040px, 100%)",
+    margin: 0,
+    padding: 0,
+    display: "grid",
+    gap: "4px",
+    listStyle: "none",
+  },
+  queueItem: {
+    minWidth: 0,
+    padding: "6px 8px",
+    display: "grid",
+    gridTemplateColumns: "18px minmax(0, 1fr) auto",
+    alignItems: "center",
+    gap: spacing.sm,
+    borderRadius: "7px",
+    backgroundColor: "rgb(255 255 255 / 0.035)",
+    color: colors.muted,
+    fontSize: "11px",
+  },
+  queueOrder: {
+    color: colors.quiet,
+    fontVariantNumeric: "tabular-nums",
+    textAlign: "center",
+  },
+  queueText: {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  queueMode: { color: colors.quiet, fontSize: "10px" },
 });
 
 const failureMessage = (failure: ConversationFailure): string =>
@@ -377,11 +415,13 @@ function ConversationComposer({
   active,
   enabled,
   onAccepted,
+  queue,
   sessionId,
 }: {
   readonly active: boolean;
   readonly enabled: boolean;
   readonly onAccepted: () => void;
+  readonly queue: ConversationSnapshot["queue"];
   readonly sessionId: string;
 }) {
   const [draft, setDraft] = useState("");
@@ -418,6 +458,7 @@ function ConversationComposer({
 
   return (
     <form onSubmit={(event) => void submit(event)} {...stylex.props(styles.composer)}>
+      <ComposerQueue queue={queue} />
       <div {...stylex.props(styles.composerControl)}>
         <textarea
           aria-label="Message this session"
@@ -453,6 +494,40 @@ function ConversationComposer({
   );
 }
 
+const compactQueueText = (item: ConversationQueueItem): string => {
+  const compact = item.text.replaceAll(/\s+/gu, " ").trim();
+  return compact.length > 120 ? `${compact.slice(0, 119).trimEnd()}…` : compact;
+};
+
+function ComposerQueue({ queue }: { readonly queue: ConversationSnapshot["queue"] }) {
+  const items = [
+    ...queue.steer.map((item) => ({ item, label: "Steer" })),
+    ...queue.followUp.map((item) => ({ item, label: "Queued" })),
+  ];
+  if (items.length === 0) return null;
+  const visible = items.slice(0, 3);
+  return (
+    <ol aria-label="Queued messages" {...stylex.props(styles.queue)}>
+      {visible.map(({ item, label }, index) => (
+        <li key={`${label}-${item.id}`} {...stylex.props(styles.queueItem)}>
+          <span {...stylex.props(styles.queueOrder)}>{index + 1}</span>
+          <span title={item.text} {...stylex.props(styles.queueText)}>
+            {compactQueueText(item)}
+          </span>
+          <small {...stylex.props(styles.queueMode)}>{label}</small>
+        </li>
+      ))}
+      {items.length > visible.length ? (
+        <li {...stylex.props(styles.queueItem)}>
+          <span {...stylex.props(styles.queueOrder)}>+</span>
+          <span {...stylex.props(styles.queueText)}>{items.length - visible.length} more</span>
+          <small {...stylex.props(styles.queueMode)}>Queued</small>
+        </li>
+      ) : null}
+    </ol>
+  );
+}
+
 export function LiveConversation({
   onLifecycleMismatch,
   runtimeAvailable,
@@ -479,6 +554,7 @@ export function LiveConversation({
         active={active}
         enabled={connection.kind === "ready" && connection.connection === "connected"}
         onAccepted={refresh}
+        queue={snapshot?.queue ?? { steer: [], followUp: [] }}
         sessionId={sessionId}
       />
     </div>

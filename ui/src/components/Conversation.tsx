@@ -110,6 +110,11 @@ const styles = stylex.create({
     animationDuration: motion.standard,
     animationTimingFunction: motion.easeOut,
   },
+  latestTurn: {
+    paddingBlock: "28px 8px",
+    display: "grid",
+    gap: spacing.lg,
+  },
   userMessage: {
     maxWidth: "min(620px, 92%)",
     justifySelf: "end",
@@ -333,6 +338,7 @@ function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
   const [open, setOpen] = useState(false);
   return (
     <details
+      data-turn-disclosure="folded"
       onToggle={(event) => setOpen(event.currentTarget.open)}
       open={open}
       {...stylex.props(styles.completedTurn)}
@@ -362,6 +368,8 @@ export function Conversation({
 }) {
   const active = turns.findLast((turn) => turn.state === "streaming");
   const completed = turns.filter((turn) => turn.state !== "streaming");
+  const latestCompleted = active === undefined ? completed.at(-1) : undefined;
+  const foldedCompleted = latestCompleted === undefined ? completed : completed.slice(0, -1);
   const [visibleCompleted, setVisibleCompleted] = useState(3);
   const [generation, setGeneration] = useState(0);
   const [visibleCharacters, setVisibleCharacters] = useState(0);
@@ -415,21 +423,30 @@ export function Conversation({
       {...stylex.props(styles.viewport)}
     >
       <div aria-label="Conversation transcript" {...stylex.props(styles.feed)}>
-        {completed.length > visibleCompleted ? (
+        {foldedCompleted.length > visibleCompleted ? (
           <button
             type="button"
             onClick={() =>
-              setVisibleCompleted((current) => Math.min(completed.length, current + 5))
+              setVisibleCompleted((current) => Math.min(foldedCompleted.length, current + 5))
             }
             {...stylex.props(styles.showEarlier)}
           >
-            Show {Math.min(5, completed.length - visibleCompleted)} earlier{" "}
-            {Math.min(5, completed.length - visibleCompleted) === 1 ? "turn" : "turns"}
+            Show {Math.min(5, foldedCompleted.length - visibleCompleted)} earlier{" "}
+            {Math.min(5, foldedCompleted.length - visibleCompleted) === 1 ? "turn" : "turns"}
           </button>
         ) : null}
-        {completed.slice(-visibleCompleted).map((turn) => (
+        {foldedCompleted.slice(-visibleCompleted).map((turn) => (
           <CompletedTurn key={turn.id} turn={turn} />
         ))}
+        {latestCompleted === undefined ? null : (
+          <article
+            aria-label="Latest response"
+            data-turn-disclosure="latest"
+            {...stylex.props(styles.latestTurn)}
+          >
+            <TurnContent assistant={latestCompleted.assistant} turn={latestCompleted} />
+          </article>
+        )}
         {active === undefined ? null : (
           <article
             aria-label="Current turn"

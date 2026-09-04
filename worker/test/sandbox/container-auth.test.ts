@@ -103,6 +103,44 @@ describe("container managed credential projection", () => {
 });
 
 describe("Pi session production observations", () => {
+  it.effect("refreshes the native terminal launcher as an interactive workspace shell", () =>
+    Effect.gen(function* () {
+      const writes: Array<{ readonly path: string; readonly content: string }> = [];
+      const commands: string[] = [];
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        exec: async (command) => {
+          commands.push(command);
+          return {
+            success: true,
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+            command,
+            duration: 1,
+            timestamp: "2026-09-04T00:00:00.000Z",
+          };
+        },
+        writeFile: async (path, content) => {
+          if (typeof content === "string") writes.push({ path, content });
+        },
+      };
+      const runtimeLayer = sandboxRuntimeLayer(capabilities);
+      const layer = Layer.merge(runtimeLayer, containerAuthLayer.pipe(Layer.provide(runtimeLayer)));
+
+      yield* Effect.flatMap(ContainerAuth, (auth) =>
+        auth.ensureTerminal(SESSION_ID, credentials),
+      ).pipe(Effect.provide(layer));
+
+      assert.strictEqual(writes.length, 1);
+      assert.strictEqual(writes[0]?.path, `/workspace/${SESSION_ID}/.pi-agent/scotty-shell`);
+      assert.include(writes[0]?.content ?? "", `cd '/workspace/${SESSION_ID}'`);
+      assert.include(writes[0]?.content ?? "", "exec /bin/bash --noprofile --norc -i");
+      assert.notInclude(writes[0]?.content ?? "", "scotty-pi-shell");
+      assert.ok(commands.some((command) => command.startsWith("chmod 700 ")));
+    }),
+  );
+
   it.effect("preserves legacy ensure readiness as an HTTP 200 process wait", () =>
     Effect.gen(function* () {
       let waitCalls = 0;
