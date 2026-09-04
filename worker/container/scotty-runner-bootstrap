@@ -86,7 +86,9 @@ chmod 700 "${codex_home}" "${root}/.home"
 chmod 600 "${codex_home}/auth.json" "${codex_home}/config.toml" "${codex_home}/AGENTS.md"
 
 exclude="$(git -C "${root}" rev-parse --absolute-git-dir)/info/exclude"
-grep -qxF ".codex/" "${exclude}" 2>/dev/null || printf ".codex/\n" >>"${exclude}"
+for path in ".codex/" ".home/" ".pi-agent/" ".scotty/"; do
+  grep -qxF "${path}" "${exclude}" 2>/dev/null || printf "%s\n" "${path}" >>"${exclude}"
+done
 
 github_identity="$(gh api user)"
 git_name="$(jq -r '.name // .login' <<<"${github_identity}")"

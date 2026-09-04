@@ -3,7 +3,7 @@ import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "../sandbox/ru
 import {
   CHANGED_FILE_LIMIT,
   PATCH_MAX_BYTES,
-  changedFilesFromGit,
+  changedFilesFromStatuses,
   parseGitStatus,
   type ChangedFile,
   type ChangedFilePatch,
@@ -15,6 +15,12 @@ const PATCH_CAPTURE_BYTES = PATCH_MAX_BYTES + 1;
 const LIST_MAX_BYTES = 512 * 1_024;
 type GitRuntime = Pick<SandboxRuntime["Service"], "execChecked">;
 type StatusFile = ReturnType<typeof parseGitStatus>[number];
+
+const SCOTTY_RUNTIME_DIRECTORIES = [".codex/", ".home/", ".pi-agent/", ".scotty/"];
+
+const isVisibleStatus = (file: StatusFile): boolean =>
+  file.status !== "untracked" ||
+  !SCOTTY_RUNTIME_DIRECTORIES.some((directory) => file.path.startsWith(directory));
 
 const boundedGitReadCommand = (command: string, maxBytes: number): string => {
   const script = [
@@ -112,7 +118,7 @@ const readStatus = Effect.fnUntraced(function* (
   const output = bounded.truncated
     ? bounded.text.slice(0, Math.max(0, bounded.text.lastIndexOf("\0") + 1))
     : bounded.text;
-  const parsed = parseGitStatus(output);
+  const parsed = parseGitStatus(output).filter(isVisibleStatus);
   return {
     output,
     files: parsed.slice(0, CHANGED_FILE_LIMIT),
@@ -145,7 +151,7 @@ export const listGitWorktreeChanges = Effect.fnUntraced(function* (
 ): Effect.fn.Return<ChangedFiles, SandboxRuntimeFailure> {
   const status = yield* readStatus(runtime, root);
   const stats = yield* readStats(runtime, root, status.files);
-  return changedFilesFromGit(status.output, stats.tracked, stats.untracked, status.truncated);
+  return changedFilesFromStatuses(status.files, stats.tracked, stats.untracked, status.truncated);
 });
 
 export const findGitWorktreeChange = Effect.fnUntraced(function* (
@@ -157,8 +163,8 @@ export const findGitWorktreeChange = Effect.fnUntraced(function* (
   const candidate = status.files.find((file) => file.path === path);
   if (candidate === undefined) return undefined;
   const stats = yield* readStats(runtime, root, [candidate]);
-  return changedFilesFromGit(
-    status.output,
+  return changedFilesFromStatuses(
+    [candidate],
     stats.tracked,
     stats.untracked,
     status.truncated,

@@ -31,8 +31,16 @@ const KNOWN_TOKEN_TYPES = new Set([
 ]);
 
 const styles = stylex.create({
-  root: { maxWidth: "68ch", color: colors.ink, fontSize: "14px", lineHeight: 1.7 },
-  paragraph: { margin: `0 0 ${spacing.md}`, textWrap: "pretty" },
+  root: {
+    width: "100%",
+    maxWidth: "68ch",
+    minWidth: 0,
+    color: colors.ink,
+    fontSize: "14px",
+    lineHeight: 1.7,
+    overflowWrap: "anywhere",
+  },
+  paragraph: { margin: `0 0 ${spacing.md}`, overflowWrap: "anywhere", textWrap: "pretty" },
   lastBlock: { marginBottom: 0 },
   heading: {
     margin: `${spacing.xl} 0 ${spacing.sm}`,
@@ -71,6 +79,9 @@ const styles = stylex.create({
     fontSize: "0.88em",
   },
   codeBlock: {
+    boxSizing: "border-box",
+    width: "100%",
+    maxWidth: "100%",
     margin: `0 0 ${spacing.lg}`,
     padding: spacing.lg,
     overflowX: "auto",

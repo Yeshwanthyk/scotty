@@ -157,7 +157,7 @@ const styles = stylex.create({
     borderBottomStyle: "solid",
     borderBottomColor: colors.line,
     backgroundColor: colors.shell,
-    "@media (max-width: 720px)": { minHeight: "52px", paddingInline: spacing.md },
+    "@media (max-width: 720px)": { minHeight: "30px", paddingInline: spacing.md },
   },
   breadcrumb: {
     minWidth: 0,
@@ -166,6 +166,7 @@ const styles = stylex.create({
     gap: spacing.sm,
     color: colors.quiet,
     fontSize: "12px",
+    "@media (max-width: 720px)": { gap: spacing.xs, fontSize: "10px" },
   },
   repo: {
     overflow: "hidden",
@@ -189,8 +190,8 @@ const styles = stylex.create({
     gap: spacing.xl,
     overflow: "hidden",
     "@media (max-width: 720px)": {
-      padding: `${spacing.lg} ${spacing.lg} 0`,
-      gap: spacing.lg,
+      padding: `10px ${spacing.md} 0`,
+      gap: "10px",
     },
   },
   headingRow: {
@@ -198,15 +199,27 @@ const styles = stylex.create({
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: spacing.xl,
-    "@media (max-width: 720px)": { flexDirection: "column", gap: spacing.lg },
+    "@media (max-width: 720px)": { flexDirection: "column", gap: "10px" },
   },
-  titleBlock: { minWidth: 0, display: "grid", gap: spacing.sm },
+  titleBlock: {
+    minWidth: 0,
+    display: "grid",
+    gap: spacing.sm,
+    "@media (max-width: 720px)": {
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      columnGap: spacing.md,
+      rowGap: spacing.xs,
+    },
+  },
   statusLine: {
     display: "flex",
     alignItems: "center",
     gap: spacing.sm,
     color: colors.muted,
     fontSize: "12px",
+    "@media (max-width: 720px)": { order: 2, fontSize: "11px" },
   },
   stateIcon: { width: "14px", height: "14px", color: colors.warning, strokeWidth: 1.8 },
   heading: {
@@ -218,6 +231,12 @@ const styles = stylex.create({
     lineHeight: 1.15,
     letterSpacing: "-0.025em",
     textWrap: "balance",
+    "@media (max-width: 720px)": {
+      width: "100%",
+      order: 1,
+      fontSize: "22px",
+      lineHeight: 1.1,
+    },
   },
   metadata: {
     display: "flex",
@@ -226,6 +245,7 @@ const styles = stylex.create({
     color: colors.quiet,
     fontSize: "12px",
     fontVariantNumeric: "tabular-nums",
+    "@media (max-width: 720px)": { order: 3, gap: spacing.md, fontSize: "11px" },
   },
   metadataItem: { display: "inline-flex", alignItems: "center", gap: "6px" },
   smallIcon: { width: "13px", height: "13px", strokeWidth: 1.8 },
