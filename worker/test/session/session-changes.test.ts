@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 import {
   GIT_STATUS_COMMAND,
   gitPatchCommand,
@@ -6,7 +6,11 @@ import {
   gitUntrackedNumstatCommand,
 } from "../../src/changes/git";
 import type { ChangedFile } from "../../src/changes/contracts";
-import type { SessionAuthority } from "../../src/session-actor/authority";
+import {
+  AuthorityStateSchema,
+  StableStateSchema,
+  type SessionAuthority,
+} from "../../src/session-actor/authority";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import { createSessionHarness, sessionHarnessKeys } from "../support/session-harness";
 import { InMemoryFaultInjectableFake, makeSessionRecord } from "../support";
@@ -38,6 +42,39 @@ const advanceActorRevision = (memory: InMemoryFaultInjectableFake, revision: num
     ...journalTail,
     sequence: revision,
     revision,
+  });
+};
+
+const changeActorRuntimeGeneration = (
+  memory: InMemoryFaultInjectableFake,
+  revision: number,
+): void => {
+  advanceActorRevision(memory, revision);
+  const authority = memory.values.get(sessionHarnessKeys.actorAuthority) as SessionAuthority;
+  assert.ok(AuthorityStateSchema.guards.Stable(authority.state));
+  assert.ok(StableStateSchema.guards.Warm(authority.state.stable));
+  const stable = authority.state.stable;
+  memory.values.set(sessionHarnessKeys.actorAuthority, {
+    ...authority,
+    revision,
+    state: {
+      _tag: "Stable",
+      stable: {
+        ...stable,
+        readiness: {
+          ...stable.readiness,
+          runtime: { ...stable.readiness.runtime, runtimeGeneration: "runtime-generation-2" },
+          supervisor: {
+            ...stable.readiness.supervisor,
+            runtimeGeneration: "runtime-generation-2",
+          },
+          transport: {
+            ...stable.readiness.transport,
+            runtimeGeneration: "runtime-generation-2",
+          },
+        },
+      },
+    },
   });
 };
 
@@ -89,7 +126,9 @@ describe("session changed-files review", () => {
     expect(harness.commands.some((command) => command.includes("../../etc/passwd"))).toBe(false);
   });
 
-  it("fails closed when lifecycle authority changes during a Git read", async () => {
+  it("allows activity-only actor revision changes during a Git read", async () => {
+    const file = changedFile("src/app.ts");
+    const trackedCommand = gitTrackedNumstatCommand([file]);
     const initial = makeSessionRecord();
     const memory = new InMemoryFaultInjectableFake();
     let interleaved = false;
@@ -100,20 +139,47 @@ describe("session changed-files review", () => {
         [sessionHarnessKeys.actorFixtureSession]: initial,
       },
       commandStdout: (command) => {
-        if (command !== GIT_STATUS_COMMAND) return "";
-        if (!interleaved) {
+        if (command === GIT_STATUS_COMMAND) return statusFor(file.path);
+        if (command === trackedCommand) return `1\t1\t${file.path}\0`;
+        if (command === "printf ''" && !interleaved) {
           interleaved = true;
-          // Simulate a lifecycle write and restoration within one clock tick.
           advanceActorRevision(memory, 2);
         }
-        return statusFor("src/app.ts");
+        return "";
+      },
+    });
+
+    await expect(harness.sandbox.listScottyChanges()).resolves.toMatchObject({
+      files: [file],
+    });
+  });
+
+  it("fails closed when the runtime generation changes during a Git read", async () => {
+    const file = changedFile("src/app.ts");
+    const trackedCommand = gitTrackedNumstatCommand([file]);
+    const memory = new InMemoryFaultInjectableFake();
+    let interleaved = false;
+    const harness = await createSessionHarness({
+      rawPiContainerRunning: true,
+      sharedMemory: memory,
+      initialEntries: {
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord(),
+      },
+      commandStdout: (command) => {
+        if (command === GIT_STATUS_COMMAND) return statusFor(file.path);
+        if (command === trackedCommand) return `1\t1\t${file.path}\0`;
+        if (command === "printf ''" && !interleaved) {
+          interleaved = true;
+          changeActorRuntimeGeneration(memory, 2);
+        }
+        return "";
       },
     });
 
     await expect(harness.sandbox.listScottyChanges()).rejects.toMatchObject({ httpStatus: 409 });
   });
 
-  it("fences a missing patch path before returning not found", async () => {
+  it("returns not found after an activity-only revision while finding a missing patch", async () => {
     const initial = makeSessionRecord();
     const memory = new InMemoryFaultInjectableFake();
     const harness = await createSessionHarness({
@@ -130,8 +196,8 @@ describe("session changed-files review", () => {
     });
 
     await expect(harness.sandbox.getScottyChangedFilePatch("src/app.ts")).rejects.toMatchObject({
-      code: "conflict",
-      httpStatus: 409,
+      code: "not_found",
+      httpStatus: 404,
     });
   });
 

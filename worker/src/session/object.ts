@@ -275,6 +275,22 @@ import {
 } from "../changes/git";
 import { parseChangedPath, type ChangedFilePatch, type ChangedFiles } from "../changes/contracts";
 
+const sameRuntimeProof = (
+  left: {
+    readonly providerRuntimeId: string;
+    readonly runtimeGeneration: string;
+    readonly containerIncarnation: string;
+  },
+  right: {
+    readonly providerRuntimeId: string;
+    readonly runtimeGeneration: string;
+    readonly containerIncarnation: string;
+  },
+): boolean =>
+  left.providerRuntimeId === right.providerRuntimeId &&
+  left.runtimeGeneration === right.runtimeGeneration &&
+  left.containerIncarnation === right.containerIncarnation;
+
 type ActorRequestRecovery =
   | { readonly _tag: "NotNeeded"; readonly snapshot: ActorStoreSnapshot }
   | { readonly _tag: "Contended"; readonly snapshot: ActorStoreSnapshot }
@@ -3332,9 +3348,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly requireChangesAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const store = yield* ActorStore;
-    const snapshot = yield* store.read;
-    const authority = snapshot.authority;
-    if (authority === undefined) return yield* notFound("unknown");
+    const initial = yield* store.read;
+    if (initial.authority === undefined) return yield* notFound("unknown");
     const record = yield* this.requireRecordProgram();
     if (record.status !== "warm")
       return yield* wrongState(
@@ -3354,7 +3369,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
         "review changes",
         "The Sandbox runtime is not running",
       );
-    return { record, revision: authority.revision };
+    const current = yield* store.read;
+    const authority = current.authority;
+    if (
+      authority === undefined ||
+      !AuthorityStateSchema.guards.Stable(authority.state) ||
+      !StableStateSchema.guards.Warm(authority.state.stable)
+    )
+      return yield* conflict("Session changed while authorizing changed files");
+    return { record, runtime: authority.state.stable.readiness.runtime };
   });
 
   private readonly listScottyChangesProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -3366,7 +3389,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     const current = yield* this.requireChangesAccessProgram();
-    if (current.revision !== observed.revision)
+    if (!sameRuntimeProof(current.runtime, observed.runtime))
       return yield* conflict("Session changed while reading changed files");
     return changes;
   });
@@ -3385,7 +3408,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     const currentAfterLookup = yield* this.requireChangesAccessProgram();
-    if (currentAfterLookup.revision !== observed.revision)
+    if (!sameRuntimeProof(currentAfterLookup.runtime, observed.runtime))
       return yield* conflict("Session changed while finding the changed file");
     if (file === undefined)
       return yield* new ScottyError("not_found", "Changed file was not found", {
@@ -3398,7 +3421,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     const current = yield* this.requireChangesAccessProgram();
-    if (current.revision !== observed.revision)
+    if (!sameRuntimeProof(current.runtime, observed.runtime))
       return yield* conflict("Session changed while reading the changed file patch");
     return patch;
   });
