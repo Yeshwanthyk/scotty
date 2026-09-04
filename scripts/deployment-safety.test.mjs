@@ -12,6 +12,7 @@ import {
   assessContainerSettlement,
   auditProductionHatchEvidenceTopology,
   assertContainerPlanAuthorized,
+  assertNoActiveInstancesBeforeContainerRollout,
   assertSettledContainerBaseline,
   assertProductionCredentialWrappingKeyBinding,
   CONTAINER_ROLLOUT_ABSENCE_QUIET_MS,
@@ -781,6 +782,41 @@ describe("production deployment ownership", () => {
     );
     assert.equal(resolvedDockerEnvironment, true);
     assert.equal(deployEnvironment.DOCKER_HOST, "unix:///test/docker.sock");
+  });
+
+  it("refuses a Container rollout while a session instance is active", async () => {
+    const active = snapshot({ application: { health: { ...application().health, active: 1 } } });
+    assert.throws(
+      () => assertNoActiveInstancesBeforeContainerRollout(active),
+      /rollout refused.*1 active session instance is running.*Sleep every warm Cloudflare session/u,
+    );
+    assert.doesNotThrow(() => assertNoActiveInstancesBeforeContainerRollout(snapshot()));
+
+    const executed = [];
+    let resolvedDockerEnvironment = false;
+    await assert.rejects(
+      executeProductionDeploySteps(
+        async (step) => {
+          executed.push(step.name);
+          if (step.name === "Check Worker credential binding")
+            return JSON.stringify([{ name: "CREDENTIAL_WRAPPING_KEY", type: "secret_text" }]);
+          if (step.name === "Plan production through Alchemy") return "[SandboxContainer] update\n";
+        },
+        async () => {},
+        {
+          environment: PRODUCTION_TOPOLOGY_ENVIRONMENT,
+          allowContainerRollout: true,
+          readControlPlane: async () => active,
+          resolveDockerEnvironment: async () => {
+            resolvedDockerEnvironment = true;
+            return {};
+          },
+        },
+      ),
+      /rollout refused.*active session instance/u,
+    );
+    assert.equal(executed.includes("Deploy production through Alchemy"), false);
+    assert.equal(resolvedDockerEnvironment, false);
   });
 
   it("requires the exact new rollout to complete and converge", () => {
