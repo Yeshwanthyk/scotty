@@ -2,7 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { access, readFile, rename, unlink } from "node:fs/promises";
+import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createLfRecordParser } from "./scotty-jsonl.mjs";
@@ -79,12 +79,23 @@ const pendingUi = createPendingUiTracker({
 
 const initialPromptPath = resolve(piHome, "initial-prompt");
 const consumedPromptPath = resolve(piHome, "initial-prompt.consumed");
+const sessionPointerPath = resolve(piHome, "scotty-session-id");
+const validSessionId = (value) =>
+  typeof value === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)
+    ? value
+    : undefined;
+const pinnedSessionId = await readFile(sessionPointerPath, "utf8").then(
+  (value) => validSessionId(value.trim()),
+  () => undefined,
+);
 const hasInitialPrompt = await access(initialPromptPath).then(
   () => true,
   () => false,
 );
 const piArgs = ["--mode", "rpc"];
-if (!hasInitialPrompt) piArgs.push("--continue");
+if (!hasInitialPrompt)
+  piArgs.push(...(pinnedSessionId === undefined ? ["--continue"] : ["--session", pinnedSessionId]));
 
 const childEnv = { ...process.env };
 delete childEnv.SCOTTY_PI_BINARY;
@@ -577,6 +588,12 @@ server.listen(port, "0.0.0.0", async () => {
   try {
     const stateResponse = await sendRpc({ type: "get_state" });
     if (stateResponse.success === false) throw new Error("Pi RPC state initialization failed");
+    const sessionId = validSessionId(stateResponse.data?.sessionId);
+    if (sessionId !== undefined) {
+      const nextPointerPath = `${sessionPointerPath}.${randomUUID()}`;
+      await writeFile(nextPointerPath, `${sessionId}\n`, { mode: 0o600 });
+      await rename(nextPointerPath, sessionPointerPath);
+    }
     if (hasInitialPrompt) {
       const initialPrompt = await readFile(initialPromptPath, "utf8");
       await rename(initialPromptPath, consumedPromptPath);
