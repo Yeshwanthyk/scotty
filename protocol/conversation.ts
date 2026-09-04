@@ -7,6 +7,7 @@ export const CONVERSATION_MAX_ID_BYTES = 256;
 export const CONVERSATION_MAX_TEXT_BYTES = 16 * 1024;
 export const CONVERSATION_MAX_TOOL_VALUE_BYTES = 1_200;
 export const CONVERSATION_MAX_ELAPSED_SECONDS = 7 * 24 * 60 * 60;
+export const CONVERSATION_MAX_QUEUE_ITEMS = 100;
 
 const utf8Encoder = new TextEncoder();
 const BoundedConversationStringSchema = Schema.String.check(
@@ -57,6 +58,22 @@ export const CanonicalConversationTurnSchema = Schema.Struct({
 });
 export type CanonicalConversationTurn = typeof CanonicalConversationTurnSchema.Type;
 
+export const CanonicalConversationQueueItemSchema = Schema.Struct({
+  id: ConversationIdSchema,
+  text: BoundedConversationStringSchema,
+});
+export type CanonicalConversationQueueItem = typeof CanonicalConversationQueueItemSchema.Type;
+
+export const CanonicalConversationQueueSchema = Schema.Struct({
+  steer: Schema.Array(CanonicalConversationQueueItemSchema).check(
+    Schema.isMaxLength(CONVERSATION_MAX_QUEUE_ITEMS),
+  ),
+  followUp: Schema.Array(CanonicalConversationQueueItemSchema).check(
+    Schema.isMaxLength(CONVERSATION_MAX_QUEUE_ITEMS),
+  ),
+});
+export type CanonicalConversationQueue = typeof CanonicalConversationQueueSchema.Type;
+
 export const CanonicalConversationTruncationSchema = Schema.Struct({
   turns: Schema.Boolean,
   values: Schema.Boolean,
@@ -69,6 +86,7 @@ export const CanonicalConversationSnapshotSchema = Schema.Struct({
   turns: Schema.Array(CanonicalConversationTurnSchema).check(
     Schema.isMaxLength(CONVERSATION_MAX_TURNS),
   ),
+  queue: CanonicalConversationQueueSchema,
   truncated: CanonicalConversationTruncationSchema,
 });
 export type CanonicalConversationSnapshot = typeof CanonicalConversationSnapshotSchema.Type;

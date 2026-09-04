@@ -20,6 +20,7 @@ import { AppShell } from "../components/AppShell";
 import { Button } from "../components/Button";
 import { Conversation } from "../components/Conversation";
 import { LiveConversation } from "../components/LiveConversation";
+import { SessionWorkbench } from "../components/SessionWorkbench";
 import {
   mutateSessionLifecycle,
   type SessionLifecycleAction,
@@ -479,13 +480,15 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
           </section>
 
           <section aria-label="Conversation" {...stylex.props(styles.surface)}>
-            <SessionSurface
-              eligibility={eligibility}
-              presentation={presentation}
-              onLifecycleMismatch={refreshLifecycle}
-              sessionId={session.id}
-              simulateConversation={fixture && session.id === "warm-working-001"}
-            />
+            <SessionWorkbench runtimeAvailable={eligibility.eligible} sessionId={session.id}>
+              <SessionSurface
+                eligibility={eligibility}
+                presentation={presentation}
+                onLifecycleMismatch={refreshLifecycle}
+                sessionId={session.id}
+                simulateConversation={fixture && session.id === "warm-working-001"}
+              />
+            </SessionWorkbench>
           </section>
         </div>
       </div>

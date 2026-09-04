@@ -699,6 +699,16 @@ export const canonicalConversationSnapshotFromPi = (
       sessionRevision: snapshot.sessionRevision,
     },
     turns,
+    queue: {
+      steer: snapshot.queue.steer.map(({ id, text }) => ({
+        id: stableIdentifier(id, "queued-steer", budget),
+        text: sanitizeText(text, CONVERSATION_MAX_TEXT_BYTES, budget),
+      })),
+      followUp: snapshot.queue.followUp.map(({ id, text }) => ({
+        id: stableIdentifier(id, "queued-follow-up", budget),
+        text: sanitizeText(text, CONVERSATION_MAX_TEXT_BYTES, budget),
+      })),
+    },
     truncated: {
       turns: turnsTruncated,
       values: projection.valuesTruncated || budget.truncated,

@@ -2,9 +2,6 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-// Upgrade-sensitive boundary: Alchemy 2.0.0-beta.76 exposes no public bundler API, so use
-// its exact-pinned compiled WorkerBundle provider rather than maintaining a parallel bundler.
-import { WorkerBundle } from "../node_modules/alchemy/lib/Cloudflare/Workers/Sources/Rolldown.js";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import {
@@ -22,6 +19,14 @@ import {
   RUNNER_WORKER_EXPORTS,
 } from "../cli/src/prebuilt-worker-bundles.ts";
 import { barePackageImports } from "./prebuilt-worker-imports.mjs";
+
+// Upgrade-sensitive boundary: Alchemy 2.0.0-beta.76 exposes no public bundler API, so resolve
+// its exact-pinned compiled WorkerBundle provider from the package entry. A source-relative
+// node_modules path is evaluated relative to Vitest itself when this module runs in its VM.
+const alchemyLibrary = new URL(".", import.meta.resolve("alchemy"));
+const { WorkerBundle } = await import(
+  new URL("Cloudflare/Workers/Sources/Rolldown.js", alchemyLibrary).href
+);
 
 const assertNoBarePackageImports = (label, sources) => {
   const bareImports = barePackageImports(sources);

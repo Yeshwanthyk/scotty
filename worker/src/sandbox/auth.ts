@@ -290,7 +290,8 @@ set -euo pipefail
 
 ${exports}
 
-exec /usr/local/bin/scotty-pi-shell
+cd ${shellQuote(sessionRoot(id))}
+exec /bin/bash --noprofile --norc -i
 `;
 };
 
@@ -622,8 +623,13 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       seed,
       preflight,
       ensureTerminal: Effect.fnUntraced(function* (id, credentials) {
-        const existing = yield* runtime.exec(`test -x ${shellQuote(terminalShellPath(id))}`);
-        if (existing.success) return;
+        const shellPath = terminalShellPath(id);
+        const existing = yield* runtime.exec(`test -x ${shellQuote(shellPath)}`);
+        if (existing.success) {
+          yield* runtime.writeFile(shellPath, terminalShell(id, credentials));
+          yield* runtime.execChecked(`chmod 700 ${shellQuote(shellPath)}`);
+          return;
+        }
         yield* seed(id, credentials);
       }),
       startPiSession,

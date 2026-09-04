@@ -31,6 +31,7 @@ const snapshot = {
       assistant: "The transport is connected.",
     },
   ],
+  queue: { steer: [], followUp: [] },
   truncated: { turns: false, values: false },
 } as const;
 
@@ -62,6 +63,23 @@ describe("conversation client boundary", () => {
       decodeConversationSnapshot({
         ...snapshot,
         turns: [{ ...snapshot.turns[0], elapsedSeconds: 7 * 24 * 60 * 60 + 1 }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("retains the bounded steer and follow-up queue", () => {
+    const queued = {
+      ...snapshot,
+      queue: {
+        steer: [{ id: "steer-1", text: "Adjust the current approach" }],
+        followUp: [{ id: "follow-up-1", text: "Then run the browser proof" }],
+      },
+    };
+    expect(decodeConversationSnapshot(queued)?.queue).toEqual(queued.queue);
+    expect(
+      decodeConversationSnapshot({
+        ...queued,
+        queue: { ...queued.queue, followUp: [{ id: "", text: "invalid" }] },
       }),
     ).toBeUndefined();
   });

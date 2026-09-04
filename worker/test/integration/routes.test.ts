@@ -2102,6 +2102,7 @@ describe("real Hono boundary", () => {
           ],
         },
       ],
+      queue: { steer: [], followUp: [] },
       truncated: { turns: false, values: false },
     });
     const encoded = JSON.stringify(body);

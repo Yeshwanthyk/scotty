@@ -33,7 +33,16 @@ export interface ConversationSnapshot {
   readonly version: 1;
   readonly transport: ConversationTransport;
   readonly turns: ReadonlyArray<ConversationTurn>;
+  readonly queue: {
+    readonly steer: ReadonlyArray<ConversationQueueItem>;
+    readonly followUp: ReadonlyArray<ConversationQueueItem>;
+  };
   readonly truncated: { readonly turns: boolean; readonly values: boolean };
+}
+
+export interface ConversationQueueItem {
+  readonly id: string;
+  readonly text: string;
 }
 
 export type ConversationFailure =
@@ -189,13 +198,31 @@ const decodeTurn = (value: JsonValue): ConversationTurn | undefined => {
   };
 };
 
+const decodeQueueItem = (value: JsonValue): ConversationQueueItem | undefined => {
+  if (
+    !isJsonObject(value) ||
+    !hasExactKeys(value, ["id", "text"]) ||
+    !isBoundedText(value.id, 256) ||
+    value.id.length === 0 ||
+    !isBoundedText(value.text)
+  )
+    return undefined;
+  return { id: value.id, text: value.text };
+};
+
 export const decodeConversationSnapshot = (value: unknown): ConversationSnapshot | undefined => {
   if (
     !isJsonObject(value) ||
-    !hasExactKeys(value, ["version", "transport", "turns", "truncated"]) ||
+    !hasExactKeys(value, ["version", "transport", "turns", "queue", "truncated"]) ||
     value.version !== 1 ||
     !Array.isArray(value.turns) ||
     value.turns.length > MAX_TURNS ||
+    !isJsonObject(value.queue) ||
+    !hasExactKeys(value.queue, ["steer", "followUp"]) ||
+    !Array.isArray(value.queue.steer) ||
+    !Array.isArray(value.queue.followUp) ||
+    value.queue.steer.length > 100 ||
+    value.queue.followUp.length > 100 ||
     !isJsonObject(value.truncated) ||
     !hasExactKeys(value.truncated, ["turns", "values"]) ||
     typeof value.truncated.turns !== "boolean" ||
@@ -204,11 +231,23 @@ export const decodeConversationSnapshot = (value: unknown): ConversationSnapshot
     return undefined;
   const transport = decodeTransport(value.transport);
   const turns = value.turns.map(decodeTurn);
-  if (transport === undefined || turns.some((turn) => turn === undefined)) return undefined;
+  const steer = value.queue.steer.map(decodeQueueItem);
+  const followUp = value.queue.followUp.map(decodeQueueItem);
+  if (
+    transport === undefined ||
+    turns.some((turn) => turn === undefined) ||
+    steer.some((item) => item === undefined) ||
+    followUp.some((item) => item === undefined)
+  )
+    return undefined;
   return {
     version: 1,
     transport,
     turns: turns.filter((turn): turn is ConversationTurn => turn !== undefined),
+    queue: {
+      steer: steer.filter((item): item is ConversationQueueItem => item !== undefined),
+      followUp: followUp.filter((item): item is ConversationQueueItem => item !== undefined),
+    },
     truncated: { turns: value.truncated.turns, values: value.truncated.values },
   };
 };

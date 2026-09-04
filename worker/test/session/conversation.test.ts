@@ -32,6 +32,23 @@ const snapshot = (overrides: Partial<PiConsoleSnapshot> = {}): PiConsoleSnapshot
 });
 
 describe("canonical conversation snapshot mapper", () => {
+  it("projects queued messages without exposing unsafe control text", () => {
+    const result = canonicalConversationSnapshotFromPi(
+      snapshot({
+        queue: {
+          steer: [{ id: "steer-1", text: "Redirect ghp_secret" }],
+          followUp: [{ id: "follow-up-1", text: "Then finish\u0000" }],
+        },
+      }),
+    );
+
+    assert.ok(result);
+    assert.deepStrictEqual(result.queue, {
+      steer: [{ id: "steer-1", text: "Redirect [credential]" }],
+      followUp: [{ id: "follow-up-1", text: "Then finish" }],
+    });
+  });
+
   it("folds Pi messages and tools into a bounded UI-owned turn", () => {
     const result = canonicalConversationSnapshotFromPi(
       snapshot({
@@ -70,6 +87,7 @@ describe("canonical conversation snapshot mapper", () => {
       sequence: 0,
       sessionRevision: 7,
     });
+    assert.deepStrictEqual(result.queue, { steer: [], followUp: [] });
     assert.deepStrictEqual(result.turns, [
       {
         id: "user-1",
