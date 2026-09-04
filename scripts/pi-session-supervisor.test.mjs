@@ -57,6 +57,10 @@ test("Pi session supervisor hydrates, replays commands, and owns extension UI", 
   const tokenFile = path.join(work, "pi-session.token");
   const transportToken = "a".repeat(64);
   await mkdir(piHome, { recursive: true });
+  const sessionId = "123e4567-e89b-42d3-a456-426614174000";
+  const sessionFile = path.join(piHome, "sessions", "workspace", `${sessionId}.jsonl`);
+  await mkdir(path.dirname(sessionFile), { recursive: true });
+  await writeFile(sessionFile, "");
   await writeFile(path.join(piHome, "initial-prompt"), "Start the task");
   await writeFile(tokenFile, transportToken);
   await writeFile(
@@ -72,9 +76,9 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   const command = JSON.parse(line);
   if (command.type === "get_state")
     output({ id: command.id, type: "response", command: command.type, success: true, data: {
-      sessionId: "pi-session-1" + String.fromCodePoint(0x2028) + "safe", isStreaming: false, steeringMode: "one-at-a-time",
+      sessionId: ${JSON.stringify(sessionId)}, isStreaming: false, steeringMode: "one-at-a-time",
       followUpMode: "one-at-a-time", messageCount: messages.length, pendingMessageCount: 0,
-      model, thinkingLevel
+      model, thinkingLevel, sessionFile: ${JSON.stringify(sessionFile)}
     }});
   else if (command.type === "get_messages")
     output({ id: command.id, type: "response", command: command.type, success: true, data: { messages } });
@@ -164,11 +168,12 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
     await readFile(path.join(piHome, "initial-prompt.consumed"), "utf8"),
     "Start the task",
   );
+  assert.equal(await readFile(path.join(piHome, "scotty-session-id"), "utf8"), `${sessionId}\n`);
 
   assert.equal((await fetch(`${url}/snapshot`)).status, 401);
   const transportHeaders = { "x-scotty-pi-session": transportToken };
   const snapshot = await (await fetch(`${url}/snapshot`, { headers: transportHeaders })).json();
-  assert.equal(snapshot.state.sessionId, `pi-session-1${String.fromCodePoint(0x2028)}safe`);
+  assert.equal(snapshot.state.sessionId, sessionId);
   const eventResponse = await fetch(`${url}/events?since=0`, { headers: transportHeaders });
   const eventReader = eventResponse.body.getReader();
   const eventChunk = await eventReader.read();
@@ -385,5 +390,70 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
     code: "extension_ui_response_already_delivered",
     retryable: false,
   });
+  assert.equal(stderr, "");
+});
+
+test("Pi session supervisor resumes the exact session it previously owned", async (t) => {
+  const work = await mkdtemp(path.join(tmpdir(), "scotty-pi-continuity-"));
+  const piHome = path.join(work, ".pi-agent");
+  const sessionId = "123e4567-e89b-42d3-a456-426614174001";
+  const sessionFile = path.join(piHome, "sessions", "workspace", `${sessionId}.jsonl`);
+  const fakePi = path.join(work, "fake-pi");
+  const argsFile = path.join(work, "pi-args.json");
+  const tokenFile = path.join(work, "pi-session.token");
+  const transportToken = "b".repeat(64);
+  await mkdir(path.dirname(sessionFile), { recursive: true });
+  await writeFile(sessionFile, "");
+  await writeFile(path.join(piHome, "scotty-session-id"), `${sessionId}\n`);
+  await writeFile(tokenFile, transportToken);
+  await writeFile(
+    fakePi,
+    `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));
+const output = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line) => {
+  const command = JSON.parse(line);
+  if (command.type === "get_state") output({ id: command.id, type: "response", command: command.type, success: true, data: {
+    sessionId: ${JSON.stringify(sessionId)}, sessionFile: ${JSON.stringify(sessionFile)}, isStreaming: false,
+    steeringMode: "one-at-a-time", followUpMode: "one-at-a-time", messageCount: 0,
+    pendingMessageCount: 0, model: null, thinkingLevel: "off"
+  }});
+  else if (command.type === "get_messages") output({ id: command.id, type: "response", command: command.type, success: true, data: { messages: [] }});
+  else if (command.type === "get_available_models") output({ id: command.id, type: "response", command: command.type, success: true, data: { models: [] }});
+  else if (command.type === "get_available_thinking_levels") output({ id: command.id, type: "response", command: command.type, success: true, data: { levels: [] }});
+  else if (command.type === "get_commands") output({ id: command.id, type: "response", command: command.type, success: true, data: { commands: [] }});
+});
+`,
+  );
+  await chmod(fakePi, 0o755);
+  const port = await unusedPort();
+  const url = `http://127.0.0.1:${port}`;
+  const supervisor = spawn(process.execPath, [supervisorPath], {
+    cwd: work,
+    env: {
+      ...process.env,
+      PI_CODING_AGENT_DIR: piHome,
+      SCOTTY_PI_BINARY: fakePi,
+      SCOTTY_PI_SESSION_PORT: String(port),
+      SCOTTY_PI_SESSION_TOKEN_FILE: tokenFile,
+      SCOTTY_WORKSPACE: work,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  supervisor.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+  t.after(() => supervisor.kill("SIGTERM"));
+
+  await waitForReady(url, supervisor, () => stderr);
+  assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
+    "--mode",
+    "rpc",
+    "--session",
+    sessionId,
+  ]);
   assert.equal(stderr, "");
 });
