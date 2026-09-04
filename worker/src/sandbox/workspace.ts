@@ -73,6 +73,6 @@ const configureGitCredentialHelper = Effect.fnUntraced(function* (
 ) {
   const helper = "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f";
   yield* runtime.execChecked(
-    `git -C ${shellQuote(root)} config credential.helper ${shellQuote(helper)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; }`,
+    `git -C ${shellQuote(root)} config credential.helper ${shellQuote(helper)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && for path in '.codex/' '.home/' '.pi-agent/' '.scotty/'; do grep -qxF "$path" "$exclude" 2>/dev/null || printf '%s\\n' "$path" >> "$exclude"; done`,
   );
 });

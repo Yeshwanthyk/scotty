@@ -172,8 +172,8 @@ const provenanceFor = (
   presentation: SessionPresentation,
   actorCorrected: boolean,
 ): string | undefined => {
-  if (actorCorrected) return "Actor-corrected";
-  if (presentation.freshness === "stale") return "Stale projection";
+  if (actorCorrected) return "Updated";
+  if (presentation.freshness === "stale") return "May be outdated";
   return undefined;
 };
 
@@ -206,7 +206,7 @@ function SessionMetadata({
         <span
           title={
             actorCorrected && projectedFreshness === "stale"
-              ? "Actor read corrected a stale rail projection"
+              ? "Showing the latest session state"
               : provenance
           }
           {...stylex.props(actorCorrected ? styles.provenance : styles.stale)}

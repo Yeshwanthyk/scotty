@@ -114,6 +114,33 @@ describe("Git changed-files adapter", () => {
     }),
   );
 
+  it.effect("hides untracked Scotty runtime files without hiding tracked repository files", () =>
+    Effect.gen(function* () {
+      const hash = "c".repeat(40);
+      const trackedRuntimePath = `1 .M N... 100644 100644 100644 ${hash} ${hash} .scotty/project.json\0`;
+      const status = `${trackedRuntimePath}? .pi-agent/settings.json\0? .scotty/runtime.json\0? .home/state\0? src/new.ts\0`;
+      const trackedFile = textFile({ path: ".scotty/project.json" });
+      const untrackedFile = textFile({ path: "src/new.ts", status: "untracked" });
+      const trackedCommand = gitTrackedNumstatCommand([trackedFile, untrackedFile]);
+      const untrackedCommand = gitUntrackedNumstatCommand([trackedFile, untrackedFile]);
+      const fake = fakeRuntime(
+        new Map([
+          [GIT_STATUS_COMMAND, encodeGitTransport(status)],
+          [trackedCommand, encodeGitTransport("1\t1\t.scotty/project.json\0")],
+          [untrackedCommand, encodeGitTransport("1\t0\tsrc/new.ts\0")],
+        ]),
+      );
+
+      const changes = yield* listGitWorktreeChanges(fake.runtime, "/workspace/session");
+
+      assert.deepStrictEqual(
+        changes.files.map((file) => file.path),
+        [".scotty/project.json", "src/new.ts"],
+      );
+      assert.isFalse(changes.truncated);
+    }),
+  );
+
   it.effect("caps oversized status transport and marks the visible list truncated", () =>
     Effect.gen(function* () {
       const hash = "b".repeat(40);

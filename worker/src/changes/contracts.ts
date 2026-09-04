@@ -34,7 +34,7 @@ export interface ChangedFilePatch extends ChangedFile {
   readonly truncated: boolean;
 }
 
-interface ParsedStatus {
+export interface ParsedStatus {
   readonly path: string;
   readonly oldPath?: string;
   readonly status: ChangedFileStatus;
@@ -170,6 +170,20 @@ export function changedFilesFromGit(
   forcedTruncated = false,
 ): ChangedFiles {
   const statuses = parseGitStatus(statusOutput);
+  return changedFilesFromStatuses(
+    statuses,
+    trackedNumstatOutput,
+    untrackedNumstatOutput,
+    forcedTruncated,
+  );
+}
+
+export function changedFilesFromStatuses(
+  statuses: ReadonlyArray<ParsedStatus>,
+  trackedNumstatOutput: string,
+  untrackedNumstatOutput: string,
+  forcedTruncated = false,
+): ChangedFiles {
   const tracked = parseGitNumstat(trackedNumstatOutput);
   const untracked = parseGitNumstat(untrackedNumstatOutput);
   const files = statuses.slice(0, CHANGED_FILE_LIMIT).map((file): ChangedFile => {
