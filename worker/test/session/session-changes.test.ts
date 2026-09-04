@@ -19,6 +19,13 @@ const hash = "a".repeat(40);
 const statusFor = (path: string): string =>
   `1 .M N... 100644 100644 100644 ${hash} ${hash} ${path}\0`;
 
+const encodeGitTransport = (value: string): string => {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+};
+
 const changedFile = (path: string): ChangedFile => ({
   path,
   status: "modified",
@@ -90,9 +97,9 @@ describe("session changed-files review", () => {
       initialEntries: { [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord() },
       commandStdout: (command) =>
         command === GIT_STATUS_COMMAND
-          ? statusFor(path)
+          ? encodeGitTransport(statusFor(path))
           : command === trackedCommand
-            ? `1\t1\t${path}\0`
+            ? encodeGitTransport(`1\t1\t${path}\0`)
             : command === untrackedCommand
               ? ""
               : command === patchCommand
@@ -114,7 +121,8 @@ describe("session changed-files review", () => {
     const harness = await createSessionHarness({
       rawPiContainerRunning: true,
       initialEntries: { [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord() },
-      commandStdout: (command) => (command === GIT_STATUS_COMMAND ? statusFor("src/app.ts") : ""),
+      commandStdout: (command) =>
+        command === GIT_STATUS_COMMAND ? encodeGitTransport(statusFor("src/app.ts")) : "",
     });
 
     await expect(
@@ -129,6 +137,7 @@ describe("session changed-files review", () => {
   it("allows activity-only actor revision changes during a Git read", async () => {
     const file = changedFile("src/app.ts");
     const trackedCommand = gitTrackedNumstatCommand([file]);
+    const untrackedCommand = gitUntrackedNumstatCommand([file]);
     const initial = makeSessionRecord();
     const memory = new InMemoryFaultInjectableFake();
     let interleaved = false;
@@ -139,9 +148,9 @@ describe("session changed-files review", () => {
         [sessionHarnessKeys.actorFixtureSession]: initial,
       },
       commandStdout: (command) => {
-        if (command === GIT_STATUS_COMMAND) return statusFor(file.path);
-        if (command === trackedCommand) return `1\t1\t${file.path}\0`;
-        if (command === "printf ''" && !interleaved) {
+        if (command === GIT_STATUS_COMMAND) return encodeGitTransport(statusFor(file.path));
+        if (command === trackedCommand) return encodeGitTransport(`1\t1\t${file.path}\0`);
+        if (command === untrackedCommand && !interleaved) {
           interleaved = true;
           advanceActorRevision(memory, 2);
         }
@@ -157,6 +166,7 @@ describe("session changed-files review", () => {
   it("fails closed when the runtime generation changes during a Git read", async () => {
     const file = changedFile("src/app.ts");
     const trackedCommand = gitTrackedNumstatCommand([file]);
+    const untrackedCommand = gitUntrackedNumstatCommand([file]);
     const memory = new InMemoryFaultInjectableFake();
     let interleaved = false;
     const harness = await createSessionHarness({
@@ -166,9 +176,9 @@ describe("session changed-files review", () => {
         [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord(),
       },
       commandStdout: (command) => {
-        if (command === GIT_STATUS_COMMAND) return statusFor(file.path);
-        if (command === trackedCommand) return `1\t1\t${file.path}\0`;
-        if (command === "printf ''" && !interleaved) {
+        if (command === GIT_STATUS_COMMAND) return encodeGitTransport(statusFor(file.path));
+        if (command === trackedCommand) return encodeGitTransport(`1\t1\t${file.path}\0`);
+        if (command === untrackedCommand && !interleaved) {
           interleaved = true;
           changeActorRuntimeGeneration(memory, 2);
         }
@@ -191,7 +201,7 @@ describe("session changed-files review", () => {
       commandStdout: (command) => {
         if (command !== GIT_STATUS_COMMAND) return "";
         advanceActorRevision(memory, 2);
-        return "";
+        return encodeGitTransport("");
       },
     });
 

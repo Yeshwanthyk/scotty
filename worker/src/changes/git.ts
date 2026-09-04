@@ -1,5 +1,5 @@
 import { Effect, Predicate } from "effect";
-import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "../sandbox/runtime";
+import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "../sandbox/runtime";
 import {
   CHANGED_FILE_LIMIT,
   PATCH_MAX_BYTES,
@@ -18,12 +18,28 @@ type StatusFile = ReturnType<typeof parseGitStatus>[number];
 
 const boundedGitReadCommand = (command: string, maxBytes: number): string => {
   const script = [
-    `${command} | head -c ${maxBytes + 1}`,
+    `${command} | head -c ${maxBytes + 1} | base64 | tr -d '\\n'`,
     "status=${PIPESTATUS[0]}",
     "((status == 0 || status == 141))",
   ].join("\n");
   return `bash -lc ${shellQuote(script)}`;
 };
+
+const decodeGitTransport = (encoded: string): Effect.Effect<string, SandboxRuntimeFailure> =>
+  Effect.try({
+    try: () => {
+      const binary = atob(encoded.trim());
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1)
+        bytes[index] = binary.charCodeAt(index);
+      return new TextDecoder().decode(bytes);
+    },
+    catch: () =>
+      new SandboxRuntimeFailure({
+        reason: "transport",
+        message: "Sandbox Git output was not valid base64",
+      }),
+  });
 
 export const GIT_STATUS_COMMAND = boundedGitReadCommand(
   "git --no-optional-locks status --porcelain=v2 -z --untracked-files=all",
@@ -53,8 +69,11 @@ const UNTRACKED_NUMSTAT_SCRIPT = [
 
 export const gitUntrackedNumstatCommand = (files: ReadonlyArray<StatusFile>): string => {
   const paths = files.filter((file) => file.status === "untracked").map((file) => file.path);
-  if (paths.length === 0) return "printf ''";
-  return `bash -lc ${shellQuote(UNTRACKED_NUMSTAT_SCRIPT)} scotty-paths ${paths.map(shellQuote).join(" ")}`;
+  if (paths.length === 0) return boundedGitReadCommand("printf ''", LIST_MAX_BYTES);
+  return boundedGitReadCommand(
+    `bash -lc ${shellQuote(UNTRACKED_NUMSTAT_SCRIPT)} scotty-paths ${paths.map(shellQuote).join(" ")}`,
+    LIST_MAX_BYTES,
+  );
 };
 
 const execOptions = (root: string) => ({ cwd: root, timeout: GIT_TIMEOUT_MILLIS });
@@ -88,7 +107,8 @@ const readStatus = Effect.fnUntraced(function* (
   SandboxRuntimeFailure
 > {
   const result = yield* runtime.execChecked(GIT_STATUS_COMMAND, execOptions(root));
-  const bounded = boundedText(result.stdout, LIST_MAX_BYTES);
+  const decoded = yield* decodeGitTransport(result.stdout);
+  const bounded = boundedText(decoded, LIST_MAX_BYTES);
   const output = bounded.truncated
     ? bounded.text.slice(0, Math.max(0, bounded.text.lastIndexOf("\0") + 1))
     : bounded.text;
@@ -114,8 +134,8 @@ const readStats = Effect.fnUntraced(function* (
     execOptions(root),
   );
   return {
-    tracked: boundedText(tracked.stdout, LIST_MAX_BYTES).text,
-    untracked: boundedText(untracked.stdout, LIST_MAX_BYTES).text,
+    tracked: boundedText(yield* decodeGitTransport(tracked.stdout), LIST_MAX_BYTES).text,
+    untracked: boundedText(yield* decodeGitTransport(untracked.stdout), LIST_MAX_BYTES).text,
   };
 });
 
