@@ -119,6 +119,34 @@ const failure = <A>(
 };
 
 describe("BackupLifecycleSandbox", () => {
+  it.effect("stops a leftover Pi supervisor before starting its replacement", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const credentials = sessionRuntimeCredentials([]);
+      const auth = authService({
+        stopPiSession: () =>
+          Effect.sync(() => {
+            calls.push("stop");
+          }),
+        startPiSession: () =>
+          Effect.sync(() => {
+            calls.push("start");
+            return "scotty-pi-session";
+          }),
+      });
+
+      const processId = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          provider.startSupervisor({ ...attempt, credentials }),
+        ),
+        { auth },
+      );
+
+      assert.strictEqual(processId, "scotty-pi-session");
+      assert.deepStrictEqual(calls, ["stop", "start"]);
+    }),
+  );
+
   it.effect("uses deterministic attempt identity and confirms the exact returned backup", () =>
     Effect.gen(function* () {
       const calls: string[] = [];

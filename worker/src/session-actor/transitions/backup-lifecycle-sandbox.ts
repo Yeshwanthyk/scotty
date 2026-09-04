@@ -418,6 +418,11 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const startSupervisor = Effect.fnUntraced(function* (
       input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
     ) {
+      yield* auth
+        .stopPiSession()
+        .pipe(
+          Effect.mapError((error) => mapRuntimeFailure(error, "supervisor_stop_outcome_unknown")),
+        );
       return yield* auth
         .startPiSession(input.sessionId, input.credentials)
         .pipe(
