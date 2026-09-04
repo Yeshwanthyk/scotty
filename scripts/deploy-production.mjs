@@ -256,6 +256,13 @@ export function assertSettledContainerBaseline(snapshot) {
   }
 }
 
+export function assertNoActiveInstancesBeforeContainerRollout(snapshot) {
+  if (snapshot.application.health.active === 0) return;
+  throw new Error(
+    `Production Container rollout refused while ${snapshot.application.health.active} active session instance${snapshot.application.health.active === 1 ? " is" : "s are"} running. Sleep every warm Cloudflare session before retrying the guarded deploy so each workspace has a confirmed backup.`,
+  );
+}
+
 function containerRolloutConverged(before, current, rollout) {
   const health = current.application.health;
   const rolloutHealth = rollout.health;
@@ -1070,6 +1077,8 @@ export async function executeProductionDeploySteps(
   const plannedContainerAction = assertContainerPlanAuthorized(planOutput, allowContainerRollout);
   const controlPlaneBeforeDeploy = await readControlPlane(productionEnv);
   assertSettledContainerBaseline(controlPlaneBeforeDeploy);
+  if (plannedContainerAction !== "noop")
+    assertNoActiveInstancesBeforeContainerRollout(controlPlaneBeforeDeploy);
   const deployEnv =
     plannedContainerAction === "noop"
       ? productionEnv
