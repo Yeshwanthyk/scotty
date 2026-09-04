@@ -329,7 +329,13 @@ function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
   );
 }
 
-export function Conversation({ turns }: { readonly turns: ReadonlyArray<ConversationTurn> }) {
+export function Conversation({
+  animateStreaming = false,
+  turns,
+}: {
+  readonly animateStreaming?: boolean;
+  readonly turns: ReadonlyArray<ConversationTurn>;
+}) {
   const active = turns.findLast((turn) => turn.state === "streaming");
   const completed = turns.filter((turn) => turn.state !== "streaming");
   const [visibleCompleted, setVisibleCompleted] = useState(3);
@@ -338,6 +344,10 @@ export function Conversation({ turns }: { readonly turns: ReadonlyArray<Conversa
 
   useEffect(() => {
     if (active === undefined) return;
+    if (!animateStreaming) {
+      setVisibleCharacters(active.assistant.length);
+      return;
+    }
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduceMotion) {
       setVisibleCharacters(active.assistant.length);
@@ -354,7 +364,7 @@ export function Conversation({ turns }: { readonly turns: ReadonlyArray<Conversa
       });
     }, 28);
     return () => window.clearInterval(timer);
-  }, [active, generation]);
+  }, [active?.assistant, animateStreaming, generation]);
 
   return (
     <div data-scrollbar="quiet" {...stylex.props(styles.viewport)}>

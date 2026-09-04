@@ -19,6 +19,7 @@ import {
 import { AppShell } from "../components/AppShell";
 import { Button } from "../components/Button";
 import { Conversation } from "../components/Conversation";
+import { LiveConversation } from "../components/LiveConversation";
 import {
   mutateSessionLifecycle,
   type SessionLifecycleAction,
@@ -493,6 +494,7 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
             <SessionSurface
               eligibility={eligibility}
               presentation={presentation}
+              sessionId={session.id}
               simulateConversation={fixture && session.id === "warm-working-001"}
             />
           </section>
@@ -775,23 +777,16 @@ function LifecycleButton({
 function SessionSurface({
   eligibility,
   presentation,
+  sessionId,
   simulateConversation,
 }: {
   readonly eligibility: ConsoleEligibility;
   readonly presentation: SessionPresentation;
+  readonly sessionId: string;
   readonly simulateConversation: boolean;
 }) {
-  if (simulateConversation) return <Conversation turns={conversationFixture} />;
-  if (eligibility.eligible)
-    return (
-      <div {...stylex.props(styles.body)}>
-        <div {...stylex.props(styles.bodyInner)}>
-          <LoaderCircle aria-hidden {...stylex.props(styles.bodyIcon, styles.spin)} />
-          <h3 {...stylex.props(styles.bodyTitle)}>Checking runtime</h3>
-          <p {...stylex.props(styles.bodyCopy)}>Runtime availability has not been confirmed yet.</p>
-        </div>
-      </div>
-    );
+  if (simulateConversation) return <Conversation animateStreaming turns={conversationFixture} />;
+  if (eligibility.eligible) return <LiveConversation sessionId={sessionId} />;
   if (eligibility.reason === "lifecycle-operation")
     return (
       <div aria-busy="true" {...stylex.props(styles.body)}>
