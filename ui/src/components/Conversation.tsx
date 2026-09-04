@@ -306,13 +306,15 @@ function ToolRow({ tool }: { readonly tool: ToolActivity }) {
 function TurnContent({
   turn,
   assistant,
+  showUser = true,
 }: {
   readonly turn: ConversationTurn;
   readonly assistant: string;
+  readonly showUser?: boolean;
 }) {
   return (
     <>
-      {turn.user.trim().length === 0 ? null : (
+      {!showUser || turn.user.trim().length === 0 ? null : (
         <p {...stylex.props(styles.userMessage)}>{turn.user}</p>
       )}
       {turn.activitySummary === undefined ? null : (
@@ -454,6 +456,9 @@ export function Conversation({
             key={active.id}
             {...stylex.props(styles.activeTurn)}
           >
+            {active.user.trim().length === 0 ? null : (
+              <p {...stylex.props(styles.userMessage)}>{active.user}</p>
+            )}
             <div {...stylex.props(styles.workingHeader)}>
               <span {...stylex.props(styles.workingLabel)}>
                 <LoaderCircle aria-hidden {...stylex.props(styles.spin)} />
@@ -471,7 +476,7 @@ export function Conversation({
                 Replay
               </Button>
             </div>
-            <TurnContent assistant="" turn={active} />
+            <TurnContent assistant="" showUser={false} turn={active} />
             <div aria-live="polite" {...stylex.props(styles.assistantMessage)}>
               <Markdown source={streamedTextAt(active.assistant, visibleCharacters)} />
               {visibleCharacters < active.assistant.length ? (
