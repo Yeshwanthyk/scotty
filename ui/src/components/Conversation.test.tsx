@@ -35,4 +35,25 @@ describe("conversation disclosure", () => {
     expect(markup).not.toContain('data-turn-disclosure="latest"');
     expect(markup).toContain('aria-label="Current turn"');
   });
+
+  it("puts the current prompt before its working status and activity", () => {
+    const streaming: ConversationTurn = {
+      ...completed("current"),
+      state: "streaming",
+      tools: [
+        {
+          id: "tool-current",
+          invocation: "read({ path: 'README.md' })",
+          label: "Reading project",
+          state: "running",
+        },
+      ],
+    };
+    const markup = renderToStaticMarkup(
+      <Conversation animateStreaming={false} turns={[streaming]} />,
+    );
+
+    expect(markup.indexOf("Question current")).toBeLessThan(markup.indexOf("Working"));
+    expect(markup.indexOf("Working")).toBeLessThan(markup.indexOf("Reading project"));
+  });
 });
