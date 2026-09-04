@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   decodeConversationSnapshot,
+  isConversationLifecycleMismatch,
   readConversation,
   steerConversation,
 } from "./conversation-client";
@@ -34,6 +35,20 @@ const snapshot = {
 } as const;
 
 describe("conversation client boundary", () => {
+  it("distinguishes a lifecycle transition from a network reconnect", () => {
+    expect(
+      isConversationLifecycleMismatch({
+        kind: "http",
+        status: 409,
+        code: "wrong_state",
+        message: "Session is sleeping",
+      }),
+    ).toBe(true);
+    expect(
+      isConversationLifecycleMismatch({ kind: "network", message: "Scotty could not be reached." }),
+    ).toBe(false);
+  });
+
   it("strictly decodes the canonical conversation projection", () => {
     expect(decodeConversationSnapshot(snapshot)).toEqual(snapshot);
     expect(decodeConversationSnapshot({ ...snapshot, privateState: true })).toBeUndefined();

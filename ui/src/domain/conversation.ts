@@ -33,6 +33,7 @@ export const turnActivityLabel = (turn: ConversationTurn): string => {
 };
 
 export const turnPreview = (turn: ConversationTurn, maximum = 92): string => {
-  const compact = turn.user.replaceAll(/\s+/gu, " ").trim();
+  const source = turn.user.trim() || turn.assistant.trim() || turn.activitySummary?.trim();
+  const compact = (source || "Conversation turn").replaceAll(/\s+/gu, " ").trim();
   return compact.length <= maximum ? compact : `${compact.slice(0, maximum - 1).trimEnd()}…`;
 };

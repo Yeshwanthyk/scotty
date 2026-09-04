@@ -1,6 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import { Check, CircleAlert, LoaderCircle, RotateCcw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   streamedTextAt,
   turnActivityLabel,
@@ -287,7 +287,9 @@ function TurnContent({
 }) {
   return (
     <>
-      <p {...stylex.props(styles.userMessage)}>{turn.user}</p>
+      {turn.user.trim().length === 0 ? null : (
+        <p {...stylex.props(styles.userMessage)}>{turn.user}</p>
+      )}
       {turn.activitySummary === undefined ? null : (
         <p {...stylex.props(styles.thinking)}>{turn.activitySummary}</p>
       )}
@@ -330,7 +332,7 @@ function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
 }
 
 export function Conversation({
-  animateStreaming = false,
+  animateStreaming = true,
   turns,
 }: {
   readonly animateStreaming?: boolean;
@@ -341,6 +343,15 @@ export function Conversation({
   const [visibleCompleted, setVisibleCompleted] = useState(3);
   const [generation, setGeneration] = useState(0);
   const [visibleCharacters, setVisibleCharacters] = useState(0);
+  const activeTurnId = useRef<string | undefined>(undefined);
+  const viewport = useRef<HTMLDivElement | null>(null);
+  const followTail = useRef(true);
+
+  useEffect(() => {
+    if (active?.id === activeTurnId.current) return;
+    activeTurnId.current = active?.id;
+    setVisibleCharacters(0);
+  }, [active?.id]);
 
   useEffect(() => {
     if (active === undefined) return;
@@ -353,7 +364,6 @@ export function Conversation({
       setVisibleCharacters(active.assistant.length);
       return;
     }
-    setVisibleCharacters(0);
     const timer = window.setInterval(() => {
       setVisibleCharacters((current) => {
         if (current >= active.assistant.length) {
@@ -366,8 +376,22 @@ export function Conversation({
     return () => window.clearInterval(timer);
   }, [active?.assistant, animateStreaming, generation]);
 
+  useLayoutEffect(() => {
+    const element = viewport.current;
+    if (element === null || !followTail.current) return;
+    element.scrollTop = element.scrollHeight;
+  }, [active?.assistant, completed.length, turns.length, visibleCharacters]);
+
   return (
-    <div data-scrollbar="quiet" {...stylex.props(styles.viewport)}>
+    <div
+      data-scrollbar="quiet"
+      onScroll={(event) => {
+        const element = event.currentTarget;
+        followTail.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+      }}
+      ref={viewport}
+      {...stylex.props(styles.viewport)}
+    >
       <div aria-label="Conversation transcript" {...stylex.props(styles.feed)}>
         {completed.length > visibleCompleted ? (
           <button
@@ -393,7 +417,10 @@ export function Conversation({
               </span>
               <Button
                 aria-label="Replay streaming response"
-                onClick={() => setGeneration((current) => current + 1)}
+                onClick={() => {
+                  setVisibleCharacters(0);
+                  setGeneration((current) => current + 1);
+                }}
                 variant="quiet"
               >
                 <RotateCcw aria-hidden {...stylex.props(styles.replayIcon)} />

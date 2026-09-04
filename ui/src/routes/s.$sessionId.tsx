@@ -1,6 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Archive,
   CircleAlert,
@@ -448,6 +448,10 @@ function SessionReadError({
 
 function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
   const { eligibility, fixture, presentation, session } = data;
+  const router = useRouter();
+  const refreshLifecycle = useCallback(() => {
+    void router.invalidate();
+  }, [router]);
   const rail = buildSessionRail(data.projections, { selectedActor: session });
   return (
     <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>
@@ -494,6 +498,7 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
             <SessionSurface
               eligibility={eligibility}
               presentation={presentation}
+              onLifecycleMismatch={refreshLifecycle}
               sessionId={session.id}
               simulateConversation={fixture && session.id === "warm-working-001"}
             />
@@ -776,17 +781,26 @@ function LifecycleButton({
 
 function SessionSurface({
   eligibility,
+  onLifecycleMismatch,
   presentation,
   sessionId,
   simulateConversation,
 }: {
   readonly eligibility: ConsoleEligibility;
+  readonly onLifecycleMismatch: () => void;
   readonly presentation: SessionPresentation;
   readonly sessionId: string;
   readonly simulateConversation: boolean;
 }) {
   if (simulateConversation) return <Conversation animateStreaming turns={conversationFixture} />;
-  if (eligibility.eligible) return <LiveConversation sessionId={sessionId} />;
+  if (eligibility.eligible)
+    return (
+      <LiveConversation
+        onLifecycleMismatch={onLifecycleMismatch}
+        runtimeAvailable
+        sessionId={sessionId}
+      />
+    );
   if (eligibility.reason === "lifecycle-operation")
     return (
       <div aria-busy="true" {...stylex.props(styles.body)}>
@@ -804,16 +818,11 @@ function SessionSurface({
     );
   if (presentation.authority.kind === "stable" && presentation.authority.lifecycle === "sleeping")
     return (
-      <div {...stylex.props(styles.body)}>
-        <div {...stylex.props(styles.bodyInner)}>
-          <Moon aria-hidden {...stylex.props(styles.bodyIcon)} />
-          <h3 {...stylex.props(styles.bodyTitle)}>Conversation retained</h3>
-          <p {...stylex.props(styles.bodyCopy)}>
-            The cloud runtime is stopped. Resume restores the confirmed backup before work can
-            continue.
-          </p>
-        </div>
-      </div>
+      <LiveConversation
+        onLifecycleMismatch={onLifecycleMismatch}
+        runtimeAvailable={false}
+        sessionId={sessionId}
+      />
     );
   if (presentation.authority.kind === "stable" && presentation.authority.lifecycle === "gone")
     return (
