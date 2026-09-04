@@ -519,7 +519,15 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       credentials: SessionRuntimeCredentials,
     ) {
       const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
-      if (existing?.status === "starting" || existing?.status === "running") return existing.id;
+      if (existing?.status === "starting") return existing.id;
+      if (existing?.status === "running") {
+        const health = yield* Effect.result(
+          runtime.fetchPortStatus("/health", PI_SESSION_PORT, "GET"),
+        );
+        if (Result.isSuccess(health) && health.success === 200) return existing.id;
+        yield* existing.kill("SIGTERM");
+        yield* existing.waitForExit(10_000);
+      }
       yield* refreshPiAuth(id, credentials);
       const transportToken = yield* derivePiSessionTransportToken(id);
       const tokenPath = piSessionTokenPath(id);

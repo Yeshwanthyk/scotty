@@ -390,6 +390,15 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
     code: "extension_ui_response_already_delivered",
     retryable: false,
   });
+  const quiesce = await fetch(`${url}/quiesce`, {
+    method: "POST",
+    headers: transportHeaders,
+  });
+  assert.equal(quiesce.status, 200);
+  assert.deepEqual(await quiesce.json(), { status: "quiesced" });
+  const quiescedHealth = await fetch(`${url}/health`);
+  assert.equal(quiescedHealth.status, 409);
+  assert.deepEqual(await quiescedHealth.json(), { status: "quiescing" });
   assert.equal(stderr, "");
 });
 
