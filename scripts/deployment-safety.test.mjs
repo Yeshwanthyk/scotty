@@ -1071,6 +1071,12 @@ describe("production deployment ownership", () => {
     );
   });
 
+  it("keeps platform services available to deferred Cloudflare profile reads", () => {
+    const controlPlane = read("scripts/container-control-plane.mjs");
+    assert.match(controlPlane, /Layer\.provideMerge\(PlatformServices\)/u);
+    assert.doesNotMatch(controlPlane, /Layer\.provide\(PlatformServices\)/u);
+  });
+
   it("requires a quiet absence proof after a failed deploy", () => {
     assert.equal(assessContainerSettlement(snapshot(), snapshot(), "unknown").status, "waiting");
     assert.deepEqual(
