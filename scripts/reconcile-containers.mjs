@@ -10,8 +10,76 @@ const ACTIVE_SESSION_STATUSES = new Set(["booting", "warm"]);
 const HEALTHY_APPLICATION_STATES = new Set(["active", "ready"]);
 const KNOWN_ACTIVE_INSTANCE_STATES = new Set(["running", "scheduling", "starting"]);
 const NON_RUNNING_INSTANCE_STATES = new Set(["inactive", "stopped"]);
+const SESSION_STATUSES = new Set(["booting", "warm", "sleeping", "failed", "gone"]);
+const SESSION_PROVIDERS = new Set(["cloudflare", "runner"]);
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+const decodeLegacySession = (value) => {
+  if (
+    !isObject(value) ||
+    typeof value.id !== "string" ||
+    !SESSION_STATUSES.has(value.status) ||
+    !SESSION_PROVIDERS.has(value.provider) ||
+    typeof value.hardCapAt !== "string" ||
+    !Number.isFinite(Date.parse(value.hardCapAt))
+  )
+    return undefined;
+  return {
+    id: value.id,
+    status: value.status,
+    provider: value.provider,
+    hardCapAt: value.hardCapAt,
+  };
+};
+
+const decodeCanonicalSession = (value) => {
+  if (
+    !isObject(value) ||
+    !isObject(value.identity) ||
+    typeof value.identity.id !== "string" ||
+    !isObject(value.authority) ||
+    !isObject(value.runtime) ||
+    !SESSION_PROVIDERS.has(value.runtime.provider) ||
+    !isObject(value.times) ||
+    typeof value.times.capRemainingSeconds !== "number" ||
+    !Number.isFinite(value.times.capRemainingSeconds) ||
+    value.times.capRemainingSeconds < 0 ||
+    !isObject(value.projection) ||
+    typeof value.projection.projectedAt !== "string"
+  )
+    return undefined;
+  const projectedAt = Date.parse(value.projection.projectedAt);
+  if (!Number.isFinite(projectedAt)) return undefined;
+  const status =
+    value.authority.kind === "stable" && SESSION_STATUSES.has(value.authority.lifecycle)
+      ? value.authority.lifecycle
+      : value.authority.kind === "transitioning" && typeof value.authority.action === "string"
+        ? value.authority.action === "create"
+          ? "booting"
+          : "warm"
+        : undefined;
+  if (status === undefined) return undefined;
+  return {
+    id: value.identity.id,
+    status,
+    provider: value.runtime.provider,
+    hardCapAt: new Date(projectedAt + value.times.capRemainingSeconds * 1_000).toISOString(),
+  };
+};
+
+export const decodeSessionInventory = (value) => {
+  const source = Array.isArray(value)
+    ? value
+    : isObject(value) && value.version === 1 && Array.isArray(value.sessions)
+      ? value.sessions
+      : undefined;
+  if (source === undefined) return undefined;
+  const sessions = source.map((session) =>
+    Array.isArray(value) ? decodeLegacySession(session) : decodeCanonicalSession(session),
+  );
+  return sessions.some((session) => session === undefined) ? undefined : sessions;
+};
 
 export const isHealthyContainerApplicationState = (state) =>
   HEALTHY_APPLICATION_STATES.has(String(state));
@@ -225,9 +293,15 @@ export async function readSessions(
     if (!response.ok) {
       throw new Error(`Scotty session inventory failed with HTTP ${response.status}.`);
     }
-    return response.json();
+    const sessions = decodeSessionInventory(await response.json());
+    if (sessions === undefined) throw new Error("Scotty session inventory was invalid.");
+    return sessions;
   }
-  return execJson("bun", ["cli/scotty.ts", "list", "--json"]);
+  const sessions = decodeSessionInventory(
+    await execJson("bun", ["cli/scotty.ts", "list", "--json"]),
+  );
+  if (sessions === undefined) throw new Error("Scotty session inventory was invalid.");
+  return sessions;
 }
 
 async function main() {
