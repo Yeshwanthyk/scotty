@@ -22,6 +22,16 @@ const isVisibleStatus = (file: StatusFile): boolean =>
   file.status !== "untracked" ||
   !SCOTTY_RUNTIME_DIRECTORIES.some((directory) => file.path.startsWith(directory));
 
+const uniqueStatuses = (files: ReadonlyArray<StatusFile>): ReadonlyArray<StatusFile> => {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    const key = `${file.status}\0${file.oldPath ?? ""}\0${file.path}\0${file.staged}\0${file.unstaged}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 const boundedGitReadCommand = (command: string, maxBytes: number): string => {
   const script = [
     `${command} | head -c ${maxBytes + 1} | base64 | tr -d '\\n'`,
@@ -47,8 +57,16 @@ const decodeGitTransport = (encoded: string): Effect.Effect<string, SandboxRunti
       }),
   });
 
+const INTERNAL_PATHS = [".codex", ".home", ".pi-agent", ".scotty"];
+const visiblePathspecs = INTERNAL_PATHS.flatMap((path) => [
+  shellQuote(`:(top,exclude)${path}`),
+  shellQuote(`:(top,exclude)${path}/**`),
+]);
 export const GIT_STATUS_COMMAND = boundedGitReadCommand(
-  "git --no-optional-locks status --porcelain=v2 -z --untracked-files=all",
+  `(${[
+    `git --no-optional-locks status --porcelain=v2 -z --untracked-files=all -- . ${visiblePathspecs.join(" ")}`,
+    "git --no-optional-locks status --porcelain=v2 -z --untracked-files=no",
+  ].join(" && ")})`,
   LIST_MAX_BYTES,
 );
 
@@ -118,7 +136,7 @@ const readStatus = Effect.fnUntraced(function* (
   const output = bounded.truncated
     ? bounded.text.slice(0, Math.max(0, bounded.text.lastIndexOf("\0") + 1))
     : bounded.text;
-  const parsed = parseGitStatus(output).filter(isVisibleStatus);
+  const parsed = uniqueStatuses(parseGitStatus(output).filter(isVisibleStatus));
   return {
     output,
     files: parsed.slice(0, CHANGED_FILE_LIMIT),

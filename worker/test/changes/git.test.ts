@@ -107,6 +107,8 @@ describe("Git changed-files adapter", () => {
         assert.notProperty(call.options ?? {}, "env");
       }
       assert.include(GIT_STATUS_COMMAND, "--no-optional-locks");
+      assert.include(GIT_STATUS_COMMAND, ":(top,exclude).pi-agent/**");
+      assert.include(GIT_STATUS_COMMAND, "--untracked-files=no");
       assert.include(trackedCommand, "--literal-pathspecs");
       assert.include(trackedCommand, "--no-ext-diff");
       assert.include(untrackedCommand, "head -c");
@@ -193,6 +195,7 @@ describe("Git changed-files adapter", () => {
         await execFileAsync("git", ["config", "user.name", "Scotty Test"], { cwd: root });
         await execFileAsync("git", ["config", "color.diff", "always"], { cwd: root });
         await mkdir(join(root, "src"));
+        await mkdir(join(root, ".scotty"));
         await writeFile(
           join(root, oldPath),
           [
@@ -204,8 +207,10 @@ describe("Git changed-files adapter", () => {
             "",
           ].join("\n"),
         );
+        await writeFile(join(root, ".scotty", "project.json"), '{"value":"old"}\n');
         await execFileAsync("git", ["add", "--", "."], { cwd: root });
         await execFileAsync("git", ["commit", "-qm", "initial"], { cwd: root });
+        await writeFile(join(root, ".scotty", "project.json"), '{"value":"new"}\n');
         await rename(join(root, oldPath), join(root, renamedPath));
         await writeFile(
           join(root, renamedPath),
@@ -219,6 +224,8 @@ describe("Git changed-files adapter", () => {
           ].join("\n"),
         );
         await execFileAsync("git", ["add", "-A", "--", "."], { cwd: root });
+        await mkdir(join(root, ".pi-agent"));
+        await writeFile(join(root, ".pi-agent", "settings.json"), "{}\n");
         await writeFile(join(root, "binary.dat"), Uint8Array.from([0, 1, 2, 3]));
       });
 
@@ -233,6 +240,8 @@ describe("Git changed-files adapter", () => {
       assert.strictEqual(binary.status, "untracked");
       assert.isTrue(binary.binary);
       assert.isFalse(binary.patchable);
+      assert.isTrue(changes.files.some((file) => file.path === ".scotty/project.json"));
+      assert.isFalse(changes.files.some((file) => file.path === ".pi-agent/settings.json"));
       const patch = yield* readGitWorktreePatch(executingRuntime, root, renamed);
       assert.include(patch.patch ?? "", oldPath);
       assert.include(patch.patch ?? "", renamedPath);
