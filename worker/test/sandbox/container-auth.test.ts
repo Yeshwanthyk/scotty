@@ -229,9 +229,52 @@ describe("Pi session production observations", () => {
         const token = yield* Effect.promise(() => piSessionTransportToken(SESSION_ID));
         assert.deepStrictEqual(calls, [
           ["/health", 43_117, "GET", undefined],
+          ["/health", 43_117, "GET", undefined],
           ["/snapshot", 43_117, "GET", { [PI_SESSION_TOKEN_HEADER]: token }],
         ]);
       }),
+  );
+
+  it.effect("replaces a running supervisor that is no longer healthy", () =>
+    Effect.gen(function* () {
+      let killCalls = 0;
+      let waitCalls = 0;
+      let startCalls = 0;
+      const existing = {
+        id: PI_SESSION_PROCESS_ID,
+        status: "running" as const,
+        kill: () => {
+          killCalls += 1;
+          return Promise.resolve();
+        },
+        waitForExit: () => {
+          waitCalls += 1;
+          return Promise.resolve({ exitCode: 0 });
+        },
+        waitForPort: () => Promise.resolve(),
+      };
+      const replacement = { ...existing, status: "starting" as const };
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        getProcess: () => Promise.resolve(existing),
+        fetchPort: () => Promise.resolve(Response.json({ status: "quiescing" }, { status: 409 })),
+        startProcess: () => {
+          startCalls += 1;
+          return Promise.resolve(replacement);
+        },
+      };
+      const runtimeLayer = sandboxRuntimeLayer(capabilities);
+      const layer = Layer.merge(runtimeLayer, containerAuthLayer.pipe(Layer.provide(runtimeLayer)));
+
+      const processId = yield* Effect.flatMap(ContainerAuth, (auth) =>
+        auth.startPiSession(SESSION_ID, credentials),
+      ).pipe(Effect.provide(layer));
+
+      assert.strictEqual(processId, PI_SESSION_PROCESS_ID);
+      assert.strictEqual(killCalls, 1);
+      assert.strictEqual(waitCalls, 1);
+      assert.strictEqual(startCalls, 1);
+    }),
   );
 
   it.effect("rejects a snapshot from a different supervisor epoch", () =>

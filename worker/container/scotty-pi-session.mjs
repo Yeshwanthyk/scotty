@@ -486,10 +486,12 @@ const handleCommand = async (body) => {
 const handleHealth = (_request, response) =>
   jsonResponse(
     response,
-    ready ? 200 : 503,
-    ready
-      ? { status: "ready", epoch }
-      : { status: "starting", stderr: stderrTail ? "available" : "empty" },
+    quiescing ? 409 : ready ? 200 : 503,
+    quiescing
+      ? { status: "quiescing" }
+      : ready
+        ? { status: "ready", epoch }
+        : { status: "starting", stderr: stderrTail ? "available" : "empty" },
   );
 
 const handleSnapshot = async (_request, response) => {
