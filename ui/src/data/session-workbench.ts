@@ -197,12 +197,8 @@ export const readEvidence = async (
   signal?: AbortSignal,
 ): Promise<ReadonlyArray<EvidenceSummary>> => {
   const value = await readJson(`/api/sessions/${encodeURIComponent(sessionId)}/evidence`, signal);
-  if (!isObject(value)) throw new Error("Unreadable evidence list");
-  const candidates = [
-    ...(isObject(value.activeJob) ? [value.activeJob] : []),
-    ...(Array.isArray(value.jobs) ? value.jobs : []),
-  ];
-  const jobs = candidates.map(decodeEvidence);
+  if (!Array.isArray(value)) throw new Error("Unreadable evidence list");
+  const jobs = value.map(decodeEvidence);
   if (jobs.some((job) => job === undefined)) throw new Error("Unreadable evidence result");
   return jobs.filter((job): job is EvidenceSummary => job !== undefined);
 };

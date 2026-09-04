@@ -53,19 +53,17 @@ describe("session workbench boundaries", () => {
       vi
         .fn()
         .mockResolvedValueOnce(
-          Response.json({
-            jobs: [
-              {
-                jobId: "job-1",
-                status: "succeeded",
-                totalSteps: 1,
-                completedSteps: 1,
-                frameCount: 1,
-                recordVideo: true,
-                steps: [{ name: "Session view", status: "passed", frame: { frameId: "frame-1" } }],
-              },
-            ],
-          }),
+          Response.json([
+            {
+              jobId: "job-1",
+              status: "succeeded",
+              totalSteps: 1,
+              completedSteps: 1,
+              frameCount: 1,
+              recordVideo: true,
+              steps: [{ name: "Session view", status: "passed", frame: { frameId: "frame-1" } }],
+            },
+          ]),
         )
         .mockResolvedValueOnce(
           Response.json({
