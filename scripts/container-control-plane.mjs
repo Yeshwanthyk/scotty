@@ -177,7 +177,9 @@ const readControlPlaneEffect = Effect.fnUntraced(function* ({ accountId, applica
 
 const live = CloudflareApiLive().pipe(
   Layer.provideMerge(Layer.succeed(AuthProviders, {})),
-  Layer.provide(PlatformServices),
+  // CloudflareEnvironment returns an Effect that reads Path after the service is retrieved.
+  // Keep platform services in the runtime context instead of consuming them while building it.
+  Layer.provideMerge(PlatformServices),
 );
 
 export const readContainerControlPlane = (input) =>
