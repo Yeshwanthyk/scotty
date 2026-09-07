@@ -120,7 +120,37 @@ const RpcError = Schema.Struct({
 const response = <S extends Schema.Constraint>(result: S) =>
   Schema.Union([Schema.Struct({ id: RequestId, result }), RpcError]);
 
+const CommandItem = Schema.Struct({
+  type: Schema.Literal("commandExecution"),
+  id: Identifier,
+  command: Text,
+  status: Schema.Literals(["inProgress", "completed", "failed", "declined"]),
+  aggregatedOutput: Schema.optionalKey(Schema.NullOr(Text)),
+}).annotate(projection);
+const OtherItem = Schema.Struct({
+  type: Identifier.check(Schema.makeFilter((type) => type !== "commandExecution")),
+}).annotate(projection);
+
 const NotificationSchema = Schema.Union([
+  Schema.Struct({
+    emittedAtMs: Schema.optionalKey(SafeInteger),
+    method: Schema.Literals(["item/started", "item/completed"]),
+    params: Schema.Struct({
+      threadId: Identifier,
+      turnId: Identifier,
+      item: Schema.Union([CommandItem, OtherItem]),
+    }).annotate(projection),
+  }),
+  Schema.Struct({
+    emittedAtMs: Schema.optionalKey(SafeInteger),
+    method: Schema.Literal("item/commandExecution/outputDelta"),
+    params: Schema.Struct({
+      threadId: Identifier,
+      turnId: Identifier,
+      itemId: Identifier,
+      delta: Text,
+    }).annotate(projection),
+  }),
   Schema.Struct({
     emittedAtMs: Schema.optionalKey(SafeInteger),
     method: Schema.Literal("item/agentMessage/delta"),

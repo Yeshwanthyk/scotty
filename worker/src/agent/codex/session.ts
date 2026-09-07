@@ -14,6 +14,7 @@ import {
   type CodexUnsupportedResponse,
 } from "../../../../protocol/codex-app-server";
 import { CodexHostError, type Cleanup } from "./errors";
+import { makeCodexTools } from "./tools";
 import { limits, makeFramer } from "./framing";
 import { launchProcess, type CodexProcess } from "./process";
 
@@ -90,6 +91,7 @@ export const makeSession = Effect.fnUntraced(function* (
   const pending = new Map<number, Pending>();
   const usedTurns = new Set<string>();
   const events: Array<CodexNotification> = [];
+  const tools = makeCodexTools();
   let ready = false,
     closing = false,
     threadId: string | undefined,
@@ -197,8 +199,9 @@ export const makeSession = Effect.fnUntraced(function* (
     );
   });
   const notification = Effect.fnUntraced(function* (message: CodexNotification) {
-    const id =
-      message.method === "item/agentMessage/delta" ? message.params.turnId : message.params.turn.id;
+    const id = Predicate.hasProperty(message.params, "turnId")
+      ? message.params.turnId
+      : message.params.turn.id;
     if (!active || message.params.threadId !== threadId || id !== active.id)
       return yield* new CodexHostError({ code: "stale_notification" });
     const turn = active;
@@ -206,6 +209,7 @@ export const makeSession = Effect.fnUntraced(function* (
       if (turn.started) return yield* new CodexHostError({ code: "duplicate_turn_started" });
       turn.started = true;
     } else if (!turn.started) return yield* new CodexHostError({ code: "turn_not_started" });
+    tools.accept(message);
     events.push(message);
     yield* publish(message);
     if (closing || failure || active !== turn) return;
@@ -233,7 +237,10 @@ export const makeSession = Effect.fnUntraced(function* (
     if (
       route.method === "turn/started" ||
       route.method === "turn/completed" ||
-      route.method === "item/agentMessage/delta"
+      route.method === "item/agentMessage/delta" ||
+      route.method === "item/started" ||
+      route.method === "item/completed" ||
+      route.method === "item/commandExecution/outputDelta"
     )
       return yield* notification(yield* decoded(decodeCodexNotification(line)));
     if (route.method === "error") {
@@ -431,6 +438,7 @@ export const makeSession = Effect.fnUntraced(function* (
       rejected,
       stderrBytes,
       eventCount,
+      ...tools.snapshot(),
     }),
     drainEvents: () => events.splice(0),
   };

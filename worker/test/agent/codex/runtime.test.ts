@@ -3,6 +3,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Queue, Result, Scope, Stream } fr
 import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { decodeCodexClientMessage } from "../../../../protocol/codex-app-server";
+import { codexConversation } from "../../../src/agent/codex/conversation";
 import { makeSession } from "../../../src/agent/codex/session";
 import type { CodexProcess } from "../../../src/agent/codex/process";
 import { makeCodexRuntime, readCodexSnapshot } from "../../../src/agent/codex/runtime";
@@ -335,3 +336,68 @@ describe("Codex generation bridge over production session adapter", () => {
     }),
   );
 });
+
+it.effect("carries native command evidence through the fenced snapshot and canonical read", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    yield* f.runtime.admit(command);
+    yield* f.emit({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          type: "commandExecution",
+          id: "command-proof",
+          command: "pwd",
+          status: "completed",
+          aggregatedOutput: "/workspace\n",
+          extra: "discard-me",
+        },
+      },
+    });
+    yield* f.complete();
+    yield* TestClock.adjust(1);
+    const snapshot = yield* f.runtime.snapshot;
+    const decoded = yield* readCodexSnapshot(JSON.stringify(snapshot), {
+      generation: "generation-1",
+      threadId: "thread",
+      turnId: "turn",
+    });
+    const conversation = yield* codexConversation(decoded, {
+      prompt: "hello",
+      turnId: "turn",
+      revision: 1,
+    });
+    assert.deepStrictEqual(conversation.turns[0]?.tools, [
+      {
+        id: "command-proof",
+        state: "completed",
+        label: "Command",
+        invocation: "pwd",
+        output: "/workspace\n",
+      },
+    ]);
+    assert.equal(conversation.truncated.values, false);
+    assert.notInclude(JSON.stringify(decoded), "discard-me");
+  }),
+);
+
+it.effect("rejects stale native command evidence at the active turn fence", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    yield* f.runtime.admit(command);
+    yield* f.emit({
+      method: "item/commandExecution/outputDelta",
+      params: {
+        threadId: "wrong-thread",
+        turnId: "turn",
+        itemId: "command-proof",
+        delta: "untrusted",
+      },
+    });
+    yield* TestClock.adjust(1);
+    assert.equal((yield* f.runtime.snapshot).failure, "stale_notification");
+    assert.deepStrictEqual((yield* f.runtime.snapshot).tools, []);
+  }),
+);

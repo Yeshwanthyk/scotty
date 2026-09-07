@@ -333,3 +333,25 @@ describe("UI session authority response", () => {
     );
   });
 });
+
+it("withholds unsupported Codex lifecycle and work controls", () => {
+  const authority = warmAuthority();
+  const response = uiSessionResponseFromActor(
+    {
+      ...authority,
+      session: {
+        ...authority.session,
+        selection: { agent: "codex", model: "gpt-6-astra", effort: "low" },
+      },
+    },
+    metadata,
+    NOW,
+  );
+  assert.deepStrictEqual(response.session.capabilities, {
+    checkpoint: false,
+    sleep: false,
+    resume: false,
+    work: false,
+    vaporize: true,
+  });
+});

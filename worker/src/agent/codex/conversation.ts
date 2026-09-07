@@ -38,11 +38,14 @@ export const codexConversation = Effect.fnUntraced(function* (
     transport: {
       epoch: snapshot.generation,
       baseSequence: 0,
-      sequence: terminal || state === "failed" ? 2 : 1,
+      sequence: snapshot.sequence ?? (terminal || state === "failed" ? 2 : 1),
       sessionRevision: input.revision,
     },
-    turns: [{ id: input.turnId, state, user, assistant, tools: [] }],
+    turns: [{ id: input.turnId, state, user, assistant, tools: snapshot.tools ?? [] }],
     queue: { steer: [], followUp: [] },
-    truncated: { turns: false, values: user !== input.prompt || assistant !== text },
+    truncated: {
+      turns: false,
+      values: snapshot.toolsTruncated === true || user !== input.prompt || assistant !== text,
+    },
   });
 });

@@ -124,7 +124,9 @@ describe("Codex 0.153.4 bounded protocol subset", () => {
       decoded.map((message) =>
         message.method === "item/agentMessage/delta"
           ? message.params.delta
-          : message.params.turn.status,
+          : message.method === "turn/started" || message.method === "turn/completed"
+            ? message.params.turn.status
+            : "unexpected",
       ),
       ["inProgress", "AUDIT_SYNTHETIC_OK", "completed", "inProgress", "interrupted"],
     );

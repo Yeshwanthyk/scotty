@@ -1113,6 +1113,17 @@ test(
       '{"method":"prompt","text":"Run the bounded synthetic file write command."}\n',
     );
     await wait(() => held);
+    const commandEvent = await wait(() =>
+      rows().find(
+        (row) =>
+          row.type === "event" &&
+          row.event.method === "item/completed" &&
+          row.event.params.item.type === "commandExecution",
+      ),
+    );
+    assert.equal(commandEvent.event.params.item.status, "completed");
+    assert.match(commandEvent.event.params.item.command, /yolo-proof\.txt/u);
+    assert.match(commandEvent.event.params.item.aggregatedOutput, /SCOTTY_YOLO_WRITE_OK/u);
     assert.equal(commandOutput.length, 1);
     assert.match(commandOutput[0].output, /SCOTTY_YOLO_WRITE_OK/u);
     assert.equal(
@@ -1260,7 +1271,7 @@ test(
               id: "cm-proof",
               call_id: "call-code",
               name: "exec",
-              input: 'text("SCOTTY_CODE_MODE_OK " + (6 * 7));',
+              input: `text(await tools.exec_command({cmd: "printf 'SCOTTY_CODE_MODE_OK 42'", shell: "/bin/sh", login: false, yield_time_ms: 1000}));`,
             }
           : {
               type: "message",
@@ -1321,6 +1332,16 @@ test(
     );
     assert.ok(output);
     assert.match(JSON.stringify(output.output), /SCOTTY_CODE_MODE_OK 42/u);
+    assert.ok(
+      host
+        .inspect()
+        .tools.some(
+          (tool) =>
+            tool.state === "completed" &&
+            tool.invocation.includes("SCOTTY_CODE_MODE_OK") &&
+            tool.output?.includes("SCOTTY_CODE_MODE_OK 42"),
+        ),
+    );
     assert.equal(host.inspect().rejected, 0);
     assert.equal((await host.stop()).parent, "exited");
   },

@@ -141,11 +141,12 @@ const capabilitiesView = (
   authority: SessionAuthority,
 ): UiSessionResponse["session"]["capabilities"] => {
   const actions = new Set(publicView(authority)?.availableActions ?? []);
+  const supportsPiWork = authority.session.selection?.agent !== "codex";
   return {
-    checkpoint: actions.has("checkpoint"),
-    sleep: actions.has("sleep"),
-    resume: actions.has("resume"),
-    work: actions.has("work"),
+    checkpoint: supportsPiWork && actions.has("checkpoint"),
+    sleep: supportsPiWork && actions.has("sleep"),
+    resume: supportsPiWork && actions.has("resume"),
+    work: supportsPiWork && actions.has("work"),
     vaporize: actions.has("vaporize"),
   };
 };

@@ -1,5 +1,9 @@
 import { Cause, Data, Deferred, Effect, Option, Schema, Scope } from "effect";
 import { CODEX_MAX_TEXT_BYTES, CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import {
+  CanonicalConversationToolSchema,
+  CONVERSATION_MAX_TOOLS_PER_TURN,
+} from "../../../../protocol/conversation";
 import { Cleanup, type CodexHostError } from "./errors";
 import { CodexLaunch } from "./process";
 import { startCodexSession } from "./session";
@@ -55,6 +59,13 @@ export const CodexSnapshot = Schema.Struct({
   ready: Schema.Boolean,
   failure: Schema.NullOr(Identifier),
   prompt: PromptState,
+  tools: Schema.optionalKey(
+    Schema.Array(CanonicalConversationToolSchema).check(
+      Schema.isMaxLength(CONVERSATION_MAX_TOOLS_PER_TURN),
+    ),
+  ),
+  toolsTruncated: Schema.optionalKey(Schema.Boolean),
+  sequence: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   cleanup: Schema.NullOr(Cleanup),
 });
 export class CodexBridgeError extends Data.TaggedError("CodexBridgeError")<{
@@ -131,6 +142,9 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (host: Host, generat
       ready: current.ready && bridgeFailure === null,
       failure: current.failure ?? bridgeFailure,
       prompt,
+      tools: current.tools,
+      toolsTruncated: current.toolsTruncated,
+      sequence: current.sequence,
       cleanup,
     }).pipe(
       Effect.mapError(

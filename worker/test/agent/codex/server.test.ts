@@ -101,6 +101,9 @@ const fixture = Effect.fnUntraced(function* () {
       rejected: 0,
       stderrBytes: 0,
       eventCount: 0,
+      tools: [],
+      toolsTruncated: false,
+      sequence: 0,
     }),
   };
   const runtime = yield* makeCodexRuntime(host, "generation-1");
