@@ -38,6 +38,15 @@ Interpret boundaries precisely:
 - Missing diagnostics after successful vaporize is compatible with deleted authority; distinguish
   an unknown session from an HTTP route fallback.
 
+For Codex, separate initial prompt admission from terminal response in canonical read. The current
+public path has one initial prompt; do not use steer, checkpoint, or resume as a canary step.
+For Pi overrides, native settings readback must precede the first prompt. Local TOML defaults do
+not establish effective settings for an existing Session.
+
+In this checkout the maintained actor and pending-create helpers live in `scripts/scotty-lab.mjs`
+and are consumed by `scripts/scotty-lab.ts`. Use their current ownership/manifest contract; do not
+assume standalone `capture-actor.mjs` or `latest-pending-session.mjs` exists.
+
 Keep evidence safe and bounded. Never print tokens, root keys, OAuth values, credential plaintext,
 environment values, prompts, model content, or raw provider payloads. Preserve the first divergent
 request, authority snapshot, and relevant tail window before another reproduction. Stop if secret

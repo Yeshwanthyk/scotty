@@ -12,7 +12,7 @@ Scotty handlers.
 
 Before changing a non-trivial CLI pattern:
 
-1. Read `vendor/effect/AGENTS.md` and `vendor/effect/.patterns/effect.md`.
+1. Read `vendor/effect/.agents/AGENTS.md` and `vendor/effect/.patterns/effect.md`.
 2. Read `vendor/effect/ai-docs/src/70_cli/10_basics.ts`.
 3. Inspect the public implementations under
    `vendor/effect/packages/effect/src/unstable/cli/`, especially `Command.ts`, `Argument.ts`,
@@ -42,17 +42,17 @@ Before changing a non-trivial CLI pattern:
   command. Do not inspect or shift action strings in handlers.
 - Use `Argument` for positional input and `Flag` for named input. Use `Flag.choice` when the public
   vocabulary is closed, such as the currently supported provider.
-- Use root `Command.withSharedFlags` for `host`, `token`, and `json` so they remain available across
+- Use root `Command.withSharedFlags` for `host`, `token-file`, and `json` so they remain available across
   descendants and before or after subcommand names.
 - Put descriptions, aliases, examples, and metavariables on the command definitions. Use
-  `Command.unlisted` (the rc.109 replacement for `Command.withHidden`) for commands that must
+  `Command.unlisted` (the rc.112 replacement for `Command.withHidden`) for commands that must
   stay runnable but out of generated help. Do not
   maintain parallel help strings or a command-name registry.
 - Use `Command.runWith` at Scotty's explicit-argv Bun boundary so production and tests execute the
   same tree.
 - Configure `CliConfig` with only the built-ins Scotty intentionally exposes. Do not accidentally
   add wizard, completions, log-level, or a conflicting version alias.
-- Pinned Effect rc.109 does not reject undeclared leftover positional arguments. Give each leaf
+- Pinned Effect rc.112 does not reject undeclared leftover positional arguments. Give each leaf
   one shared hidden variadic trailing `Argument` and reject any values before the handler performs
   side effects. Keep this guard until a pinned-source test proves the parser rejects leftovers.
 
@@ -61,6 +61,7 @@ const beam = Command.make(
   "beam",
   {
     prompt: Argument.string("prompt"),
+    title: Flag.string("title"),
     repo: Flag.string("repo"),
     provider: Flag.choice("provider", ["cloudflare"]),
     cap: Flag.string("cap").pipe(Flag.optional),
@@ -69,6 +70,12 @@ const beam = Command.make(
   handleBeamUp,
 );
 ```
+
+For `beam`, keep `--provider` as placement and `--model-provider` as Pi's model provider.
+Resolve explicit agent → TOML default → Pi, then apply only that profile's field overrides.
+Missing TOML preserves legacy Pi behavior; a present malformed file fails before API access.
+Read the private TOML without resolving sync roots or reading credential sources. Use the shared
+selection schema; Codex requires a supported model/effort pair and rejects Pi-only fields.
 
 Normal branching inside a handler is fine. Do not replace domain decisions such as optional cap
 conversion, response decoding, or browser launch with command combinators.

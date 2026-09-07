@@ -4,9 +4,9 @@
 
 The explicit **Codex create → initial response → read → vaporize** increment is implemented and accepted at local proof tiers. The final combined repository gate passed after independent audits and targeted repairs.
 
-**TOML defaults are implemented and locally verified (2026-09-07).** Agent selection uses explicit flags → selected TOML profile → legacy Pi behavior. Pi and Codex profiles remain separate; Pi settings reach native startup and are checked before the initial prompt. Follow-up, skills/capabilities, durable Codex sleep/resume, maintained full E2E lab recipes, and end-of-work skill maintenance remain. The original defaults draft below is historical.
+**TOML defaults are implemented and locally verified (2026-09-07).** Agent selection uses explicit flags → selected TOML profile → legacy Pi behavior. Pi and Codex profiles remain separate; Pi settings reach native startup and are checked before the initial prompt. Follow-up, skills/capabilities, durable Codex sleep/resume, and maintained full E2E lab recipes remain. All 12 active bundled/project skills have been updated and validated; the local Codex observability skill loads current CLI guidance. The legacy verifier exists only in the protected runner-portability checkout and was not changed. The original defaults draft below is historical.
 
-Nothing was committed, merged, or deployed. Do not describe the current installed CLI/deployed Worker as containing this branch's changes.
+The production implementation was checkpointed as `2b707719` on `codex-agent`. Skill maintenance is the next checkpoint. The user has authorized release and a live baseline trial; deployment and installed-CLI proof remain pending at this update.
 
 ### Latest defaults increment
 
@@ -16,7 +16,7 @@ Nothing was committed, merged, or deployed. Do not describe the current installe
 - User configuration now selects `codex` / `gpt-6-astra` / `low`. Unsupported pre-existing runner sections are retained as comments. Original private backup: `~/.config/scotty/scotty.toml.before-agent-defaults-20260907`.
 - Verification: focused Worker 150/150, Pi supervisor 6/6, CLI beam 13/13; native Pi 0.84 settings readback; pinned native Codex Astra-low synthetic run; exact candidate decode and isolated CLI default selection. Release checks passed in stages after registering the existing bundled Codex main entrypoint with knip: build/package checks, formatting, lint, knip, all typechecks, `test:all`, scan, compiled CLI. Scanner had zero configured secrets and is not a credential-leak canary.
 - Receipts and compiled CLI: `/tmp/scotty-toml-defaults/`. No fresh Container image, real provider/account request, or deployed canary was proved by this increment.
-- Requested live target: installation `baseline`, repository `Yeshwanthyk/scotty`. Read-only checks found authenticated reachability, an empty Session list, and the wrapping-key binding. Guarded release still requires clean `main` matching `origin/main`; this dirty branch has not been committed, merged, pushed, deployed, or installed as the user's CLI.
+- Requested live target: installation `baseline`, repository `Yeshwanthyk/scotty`. Read-only checks found authenticated reachability, an empty Session list, and the wrapping-key binding. Guarded release still requires clean `main` matching `origin/main`; the implementation is checkpointed, with guarded release and the user's installed CLI update pending.
 
 ## Checkout and preservation
 

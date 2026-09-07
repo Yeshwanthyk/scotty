@@ -2,7 +2,7 @@
 name: wrapping-promise-clients
 description: Wraps Promise-based SDKs in Effect services with typed failures, interruption, and explicit retry ownership. Use when domain-facing APIs expose Promise rejection or raw third-party clients.
 license: MIT
-compatibility: Scotty with Effect 4.0.0-rc.109; verify APIs against vendor/effect.
+compatibility: Scotty with Effect 4.0.0-rc.112; verify APIs against vendor/effect.
 ---
 
 # Wrap Promise clients
@@ -44,4 +44,4 @@ const makeSearchClient = (sdk: VendorSdk): SearchClientShape => ({
 
 Do not expose the raw SDK, use Promise `.catch` for domain recovery, or silently replace failure with an empty result. Disable blind SDK retries for ambiguous mutations when Scotty must re-observe state before retrying.
 
-Verify `Context.Service`, `Effect.tryPromise`, and Layer usage against pinned rc.109 source and tests.
+Verify `Context.Service`, `Effect.tryPromise`, and Layer usage against pinned rc.112 source and tests.

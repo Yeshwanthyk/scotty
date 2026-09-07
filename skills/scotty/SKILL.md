@@ -10,7 +10,8 @@ Use the signed executable for a release. Use checkout source only when the user 
 commit, and never deploy from a dirty worktree.
 
 Names, Cloudflare targets, credential sources, repositories, and session IDs are user-supplied.
-Never infer them. Show the exact target and obtain approval immediately before remote mutation.
+Never infer them. Bind remote mutations to the explicit target and authorized task scope; obtain
+approval when that scope is missing. Do not request the same authorization again.
 Redact secrets, recovery fragments, authenticated links, cookies, and nonces.
 
 ## Reason from authority
@@ -50,6 +51,28 @@ Complete only when config validation, sync, doctor, registration, browser owners
 warm session agree. Stop on multiple matching Pi grants, missing GitHub identity, or binding
 overwrite ambiguity; never select, fabricate, or replace authority implicitly.
 
+## Select an agent
+
+Inspect `scotty beam --help` and the private `~/.config/scotty/scotty.toml`. Precedence is explicit
+`--agent`, then `[agent].default`, then Pi. Use `pi` or `codex`; `codex-app-server` is not a config
+value. The TOML still requires its existing version, sync, and repos sections.
+
+`[agents.codex]` owns model and effort. `[agents.pi]` owns provider, model, and effort. Flags
+`--model` and `--effort` override only the selected profile; Pi's `--model-provider` overrides its
+model provider. `--provider` remains execution placement. Missing TOML preserves existing Pi
+behavior; malformed present config fails. Beam validates config without reading credential sources
+or resolving sync directories. Do not add a `codex-auth` declaration: current credential kinds are
+`pi-auth` and `github-cli`.
+
+Codex currently supports creation, one initial prompt, passive read, and vaporize. It requires a
+supported model/effort pair and runs with approvals disabled and danger-full-access inside the
+Scotty runtime. Public follow-up/steer, checkpoint, sleep/resume, and shared skill discovery are not
+implemented for Codex. Pi keeps its current controls. Do not use a Pi lifecycle recipe on Codex.
+
+TOML changes affect new Sessions. Pi verifies requested settings before its first prompt; native
+saved Session settings remain current on resume. A successful beam proves admission, so read until
+the intended terminal response before claiming the agent completed work.
+
 ## Configure and repair Hatch
 
 Hatch is a service inside a warm session, not a Cloudflare resource. The Session Durable Object owns
@@ -84,8 +107,9 @@ reconcile or escalate; do not invent a retry or force a transition.
 In an operator environment, load the built-in `scotty-live-observability` skill for live canaries,
 authority divergence, deployment verification, or ambiguous provider outcomes.
 
-Snapshot, recoverable stop, and vaporize differ. Vaporize is permanent and requires approval for
-the exact ID immediately before execution. Capture evidence first because deletion removes its route.
+Snapshot, recoverable stop, and vaporize differ. Vaporize is permanent. Confirm the exact ID is
+within the authorized cleanup scope before execution. Capture evidence first because deletion
+removes its route.
 
 Judge vaporize by authoritative `gone` and owned-resource deletion. Check backup, grant,
 Hatch/evidence, schedules, and list projection separately. Stale list data does not negate deletion,

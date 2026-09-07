@@ -2,7 +2,7 @@
 name: modeling-effect-errors
 description: Models failures as typed Effect values and keeps defects, throws, Promise rejections, and unknown errors at explicit host boundaries. Use when implementing or reviewing Effect error handling.
 license: MIT
-compatibility: Scotty with Effect 4.0.0-rc.109; verify APIs against vendor/effect.
+compatibility: Scotty with Effect 4.0.0-rc.112; verify APIs against vendor/effect.
 ---
 
 # Model Effect errors
@@ -48,4 +48,4 @@ Use `Effect.catchTag` or `Effect.catchTags` for typed recovery. Do not use `try/
 
 Native host signatures may require throws, rejected Promises, or conversion to a Promise. Keep those operations in the smallest adapter and immediately translate to or from Effect. A lint suppression must be adjacent, rule-specific, and include a `boundary:` reason. Do not build fake Effect abstractions around pure parsing, static configuration, or native callback contracts merely for uniformity.
 
-Before using an unfamiliar API, inspect `vendor/effect/.patterns/effect.md`, `vendor/effect/packages/effect/src/Effect.ts`, `Data.ts`, `Schema.ts`, and their tests at rc.109.
+Before using an unfamiliar API, inspect `vendor/effect/.patterns/effect.md`, `vendor/effect/packages/effect/src/Effect.ts`, `Data.ts`, `Schema.ts`, and their tests at rc.112.

@@ -2,7 +2,7 @@
 name: testing-effect-programs
 description: Tests Effect programs with @effect/vitest, deterministic clocks, Layers, scopes, failures, and interruption. Use when adding Effect-returning tests or fixing conditional assertions and runtime escape hatches in tests.
 license: MIT
-compatibility: Scotty with @effect/vitest and Effect 4.0.0-rc.109.
+compatibility: Scotty with @effect/vitest and Effect 4.0.0-rc.112.
 ---
 
 # Test Effect programs
@@ -22,15 +22,15 @@ Use Effect-native tests for Effect-returning programs and ordinary Vitest tests 
 - Keep assertions unconditional. Split cases or assert the discriminant before asserting branch data.
 
 ```ts
-import { assert, describe, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { assert, it } from "@effect/vitest";
+import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 
-it.effect("retries after the scheduled delay", () =>
+it.effect("completes after the scheduled delay", () =>
   Effect.gen(function* () {
-    const fiber = yield* program.pipe(Effect.fork);
+    const fiber = yield* Effect.succeed("done").pipe(Effect.delay("1 second"), Effect.forkChild);
     yield* TestClock.adjust("1 second");
-    const result = yield* fiber;
+    const result = yield* Fiber.join(fiber);
     assert.equal(result, "done");
   }),
 );
@@ -38,4 +38,4 @@ it.effect("retries after the scheduled delay", () =>
 
 Live Cloudflare tests remain skip-gated unless the exact user approval and isolated-stage guards are present. Never weaken no-deploy or credential-isolation assertions to make a test easier.
 
-Read `vendor/effect/.patterns/testing.md` and inspect analogous rc.109 tests before introducing a new test pattern.
+Read `vendor/effect/.patterns/testing.md` and inspect analogous rc.112 tests before introducing a new test pattern.
