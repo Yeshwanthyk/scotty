@@ -553,6 +553,38 @@ const actorReadiness = (authority: SessionAuthority): ReadinessProgress | null =
   return "readiness" in proof ? proof.readiness : null;
 };
 
+interface HatchExposureReconciliationContext {
+  readonly previewBase: string;
+  readonly hatch: HatchRecord;
+  readonly runtimeProof: NonNullable<ReadinessProgress["runtime"]>;
+}
+
+const hatchExposureReconciliationContext = (
+  previewBase: string | undefined,
+  runtimeRunning: boolean,
+  authority: SessionAuthority | undefined,
+  hatch: HatchRecord | undefined,
+): HatchExposureReconciliationContext | undefined => {
+  if (
+    previewBase === undefined ||
+    !runtimeRunning ||
+    authority === undefined ||
+    hatch === undefined
+  )
+    return undefined;
+  const warmAuthority = AuthorityStateSchema.guards.Stable(authority.state)
+    ? StableStateSchema.guards.Warm(authority.state.stable)
+    : TransitionSchema.guards.WarmWork(authority.state.transition);
+  if (!warmAuthority || authority.session.id !== hatch.sessionId) return undefined;
+  const runtimeProof = actorReadiness(authority)?.runtime;
+  if (runtimeProof === undefined || runtimeProof === null) return undefined;
+  if (hatch.desiredStatus !== "open" || hatch.observedStatus !== "running") return undefined;
+  if (hatch.exposure !== "active" || hatch.runtimeEpoch !== runtimeProof.runtimeGeneration)
+    return undefined;
+  if (hatch.cleanup !== undefined || hatch.transitionNonce !== undefined) return undefined;
+  return { previewBase, hatch, runtimeProof };
+};
+
 interface EvidenceDeadlinePayload {
   readonly nonce: string;
   readonly deadlineAt: string;
@@ -598,7 +630,14 @@ export const SANDBOX_TEST_EXPOSE_EVIDENCE = Symbol("scotty.test.exposeEvidence")
 export const SANDBOX_TEST_COMPLETE_EVIDENCE_STEP = Symbol("scotty.test.completeEvidenceStep");
 export const SANDBOX_TEST_FINALIZE_EVIDENCE = Symbol("scotty.test.finalizeEvidence");
 
-type HostOperation = "destroy" | "expose" | "schedule" | "stop" | "unexpose";
+type HostOperation =
+  | "destroy"
+  | "expose"
+  | "getExposedPorts"
+  | "schedule"
+  | "stop"
+  | "unexpose"
+  | "validatePortToken";
 
 class HostOperationFailure extends Data.TaggedError("HostOperationFailure")<{
   readonly operation: HostOperation;
@@ -1557,6 +1596,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     operationNonce: string,
     runtimeEpoch: string,
     restoreFence?: HatchRestoreFence,
+    publish = true,
+    expectedIncarnation?: string,
   ) {
     const previewBase = this.previewBase;
     if (previewBase === undefined)
@@ -1565,6 +1606,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
         message: "Hatch routing is unavailable",
       });
     const runtime = yield* SandboxRuntime;
+    const beforeIncarnation = yield* runtime.getContainerIncarnationId();
+    if (beforeIncarnation === null)
+      return yield* new HatchStateError({
+        reason: "invalid_state",
+        message: "Hatch runtime identity is unavailable",
+      });
+    if (expectedIncarnation !== undefined && beforeIncarnation !== expectedIncarnation)
+      return yield* new HatchStateError({
+        reason: "runtime_changed",
+        message: "Hatch runtime is no longer current",
+      });
     const healthStatus = yield* runtime.fetchPortStatus(
       hatch.service.healthPath,
       hatch.service.port,
@@ -1574,6 +1626,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* new HatchStateError({
         reason: "invalid_state",
         message: "Hatch service health check failed",
+      });
+    const afterHealthIncarnation = yield* runtime.getContainerIncarnationId();
+    if (afterHealthIncarnation !== beforeIncarnation)
+      return yield* new HatchStateError({
+        reason: "runtime_changed",
+        message: "Hatch runtime changed during health check",
       });
     const exposed = yield* hostEffect("expose", () =>
       this.exposePort(hatch.service.port, {
@@ -1596,7 +1654,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
         reason: "invalid_state",
         message: "Hatch exposure host did not match authority",
       });
+    const afterExposureIncarnation = yield* runtime.getContainerIncarnationId();
+    if (afterExposureIncarnation !== beforeIncarnation)
+      return yield* new HatchStateError({
+        reason: "runtime_changed",
+        message: "Hatch runtime changed during exposure",
+      });
     yield* this.verifyPublicHatchRouteProgram(hatch, operationNonce);
+    if (!publish) return hatch;
     const store = yield* HatchStore;
     return yield* store.publishRunning(
       operationNonce,
@@ -1606,6 +1671,91 @@ export class Sandbox extends BaseSandbox<Bindings> {
       restoreFence,
     );
   });
+
+  private readonly reconcileHatchRuntimeExposureProgram = Effect.fnUntraced(
+    function* (this: Sandbox) {
+      const previewBase = this.previewBase;
+      const actor = yield* ActorStore;
+      const store = yield* HatchStore;
+      const actorSnapshot = yield* Effect.result(actor.read);
+      const stored = yield* Effect.result(store.read);
+      const authority = Result.isSuccess(actorSnapshot)
+        ? actorSnapshot.success.authority
+        : undefined;
+      const hatch = Result.isSuccess(stored) ? stored.success.primary : undefined;
+      const reconciliationContext = hatchExposureReconciliationContext(
+        previewBase,
+        this.rawContainer?.running === true,
+        authority,
+        hatch,
+      );
+      if (reconciliationContext === undefined) return false;
+      const {
+        previewBase: currentPreviewBase,
+        hatch: currentHatch,
+        runtimeProof,
+      } = reconciliationContext;
+      const runtime = yield* SandboxRuntime;
+      const currentIncarnation = yield* Effect.result(runtime.getContainerIncarnationId());
+      if (
+        Result.isFailure(currentIncarnation) ||
+        currentIncarnation.success !== runtimeProof.containerIncarnation
+      )
+        return false;
+      const exposed = yield* Effect.result(
+        hostEffect("getExposedPorts", () => this.getExposedPorts(currentPreviewBase)),
+      );
+      if (Result.isFailure(exposed)) return false;
+      const current = exposed.success.find((entry) => entry.port === currentHatch.service.port);
+      if (current !== undefined) {
+        const currentOrigin = yield* Effect.result(
+          Effect.try({
+            try: () => new URL(current.url).origin,
+            catch: () =>
+              new HatchStateError({
+                reason: "invalid_state",
+                message: "Current Hatch exposure is invalid",
+              }),
+          }),
+        );
+        return (
+          Result.isSuccess(currentOrigin) &&
+          currentOrigin.success ===
+            hatchOrigin(
+              {
+                sessionId: currentHatch.sessionId,
+                port: currentHatch.service.port,
+                routeNonce: currentHatch.routeNonce,
+              },
+              currentPreviewBase,
+            )
+        );
+      }
+      const authorized = yield* Effect.result(
+        hostEffect("validatePortToken", () =>
+          this.validatePortToken(currentHatch.service.port, currentHatch.routeNonce),
+        ),
+      );
+      if (Result.isFailure(authorized) || !authorized.success) return false;
+      const reconciled = yield* Effect.result(
+        this.healthCheckAndExposeHatchProgram(
+          currentHatch,
+          currentHatch.routeNonce,
+          runtimeProof.runtimeGeneration,
+          undefined,
+          false,
+          runtimeProof.containerIncarnation,
+        ),
+      );
+      return Result.isSuccess(reconciled);
+    },
+  );
+
+  private reconcileHatchRuntimeExposure(): Promise<boolean> {
+    return this.sessionControlGate.run(() =>
+      this.#run(this.reconcileHatchRuntimeExposureProgram()),
+    );
+  }
 
   private readonly prepareHatchRestoreProgram = Effect.fnUntraced(function* (
     this: Sandbox,
@@ -3931,6 +4081,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
       runtime.fetchPortStatus(hatch.service.healthPath, hatch.service.port, "GET"),
     );
     if (Result.isSuccess(health) && health.success >= 200 && health.success <= 399) {
+      const reconciled = yield* Effect.promise(() => this.reconcileHatchRuntimeExposure());
+      if (!reconciled) {
+        yield* store.clearPublicReady(
+          authorization.hatchId,
+          authorization.generation,
+          authorization.runtimeEpoch,
+        );
+        return false;
+      }
       const publicRoute = yield* Effect.result(this.verifyPublicHatchRouteProgram(hatch));
       if (Result.isFailure(publicRoute)) {
         yield* store.clearPublicReady(
@@ -4023,7 +4182,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
       route.success.routeNonce !== decoded.value.routeNonce
     )
       return undefined;
-    return route.success;
+    const reconciled = await this.reconcileHatchRuntimeExposure().then(
+      (value) => value,
+      () => false,
+    );
+    if (!reconciled) return undefined;
+    const current = await this.#run(
+      Effect.result(Effect.flatMap(HatchStore, (store) => store.activeRoute)),
+    );
+    if (
+      Result.isFailure(current) ||
+      current.success.sessionId !== decoded.value.sessionId ||
+      current.success.port !== decoded.value.port ||
+      current.success.routeNonce !== decoded.value.routeNonce
+    )
+      return undefined;
+    return current.success;
   }
 
   async issueScottyHatchPermit(
@@ -5355,6 +5529,20 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.ctx.waitUntil(background);
   }
 
+  private enqueueHatchRuntimeExposureReconciliation(): void {
+    const background = Promise.resolve()
+      .then(() => this.reconcileHatchRuntimeExposure())
+      .then(
+        () => undefined,
+        (cause: unknown) => {
+          console.error("Hatch runtime exposure reconciliation failed", {
+            error: errorName(cause),
+          });
+        },
+      );
+    this.ctx.waitUntil(background);
+  }
+
   override async onActivityExpired(): Promise<void> {
     return this.#run(
       Effect.gen({ self: this }, function* () {
@@ -5374,6 +5562,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   override async onStart(): Promise<void> {
     await super.onStart();
     if (this.localE2E) await this.runtimeIncarnationStore.markLocalStarted();
+    this.enqueueHatchRuntimeExposureReconciliation();
     this.enqueueRuntimeLifecycleObservation("started");
   }
 

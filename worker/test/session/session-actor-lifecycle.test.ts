@@ -4,7 +4,13 @@ import { TestClock } from "effect/testing";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { EvidenceState } from "../../src/evidence/contracts";
-import type { HatchState } from "../../src/hatch/contracts";
+import {
+  HATCH_PRIVATE_REQUEST_HEADER,
+  hatchOrigin,
+  type HatchRouteAuthorization,
+  type HatchState,
+} from "../../src/hatch/contracts";
+import { sha256Hex } from "../../src/shared/digest";
 import { ScottyError } from "../../src/session/contracts";
 import {
   CREATE_IDEMPOTENCY,
@@ -12,7 +18,49 @@ import {
   createSessionHarness,
   SESSION_ID,
   sessionHarnessKeys,
+  type SessionHarness,
 } from "../support/session-harness";
+
+const fetchAuthorizedHatchRequest = async (
+  harness: SessionHarness,
+  route: HatchRouteAuthorization,
+): Promise<Response> => {
+  const cookieSecret = "a".repeat(64);
+  const cookieDigest = await sha256Hex(cookieSecret);
+  const hostRoute = {
+    sessionId: route.sessionId,
+    port: route.port,
+    routeNonce: route.routeNonce,
+  } as const;
+  const active = await harness.sandbox.getScottyHatchRoute(hostRoute);
+  assert.isDefined(active);
+  const issued = await harness.sandbox.issueScottyHatchPermit(
+    hostRoute,
+    "111111111111",
+    cookieDigest,
+  );
+  assert.isDefined(issued);
+  const permit = await harness.sandbox.admitScottyHatchRequest({
+    sessionId: route.sessionId,
+    port: route.port,
+    routeNonce: route.routeNonce,
+    cookieSecret,
+    ingressBytes: 0,
+  });
+  assert.isDefined(permit);
+  assert.isTrue(await harness.sandbox.adjustScottyHatchRequest(permit.requestId, 0));
+  return harness.sandbox.fetch(
+    new Request(`${hatchOrigin(route, "preview.example.test")}/`, {
+      headers: {
+        "x-sandbox-preview-proxy": "1",
+        "x-sandbox-preview-port": String(route.port),
+        "x-sandbox-preview-sandbox-id": route.sessionId,
+        "x-sandbox-preview-token": route.routeNonce,
+        [HATCH_PRIVATE_REQUEST_HEADER]: permit.requestId,
+      },
+    }),
+  );
+};
 
 const decodeDrainFence = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -1081,6 +1129,193 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     if (publicStatus.status !== "configured") return;
     assert.strictEqual(publicStatus.observedStatus, "running");
     assert.strictEqual(publicStatus.exposure, "active");
+  });
+
+  it("re-exposes Hatch on the current runtime without reviving Evidence exposure", async () => {
+    let activeHarness: SessionHarness | undefined;
+    const forwardedHatchUrls: string[] = [];
+    const harness = await createSessionHarness({
+      evidenceEnabled: true,
+      piSessionRunning: true,
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      hatchRequestForwarder: async (request) => {
+        forwardedHatchUrls.push(request.url);
+        const port = Number.parseInt(new URL(request.url).hostname.split("-")[0] ?? "", 10);
+        return activeHarness?.exposedPreviewPorts().includes(port)
+          ? new Response("hatch-app")
+          : new Response("stale Hatch runtime", { status: 404 });
+      },
+    });
+    activeHarness = harness;
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const service = {
+      name: "docs",
+      argv: ["npm", "run", "dev", "--", "--host", "0.0.0.0"],
+      workingDirectory: `/workspace/${SESSION_ID}`,
+      port: 4_173,
+      healthPath: "/health",
+    } as const;
+    const ensured = await harness.sandbox.ensureScottyHatch({ service });
+    assert.strictEqual(ensured.status, "configured");
+    const activeEvidence = await harness.sandbox.acceptScottyEvidenceJob({
+      port: 4_174,
+      viewport: { width: 1_280, height: 720 },
+      capture: { screenshots: "after-each-step", video: false },
+      steps: [
+        {
+          name: "Open the app",
+          action: { kind: "goto", path: "/" },
+          expect: [{ kind: "urlPath", expected: "/" }],
+        },
+      ],
+    });
+    await harness.sandbox.exposeScottyEvidencePreview(activeEvidence.operationNonce);
+
+    const initialRuntimeIdentity = harness.runtimeIdentity();
+    const evidenceExposureCount = harness.events.filter(
+      (event) => event === "host:preview:expose:4174",
+    ).length;
+    assert.include(harness.exposedPreviewPorts(), 4_173);
+    assert.include(harness.exposedPreviewPorts(), 4_174);
+    const route = await harness.sandbox.getScottyHatchOpenRoute();
+    assert.isDefined(route);
+    if (route === undefined) return;
+    const beforeRestart = await fetchAuthorizedHatchRequest(harness, route);
+    assert.strictEqual(beforeRestart.status, 200);
+    assert.strictEqual(await beforeRestart.text(), "hatch-app");
+
+    await harness.startRuntime();
+    assert.notStrictEqual(harness.runtimeIdentity(), initialRuntimeIdentity);
+    assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+
+    const duringRestart = await fetchAuthorizedHatchRequest(harness, route);
+    assert.strictEqual(duringRestart.status, 200);
+    assert.strictEqual(await duringRestart.text(), "hatch-app");
+    assert.deepStrictEqual(harness.exposedPreviewPorts(), [4_173]);
+    assert.strictEqual(forwardedHatchUrls.length, 2);
+    assert.deepStrictEqual(
+      forwardedHatchUrls.map((url) => new URL(url).origin),
+      [hatchOrigin(route, "preview.example.test"), hatchOrigin(route, "preview.example.test")],
+    );
+
+    await harness.drainBackground();
+    assert.deepStrictEqual(harness.exposedPreviewPorts(), [4_173]);
+    assert.include(harness.events, "host:preview:expose:4173");
+    assert.strictEqual(
+      harness.events.filter((event) => event === "host:preview:expose:4174").length,
+      evidenceExposureCount,
+    );
+    const publicStatus = await harness.sandbox.getScottyHatchStatus();
+    assert.strictEqual(publicStatus.status, "configured");
+    if (publicStatus.status !== "configured") return;
+    assert.strictEqual(publicStatus.observedStatus, "running");
+    assert.strictEqual(publicStatus.exposure, "active");
+
+    const hatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.isDefined(hatch);
+    assert.strictEqual(hatch?.service.port, 4_173);
+    assert.strictEqual(hatch?.observedStatus, "running");
+    assert.strictEqual(hatch?.exposure, "active");
+    await harness.sandbox.finalizeScottyEvidenceJob(activeEvidence.operationNonce, "interrupted");
+    const exposureCountAfterRepair = harness.events.filter(
+      (event) => event === "host:preview:expose:4173",
+    ).length;
+    const afterEvidence = await fetchAuthorizedHatchRequest(harness, route);
+    assert.strictEqual(afterEvidence.status, 200);
+    assert.strictEqual(await afterEvidence.text(), "hatch-app");
+    assert.strictEqual(
+      harness.events.filter((event) => event === "host:preview:expose:4173").length,
+      exposureCountAfterRepair,
+    );
+  });
+
+  it("keeps Hatch unavailable when the replacement runtime has no healthy service", async () => {
+    const harness = await createSessionHarness({
+      piSessionRunning: true,
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const ensured = await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    assert.strictEqual(ensured.status, "configured");
+
+    harness.injectFailure("hatchHealth");
+    await harness.startRuntime();
+    await harness.drainBackground();
+    assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+
+    assert.isUndefined(await harness.sandbox.getScottyHatchOpenRoute());
+  });
+
+  it("does not revive Hatch after the actor observes a replacement incarnation", async () => {
+    const harness = await createSessionHarness({
+      containerPlacementId: null,
+      localE2E: true,
+      piSessionRunning: true,
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+    });
+    await harness.startRuntime();
+    await harness.drainBackground();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const ensured = await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    assert.strictEqual(ensured.status, "configured");
+    assert.include(harness.exposedPreviewPorts(), 4_173);
+    const before = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      before !== undefined &&
+        Predicate.isTagged(before.state, "Stable") &&
+        Predicate.isTagged(before.state.stable, "Warm"),
+    );
+    if (
+      before === undefined ||
+      !Predicate.isTagged(before.state, "Stable") ||
+      !Predicate.isTagged(before.state.stable, "Warm")
+    )
+      return;
+    const initialIncarnation = before.state.stable.readiness.runtime.containerIncarnation;
+
+    await harness.startRuntime();
+    await harness.drainBackground();
+
+    const after = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      after !== undefined &&
+        Predicate.isTagged(after.state, "Stable") &&
+        Predicate.isTagged(after.state.stable, "Failed"),
+    );
+    if (
+      after === undefined ||
+      !Predicate.isTagged(after.state, "Stable") ||
+      !Predicate.isTagged(after.state.stable, "Failed")
+    )
+      return;
+    assert.strictEqual(after.state.stable.code, "runtime_replaced");
+    assert.notStrictEqual(
+      initialIncarnation,
+      harness.read<{ readonly version: 1; readonly id: string }>(
+        sessionHarnessKeys.localContainerIncarnation,
+      )?.id,
+    );
+    assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+    assert.isUndefined(await harness.sandbox.getScottyHatchOpenRoute());
   });
 
   it("does not reconcile lifecycle success after Hatch restore cleanup failed", async () => {

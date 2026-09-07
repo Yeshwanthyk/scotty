@@ -655,6 +655,7 @@ export interface SessionHarness {
   readonly sandboxBundleKeys: () => ReadonlyArray<string>;
   readonly sandboxBundleDeletedKeys: ReadonlyArray<string>;
   readonly exposedPreviewPorts: () => ReadonlyArray<number>;
+  readonly runtimeIdentity: () => string;
   readonly piHatchRestoreDescriptors: ReadonlyArray<HatchRestoreDescriptor>;
   readonly stopHatchProcess: (generation: number) => void;
   readonly startRuntime: () => Promise<void>;
@@ -1164,7 +1165,19 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
   const artifactDeletedKeys: string[] = [];
   const sandboxBundleDeletedKeys: string[] = [];
-  const exposedPreviewPorts = new Set<number>();
+  let runtimeIdentitySequence = 0;
+  let currentRuntimeIdentity = `runtime-${runtimeIdentitySequence}`;
+  const exposedPreviewPortsByRuntime = new Map<string, Map<number, string>>([
+    [currentRuntimeIdentity, new Map()],
+  ]);
+  const durablePreviewTokens = new Map<number, string>();
+  const currentExposedPreviewPorts = (): Map<number, string> => {
+    const ports = exposedPreviewPortsByRuntime.get(currentRuntimeIdentity);
+    if (ports !== undefined) return ports;
+    const created = new Map<number, string>();
+    exposedPreviewPortsByRuntime.set(currentRuntimeIdentity, created);
+    return created;
+  };
   const piHatchRestoreDescriptors: HatchRestoreDescriptor[] = [];
   const artifactObjects = initialArtifactObjectMap(options.initialArtifactObjects);
   let piSessionRunning = options.piSessionRunning ?? false;
@@ -1622,7 +1635,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         events.push(`host:preview:expose:${port}`);
         await options.previewExposeGate;
         const token = exposeOptions.token ?? "generated_token";
-        exposedPreviewPorts.add(port);
+        currentExposedPreviewPorts().set(port, token);
+        durablePreviewTokens.set(port, token);
         if (failures.has("previewExpose"))
           throw injectedHarnessFailure("injected ambiguous preview exposure failure");
         return {
@@ -1632,13 +1646,32 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         };
       },
     },
+    getExposedPorts: {
+      value: async (hostname: string) =>
+        [...currentExposedPreviewPorts()].flatMap(([port, token]) =>
+          durablePreviewTokens.get(port) === token
+            ? [
+                {
+                  url: `https://${port}-${SESSION_ID}-${token}.${hostname}/`,
+                  port,
+                  status: "active" as const,
+                },
+              ]
+            : [],
+        ),
+    },
     unexposePort: {
       value: async (port: number): Promise<void> => {
         events.push(`host:preview:unexpose:${port}`);
         if (failures.has("previewUnexpose"))
           throw injectedHarnessFailure("injected preview unexpose failure");
-        exposedPreviewPorts.delete(port);
+        currentExposedPreviewPorts().delete(port);
+        durablePreviewTokens.delete(port);
       },
+    },
+    validatePortToken: {
+      value: async (port: number, token: string): Promise<boolean> =>
+        durablePreviewTokens.get(port) === token,
     },
     createBackup: {
       value: async (_backupOptions: BackupOptions): Promise<DirectoryBackup> => {
@@ -1873,7 +1906,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     artifactKeys: () => [...artifactObjects.keys()],
     sandboxBundleKeys: () => [...sandboxBundleObjectMap.keys()],
     sandboxBundleDeletedKeys,
-    exposedPreviewPorts: () => [...exposedPreviewPorts],
+    exposedPreviewPorts: () => [...currentExposedPreviewPorts().keys()],
+    runtimeIdentity: () => currentRuntimeIdentity,
     piHatchRestoreDescriptors,
     stopHatchProcess: (generation) => {
       failures.add("hatchHealth");
@@ -1883,12 +1917,16 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       if (!rawPiContainerRunning) piSessionRunning = false;
       rawPiContainerRunning = true;
       runtimeStatus = "running";
+      runtimeIdentitySequence += 1;
+      currentRuntimeIdentity = `runtime-${runtimeIdentitySequence}`;
+      exposedPreviewPortsByRuntime.set(currentRuntimeIdentity, new Map());
       await sandbox.onStart();
     },
     stopRuntime: async () => {
       piSessionRunning = false;
       rawPiContainerRunning = false;
       runtimeStatus = "stopped";
+      currentExposedPreviewPorts().clear();
       await sandbox.onStop();
     },
     drainBackground: async () => {
