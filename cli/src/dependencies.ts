@@ -1,3 +1,7 @@
+import { decodeCanonicalReadSnapshot, decodeInspectResponse } from "./schemas";
+import { readableMessages } from "./pure";
+import type { CanonicalConversationSnapshot } from "../../protocol/conversation";
+import type { ReadMessage } from "./pure";
 import { isAbsolute, join, resolve } from "node:path";
 import { Clock, Effect, Option, Result } from "effect";
 import { decodeInstallationPreviewConfiguration } from "../../infra/installation";
@@ -365,3 +369,42 @@ export const appendOnce = Effect.fnUntraced(function* (
   const fileSystem = yield* FileSystem;
   return yield* fileSystem.appendOnce(path, marker, content);
 });
+
+export const canonicalReadSnapshot = (
+  snapshot: CanonicalConversationSnapshot,
+  options: { readonly last: number; readonly role?: "user" | "assistant" },
+) => ({
+  epoch: snapshot.transport.epoch,
+  sequence: snapshot.transport.sequence,
+  truncated: snapshot.truncated.turns || snapshot.truncated.values,
+  messages: snapshot.turns
+    .flatMap((turn, index): ReadMessage[] => [
+      { index: index * 2, role: "user", id: `${turn.id}:user`, content: turn.user },
+      {
+        index: index * 2 + 1,
+        role: "assistant",
+        id: `${turn.id}:assistant`,
+        content: turn.assistant,
+      },
+    ])
+    .filter(
+      (message) =>
+        message.content.trim().length > 0 &&
+        (options.role === undefined || message.role === options.role),
+    )
+    .slice(-options.last),
+});
+
+export const decodeReadSnapshot = (
+  raw: unknown,
+  options: Parameters<typeof canonicalReadSnapshot>[1],
+) => {
+  const canonical = decodeCanonicalReadSnapshot(raw);
+  if (Option.isSome(canonical)) return Option.some(canonicalReadSnapshot(canonical.value, options));
+  return Option.map(decodeInspectResponse(raw), (snapshot) => ({
+    epoch: snapshot.epoch,
+    sequence: snapshot.sequence,
+    messages: readableMessages(snapshot, options),
+    truncated: snapshot.truncated.messages,
+  }));
+};

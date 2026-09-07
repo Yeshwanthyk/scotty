@@ -198,7 +198,8 @@ export const makeSessionActorMetadataStore = (
       if (decoded.success === undefined) return { _tag: "Missing" } as const;
       if (
         decoded.success.sessionId !== authority.session.id ||
-        decoded.success.repository !== authority.session.repository
+        decoded.success.repository !== authority.session.repository ||
+        JSON.stringify(decoded.success.selection) !== JSON.stringify(authority.session.selection)
       )
         return yield* new MetadataStoreConflict({ code: "metadata_already_exists" });
       const idempotency = idempotencyOutcome(decoded.success, input);
@@ -240,7 +241,8 @@ export const makeSessionActorMetadataStore = (
       if (current.success !== undefined) {
         if (
           current.success.sessionId !== authority.session.id ||
-          current.success.repository !== authority.session.repository
+          current.success.repository !== authority.session.repository ||
+          JSON.stringify(current.success.selection) !== JSON.stringify(authority.session.selection)
         )
           return {
             _tag: "NoWrite",

@@ -285,6 +285,186 @@ describe("configuration and transport", () => {
     expect(empty.error().error.message).toBe("Scotty token file is empty");
   });
 
+  test("beam sends explicit Codex selection without changing placement or inventing defaults", async () => {
+    let body: unknown;
+    const h = harness({
+      fetch: async (_input, init) => {
+        body = JSON.parse(String(init?.body));
+        return Response.json({
+          id: "s1",
+          title: "Fix build",
+          url: "https://worker.example/s/s1",
+          branch: "scotty/s1",
+          provider: "cloudflare",
+          status: "warm",
+        });
+      },
+    });
+    expect(
+      await main(
+        [...beamArgs(), "--agent", "codex", "--model", "gpt-5.4", "--effort", "high"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(body).toMatchObject({
+      agent: "codex",
+      model: "gpt-5.4",
+      effort: "high",
+      provider: "cloudflare",
+    });
+    for (const flags of [
+      ["--agent", "codex"],
+      ["--agent", "codex", "--model", "gpt-5.4", "--effort", "ultra"],
+      ["--agent", "pi", "--effort", "ultra"],
+      ["--agent", "other"],
+    ]) {
+      let requests = 0;
+      const invalid = harness({
+        fetch: async () => {
+          requests += 1;
+          return Response.json({});
+        },
+      });
+      expect(await main([...beamArgs(), ...flags], invalid.deps)).toBe(EXIT.USAGE);
+      expect(requests).toBe(0);
+    }
+  });
+
+  test("beam selects independent TOML profiles and applies only selected-agent overrides", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home, { skills: ["/nonexistent/unused-sync-root"] });
+    const path = scottyTomlConfigPath(home);
+    await writeFile(
+      path,
+      (await readFile(path, "utf8")) +
+        `
+[agent]
+default = "codex"
+[agents.pi]
+provider = "openai-codex"
+model = "gpt-5.6-sol"
+effort = "high"
+[agents.codex]
+model = "gpt-6-astra"
+effort = "low"
+`,
+      { mode: 0o600 },
+    );
+    let body: unknown;
+    const h = harness({
+      home,
+      fetch: async (_input, init) => {
+        body = JSON.parse(String(init?.body));
+        return Response.json({
+          id: "s1",
+          title: "Fix build",
+          url: "https://worker.example/s/s1",
+          branch: "scotty/s1",
+          provider: "cloudflare",
+          status: "warm",
+        });
+      },
+    });
+    expect(await main(beamArgs(), h.deps)).toBe(EXIT.OK);
+    expect(body).toMatchObject({
+      agent: "codex",
+      model: "gpt-6-astra",
+      effort: "low",
+      provider: "cloudflare",
+    });
+    expect(body).not.toHaveProperty("modelProvider");
+    expect(await main([...beamArgs(), "--agent", "pi", "--effort", "medium"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(body).toMatchObject({
+      agent: "pi",
+      modelProvider: "openai-codex",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      provider: "cloudflare",
+    });
+    expect(await main([...beamArgs(), "--model", "gpt-5.4", "--effort", "high"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(body).toMatchObject({ agent: "codex", model: "gpt-5.4", effort: "high" });
+    expect(body).not.toHaveProperty("modelProvider");
+    await writeFile(
+      path,
+      (await readFile(path, "utf8")).replace('default = "codex"', 'default = "pi"'),
+    );
+    expect(
+      await main([...beamArgs(), "--model-provider", "openai", "--model", "gpt-5.4"], h.deps),
+    ).toBe(EXIT.OK);
+    expect(body).toMatchObject({
+      agent: "pi",
+      modelProvider: "openai",
+      model: "gpt-5.4",
+      effort: "high",
+    });
+  });
+
+  test("beam rejects present malformed or unsafe TOML before API access and never borrows Pi defaults", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    const path = scottyTomlConfigPath(home);
+    const base = await readFile(path, "utf8");
+    let requests = 0;
+    const h = harness({
+      home,
+      fetch: async () => {
+        requests++;
+        return Response.json({});
+      },
+    });
+    for (const extra of [
+      '[agent]\ndefault = "codex-app-server"',
+      '[agents.pi]\neffort = "ultra"',
+      '[agents.codex]\nprovider = "openai"',
+      '[agent]\ndefault = "codex"\n[agents.pi]\nmodel = "gpt-5.4"\neffort = "high"',
+      "[agent",
+    ]) {
+      await writeFile(path, base + extra);
+      expect(await main(beamArgs(), h.deps)).toBe(EXIT.USAGE);
+    }
+    await writeFile(path, base);
+    await chmod(path, 0o644);
+    expect(await main(beamArgs(), h.deps)).toBe(EXIT.USAGE);
+    expect(requests).toBe(0);
+  });
+
+  test("read consumes a canonical Codex snapshot with the existing CLI output shape", async () => {
+    const h = harness({
+      fetch: async () =>
+        Response.json({
+          version: 1,
+          transport: { epoch: "generation-1", baseSequence: 0, sequence: 2, sessionRevision: 8 },
+          turns: [
+            {
+              id: "turn-1",
+              state: "failed",
+              user: "one prompt",
+              assistant: "bounded failure output",
+              tools: [],
+            },
+          ],
+          queue: { steer: [], followUp: [] },
+          truncated: { turns: false, values: false },
+        }),
+    });
+    expect(await main(["read", "a0b1c2d3e4f5", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(JSON.parse(h.stdout.join(""))).toEqual({
+      id: "a0b1c2d3e4f5",
+      epoch: "generation-1",
+      sequence: 2,
+      messages: [
+        { index: 1, role: "assistant", id: "turn-1:assistant", content: "bounded failure output" },
+      ],
+      truncated: false,
+    });
+  });
+
   test("beam converts the human cap to the Worker contract", async () => {
     let body: unknown;
     const h = harness({

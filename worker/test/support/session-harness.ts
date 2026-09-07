@@ -560,6 +560,7 @@ export type HarnessFailureStage =
   | "workspacePrepare";
 
 export interface HarnessOptions {
+  readonly containerFetch?: (request: Request, port: number) => Promise<Response>;
   readonly actorRequestRecoveryAfterResume?: SandboxEffectOptions["actorRequestRecoveryAfterResume"];
   readonly actorRequestRecoveryBeforeResume?: SandboxEffectOptions["actorRequestRecoveryBeforeResume"];
   readonly clock?: SandboxEffectOptions["clock"];
@@ -1754,6 +1755,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     containerFetch: {
       value: async (request: Request, port: number) => {
         piRequests.push(request.clone());
+        if (options.containerFetch !== undefined) return options.containerFetch(request, port);
         const pathname = new URL(request.url).pathname;
         if (port !== 43_117) {
           events.push(`host:hatch:health:${port}:${pathname}`);

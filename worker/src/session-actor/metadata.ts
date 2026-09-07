@@ -1,3 +1,4 @@
+import { AgentSelectionSchema } from "../../../protocol/agent-selection";
 import { Match, Predicate, Result, Schema } from "effect";
 import { CredentialGrantSchema, type CredentialGrant } from "../../../protocol/credentials";
 import {
@@ -79,7 +80,13 @@ const CreateResourceObservationsSchema = Schema.Struct({
   credentialGrants: Schema.NullOr(CredentialGrantCreateObservationSchema),
 });
 
+const CodexControlMetadataSchema = Schema.Struct({
+  token: Sha256DigestSchema,
+  initialPrompt: InitialPromptSchema,
+});
 export const SessionActorMetadataSchema = Schema.Struct({
+  selection: Schema.optionalKey(AgentSelectionSchema),
+  codexControl: Schema.optionalKey(CodexControlMetadataSchema),
   sessionId: SafeReferenceSchema,
   repository: RepositoryIdentitySchema,
   branch: SessionBranchSchema,
@@ -97,6 +104,8 @@ export const decodeSessionActorMetadata = Schema.decodeUnknownResult(SessionActo
 });
 
 export const SessionActorMetadataInputSchema = Schema.Struct({
+  selection: Schema.optionalKey(AgentSelectionSchema),
+  codexControl: Schema.optionalKey(CodexControlMetadataSchema),
   branch: SessionBranchSchema,
   createRepositoryIfMissing: Schema.Boolean,
   hardCap: HardCapMetadataSchema,
@@ -214,7 +223,9 @@ export const validateSessionActorMetadata = (
 ): Result.Result<SessionActorMetadata, SessionActorMetadataViolation> => {
   if (
     metadata.sessionId !== authority.session.id ||
-    metadata.repository !== authority.session.repository
+    metadata.repository !== authority.session.repository ||
+    JSON.stringify(metadata.selection) !== JSON.stringify(authority.session.selection) ||
+    (metadata.selection?.agent === "codex") !== (metadata.codexControl !== undefined)
   )
     return invalid("authority_identity_mismatch");
 
@@ -241,6 +252,8 @@ export const makeSessionActorMetadata = (
   if (create === undefined) return invalid("create_transition_required");
   const payload: MetadataCreatePayloadReference = input.payload;
   const metadata: SessionActorMetadata = {
+    ...(input.selection === undefined ? {} : { selection: input.selection }),
+    ...(input.codexControl === undefined ? {} : { codexControl: input.codexControl }),
     sessionId: authority.session.id,
     repository: authority.session.repository,
     branch: input.branch,
@@ -324,6 +337,8 @@ const sameImmutableConfiguration = (
   next: SessionActorMetadata,
 ): boolean =>
   current.sessionId === next.sessionId &&
+  JSON.stringify(current.selection) === JSON.stringify(next.selection) &&
+  JSON.stringify(current.codexControl) === JSON.stringify(next.codexControl) &&
   current.repository === next.repository &&
   current.branch === next.branch &&
   current.createRepositoryIfMissing === next.createRepositoryIfMissing &&

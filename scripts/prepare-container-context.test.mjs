@@ -1,8 +1,26 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  chmod,
+  mkdtemp,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
+import {
+  CODEX_BUNDLE_SMOKE,
+  CODEX_SERVER_PROOF,
+  CODEX_FAKE_CHILD,
+  codexFixtureLaunch,
+} from "./check-container-image.mjs";
 import {
   CONTAINER_CONTEXT_PATH,
   CONTAINER_CONTEXT_BUDGET,
@@ -12,6 +30,7 @@ import {
   assertContainerContextBudget,
   assertContainerImageBudget,
   assertSafeProjectPath,
+  discoverContainerCliInputs,
   inspectContainerImageBudget,
   isSafeProjectPath,
   listPackagedFiles,
@@ -346,4 +365,176 @@ test("named context and image budgets sit above the current measured sizes", asy
     }),
     /docker image inspect Size is \d+ bytes; budget is/u,
   );
+});
+
+test("discovery follows transitive container-only source imports without including dependencies", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scotty-container-graph-"));
+  try {
+    await writeTree(root, {
+      "cli/scotty.ts": "console.log('cli');",
+      "worker/src/agent/codex/server.ts": "export { value } from './server-only.ts';",
+      "worker/src/agent/codex/server-only.ts": "export const value = 1;",
+      "worker/src/agent/codex/main.ts":
+        "export { value } from '../../../../protocol/codex-app-server.ts';",
+      "protocol/codex-app-server.ts": "export { value } from './codex-dependency.ts';",
+      "protocol/codex-dependency.ts": "export { value } from './nested/value.ts';",
+      "protocol/nested/value.ts": "export const value = 42;",
+      "protocol/unrelated.ts": "export const ignored = true;",
+    });
+    assert.deepEqual(await discoverContainerCliInputs(root), [
+      "cli/scotty.ts",
+      "protocol/codex-app-server.ts",
+      "protocol/codex-dependency.ts",
+      "protocol/nested/value.ts",
+      "worker/src/agent/codex/main.ts",
+      "worker/src/agent/codex/server-only.ts",
+      "worker/src/agent/codex/server.ts",
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real discovery prepares and bundles the Effect Codex host for standalone native Node", async (t) => {
+  const checkout = fileURLToPath(new URL("../", import.meta.url));
+  const root = await mkdtemp(join(tmpdir(), "scotty-real-container-context-"));
+  try {
+    const discovered = await discoverContainerCliInputs(checkout);
+    assert.ok(discovered.includes("protocol/codex-app-server.ts"));
+    for (const module of [
+      "main",
+      "process",
+      "session",
+      "framing",
+      "errors",
+      "server",
+      "runtime",
+      "token-file",
+    ]) {
+      assert.ok(discovered.includes(`worker/src/agent/codex/${module}.ts`));
+    }
+    assert.ok(discovered.includes("cli/scotty.ts"));
+    assert.ok(discovered.every((path) => !path.split("/").includes("node_modules")));
+    await materializeProjectInputs(checkout, root, [...CONTAINER_STATIC_INPUTS, ...discovered]);
+    await prepareContainerContext(root, { discoverCliInputs: async () => discovered });
+    const context = join(root, CONTAINER_CONTEXT_PATH);
+    const measured = await assertContainerContextBudget(context);
+    t.diagnostic(`Prepared context: ${measured.fileCount} files, ${measured.bytes} bytes`);
+    assert.equal(
+      await readFile(join(context, "protocol/codex-app-server.ts"), "utf8"),
+      await readFile(join(checkout, "protocol/codex-app-server.ts"), "utf8"),
+    );
+    const lock = JSON.parse(await readFile(join(context, "package-lock.json"), "utf8"));
+    const installed = JSON.parse(
+      await readFile(join(checkout, "node_modules/effect/package.json"), "utf8"),
+    );
+    assert.equal(installed.version, lock.packages["node_modules/effect"].version);
+    assert.equal(installed.version, "4.0.0-rc.112");
+    for (const name of ["platform-node", "platform-node-shared"]) {
+      const dependency = JSON.parse(
+        await readFile(join(checkout, `node_modules/@effect/${name}/package.json`), "utf8"),
+      );
+      assert.equal(dependency.version, lock.packages[`node_modules/@effect/${name}`].version);
+      assert.equal(dependency.version, "4.0.0-rc.112");
+    }
+    // Reuse locked local dependencies only after proving the pre-install context exclusions.
+    await symlink(join(checkout, "node_modules"), join(context, "node_modules"), "dir");
+    const output = join(root, "native");
+    await mkdir(output);
+    const dockerfile = await readFile(join(context, "worker/container/Dockerfile"), "utf8");
+    const build = dockerfile
+      .split("\n")
+      .find((line) => line.startsWith("RUN bun build worker/src/agent/codex/main.ts "));
+    assert.ok(build, "Dockerfile must build the Effect host bundle");
+    execFileSync(
+      "bun",
+      build
+        .slice("RUN bun ".length)
+        .split(" ")
+        .map((arg) =>
+          arg === "--outfile=/out/scotty-codex-host.mjs"
+            ? `--outfile=${join(output, "scotty-codex-host.mjs")}`
+            : arg,
+        ),
+      { cwd: context, stdio: "pipe" },
+    );
+    const serverBuild = dockerfile
+      .split("\n")
+      .find((line) => line.startsWith("RUN bun build worker/src/agent/codex/server.ts "));
+    assert.ok(serverBuild);
+    execFileSync(
+      "bun",
+      serverBuild
+        .slice("RUN bun ".length)
+        .split(" ")
+        .map((arg) =>
+          arg === "--outfile=/out/scotty-codex-server.mjs"
+            ? `--outfile=${join(output, "scotty-codex-server.mjs")}`
+            : arg,
+        ),
+      { cwd: context, stdio: "pipe" },
+    );
+    await copyFile(
+      join(context, "worker/container/scotty-codex-server.mjs"),
+      join(output, "scotty-codex-server"),
+    );
+    await chmod(join(output, "scotty-codex-server"), 0o755);
+    await t.test(
+      "installed private server authenticates, admits, reads, and stops without claiming teardown",
+      () => {
+        execFileSync(process.execPath, ["--input-type=module", "-e", CODEX_SERVER_PROOF], {
+          cwd: output,
+          stdio: "pipe",
+          env: { PATH: process.env.PATH },
+          timeout: 30_000,
+        });
+      },
+    );
+    execFileSync(process.execPath, ["--input-type=module", "-e", CODEX_BUNDLE_SMOKE], {
+      cwd: output,
+      stdio: "pipe",
+      env: { PATH: process.env.PATH },
+    });
+
+    await t.test("stages the actual native host beside its bundle", async () => {
+      const host = join(context, "worker/container/scotty-codex-session.mjs");
+      const source = await readFile(host, "utf8");
+      assert.match(source, /from ["']\.\/scotty-codex-host\.mjs["']/u);
+      await copyFile(host, join(output, "scotty-codex-session"));
+      execFileSync(process.execPath, ["--check", join(output, "scotty-codex-session")], {
+        stdio: "pipe",
+      });
+      const fake = join(output, "fake-codex");
+      await writeFile(fake, `#!${process.execPath}\n${CODEX_FAKE_CHILD}`);
+      await chmod(fake, 0o755);
+      const workspace = join(root, "parent-workspace");
+      await mkdir(workspace);
+      const transcript = execFileSync(
+        process.execPath,
+        [
+          join(output, "scotty-codex-session"),
+          JSON.stringify(codexFixtureLaunch(fake, join(root, "isolated"), workspace)),
+        ],
+        {
+          input: "",
+          encoding: "utf8",
+          env: {},
+          timeout: 10000,
+        },
+      )
+        .trim()
+        .split("\n")
+        .map(JSON.parse);
+      assert.deepEqual(
+        transcript.map((record) => record.type),
+        ["ready", "stopped"],
+      );
+      assert.equal(transcript[0].settings.reasoningEffort, "high");
+      assert.equal(transcript[1].shutdown, "eof");
+      assert.equal(transcript[1].parent, "exited");
+      assert.equal(transcript[1].descendants, "unverified");
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

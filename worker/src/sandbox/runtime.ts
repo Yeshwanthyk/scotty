@@ -50,6 +50,8 @@ export interface SandboxRuntimeCapabilities {
     port: number,
     method: "GET" | "POST",
     headers?: Readonly<Record<string, string>>,
+    body?: string,
+    signal?: AbortSignal,
   ) => Promise<Response>;
 }
 
@@ -113,6 +115,7 @@ interface SandboxRuntimeShape {
     method: "GET" | "POST",
     maxBytes: number,
     headers?: Readonly<Record<string, string>>,
+    body?: string,
   ) => Effect.Effect<{ readonly status: number; readonly body: string }, SandboxRuntimeFailure>;
 }
 
@@ -271,27 +274,34 @@ const makeSandboxRuntime = <E>(
       return guardOperation(beforeOperation, "Sandbox port transport failed").pipe(
         Effect.andThen(
           Effect.tryPromise({
-            try: () => fetchPort(path, port, method, headers),
+            try: (signal) => fetchPort(path, port, method, headers, undefined, signal),
             catch: () => transportFailure("Sandbox port transport failed"),
           }),
         ),
         Effect.map((response) => response.status),
       );
     },
-    fetchPortBody: (path, port, method, maxBytes, headers) => {
+    fetchPortBody: (path, port, method, maxBytes, headers, body) => {
+      if (
+        body !== undefined &&
+        (method !== "POST" || new TextEncoder().encode(body).byteLength > 256 * 1024)
+      )
+        return Effect.fail(
+          transportFailure("Sandbox port request body is invalid or exceeds its byte limit"),
+        );
       const fetchPort = capabilities.fetchPort;
       if (fetchPort === undefined)
         return Effect.fail(transportFailure("Sandbox port transport is unavailable"));
       return guardOperation(beforeOperation, "Sandbox port transport failed").pipe(
         Effect.andThen(
           Effect.tryPromise({
-            try: () => fetchPort(path, port, method, headers),
+            try: (signal) => fetchPort(path, port, method, headers, body, signal),
             catch: () => transportFailure("Sandbox port transport failed"),
           }),
         ),
         Effect.flatMap((response) =>
           Effect.tryPromise({
-            try: () => readBoundedUtf8Body(response, maxBytes),
+            try: (signal) => readBoundedUtf8Body(response, maxBytes, signal),
             catch: () => transportFailure("Sandbox port response transport failed"),
           }).pipe(
             Effect.flatMap((body) =>
@@ -347,7 +357,7 @@ const waitForPortViaFetch = <E>(
   return guardOperation(beforeOperation, "Sandbox process readiness transport failed").pipe(
     Effect.andThen(
       Effect.tryPromise({
-        try: () => fetchPort(options?.path ?? "/", port, "GET"),
+        try: (signal) => fetchPort(options?.path ?? "/", port, "GET", undefined, undefined, signal),
         catch: () => transportFailure("Sandbox process readiness transport failed"),
       }),
     ),

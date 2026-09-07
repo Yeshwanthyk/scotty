@@ -47,7 +47,7 @@ export type CanonicalConversationTool = typeof CanonicalConversationToolSchema.T
 
 export const CanonicalConversationTurnSchema = Schema.Struct({
   id: ConversationIdSchema,
-  state: Schema.Literals(["completed", "streaming"]),
+  state: Schema.Literals(["completed", "streaming", "failed", "aborted"]),
   user: BoundedConversationStringSchema,
   assistant: BoundedConversationStringSchema,
   activitySummary: Schema.optionalKey(BoundedConversationStringSchema),

@@ -1,3 +1,8 @@
+import {
+  PiModelSettingSchema,
+  PiReasoningEffortSchema,
+  type PiAgentSelection,
+} from "../../../protocol/agent-selection";
 import { Context, Effect, Layer, Option, Result, Schema } from "effect";
 import { PI_CONSOLE_MAX_RESPONSE_BYTES } from "../../../protocol/pi-console";
 import {
@@ -170,6 +175,9 @@ const resolveSeedExtras = (
   });
 
 const PiSettingsResourcesSchema = Schema.Struct({
+  defaultProvider: Schema.optionalKey(PiModelSettingSchema),
+  defaultModel: Schema.optionalKey(PiModelSettingSchema),
+  defaultThinkingLevel: Schema.optionalKey(PiReasoningEffortSchema),
   packages: Schema.optional(Schema.Array(Schema.String)),
   extensions: Schema.optional(Schema.Array(Schema.String)),
 });
@@ -195,6 +203,7 @@ const existingExtraResources = Effect.fnUntraced(function* (
     return {
       packagePaths: [] as ReadonlyArray<string>,
       extensionPaths: [] as ReadonlyArray<string>,
+      selection: undefined,
     };
   const decoded = yield* Effect.result(
     decodePiSettingsResources(new TextDecoder().decode(settingsBytes)),
@@ -203,27 +212,40 @@ const existingExtraResources = Effect.fnUntraced(function* (
     return {
       packagePaths: [] as ReadonlyArray<string>,
       extensionPaths: [] as ReadonlyArray<string>,
+      selection: undefined,
     };
+  const selection = {
+    ...(decoded.success.defaultProvider === undefined
+      ? {}
+      : { modelProvider: decoded.success.defaultProvider }),
+    ...(decoded.success.defaultModel === undefined ? {} : { model: decoded.success.defaultModel }),
+    ...(decoded.success.defaultThinkingLevel === undefined
+      ? {}
+      : { effort: decoded.success.defaultThinkingLevel }),
+  };
   const packages = decoded.success.packages ?? [];
   const extensionPaths = decoded.success.extensions ?? [];
   if (packages.length < PI_PACKAGES.length)
-    return { packagePaths: [] as ReadonlyArray<string>, extensionPaths };
+    return { packagePaths: [] as ReadonlyArray<string>, extensionPaths, selection };
   for (let index = 0; index < PI_PACKAGES.length; index += 1) {
     if (packages[index] !== PI_PACKAGES[index])
-      return { packagePaths: [] as ReadonlyArray<string>, extensionPaths };
+      return { packagePaths: [] as ReadonlyArray<string>, extensionPaths, selection };
   }
-  return { packagePaths: packages.slice(PI_PACKAGES.length), extensionPaths };
+  return { packagePaths: packages.slice(PI_PACKAGES.length), extensionPaths, selection };
 });
 
 const piSettings = (
   credentials: SessionRuntimeCredentials,
   extraPackagePaths: ReadonlyArray<string> = [],
   extensionPaths: ReadonlyArray<string> = [],
+  selection?: PiAgentSelection,
 ): string =>
   JSON.stringify({
-    defaultProvider: credentials.piProviders.includes("openai-codex") ? "openai-codex" : "openai",
-    defaultModel: "gpt-5.6-sol",
-    defaultThinkingLevel: "high",
+    defaultProvider:
+      selection?.modelProvider ??
+      (credentials.piProviders.includes("openai-codex") ? "openai-codex" : "openai"),
+    defaultModel: selection?.model ?? "gpt-5.6-sol",
+    defaultThinkingLevel: selection?.effort ?? "high",
     steeringMode: "one-at-a-time",
     theme: "dark",
     hideThinkingBlock: false,
@@ -315,6 +337,7 @@ export const sandboxAgentsInstructions = `- Read and follow the repository AGENT
 `;
 
 export interface ContainerAuthSeedOptions {
+  readonly selection?: PiAgentSelection;
   readonly initialPrompt?: string;
   readonly items?: ReadonlyArray<{
     readonly kind: SandboxBundleItemKind;
@@ -341,10 +364,12 @@ interface ContainerAuthShape {
   readonly ensurePiSession: (
     id: SessionRecord["id"],
     credentials: SessionRuntimeCredentials,
+    selection?: PiAgentSelection,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly startPiSession: (
     id: SessionRecord["id"],
     credentials: SessionRuntimeCredentials,
+    selection?: PiAgentSelection,
   ) => Effect.Effect<string, SandboxRuntimeFailure>;
   readonly waitForPiSessionReady: (
     id: SessionRecord["id"],
@@ -364,6 +389,7 @@ interface ContainerAuthShape {
   readonly refreshPiAuth: (
     id: SessionRecord["id"],
     credentials: SessionRuntimeCredentials,
+    selection?: PiAgentSelection,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
 }
 
@@ -377,6 +403,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
     const refreshPiAuth = Effect.fnUntraced(function* (
       id: SessionRecord["id"],
       credentials: SessionRuntimeCredentials,
+      selection?: PiAgentSelection,
     ) {
       const piHome = `${sessionRoot(id)}/.pi-agent`;
       const authPath = `${piHome}/auth.json`;
@@ -386,7 +413,11 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       const resources = yield* existingExtraResources(runtime, settingsPath);
       yield* runtime.writeFile(
         settingsPath,
-        piSettings(credentials, resources.packagePaths, resources.extensionPaths),
+        piSettings(credentials, resources.packagePaths, resources.extensionPaths, {
+          agent: "pi",
+          ...selection,
+          ...resources.selection,
+        }),
       );
       yield* runtime.execChecked(`chmod 600 ${shellQuote(authPath)} ${shellQuote(settingsPath)}`);
     });
@@ -491,7 +522,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       yield* runtime.writeFile(piAuthPath, piAuthJson(credentials));
       yield* runtime.writeFile(
         piSettingsPath,
-        piSettings(credentials, extraPackagePaths, extensionPaths),
+        piSettings(credentials, extraPackagePaths, extensionPaths, options?.selection),
       );
       yield* runtime.writeFile(piAgentsPath, sandboxAgentsInstructions);
       yield* runtime.writeFile(gitConfigPath, gitConfig());
@@ -517,6 +548,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
     const startPiSession = Effect.fnUntraced(function* (
       id: SessionRecord["id"],
       credentials: SessionRuntimeCredentials,
+      selection?: PiAgentSelection,
     ) {
       const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
       if (existing?.status === "starting") return existing.id;
@@ -528,7 +560,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         yield* existing.kill("SIGTERM");
         yield* existing.waitForExit(10_000);
       }
-      yield* refreshPiAuth(id, credentials);
+      yield* refreshPiAuth(id, credentials, selection);
       const transportToken = yield* derivePiSessionTransportToken(id);
       const tokenPath = piSessionTokenPath(id);
       yield* runtime.writeFile(tokenPath, transportToken);
@@ -541,6 +573,13 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           SCOTTY_PI_SESSION_PORT: String(PI_SESSION_PORT),
           SCOTTY_PI_SESSION_TOKEN_FILE: tokenPath,
           SCOTTY_WORKSPACE: sessionRoot(id),
+          ...(selection?.modelProvider === undefined
+            ? {}
+            : { SCOTTY_PI_EXPECTED_PROVIDER: selection.modelProvider }),
+          ...(selection?.model === undefined ? {} : { SCOTTY_PI_EXPECTED_MODEL: selection.model }),
+          ...(selection?.effort === undefined
+            ? {}
+            : { SCOTTY_PI_EXPECTED_EFFORT: selection.effort }),
         },
         processId: PI_SESSION_PROCESS_ID,
       });
@@ -644,13 +683,13 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       waitForPiSessionReady,
       readPiSessionHealth,
       verifyPiSessionSnapshot,
-      ensurePiSession: Effect.fnUntraced(function* (id, credentials) {
+      ensurePiSession: Effect.fnUntraced(function* (id, credentials, selection) {
         const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
         if (existing?.status === "starting" || existing?.status === "running") {
           yield* waitForPiSessionReady(id);
           return;
         }
-        yield* startPiSession(id, credentials);
+        yield* startPiSession(id, credentials, selection);
         yield* waitForPiSessionReady(id);
         const healthStatus = yield* runtime.fetchPortStatus("/health", PI_SESSION_PORT, "GET");
         if (healthStatus !== 200)

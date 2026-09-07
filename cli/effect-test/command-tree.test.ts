@@ -138,6 +138,9 @@ describe("Effect command tree", () => {
         assert.notInclude(beam.stdout.join(""), "vaporize");
         assert.include(beam.stdout.join(""), "prompt");
         assert.include(beam.stdout.join(""), "--new-repo");
+        assert.include(beam.stdout.join(""), "--agent");
+        assert.include(beam.stdout.join(""), "--model");
+        assert.include(beam.stdout.join(""), "--effort");
         assert.notInclude(beam.stdout.join(""), "SUBCOMMANDS");
         assert.strictEqual(beam.stderr.join(""), "");
 

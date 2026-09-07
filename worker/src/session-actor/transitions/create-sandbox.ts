@@ -1,3 +1,10 @@
+import {
+  admitCodexSandbox,
+  codexSandboxProcessId,
+  readCodexSandbox,
+  startCodexSandbox,
+  waitForCodexSandbox,
+} from "../../agent/codex/sandbox";
 import { Clock, Context, Effect, Layer, Predicate, Result, Schema } from "effect";
 import type { CredentialGrant } from "../../../../protocol/credentials";
 import { SandboxBundleMaterializer } from "../../sandbox/bundle-materializer";
@@ -162,7 +169,9 @@ const resolveInput = Effect.fnUntraced(function* (
       "create_sandbox_input_fence_mismatch",
       observedAt,
     );
-  return input;
+  return context.authority.session.selection?.agent === "codex"
+    ? { ...input, sandboxBundleDigest: null }
+    : input;
 });
 
 const runtimeProof = Effect.fnUntraced(function* (
@@ -266,6 +275,33 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const materializer = yield* SandboxBundleMaterializer;
     const auth = yield* ContainerAuth;
     const runtime = yield* SandboxRuntime;
+    const codexIdentity = Effect.fnUntraced(function* (
+      context: CreateProviderContext,
+      generation: string,
+    ) {
+      const observedAt = yield* timestamp;
+      const selection = context.authority.session.selection;
+      const metadata = yield* metadataStore
+        .read(context.authority)
+        .pipe(
+          Effect.mapError(() =>
+            failure("unknown_after_admission", "codex_metadata_unavailable", observedAt),
+          ),
+        );
+      if (selection?.agent !== "codex" || metadata?.codexControl === undefined)
+        return yield* failure(
+          "rejected_before_admission",
+          "codex_selection_unavailable",
+          observedAt,
+        );
+      return {
+        sessionId: context.authority.session.id,
+        generation,
+        selection,
+        token: metadata.codexControl.token,
+        initialPrompt: metadata.codexControl.initialPrompt,
+      };
+    });
 
     const recordCredentialGrants = Effect.fnUntraced(function* (
       context: CreateProviderContext,
@@ -372,10 +408,12 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       const materialized = yield* beforeTransitionDeadline(
         context,
         "create_bundle_materialization_timeout",
-        materializer.materialize({
-          sessionId: context.authority.session.id,
-          digest: input.sandboxBundleDigest,
-        }),
+        context.authority.session.selection?.agent === "codex"
+          ? Effect.succeed({ items: [], bundleRoot: undefined, digest: null })
+          : materializer.materialize({
+              sessionId: context.authority.session.id,
+              digest: input.sandboxBundleDigest,
+            }),
       ).pipe(
         Effect.mapError((error) =>
           Predicate.isTagged(error, "CreateProviderFailure")
@@ -408,28 +446,33 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         items: materialized.items,
         bundleRoot: materialized.bundleRoot,
       };
-      yield* beforeTransitionDeadline(
-        context,
-        "create_runtime_seed_timeout",
-        auth.seed(context.authority.session.id, input.credentials, seedOptions),
-      ).pipe(
-        Effect.mapError((error) =>
-          Predicate.isTagged(error, "CreateProviderFailure")
-            ? error
-            : mapRuntimeFailure(error, "create_runtime_seed_failed", observedAt),
-        ),
-      );
-      yield* beforeTransitionDeadline(
-        context,
-        "create_runtime_preflight_timeout",
-        auth.preflight(context.authority.session.id, input.credentials, seedOptions),
-      ).pipe(
-        Effect.mapError((error) =>
-          Predicate.isTagged(error, "CreateProviderFailure")
-            ? error
-            : mapRuntimeFailure(error, "create_runtime_preflight_failed", observedAt),
-        ),
-      );
+      if (context.authority.session.selection?.agent !== "codex") {
+        yield* beforeTransitionDeadline(
+          context,
+          "create_runtime_seed_timeout",
+          auth.seed(context.authority.session.id, input.credentials, {
+            ...seedOptions,
+            selection: context.authority.session.selection,
+          }),
+        ).pipe(
+          Effect.mapError((error) =>
+            Predicate.isTagged(error, "CreateProviderFailure")
+              ? error
+              : mapRuntimeFailure(error, "create_runtime_seed_failed", observedAt),
+          ),
+        );
+        yield* beforeTransitionDeadline(
+          context,
+          "create_runtime_preflight_timeout",
+          auth.preflight(context.authority.session.id, input.credentials, seedOptions),
+        ).pipe(
+          Effect.mapError((error) =>
+            Predicate.isTagged(error, "CreateProviderFailure")
+              ? error
+              : mapRuntimeFailure(error, "create_runtime_preflight_failed", observedAt),
+          ),
+        );
+      }
       const proof = yield* runtimeProof(runtime, context, input.runtimeGeneration);
       const marker: RuntimeMaterializationMarker = {
         attempt: context.transition.attempt,
@@ -487,7 +530,15 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       const processId = yield* beforeTransitionDeadline(
         context,
         "create_supervisor_start_timeout",
-        auth.startPiSession(context.authority.session.id, input.credentials),
+        context.authority.session.selection?.agent === "codex"
+          ? Effect.flatMap(codexIdentity(context, input.runtimeGeneration), (identity) =>
+              startCodexSandbox(identity, input.grants),
+            ).pipe(Effect.provideService(SandboxRuntime, runtime))
+          : auth.startPiSession(
+              context.authority.session.id,
+              input.credentials,
+              context.authority.session.selection,
+            ),
       ).pipe(
         Effect.mapError((error) =>
           Predicate.isTagged(error, "CreateProviderFailure")
@@ -506,6 +557,26 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const confirmSupervisorReady = Effect.fnUntraced(function* (context: CreateProviderContext) {
       const observedAt = yield* timestamp;
       const runtimeProofValue = yield* currentRuntime(context, observedAt);
+      if (context.authority.session.selection?.agent === "codex") {
+        const identity = yield* codexIdentity(context, runtimeProofValue.runtimeGeneration);
+        const snapshot = yield* waitForCodexSandbox(identity).pipe(
+          Effect.provideService(SandboxRuntime, runtime),
+          Effect.mapError((error) =>
+            mapRuntimeFailure(error, "codex_readiness_unknown", observedAt),
+          ),
+        );
+        return {
+          _tag: "SupervisorReadyConfirmed" as const,
+          supervisor: {
+            processId: codexSandboxProcessId(identity.generation),
+            supervisorEpoch: snapshot.threadId,
+            runtimeGeneration: identity.generation,
+            containerIncarnation: runtimeProofValue.containerIncarnation,
+          },
+          observedAt,
+          resultCode: "codex_supervisor_ready",
+        };
+      }
       yield* beforeTransitionDeadline(
         context,
         "create_supervisor_readiness_timeout",
@@ -537,7 +608,10 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       };
     });
 
-    const verifyTransport = Effect.fnUntraced(function* (context: CreateProviderContext) {
+    const verifyTransport = Effect.fnUntraced(function* (
+      context: CreateProviderContext,
+      reconcile = false,
+    ) {
       const observedAt = yield* timestamp;
       const runtimeProofValue = yield* currentRuntime(context, observedAt);
       const supervisor = context.transition.proof.readiness.supervisor;
@@ -547,6 +621,31 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
           "create_supervisor_proof_missing",
           observedAt,
         );
+      if (context.authority.session.selection?.agent === "codex") {
+        const identity = yield* codexIdentity(context, runtimeProofValue.runtimeGeneration);
+        const admitted = yield* admitCodexSandbox(
+          identity,
+          supervisor.supervisorEpoch,
+          identity.initialPrompt,
+          reconcile,
+        ).pipe(
+          Effect.provideService(SandboxRuntime, runtime),
+          Effect.mapError((error) =>
+            mapRuntimeFailure(error, "codex_admission_unknown", observedAt),
+          ),
+        );
+        return {
+          _tag: "TransportVerified" as const,
+          transport: {
+            transportId: admitted.turnId,
+            supervisorEpoch: supervisor.supervisorEpoch,
+            runtimeGeneration: identity.generation,
+            containerIncarnation: runtimeProofValue.containerIncarnation,
+          },
+          observedAt,
+          resultCode: "codex_prompt_admitted",
+        };
+      }
       const snapshot = yield* auth
         .verifyPiSessionSnapshot(context.authority.session.id, supervisor.supervisorEpoch)
         .pipe(
@@ -643,6 +742,22 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       }
       if (context.transition.phase === "SupervisorStarting") {
         const observedAt = yield* timestamp;
+        if (context.authority.session.selection?.agent === "codex") {
+          const input = yield* resolveInput(boundary, context);
+          const identity = yield* codexIdentity(context, input.runtimeGeneration);
+          yield* readCodexSandbox(identity).pipe(
+            Effect.provideService(SandboxRuntime, runtime),
+            Effect.mapError((error) =>
+              mapRuntimeFailure(error, "codex_start_reconciliation_unknown", observedAt),
+            ),
+          );
+          return {
+            _tag: "SupervisorStarted" as const,
+            processId: codexSandboxProcessId(identity.generation),
+            observedAt,
+            resultCode: "codex_start_reconciled",
+          };
+        }
         const health = yield* auth
           .readPiSessionHealth(context.authority.session.id)
           .pipe(
@@ -664,7 +779,8 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       if (context.transition.phase === "RuntimeReady") return yield* confirmRuntimeReady(context);
       if (context.transition.phase === "SupervisorReady")
         return yield* confirmSupervisorReady(context);
-      if (context.transition.phase === "TransportVerifying") return yield* verifyTransport(context);
+      if (context.transition.phase === "TransportVerifying")
+        return yield* verifyTransport(context, true);
       const observedAt = yield* timestamp;
       return yield* failure(
         "unknown_after_admission",

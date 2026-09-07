@@ -1,5 +1,6 @@
+import { AgentSelectionSchema, decodeAgentSelection } from "../../../protocol/agent-selection";
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Result, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../../protocol/pi-console";
 import { CredentialGrantSchema } from "../../../protocol/credentials";
 import {
@@ -280,6 +281,7 @@ export const RepoViewSchema = Schema.Struct({
 export type RepoView = typeof RepoViewSchema.Type;
 
 export const CreateSessionInputSchema = Schema.Struct({
+  selection: Schema.optionalKey(AgentSelectionSchema),
   title: Schema.String,
   prompt: Schema.String,
   provider: ProviderSchema,
@@ -433,6 +435,10 @@ export function conflict(message: string): ScottyError {
 }
 
 const RawCreateSessionInputSchema = Schema.Struct({
+  agent: Schema.optionalKey(Schema.Unknown),
+  modelProvider: Schema.optionalKey(Schema.Unknown),
+  model: Schema.optionalKey(Schema.Unknown),
+  effort: Schema.optionalKey(Schema.Unknown),
   title: Schema.optionalKey(Schema.Unknown),
   prompt: Schema.optionalKey(Schema.Unknown),
   provider: Schema.optionalKey(Schema.Unknown),
@@ -448,7 +454,23 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
   if (Option.isNone(decoded)) throw badRequest("Request body must be a JSON object");
   const title = parseSessionTitle(decoded.value.title);
+  const selection = decodeAgentSelection({
+    agent: decoded.value.agent === undefined ? "pi" : decoded.value.agent,
+    ...(decoded.value.modelProvider === undefined
+      ? {}
+      : { modelProvider: decoded.value.modelProvider }),
+    ...(decoded.value.model === undefined ? {} : { model: decoded.value.model }),
+    ...(decoded.value.effort === undefined ? {} : { effort: decoded.value.effort }),
+  });
+  if (Result.isFailure(selection))
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous HTTP parser preserves ScottyError envelopes
+    throw badRequest(
+      "Codex requires a supported model and effort and does not accept modelProvider; Pi overrides must be valid model settings",
+    );
   const prompt = readNonEmptyString(decoded.value.prompt, "prompt", 64_000);
+  if (selection.success.agent === "codex" && new TextEncoder().encode(prompt).length > 64 * 1024)
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous HTTP parser rejects oversized Codex input before creating resources
+    throw badRequest("Codex prompt exceeds its UTF-8 byte limit");
   const provider = parseProvider(decoded.value.provider);
   const runner =
     decoded.value.runner === undefined
@@ -476,6 +498,9 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
     title,
     prompt,
     provider,
+    ...(decoded.value.agent === undefined && Object.keys(selection.success).length === 1
+      ? {}
+      : { selection: selection.success }),
     ...(runner === undefined ? {} : { runner }),
     repo,
     newRepo,

@@ -1,3 +1,4 @@
+import { CanonicalConversationSnapshotSchema } from "../../protocol/conversation";
 import { Effect, Option, Schema } from "effect";
 import { PiConsoleSnapshotSchema } from "../../protocol/pi-console";
 import {
@@ -81,6 +82,10 @@ export const UpResponseSchema = Schema.Struct({
   status: Schema.NonEmptyString,
 });
 const BeamUpRequestFields = {
+  agent: Schema.optionalKey(Schema.Literals(["pi", "codex"])),
+  modelProvider: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  effort: Schema.optionalKey(Schema.String),
   title: Schema.NonEmptyString,
   prompt: Schema.String,
   provider: ProviderSchema,
@@ -339,3 +344,8 @@ export const decodeRepositoryRemovalResponse = Schema.decodeUnknownOption(
 export const decodeString = Schema.decodeUnknownOption(Schema.String);
 export const decodeTrue = Schema.decodeUnknownOption(Schema.Literal(true));
 export const decodeNonEmptyString = Schema.decodeUnknownOption(Schema.NonEmptyString);
+
+export const decodeCanonicalReadSnapshot = Schema.decodeUnknownOption(
+  CanonicalConversationSnapshotSchema,
+  { onExcessProperty: "error" },
+);

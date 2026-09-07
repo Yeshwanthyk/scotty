@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Layer, Result, Schema } from "effect";
 import {
   agentEnv,
   ContainerAuth,
@@ -20,6 +20,17 @@ import {
   sessionRuntimeCredentials,
 } from "../../src/credentials/managed";
 import type { CredentialGrant } from "../../../protocol/credentials";
+
+const decodeSettings = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      defaultProvider: Schema.String,
+      defaultModel: Schema.String,
+      defaultThinkingLevel: Schema.String,
+      packages: Schema.Array(Schema.String),
+    }),
+  ),
+);
 
 const PI_EXPIRES = 1_795_000_123_456;
 
@@ -56,6 +67,69 @@ const credentials = sessionRuntimeCredentials(grants);
 
 // Keep this assertion close to the ContainerAuth boundary: native files only receive projections.
 describe("container managed credential projection", () => {
+  it.effect(
+    "seeds requested Pi settings and preserves changed settings during credential refresh",
+    () =>
+      Effect.gen(function* () {
+        const files = new Map<string, string>();
+        const capabilities: SandboxRuntimeCapabilities = {
+          ...sandboxRuntimeCapabilitiesFake(),
+          writeFile: (path, content) => {
+            assert.ok(typeof content === "string");
+            files.set(path, content);
+            return Promise.resolve({});
+          },
+          readFileStream: (path) =>
+            Promise.resolve(
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(files.get(path) ?? "{}"));
+                  controller.close();
+                },
+              }),
+            ),
+        };
+        const runtimeLayer = sandboxRuntimeLayer(capabilities);
+        const layer = Layer.merge(
+          runtimeLayer,
+          containerAuthLayer.pipe(Layer.provide(runtimeLayer)),
+        );
+        yield* Effect.gen(function* () {
+          const auth = yield* ContainerAuth;
+          const selection = {
+            agent: "pi",
+            modelProvider: "openai",
+            model: "gpt-5.4",
+            effort: "low",
+          } as const;
+          yield* auth.seed(SESSION_ID, credentials, { selection });
+          const settingsEntry = [...files.entries()].find(([path]) =>
+            path.endsWith("/.pi-agent/settings.json"),
+          );
+          assert.ok(settingsEntry);
+          const path = settingsEntry[0];
+          const settings = decodeSettings(files.get(path));
+          assert.strictEqual(settings.defaultProvider, "openai");
+          assert.strictEqual(settings.defaultModel, "gpt-5.4");
+          assert.strictEqual(settings.defaultThinkingLevel, "low");
+          files.set(
+            path,
+            JSON.stringify({
+              ...settings,
+              defaultModel: "gpt-5.6-sol",
+              defaultThinkingLevel: "medium",
+            }),
+          );
+          yield* auth.refreshPiAuth(SESSION_ID, credentials, selection);
+          const refreshed = decodeSettings(files.get(path));
+          assert.strictEqual(refreshed.defaultProvider, "openai");
+          assert.strictEqual(refreshed.defaultModel, "gpt-5.6-sol");
+          assert.strictEqual(refreshed.defaultThinkingLevel, "medium");
+          assert.deepStrictEqual(refreshed.packages, settings.packages);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
   it("directs PR creation through the repository-scoped GitHub REST API", () => {
     assert.include(
       sandboxAgentsInstructions,

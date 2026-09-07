@@ -1,7 +1,15 @@
+import {
+  AuthorityStateSchema,
+  StableStateSchema,
+  type SessionAuthority,
+} from "../../src/session-actor/authority";
+import type { SessionActorMetadata } from "../../src/session-actor/metadata";
+import { CODEX_VERSION } from "../../../protocol/codex-app-server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
+  readScottyCodexConversation: vi.fn().mockResolvedValue(null),
   getScottyActorDiagnostics: vi.fn(),
   getScottySession: vi.fn(),
   getScottyDeploymentReadiness: vi.fn(),
@@ -1404,6 +1412,393 @@ describe("real Hono boundary", () => {
     );
     expect(unknownAction.status).toBe(404);
     expect(runner.control).toHaveBeenCalledTimes(4);
+  });
+
+  for (const outcome of [
+    "pending",
+    "completed",
+    "failed",
+    "interrupted",
+    "lost-admission",
+  ] as const) {
+    it(`creates, reads and destroys Codex through production Session wiring: ${outcome}`, async () => {
+      let admitted = false;
+      let promptRequests = 0;
+      const harness = await createSessionHarness({
+        credentialRegistryGrants: DEFAULT_CREDENTIAL_GRANTS,
+        containerFetch: async (request, port) => {
+          expect(port).toBe(43_118);
+          const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+          const metadata = harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata);
+          if (authority === undefined || metadata?.codexControl === undefined)
+            throw new RouteTestFailure("missing authority");
+          expect(request.headers.get("x-scotty-codex-token")).toBe(metadata.codexControl.token);
+          const generation = request.headers.get("x-scotty-codex-generation");
+          expect(generation).toMatch(/^[a-zA-Z0-9_-]+$/u);
+          if (new URL(request.url).pathname === "/prompt") {
+            promptRequests += 1;
+            admitted = true;
+            if (outcome === "lost-admission") throw new RouteTestFailure("lost admission reply");
+            return Response.json(
+              { generation, threadId: "thread-1", turnId: "turn-1" },
+              { status: 202 },
+            );
+          }
+          expect(request.method).toBe("GET");
+          expect(await request.text()).toBe("");
+          return Response.json({
+            generation,
+            threadId: "thread-1",
+            version: CODEX_VERSION,
+            settings: {
+              model: "gpt-5.4",
+              effort: "high",
+              workspace: `/workspace/${authority.session.id}`,
+              modelProvider: "scotty-managed",
+              approvalPolicy: "never",
+              sandbox: "dangerFullAccess",
+            },
+            ready: true,
+            failure: null,
+            cleanup: null,
+            prompt: !admitted
+              ? { status: "idle" }
+              : outcome === "pending" || outcome === "lost-admission"
+                ? { status: "running", turnId: "turn-1" }
+                : { status: "terminal", turnId: "turn-1", outcome, text: "bounded answer" },
+          });
+        },
+      });
+      useRealSandbox(harness);
+      const created = await app.request(
+        "/api/sessions",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+            "idempotency-key": "11111111-1111-4111-8111-111111111111",
+          },
+          body: JSON.stringify({
+            title: "Codex vertical",
+            prompt: "one prompt",
+            provider: "cloudflare",
+            repo: "owner/project",
+            agent: "codex",
+            model: "gpt-5.4",
+            effort: "high",
+          }),
+        },
+        env(),
+      );
+      expect(created.status).toBe(200);
+      expect(await created.json()).toMatchObject({ status: "warm", provider: "cloudflare" });
+      const promptRequest = harness.piRequests.find(
+        (request) => new URL(request.url).pathname === "/prompt",
+      );
+      if (promptRequest === undefined) throw new RouteTestFailure("missing prompt request");
+      expect(promptRequest.method).toBe("POST");
+      expect(await promptRequest.text()).toBe(
+        JSON.stringify({ threadId: "thread-1", text: "one prompt" }),
+      );
+      const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      if (authority === undefined) throw new RouteTestFailure("missing committed authority");
+      expect(authority.session.selection).toEqual({
+        agent: "codex",
+        model: "gpt-5.4",
+        effort: "high",
+      });
+      const replay = await app.request(
+        "/api/sessions",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+            "idempotency-key": "11111111-1111-4111-8111-111111111111",
+          },
+          body: JSON.stringify({
+            title: "Codex vertical",
+            prompt: "one prompt",
+            provider: "cloudflare",
+            repo: "owner/project",
+            agent: "codex",
+            model: "gpt-5.4",
+            effort: "high",
+          }),
+        },
+        env(),
+      );
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toMatchObject({ id: authority.session.id, status: "warm" });
+      const changed = await app.request(
+        "/api/sessions",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+            "idempotency-key": "11111111-1111-4111-8111-111111111111",
+          },
+          body: JSON.stringify({
+            title: "Codex vertical",
+            prompt: "one prompt",
+            provider: "cloudflare",
+            repo: "owner/project",
+            agent: "codex",
+            model: "gpt-5.4",
+            effort: "low",
+          }),
+        },
+        env(),
+      );
+      expect(changed.status).toBe(409);
+      expect(promptRequests).toBe(1);
+      const read = await app.request(
+        `/api/sessions/${authority.session.id}/conversation`,
+        { headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(read.status).toBe(200);
+      expect(await read.json()).toMatchObject({
+        version: 1,
+        turns: [
+          {
+            id: "turn-1",
+            user: "one prompt",
+            state:
+              outcome === "pending" || outcome === "lost-admission"
+                ? "streaming"
+                : outcome === "interrupted"
+                  ? "aborted"
+                  : outcome,
+          },
+        ],
+      });
+      expect(promptRequests).toBe(1);
+      for (const action of ["checkpoint", "sleep", "resume"]) {
+        const rejected = await app.request(
+          `/api/sessions/${authority.session.id}/${action}`,
+          { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+          env(),
+        );
+        expect(rejected.status).toBe(400);
+      }
+      harness.injectFailure("vaporizeDestroy");
+      const ambiguous = await app.request(
+        `/api/sessions/${authority.session.id}`,
+        { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(ambiguous.status).toBe(502);
+      expect(harness.read(sessionHarnessKeys.actorMetadata)).toBeDefined();
+      expect(harness.credentialGrantReleases).toHaveLength(0);
+      harness.clearFailure("vaporizeDestroy");
+      const gone = await app.request(
+        `/api/sessions/${authority.session.id}`,
+        { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(gone.status).toBe(200);
+      expect(harness.events).toContain("host:destroy");
+      expect(harness.read(sessionHarnessKeys.actorMetadata)).toBeUndefined();
+      expect(harness.credentialGrantReleases).toHaveLength(1);
+      expect(harness.writtenFiles.some((file) => file.path.includes(".pi-agent"))).toBe(false);
+    });
+  }
+
+  for (const change of [
+    "unchanged",
+    "delete",
+    "lease",
+    "revision",
+    "generation",
+    "thread",
+    "turn",
+    "incarnation",
+  ] as const) {
+    it(`fences a public Codex read after remote I/O: ${change}`, async () => {
+      let admitted = false;
+      let hold = false;
+      let release = () => {};
+      let entered = () => {};
+      const enteredPromise = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const releasePromise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const harness = await createSessionHarness({
+        credentialRegistryGrants: DEFAULT_CREDENTIAL_GRANTS,
+        containerFetch: async (request) => {
+          const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+          if (authority === undefined) throw new RouteTestFailure("missing authority");
+          const generation = request.headers.get("x-scotty-codex-generation");
+          if (new URL(request.url).pathname === "/prompt") {
+            admitted = true;
+            return Response.json(
+              { generation, threadId: "thread-fence", turnId: "turn-fence" },
+              { status: 202 },
+            );
+          }
+          const snapshot = {
+            generation,
+            threadId: "thread-fence",
+            version: CODEX_VERSION,
+            settings: {
+              model: "gpt-5.4",
+              effort: "high",
+              workspace: `/workspace/${authority.session.id}`,
+              modelProvider: "scotty-managed",
+              approvalPolicy: "never",
+              sandbox: "dangerFullAccess",
+            },
+            ready: true,
+            failure: null,
+            cleanup: null,
+            prompt: admitted
+              ? { status: "terminal", turnId: "turn-fence", outcome: "completed", text: "answer" }
+              : { status: "idle" },
+          };
+          if (hold) {
+            entered();
+            await releasePromise;
+          }
+          return Response.json(snapshot);
+        },
+      });
+      useRealSandbox(harness);
+      const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+      const created = await app.request(
+        "/api/sessions",
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            title: "Read fence",
+            prompt: "one prompt",
+            provider: "cloudflare",
+            repo: "owner/project",
+            agent: "codex",
+            model: "gpt-5.4",
+            effort: "high",
+          }),
+        },
+        env(),
+      );
+      expect(created.status).toBe(200);
+      const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      if (
+        authority === undefined ||
+        !AuthorityStateSchema.guards.Stable(authority.state) ||
+        !StableStateSchema.guards.Warm(authority.state.stable)
+      )
+        throw new RouteTestFailure("missing warm authority");
+      hold = true;
+      const reading = app.request(
+        `/api/sessions/${authority.session.id}/conversation`,
+        { headers },
+        env(),
+      );
+      await enteredPromise;
+      let deleteStatus: number | undefined;
+      let metadataAbsent = false;
+      try {
+        if (change === "delete" || change === "lease") {
+          if (change === "lease") harness.injectFailure("vaporizeDestroy");
+          const gone = await app.request(
+            `/api/sessions/${authority.session.id}`,
+            { method: "DELETE", headers },
+            env(),
+          );
+          deleteStatus = gone.status;
+          metadataAbsent = harness.read(sessionHarnessKeys.actorMetadata) === undefined;
+        } else if (change !== "unchanged") {
+          const readiness = authority.state.stable.readiness;
+          harness.memory.values.set(sessionHarnessKeys.actorAuthority, {
+            ...authority,
+            revision: authority.revision + (change === "revision" ? 1 : 0),
+            state: {
+              ...authority.state,
+              stable: {
+                ...authority.state.stable,
+                readiness: {
+                  ...readiness,
+                  runtime: {
+                    ...readiness.runtime,
+                    runtimeGeneration:
+                      change === "generation"
+                        ? "replacement-generation"
+                        : readiness.runtime.runtimeGeneration,
+                    containerIncarnation:
+                      change === "incarnation"
+                        ? "replacement-incarnation"
+                        : readiness.runtime.containerIncarnation,
+                  },
+                  supervisor: {
+                    ...readiness.supervisor,
+                    supervisorEpoch:
+                      change === "thread"
+                        ? "replacement-thread"
+                        : readiness.supervisor.supervisorEpoch,
+                  },
+                  transport: {
+                    ...readiness.transport,
+                    transportId:
+                      change === "turn" ? "replacement-turn" : readiness.transport.transportId,
+                  },
+                },
+              },
+            },
+          });
+        }
+      } finally {
+        release();
+      }
+      expect(deleteStatus).toBe(change === "delete" ? 200 : change === "lease" ? 502 : undefined);
+      expect(metadataAbsent).toBe(change === "delete");
+      const read = await reading;
+      expect(read.status).toBe(change === "unchanged" ? 200 : 409);
+      expect(await read.json()).toMatchObject(
+        change === "unchanged"
+          ? { turns: [{ state: "completed" }] }
+          : { error: { code: "conflict" } },
+      );
+    });
+  }
+
+  it("rejects invalid Codex settings and runner placement before creating a Session", async () => {
+    for (const input of [
+      { agent: "codex" },
+      { agent: "codex", model: "gpt-5.4", effort: "ultra" },
+      { agent: "codex", model: "invented-model", effort: "high" },
+      { agent: "pi", model: "gpt-5.4", effort: "ultra" },
+      {
+        agent: "codex",
+        model: "gpt-5.4",
+        effort: "high",
+        provider: "runner",
+        runner: "explicit-runner",
+      },
+    ]) {
+      const response = await app.request(
+        "/api/sessions",
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            title: "Codex",
+            prompt: "one prompt",
+            provider: "cloudflare",
+            repo: "owner/project",
+            ...input,
+          }),
+        },
+        env(),
+      );
+      expect(response.status).toBe(400);
+    }
+    expect(sandbox.createScottySession).not.toHaveBeenCalled();
   });
 
   it("preserves the create status, output shape, and default hard cap", async () => {

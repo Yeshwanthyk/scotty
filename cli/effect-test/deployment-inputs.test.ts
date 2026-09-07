@@ -259,12 +259,16 @@ describe("standalone deployment archive", () => {
     }
   });
 
-  it("keeps recursive read-only chmod in the Pi/Playwright install layer and drops Codex CLI", () => {
+  it("keeps Pi/Playwright read-only and installs the complete pinned Codex package and server", () => {
     const installRun = dockerfile
       .split(/\n(?=RUN )/u)
       .find((block) => block.includes("playwright-core/cli.js") && block.includes("npm ci"));
     expect(installRun).toBeDefined();
-    expect(installRun).toContain("chmod -R a-w /opt/scotty/pi-packages");
+    expect(installRun).toContain(
+      "chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills",
+    );
+    expect(installRun).toContain("/usr/local/bin/scotty-codex-session");
+    expect(installRun).toContain("/usr/local/bin/scotty-codex-server");
     expect(installRun).not.toContain("project-container-pi-install.mjs");
     expect(installRun).not.toContain("claudeBackend|codexBackend|claude-agent-sdk");
     expect(piProjectionScript).toContain("export const assertPiSubagentsSource");
@@ -288,8 +292,58 @@ describe("standalone deployment archive", () => {
     expect(finalRun).toContain("scotty --version");
     expect(finalRun).toContain("! -type l -perm /222");
     expect(finalRun).toContain("python go gofmt git");
-    expect(finalRun).toContain("if command -v codex");
+    expect(finalRun).toContain("pi codex scotty-codex-session scotty-pi-session");
+    expect(finalRun).toContain(
+      'test "$(stat -c \'%a\' /usr/local/bin/scotty-codex-server)" = "755"',
+    );
+    expect(finalRun).toContain("node --check /usr/local/bin/scotty-codex-server");
+    expect(finalRun).toContain("node --check /usr/local/bin/scotty-codex-server.mjs");
     expect(finalRun).toContain("rm -rf /root/.cache /root/.npm /tmp/*");
+
+    const codexInstall = dockerfile
+      .split(/\n(?=RUN )/u)
+      .find((block) => block.includes("mkdir /opt/codex"));
+    expect(codexInstall).toBeDefined();
+    const pinnedCommands = [
+      '"https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-package-x86_64-unknown-linux-musl.tar.gz"',
+      'echo "a822187e1a2420c61c5926721bfbd878701ed95547c9bb0d4de4498a16ba1821  /tmp/scotty-codex-install/codex.tar.gz" | sha256sum --check --strict',
+      "mkdir /opt/codex",
+      "tar -xzf /tmp/scotty-codex-install/codex.tar.gz -C /opt/codex",
+      'a.deepEqual(require("/opt/codex/codex-package.json"), {layoutVersion:1, version:"0.153.4", target:"x86_64-unknown-linux-musl", variant:"codex", entrypoint:"bin/codex", resourcesDir:"codex-resources", pathDir:"codex-path"})',
+      "test -x /opt/codex/bin/codex-code-mode-host",
+      "test -x /opt/codex/codex-path/rg",
+      "test -x /opt/codex/codex-resources/bwrap",
+      "test -x /opt/codex/codex-resources/zsh/bin/zsh",
+      'test -z "$(find /opt/codex -perm /6000 -print -quit)"',
+      "ln -s /opt/codex/bin/codex /usr/local/bin/codex",
+      'test "$(stat -Lc \'%a\' /usr/local/bin/codex)" = "755"',
+      'test "$(env -i HOME=/tmp/scotty-codex-install/home CODEX_HOME=/tmp/scotty-codex-install/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.153.4"',
+      "rm -rf /tmp/scotty-codex-install",
+    ];
+    let previous = -1;
+    for (const command of pinnedCommands) {
+      const index = codexInstall?.indexOf(command) ?? -1;
+      expect(index, command).toBeGreaterThan(previous);
+      previous = index;
+    }
+    expect(codexInstall).not.toMatch(/--strip-components|npm|auth\.json|app-server --listen/u);
+    expect(dockerfile).not.toMatch(
+      /if command -v codex|--privileged|--cap-add|seccomp|chmod [2467][0-7]{3}/u,
+    );
+    for (const [source, bundle, launcher] of [
+      ["main", "host", "session"],
+      ["server", "server", "server"],
+    ]) {
+      expect(dockerfile).toContain(
+        `RUN bun build worker/src/agent/codex/${source}.ts --target=node --format=esm --outfile=/out/scotty-codex-${bundle}.mjs`,
+      );
+      expect(dockerfile).toContain(
+        `COPY --from=scotty-cli-build /out/scotty-codex-${bundle}.mjs /usr/local/bin/scotty-codex-${bundle}.mjs`,
+      );
+      expect(dockerfile).toContain(
+        `COPY worker/container/scotty-codex-${launcher}.mjs /usr/local/bin/scotty-codex-${launcher}`,
+      );
+    }
 
     const cliBuildIndex = dockerfile.indexOf("chmod 0755 /out/scotty");
     expect(cliBuildIndex).toBeGreaterThan(-1);

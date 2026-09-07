@@ -1,3 +1,4 @@
+import { AgentSelectionSchema } from "../../../protocol/agent-selection";
 import { Schema } from "effect";
 
 const SafeIdentifierSchema = Schema.NonEmptyString.check(Schema.isMaxLength(256));
@@ -23,6 +24,7 @@ export const ExecutionBindingSchema = Schema.Union([
   Schema.Struct({ provider: Schema.Literal("runner"), runnerName: Schema.String }),
 ]);
 export const SessionIdentitySchema = Schema.Struct({
+  selection: Schema.optionalKey(AgentSelectionSchema),
   id: Schema.String,
   title: Schema.String,
   repository: Schema.String,

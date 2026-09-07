@@ -1,4 +1,9 @@
 import { Schema } from "effect";
+import { PiModelSettingSchema, PiReasoningEffortSchema } from "../../protocol/agent-selection";
+import {
+  CodexModelIdentifier,
+  CodexReasoningEffort,
+} from "../../protocol/codex-model-capabilities";
 import { CredentialDeclarationsSchema } from "../../protocol/credentials";
 import { RepositoryIdentitySchema, repositoryIdentityKey } from "../../protocol/repository";
 
@@ -52,6 +57,28 @@ export const ScottyTomlConfigSchema = Schema.Struct({
   sync: ScottyTomlSyncSchema,
   repos: ScottyTomlRepositoriesSchema,
   credentials: Schema.optionalKey(ScottyTomlCredentialsSchema),
+  agent: Schema.optionalKey(
+    Schema.Struct({
+      default: Schema.optionalKey(Schema.Literals(["pi", "codex"])),
+    }),
+  ),
+  agents: Schema.optionalKey(
+    Schema.Struct({
+      pi: Schema.optionalKey(
+        Schema.Struct({
+          provider: Schema.optionalKey(PiModelSettingSchema),
+          model: Schema.optionalKey(PiModelSettingSchema),
+          effort: Schema.optionalKey(PiReasoningEffortSchema),
+        }),
+      ),
+      codex: Schema.optionalKey(
+        Schema.Struct({
+          model: Schema.optionalKey(CodexModelIdentifier),
+          effort: Schema.optionalKey(CodexReasoningEffort),
+        }),
+      ),
+    }),
+  ),
 }).check(
   Schema.makeFilter(
     ({ repos, credentials }) =>

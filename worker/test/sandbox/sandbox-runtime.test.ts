@@ -424,6 +424,88 @@ describe("SandboxRuntime", () => {
     }),
   );
 
+  for (const operation of ["body", "status"] as const) {
+    it.effect(`interrupts a stalled port ${operation} request through its optional signal`, () =>
+      Effect.gen(function* () {
+        let signal: AbortSignal | undefined;
+        const capabilities: SandboxRuntimeCapabilities = {
+          ...sandboxRuntimeCapabilitiesFake(),
+          fetchPort: (_path, _port, _method, _headers, _body, requestSignal) => {
+            signal = requestSignal;
+            return new Promise<Response>((_resolve, reject) => {
+              requestSignal?.addEventListener("abort", () => reject(requestSignal.reason), {
+                once: true,
+              });
+            });
+          },
+        };
+        const fiber = yield* withRuntime(
+          capabilities,
+          Effect.flatMap(SandboxRuntime, (runtime) =>
+            operation === "body"
+              ? runtime.fetchPortBody("/health", 43_117, "GET", 128).pipe(Effect.asVoid)
+              : runtime.fetchPortStatus("/health", 43_117, "GET").pipe(Effect.asVoid),
+          ),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Fiber.interrupt(fiber);
+        assert.isTrue(signal?.aborted);
+      }),
+    );
+  }
+
+  it.effect("forwards bounded POST text and leaves Pi requests bodyless", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ method: string; body: string | undefined }> = [];
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        fetchPort: (_path, _port, method, _headers, body) => {
+          calls.push({ method, body });
+          return Promise.resolve(new Response("ok"));
+        },
+      };
+      yield* withRuntime(
+        capabilities,
+        Effect.gen(function* () {
+          const runtime = yield* SandboxRuntime;
+          yield* runtime.fetchPortBody(
+            "/prompt",
+            43_118,
+            "POST",
+            128,
+            { "content-type": "application/json" },
+            '{"text":"hello"}',
+          );
+          yield* runtime.fetchPortBody("/health", 43_117, "GET", 128);
+          assert.isTrue(
+            Result.isFailure(
+              yield* Effect.result(
+                runtime.fetchPortBody(
+                  "/prompt",
+                  43_118,
+                  "POST",
+                  128,
+                  undefined,
+                  "😀".repeat(65_537),
+                ),
+              ),
+            ),
+          );
+          assert.isTrue(
+            Result.isFailure(
+              yield* Effect.result(
+                runtime.fetchPortBody("/health", 43_117, "GET", 128, undefined, "invalid"),
+              ),
+            ),
+          );
+        }),
+      );
+      assert.deepStrictEqual(calls, [
+        { method: "POST", body: '{"text":"hello"}' },
+        { method: "GET", body: undefined },
+      ]);
+    }),
+  );
+
   it.effect("fails a port response that exceeds its caller-owned byte limit", () =>
     Effect.gen(function* () {
       const capabilities: SandboxRuntimeCapabilities = {

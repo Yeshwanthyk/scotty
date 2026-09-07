@@ -18,7 +18,7 @@
       "ignoreDependencies": ["cloudflare", "@alchemy.run/cloudflare-runtime"]
     },
     "worker": {
-      "entry": ["test/**/*.test.ts"],
+      "entry": ["test/**/*.test.ts", "src/agent/codex/main.ts"],
       "project": ["src/**/*.ts"]
     }
   },

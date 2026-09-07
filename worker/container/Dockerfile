@@ -23,6 +23,8 @@ COPY skills/scotty-live-observability/SKILL.md skills/scotty-live-observability/
 COPY infra infra
 COPY protocol protocol
 COPY worker/src worker/src
+RUN bun build worker/src/agent/codex/main.ts --target=node --format=esm --outfile=/out/scotty-codex-host.mjs
+RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs
 RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
   && chmod 0755 /out/scotty \
   && test "$(stat -c '%a' /out/scotty)" = "755" \
@@ -51,6 +53,26 @@ ARG YQ_SHA256=fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4
 ENV COREPACK_HOME=/opt/corepack
 
 USER root
+
+# Pin evidence and root archive layout: docs/research/codex-agent-pin.md.
+RUN set -eu; \
+  mkdir -p /tmp/scotty-codex-install/home /tmp/scotty-codex-install/codex-home \
+  && curl --fail --location --silent --show-error \
+    "https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-package-x86_64-unknown-linux-musl.tar.gz" \
+    --output /tmp/scotty-codex-install/codex.tar.gz \
+  && echo "a822187e1a2420c61c5926721bfbd878701ed95547c9bb0d4de4498a16ba1821  /tmp/scotty-codex-install/codex.tar.gz" | sha256sum --check --strict \
+  && mkdir /opt/codex \
+  && tar -xzf /tmp/scotty-codex-install/codex.tar.gz -C /opt/codex \
+  && node -e 'const a = require("node:assert/strict"); a.deepEqual(require("/opt/codex/codex-package.json"), {layoutVersion:1, version:"0.153.4", target:"x86_64-unknown-linux-musl", variant:"codex", entrypoint:"bin/codex", resourcesDir:"codex-resources", pathDir:"codex-path"})' \
+  && test -x /opt/codex/bin/codex-code-mode-host \
+  && test -x /opt/codex/codex-path/rg \
+  && test -x /opt/codex/codex-resources/bwrap \
+  && test -x /opt/codex/codex-resources/zsh/bin/zsh \
+  && test -z "$(find /opt/codex -perm /6000 -print -quit)" \
+  && ln -s /opt/codex/bin/codex /usr/local/bin/codex \
+  && test "$(stat -Lc '%a' /usr/local/bin/codex)" = "755" \
+  && test "$(env -i HOME=/tmp/scotty-codex-install/home CODEX_HOME=/tmp/scotty-codex-install/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.153.4" \
+  && rm -rf /tmp/scotty-codex-install
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -130,6 +152,10 @@ ENV LANG=en_US.UTF-8 \
 RUN mkdir -p /workspace /opt/scotty/skills
 
 COPY --from=scotty-cli-build /out/scotty /usr/local/bin/scotty
+COPY --from=scotty-cli-build /out/scotty-codex-host.mjs /usr/local/bin/scotty-codex-host.mjs
+COPY worker/container/scotty-codex-session.mjs /usr/local/bin/scotty-codex-session
+COPY --from=scotty-cli-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs
+COPY worker/container/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server
 COPY worker/container/skills/THIRD_PARTY_NOTICES.md /opt/scotty/THIRD_PARTY_NOTICES.md
 COPY worker/container/skills/skills.lock.json /opt/scotty/skills.lock.json
 COPY worker/container/pi-packages /opt/scotty/pi-packages
@@ -163,6 +189,8 @@ RUN set -eu; \
     /usr/local/bin/scotty-runner-bootstrap \
     /usr/local/bin/scotty-pi-shell \
     /usr/local/bin/scotty-pi-session \
+    /usr/local/bin/scotty-codex-session \
+    /usr/local/bin/scotty-codex-server \
   && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills \
   && npm cache clean --force \
   && rm -rf /root/.cache /tmp/* \
@@ -214,14 +242,16 @@ RUN set -eu; \
   && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 0 \
   && test "$(stat -c '%a' /usr/local/bin/scotty)" = "755" \
   && test -z "$(find /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills ! -type l -perm /222 -print -quit)" \
+  && test "$(stat -c '%a' /usr/local/bin/scotty-codex-server)" = "755" \
+  && node --check /usr/local/bin/scotty-codex-server \
+  && node --check /usr/local/bin/scotty-codex-server.mjs \
   && test "$(pi --version)" = "${PI_VERSION}" \
   && scotty --version \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh shellcheck ffmpeg Xvfb \
-    node npm bun corepack cc pkg-config pi scotty-pi-session scotty-pi-shell scotty-runner-bootstrap; do \
+    node npm bun corepack cc pkg-config pi codex scotty-codex-session scotty-pi-session scotty-pi-shell scotty-runner-bootstrap; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done \
-  && if command -v codex >/dev/null; then exit 1; fi \
   && rm -rf /root/.cache /root/.npm /tmp/*
 
 # The SDK base image supplies /container-server/sandbox as its ENTRYPOINT.

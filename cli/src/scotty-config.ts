@@ -19,19 +19,21 @@ const invalidScottyConfig = (path: string, reason: string): CliError =>
   new CliError(
     "scotty_config_invalid",
     `Scotty TOML configuration is invalid: ${reason}`,
-    `Fix ${path}; only version, sync.skills/packages/tools/extensions, repos.allowed, and credentials.<name> are accepted.`,
+    `Fix ${path}; only version, sync.skills/packages/tools/extensions, repos.allowed, credentials.<name>, agent.default, and agents.pi/codex are accepted.`,
     EXIT.USAGE,
   );
 
 const configFileFailure = (path: string, reason: string): CliError =>
   invalidScottyConfig(path, reason);
 
-const readScottyToml = Effect.fnUntraced(function* (path: string) {
+const readScottyToml = Effect.fnUntraced(function* (path: string, optional = false) {
   const fileSystem = yield* FileSystem;
   return yield* fileSystem.readPrivateText(path).pipe(
     Effect.catch((error) => {
       if (error.reason === "missing")
-        return Effect.fail(configFileFailure(path, "the file is missing"));
+        return optional
+          ? Effect.succeed(undefined)
+          : Effect.fail(configFileFailure(path, "the file is missing"));
       if (
         error.reason === "permissions" ||
         error.reason === "not_file" ||
@@ -68,6 +70,14 @@ export const decodeScottyTomlText = Effect.fnUntraced(function* (
   return yield* decodeScottyTomlUnknown(parsed).pipe(
     Effect.mapError(() => configFileFailure(path, "it contains unsupported or malformed keys")),
   );
+});
+
+export const loadOptionalScottyAgentConfig = Effect.fnUntraced(function* (home: string) {
+  const path = scottyTomlConfigPath(home);
+  const text = yield* readScottyToml(path, true);
+  if (text === undefined) return undefined;
+  const config = yield* decodeScottyTomlText(text, path);
+  return { agent: config.agent, agents: config.agents };
 });
 
 type ScottyRootCategory = keyof ScottyTomlConfig["sync"];
@@ -204,6 +214,7 @@ export const loadScottyTomlConfig = Effect.fnUntraced(function* (input: {
 }) {
   const path = scottyTomlConfigPath(input.home);
   const text = yield* readScottyToml(path);
+  if (text === undefined) return yield* configFileFailure(path, "the file is missing");
   const config = yield* decodeScottyTomlText(text, path);
   const resolvedRoots: ResolvedScottyTomlRoots = {
     skills: yield* resolveConfiguredRoots({
@@ -244,6 +255,8 @@ export const scottyConfigCheckOutput = (loaded: LoadedScottyTomlConfig) => ({
   version: loaded.config.version,
   sync: loaded.config.sync,
   repos: loaded.config.repos,
+  ...(loaded.config.agent === undefined ? {} : { agent: loaded.config.agent }),
+  ...(loaded.config.agents === undefined ? {} : { agents: loaded.config.agents }),
   ...(loaded.config.credentials === undefined ? {} : { credentials: loaded.config.credentials }),
 });
 

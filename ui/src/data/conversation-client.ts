@@ -14,7 +14,7 @@ interface JsonObject {
 
 interface ConversationTurnObject extends JsonObject {
   readonly id: string;
-  readonly state: "completed" | "streaming";
+  readonly state: "completed" | "streaming" | "failed" | "aborted";
   readonly user: string;
   readonly assistant: string;
   readonly tools: ReadonlyArray<JsonValue>;
@@ -174,7 +174,10 @@ const validTurnShape = (value: JsonObject): value is ConversationTurnObject =>
   hasExactKeys(value, expectedTurnKeys(value)) &&
   isBoundedText(value.id, 256) &&
   value.id.length > 0 &&
-  (value.state === "completed" || value.state === "streaming") &&
+  (value.state === "completed" ||
+    value.state === "streaming" ||
+    value.state === "failed" ||
+    value.state === "aborted") &&
   isBoundedText(value.user) &&
   isBoundedText(value.assistant) &&
   (value.activitySummary === undefined || isBoundedText(value.activitySummary)) &&

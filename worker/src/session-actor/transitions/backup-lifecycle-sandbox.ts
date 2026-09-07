@@ -1,3 +1,4 @@
+import type { AgentSelection } from "../../../../protocol/agent-selection";
 import { Clock, Context, Effect, Layer, Match, Result, Schema } from "effect";
 import { BackupStore, type BackupStoreFailure } from "../../backups/store";
 import { ContainerAuth, PI_SESSION_PROCESS_ID } from "../../sandbox/auth";
@@ -67,6 +68,7 @@ export class BackupLifecycleSandboxFailure extends Schema.TaggedError<BackupLife
 ) {}
 
 export interface BackupLifecycleAttempt {
+  readonly selection?: AgentSelection;
   readonly sessionId: string;
   readonly attempt: string;
   readonly operationNonce: string;
@@ -424,7 +426,11 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
           Effect.mapError((error) => mapRuntimeFailure(error, "supervisor_stop_outcome_unknown")),
         );
       return yield* auth
-        .startPiSession(input.sessionId, input.credentials)
+        .startPiSession(
+          input.sessionId,
+          input.credentials,
+          input.selection?.agent === "pi" ? input.selection : undefined,
+        )
         .pipe(
           Effect.mapError((error) => mapRuntimeFailure(error, "supervisor_start_outcome_unknown")),
         );
@@ -554,6 +560,7 @@ export const backupLifecycleSandboxLayerWithHatch = (
 
 const checkpointAttempt = (context: CheckpointProviderContext): BackupLifecycleAttempt => ({
   sessionId: context.authority.session.id,
+  selection: context.authority.session.selection,
   attempt: context.transition.attempt,
   operationNonce: context.transition.nonce,
   runtimeGeneration: context.transition.proof.readiness.runtime.runtimeGeneration,
@@ -566,6 +573,7 @@ const checkpointAttempt = (context: CheckpointProviderContext): BackupLifecycleA
 
 const sleepAttempt = (context: SleepProviderContext): BackupLifecycleAttempt => ({
   sessionId: context.authority.session.id,
+  selection: context.authority.session.selection,
   attempt: context.transition.attempt,
   operationNonce: context.transition.nonce,
   runtimeGeneration: context.transition.proof.readiness.runtime.runtimeGeneration,
@@ -581,6 +589,7 @@ const resumeAttempt = (
   runtimeGeneration: string,
 ): BackupLifecycleAttempt => ({
   sessionId: context.authority.session.id,
+  selection: context.authority.session.selection,
   attempt: context.transition.attempt,
   operationNonce: context.transition.nonce,
   runtimeGeneration,

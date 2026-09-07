@@ -590,6 +590,16 @@ server.listen(port, "0.0.0.0", async () => {
   try {
     const stateResponse = await sendRpc({ type: "get_state" });
     if (stateResponse.success === false) throw new Error("Pi RPC state initialization failed");
+    if (
+      hasInitialPrompt &&
+      ((process.env.SCOTTY_PI_EXPECTED_PROVIDER !== undefined &&
+        stateResponse.data?.model?.provider !== process.env.SCOTTY_PI_EXPECTED_PROVIDER) ||
+        (process.env.SCOTTY_PI_EXPECTED_MODEL !== undefined &&
+          stateResponse.data?.model?.id !== process.env.SCOTTY_PI_EXPECTED_MODEL) ||
+        (process.env.SCOTTY_PI_EXPECTED_EFFORT !== undefined &&
+          stateResponse.data?.thinkingLevel !== process.env.SCOTTY_PI_EXPECTED_EFFORT))
+    )
+      throw new Error("Pi effective settings do not match the requested selection");
     const sessionId = validSessionId(stateResponse.data?.sessionId);
     if (sessionId !== undefined) {
       const nextPointerPath = `${sessionPointerPath}.${randomUUID()}`;

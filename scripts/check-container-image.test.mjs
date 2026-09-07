@@ -5,13 +5,13 @@ import { CONTAINER_CONTEXT_PATH, CONTAINER_IMAGE_BUDGET } from "../cli/src/deplo
 import { CLEAN_ROOM_CACHE_SCOPE, CLEAN_ROOM_CLI_TARGET } from "./check-cli-clean-room.mjs";
 import {
   CONTAINER_IMAGE,
-  CONTAINER_IMAGE_ABSENT_COMMANDS,
   CONTAINER_IMAGE_ABSENT_PI_PACKAGES,
   CONTAINER_IMAGE_CACHE_SCOPE,
   CONTAINER_IMAGE_PI_PACKAGES,
   CONTAINER_IMAGE_PLATFORM,
   checkContainerImage,
-  containerImageAbsentToolchainArgs,
+  containerImageCodexPackagingArgs,
+  containerImageCodexVersionArgs,
   containerImageBuildArgs,
   containerImageInspectArgs,
   containerImagePiPackagesSmokeArgs,
@@ -22,6 +22,95 @@ import {
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 
 describe("final container image gate", () => {
+  it("preserves the verified Codex archive and wires the bundled native host", () => {
+    const dockerfile = read("worker/container/Dockerfile");
+    const start = dockerfile.indexOf("# Pin evidence and root archive layout:");
+    assert.ok(start >= 0);
+    const install = dockerfile.slice(start, dockerfile.indexOf("RUN apt-get update", start));
+    assert.ok(
+      install.includes(
+        "https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-package-x86_64-unknown-linux-musl.tar.gz",
+      ),
+    );
+    const digest = "a822187e1a2420c61c5926721bfbd878701ed95547c9bb0d4de4498a16ba1821";
+    assert.ok(install.includes(`${digest}  /tmp/scotty-codex-install/codex.tar.gz`));
+    const ordered = [
+      "sha256sum --check --strict",
+      "mkdir /opt/codex",
+      "tar -xzf /tmp/scotty-codex-install/codex.tar.gz -C /opt/codex",
+      'a.deepEqual(require("/opt/codex/codex-package.json"), {layoutVersion:1, version:"0.153.4", target:"x86_64-unknown-linux-musl", variant:"codex", entrypoint:"bin/codex", resourcesDir:"codex-resources", pathDir:"codex-path"})',
+      "test -x /opt/codex/bin/codex-code-mode-host",
+      "test -x /opt/codex/codex-path/rg",
+      "test -x /opt/codex/codex-resources/bwrap",
+      "test -x /opt/codex/codex-resources/zsh/bin/zsh",
+      'test -z "$(find /opt/codex -perm /6000 -print -quit)"',
+      "ln -s /opt/codex/bin/codex /usr/local/bin/codex",
+      `test "$(stat -Lc '%a' /usr/local/bin/codex)" = "755"`,
+      'test "$(env -i HOME=/tmp/scotty-codex-install/home CODEX_HOME=/tmp/scotty-codex-install/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.153.4"',
+      "rm -rf /tmp/scotty-codex-install",
+    ];
+    let previous = -1;
+    for (const command of ordered) {
+      const index = install.indexOf(command);
+      assert.ok(index > previous, `missing or out-of-order: ${command}`);
+      previous = index;
+    }
+    assert.doesNotMatch(install, /--strip-components|install -m|chmod.*[2467][0-7]{3}/u);
+    assert.doesNotMatch(dockerfile, /if command -v codex|ARG CODEX/u);
+    const aptInstall = dockerfile.slice(
+      dockerfile.indexOf("RUN apt-get update"),
+      dockerfile.indexOf("&& sed -i"),
+    );
+    assert.doesNotMatch(aptInstall, /\b(?:bubblewrap|bwrap)\b/u);
+    assert.doesNotMatch(dockerfile, /--privileged|--cap-add|seccomp|chmod [2467][0-7]{3}/u);
+    assert.match(dockerfile, /ARG PI_VERSION=0\.84\.0/u);
+    assert.ok(
+      dockerfile.includes(
+        "RUN bun build worker/src/agent/codex/main.ts --target=node --format=esm --outfile=/out/scotty-codex-host.mjs",
+      ),
+    );
+    assert.ok(
+      dockerfile.includes(
+        "COPY --from=scotty-cli-build /out/scotty-codex-host.mjs /usr/local/bin/scotty-codex-host.mjs",
+      ),
+    );
+    assert.ok(
+      dockerfile.includes(
+        "COPY worker/container/scotty-codex-session.mjs /usr/local/bin/scotty-codex-session",
+      ),
+    );
+    assert.ok(
+      dockerfile.includes(
+        "RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs",
+      ),
+    );
+    assert.ok(
+      dockerfile.includes(
+        "COPY --from=scotty-cli-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs",
+      ),
+    );
+    assert.ok(
+      dockerfile.includes(
+        "COPY worker/container/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server",
+      ),
+    );
+    assert.equal(
+      read("worker/container/scotty-codex-server.mjs"),
+      '#!/usr/bin/env node\nimport { runServer } from "./scotty-codex-server.mjs";\n\nrunServer(process.argv.slice(2));\n',
+    );
+    assert.ok(
+      containerImageCodexPackagingArgs(containerImagePlan())
+        .join(" ")
+        .includes("prepared-generation"),
+    );
+    assert.ok(dockerfile.includes('test "$(pi --version)" = "${PI_VERSION}"'));
+    assert.match(
+      dockerfile,
+      /COPY worker\/container\/scotty-pi-session\.mjs \/usr\/local\/bin\/scotty-pi-session/u,
+    );
+    assert.doesNotMatch(install, /npm|auth\.json|app-server --listen/u);
+  });
+
   it("builds and loads the final linux/amd64 image, then smokes Pi packages and inspects Size", async () => {
     const prepared = [];
     const dockerCalls = [];
@@ -63,7 +152,8 @@ describe("final container image gate", () => {
       { command: "docker", args: containerImageBuildArgs(plan) },
       { command: "docker", args: containerImagePiVersionArgs(plan) },
       { command: "docker", args: containerImagePiPackagesSmokeArgs(plan) },
-      { command: "docker", args: containerImageAbsentToolchainArgs(plan) },
+      { command: "docker", args: containerImageCodexVersionArgs(plan) },
+      { command: "docker", args: containerImageCodexPackagingArgs(plan) },
     ]);
     assert.deepEqual(containerImageBuildArgs(plan), [
       "buildx",
@@ -121,9 +211,16 @@ describe("final container image gate", () => {
     }
     for (const name of CONTAINER_IMAGE_PI_PACKAGES) assert.ok(dockerfile.includes(name));
     assert.doesNotMatch(dockerfile, /locks\/pi-web-access\/package-lock\.json/u);
-    for (const name of CONTAINER_IMAGE_ABSENT_COMMANDS) {
-      assert.match(containerImageAbsentToolchainArgs(plan).join(" "), new RegExp(name, "u"));
-    }
+    const codexSmoke = containerImageCodexVersionArgs(plan).join(" ");
+    assert.match(codexSmoke, /env -i HOME=\/tmp\/scotty-codex-smoke\/home CODEX_HOME=/u);
+    assert.ok(codexSmoke.includes('/usr/local/bin/codex --version)" = "codex-cli 0.153.4"'));
+    assert.ok(codexSmoke.includes(`stat -Lc '%a' /usr/local/bin/codex`));
+    assert.ok(codexSmoke.includes("test -x /opt/codex/codex-resources/bwrap"));
+    assert.ok(codexSmoke.includes("! command -v bwrap"));
+    assert.ok(codexSmoke.includes("find /opt/codex -perm /6000"));
+    assert.ok(codexSmoke.includes("! dpkg-query"));
+    assert.doesNotMatch(codexSmoke, /--as-pid-1|--perms/u);
+    assert.doesNotMatch(codexSmoke, /--volume|--mount|auth\.json|app-server/u);
     assert.deepEqual(containerImageInspectArgs(plan), [
       "image",
       "inspect",

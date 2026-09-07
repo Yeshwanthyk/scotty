@@ -1,3 +1,6 @@
+import { canonicalReadSnapshot, decodeReadSnapshot } from "./dependencies";
+import { decodeCanonicalReadSnapshot } from "./schemas";
+import { decodeAgentSelection } from "../../protocol/agent-selection";
 import { isAbsolute, join } from "node:path";
 import { Clock, Console, Effect, Exit, FileSystem, Option, Predicate, Ref, Result } from "effect";
 import {
@@ -55,8 +58,6 @@ import {
   normalizeHost,
   optionalString,
   outputJson,
-  readableMessages,
-  readOutput,
   sanitizeUrl,
   stableRecoveryGrant,
   usage,
@@ -65,6 +66,7 @@ import {
 import {
   formatScottyConfigCheck,
   loadScottyTomlConfig,
+  loadOptionalScottyAgentConfig,
   resolveConfiguredCredentialSource,
   scottyConfigCheckOutput,
 } from "./scotty-config";
@@ -106,6 +108,35 @@ import {
   parseInstallationName,
 } from "../../infra/installation.ts";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
+
+const beamAgentSelection = Effect.fnUntraced(function* (
+  home: string,
+  agent: Option.Option<"pi" | "codex">,
+  modelProvider: Option.Option<string>,
+  model: Option.Option<string>,
+  effort: Option.Option<string>,
+) {
+  const configured = yield* loadOptionalScottyAgentConfig(home);
+  const selectedAgent = Option.getOrElse(agent, () => configured?.agent?.default ?? "pi");
+  const profile = configured?.agents?.[selectedAgent];
+  const piProvider = selectedAgent === "pi" ? configured?.agents?.pi?.provider : undefined;
+  const selection = decodeAgentSelection({
+    agent: selectedAgent,
+    ...(profile?.model === undefined ? {} : { model: profile.model }),
+    ...(profile?.effort === undefined ? {} : { effort: profile.effort }),
+    ...(piProvider === undefined ? {} : { modelProvider: piProvider }),
+    ...(Option.isSome(modelProvider) ? { modelProvider: modelProvider.value } : {}),
+    ...(Option.isSome(model) ? { model: model.value } : {}),
+    ...(Option.isSome(effort) ? { effort: effort.value } : {}),
+  });
+  if (Result.isFailure(selection))
+    return yield* usage(
+      "Codex requires a supported model and effort from flags or its TOML profile; --model-provider is Pi-only; Pi overrides must be valid model settings",
+    );
+  return Option.isSome(agent) || selectedAgent !== "pi" || Object.keys(selection.success).length > 1
+    ? selection.success
+    : {};
+});
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const SANDBOX_PEER_HOST = "https://scotty.internal";
@@ -1430,6 +1461,22 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       provider: Flag.choice("provider", ["cloudflare"] as const).pipe(
         Flag.withDescription("Execution provider"),
       ),
+      agent: Flag.choice("agent", ["pi", "codex"]).pipe(
+        Flag.optional,
+        Flag.withDescription("Agent override; otherwise agent.default in scotty.toml, then Pi"),
+      ),
+      modelProvider: Flag.string("model-provider").pipe(
+        Flag.optional,
+        Flag.withDescription("Pi model provider override (separate from execution --provider)"),
+      ),
+      model: Flag.string("model").pipe(
+        Flag.optional,
+        Flag.withDescription("Model override for the selected agent's TOML profile"),
+      ),
+      effort: Flag.string("effort").pipe(
+        Flag.optional,
+        Flag.withDescription("Reasoning effort override for the selected agent's TOML profile"),
+      ),
       cap: Flag.string("cap").pipe(
         Flag.optional,
         Flag.withDescription("Hard cap such as 30m, 4h, or 1d"),
@@ -1439,7 +1486,19 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Do not open the session browser"),
       ),
     },
-    ({ cap, detach, newRepo, prompt, provider, repo, title }) =>
+    ({
+      agent,
+      modelProvider,
+      model,
+      effort,
+      cap,
+      detach,
+      newRepo,
+      prompt,
+      provider,
+      repo,
+      title,
+    }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         const browser = yield* BrowserLauncher;
@@ -1448,11 +1507,19 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (!normalizedTitle || normalizedTitle.length > 120)
           return yield* usage("--title must be between 1 and 120 characters");
         if (!isRepositoryIdentity(repo)) return yield* usage("--repo must be OWNER/NAME");
+        const selection = yield* beamAgentSelection(
+          runtime.home,
+          agent,
+          modelProvider,
+          model,
+          effort,
+        );
         const auth = yield* credentials(options);
         const hardCapSeconds = Option.isSome(cap)
           ? yield* Effect.fromResult(durationSeconds(cap.value))
           : undefined;
         const body: BeamUpRequest = {
+          ...selection,
           title: normalizedTitle,
           prompt,
           provider,
@@ -1590,12 +1657,24 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const { autoJson, options, runtime } = yield* commandContext();
         const sessionId = yield* validateSessionId(id);
         const target = yield* peerControlTarget(options);
-        const decoded = decodeInspectResponse(
-          yield* requestJson(target, `/api/sessions/${encodeURIComponent(sessionId)}/inspect`, {
+        const raw = yield* requestJson(
+          target,
+          `/api/sessions/${encodeURIComponent(sessionId)}/inspect`,
+          {
             cache: "no-store",
             redirect: "manual",
-          }),
+          },
         );
+        const canonical = decodeCanonicalReadSnapshot(raw);
+        if (Option.isSome(canonical)) {
+          if (autoJson) outputJson(runtime.stdout, { id: sessionId, ...canonical.value });
+          else
+            runtime.stdout(
+              humanRead({ id: sessionId, ...canonicalReadSnapshot(canonical.value, { last: 2 }) }),
+            );
+          return;
+        }
+        const decoded = decodeInspectResponse(raw);
         if (Option.isNone(decoded))
           return yield* invalidResponse("Server returned an invalid Pi snapshot");
         if (autoJson) outputJson(runtime.stdout, { id: sessionId, ...decoded.value });
@@ -1639,36 +1718,35 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const seen = new Map<string, string>();
 
         while (true) {
-          const decoded = decodeInspectResponse(
-            yield* requestJson(target, `/api/sessions/${encodeURIComponent(sessionId)}/inspect`, {
+          const raw = yield* requestJson(
+            target,
+            `/api/sessions/${encodeURIComponent(sessionId)}/inspect`,
+            {
               cache: "no-store",
               redirect: "manual",
-            }),
+            },
           );
+          const decoded = decodeReadSnapshot(raw, { last, role: selectedRole });
           if (Option.isNone(decoded))
-            return yield* invalidResponse("Server returned an invalid Pi snapshot");
+            return yield* invalidResponse("Server returned an invalid conversation snapshot");
           const snapshot = decoded.value;
           const epochChanged = epoch !== undefined && snapshot.epoch !== epoch;
           const advanced = epochChanged || snapshot.sequence > cursor;
           if (advanced) {
-            const selected = readableMessages(snapshot, { last, role: selectedRole });
+            const selected = snapshot.messages;
             const messages = follow ? changedReadMessages(selected, seen, epochChanged) : selected;
             if (!follow || messages.length > 0) {
-              const output = readOutput(sessionId, snapshot, messages);
+              const output = { id: sessionId, ...snapshot, messages };
               if (autoJson) outputJson(runtime.stdout, output);
               else runtime.stdout(humanRead(output));
             }
             cursor = snapshot.sequence;
           } else if (!follow) {
-            const output = readOutput(sessionId, snapshot, []);
+            const output = { id: sessionId, ...snapshot, messages: [] };
             if (autoJson) outputJson(runtime.stdout, output);
             else runtime.stdout(humanRead(output));
           } else if (seen.size === 0) {
-            changedReadMessages(
-              readableMessages(snapshot, { last, role: selectedRole }),
-              seen,
-              true,
-            );
+            changedReadMessages(snapshot.messages, seen, true);
           }
           epoch = snapshot.epoch;
           if (!follow) return;

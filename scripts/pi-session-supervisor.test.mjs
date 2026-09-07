@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { access, chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -145,6 +146,9 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
       SCOTTY_PI_SESSION_PORT: String(port),
       SCOTTY_PI_SESSION_TOKEN_FILE: tokenFile,
       SCOTTY_WORKSPACE: work,
+      SCOTTY_PI_EXPECTED_PROVIDER: "openai-codex",
+      SCOTTY_PI_EXPECTED_MODEL: "gpt-5.4",
+      SCOTTY_PI_EXPECTED_EFFORT: "high",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -466,3 +470,60 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   ]);
   assert.equal(stderr, "");
 });
+
+for (const [key, value] of [
+  ["SCOTTY_PI_EXPECTED_PROVIDER", "other"],
+  ["SCOTTY_PI_EXPECTED_MODEL", "other"],
+  ["SCOTTY_PI_EXPECTED_EFFORT", "low"],
+])
+  test(
+    `Pi supervisor rejects ${key} mismatch before consuming initial prompt`,
+    { timeout: 10000 },
+    async (t) => {
+      const work = await mkdtemp(path.join(tmpdir(), "scotty-pi-selection-"));
+      const piHome = path.join(work, ".pi-agent");
+      await mkdir(piHome);
+      const tokenFile = path.join(piHome, "token");
+      await writeFile(tokenFile, "selection-test-token-".repeat(3), { mode: 0o600 });
+      const promptPath = path.join(piHome, "initial-prompt");
+      await writeFile(promptPath, "Do not consume this prompt");
+      const fakePi = path.join(work, "pi.mjs");
+      await writeFile(
+        fakePi,
+        `#!/usr/bin/env node
+import { createInterface } from "node:readline";
+import { appendFileSync } from "node:fs";
+createInterface({ input: process.stdin }).on("line", (line) => {
+  appendFileSync(${JSON.stringify(path.join(work, "commands"))}, line + "\\n");
+  const command = JSON.parse(line);
+  process.stdout.write(JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data: { model: { provider: "openai-codex", id: "gpt-5.4" }, thinkingLevel: "high" } }) + "\\n");
+});
+`,
+      );
+      await chmod(fakePi, 0o755);
+      const supervisor = spawn(process.execPath, [supervisorPath], {
+        cwd: work,
+        env: {
+          PATH: process.env.PATH,
+          PI_CODING_AGENT_DIR: piHome,
+          SCOTTY_PI_BINARY: fakePi,
+          SCOTTY_PI_SESSION_PORT: String(await unusedPort()),
+          SCOTTY_PI_SESSION_TOKEN_FILE: tokenFile,
+          SCOTTY_WORKSPACE: work,
+          [key]: value,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      t.after(() => supervisor.kill("SIGKILL"));
+      await once(supervisor, "exit");
+      assert.equal(await readFile(promptPath, "utf8"), "Do not consume this prompt");
+      const commands = (await readFile(path.join(work, "commands"), "utf8"))
+        .trim()
+        .split("\n")
+        .map(JSON.parse);
+      assert.deepEqual(
+        commands.map((command) => command.type),
+        ["get_state"],
+      );
+    },
+  );

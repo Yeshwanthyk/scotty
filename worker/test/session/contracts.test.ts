@@ -32,6 +32,24 @@ import {
 } from "../../src/credentials/managed";
 
 describe("request contracts", () => {
+  it("retains Pi creation overrides even when the agent field is omitted", () => {
+    const selection = parseCreateInput({
+      title: "Pi task",
+      prompt: "work",
+      provider: "cloudflare",
+      repo: "owner/project",
+      modelProvider: "openai",
+      model: "gpt-5.4",
+      effort: "low",
+    }).selection;
+    assert.deepStrictEqual(selection, {
+      agent: "pi",
+      modelProvider: "openai",
+      model: "gpt-5.4",
+      effort: "low",
+    });
+  });
+
   it("parses and bounds create input", () => {
     assert.deepStrictEqual(
       parseCreateInput({

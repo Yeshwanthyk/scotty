@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import {
+  CONTAINER_BUILD_ENTRYPOINTS,
   CONTAINER_CONTEXT_BUDGET,
   CONTAINER_CONTEXT_PATH,
   CONTAINER_IMAGE_BUDGET,
@@ -77,7 +78,7 @@ export async function discoverContainerCliInputs(root = process.cwd(), execute =
       "bun",
       [
         "build",
-        "cli/scotty.ts",
+        ...CONTAINER_BUILD_ENTRYPOINTS,
         "--target=bun",
         `--outdir=${outputDirectory}`,
         `--metafile=${metafilePath}`,

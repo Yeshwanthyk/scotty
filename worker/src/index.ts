@@ -784,13 +784,19 @@ app.delete("/api/sessions/:id/hatch", async (c) => {
 app.get("/api/sessions/:id/inspect", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
-  return inspectPassiveSession(sessionSandbox(c.env, id));
+  const sandbox = sessionSandbox(c.env, id);
+  const codex = await sandbox.readScottyCodexConversation();
+  if (codex !== null) return c.json(codex, { headers: { "cache-control": "no-store" } });
+  return inspectPassiveSession(sandbox);
 });
 
 app.get("/api/sessions/:id/conversation", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
-  return inspectCanonicalConversation(sessionSandbox(c.env, id));
+  const sandbox = sessionSandbox(c.env, id);
+  const codex = await sandbox.readScottyCodexConversation();
+  if (codex !== null) return c.json(codex, { headers: { "cache-control": "no-store" } });
+  return inspectCanonicalConversation(sandbox);
 });
 
 app.post("/api/sessions/:id/steer", async (c) => {
@@ -1629,8 +1635,8 @@ async function createSessionIdempotency(
   const [keyDigest, inputDigest] = await Promise.all([
     sha256Hex(key),
     sha256Hex(
-      JSON.stringify(
-        input.provider === "runner"
+      JSON.stringify([
+        ...(input.provider === "runner"
           ? input.newRepo
             ? [
                 input.title,
@@ -1651,8 +1657,9 @@ async function createSessionIdempotency(
               ]
           : input.newRepo
             ? [input.title, input.prompt, input.provider, input.repo, true, input.hardCapSeconds]
-            : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds],
-      ),
+            : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds]),
+        ...(input.selection === undefined ? [] : [input.selection]),
+      ]),
     ),
   ]);
   return { keyDigest, inputDigest };

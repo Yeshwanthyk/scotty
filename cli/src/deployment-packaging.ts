@@ -71,6 +71,13 @@ export const DEPLOYMENT_PACKAGING = Object.freeze({
   cliSourceTrees: CLI_SOURCE_TREES,
 });
 
+// Discover all build roots, including both native Codex entries and their Effect graphs.
+export const CONTAINER_BUILD_ENTRYPOINTS = Object.freeze([
+  "cli/scotty.ts",
+  "worker/src/agent/codex/main.ts",
+  "worker/src/agent/codex/server.ts",
+] as const);
+
 export const CONTAINER_CONTEXT_BUDGET = Object.freeze({
   maxFiles: 2_000,
   maxBytes: 40 * 1024 * 1024,

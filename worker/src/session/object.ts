@@ -1,3 +1,5 @@
+import { readCodexSandbox } from "../agent/codex/sandbox";
+import { codexConversation } from "../agent/codex/conversation";
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
 import {
   decodePiConsoleCommandPromise,
@@ -993,9 +995,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
         port: number,
         method: "GET" | "POST",
         headers?: Readonly<Record<string, string>>,
+        body?: string,
+        signal?: AbortSignal,
       ) =>
         this.containerFetch(
-          new Request(`http://127.0.0.1:${port}${path}`, { method, headers }),
+          new Request(
+            `http://127.0.0.1:${port}${path}`,
+            method === "POST" ? { method, headers, body, signal } : { method, headers, signal },
+          ),
           port,
         ),
     };
@@ -2762,6 +2769,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly preparePiSessionAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const state = yield* this.readActorSessionStateProgram();
+    if (state.authority.session.selection?.agent === "codex")
+      return yield* badRequest("Codex does not expose Pi session callbacks");
     const record = yield* this.requireRecordProgram();
     if (record.status !== "warm")
       return yield* wrongState(
@@ -2785,7 +2795,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         undefined,
         record.id,
       );
-    yield* containerAuth.ensurePiSession(record.id, sessionRuntimeCredentials(grant.grants));
+    yield* containerAuth.ensurePiSession(
+      record.id,
+      sessionRuntimeCredentials(grant.grants),
+      state.authority.session.selection,
+    );
   });
 
   private readonly actorSessionStateFromSnapshotProgram = Effect.fnUntraced(function* (
@@ -2982,10 +2996,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const now = yield* Clock.currentTimeMillis;
     const nowIso = new Date(now).toISOString();
     const request: CreateControllerRequest = {
+      ...(input.selection?.agent === "codex"
+        ? {
+            codexControl: {
+              token: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+                byte.toString(16).padStart(2, "0"),
+              ).join(""),
+              initialPrompt: input.prompt,
+            },
+          }
+        : {}),
       session: {
         id,
         title: input.title,
         repository: input.repo,
+        ...(input.selection === undefined ? {} : { selection: input.selection }),
         execution: { provider: "cloudflare", runtimeName: id },
         createdAt: nowIso,
       },
@@ -3152,6 +3177,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     kind: LifecycleCommandKind,
   ) {
+    const current = yield* this.readActorSessionStateProgram();
+    if (current.authority.session.selection?.agent === "codex")
+      return yield* badRequest(
+        "Codex checkpoint, sleep and resume are not supported in this increment",
+      );
     const controller = yield* LifecycleController;
     const recovered = yield* this.recoverTransitioningActorForRequestProgram(kind).pipe(
       Effect.mapError((failure) =>
@@ -4459,6 +4489,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const relayWithCurrentAuthority = async (): Promise<Response> => {
       const authority = await this.readPassiveConsoleAuthority();
       if (authority instanceof Response) return authority;
+      if (authority.authority.session.selection?.agent === "codex")
+        return Response.json({ error: "codex_operation_unsupported" }, { status: 409 });
       if (command && command.expectedSessionRevision !== authority.revision)
         return this.stalePassiveConsoleCommand(command, authority.revision);
       const unavailable = this.validatePassiveConsoleAuthority(authority);
@@ -5032,6 +5064,73 @@ export class Sandbox extends BaseSandbox<Bindings> {
     Redacted.wipeUnsafe(credential);
     return plaintext;
   });
+
+  async readScottyCodexConversation() {
+    return this.#run(
+      Effect.gen({ self: this }, function* () {
+        const state = yield* this.readActorSessionStateProgram();
+        const selection = state.authority.session.selection;
+        if (selection?.agent !== "codex") return null;
+        const authority = state.authority;
+        if (
+          !AuthorityStateSchema.guards.Stable(authority.state) ||
+          !StableStateSchema.guards.Warm(authority.state.stable)
+        )
+          return yield* conflict("Codex conversation requires an admitted warm session");
+        const readiness = authority.state.stable.readiness;
+        const control = state.metadata.codexControl;
+        if (control === undefined)
+          return yield* this.upstreamError("Codex control metadata is unavailable", undefined);
+        const runtime = yield* SandboxRuntime;
+        const incarnation = yield* runtime.getContainerIncarnationId();
+        if (incarnation !== readiness.runtime.containerIncarnation)
+          return yield* conflict("Codex runtime generation is no longer current");
+        const snapshot = yield* readCodexSandbox(
+          {
+            sessionId: authority.session.id,
+            generation: readiness.runtime.runtimeGeneration,
+            selection,
+            token: control.token,
+          },
+          readiness.supervisor.supervisorEpoch,
+        ).pipe(
+          Effect.mapError(() => this.upstreamError("Codex snapshot is unavailable", undefined)),
+        );
+        if (
+          snapshot.prompt.status === "idle" ||
+          snapshot.prompt.status === "admitting" ||
+          snapshot.prompt.turnId !== readiness.transport.transportId
+        )
+          return yield* conflict("Codex admitted turn does not match Session authority");
+        const currentIncarnation = yield* runtime
+          .getContainerIncarnationId()
+          .pipe(
+            Effect.mapError(() => conflict("Session changed while reading Codex conversation")),
+          );
+        const store = yield* ActorStore;
+        const current = (yield* store.read).authority;
+        if (
+          current === undefined ||
+          current.revision !== authority.revision ||
+          !AuthorityStateSchema.guards.Stable(current.state) ||
+          !StableStateSchema.guards.Warm(current.state.stable) ||
+          !sameRuntimeProof(current.state.stable.readiness.runtime, readiness.runtime) ||
+          currentIncarnation !== readiness.runtime.containerIncarnation ||
+          current.state.stable.readiness.supervisor.supervisorEpoch !==
+            readiness.supervisor.supervisorEpoch ||
+          current.state.stable.readiness.transport.transportId !== readiness.transport.transportId
+        )
+          return yield* conflict("Session changed while reading Codex conversation");
+        return yield* codexConversation(snapshot, {
+          prompt: control.initialPrompt,
+          turnId: readiness.transport.transportId,
+          revision: authority.revision,
+        }).pipe(
+          Effect.mapError(() => this.upstreamError("Codex conversation is invalid", undefined)),
+        );
+      }),
+    );
+  }
 
   async checkpointScottySession(): Promise<SessionView> {
     return this.#run(this.actorLifecycleProgram("Checkpoint"));

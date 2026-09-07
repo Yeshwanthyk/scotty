@@ -67,6 +67,56 @@ describe("conversation client boundary", () => {
     ).toBeUndefined();
   });
 
+  it.each(["completed", "streaming", "failed", "aborted"])(
+    "preserves the %s turn state through decoding and reading",
+    async (state) => {
+      const expected = {
+        ...snapshot,
+        turns: [{ ...snapshot.turns[0], state }],
+      };
+      expect(decodeConversationSnapshot(expected)).toEqual(expected);
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(expected));
+      await expect(readConversation("session-1", { fetch: fetchMock })).resolves.toEqual({
+        ok: true,
+        snapshot: expected,
+      });
+    },
+  );
+
+  it.each([
+    { label: "unknown state", turn: { ...snapshot.turns[0], state: "cancelled" } },
+    { label: "non-string state", turn: { ...snapshot.turns[0], state: null } },
+    { label: "non-object turn", turn: null },
+    { label: "missing fields", turn: { id: "turn-1", state: "failed" } },
+    {
+      label: "unexpected field",
+      turn: { ...snapshot.turns[0], state: "failed", privateState: true },
+    },
+    {
+      label: "malformed assistant",
+      turn: { ...snapshot.turns[0], state: "aborted", assistant: null },
+    },
+    {
+      label: "malformed tools",
+      turn: { ...snapshot.turns[0], state: "failed", tools: {} },
+    },
+    {
+      label: "malformed tool",
+      turn: { ...snapshot.turns[0], state: "aborted", tools: [{ id: "tool-1" }] },
+    },
+  ])("rejects $label through decoding and reading", async ({ turn }) => {
+    const malformed = { ...snapshot, turns: [turn] };
+    expect(decodeConversationSnapshot(malformed)).toBeUndefined();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(malformed));
+    await expect(readConversation("session-1", { fetch: fetchMock })).resolves.toEqual({
+      ok: false,
+      failure: {
+        kind: "malformed-response",
+        message: "Scotty returned an unreadable conversation snapshot.",
+      },
+    });
+  });
+
   it("retains the bounded steer and follow-up queue", () => {
     const queued = {
       ...snapshot,
