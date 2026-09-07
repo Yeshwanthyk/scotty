@@ -568,6 +568,7 @@ export interface HarnessOptions {
   readonly commandStdout?: (command: string) => string | undefined;
   readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
   readonly containerPlacementId?: string | null;
+  readonly containerPlacementIdAfterExpose?: string | null;
   readonly destroyBehavior?: "pending" | "reject" | "success";
   readonly evidenceEnabled?: boolean;
   readonly evidencePreviewHostTimeoutMillis?: number;
@@ -1167,6 +1168,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const sandboxBundleDeletedKeys: string[] = [];
   let runtimeIdentitySequence = 0;
   let currentRuntimeIdentity = `runtime-${runtimeIdentitySequence}`;
+  const initialContainerPlacementId: string | null | undefined =
+    options.containerPlacementId === undefined
+      ? `placement-${SESSION_ID}`
+      : options.containerPlacementId;
+  let currentContainerPlacementId = initialContainerPlacementId;
   const exposedPreviewPortsByRuntime = new Map<string, Map<number, string>>([
     [currentRuntimeIdentity, new Map()],
   ]);
@@ -1578,10 +1584,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: async () => ({ status: runtimeStatus }),
     },
     getContainerPlacementId: {
-      value: async () =>
-        options.containerPlacementId === undefined
-          ? `placement-${SESSION_ID}`
-          : options.containerPlacementId,
+      value: async () => currentContainerPlacementId,
     },
     acceptScottyEvidenceJob: {
       value: (value: unknown) => sandbox[SANDBOX_TEST_ACCEPT_EVIDENCE](value),
@@ -1634,6 +1637,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       ) => {
         events.push(`host:preview:expose:${port}`);
         await options.previewExposeGate;
+        if (options.containerPlacementIdAfterExpose !== undefined)
+          currentContainerPlacementId = options.containerPlacementIdAfterExpose;
         const token = exposeOptions.token ?? "generated_token";
         currentExposedPreviewPorts().set(port, token);
         durablePreviewTokens.set(port, token);
@@ -1813,6 +1818,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: async (): Promise<void> => {
         events.push("host:stop");
         runtimeStatus = "stopped";
+        if (options.containerPlacementIdAfterExpose !== undefined)
+          currentContainerPlacementId = initialContainerPlacementId;
         if (options.stopCallsOnStop) await sandbox.onStop();
       },
     },
@@ -1926,6 +1933,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       piSessionRunning = false;
       rawPiContainerRunning = false;
       runtimeStatus = "stopped";
+      if (options.containerPlacementIdAfterExpose !== undefined)
+        currentContainerPlacementId = initialContainerPlacementId;
       currentExposedPreviewPorts().clear();
       await sandbox.onStop();
     },

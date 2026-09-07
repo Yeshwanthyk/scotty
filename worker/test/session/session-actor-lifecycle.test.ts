@@ -1131,6 +1131,64 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.strictEqual(publicStatus.exposure, "active");
   });
 
+  it("allows Hatch ensure and restore placement hydration while reconciliation fences a mismatch", async () => {
+    const harness = await createSessionHarness({
+      containerPlacementId: "placement-stale",
+      containerPlacementIdAfterExpose: "placement-hydrated",
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const service = {
+      name: "docs",
+      argv: ["npm", "run", "dev", "--", "--host", "0.0.0.0"],
+      workingDirectory: `/workspace/${SESSION_ID}`,
+      port: 4_173,
+      healthPath: "/health",
+    } as const;
+
+    const ensured = await harness.sandbox.ensureScottyHatch({ service });
+    assert.strictEqual(ensured.status, "configured");
+    assert.strictEqual(
+      harness.events.filter((event) => event === "host:preview:expose:4173").length,
+      1,
+    );
+
+    await harness.sandbox.sleepScottySession();
+    const resumed = await harness.sandbox.resumeScottySession();
+    assert.strictEqual(resumed.status, "warm");
+    assert.strictEqual(
+      harness.events.filter((event) => event === "host:preview:expose:4173").length,
+      2,
+    );
+    const running = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.isDefined(running);
+    assert.strictEqual(running?.observedStatus, "running");
+    assert.strictEqual(running?.exposure, "active");
+
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined &&
+        Predicate.isTagged(authority.state, "Stable") &&
+        Predicate.isTagged(authority.state.stable, "Warm"),
+    );
+    if (
+      authority === undefined ||
+      !Predicate.isTagged(authority.state, "Stable") ||
+      !Predicate.isTagged(authority.state.stable, "Warm")
+    )
+      return;
+    assert.strictEqual(
+      authority.state.stable.readiness.runtime.containerIncarnation,
+      "placement-stale",
+    );
+    assert.isUndefined(
+      await harness.sandbox.getScottyHatchOpenRoute(),
+      "reconciliation must reject the hydrated placement mismatch",
+    );
+  });
+
   it("re-exposes Hatch on the current runtime without reviving Evidence exposure", async () => {
     let activeHarness: SessionHarness | undefined;
     const forwardedHatchUrls: string[] = [];

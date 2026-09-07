@@ -1606,17 +1606,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
         message: "Hatch routing is unavailable",
       });
     const runtime = yield* SandboxRuntime;
-    const beforeIncarnation = yield* runtime.getContainerIncarnationId();
-    if (beforeIncarnation === null)
-      return yield* new HatchStateError({
-        reason: "invalid_state",
-        message: "Hatch runtime identity is unavailable",
-      });
-    if (expectedIncarnation !== undefined && beforeIncarnation !== expectedIncarnation)
-      return yield* new HatchStateError({
-        reason: "runtime_changed",
-        message: "Hatch runtime is no longer current",
-      });
+    if (expectedIncarnation !== undefined) {
+      const beforeIncarnation = yield* runtime.getContainerIncarnationId();
+      if (beforeIncarnation === null)
+        return yield* new HatchStateError({
+          reason: "invalid_state",
+          message: "Hatch runtime identity is unavailable",
+        });
+      if (beforeIncarnation !== expectedIncarnation)
+        return yield* new HatchStateError({
+          reason: "runtime_changed",
+          message: "Hatch runtime is no longer current",
+        });
+    }
     const healthStatus = yield* runtime.fetchPortStatus(
       hatch.service.healthPath,
       hatch.service.port,
@@ -1627,12 +1629,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
         reason: "invalid_state",
         message: "Hatch service health check failed",
       });
-    const afterHealthIncarnation = yield* runtime.getContainerIncarnationId();
-    if (afterHealthIncarnation !== beforeIncarnation)
-      return yield* new HatchStateError({
-        reason: "runtime_changed",
-        message: "Hatch runtime changed during health check",
-      });
+    if (expectedIncarnation !== undefined) {
+      const afterHealthIncarnation = yield* runtime.getContainerIncarnationId();
+      if (afterHealthIncarnation !== expectedIncarnation)
+        return yield* new HatchStateError({
+          reason: "runtime_changed",
+          message: "Hatch runtime changed during health check",
+        });
+    }
     const exposed = yield* hostEffect("expose", () =>
       this.exposePort(hatch.service.port, {
         hostname: previewBase,
@@ -1654,12 +1658,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
         reason: "invalid_state",
         message: "Hatch exposure host did not match authority",
       });
-    const afterExposureIncarnation = yield* runtime.getContainerIncarnationId();
-    if (afterExposureIncarnation !== beforeIncarnation)
-      return yield* new HatchStateError({
-        reason: "runtime_changed",
-        message: "Hatch runtime changed during exposure",
-      });
+    if (expectedIncarnation !== undefined) {
+      const afterExposureIncarnation = yield* runtime.getContainerIncarnationId();
+      if (afterExposureIncarnation !== expectedIncarnation)
+        return yield* new HatchStateError({
+          reason: "runtime_changed",
+          message: "Hatch runtime changed during exposure",
+        });
+    }
     yield* this.verifyPublicHatchRouteProgram(hatch, operationNonce);
     if (!publish) return hatch;
     const store = yield* HatchStore;
@@ -1782,6 +1788,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     if (Result.isSuccess(restored)) return;
+    yield* Effect.sync(() =>
+      console.error("Hatch restore completion failed before cleanup", {
+        error: errorName(restored.failure),
+        ...(isHatchStateError(restored.failure) ? { reason: restored.failure.reason } : {}),
+      }),
+    );
     const cleanup = yield* Effect.result(
       this.cleanupHatchProgram(pending.operationNonce, "failed", false, {
         kind: "restore_operation",
