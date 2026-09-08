@@ -47,8 +47,7 @@ Warm with a new runtime generation and the same native thread. Compare earlier c
 and tool output, then require a completed new turn using prior conversation context. Standalone
 checkpoint and shared skill discovery remain unavailable for Codex.
 
-Queued follow-ups are implemented and locally verified; deployment and a deployed queue canary
-remain pending. For an authorized queue canary, use `steer --follow-up --idempotency-key ID` during
+For an authorized queue canary, use `steer --follow-up --idempotency-key ID` during
 an active turn. Default `steer` still targets that turn. Require the public `mode: "followUp"`
 admission and visible queue item, then close the browser and prove alarm-driven native admission
 and terminal completion. Queue acceptance alone proves no native execution. Verify ordinary

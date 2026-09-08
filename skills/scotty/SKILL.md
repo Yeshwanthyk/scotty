@@ -71,9 +71,8 @@ terminal completion. A delivery-unknown response requires inspection before anot
 Codex requires a supported model/effort pair and runs with approvals disabled and danger-full-access
 inside the Scotty runtime. Sleep automatically saves conversation history through the Session
 backup; resume continues the same native thread with its earlier messages and tool history.
-Standalone checkpoint and shared skill discovery remain unavailable for Codex. Queued follow-ups
-are implemented and locally verified; deployment and a deployed queue canary remain pending.
-Pi keeps its current controls.
+Standalone checkpoint and shared skill discovery remain unavailable for Codex. Pi keeps its
+current controls.
 
 TOML changes affect new Sessions. Pi verifies requested settings before its first prompt; native
 saved Session settings remain current on resume. A successful beam proves admission, so read until

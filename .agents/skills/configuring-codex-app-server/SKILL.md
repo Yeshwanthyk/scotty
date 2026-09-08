@@ -61,7 +61,6 @@ and verifies the same thread in a fresh runtime before publishing readiness. A m
 save must fail rather than start a new conversation. Standalone checkpoint and shared skill
 discovery remain unavailable; preserve those guards.
 
-Queued follow-ups are implemented and locally verified, pending deployment and deployed proof.
 Public `steer` remains active steering by default; `--follow-up` explicitly selects the DO-owned
 queue. Preserve its bounded pending items and idempotency receipts across eviction and sleep.
 The existing DO alarm dispatches only after current readiness and terminal-turn checks, without a

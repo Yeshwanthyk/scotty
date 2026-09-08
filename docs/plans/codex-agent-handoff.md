@@ -13,9 +13,11 @@ until a matching receipt is available. Standalone checkpoint remains unavailable
 shared skill discovery remains separate work.
 
 The pinned native runtime passed a two-turn/tool save and fresh-home restore test, followed by a
-new tool turn with prior context. Production acceptance still requires the guarded deployment and
-a fresh deployed sleep/resume canary. Immediate command output can be absent from pinned native
-app-server display events even though the model receives it; ordered received chunks are retained.
+new tool turn with prior context. Automatic save/restore is deployed at `faa39c93`; the live canary
+passed same-session resume into a new runtime generation, prior-context recall, and new tool output.
+Queued follow-up deployment and its live canary remain pending. Immediate command output can be
+absent from pinned native app-server display events even though the model receives it; ordered
+received chunks are retained.
 
 ## Read this first
 
