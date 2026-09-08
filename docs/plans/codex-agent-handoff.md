@@ -3,11 +3,14 @@
 ## Current increment: automatic save and restore (2026-09-08)
 
 The historical implementation and proof statuses below are superseded by current source and the
-bundled skills. Codex now supports messages, active steering, interruption, and automatic history
-save/restore through Session sleep/resume. The DO-owned backup binds the native thread and initial
-turn; a fresh runtime restores native context, visible history, and message receipts without
-replaying the initial prompt. Standalone checkpoint remains unavailable by user choice. Queued
-follow-ups and shared skill discovery remain separate work.
+bundled skills. Codex supports messages, active steering, interruption, and automatic history
+save/restore through Session sleep/resume. DO-owned queued follow-ups are now implemented and
+locally verified, pending deployment and a deployed queue canary. `steer --follow-up` explicitly
+queues work; default `steer` still steers an active turn. Pending items survive eviction and sleep,
+and DO alarms dispatch without a browser. Resume restores the same native thread and saved message
+receipts without replaying the initial prompt; unknown queue delivery remains visibly unconfirmed
+until a matching receipt is available. Standalone checkpoint remains unavailable by user choice;
+shared skill discovery remains separate work.
 
 The pinned native runtime passed a two-turn/tool save and fresh-home restore test, followed by a
 new tool turn with prior context. Production acceptance still requires the guarded deployment and

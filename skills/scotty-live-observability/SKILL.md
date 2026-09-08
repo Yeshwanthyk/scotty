@@ -45,7 +45,17 @@ canonical `aborted` projection. A delivery-unknown result requires inspection, n
 resubmission. For sleep/resume, require authoritative Sleeping after backup confirmation, then
 Warm with a new runtime generation and the same native thread. Compare earlier canonical turns
 and tool output, then require a completed new turn using prior conversation context. Standalone
-checkpoint, queued follow-ups, and shared skill discovery remain unavailable for Codex.
+checkpoint and shared skill discovery remain unavailable for Codex.
+
+Queued follow-ups are implemented and locally verified; deployment and a deployed queue canary
+remain pending. For an authorized queue canary, use `steer --follow-up --idempotency-key ID` during
+an active turn. Default `steer` still targets that turn. Require the public `mode: "followUp"`
+admission and visible queue item, then close the browser and prove alarm-driven native admission
+and terminal completion. Queue acceptance alone proves no native execution. Verify ordinary
+interrupt preserves queued work, sleep retains it, resume checks the restored thread's receipts,
+and vaporize removes it. A lost reply must retain the same ID and text; a restored accepted receipt
+may remove the item, while an absent or unknown receipt must remain visibly unconfirmed without a
+replacement turn. Inspect before sending another message with a new ID.
 For Pi overrides, native settings readback must precede the first prompt. Local TOML defaults do
 not establish effective settings for an existing Session.
 

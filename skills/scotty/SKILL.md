@@ -65,14 +65,15 @@ or resolving sync directories. Do not add a `codex-auth` declaration: current cr
 `pi-auth` and `github-cli`.
 
 Codex supports creation, passive read, terminal follow-up messages, active-turn steering,
-interruption, sleep/resume, and vaporize. `scotty steer` selects a new message when idle and native steering while
-a turn is active. Correlate its returned turn ID with canonical read; an accepted message is not
+interruption, sleep/resume, and vaporize. `scotty steer` selects a new message when idle and native
+steering while a turn is active. Correlate its returned turn ID with canonical read; an accepted message is not
 terminal completion. A delivery-unknown response requires inspection before another submission.
 Codex requires a supported model/effort pair and runs with approvals disabled and danger-full-access
 inside the Scotty runtime. Sleep automatically saves conversation history through the Session
 backup; resume continues the same native thread with its earlier messages and tool history.
-Standalone checkpoint, queued follow-ups, and shared skill discovery remain unavailable for
-Codex. Pi keeps its current controls.
+Standalone checkpoint and shared skill discovery remain unavailable for Codex. Queued follow-ups
+are implemented and locally verified; deployment and a deployed queue canary remain pending.
+Pi keeps its current controls.
 
 TOML changes affect new Sessions. Pi verifies requested settings before its first prompt; native
 saved Session settings remain current on resume. A successful beam proves admission, so read until
@@ -141,9 +142,21 @@ Use passive read for transcript context and inspect for lifecycle, queues, tools
 Never wake a session to read; `wrong_state` is not permission to resume. A read sequence is a
 snapshot cursor, not a time or message ID.
 
-Queue and steer are different intents. Fence actions by session, epoch, and command/revision. Never
-replay ambiguity. After accepted steer or follow-up, observe terminal output before claiming it ran;
-final message and tool-result events reconcile streamed projections.
+For Codex, `scotty steer SESSION MESSAGE --follow-up --idempotency-key ID` explicitly queues a
+message after the current turn. Reuse the same ID and text when retrying that queue admission;
+the CLI generates an ID when omitted. The browser offers “Queue after this turn” while working;
+default submission still steers. Queue acceptance confirms durable storage, not native execution.
+The Session DO owns pending items and retained receipts, bounded to 100 IDs and 96 KiB of serialized
+admission state. Its alarm drains pending work without an open browser. Pending work survives DO
+eviction and sleep; resume checks readiness before dispatch. Ordinary interrupt preserves queued
+work, while vaporize removes it.
+
+An unconfirmed-delivery notice means the queue is waiting for a matching native receipt. Across
+resume, receipt reconciliation may confirm a saved admission but cannot start a replacement turn;
+absent or unknown receipts retain the item. Inspect the conversation before submitting another
+message under a new ID. Fence actions by session, epoch, and command/revision. After accepted steer
+or follow-up, observe terminal output before claiming it ran; final message and tool-result events
+reconcile streamed projections.
 
 ## Close out
 

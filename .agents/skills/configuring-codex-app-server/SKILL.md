@@ -58,8 +58,17 @@ and preserve typed ambiguity after dispatch. Sleep settles the active turn and s
 native conversation files and bounded display history through the existing Session backup. Resume
 requires that backup's native thread and initial turn identities, regenerates private configuration,
 and verifies the same thread in a fresh runtime before publishing readiness. A missing or invalid
-save must fail rather than start a new conversation. Standalone checkpoint, queued follow-ups, and
-shared skill discovery remain unavailable; preserve those guards.
+save must fail rather than start a new conversation. Standalone checkpoint and shared skill
+discovery remain unavailable; preserve those guards.
+
+Queued follow-ups are implemented and locally verified, pending deployment and deployed proof.
+Public `steer` remains active steering by default; `--follow-up` explicitly selects the DO-owned
+queue. Preserve its bounded pending items and idempotency receipts across eviction and sleep.
+The existing DO alarm dispatches only after current readiness and terminal-turn checks, without a
+browser. Remove an item only after matching native admission under the current authority proof.
+After resume, private `/message` with `reconcileOnly: true` may return a matching saved receipt but
+must reject an absent receipt before starting a turn. Retain unknown delivery visibly. Ordinary
+interrupt preserves queued work; vaporize removes it.
 
 ## Verify and report
 
