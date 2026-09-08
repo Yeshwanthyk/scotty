@@ -375,6 +375,8 @@ const EVIDENCE_PREVIEW_BASE_PATTERN =
 const EVIDENCE_CLEANUP_RETRY_SECONDS = 5;
 const EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS = 5_000;
 const HATCH_PUBLIC_ROUTE_TIMEOUT_MILLIS = 10_000;
+const HATCH_PORT_HEALTH_TIMEOUT_MILLIS = 30_000;
+const HATCH_PORT_HEALTH_RETRY_MILLIS = 250;
 const SANDBOX_PREVIEW_PROXY_HEADER = "x-sandbox-preview-proxy";
 const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
 const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
@@ -1659,11 +1661,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
           message: "Hatch runtime is no longer current",
         });
     }
-    const healthStatus = yield* runtime.fetchPortStatus(
-      hatch.service.healthPath,
-      hatch.service.port,
-      "GET",
-    );
+    const healthStatus =
+      restoreFence === undefined
+        ? yield* runtime.fetchPortStatus(hatch.service.healthPath, hatch.service.port, "GET")
+        : yield* this.pollHatchPortHealthProgram(runtime, hatch);
     if (healthStatus < 200 || healthStatus > 399)
       return yield* new HatchStateError({
         reason: "invalid_state",
@@ -1721,6 +1722,48 @@ export class Sandbox extends BaseSandbox<Bindings> {
       hatch.generation,
       runtimeEpoch,
       restoreFence,
+    );
+  });
+
+  private readonly pollHatchPortHealthProgram = Effect.fnUntraced(function* (
+    runtime: SandboxRuntime["Service"],
+    hatch: HatchRecord,
+  ) {
+    let lastStatus: number | undefined;
+    const probe = runtime.fetchPortStatus(hatch.service.healthPath, hatch.service.port, "GET").pipe(
+      Effect.map((status) => {
+        lastStatus = status;
+        return status;
+      }),
+      Effect.filterOrFail(
+        (status) => status >= 200 && status <= 399,
+        () =>
+          new HatchStateError({
+            reason: "invalid_state",
+            phase: "port_health",
+            message:
+              lastStatus === undefined
+                ? "Hatch service health check failed"
+                : `Hatch service health check failed with HTTP status ${lastStatus}`,
+          }),
+      ),
+    );
+    return yield* probe.pipe(
+      Effect.retry({ schedule: Schedule.spaced(HATCH_PORT_HEALTH_RETRY_MILLIS) }),
+      Effect.timeoutOrElse({
+        duration: HATCH_PORT_HEALTH_TIMEOUT_MILLIS,
+        orElse: () =>
+          Effect.fail(
+            new HatchStateError({
+              reason: "invalid_state",
+              phase: "port_health",
+              message:
+                lastStatus === undefined
+                  ? "Hatch service health check timed out"
+                  : `Hatch service health check timed out after HTTP status ${lastStatus}`,
+            }),
+          ),
+      }),
     );
   });
 

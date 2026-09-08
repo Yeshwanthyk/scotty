@@ -18,6 +18,7 @@ import {
   createSessionHarness,
   SESSION_ID,
   sessionHarnessKeys,
+  type HarnessOptions,
   type SessionHarness,
 } from "../support/session-harness";
 
@@ -79,6 +80,20 @@ const deferred = <A>() => {
   });
   return { promise, resolve };
 };
+
+const makeHatchHealthContainerFetch =
+  (nextHealthStatus: () => number): NonNullable<HarnessOptions["containerFetch"]> =>
+  async (request, port) => {
+    const pathname = new URL(request.url).pathname;
+    if (port === 43_117) {
+      if (pathname === "/health")
+        return Response.json({ status: "ready", epoch: `pi-${SESSION_ID}` });
+      if (pathname === "/snapshot") return Response.json({ epoch: `pi-${SESSION_ID}` });
+      return Response.json({ status: pathname === "/quiesce" ? "quiesced" : "ready" });
+    }
+    const status = nextHealthStatus();
+    return new Response(status >= 200 && status <= 399 ? "healthy" : "unhealthy", { status });
+  };
 
 describe("Sandbox actor checkpoint, sleep, and resume", () => {
   it("arms the strict final payload before the derived drain and stops create when drain arming fails", async () => {
@@ -1130,6 +1145,92 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.strictEqual(publicStatus.observedStatus, "running");
     assert.strictEqual(publicStatus.exposure, "active");
   });
+
+  it("polls Hatch port health after Pi supervisor readiness during resume", async () => {
+    let healthCalls = 0;
+    const statuses = [200, 503, 200];
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+      containerFetch: makeHatchHealthContainerFetch(() => {
+        healthCalls += 1;
+        return statuses[healthCalls - 1] ?? 200;
+      }),
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const service = {
+      name: "docs",
+      argv: ["npm", "run", "dev"],
+      workingDirectory: `/workspace/${SESSION_ID}`,
+      port: 4_173,
+      healthPath: "/health",
+    } as const;
+    const ensured = await harness.sandbox.ensureScottyHatch({ service });
+    assert.strictEqual(ensured.status, "configured");
+
+    await harness.sandbox.sleepScottySession();
+    const resumed = await harness.sandbox.resumeScottySession();
+    assert.strictEqual(resumed.status, "warm");
+    assert.strictEqual(healthCalls, 3);
+    assert.include(harness.exposedPreviewPorts(), service.port);
+    const hatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.strictEqual(hatch?.observedStatus, "running");
+    assert.strictEqual(hatch?.exposure, "active");
+  });
+
+  it.effect("bounds permanent Hatch restore port health polling", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      const restoreHealthEntered = deferred<void>();
+      let restoreStarted = false;
+      let healthCalls = 0;
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          previewBase: "preview.example.test",
+          rawPiContainerRunning: true,
+          piSessionRunning: true,
+          containerFetch: makeHatchHealthContainerFetch(() => {
+            healthCalls += 1;
+            if (restoreStarted) restoreHealthEntered.resolve();
+            return healthCalls === 1 ? 200 : 503;
+          }),
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      const service = {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      } as const;
+      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ service }));
+      yield* Effect.promise(() => harness.sandbox.sleepScottySession());
+
+      restoreStarted = true;
+      const resume = harness.sandbox.resumeScottySession().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      yield* Effect.promise(() => restoreHealthEntered.promise);
+      yield* Effect.yieldNow;
+      yield* clock.adjust("30 seconds");
+      const failure = yield* Effect.promise(() => resume);
+
+      assert.ok(failure instanceof ScottyError);
+      if (!(failure instanceof ScottyError)) return;
+      assert.strictEqual(failure.code, "upstream");
+      assert.isBelow(healthCalls, 200);
+      assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+      const hatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+      assert.strictEqual(hatch?.observedStatus, "failed");
+      assert.strictEqual(hatch?.exposure, "closed");
+    }),
+  );
 
   it("allows Hatch ensure and restore placement hydration while reconciliation fences a mismatch", async () => {
     const harness = await createSessionHarness({
