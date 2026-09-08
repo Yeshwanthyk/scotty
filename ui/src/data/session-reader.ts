@@ -205,12 +205,12 @@ const runtimeFrom = (value: JsonValue | undefined): SessionModel["runtime"] | un
   return { provider: value.provider, readiness: value.readiness };
 };
 
-const sameCapabilities = (actual: SessionCapabilities, expected: SessionCapabilities): boolean =>
-  actual.checkpoint === expected.checkpoint &&
-  actual.sleep === expected.sleep &&
-  actual.resume === expected.resume &&
-  actual.work === expected.work &&
-  actual.vaporize === expected.vaporize;
+const capabilitiesWithin = (actual: SessionCapabilities, allowed: SessionCapabilities): boolean =>
+  (!actual.checkpoint || allowed.checkpoint) &&
+  (!actual.sleep || allowed.sleep) &&
+  (!actual.resume || allowed.resume) &&
+  (!actual.work || allowed.work) &&
+  (!actual.vaporize || allowed.vaporize);
 
 const validSessionContract = (session: Omit<SessionModel, "source">): boolean => {
   if (
@@ -222,7 +222,7 @@ const validSessionContract = (session: Omit<SessionModel, "source">): boolean =>
     return (
       session.authority.startedAt.length > 0 &&
       session.runtime.readiness === "not-applicable" &&
-      sameCapabilities(session.capabilities, noCapabilities)
+      capabilitiesWithin(session.capabilities, noCapabilities)
     );
 
   const { failure, lifecycle } = session.authority;
@@ -242,7 +242,7 @@ const validSessionContract = (session: Omit<SessionModel, "source">): boolean =>
       : "not-applicable";
   return (
     session.runtime.readiness === expectedReadiness &&
-    sameCapabilities(session.capabilities, expected)
+    capabilitiesWithin(session.capabilities, expected)
   );
 };
 

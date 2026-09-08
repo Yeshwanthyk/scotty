@@ -5,9 +5,16 @@ import {
   readAuthoritativeSession,
   refetchSessionAfterConsoleConflict,
   SESSION_WIRE_VERSION,
+  type SessionCapabilities,
 } from "./session-reader";
 
-const wireSession = (id: string, lifecycle: "warm" | "sleeping" = "warm") => ({
+const wireSession = (
+  id: string,
+  lifecycle: "warm" | "sleeping" = "warm",
+  capabilities: SessionCapabilities = lifecycle === "warm"
+    ? { checkpoint: true, sleep: true, resume: false, work: true, vaporize: true }
+    : { checkpoint: false, sleep: false, resume: true, work: false, vaporize: true },
+) => ({
   version: SESSION_WIRE_VERSION,
   session: {
     identity: { id },
@@ -16,10 +23,7 @@ const wireSession = (id: string, lifecycle: "warm" | "sleeping" = "warm") => ({
       provider: "cloudflare",
       readiness: lifecycle === "warm" ? "unchecked" : "not-applicable",
     },
-    capabilities:
-      lifecycle === "warm"
-        ? { checkpoint: true, sleep: true, resume: false, work: true, vaporize: true }
-        : { checkpoint: false, sleep: false, resume: true, work: false, vaporize: true },
+    capabilities,
     display: {
       title: "Boundary test",
       repository: "personal/scotty",
@@ -183,6 +187,37 @@ describe("readAuthoritativeSession", () => {
         classification: "malformed",
       });
     }
+  });
+
+  it("accepts backend Codex capability subsets but rejects lifecycle-invalid actions", async () => {
+    const codex = wireSession("codex-123", "warm", {
+      checkpoint: false,
+      sleep: false,
+      resume: false,
+      work: true,
+      vaporize: true,
+    });
+    await expect(
+      readAuthoritativeSession("codex-123", {
+        fetch: vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(codex)),
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      session: { capabilities: codex.session.capabilities },
+    });
+
+    const invalid = {
+      ...codex,
+      session: {
+        ...codex.session,
+        capabilities: { ...codex.session.capabilities, resume: true },
+      },
+    };
+    await expect(
+      readAuthoritativeSession("codex-123", {
+        fetch: vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(invalid)),
+      }),
+    ).resolves.toMatchObject({ ok: false, classification: "malformed" });
   });
 
   it("uses known demo fixtures without a network request", async () => {
