@@ -45,7 +45,17 @@ const styles = stylex.create({
     cursor: "pointer",
     ":hover": { backgroundColor: colors.panelRaised, color: colors.ink },
   },
-  mobileTitle: { color: colors.ink, fontSize: "13px", fontWeight: 650 },
+  mobileTitle: {
+    minWidth: 0,
+    flex: 1,
+    overflow: "hidden",
+    margin: 0,
+    color: colors.ink,
+    fontSize: "13px",
+    fontWeight: 650,
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
   mobileIcon: { width: "18px", height: "18px", strokeWidth: 1.8 },
   backdrop: {
     display: "none",
@@ -63,11 +73,13 @@ const styles = stylex.create({
 export function AppShell({
   archivedSessions = [],
   children,
+  mobileTitleHeading = false,
   mobileTitle,
   repositories,
 }: {
   readonly archivedSessions?: ReadonlyArray<RepositoryGroup["sessions"][number]>;
   readonly children: ReactNode;
+  readonly mobileTitleHeading?: boolean;
   readonly mobileTitle?: string;
   readonly repositories: ReadonlyArray<RepositoryGroup>;
 }) {
@@ -115,7 +127,13 @@ export function AppShell({
               <Menu aria-hidden {...stylex.props(styles.mobileIcon)} />
             )}
           </button>
-          {mobileTitle ? <span {...stylex.props(styles.mobileTitle)}>{mobileTitle}</span> : null}
+          {mobileTitle ? (
+            mobileTitleHeading ? (
+              <h1 {...stylex.props(styles.mobileTitle)}>{mobileTitle}</h1>
+            ) : (
+              <span {...stylex.props(styles.mobileTitle)}>{mobileTitle}</span>
+            )
+          ) : null}
         </div>
         {children}
       </main>

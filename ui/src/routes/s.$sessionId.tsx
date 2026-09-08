@@ -144,6 +144,7 @@ const styles = stylex.create({
     "@media (max-width: 760px)": {
       height: "calc(100dvh - 52px)",
       minHeight: "calc(100dvh - 52px)",
+      gridTemplateRows: "minmax(0, 1fr)",
     },
   },
   topbar: {
@@ -157,7 +158,7 @@ const styles = stylex.create({
     borderBottomStyle: "solid",
     borderBottomColor: colors.line,
     backgroundColor: colors.shell,
-    "@media (max-width: 720px)": { minHeight: "30px", paddingInline: spacing.md },
+    "@media (max-width: 760px)": { display: "none" },
   },
   breadcrumb: {
     minWidth: 0,
@@ -166,7 +167,7 @@ const styles = stylex.create({
     gap: spacing.sm,
     color: colors.quiet,
     fontSize: "12px",
-    "@media (max-width: 720px)": { gap: spacing.xs, fontSize: "10px" },
+    "@media (max-width: 760px)": { gap: spacing.xs, fontSize: "10px" },
   },
   repo: {
     overflow: "hidden",
@@ -182,6 +183,7 @@ const styles = stylex.create({
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   },
   workspace: {
+    minWidth: 0,
     minHeight: 0,
     width: "100%",
     padding: "clamp(22px, 3vw, 40px) clamp(24px, 4vw, 52px) 0",
@@ -189,28 +191,33 @@ const styles = stylex.create({
     gridTemplateRows: "auto minmax(0, 1fr)",
     gap: spacing.xl,
     overflow: "hidden",
-    "@media (max-width: 720px)": {
-      padding: `10px ${spacing.md} 0`,
-      gap: "10px",
+    "@media (max-width: 760px)": {
+      padding: `6px ${spacing.md} 0`,
+      gap: "4px",
     },
   },
   headingRow: {
+    minWidth: 0,
     display: "flex",
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: spacing.xl,
-    "@media (max-width: 720px)": { flexDirection: "column", gap: "10px" },
+    "@media (max-width: 760px)": {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: "4px",
+    },
   },
   titleBlock: {
     minWidth: 0,
     display: "grid",
     gap: spacing.sm,
-    "@media (max-width: 720px)": {
+    "@media (max-width: 760px)": {
       display: "flex",
-      flexWrap: "wrap",
       alignItems: "center",
-      columnGap: spacing.md,
-      rowGap: spacing.xs,
+      flex: 1,
+      overflow: "hidden",
     },
   },
   statusLine: {
@@ -219,7 +226,7 @@ const styles = stylex.create({
     gap: spacing.sm,
     color: colors.muted,
     fontSize: "12px",
-    "@media (max-width: 720px)": { order: 2, fontSize: "11px" },
+    "@media (max-width: 760px)": { display: "none" },
   },
   stateIcon: { width: "14px", height: "14px", color: colors.warning, strokeWidth: 1.8 },
   heading: {
@@ -231,12 +238,7 @@ const styles = stylex.create({
     lineHeight: 1.15,
     letterSpacing: "-0.025em",
     textWrap: "balance",
-    "@media (max-width: 720px)": {
-      width: "100%",
-      order: 1,
-      fontSize: "22px",
-      lineHeight: 1.1,
-    },
+    "@media (max-width: 760px)": { display: "none" },
   },
   metadata: {
     display: "flex",
@@ -245,8 +247,27 @@ const styles = stylex.create({
     color: colors.quiet,
     fontSize: "12px",
     fontVariantNumeric: "tabular-nums",
-    "@media (max-width: 720px)": { order: 3, gap: spacing.md, fontSize: "11px" },
+    "@media (max-width: 760px)": { display: "none" },
   },
+  mobileContext: {
+    minWidth: 0,
+    flex: 1,
+    display: "flex",
+    alignItems: "center",
+    gap: spacing.xs,
+    overflow: "hidden",
+    color: colors.quiet,
+    fontSize: "11px",
+    whiteSpace: "nowrap",
+    "@media (min-width: 761px)": { display: "none" },
+  },
+  mobileStatus: { flexShrink: 0, color: colors.muted },
+  mobilePath: {
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  mobileCap: { flexShrink: 0 },
   metadataItem: { display: "inline-flex", alignItems: "center", gap: "6px" },
   smallIcon: { width: "13px", height: "13px", strokeWidth: 1.8 },
   actionArea: {
@@ -254,10 +275,11 @@ const styles = stylex.create({
     display: "grid",
     justifyItems: "end",
     gap: spacing.sm,
-    "@media (max-width: 720px)": {
-      width: "100%",
+    "@media (max-width: 760px)": {
       minWidth: 0,
-      justifyItems: "start",
+      maxWidth: "100%",
+      flexShrink: 0,
+      justifyItems: "end",
     },
   },
   actionRow: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: spacing.sm },
@@ -276,7 +298,11 @@ const styles = stylex.create({
     cursor: "pointer",
     listStyle: "none",
     "::-webkit-details-marker": { display: "none" },
+    "@media (max-width: 760px)": { width: "44px", height: "44px" },
   },
+  mobileOnlyActionMenu: { "@media (min-width: 761px)": { display: "none" } },
+  mobileOnlyAction: { "@media (min-width: 761px)": { display: "none" } },
+  desktopOnlyAction: { "@media (max-width: 760px)": { display: "none" } },
   menuPanel: {
     position: "absolute",
     zIndex: 20,
@@ -304,7 +330,7 @@ const styles = stylex.create({
     borderColor: colors.danger,
     borderRadius: "8px",
     backgroundColor: colors.panel,
-    "@media (max-width: 720px)": { width: "100%", maxWidth: "none" },
+    "@media (max-width: 760px)": { width: "100%", maxWidth: "none" },
   },
   confirmCopy: { margin: 0, color: colors.muted, fontSize: "12px", lineHeight: 1.5 },
   actionIcon: { width: "15px", height: "15px", strokeWidth: 1.8 },
@@ -314,7 +340,7 @@ const styles = stylex.create({
     color: colors.quiet,
     fontSize: "11px",
     textAlign: "right",
-    "@media (max-width: 720px)": { textAlign: "left" },
+    "@media (max-width: 760px)": { textAlign: "left" },
   },
   actionMessage: {
     width: "100%",
@@ -323,7 +349,7 @@ const styles = stylex.create({
     fontSize: "11px",
     lineHeight: 1.45,
     textAlign: "right",
-    "@media (max-width: 720px)": { textAlign: "left" },
+    "@media (max-width: 760px)": { textAlign: "left" },
   },
   actionError: { color: colors.danger },
   actionReconciliation: { color: colors.warning },
@@ -348,6 +374,7 @@ const styles = stylex.create({
     animationTimingFunction: motion.easeOut,
   },
   surface: {
+    minWidth: 0,
     minHeight: 0,
     overflow: "hidden",
   },
@@ -462,7 +489,12 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
   }, [router]);
   const rail = buildSessionRail(data.projections, { selectedActor: session });
   return (
-    <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>
+    <AppShell
+      archivedSessions={rail.archivedSessions}
+      mobileTitle={session.display.title}
+      mobileTitleHeading
+      repositories={rail.repositories}
+    >
       <div data-session-source={fixture ? "fixture" : "actor"} {...stylex.props(styles.page)}>
         <header {...stylex.props(styles.topbar)}>
           <div {...stylex.props(styles.breadcrumb)}>
@@ -495,6 +527,20 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
                   {formatDuration(session.times.capRemainingSeconds)} remaining
                 </span>
               </div>
+              <span aria-label="Session status and context" {...stylex.props(styles.mobileContext)}>
+                <span {...stylex.props(styles.mobileStatus)}>{presentation.railLabel}</span>
+                <span aria-hidden>·</span>
+                <span
+                  title={`${session.display.repository} / ${session.display.branch ?? "Vaporized"}`}
+                  {...stylex.props(styles.mobilePath)}
+                >
+                  {session.display.repository} / {session.display.branch ?? "Vaporized"}
+                </span>
+                <span aria-hidden>·</span>
+                <span {...stylex.props(styles.mobileCap)}>
+                  {formatDuration(session.times.capRemainingSeconds)} left
+                </span>
+              </span>
             </div>
             <LifecycleControls presentation={presentation} sessionId={session.id} />
           </section>
@@ -727,29 +773,13 @@ function LifecycleControls({
 
   return (
     <div {...stylex.props(styles.actionArea)}>
-      <div {...stylex.props(styles.actionRow)}>
-        {primary === undefined ? null : (
-          <LifecycleButton action={primary} onAction={runAction} primary />
-        )}
-        {secondary.length > 0 ? (
-          <details {...stylex.props(styles.actionMenu)}>
-            <summary aria-label="More session actions" {...stylex.props(styles.actionSummary)}>
-              <MoreHorizontal aria-hidden {...stylex.props(styles.actionIcon)} />
-            </summary>
-            <div {...stylex.props(styles.menuPanel)}>
-              {secondary.map((action) => (
-                <LifecycleButton action={action} key={action} onAction={runAction} />
-              ))}
-            </div>
-          </details>
-        ) : null}
-        {canVaporize ? (
-          <Button onClick={() => setConfirmingVaporizeFor(sessionId)} variant="quiet">
-            <Trash2 aria-hidden {...stylex.props(styles.actionIcon, styles.dangerButton)} />
-            Vaporize
-          </Button>
-        ) : null}
-      </div>
+      <LifecycleActionRow
+        canVaporize={canVaporize}
+        onAction={runAction}
+        onVaporize={() => setConfirmingVaporizeFor(sessionId)}
+        primary={primary}
+        secondary={secondary}
+      />
       {currentMessage ? (
         <p
           role={currentMessage.kind === "error" ? "alert" : "status"}
@@ -761,6 +791,65 @@ function LifecycleControls({
         >
           {currentMessage.text}
         </p>
+      ) : null}
+    </div>
+  );
+}
+
+function LifecycleActionRow({
+  canVaporize,
+  onAction,
+  onVaporize,
+  primary,
+  secondary,
+}: {
+  readonly canVaporize: boolean;
+  readonly onAction: (action: SessionLifecycleAction) => void;
+  readonly onVaporize: () => void;
+  readonly primary: SessionAction | undefined;
+  readonly secondary: ReadonlyArray<SessionAction>;
+}) {
+  return (
+    <div {...stylex.props(styles.actionRow)}>
+      {primary === undefined ? null : (
+        <div {...stylex.props(styles.desktopOnlyAction)}>
+          <LifecycleButton action={primary} onAction={onAction} primary />
+        </div>
+      )}
+      {primary !== undefined || secondary.length > 0 || canVaporize ? (
+        <details
+          {...stylex.props(
+            styles.actionMenu,
+            secondary.length === 0 && styles.mobileOnlyActionMenu,
+          )}
+        >
+          <summary aria-label="More session actions" {...stylex.props(styles.actionSummary)}>
+            <MoreHorizontal aria-hidden {...stylex.props(styles.actionIcon)} />
+          </summary>
+          <div {...stylex.props(styles.menuPanel)}>
+            {primary === undefined ? null : (
+              <div {...stylex.props(styles.mobileOnlyAction)}>
+                <LifecycleButton action={primary} onAction={onAction} primary />
+              </div>
+            )}
+            {secondary.map((action) => (
+              <LifecycleButton action={action} key={action} onAction={onAction} />
+            ))}
+            {canVaporize ? (
+              <div {...stylex.props(styles.mobileOnlyAction)}>
+                <LifecycleButton action="vaporize" onAction={() => onVaporize()} />
+              </div>
+            ) : null}
+          </div>
+        </details>
+      ) : null}
+      {canVaporize ? (
+        <div {...stylex.props(styles.desktopOnlyAction)}>
+          <Button onClick={onVaporize} variant="quiet">
+            <Trash2 aria-hidden {...stylex.props(styles.actionIcon, styles.dangerButton)} />
+            Vaporize
+          </Button>
+        </div>
       ) : null}
     </div>
   );
@@ -780,7 +869,10 @@ function LifecycleButton({
   const onClick = action === "work" ? undefined : () => onAction(action);
   return (
     <Button disabled={action === "work"} onClick={onClick} variant={primary ? "primary" : "quiet"}>
-      <Icon aria-hidden {...stylex.props(styles.actionIcon)} />
+      <Icon
+        aria-hidden
+        {...stylex.props(styles.actionIcon, action === "vaporize" && styles.dangerButton)}
+      />
       {detail.label}
     </Button>
   );
