@@ -1,5 +1,19 @@
 # Codex agent handoff: completed work and remaining slices
 
+## Current increment: automatic save and restore (2026-09-08)
+
+The historical implementation and proof statuses below are superseded by current source and the
+bundled skills. Codex now supports messages, active steering, interruption, and automatic history
+save/restore through Session sleep/resume. The DO-owned backup binds the native thread and initial
+turn; a fresh runtime restores native context, visible history, and message receipts without
+replaying the initial prompt. Standalone checkpoint remains unavailable by user choice. Queued
+follow-ups and shared skill discovery remain separate work.
+
+The pinned native runtime passed a two-turn/tool save and fresh-home restore test, followed by a
+new tool turn with prior context. Production acceptance still requires the guarded deployment and
+a fresh deployed sleep/resume canary. Immediate command output can be absent from pinned native
+app-server display events even though the model receives it; ordered received chunks are retained.
+
 ## Read this first
 
 The explicit **Codex create → initial response → read → vaporize** increment is implemented and accepted at local proof tiers. The final combined repository gate passed after independent audits and targeted repairs.
