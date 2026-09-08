@@ -95,6 +95,16 @@ describe("Effect command tree", () => {
       assert.strictEqual(yield* version.effect, EXIT.OK);
       assert.strictEqual(version.stdout.join(""), `${VERSION}\n`);
       assert.strictEqual(version.stderr.join(""), "");
+
+      const provenance = run(["--build-info"]);
+      assert.strictEqual(yield* provenance.effect, EXIT.OK);
+      assert.deepStrictEqual(JSON.parse(provenance.stdout.join("")), {
+        version: VERSION,
+        commit: null,
+        dirty: null,
+        embeddedDeployment: false,
+      });
+      assert.strictEqual(provenance.stderr.join(""), "");
     }),
   );
 

@@ -31,6 +31,21 @@ Distinguish `accepted`, `queued`, `running`, `completed`, `failed`, and `ambiguo
 not prove completion. A timeout or lost response after possible dispatch is ambiguous: inspect the
 owner before retrying. Never conclude from a stale projection alone.
 
+## Upgrade and load guidance
+
+Run `scotty upgrade` to install the latest published signed CLI and its bundled guides. Confirm
+`scotty --version` and `scotty --build-info`; deployment requires `embeddedDeployment: true`.
+Then read `scotty skill show` and, for live diagnostics, `scotty skill show scotty-live-observability`.
+Upgrade does not deploy the Worker: review `deploy --plan --json` before an authorized
+`deploy --yes --json`. The executable deploys its bundled release code, not current Git main.
+Keep the managed installation/profile, Cloudflare auth, Docker, and TOML source roots available.
+
+Host-agent loaders are separate from the bundled guides. `init` and `upgrade` do not write them.
+For automatic discovery, use the host agent's configured filesystem skill directory and a small
+loader that runs `scotty skill show`; preserve existing custom loaders. Confirm discovery in a
+fresh agent session. Container skills mount automatically. Filesystem discovery does not require
+Scotty's public shared skill catalog.
+
 ## Set up an installation
 
 Use this order, adapting command arguments from current help:
@@ -71,7 +86,8 @@ terminal completion. A delivery-unknown response requires inspection before anot
 Codex requires a supported model/effort pair and runs with approvals disabled and danger-full-access
 inside the Scotty runtime. Sleep automatically saves conversation history through the Session
 backup; resume continues the same native thread with its earlier messages and tool history.
-Standalone checkpoint and shared skill discovery remain unavailable for Codex. Pi keeps its
+Standalone checkpoint and Scotty's public shared skill catalog remain unavailable for Codex. Native
+filesystem skills are separate. Pi keeps its
 current controls.
 
 TOML changes affect new Sessions. Pi verifies requested settings before its first prompt; native

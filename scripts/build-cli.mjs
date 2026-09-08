@@ -19,6 +19,17 @@ const archivePath = join(buildDirectory, "scotty-deployment.tar.gz");
 const entryPath = join(buildDirectory, "standalone.ts");
 const output = resolve(process.argv[2] ?? join(root, "dist", "scotty"));
 const compileTarget = process.env.SCOTTY_COMPILE_TARGET;
+const commitResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
+const candidateCommit = commitResult.stdout?.trim();
+const buildCommit =
+  commitResult.status === 0 && /^[a-f0-9]{40}$/u.test(candidateCommit ?? "")
+    ? candidateCommit
+    : null;
+const statusResult = spawnSync("git", ["status", "--porcelain", "--untracked-files=normal"], {
+  cwd: root,
+  encoding: "utf8",
+});
+const buildDirty = statusResult.status === 0 ? statusResult.stdout.trim().length > 0 : null;
 
 const buildBrowserAssets = () => {
   const result = spawnSync("npm", ["run", "ui:build"], { cwd: root, stdio: "inherit" });
@@ -87,6 +98,10 @@ try {
   await Bun.build({
     entrypoints: [entryPath],
     target: "bun",
+    define: {
+      SCOTTY_BUILD_COMMIT: JSON.stringify(buildCommit),
+      SCOTTY_BUILD_DIRTY: JSON.stringify(buildDirty),
+    },
     compile: {
       outfile: output,
       ...(compileTarget ? { target: compileTarget } : {}),

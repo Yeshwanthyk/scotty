@@ -35,6 +35,33 @@ recovery is opened in my browser; and one sandbox for the repository I supplied 
 the installed Scotty version, installation name, Worker host, bundle digest, and sandbox ID.
 ```
 
+## Update the CLI and bundled guidance
+
+```sh
+scotty upgrade
+scotty --version
+scotty --build-info
+scotty skill show
+scotty skill show scotty-live-observability
+```
+
+`upgrade` installs the latest published signed release, including its bundled guides. Main-branch
+pushes do not publish a release. `--version` remains the release version; `--build-info` reports
+the build commit and whether the executable contains the deployment archive. Use the packaged
+release artifact for deployment; a direct `bun build cli/scotty.ts --compile` omits that archive.
+
+Upgrading the executable does not update the Worker. Follow the production runbook below to
+review `scotty deploy --plan --json`, then apply with `scotty deploy --yes --json`. Deployment
+uses the code bundled in that release and requires the managed installation/profile, Cloudflare
+authentication, Docker, and the source paths declared in your local TOML.
+
+`init` and `upgrade` do not install host-agent skill loaders. Your agent can read the guides with
+`scotty skill show`. For automatic discovery, add a small `SKILL.md` in your agent's configured
+skill directory that tells it to run that command and follow the result. Review any existing skill
+first, preserve custom delegation instructions, and verify discovery in a fresh agent session.
+This keeps the guide current after an upgrade without overwriting local skills. Native filesystem
+skill discovery is separate from Scotty's unavailable public shared skill catalog.
+
 ## Cloudflare structure
 
 ```mermaid

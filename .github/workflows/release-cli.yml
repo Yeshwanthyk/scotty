@@ -71,7 +71,18 @@ jobs:
           test "$(find dist/release -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
       - name: Smoke native compiled release artifact
         if: matrix.platform == 'linux' && matrix.architecture == 'x64'
-        run: dist/release/scotty-linux-x64 --version
+        run: |
+          test "$(dist/release/scotty-linux-x64 --version)" = "${GITHUB_REF_NAME#v}"
+          dist/release/scotty-linux-x64 --build-info > /tmp/scotty-build-info.json
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import assert from "node:assert/strict";
+            const info = JSON.parse(readFileSync("/tmp/scotty-build-info.json", "utf8"));
+            assert.equal(info.version, process.env.GITHUB_REF_NAME.slice(1));
+            assert.equal(info.commit, process.env.GITHUB_SHA);
+            assert.equal(info.dirty, false);
+            assert.equal(info.embeddedDeployment, true);
+          '
       - name: Prove native release deployment packaging in a clean room
         if: matrix.platform == 'linux' && matrix.architecture == 'x64'
         run: node scripts/check-cli-standalone-deploy.mjs dist/release/scotty-linux-x64

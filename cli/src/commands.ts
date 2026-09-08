@@ -1,4 +1,5 @@
 import { canonicalReadSnapshot, decodeReadSnapshot } from "./dependencies";
+import { buildInfo } from "./build-info";
 import { decodeCanonicalReadSnapshot } from "./schemas";
 import { decodeAgentSelection } from "../../protocol/agent-selection";
 import { isAbsolute, join } from "node:path";
@@ -463,7 +464,16 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Emit stable machine-readable output"),
       ),
     }),
-    Command.withGlobalFlags([version]),
+    Command.withGlobalFlags([
+      version,
+      GlobalFlag.action({
+        flag: Flag.boolean("build-info").pipe(
+          Flag.withDefault(false),
+          Flag.withDescription("Show build commit and embedded deployment availability as JSON"),
+        ),
+        run: () => Console.log(JSON.stringify(buildInfo())),
+      }),
+    ]),
     Command.withDescription("Run durable coding-agent sessions"),
   );
 
