@@ -437,20 +437,63 @@ describe("scoped Codex session", () => {
     }),
   );
 
-  it.effect("ack without terminal reaches turn deadline, not interrupted success", () =>
+  it.effect("an explicit turn deadline fails and cleans up without terminal success", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
       const host = yield* makeSession(f.transport);
       const turn = yield* host.prompt("hello");
-      const interrupt = yield* host.interrupt.pipe(Effect.result, Effect.forkChild);
       yield* TestClock.adjust(200);
-      const result = yield* Fiber.join(interrupt);
-      assert.ok(Result.isFailure(result));
-      assert.equal(result.failure.code, "turn_timeout");
       const terminal = yield* Effect.result(turn.completed);
       assert.ok(Result.isFailure(terminal));
       assert.equal(terminal.failure.code, "turn_timeout");
       assert.equal((yield* host.closed).failure, "turn_timeout");
+    }),
+  );
+
+  it.effect("an unset turn deadline lets an active turn exceed 30 seconds and complete", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession({
+        ...f.transport,
+        options: { ...f.transport.options, turnTimeoutMs: undefined },
+      });
+      const turn = yield* host.prompt("hello");
+      yield* TestClock.adjust(30001);
+      assert.equal(f.stopped(), 0);
+      assert.equal(host.inspect().ready, true);
+      assert.equal(host.inspect().activeTurnId, "turn");
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+      });
+      assert.equal((yield* turn.completed).status, "completed");
+      assert.equal(host.inspect().failure, null);
+      yield* host.stop;
+      assert.equal(f.stopped(), 1);
+    }),
+  );
+
+  it.effect("an interrupt acknowledgement without a terminal uses the request deadline", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession({
+        ...f.transport,
+        options: { ...f.transport.options, turnTimeoutMs: undefined },
+      });
+      const turn = yield* host.prompt("hello");
+      const interrupt = yield* host.interrupt.pipe(Effect.result, Effect.forkChild);
+      yield* TestClock.adjust(99);
+      assert.equal(interrupt.pollUnsafe(), undefined);
+      assert.equal(f.stopped(), 0);
+      yield* TestClock.adjust(1);
+      const result = yield* Fiber.join(interrupt);
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure.code, "request_timeout");
+      const terminal = yield* Effect.result(turn.completed);
+      assert.ok(Result.isFailure(terminal));
+      assert.equal(terminal.failure.code, "request_timeout");
+      assert.equal((yield* host.closed).failure, "request_timeout");
+      assert.equal(f.stopped(), 1);
     }),
   );
 

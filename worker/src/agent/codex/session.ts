@@ -347,13 +347,17 @@ export const makeSession = Effect.fnUntraced(function* (
       terminal: yield* Deferred.make<Terminal, CodexHostError>(),
     };
     active = turn;
+    const turnTimeoutMs = transport.options.turnTimeoutMs;
+    const terminal = Deferred.await(turn.terminal);
     yield* supervise(
-      Deferred.await(turn.terminal).pipe(
-        Effect.timeoutOrElse({
-          duration: transport.options.turnTimeoutMs,
-          orElse: () => Effect.fail(new CodexHostError({ code: "turn_timeout" })),
-        }),
-      ),
+      turnTimeoutMs === undefined
+        ? terminal
+        : terminal.pipe(
+            Effect.timeoutOrElse({
+              duration: turnTimeoutMs,
+              orElse: () => Effect.fail(new CodexHostError({ code: "turn_timeout" })),
+            }),
+          ),
     );
     const result = yield* rpc(
       { method: "turn/start", params },
@@ -410,7 +414,8 @@ export const makeSession = Effect.fnUntraced(function* (
       if (!turn.interruption)
         turn.interruption = yield* Effect.cached(
           rpc({ method: "turn/interrupt", params }, decodeCodexInterruptResponse).pipe(
-            Effect.andThen(Deferred.await(turn.terminal)),
+            Effect.andThen(timed(Deferred.await(turn.terminal))),
+            Effect.tapError(fail),
           ),
         );
       return yield* turn.interruption;

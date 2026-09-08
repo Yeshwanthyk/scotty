@@ -155,7 +155,6 @@ export const launchProcess = Effect.fnUntraced(function* (input: unknown) {
       : `http://127.0.0.1:${port}/backend-api/codex`;
   const options = {
     requestTimeoutMs: 15000,
-    turnTimeoutMs: 30000,
     stopTimeoutMs: 2000,
     ...selection,
   };
