@@ -1,3 +1,4 @@
+import { decodeSessionMessageInput } from "../../protocol/session-steer";
 import { getSandbox, proxyTerminal } from "@cloudflare/sandbox";
 import {
   decodePiConsoleCommandPromise,
@@ -812,12 +813,18 @@ app.post("/api/sessions/:id/steer", async (c) => {
   if (bodyText === undefined) throw badRequest("Steer request body is too large");
   const body = decodeJsonValue(bodyText);
   if (Option.isNone(body)) throw badRequest("Request body must be valid JSON");
-  const message = parseSteerInput(body.value);
+  const input = decodeSessionMessageInput(body.value);
+  if (Option.isNone(input)) throw badRequest("Invalid message delivery request");
+  const message = parseSteerInput({ message: input.value.message });
   const idempotencyKey = c.req.header("idempotency-key");
   if (idempotencyKey !== undefined) parseIdempotencyKey(idempotencyKey);
   const sandbox = sessionSandbox(c.env, id);
-  const codex = await sandbox.steerScottyCodexSession(message, idempotencyKey);
+  const codex =
+    input.value.deliverAs === undefined
+      ? await sandbox.steerScottyCodexSession(message, idempotencyKey)
+      : await sandbox.steerScottyCodexSession(message, idempotencyKey, input.value.deliverAs);
   if (codex !== null) return codex;
+  if (input.value.deliverAs !== undefined) throw badRequest("Queued follow-up requires Codex");
   return steerPassiveSession(sandbox, id, message);
 });
 

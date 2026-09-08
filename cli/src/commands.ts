@@ -1760,12 +1760,19 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const steer = Command.make(
     "steer",
     {
+      messageId: Flag.string("idempotency-key").pipe(
+        Flag.optional,
+        Flag.withDescription("Reuse this ID when retrying a queued follow-up"),
+      ),
+      followUp: Flag.boolean("follow-up").pipe(
+        Flag.withDescription("Queue a Codex message after the current turn"),
+      ),
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
       message: Argument.string("message").pipe(
         Argument.withDescription("Prompt or steering message"),
       ),
     },
-    ({ id, message }) =>
+    ({ id, message, followUp, messageId }) =>
       Effect.gen(function* () {
         if (!message.trim()) return yield* usage("Message must not be empty");
         if (new TextEncoder().encode(message).byteLength > PI_CONSOLE_MAX_STRING_BYTES)
@@ -1778,7 +1785,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const decoded = decodeSteerResponse(
           yield* requestJson(target, `/api/sessions/${encodeURIComponent(sessionId)}/steer`, {
             method: "POST",
-            body: JSON.stringify({ message }),
+            body: JSON.stringify({ message, ...(followUp ? { deliverAs: "followUp" } : {}) }),
+            ...(followUp
+              ? {
+                  headers: {
+                    "idempotency-key": Option.getOrElse(messageId, () => crypto.randomUUID()),
+                  },
+                }
+              : {}),
             cache: "no-store",
             redirect: "manual",
           }),

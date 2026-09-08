@@ -736,9 +736,20 @@ describe("Codex automatic saved history", () => {
             threadId: "thread",
             text: "second user",
             clientUserMessageId: "message-2",
+            reconcileOnly: true,
           }),
           { generation: "generation-1", threadId: "thread", turnId: "second" },
         );
+        const absent = yield* Effect.result(
+          f.runtime.message({
+            threadId: "thread",
+            text: "never admitted",
+            clientUserMessageId: "absent-message",
+            reconcileOnly: true,
+          }),
+        );
+        assert.ok(Result.isFailure(absent));
+        assert.equal(absent.failure.code, "idempotency_unknown");
         assert.equal(f.prompts(), 0);
         const replay = yield* Effect.result(f.runtime.admit(command));
         assert.ok(Result.isFailure(replay));

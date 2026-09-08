@@ -282,7 +282,12 @@ export function humanRead(output: ReadOutput): string {
 
 export function humanSteer(result: SteerResponse): string {
   if (result.status === "accepted") {
-    const label = "mode" in result && result.mode === "message" ? "Follow-up" : "Steer";
+    const label =
+      "mode" in result && result.mode === "followUp"
+        ? "Queued follow-up"
+        : "mode" in result && result.mode === "message"
+          ? "Follow-up"
+          : "Steer";
     return `${label} accepted for ${result.id} at revision ${result.sessionRevision}.\n`;
   }
   if (result.status === "stale")

@@ -61,6 +61,13 @@ const AmbiguousResponseSchema = Schema.Struct({
 });
 
 export const SessionSteerResponseSchema = Schema.Union([
+  Schema.Struct({
+    id: Identifier,
+    status: Schema.Literal("accepted"),
+    mode: Schema.Literal("followUp"),
+    clientUserMessageId: Identifier,
+    sessionRevision: SessionRevision,
+  }),
   PiSteerAcceptedResponseSchema,
   CodexSteerAcceptedResponseSchema,
   StaleResponseSchema,
@@ -68,3 +75,11 @@ export const SessionSteerResponseSchema = Schema.Union([
   AmbiguousResponseSchema,
 ]);
 export type SessionSteerResponse = typeof SessionSteerResponseSchema.Type;
+
+export const decodeSessionMessageInput = Schema.decodeUnknownOption(
+  Schema.Struct({
+    message: Schema.Unknown,
+    deliverAs: Schema.optionalKey(Schema.Literal("followUp")),
+  }),
+  { onExcessProperty: "error" },
+);

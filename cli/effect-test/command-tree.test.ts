@@ -43,6 +43,38 @@ const run = (
 };
 
 describe("Effect command tree", () => {
+  it.effect("queues a follow-up with explicit intent and a reusable client ID", () =>
+    Effect.gen(function* () {
+      const bodies: string[] = [];
+      const keys: Array<string | null> = [];
+      const execution = run(
+        ["steer", "s1", "Check next", "--follow-up", "--idempotency-key", "queued-cli-1", "--json"],
+        {
+          env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "secret" },
+          fetch: async (_url, init) => {
+            bodies.push(String(init?.body));
+            keys.push(new Headers(init?.headers).get("idempotency-key"));
+            return Response.json(
+              {
+                id: "s1",
+                status: "accepted",
+                mode: "followUp",
+                clientUserMessageId: "queued-cli-1",
+                sessionRevision: 1,
+              },
+              { status: 202 },
+            );
+          },
+        },
+      );
+      yield* execution.effect;
+      assert.deepStrictEqual(bodies, [
+        JSON.stringify({ message: "Check next", deliverAs: "followUp" }),
+      ]);
+      assert.deepStrictEqual(keys, ["queued-cli-1"]);
+    }),
+  );
+
   it.effect("defaults omitted boolean switches on ordinary command execution", () =>
     Effect.gen(function* () {
       const requests: Request[] = [];

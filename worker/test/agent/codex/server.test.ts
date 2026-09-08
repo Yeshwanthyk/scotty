@@ -318,6 +318,19 @@ createInterface({input:process.stdin}).on('line', (line) => {
             .prompt,
           { status: "terminal", turnId: "turn", outcome: "completed", text: "synthetic answer" },
         );
+        const absentReceipt = yield* exchange(
+          f.port,
+          "POST",
+          "/message",
+          JSON.stringify({
+            mode: "message",
+            threadId: "thread",
+            text: "never admitted",
+            clientUserMessageId: "missing",
+            reconcileOnly: true,
+          }),
+        );
+        assert.equal((yield* decodeError(absentReceipt.text)).error, "idempotency_unknown");
         assert.equal(f.calls(), 1);
         const stopped = yield* exchange(f.port, "POST", "/stop");
         assert.equal(stopped.status, 200);

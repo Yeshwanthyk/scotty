@@ -1,3 +1,10 @@
+import { codexFollowUpStorage } from "./store";
+import {
+  decodeCodexFollowUps,
+  emptyCodexFollowUps,
+  enqueueCodexFollowUp,
+  confirmCodexFollowUp,
+} from "./codex-follow-ups";
 import {
   interruptCodexSandbox,
   readCodexSandbox,
@@ -667,7 +674,13 @@ export const SANDBOX_TEST_EXPOSE_EVIDENCE = Symbol("scotty.test.exposeEvidence")
 export const SANDBOX_TEST_COMPLETE_EVIDENCE_STEP = Symbol("scotty.test.completeEvidenceStep");
 export const SANDBOX_TEST_FINALIZE_EVIDENCE = Symbol("scotty.test.finalizeEvidence");
 
+const codexQueueTransitionKeepsRuntime = (
+  transition: import("../session-actor/authority").Transition,
+): boolean =>
+  Predicate.isTagged(transition, "WarmWork") || Predicate.isTagged(transition, "Resume");
+
 type HostOperation =
+  | "codexQueue"
   | "destroy"
   | "expose"
   | "getExposedPorts"
@@ -898,6 +911,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly hatchRequestForwarder: (request: Request) => Promise<Response>;
   private readonly rawContainer: DurableObjectState["container"];
   private readonly sessionControlGate: SessionControlGate;
+  private readonly codexFollowUps: ReturnType<typeof codexFollowUpStorage>;
   private readonly terminalSessionControl: TerminalSessionControl;
   private readonly evidenceEnabled: boolean;
   private readonly localE2E: boolean;
@@ -960,6 +974,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.hatchRequestForwarder =
       options.hatchRequestForwarder ?? ((request) => this.forwardSandboxPreviewRequest(request));
     this.sessionControlGate = makeSessionControlGate();
+    // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires DO-owned follow-up storage
+    this.codexFollowUps = codexFollowUpStorage(ctx.storage);
     const terminalSessionControl = options.terminalSessionControl ?? {
       delete: (terminalId: string) => this.deleteSession(terminalId).then(() => undefined),
     };
@@ -1418,6 +1434,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 if (!released.ok || !released.value.released)
                   return yield* vaporizeUnknown("credential_release_unconfirmed")();
               }
+              yield* hostEffect("codexQueue", () => this.codexFollowUps.clear());
               yield* metadataStore.deleteForVaporize(authority);
               return yield* vaporizeResult("GrantsReleased", "owned_authority_released");
             }).pipe(Effect.catch(vaporizeUnknown("owned_authority_release_unknown"))),
@@ -1425,6 +1442,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
             Effect.gen({ self: this }, function* () {
               const metadata = yield* metadataStore.read(authority);
               if (metadata !== undefined) return yield* vaporizeUnknown("metadata_still_present")();
+              if ((yield* hostEffect("codexQueue", () => this.codexFollowUps.read())) !== undefined)
+                return yield* vaporizeUnknown("follow_ups_still_present")();
               yield* projection.remove(authority.session.id);
               return yield* vaporizeResult("AbsenceConfirmed", "owned_state_absent_confirmed");
             }).pipe(Effect.catch(vaporizeUnknown("absence_confirmation_unknown"))),
@@ -5385,10 +5404,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
         const current = (yield* store.read).authority;
         if (!sameCodexAuthorityProof(current, authority, readiness, currentIncarnation))
           return yield* conflict("Session changed while reading Codex conversation");
+        const queue = yield* this.readCodexFollowUpsProgram();
         return yield* codexConversation(snapshot, {
           prompt: control.initialPrompt,
           turnId: readiness.transport.transportId,
           revision: authority.revision,
+          followUpBlocked: queue.pending[0]?.attempt !== undefined,
+          followUp: queue.pending.map(({ id, text }) => ({
+            id,
+            text,
+          })),
         }).pipe(
           Effect.mapError(() => this.upstreamError("Codex conversation is invalid", undefined)),
         );
@@ -5396,9 +5421,113 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
+  private readonly readCodexFollowUpsProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const stored = yield* hostEffect("codexQueue", () => this.codexFollowUps.read());
+    if (stored === undefined) return emptyCodexFollowUps();
+    return yield* decodeCodexFollowUps(stored).pipe(
+      Effect.mapError(() => this.upstreamError("Codex follow-up queue is invalid", undefined)),
+    );
+  });
+
+  private readonly scheduleCodexFollowUpsProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const now = yield* Clock.currentTimeMillis;
+    const schedules = yield* hostEffect("schedule", () =>
+      this.listSchedules("drainCodexFollowUps"),
+    );
+    if (schedules.some((schedule) => schedule.time * 1000 > now)) return;
+    yield* hostEffect("schedule", () =>
+      this.schedule(new Date(now + 5_000), "drainCodexFollowUps", {}),
+    );
+  });
+
+  async drainCodexFollowUps(): Promise<void> {
+    return this.sessionControlGate.run(() =>
+      this.#run(
+        Effect.gen({ self: this }, function* () {
+          let queue = yield* this.readCodexFollowUpsProgram();
+          const item = queue.pending[0];
+          if (item === undefined) return;
+          const authority = (yield* (yield* ActorStore).read).authority;
+          if (authority === undefined) return;
+          if (AuthorityStateSchema.guards.Transitioning(authority.state)) {
+            if (codexQueueTransitionKeepsRuntime(authority.state.transition))
+              yield* this.scheduleCodexFollowUpsProgram();
+            return;
+          }
+          if (StableStateSchema.guards.Gone(authority.state.stable)) {
+            yield* hostEffect("codexQueue", () => this.codexFollowUps.clear());
+            return;
+          }
+          if (
+            !StableStateSchema.guards.Warm(authority.state.stable) ||
+            authority.session.selection?.agent !== "codex"
+          )
+            return;
+          const readiness = authority.state.stable.readiness;
+          if (
+            item.attempt !== undefined &&
+            item.attempt.threadId !== readiness.supervisor.supervisorEpoch
+          )
+            return;
+          const reconcileOnly =
+            item.attempt !== undefined &&
+            item.attempt.generation !== readiness.runtime.runtimeGeneration;
+          // Arm recovery before observing or dispatching: provider timeouts retain the same item and ID.
+          yield* this.scheduleCodexFollowUpsProgram();
+          const state = yield* this.readActorSessionStateProgram();
+          const control = state.metadata.codexControl;
+          if (control === undefined) return;
+          const runtime = yield* SandboxRuntime;
+          const incarnation = yield* runtime.getContainerIncarnationId();
+          if (incarnation !== readiness.runtime.containerIncarnation) return;
+          const identity = {
+            sessionId: authority.session.id,
+            generation: readiness.runtime.runtimeGeneration,
+            selection: authority.session.selection,
+            token: control.token,
+          };
+          const before = yield* readCodexSandbox(identity, readiness.supervisor.supervisorEpoch);
+          if (!codexSnapshotHasInitialTurn(before, readiness.transport.transportId)) return;
+          if (item.attempt === undefined && before.prompt.status !== "terminal") return;
+          if (item.attempt === undefined) {
+            queue = {
+              ...queue,
+              pending: queue.pending.map((entry) =>
+                entry.id === item.id
+                  ? {
+                      ...entry,
+                      attempt: {
+                        generation: identity.generation,
+                        threadId: readiness.supervisor.supervisorEpoch,
+                      },
+                    }
+                  : entry,
+              ),
+            };
+            yield* hostEffect("codexQueue", () => this.codexFollowUps.write(queue));
+          }
+          yield* sendCodexSandboxMessage(
+            identity,
+            readiness.supervisor.supervisorEpoch,
+            item.text,
+            item.id,
+            reconcileOnly ? "reconcile" : "followUp",
+          );
+          const currentIncarnation = yield* runtime.getContainerIncarnationId();
+          const current = (yield* (yield* ActorStore).read).authority;
+          if (!sameCodexAuthorityProof(current, authority, readiness, currentIncarnation)) return;
+          yield* hostEffect("codexQueue", () =>
+            this.codexFollowUps.write(confirmCodexFollowUp(queue, item.id)),
+          );
+        }),
+      ),
+    );
+  }
+
   async steerScottyCodexSession(
     message: string,
     clientUserMessageId?: string,
+    deliverAs?: "followUp",
   ): Promise<Response | null> {
     let sessionId: string | undefined;
     const result = await this.sessionControlGate.run(() =>
@@ -5419,6 +5548,31 @@ export class Sandbox extends BaseSandbox<Bindings> {
             const control = state.metadata.codexControl;
             if (control === undefined)
               return yield* this.upstreamError("Codex control metadata is unavailable", undefined);
+            if (deliverAs === "followUp") {
+              if (clientUserMessageId === undefined)
+                return yield* badRequest("Queued follow-up requires an idempotency-key");
+              const queue = yield* this.readCodexFollowUpsProgram();
+              const result = enqueueCodexFollowUp(queue, {
+                id: clientUserMessageId,
+                text: message,
+              });
+              if (result.status === "conflict")
+                return yield* conflict("Follow-up ID already has different text");
+              if (result.status === "full")
+                return yield* conflict("Codex follow-up admission limit reached");
+              yield* this.scheduleCodexFollowUpsProgram();
+              yield* hostEffect("codexQueue", () => this.codexFollowUps.write(result.queue));
+              return Response.json(
+                {
+                  id: authority.session.id,
+                  status: "accepted",
+                  mode: "followUp",
+                  clientUserMessageId,
+                  sessionRevision: authority.revision,
+                },
+                { status: 202, headers: { "cache-control": "no-store" } },
+              );
+            }
             const runtime = yield* SandboxRuntime;
             const incarnation = yield* runtime.getContainerIncarnationId();
             if (incarnation !== readiness.runtime.containerIncarnation)
@@ -5681,6 +5835,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   async resumeScottySession(): Promise<SessionView> {
+    await this.#run(
+      Effect.gen({ self: this }, function* () {
+        if ((yield* this.readCodexFollowUpsProgram()).pending.length > 0)
+          yield* this.scheduleCodexFollowUpsProgram();
+      }),
+    );
     return this.#run(this.actorLifecycleProgram("Resume"));
   }
 

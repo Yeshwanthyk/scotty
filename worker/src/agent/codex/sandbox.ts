@@ -193,6 +193,7 @@ export const sendCodexSandboxMessage = Effect.fnUntraced(function* (
   threadId: string,
   text: string,
   clientUserMessageId?: string,
+  delivery: "auto" | "followUp" | "reconcile" = "auto",
 ) {
   const identity = yield* decodeIdentity(input).pipe(
     Effect.mapError(() => failure("Codex identity is invalid")),
@@ -202,11 +203,13 @@ export const sendCodexSandboxMessage = Effect.fnUntraced(function* (
   if (!before.ready || before.failure !== null)
     return yield* failure("Codex is not ready for a message");
   const mode =
-    before.prompt.status === "running"
-      ? { mode: "steer" as const, expectedTurnId: before.prompt.turnId }
-      : before.prompt.status === "terminal"
-        ? { mode: "message" as const }
-        : yield* failure("Codex message admission is unavailable");
+    delivery !== "auto"
+      ? { mode: "message" as const }
+      : before.prompt.status === "running"
+        ? { mode: "steer" as const, expectedTurnId: before.prompt.turnId }
+        : before.prompt.status === "terminal"
+          ? { mode: "message" as const }
+          : yield* failure("Codex message admission is unavailable");
   const body =
     mode.mode === "steer"
       ? {
@@ -220,6 +223,7 @@ export const sendCodexSandboxMessage = Effect.fnUntraced(function* (
           mode: mode.mode,
           threadId,
           text,
+          ...(delivery === "reconcile" ? { reconcileOnly: true } : {}),
           ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
         };
   const response = yield* runtime

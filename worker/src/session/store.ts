@@ -1,3 +1,4 @@
+import type { CodexFollowUps } from "./codex-follow-ups";
 import { Data, Predicate, Result } from "effect";
 import {
   AuthorityStateSchema,
@@ -314,4 +315,10 @@ export const durableObjectSessionActorMetadataStorage = (
         return mutation.outcome;
       }),
     ),
+});
+
+export const codexFollowUpStorage = (storage: DurableObjectStorage) => ({
+  clear: () => storage.delete("scotty:codex-follow-ups").then(() => undefined),
+  read: () => storage.get<unknown>("scotty:codex-follow-ups"),
+  write: (queue: CodexFollowUps) => storage.put("scotty:codex-follow-ups", queue),
 });

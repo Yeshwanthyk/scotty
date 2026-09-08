@@ -345,3 +345,43 @@ describe("conversation client boundary", () => {
     },
   );
 });
+
+describe("queued follow-up public intent", () => {
+  it("advertises Codex queue capability and preserves blocked delivery state", () => {
+    expect(
+      decodeConversationSnapshot({ ...snapshot, followUpAvailable: true, followUpBlocked: true }),
+    ).toMatchObject({ followUpAvailable: true, followUpBlocked: true });
+    expect(decodeConversationSnapshot({ ...snapshot, followUpAvailable: "yes" })).toBeUndefined();
+  });
+  it("sends explicit follow-up intent with the same client ID on retry", async () => {
+    const requests = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error("lost reply"))
+      .mockResolvedValueOnce(
+        Response.json({ id: "session-1", status: "accepted", mode: "followUp" }, { status: 202 }),
+      );
+    const options = {
+      fetch: requests,
+      deliverAs: "followUp",
+      clientUserMessageId: "stable-client-id",
+    } as const;
+    expect((await steerConversation("session-1", "Later", options)).ok).toBe(false);
+    expect((await steerConversation("session-1", "Later", options)).ok).toBe(true);
+    expect(requests).toHaveBeenNthCalledWith(
+      1,
+      "/api/sessions/session-1/steer",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "idempotency-key": "stable-client-id" }),
+        body: JSON.stringify({ message: "Later", deliverAs: "followUp" }),
+      }),
+    );
+    expect(requests).toHaveBeenNthCalledWith(
+      2,
+      "/api/sessions/session-1/steer",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "idempotency-key": "stable-client-id" }),
+        body: JSON.stringify({ message: "Later", deliverAs: "followUp" }),
+      }),
+    );
+  });
+});

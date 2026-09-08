@@ -30,6 +30,8 @@ export interface ConversationTransport {
 }
 
 export interface ConversationSnapshot {
+  readonly followUpAvailable?: boolean;
+  readonly followUpBlocked?: boolean;
   readonly version: 1;
   readonly transport: ConversationTransport;
   readonly turns: ReadonlyArray<ConversationTurn>;
@@ -222,10 +224,30 @@ const decodeQueueItem = (value: JsonValue): ConversationQueueItem | undefined =>
   return { id: value.id, text: value.text };
 };
 
+const hasConversationSnapshotKeys = (value: JsonObject): boolean =>
+  hasExactKeys(value, [
+    "version",
+    "transport",
+    "turns",
+    "queue",
+    "truncated",
+    ...(value.followUpAvailable === undefined ? [] : ["followUpAvailable"]),
+    ...(value.followUpBlocked === undefined ? [] : ["followUpBlocked"]),
+  ]) &&
+  (value.followUpAvailable === undefined || typeof value.followUpAvailable === "boolean") &&
+  (value.followUpBlocked === undefined || typeof value.followUpBlocked === "boolean");
+
+const decodeFollowUpCapabilities = (value: JsonObject) => ({
+  ...(typeof value.followUpAvailable === "boolean"
+    ? { followUpAvailable: value.followUpAvailable }
+    : {}),
+  ...(typeof value.followUpBlocked === "boolean" ? { followUpBlocked: value.followUpBlocked } : {}),
+});
+
 export const decodeConversationSnapshot = (value: unknown): ConversationSnapshot | undefined => {
   if (
     !isJsonObject(value) ||
-    !hasExactKeys(value, ["version", "transport", "turns", "queue", "truncated"]) ||
+    !hasConversationSnapshotKeys(value) ||
     value.version !== 1 ||
     !Array.isArray(value.turns) ||
     value.turns.length > MAX_TURNS ||
@@ -255,6 +277,7 @@ export const decodeConversationSnapshot = (value: unknown): ConversationSnapshot
   return {
     version: 1,
     transport,
+    ...decodeFollowUpCapabilities(value),
     turns: turns.filter((turn): turn is ConversationTurn => turn !== undefined),
     queue: {
       steer: steer.filter((item): item is ConversationQueueItem => item !== undefined),
@@ -342,7 +365,10 @@ const decodeSteerOutcome = (
 export const steerConversation = async (
   sessionId: string,
   message: string,
-  options: ConversationRequestOptions = {},
+  options: ConversationRequestOptions & {
+    readonly deliverAs?: "followUp";
+    readonly clientUserMessageId?: string;
+  } = {},
 ): Promise<ConversationSteerResult> => {
   let response: Response;
   try {
@@ -352,8 +378,17 @@ export const steerConversation = async (
         method: "POST",
         credentials: "same-origin",
         cache: "no-store",
-        headers: { accept: "application/json", "content-type": "application/json" },
-        body: JSON.stringify({ message }),
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          ...(options.clientUserMessageId === undefined
+            ? {}
+            : { "idempotency-key": options.clientUserMessageId }),
+        },
+        body: JSON.stringify({
+          message,
+          ...(options.deliverAs === undefined ? {} : { deliverAs: options.deliverAs }),
+        }),
         signal: options.signal,
       },
     );

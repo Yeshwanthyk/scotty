@@ -41,7 +41,13 @@ const projectFailedTurn = (
 
 export const codexConversation = Effect.fnUntraced(function* (
   snapshot: typeof CodexSnapshot.Type,
-  input: { readonly prompt: string; readonly turnId: string; readonly revision: number },
+  input: {
+    readonly prompt: string;
+    readonly turnId: string;
+    readonly revision: number;
+    readonly followUpBlocked?: boolean;
+    readonly followUp?: ReadonlyArray<{ readonly id: string; readonly text: string }>;
+  },
 ) {
   const prompt = snapshot.prompt;
   const user = boundedText(input.prompt);
@@ -74,6 +80,8 @@ export const codexConversation = Effect.fnUntraced(function* (
         );
   return yield* decodeCanonicalConversationSnapshot({
     version: 1,
+    followUpAvailable: true,
+    followUpBlocked: input.followUpBlocked ?? false,
     transport: {
       epoch: snapshot.generation,
       baseSequence: 0,
@@ -81,7 +89,7 @@ export const codexConversation = Effect.fnUntraced(function* (
       sessionRevision: input.revision,
     },
     turns,
-    queue: { steer: [], followUp: [] },
+    queue: { steer: [], followUp: input.followUp ?? [] },
     truncated: {
       turns: snapshot.turnsTruncated === true,
       values: snapshot.toolsTruncated === true || user !== input.prompt || assistant !== text,

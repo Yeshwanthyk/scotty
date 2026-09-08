@@ -200,6 +200,9 @@ export const makeCodexControl = Effect.fnUntraced(function* (
         const admission =
           command.mode === "message"
             ? runtime.message({
+                ...(command.reconcileOnly === undefined
+                  ? {}
+                  : { reconcileOnly: command.reconcileOnly }),
                 threadId: command.threadId,
                 text: command.text,
                 ...(command.clientUserMessageId === undefined

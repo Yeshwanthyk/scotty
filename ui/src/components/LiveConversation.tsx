@@ -413,9 +413,19 @@ const deliveryMessage = (delivery: DeliveryState, draftTooLong: boolean): string
   return "";
 };
 
+const composerSendLabel = (followUp: boolean, active: boolean): string =>
+  followUp ? "Queue" : active ? "Steer" : "Send";
+
+const queueDeliveryIntent = (
+  retryingQueued: boolean,
+  supportsQueue: boolean,
+  queueAfterTurn: boolean,
+): boolean => retryingQueued || (supportsQueue && queueAfterTurn);
+
 function ConversationComposer({
   active,
   activeTurnId,
+  followUpAvailable,
   enabled,
   onAccepted,
   queue,
@@ -424,6 +434,7 @@ function ConversationComposer({
 }: {
   readonly active: boolean;
   readonly activeTurnId: string | undefined;
+  readonly followUpAvailable: boolean;
   readonly enabled: boolean;
   readonly onAccepted: () => void;
   readonly queue: ConversationSnapshot["queue"];
@@ -431,33 +442,43 @@ function ConversationComposer({
   readonly sessionId: string;
 }) {
   const [draft, setDraft] = useState("");
+  const [queueAfterTurn, setQueueAfterTurn] = useState(false);
+  const queuedRequest = useRef<{ text: string; id: string } | undefined>(undefined);
   const [delivery, setDelivery] = useState<DeliveryState>({ kind: "idle" });
   const draftBytes = useMemo(() => new TextEncoder().encode(draft).byteLength, [draft]);
   const draftTooLong = draftBytes > MAX_MESSAGE_BYTES;
-  const canSubmit =
-    enabled &&
-    draft.trim().length > 0 &&
-    !draftTooLong &&
-    delivery.kind !== "submitting" &&
-    delivery.kind !== "interrupting";
+  const deliveryBusy = delivery.kind === "submitting" || delivery.kind === "interrupting";
+  const canSubmit = enabled && draft.trim().length > 0 && !draftTooLong && !deliveryBusy;
   const canInterrupt =
     enabled &&
     active &&
     activeTurnId !== undefined &&
     sessionRevision !== undefined &&
-    delivery.kind !== "submitting" &&
-    delivery.kind !== "interrupting";
-  const sendLabel = active ? "Steer" : "Send";
+    !deliveryBusy;
+  const supportsQueue = followUpAvailable && active;
+  const retryingQueued = queuedRequest.current?.text === draft.trim();
+  const followUp = queueDeliveryIntent(retryingQueued, supportsQueue, queueAfterTurn);
+  const sendLabel = composerSendLabel(followUp, active);
 
   const submit = async (event?: FormEvent): Promise<void> => {
     event?.preventDefault();
     if (!canSubmit) return;
     const message = draft.trim();
     setDelivery({ kind: "submitting" });
-    const result = await steerConversation(sessionId, message);
+    if (followUp && queuedRequest.current?.text !== message)
+      queuedRequest.current = { text: message, id: crypto.randomUUID() };
+    const result = await steerConversation(
+      sessionId,
+      message,
+      followUp ? { deliverAs: "followUp", clientUserMessageId: queuedRequest.current?.id } : {},
+    );
     if (result.ok) {
       setDraft("");
-      setDelivery({ kind: "accepted", message: active ? "Steer accepted" : "Message accepted" });
+      queuedRequest.current = undefined;
+      setDelivery({
+        kind: "accepted",
+        message: followUp ? "Follow-up queued" : active ? "Steer accepted" : "Message accepted",
+      });
       onAccepted();
       return;
     }
@@ -522,7 +543,19 @@ function ConversationComposer({
         </Button>
       </div>
       <div {...stylex.props(styles.composerFooter)}>
-        <span>Enter to {active ? "steer" : "send"} · Shift+Enter for a new line</span>
+        {supportsQueue ? (
+          <label>
+            <input
+              type="checkbox"
+              disabled={retryingQueued}
+              checked={queueAfterTurn}
+              onChange={(event) => setQueueAfterTurn(event.currentTarget.checked)}
+            />{" "}
+            Queue after this turn
+          </label>
+        ) : (
+          <span>Enter to send · Shift+Enter for a new line</span>
+        )}
         <span
           role={delivery.kind === "failed" || delivery.kind === "ambiguous" ? "alert" : "status"}
           {...stylex.props(
@@ -594,9 +627,16 @@ export function LiveConversation({
     <div {...stylex.props(styles.root)}>
       <ConnectionStatus active={active} connection={connection} />
       <ConversationContent connection={connection} retry={refresh} />
+      {snapshot?.followUpBlocked === true ? (
+        <p role="alert">
+          A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before
+          continuing the queue.
+        </p>
+      ) : null}
       <ConversationComposer
         active={active}
         activeTurnId={activeTurn?.id}
+        followUpAvailable={snapshot?.followUpAvailable === true}
         enabled={connection.kind === "ready" && connection.connection === "connected"}
         onAccepted={refresh}
         queue={snapshot?.queue ?? { steer: [], followUp: [] }}

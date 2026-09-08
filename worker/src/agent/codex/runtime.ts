@@ -34,6 +34,7 @@ export const CodexRuntimeStart = Schema.Struct({
   restore: Schema.optionalKey(CodexPersistenceIdentity),
 });
 export const CodexPrompt = Schema.Struct({
+  reconcileOnly: Schema.optionalKey(Schema.Boolean),
   threadId: Identifier,
   text: bytes(CODEX_MAX_TEXT_BYTES).check(Schema.isMinLength(1)),
   clientUserMessageId: Schema.optionalKey(Identifier),
@@ -338,6 +339,8 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
         return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
       return yield* new CodexBridgeError({ code: "idempotency_unknown", outcome: "ambiguous" });
     }
+    if (command.reconcileOnly === true)
+      return yield* new CodexBridgeError({ code: "idempotency_unknown", outcome: "ambiguous" });
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         if (saving) return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
