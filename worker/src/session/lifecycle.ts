@@ -1,6 +1,7 @@
 import type { SessionRecord } from "./contracts";
 
 export const SESSION_SCHEDULE_CALLBACKS = [
+  "drainCodexFollowUps",
   "expireEvidenceJob",
   "expireRetainedEvidence",
   "retryHatchCleanup",
