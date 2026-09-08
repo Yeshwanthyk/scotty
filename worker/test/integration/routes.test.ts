@@ -1425,9 +1425,20 @@ describe("real Hono boundary", () => {
     "interrupted",
     "lost-admission",
   ] as const) {
-    it(`creates, reads and destroys Codex through production Session wiring: ${outcome}`, async () => {
+    it(`creates, reads, sleeps, resumes and destroys Codex through production Session wiring: ${outcome}`, async () => {
       let admitted = false;
       let promptRequests = 0;
+      let saved = false;
+      let saveRequests = 0;
+      const savedOutcome =
+        outcome === "pending" || outcome === "lost-admission" ? "interrupted" : outcome;
+      const savedTurn = {
+        id: "turn-1",
+        user: "one prompt",
+        assistant: "bounded answer",
+        state: savedOutcome === "interrupted" ? "aborted" : savedOutcome,
+        tools: [],
+      };
       const harness = await createSessionHarness({
         credentialRegistryGrants: DEFAULT_CREDENTIAL_GRANTS,
         containerFetch: async (request, port) => {
@@ -1448,11 +1459,18 @@ describe("real Hono boundary", () => {
               { status: 202 },
             );
           }
+          if (new URL(request.url).pathname === "/save") {
+            if (request.method !== "POST") throw new RouteTestFailure("save requires POST");
+            saveRequests += 1;
+            saved = true;
+            return Response.json({ generation, threadId: "thread-1", initialTurnId: "turn-1" });
+          }
           expect(request.method).toBe("GET");
           expect(await request.text()).toBe("");
           return Response.json({
             generation,
             threadId: "thread-1",
+            ...(saved ? { turns: [savedTurn] } : {}),
             version: CODEX_VERSION,
             settings: {
               model: "gpt-5.4",
@@ -1465,11 +1483,18 @@ describe("real Hono boundary", () => {
             ready: true,
             failure: null,
             cleanup: null,
-            prompt: !admitted
-              ? { status: "idle" }
-              : outcome === "pending" || outcome === "lost-admission"
-                ? { status: "running", turnId: "turn-1" }
-                : { status: "terminal", turnId: "turn-1", outcome, text: "bounded answer" },
+            prompt: saved
+              ? {
+                  status: "terminal",
+                  turnId: "turn-1",
+                  outcome: savedOutcome,
+                  text: "bounded answer",
+                }
+              : !admitted
+                ? { status: "idle" }
+                : outcome === "pending" || outcome === "lost-admission"
+                  ? { status: "running", turnId: "turn-1" }
+                  : { status: "terminal", turnId: "turn-1", outcome, text: "bounded answer" },
           });
         },
       });
@@ -1580,14 +1605,66 @@ describe("real Hono boundary", () => {
         ],
       });
       expect(promptRequests).toBe(1);
-      for (const action of ["checkpoint", "sleep", "resume"]) {
-        const rejected = await app.request(
-          `/api/sessions/${authority.session.id}/${action}`,
-          { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
-          env(),
-        );
-        expect(rejected.status).toBe(400);
-      }
+      const checkpoint = await app.request(
+        `/api/sessions/${authority.session.id}/checkpoint`,
+        { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(checkpoint.status).toBe(400);
+      if (
+        !AuthorityStateSchema.guards.Stable(authority.state) ||
+        !StableStateSchema.guards.Warm(authority.state.stable)
+      )
+        throw new RouteTestFailure("missing initial warm readiness");
+      const originalReadiness = authority.state.stable.readiness;
+      const sleeping = await app.request(
+        `/api/sessions/${authority.session.id}/sleep`,
+        { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(sleeping.status).toBe(200);
+      expect(await sleeping.json()).toMatchObject({
+        id: authority.session.id,
+        status: "sleeping",
+      });
+      expect(harness.read(sessionHarnessKeys.actorAuthority)).toMatchObject({
+        state: {
+          _tag: "Stable",
+          stable: {
+            _tag: "Sleeping",
+            backup: { codex: { threadId: "thread-1", initialTurnId: "turn-1" } },
+          },
+        },
+      });
+      expect(saveRequests).toBe(1);
+      expect(harness.events).toContain("host:createBackup");
+      const resumed = await app.request(
+        `/api/sessions/${authority.session.id}/resume`,
+        { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(resumed.status).toBe(200);
+      expect(await resumed.json()).toMatchObject({ id: authority.session.id, status: "warm" });
+      const current = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      if (
+        current === undefined ||
+        !AuthorityStateSchema.guards.Stable(current.state) ||
+        !StableStateSchema.guards.Warm(current.state.stable)
+      )
+        throw new RouteTestFailure("missing resumed warm readiness");
+      expect(current.state.stable.readiness.runtime.runtimeGeneration).not.toBe(
+        originalReadiness.runtime.runtimeGeneration,
+      );
+      expect(current.state.stable.readiness.supervisor.supervisorEpoch).toBe("thread-1");
+      expect(current.state.stable.readiness.transport.transportId).toBe("turn-1");
+      expect(promptRequests).toBe(1);
+      const restored = await app.request(
+        `/api/sessions/${authority.session.id}/conversation`,
+        { headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(restored.status).toBe(200);
+      expect(await restored.json()).toMatchObject({ turns: [savedTurn] });
       harness.injectFailure("vaporizeDestroy");
       const ambiguous = await app.request(
         `/api/sessions/${authority.session.id}`,
