@@ -42,8 +42,10 @@ For Codex, separate message admission from terminal response in canonical read. 
 messaging canary, correlate active steering and terminal follow-ups by returned turn ID and require
 completed tool receipts. For interruption, require native terminal `interrupted` and its public
 canonical `aborted` projection. A delivery-unknown result requires inspection, not blind
-resubmission. Checkpoint, sleep/resume, queued follow-ups, and shared skill discovery remain
-unavailable for Codex.
+resubmission. For sleep/resume, require authoritative Sleeping after backup confirmation, then
+Warm with a new runtime generation and the same native thread. Compare earlier canonical turns
+and tool output, then require a completed new turn using prior conversation context. Standalone
+checkpoint, queued follow-ups, and shared skill discovery remain unavailable for Codex.
 For Pi overrides, native settings readback must precede the first prompt. Local TOML defaults do
 not establish effective settings for an existing Session.
 

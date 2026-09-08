@@ -53,9 +53,13 @@ Session grant and substitutes the pinned credential. Do not add native OAuth imp
   native child cleanup belongs to scopes/finalizers.
 
 The public vertical supports create, canonical read, terminal follow-up messages, active-turn
-steering, interruption, and vaporize. Correlate message receipts with native turn IDs and preserve
-typed ambiguity after dispatch. Codex checkpoint, sleep/resume, queued follow-ups, and shared skill
-discovery remain unavailable. Preserve their explicit guards; do not route them through Pi.
+steering, interruption, sleep/resume, and vaporize. Correlate message receipts with native turn IDs
+and preserve typed ambiguity after dispatch. Sleep settles the active turn and saves allowlisted
+native conversation files and bounded display history through the existing Session backup. Resume
+requires that backup's native thread and initial turn identities, regenerates private configuration,
+and verifies the same thread in a fresh runtime before publishing readiness. A missing or invalid
+save must fail rather than start a new conversation. Standalone checkpoint, queued follow-ups, and
+shared skill discovery remain unavailable; preserve those guards.
 
 ## Verify and report
 

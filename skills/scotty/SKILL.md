@@ -65,13 +65,14 @@ or resolving sync directories. Do not add a `codex-auth` declaration: current cr
 `pi-auth` and `github-cli`.
 
 Codex supports creation, passive read, terminal follow-up messages, active-turn steering,
-interruption, and vaporize. `scotty steer` selects a new message when idle and native steering while
+interruption, sleep/resume, and vaporize. `scotty steer` selects a new message when idle and native steering while
 a turn is active. Correlate its returned turn ID with canonical read; an accepted message is not
 terminal completion. A delivery-unknown response requires inspection before another submission.
 Codex requires a supported model/effort pair and runs with approvals disabled and danger-full-access
-inside the Scotty runtime. Checkpoint, sleep/resume, queued follow-ups, and shared skill discovery
-remain unavailable for Codex. Pi keeps its current controls. Do not use a Pi lifecycle recipe on
-Codex.
+inside the Scotty runtime. Sleep automatically saves conversation history through the Session
+backup; resume continues the same native thread with its earlier messages and tool history.
+Standalone checkpoint, queued follow-ups, and shared skill discovery remain unavailable for
+Codex. Pi keeps its current controls.
 
 TOML changes affect new Sessions. Pi verifies requested settings before its first prompt; native
 saved Session settings remain current on resume. A successful beam proves admission, so read until
