@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   decodeConversationSnapshot,
+  interruptConversation,
   isConversationLifecycleMismatch,
   readConversation,
   steerConversation,
@@ -230,6 +231,80 @@ describe("conversation client boundary", () => {
       failure: {
         kind: "ambiguous",
         message: "Delivery could not be confirmed. Check the conversation before sending again.",
+      },
+    });
+  });
+
+  it("submits a fenced interrupt and preserves an unconfirmed outcome", async () => {
+    const acceptedFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      Response.json(
+        {
+          id: "session-1",
+          status: "accepted",
+          turnId: "turn-1",
+          sessionRevision: 2,
+        },
+        { status: 202 },
+      ),
+    );
+    await expect(
+      interruptConversation("session-1", "turn-1", 2, { fetch: acceptedFetch }),
+    ).resolves.toEqual({ ok: true, status: "accepted" });
+    expect(acceptedFetch).toHaveBeenCalledWith(
+      "/api/sessions/session-1/interrupt",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({ turnId: "turn-1", sessionRevision: 2 }),
+      }),
+    );
+
+    const ambiguousFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      Response.json(
+        {
+          id: "session-1",
+          status: "ambiguous",
+          reason: "codex_interrupt_unknown",
+          retryable: false,
+        },
+        { status: 502 },
+      ),
+    );
+    await expect(
+      interruptConversation("session-1", "turn-1", 2, { fetch: ambiguousFetch }),
+    ).resolves.toEqual({
+      ok: false,
+      failure: {
+        kind: "ambiguous",
+        message:
+          "The stop request could not be confirmed. Inspect the latest conversation before retrying.",
+      },
+    });
+
+    const lostFetch = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error("socket closed"));
+    await expect(
+      interruptConversation("session-1", "turn-1", 2, { fetch: lostFetch }),
+    ).resolves.toEqual({
+      ok: false,
+      failure: {
+        kind: "ambiguous",
+        message:
+          "The stop request could not be confirmed. Inspect the latest conversation before retrying.",
+      },
+    });
+
+    const unreadableSuccessFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ id: "session-1", status: "accepted" }));
+    await expect(
+      interruptConversation("session-1", "turn-1", 2, { fetch: unreadableSuccessFetch }),
+    ).resolves.toEqual({
+      ok: false,
+      failure: {
+        kind: "ambiguous",
+        message:
+          "The stop request could not be confirmed. Inspect the latest conversation before retrying.",
       },
     });
   });

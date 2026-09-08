@@ -2,6 +2,7 @@ import { CanonicalConversationSnapshotSchema } from "../../protocol/conversation
 import { Effect, Option, Schema } from "effect";
 import { PiConsoleSnapshotSchema } from "../../protocol/pi-console";
 import { SessionSteerResponseSchema } from "../../protocol/session-steer";
+import { SessionInterruptResponseSchema } from "../../protocol/session-interrupt";
 import {
   RepositoryRegistryEntrySchema,
   RepositoryRegistryRemovalResponseSchema,
@@ -185,6 +186,8 @@ export const InspectResponseSchema = PiConsoleSnapshotSchema;
 export type InspectResponse = typeof InspectResponseSchema.Type;
 export const SteerResponseSchema = SessionSteerResponseSchema;
 export type SteerResponse = typeof SessionSteerResponseSchema.Type;
+export const InterruptResponseSchema = SessionInterruptResponseSchema;
+export type InterruptResponse = typeof SessionInterruptResponseSchema.Type;
 export const ErrorEnvelopeSchema = Schema.Struct({ error: Schema.optionalKey(Schema.Unknown) });
 export const ErrorFieldsSchema = Schema.Struct({
   code: Schema.optionalKey(Schema.Unknown),
@@ -272,6 +275,9 @@ export const decodeInspectResponse = Schema.decodeUnknownOption(InspectResponseS
   onExcessProperty: "ignore",
 });
 export const decodeSteerResponse = Schema.decodeUnknownOption(SteerResponseSchema, {
+  onExcessProperty: "error",
+});
+export const decodeInterruptResponse = Schema.decodeUnknownOption(InterruptResponseSchema, {
   onExcessProperty: "error",
 });
 export const decodeErrorEnvelope = Schema.decodeUnknownOption(ErrorEnvelopeSchema);

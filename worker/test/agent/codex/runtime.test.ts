@@ -12,16 +12,19 @@ const fixture = Effect.fnUntraced(function* (
   accept = true,
   expiresAt = Number.MAX_SAFE_INTEGER,
   steerMode: "accepted" | "lost" | "delayed" = "accepted",
+  interruptStatus: "interrupted" | "completed" = "interrupted",
 ) {
   const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
   const exited = yield* Deferred.make<void>();
   const prompted = yield* Deferred.make<void>();
   const steerReceived = yield* Deferred.make<void>();
+  const interruptReceived = yield* Deferred.make<void>();
   const emit = (value: unknown) =>
     Queue.offer(output, new TextEncoder().encode(`${JSON.stringify(value)}\n`)).pipe(Effect.asVoid);
   let stops = 0;
   let prompts = 0;
   let steers = 0;
+  let interrupts = 0;
   let activeTurnId = "turn";
   let pendingSteerId: string | number | undefined;
   const transport: CodexProcess = {
@@ -109,18 +112,28 @@ const fixture = Effect.fnUntraced(function* (
           yield* emit({ id: message.id, result: { turnId: message.params.expectedTurnId } });
         else if (steerMode === "delayed") pendingSteerId = message.id;
       }
+      if (message.method === "turn/interrupt") {
+        interrupts++;
+        yield* Deferred.succeed(interruptReceived, undefined);
+        yield* emit({ id: message.id, result: {} });
+        yield* complete("thread", activeTurnId, interruptStatus);
+      }
     }),
   };
   const host = yield* makeSession(transport);
   const runtime = yield* makeCodexRuntime(host, "generation-1");
-  const complete = (threadId = "thread", turnId = activeTurnId) =>
+  const complete = (
+    threadId = "thread",
+    turnId = activeTurnId,
+    status: "completed" | "interrupted" = "completed",
+  ) =>
     emit({
       method: "turn/completed",
       params: {
         threadId,
         turn: {
           id: turnId,
-          status: "completed",
+          status,
           items: [
             {
               type: "agentMessage",
@@ -143,11 +156,13 @@ const fixture = Effect.fnUntraced(function* (
     complete,
     releaseSteer,
     steerReceived,
+    interruptReceived,
     prompted,
     exited,
     stops: () => stops,
     prompts: () => prompts,
     steers: () => steers,
+    interrupts: () => interrupts,
   };
 });
 
@@ -326,6 +341,56 @@ describe("Codex generation bridge over production session adapter", () => {
       const snapshot = yield* f.runtime.snapshot;
       assert.equal(snapshot.prompt.status, "terminal");
       assert.equal(snapshot.turns?.[0]?.user, "hello\nrace");
+    }),
+  );
+
+  it.effect("waits for native interruption and projects the terminal turn as aborted", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.runtime.admit(command);
+      const interrupted = yield* f.runtime.interrupt({
+        threadId: "thread",
+        turnId: "turn",
+      });
+      assert.deepEqual(interrupted, {
+        generation: "generation-1",
+        threadId: "thread",
+        turnId: "turn",
+        status: "interrupted",
+      });
+      yield* TestClock.adjust(1);
+      const snapshot = yield* f.runtime.snapshot;
+      assert.deepEqual(snapshot.prompt, {
+        status: "terminal",
+        turnId: "turn",
+        outcome: "interrupted",
+        text: "synthetic answer",
+      });
+      assert.equal(snapshot.turns?.[0]?.state, "aborted");
+      assert.equal(f.host.inspect().ready, true);
+      assert.equal(f.stops(), 0);
+      assert.equal(f.interrupts(), 1);
+    }),
+  );
+
+  it.effect("reports completion when it wins the interrupt race without stopping the host", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "completed");
+      yield* f.runtime.admit(command);
+      const completed = yield* f.runtime.interrupt({
+        threadId: "thread",
+        turnId: "turn",
+      });
+      assert.equal(completed.status, "completed");
+      yield* TestClock.adjust(1);
+      assert.deepEqual((yield* f.runtime.snapshot).prompt, {
+        status: "terminal",
+        turnId: "turn",
+        outcome: "completed",
+        text: "synthetic answer",
+      });
+      assert.equal(f.host.inspect().ready, true);
+      assert.equal(f.stops(), 0);
     }),
   );
 

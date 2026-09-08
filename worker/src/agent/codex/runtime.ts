@@ -37,10 +37,20 @@ export const CodexSteer = Schema.Struct({
   expectedTurnId: Identifier,
   clientUserMessageId: Schema.optionalKey(Identifier),
 });
+export const CodexInterrupt = Schema.Struct({
+  threadId: Identifier,
+  turnId: Identifier,
+});
 export const CodexAdmission = Schema.Struct({
   generation: CodexGeneration,
   threadId: Identifier,
   turnId: Identifier,
+});
+export const CodexInterruptResult = Schema.Struct({
+  generation: CodexGeneration,
+  threadId: Identifier,
+  turnId: Identifier,
+  status: Schema.Literals(["completed", "interrupted", "failed"]),
 });
 const PromptState = Schema.Union([
   Schema.Struct({ status: Schema.Literal("idle") }),
@@ -104,6 +114,7 @@ const decodeStart = Schema.decodeUnknownEffect(CodexRuntimeStart, { onExcessProp
 const decodeGeneration = Schema.decodeUnknownEffect(CodexGeneration);
 const decodePrompt = Schema.decodeUnknownEffect(CodexPrompt, { onExcessProperty: "error" });
 const decodeSteer = Schema.decodeUnknownEffect(CodexSteer, { onExcessProperty: "error" });
+const decodeInterrupt = Schema.decodeUnknownEffect(CodexInterrupt, { onExcessProperty: "error" });
 const decodeSnapshot = Schema.decodeUnknownEffect(CodexSnapshot, { onExcessProperty: "error" });
 const decodeSnapshotJson = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexSnapshot), {
   onExcessProperty: "error",
@@ -467,7 +478,50 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (host: Host, generat
     operation.admission = result;
     return result;
   });
-  return { generation, snapshot, admit, message, steer, stop };
+  const projectedTerminal = (state: typeof PromptState.Type, turnId: string, threadId: string) =>
+    state.status === "terminal" && state.turnId === turnId
+      ? { generation, threadId, turnId, status: state.outcome }
+      : undefined;
+  const interrupt = Effect.fnUntraced(function* (input: unknown) {
+    const command = yield* decodeInterrupt(input).pipe(
+      Effect.mapError(() => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" })),
+    );
+    if (command.threadId !== initial.threadId)
+      return yield* new CodexBridgeError({ code: "wrong_thread", outcome: "rejected" });
+    if (prompt.status === "terminal" && prompt.turnId === command.turnId)
+      return {
+        generation,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        status: prompt.outcome,
+      };
+    if (
+      prompt.status !== "running" ||
+      prompt.turnId !== command.turnId ||
+      activeTurn?.id !== command.turnId
+    )
+      return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
+    if (!host.inspect().ready || bridgeFailure !== null)
+      return yield* new CodexBridgeError({ code: "host_failed", outcome: "rejected" });
+
+    const result = yield* Effect.result(host.interrupt);
+    if (Result.isFailure(result)) {
+      // A terminal notification may win between the prompt snapshot and the native interrupt
+      // request. Reconcile from the generation-owned projection before classifying the outcome.
+      const terminal = projectedTerminal(prompt, command.turnId, command.threadId);
+      if (terminal !== undefined) return terminal;
+      return yield* new CodexBridgeError({ code: "host_failed", outcome: "ambiguous" });
+    }
+    if (result.success.id !== command.turnId)
+      return yield* new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" });
+    return {
+      generation,
+      threadId: command.threadId,
+      turnId: command.turnId,
+      status: result.success.status,
+    };
+  });
+  return { generation, snapshot, admit, message, steer, interrupt, stop };
 });
 export type CodexRuntime = Effect.Success<ReturnType<typeof makeCodexRuntime>>;
 export const startCodexRuntime = Effect.fnUntraced(function* (input: unknown) {

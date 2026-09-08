@@ -1,14 +1,16 @@
 import * as stylex from "@stylexjs/stylex";
-import { CircleAlert, RefreshCw, Send, Wifi, WifiOff } from "lucide-react";
+import { CircleAlert, RefreshCw, Send, Square, Wifi, WifiOff } from "lucide-react";
 import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   type ConversationFailure,
   type ConversationQueueItem,
   type ConversationSnapshot,
   isConversationLifecycleMismatch,
+  interruptConversation,
   readConversation,
   steerConversation,
 } from "../data/conversation-client";
+import { activeConversationTurn } from "../domain/conversation";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { Button } from "./Button";
 import { Conversation } from "./Conversation";
@@ -31,7 +33,7 @@ type ConnectionState =
 
 type DeliveryState =
   | { readonly kind: "idle" }
-  | { readonly kind: "submitting" }
+  | { readonly kind: "submitting" | "interrupting" }
   | { readonly kind: "accepted"; readonly message: string }
   | { readonly kind: "failed" | "ambiguous"; readonly message: string };
 
@@ -116,7 +118,7 @@ const styles = stylex.create({
     width: "min(840px, 100%)",
     minHeight: "52px",
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) auto",
+    gridTemplateColumns: "minmax(0, 1fr) auto auto",
     alignItems: "end",
     gap: spacing.sm,
     padding: "7px",
@@ -413,15 +415,19 @@ const deliveryMessage = (delivery: DeliveryState, draftTooLong: boolean): string
 
 function ConversationComposer({
   active,
+  activeTurnId,
   enabled,
   onAccepted,
   queue,
+  sessionRevision,
   sessionId,
 }: {
   readonly active: boolean;
+  readonly activeTurnId: string | undefined;
   readonly enabled: boolean;
   readonly onAccepted: () => void;
   readonly queue: ConversationSnapshot["queue"];
+  readonly sessionRevision: number | undefined;
   readonly sessionId: string;
 }) {
   const [draft, setDraft] = useState("");
@@ -429,7 +435,18 @@ function ConversationComposer({
   const draftBytes = useMemo(() => new TextEncoder().encode(draft).byteLength, [draft]);
   const draftTooLong = draftBytes > MAX_MESSAGE_BYTES;
   const canSubmit =
-    enabled && draft.trim().length > 0 && !draftTooLong && delivery.kind !== "submitting";
+    enabled &&
+    draft.trim().length > 0 &&
+    !draftTooLong &&
+    delivery.kind !== "submitting" &&
+    delivery.kind !== "interrupting";
+  const canInterrupt =
+    enabled &&
+    active &&
+    activeTurnId !== undefined &&
+    sessionRevision !== undefined &&
+    delivery.kind !== "submitting" &&
+    delivery.kind !== "interrupting";
   const sendLabel = active ? "Steer" : "Send";
 
   const submit = async (event?: FormEvent): Promise<void> => {
@@ -456,6 +473,21 @@ function ConversationComposer({
     void submit();
   };
 
+  const interrupt = async (): Promise<void> => {
+    if (!canInterrupt || activeTurnId === undefined || sessionRevision === undefined) return;
+    setDelivery({ kind: "interrupting" });
+    const result = await interruptConversation(sessionId, activeTurnId, sessionRevision);
+    if (result.ok) {
+      setDelivery({ kind: "accepted", message: "Turn stopped" });
+      onAccepted();
+      return;
+    }
+    setDelivery({
+      kind: result.failure.kind === "ambiguous" ? "ambiguous" : "failed",
+      message: result.failure.message,
+    });
+  };
+
   return (
     <form onSubmit={(event) => void submit(event)} {...stylex.props(styles.composer)}>
       <ComposerQueue queue={queue} />
@@ -473,6 +505,17 @@ function ConversationComposer({
           value={draft}
           {...stylex.props(styles.input)}
         />
+        {active ? (
+          <Button
+            aria-label="Stop"
+            disabled={!canInterrupt}
+            onClick={() => void interrupt()}
+            variant="quiet"
+          >
+            <Square aria-hidden {...stylex.props(styles.sendIcon)} />
+            {delivery.kind === "interrupting" ? "Stopping" : "Stop"}
+          </Button>
+        ) : null}
         <Button aria-label={sendLabel} disabled={!canSubmit} type="submit" variant="primary">
           <Send aria-hidden {...stylex.props(styles.sendIcon)} />
           {delivery.kind === "submitting" ? "Sending" : sendLabel}
@@ -544,7 +587,8 @@ export function LiveConversation({
   );
 
   const snapshot = connection.kind === "ready" ? connection.snapshot : undefined;
-  const active = snapshot?.turns.some((turn) => turn.state === "streaming") ?? false;
+  const activeTurn = activeConversationTurn(snapshot?.turns ?? []);
+  const active = activeTurn !== undefined;
 
   return (
     <div {...stylex.props(styles.root)}>
@@ -552,9 +596,11 @@ export function LiveConversation({
       <ConversationContent connection={connection} retry={refresh} />
       <ConversationComposer
         active={active}
+        activeTurnId={activeTurn?.id}
         enabled={connection.kind === "ready" && connection.connection === "connected"}
         onAccepted={refresh}
         queue={snapshot?.queue ?? { steer: [], followUp: [] }}
+        sessionRevision={snapshot?.transport.sessionRevision}
         sessionId={sessionId}
       />
     </div>

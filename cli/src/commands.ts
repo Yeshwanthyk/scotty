@@ -26,6 +26,7 @@ import { beamUpSession, credentials, readConfig, secureWrite } from "./dependenc
 import {
   decodeInitJournalJson,
   decodeInspectResponse,
+  decodeInterruptResponse,
   decodeOperationResponse,
   decodeRepositoriesResponse,
   decodeRepositoryRemovalResponse,
@@ -50,6 +51,7 @@ import {
   browserUrl,
   durationSeconds,
   humanInspect,
+  humanInterrupt,
   humanRead,
   humanResult,
   humanSession,
@@ -1794,6 +1796,54 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withDescription("Prompt or steer a warm session or sandbox peer without waking it"),
   );
 
+  const interrupt = Command.make(
+    "interrupt",
+    {
+      id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
+    },
+    ({ id }) =>
+      Effect.gen(function* () {
+        const { autoJson, options, runtime } = yield* commandContext();
+        const sessionId = yield* validateSessionId(id);
+        const target = yield* peerControlTarget(options);
+        const conversation = decodeCanonicalReadSnapshot(
+          yield* requestJson(
+            target,
+            `/api/sessions/${encodeURIComponent(sessionId)}/conversation`,
+            { cache: "no-store", redirect: "manual" },
+          ),
+        );
+        if (Option.isNone(conversation))
+          return yield* invalidResponse("Server returned an invalid conversation snapshot");
+        const active = conversation.value.turns.find((turn) => turn.state === "streaming");
+        const body = {
+          ...(active === undefined ? {} : { turnId: active.id }),
+          sessionRevision: conversation.value.transport.sessionRevision,
+        };
+        const decoded = decodeInterruptResponse(
+          yield* requestJson(
+            target,
+            `/api/sessions/${encodeURIComponent(sessionId)}/interrupt`,
+            {
+              method: "POST",
+              body: JSON.stringify(body),
+              cache: "no-store",
+              redirect: "manual",
+            },
+            { acceptedStatuses: [409, 502] },
+          ),
+        );
+        if (Option.isNone(decoded))
+          return yield* invalidResponse("Server returned an invalid interrupt outcome");
+        const result = decoded.value;
+        if (result.status === "stale" || result.status === "unavailable")
+          yield* setExitCode(EXIT.WRONG_STATE);
+        else if (result.status === "ambiguous") yield* setExitCode(EXIT.GENERIC);
+        if (autoJson) outputJson(runtime.stdout, result);
+        else runtime.stdout(humanInterrupt(result));
+      }),
+  ).pipe(Command.withDescription("Stop the active turn in a warm session or sandbox peer"));
+
   const configCheck = Command.make("check", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
@@ -2357,6 +2407,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       inspect,
       read,
       steer,
+      interrupt,
       doctor,
       attach,
       owner,

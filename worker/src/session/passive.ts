@@ -62,6 +62,125 @@ const unavailableSteer = (id: string, reason = "provider_passive_relay_unavailab
     { headers: { "cache-control": "no-store" } },
   );
 
+const dispatchPassiveCommand = async (
+  target: PassiveSessionTarget,
+  id: string,
+  command: PiConsoleCommand,
+  intent: PiConsoleCommand["intent"],
+  statuses: {
+    readonly accepted?: number;
+    readonly outcome?: number;
+    readonly ambiguous?: number;
+  } = {},
+): Promise<Response> => {
+  const outcomeStatus = statuses.outcome ?? 200;
+  const ambiguousStatus = statuses.ambiguous ?? outcomeStatus;
+  const commandResult = await Promise.resolve()
+    .then(() =>
+      target.fetch(
+        new Request(`http://localhost${PI_CONSOLE_PROXY_PREFIX}/command`, {
+          method: "POST",
+          headers: { accept: "application/json", "content-type": "application/json" },
+          body: JSON.stringify(command),
+        }),
+      ),
+    )
+    .then(Result.succeed, () => Result.fail(undefined));
+  if (Result.isFailure(commandResult))
+    return Response.json(
+      { id, status: "ambiguous" as const, reason: "command_transport_failed" as const },
+      { status: ambiguousStatus, headers: { "cache-control": "no-store" } },
+    );
+
+  const commandBody = await readBoundedJson(commandResult.success, PI_CONSOLE_MAX_RESPONSE_BYTES);
+  if (Option.isNone(commandBody))
+    return Response.json(
+      { id, status: "ambiguous" as const, reason: "command_response_invalid" as const },
+      { status: ambiguousStatus, headers: { "cache-control": "no-store" } },
+    );
+
+  const stale = decodeStale(commandBody.value);
+  if (Option.isSome(stale))
+    return Response.json(
+      {
+        id,
+        status: stale.value.status,
+        reason: "session_revision_changed" as const,
+        expectedSessionRevision: stale.value.expectedSessionRevision,
+        sessionRevision: stale.value.sessionRevision,
+        retryable: stale.value.retryable,
+      },
+      { status: outcomeStatus, headers: { "cache-control": "no-store" } },
+    );
+  const commandError = decodeCommandError(commandBody.value);
+  if (Option.isSome(commandError))
+    return commandError.value.code === "scotty_epoch_changed"
+      ? Response.json(
+          {
+            id,
+            status: "stale" as const,
+            reason: "epoch_changed" as const,
+            expectedSessionRevision: command.expectedSessionRevision,
+            retryable: false as const,
+          },
+          { status: outcomeStatus, headers: { "cache-control": "no-store" } },
+        )
+      : Response.json(
+          {
+            id,
+            status: "unavailable" as const,
+            reason: commandError.value.code,
+            retryable: false as const,
+          },
+          { status: outcomeStatus, headers: { "cache-control": "no-store" } },
+        );
+  const unavailable = decodeUnavailable(commandBody.value);
+  if (Option.isSome(unavailable))
+    return Response.json(
+      {
+        id,
+        status: unavailable.value.status,
+        reason: unavailable.value.reason,
+        retryable: unavailable.value.retryable,
+      },
+      { status: outcomeStatus, headers: { "cache-control": "no-store" } },
+    );
+  const receipt = decodeReceipt(commandBody.value);
+  const expectedDigest = await commandIntentDigest(intent);
+  if (
+    Option.isSome(receipt) &&
+    receipt.value.epoch === command.epoch &&
+    receipt.value.commandId === command.commandId &&
+    receipt.value.commandDigest === expectedDigest
+  ) {
+    if (receipt.value.status !== "rejected" && commandResult.success.ok)
+      return Response.json(
+        {
+          id,
+          status: "accepted" as const,
+          commandId: command.commandId,
+          epoch: command.epoch,
+          sessionRevision: command.expectedSessionRevision,
+        },
+        { status: statuses.accepted ?? 200, headers: { "cache-control": "no-store" } },
+      );
+    if (receipt.value.status === "rejected")
+      return Response.json(
+        {
+          id,
+          status: "unavailable" as const,
+          reason: "command_rejected" as const,
+          retryable: false as const,
+        },
+        { status: outcomeStatus, headers: { "cache-control": "no-store" } },
+      );
+  }
+  return Response.json(
+    { id, status: "ambiguous" as const, reason: "command_receipt_mismatch" as const },
+    { status: ambiguousStatus, headers: { "cache-control": "no-store" } },
+  );
+};
+
 export async function inspectPassiveSession(target: PassiveSessionTarget): Promise<Response> {
   const responseResult = await Promise.resolve()
     .then(() =>
@@ -148,108 +267,94 @@ export async function steerPassiveSession(
     expectedSessionRevision: snapshot.value.sessionRevision,
     intent,
   } satisfies PiConsoleCommand;
-  const commandResult = await Promise.resolve()
+  return dispatchPassiveCommand(target, id, command, intent);
+}
+
+export async function interruptPassiveSession(
+  target: PassiveSessionTarget,
+  id: string,
+  expectedSessionRevision: number,
+): Promise<Response> {
+  const snapshotResult = await Promise.resolve()
     .then(() =>
       target.fetch(
-        new Request(`http://localhost${PI_CONSOLE_PROXY_PREFIX}/command`, {
-          method: "POST",
-          headers: { accept: "application/json", "content-type": "application/json" },
-          body: JSON.stringify(command),
+        new Request(`http://localhost${PI_CONSOLE_PROXY_PREFIX}/snapshot`, {
+          headers: { accept: "application/json" },
         }),
       ),
     )
     .then(Result.succeed, () => Result.fail(undefined));
-  if (Result.isFailure(commandResult))
-    return Response.json(
-      { id, status: "ambiguous" as const, reason: "command_transport_failed" as const },
-      { headers: { "cache-control": "no-store" } },
-    );
-
-  const commandBody = await readBoundedJson(commandResult.success, PI_CONSOLE_MAX_RESPONSE_BYTES);
-  if (Option.isNone(commandBody))
-    return Response.json(
-      { id, status: "ambiguous" as const, reason: "command_response_invalid" as const },
-      { headers: { "cache-control": "no-store" } },
-    );
-
-  const stale = decodeStale(commandBody.value);
-  if (Option.isSome(stale))
+  if (Result.isFailure(snapshotResult))
     return Response.json(
       {
         id,
-        status: stale.value.status,
-        reason: "session_revision_changed" as const,
-        expectedSessionRevision: stale.value.expectedSessionRevision,
-        sessionRevision: stale.value.sessionRevision,
-        retryable: stale.value.retryable,
+        status: "unavailable" as const,
+        reason: "provider_passive_relay_unavailable" as const,
+        retryable: false as const,
       },
-      { headers: { "cache-control": "no-store" } },
+      { status: 503, headers: { "cache-control": "no-store" } },
     );
-  const commandError = decodeCommandError(commandBody.value);
-  if (Option.isSome(commandError))
-    return commandError.value.code === "scotty_epoch_changed"
-      ? Response.json(
-          {
-            id,
-            status: "stale" as const,
-            reason: "epoch_changed" as const,
-            expectedSessionRevision: snapshot.value.sessionRevision,
-            retryable: false as const,
-          },
-          { headers: { "cache-control": "no-store" } },
-        )
-      : Response.json(
-          {
-            id,
-            status: "unavailable" as const,
-            reason: commandError.value.code,
-            retryable: false as const,
-          },
-          { headers: { "cache-control": "no-store" } },
-        );
-  const unavailable = decodeUnavailable(commandBody.value);
-  if (Option.isSome(unavailable))
+
+  const snapshotBody = await readBoundedJson(snapshotResult.success, PI_CONSOLE_MAX_RESPONSE_BYTES);
+  const unavailableSnapshot = Option.isSome(snapshotBody)
+    ? decodeUnavailable(snapshotBody.value)
+    : Option.none();
+  if (snapshotResult.success.status !== 200) {
+    if (Option.isSome(unavailableSnapshot))
+      return Response.json(
+        {
+          id,
+          status: unavailableSnapshot.value.status,
+          reason: unavailableSnapshot.value.reason,
+          retryable: unavailableSnapshot.value.retryable,
+        },
+        { status: 409, headers: { "cache-control": "no-store" } },
+      );
     return Response.json(
       {
         id,
-        status: unavailable.value.status,
-        reason: unavailable.value.reason,
-        retryable: unavailable.value.retryable,
+        status: "unavailable" as const,
+        reason: "provider_passive_relay_unavailable" as const,
+        retryable: false as const,
       },
-      { headers: { "cache-control": "no-store" } },
+      { status: 503, headers: { "cache-control": "no-store" } },
     );
-  const receipt = decodeReceipt(commandBody.value);
-  const expectedDigest = await commandIntentDigest(intent);
-  if (
-    Option.isSome(receipt) &&
-    receipt.value.epoch === command.epoch &&
-    receipt.value.commandId === command.commandId &&
-    receipt.value.commandDigest === expectedDigest
-  ) {
-    if (receipt.value.status !== "rejected" && commandResult.success.ok)
-      return Response.json(
-        {
-          id,
-          status: "accepted" as const,
-          commandId,
-          epoch: command.epoch,
-          sessionRevision: command.expectedSessionRevision,
-        },
-        { headers: { "cache-control": "no-store" } },
-      );
-    if (receipt.value.status === "rejected")
-      return Response.json(
-        {
-          id,
-          status: "unavailable" as const,
-          reason: "command_rejected" as const,
-          retryable: false as const,
-        },
-        { headers: { "cache-control": "no-store" } },
-      );
   }
-  return Response.json(
-    { id, status: "ambiguous" as const, reason: "command_receipt_mismatch" as const },
-    { headers: { "cache-control": "no-store" } },
-  );
+  const snapshot = Option.isSome(snapshotBody) ? decodeSnapshot(snapshotBody.value) : Option.none();
+  if (Option.isNone(snapshot))
+    return Response.json(
+      {
+        id,
+        status: "unavailable" as const,
+        reason: "provider_passive_relay_unavailable" as const,
+        retryable: false as const,
+      },
+      { status: 502, headers: { "cache-control": "no-store" } },
+    );
+  if (snapshot.value.sessionRevision !== expectedSessionRevision)
+    return Response.json(
+      {
+        id,
+        status: "stale" as const,
+        reason: "session_revision_changed" as const,
+        expectedSessionRevision,
+        sessionRevision: snapshot.value.sessionRevision,
+        retryable: false as const,
+      },
+      { status: 409, headers: { "cache-control": "no-store" } },
+    );
+
+  const commandId = crypto.randomUUID();
+  const intent = { type: "abort" as const };
+  const command = {
+    epoch: snapshot.value.epoch,
+    commandId,
+    expectedSessionRevision,
+    intent,
+  } satisfies PiConsoleCommand;
+  return dispatchPassiveCommand(target, id, command, intent, {
+    accepted: 202,
+    outcome: 409,
+    ambiguous: 502,
+  });
 }

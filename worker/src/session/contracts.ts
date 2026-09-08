@@ -518,6 +518,13 @@ const RawSteerInputSchema = Schema.Struct({
 const decodeRawSteerInput = Schema.decodeUnknownOption(RawSteerInputSchema, {
   onExcessProperty: "error",
 });
+const RawInterruptInputSchema = Schema.Struct({
+  turnId: Schema.optionalKey(Schema.Unknown),
+  sessionRevision: Schema.optionalKey(Schema.Unknown),
+});
+const decodeRawInterruptInput = Schema.decodeUnknownOption(RawInterruptInputSchema, {
+  onExcessProperty: "error",
+});
 
 export function parseSteerInput(value: unknown): string {
   const decoded = decodeRawSteerInput(value);
@@ -534,6 +541,27 @@ export function parseSteerInput(value: unknown): string {
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest("message must be a prompt, not a slash command");
   return message;
+}
+
+export function parseInterruptInput(value: unknown): {
+  readonly turnId?: string;
+  readonly sessionRevision: number;
+} {
+  const decoded = decodeRawInterruptInput(value);
+  if (Option.isNone(decoded))
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+    throw badRequest("Request body must contain only turnId and sessionRevision");
+  const sessionRevision = readInteger(
+    decoded.value.sessionRevision,
+    "sessionRevision",
+    0,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const turnId =
+    decoded.value.turnId === undefined
+      ? undefined
+      : readNonEmptyString(decoded.value.turnId, "turnId", 256);
+  return turnId === undefined ? { sessionRevision } : { turnId, sessionRevision };
 }
 
 export function parseRenameSessionInput(value: unknown): string {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeConversationTurn,
   streamedTextAt,
   turnActivityLabel,
   turnPreview,
@@ -16,6 +17,16 @@ const turn = (overrides: Partial<ConversationTurn> = {}): ConversationTurn => ({
 });
 
 describe("conversation presentation", () => {
+  it("uses only a canonical streaming turn as the active turn", () => {
+    expect(activeConversationTurn([turn({ state: "completed" })])).toBeUndefined();
+    expect(activeConversationTurn([turn({ state: "failed" })])).toBeUndefined();
+    expect(activeConversationTurn([turn({ state: "aborted" })])).toBeUndefined();
+    expect(activeConversationTurn([turn({ id: "streaming", state: "streaming" })])).toMatchObject({
+      id: "streaming",
+      state: "streaming",
+    });
+  });
+
   it("bounds streaming text without splitting past the source", () => {
     expect(streamedTextAt("Scotty", -2)).toBe("");
     expect(streamedTextAt("Scotty", 4)).toBe("Scot");

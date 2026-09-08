@@ -5,6 +5,7 @@ import type { CredentialGrant } from "../../../../protocol/credentials";
 import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
 import {
   admitCodexSandbox,
+  interruptCodexSandbox,
   readCodexSandbox,
   sendCodexSandboxMessage,
   startCodexSandbox,
@@ -311,6 +312,102 @@ describe("Codex Sandbox adapter", () => {
       assert.ok(Result.isFailure(result));
       assert.isTrue(Predicate.isTagged(result.failure, "CodexMessageAdmissionUnknown"));
       assert.equal(posts, 1);
+    }),
+  );
+
+  it.effect("requires the expected active turn and reconciles a native interruption", () =>
+    Effect.gen(function* () {
+      let snapshotReads = 0;
+      let posts = 0;
+      const layer = sandboxRuntimeLayer({
+        ...sandboxRuntimeCapabilitiesFake(),
+        fetchPort: (path, _port, method) => {
+          if (path === "/snapshot") {
+            snapshotReads += 1;
+            return Promise.resolve(
+              Response.json({
+                ...snapshot,
+                prompt:
+                  snapshotReads === 1
+                    ? { status: "running", turnId: "turn-1" }
+                    : {
+                        status: "terminal",
+                        turnId: "turn-1",
+                        outcome: "interrupted",
+                        text: "",
+                      },
+              }),
+            );
+          }
+          if (path === "/interrupt" && method === "POST") {
+            posts += 1;
+            return Promise.resolve(
+              Response.json(
+                {
+                  generation: identity.generation,
+                  threadId: "thread-1",
+                  turnId: "turn-1",
+                  status: "interrupted",
+                },
+                { status: 202 },
+              ),
+            );
+          }
+          return Promise.reject(new Error("unexpected Codex request"));
+        },
+      });
+      const result = yield* interruptCodexSandbox(identity, "thread-1", "turn-1").pipe(
+        Effect.provide(layer),
+      );
+      assert.equal(result.outcome, "interrupted");
+      assert.equal(result.snapshot.prompt.status, "terminal");
+      assert.equal(posts, 1);
+      assert.equal(snapshotReads, 2);
+    }),
+  );
+
+  it.effect("does not report accepted when completion wins the interrupt race", () =>
+    Effect.gen(function* () {
+      let snapshotReads = 0;
+      const layer = sandboxRuntimeLayer({
+        ...sandboxRuntimeCapabilitiesFake(),
+        fetchPort: (path, _port, method) => {
+          if (path === "/snapshot")
+            return Promise.resolve(
+              Response.json({
+                ...snapshot,
+                prompt:
+                  snapshotReads++ === 0
+                    ? { status: "running", turnId: "turn-1" }
+                    : {
+                        status: "terminal",
+                        turnId: "turn-1",
+                        outcome: "completed",
+                        text: "done",
+                      },
+              }),
+            );
+          if (path === "/interrupt" && method === "POST")
+            return Promise.resolve(
+              Response.json(
+                {
+                  generation: identity.generation,
+                  threadId: "thread-1",
+                  turnId: "turn-1",
+                  status: "completed",
+                },
+                { status: 202 },
+              ),
+            );
+          return Promise.reject(new Error("unexpected Codex request"));
+        },
+      });
+      const result = yield* interruptCodexSandbox(identity, "thread-1", "turn-1").pipe(
+        Effect.provide(layer),
+      );
+      assert.equal(result.outcome, "completed");
+      assert.equal(result.snapshot.prompt.status, "terminal");
+      assert.equal(snapshotReads, 2);
     }),
   );
 

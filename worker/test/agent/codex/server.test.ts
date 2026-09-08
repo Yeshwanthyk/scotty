@@ -333,7 +333,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
     () =>
       Effect.gen(function* () {
         const f = yield* listening();
-        for (const path of ["/health", "/snapshot", "/prompt", "/stop"]) {
+        for (const path of ["/health", "/snapshot", "/prompt", "/message", "/interrupt", "/stop"]) {
           const response = yield* exchange(f.port, "GET", path, undefined, {
             ...headers,
             [CODEX_CONTROL_TOKEN_HEADER]: "",
@@ -352,6 +352,31 @@ createInterface({input:process.stdin}).on('line', (line) => {
         }
         assert.equal(f.calls(), 0);
       }).pipe(Effect.provide(FetchHttpClient.layer)),
+  );
+
+  it.effect("returns the completed race outcome without stopping the native host", () =>
+    Effect.gen(function* () {
+      const f = yield* listening();
+      const admitted = yield* exchange(
+        f.port,
+        "POST",
+        "/prompt",
+        JSON.stringify({ threadId: "thread", text: "hello" }),
+      );
+      assert.equal(admitted.status, 202);
+      yield* f.complete;
+      yield* TestClock.adjust(1);
+      const interrupted = yield* exchange(
+        f.port,
+        "POST",
+        "/interrupt",
+        JSON.stringify({ threadId: "thread", turnId: "turn" }),
+      );
+      assert.equal(interrupted.status, 202);
+      assert.equal(JSON.parse(interrupted.text).status, "completed");
+      assert.equal(f.stops(), 0);
+      assert.equal((yield* exchange(f.port, "GET", "/health")).status, 200);
+    }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
 
   it.effect("host failure remains readable and unavailable, never a successful terminal", () =>

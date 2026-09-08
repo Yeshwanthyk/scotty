@@ -35,6 +35,7 @@ import {
   parseAuthClientId,
   parseCreateInput,
   parseIdempotencyKey,
+  parseInterruptInput,
   parseRenameSessionInput,
   parseRepo,
   parseSessionId,
@@ -112,7 +113,11 @@ import {
   type SandboxConfigRpcResult,
   type ScottySandboxConfigStub,
 } from "./sandbox/config-object";
-import { inspectPassiveSession, steerPassiveSession } from "./session/passive";
+import {
+  inspectPassiveSession,
+  interruptPassiveSession,
+  steerPassiveSession,
+} from "./session/passive";
 import { inspectCanonicalConversation } from "./session/conversation";
 import { Sandbox as ScottySandbox } from "./session/object";
 import { uiSessionListResponseFromProjections } from "./ui/session-view";
@@ -814,6 +819,21 @@ app.post("/api/sessions/:id/steer", async (c) => {
   const codex = await sandbox.steerScottyCodexSession(message, idempotencyKey);
   if (codex !== null) return codex;
   return steerPassiveSession(sandbox, id, message);
+});
+
+app.post("/api/sessions/:id/interrupt", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  requireJsonContentType(c.req.raw);
+  const id = parseSessionId(c.req.param("id"));
+  const bodyText = await readBoundedUtf8Body(c.req.raw, PI_CONSOLE_MAX_COMMAND_BYTES);
+  if (bodyText === undefined) throw badRequest("Interrupt request body is too large");
+  const body = decodeJsonValue(bodyText);
+  if (Option.isNone(body)) throw badRequest("Request body must be valid JSON");
+  const input = parseInterruptInput(body.value);
+  const sandbox = sessionSandbox(c.env, id);
+  const codex = await sandbox.interruptScottyCodexSession(input);
+  if (codex !== null) return codex;
+  return interruptPassiveSession(sandbox, id, input.sessionRevision);
 });
 
 app.patch("/api/sessions/:id", async (c) => {

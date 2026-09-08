@@ -3761,6 +3761,114 @@ describe("commands and schemas", () => {
     expect(calls).toBe(2);
   });
 
+  test("interrupt reads the current revision and turn before one stop request", async () => {
+    const snapshot = {
+      version: 1,
+      transport: { epoch: "epoch-1", baseSequence: 1, sequence: 2, sessionRevision: 7 },
+      turns: [
+        {
+          id: "turn-1",
+          state: "streaming",
+          user: "Start the work",
+          assistant: "",
+          tools: [],
+        },
+      ],
+      queue: { steer: [], followUp: [] },
+      truncated: { turns: false, values: false },
+    } as const;
+    const accepted = {
+      id: "s1",
+      status: "accepted",
+      turnId: "turn-1",
+      sessionRevision: 7,
+    } as const;
+    const requests: Request[] = [];
+    const h = harness({
+      stdoutIsTTY: true,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        return request.method === "GET"
+          ? Response.json(snapshot)
+          : Response.json(accepted, { status: 202 });
+      },
+    });
+
+    expect(await main(["interrupt", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(h.stdout.join("")).toBe("Interrupt accepted for s1 at revision 7.\n");
+    expect(requests.map((request) => [request.method, new URL(request.url).pathname])).toEqual([
+      ["GET", "/api/sessions/s1/conversation"],
+      ["POST", "/api/sessions/s1/interrupt"],
+    ]);
+    expect(await requests[1]?.json()).toEqual({ turnId: "turn-1", sessionRevision: 7 });
+  });
+
+  test("interrupt decodes typed stale and ambiguous outcomes from their HTTP statuses", async () => {
+    const snapshot = {
+      version: 1,
+      transport: { epoch: "epoch-1", baseSequence: 1, sequence: 2, sessionRevision: 7 },
+      turns: [
+        { id: "turn-1", state: "streaming", user: "Start the work", assistant: "", tools: [] },
+      ],
+      queue: { steer: [], followUp: [] },
+      truncated: { turns: false, values: false },
+    } as const;
+    const cases = [
+      {
+        status: 409,
+        reply: {
+          id: "s1",
+          status: "stale",
+          reason: "session_revision_changed",
+          expectedSessionRevision: 7,
+          sessionRevision: 8,
+          retryable: false,
+        },
+        exitCode: EXIT.WRONG_STATE,
+        human: "Interrupt was stale for s1; no command was retried.\n",
+      },
+      {
+        status: 502,
+        reply: { id: "s1", status: "ambiguous", reason: "codex_interrupt_unknown" },
+        exitCode: EXIT.GENERIC,
+        human:
+          "Interrupt outcome is ambiguous for s1: codex_interrupt_unknown; do not retry automatically.\n",
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      let calls = 0;
+      const h = harness({
+        stdoutIsTTY: true,
+        fetch: async (_input, init) => {
+          calls += 1;
+          return init?.method === "POST"
+            ? Response.json(testCase.reply, { status: testCase.status })
+            : Response.json(snapshot);
+        },
+      });
+      expect(await main(["interrupt", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+        testCase.exitCode,
+      );
+      expect(h.stdout.join("")).toBe(testCase.human);
+      expect(calls).toBe(2);
+
+      const json = harness({
+        fetch: async (_input, init) =>
+          init?.method === "POST"
+            ? Response.json(testCase.reply, { status: testCase.status })
+            : Response.json(snapshot),
+      });
+      expect(
+        await main(["interrupt", "s1", "--json", "--host", "https://worker.example"], json.deps),
+      ).toBe(testCase.exitCode);
+      expect(json.json()).toEqual(testCase.reply);
+    }
+  });
+
   test("steer surfaces stale, unavailable, and ambiguous outcomes once with bounded output", async () => {
     for (const [reply, exitCode, humanOutput] of [
       [

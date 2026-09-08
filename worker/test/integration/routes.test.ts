@@ -11,6 +11,7 @@ const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
   readScottyCodexConversation: vi.fn().mockResolvedValue(null),
   steerScottyCodexSession: vi.fn().mockResolvedValue(null),
+  interruptScottyCodexSession: vi.fn().mockResolvedValue(null),
   getScottyActorDiagnostics: vi.fn(),
   getScottySession: vi.fn(),
   getScottyDeploymentReadiness: vi.fn(),
@@ -516,6 +517,7 @@ describe("real Hono boundary", () => {
     });
     sandbox.preparePiSessionAccess.mockResolvedValue(undefined);
     sandbox.steerScottyCodexSession.mockResolvedValue(null);
+    sandbox.interruptScottyCodexSession.mockResolvedValue(null);
     sandbox.prepareTerminalAccess.mockResolvedValue(undefined);
     sandbox.restartScottyTerminal.mockResolvedValue(undefined);
     proxyTerminal.mockResolvedValue(new Response("terminal-proxy"));
@@ -2881,6 +2883,130 @@ describe("real Hono boundary", () => {
     });
     expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(1, "continue", undefined);
     expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(2, "continue", undefined);
+  });
+
+  it("returns a fenced Codex interrupt result without treating completion as accepted", async () => {
+    sandbox.interruptScottyCodexSession
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            id: SESSION_ID,
+            status: "accepted",
+            turnId: "turn-active",
+            sessionRevision: 8,
+          },
+          { status: 202 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            id: SESSION_ID,
+            status: "unavailable",
+            reason: "turn_already_terminal",
+            retryable: false,
+          },
+          { status: 409 },
+        ),
+      );
+
+    const request = () =>
+      app.request(
+        `/api/sessions/${SESSION_ID}/interrupt`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ turnId: "turn-active", sessionRevision: 8 }),
+        },
+        env(),
+      );
+    const accepted = await request();
+    expect(accepted.status).toBe(202);
+    await expect(accepted.json()).resolves.toEqual({
+      id: SESSION_ID,
+      status: "accepted",
+      turnId: "turn-active",
+      sessionRevision: 8,
+    });
+    const completed = await request();
+    expect(completed.status).toBe(409);
+    await expect(completed.json()).resolves.toEqual({
+      id: SESSION_ID,
+      status: "unavailable",
+      reason: "turn_already_terminal",
+      retryable: false,
+    });
+    expect(sandbox.interruptScottyCodexSession).toHaveBeenNthCalledWith(1, {
+      turnId: "turn-active",
+      sessionRevision: 8,
+    });
+  });
+
+  it("uses Pi's existing abort intent for the common interrupt route", async () => {
+    const snapshot = {
+      epoch: "epoch-1",
+      baseSequence: 3,
+      sequence: 3,
+      sessionRevision: 7,
+      state: { isStreaming: true },
+      messages: [],
+      overlapEvents: [],
+      activeTools: [],
+      queue: { steer: [], followUp: [] },
+      pendingUi: [],
+      pendingUiAuthority: {
+        status: "partial",
+        reason: "pi_0_83_signal_cancellation_unobservable",
+      },
+      extensionSurface: { statuses: {}, widgets: [] },
+      capabilities: { models: [], thinkingLevels: [], commands: [] },
+      truncated: { messages: false, values: false },
+    };
+    const forwarded: Request[] = [];
+    sandbox.fetch.mockImplementation(async (request: Request) => {
+      forwarded.push(request.clone());
+      if (forwarded.length === 1) return Response.json(snapshot);
+      const command = await decodePiConsoleCommandPromise(await request.clone().json());
+      return Response.json(
+        {
+          epoch: command.epoch,
+          commandId: command.commandId,
+          commandDigest: await commandIntentDigest(command.intent),
+          status: "accepted",
+          response: { success: true },
+        },
+        { status: 202 },
+      );
+    });
+
+    const response = await app.request(
+      `/api/sessions/${SESSION_ID}/interrupt`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ turnId: "turn-active", sessionRevision: 7 }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      id: SESSION_ID,
+      status: "accepted",
+      epoch: "epoch-1",
+      sessionRevision: 7,
+    });
+    expect(await forwarded[1]?.json()).toMatchObject({
+      epoch: "epoch-1",
+      expectedSessionRevision: 7,
+      intent: { type: "abort" },
+    });
   });
 
   it("requires sessions:write and strictly bounds steer input before passive access", async () => {

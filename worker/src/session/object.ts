@@ -1,4 +1,8 @@
-import { readCodexSandbox, sendCodexSandboxMessage } from "../agent/codex/sandbox";
+import {
+  interruptCodexSandbox,
+  readCodexSandbox,
+  sendCodexSandboxMessage,
+} from "../agent/codex/sandbox";
 import type { CodexSnapshot } from "../agent/codex/runtime";
 import { codexConversation } from "../agent/codex/conversation";
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
@@ -5470,6 +5474,157 @@ export class Sandbox extends BaseSandbox<Bindings> {
         id: sessionId,
         status: "ambiguous" as const,
         reason: "codex_message_admission_unknown" as const,
+        retryable: false as const,
+      },
+      { status: 502, headers: { "cache-control": "no-store" } },
+    );
+  }
+
+  async interruptScottyCodexSession(input: {
+    readonly turnId?: string;
+    readonly sessionRevision: number;
+  }): Promise<Response | null> {
+    let sessionId: string | undefined;
+    const result = await this.sessionControlGate.run(() =>
+      this.#run(
+        Effect.result(
+          Effect.gen({ self: this }, function* () {
+            const state = yield* this.readActorSessionStateProgram();
+            sessionId = state.authority.session.id;
+            const selection = state.authority.session.selection;
+            if (selection?.agent !== "codex") return null;
+            const authority = state.authority;
+            if (input.sessionRevision !== authority.revision)
+              return Response.json(
+                {
+                  id: authority.session.id,
+                  status: "stale" as const,
+                  reason: "session_revision_changed" as const,
+                  expectedSessionRevision: input.sessionRevision,
+                  sessionRevision: authority.revision,
+                  retryable: false as const,
+                },
+                { status: 409, headers: { "cache-control": "no-store" } },
+              );
+            if (
+              !AuthorityStateSchema.guards.Stable(authority.state) ||
+              !StableStateSchema.guards.Warm(authority.state.stable)
+            )
+              return yield* conflict("Codex interrupt requires an admitted warm session");
+            if (input.turnId === undefined)
+              return Response.json(
+                {
+                  id: authority.session.id,
+                  status: "unavailable" as const,
+                  reason: "codex_interrupt_unavailable" as const,
+                  retryable: false as const,
+                },
+                { status: 409, headers: { "cache-control": "no-store" } },
+              );
+            const readiness = authority.state.stable.readiness;
+            const control = state.metadata.codexControl;
+            if (control === undefined)
+              return yield* this.upstreamError("Codex control metadata is unavailable", undefined);
+            const runtime = yield* SandboxRuntime;
+            const incarnation = yield* runtime.getContainerIncarnationId();
+            if (incarnation !== readiness.runtime.containerIncarnation)
+              return yield* conflict("Codex runtime generation is no longer current");
+            const identity = {
+              sessionId: authority.session.id,
+              generation: readiness.runtime.runtimeGeneration,
+              selection,
+              token: control.token,
+            };
+            const before = yield* readCodexSandbox(
+              identity,
+              readiness.supervisor.supervisorEpoch,
+            ).pipe(
+              Effect.mapError(() => this.upstreamError("Codex snapshot is unavailable", undefined)),
+            );
+            if (!codexSnapshotHasInitialTurn(before, readiness.transport.transportId))
+              return yield* conflict("Codex admitted turn does not match Session authority");
+            if (before.prompt.status !== "running" || before.prompt.turnId !== input.turnId)
+              return Response.json(
+                {
+                  id: authority.session.id,
+                  status: "unavailable" as const,
+                  reason: "turn_already_terminal" as const,
+                  retryable: false as const,
+                },
+                { status: 409, headers: { "cache-control": "no-store" } },
+              );
+            const interrupted = yield* interruptCodexSandbox(
+              identity,
+              readiness.supervisor.supervisorEpoch,
+              input.turnId,
+            ).pipe(
+              Effect.mapError((error) =>
+                Predicate.isTagged(error, "CodexInterruptAdmissionUnknown")
+                  ? error
+                  : new ScottyError("upstream", "Codex interrupt outcome is unknown", {
+                      httpStatus: 502,
+                      exitCode: 1,
+                      hint: "Inspect Worker observability before retrying the interrupt.",
+                    }),
+              ),
+            );
+            if (interrupted.outcome !== "interrupted")
+              return Response.json(
+                {
+                  id: authority.session.id,
+                  status: "unavailable" as const,
+                  reason: "turn_already_terminal" as const,
+                  retryable: false as const,
+                },
+                { status: 409, headers: { "cache-control": "no-store" } },
+              );
+            const currentIncarnation = yield* runtime
+              .getContainerIncarnationId()
+              .pipe(
+                Effect.mapError(() => conflict("Session changed while interrupting Codex turn")),
+              );
+            const current = (yield* (yield* ActorStore).read).authority;
+            if (!sameCodexAuthorityProof(current, authority, readiness, currentIncarnation))
+              return Response.json(
+                {
+                  id: authority.session.id,
+                  status: "stale" as const,
+                  reason: "session_revision_changed" as const,
+                  expectedSessionRevision: authority.revision,
+                  sessionRevision: current?.revision ?? authority.revision,
+                  retryable: false as const,
+                },
+                { status: 409, headers: { "cache-control": "no-store" } },
+              );
+            return Response.json(
+              {
+                id: authority.session.id,
+                status: "accepted" as const,
+                turnId: input.turnId,
+                sessionRevision: authority.revision,
+              },
+              { status: 202, headers: { "cache-control": "no-store" } },
+            );
+          }),
+        ),
+      ),
+    );
+    if (Result.isSuccess(result)) return result.success;
+    if (Predicate.isTagged(result.failure, "ScottyError"))
+      return scottyErrorResponse(result.failure);
+    if (sessionId === undefined)
+      return scottyErrorResponse(
+        new ScottyError("upstream", "Codex interrupt outcome is unknown", {
+          httpStatus: 502,
+          exitCode: 1,
+          hint: "Inspect Worker observability before retrying the interrupt.",
+        }),
+      );
+    return Response.json(
+      {
+        id: sessionId,
+        status: "ambiguous" as const,
+        reason: "codex_interrupt_unknown" as const,
         retryable: false as const,
       },
       { status: 502, headers: { "cache-control": "no-store" } },

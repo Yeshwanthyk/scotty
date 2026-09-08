@@ -55,6 +55,10 @@ export type ApiRequestTarget =
   | { readonly host: string; readonly token: string }
   | { readonly host: "https://scotty.internal"; readonly token?: never };
 
+export interface ApiRequestOptions {
+  readonly acceptedStatuses?: ReadonlyArray<number>;
+}
+
 const requestHeaders = (target: ApiRequestTarget, init: RequestInit, method: string): Headers => {
   const headers = new Headers(init.headers);
   if (target.token !== undefined) headers.set("authorization", `Bearer ${target.token}`);
@@ -99,6 +103,7 @@ export const apiRequest = Effect.fnUntraced(function* (
   target: ApiRequestTarget,
   path: string,
   init: RequestInit = {},
+  options: ApiRequestOptions = {},
 ) {
   const transport = yield* HttpTransport;
   const method = init.method || "GET";
@@ -110,7 +115,8 @@ export const apiRequest = Effect.fnUntraced(function* (
   if (Option.isNone(responseOption)) return yield* timeoutError();
   const response = responseOption.value;
   const bytes = yield* readLimited(response);
-  if (!response.ok) return yield* responseError(target, response, bytes);
+  if (!response.ok && !options.acceptedStatuses?.includes(response.status))
+    return yield* responseError(target, response, bytes);
   return { response, bytes };
 });
 
@@ -124,7 +130,8 @@ export const requestJson = Effect.fnUntraced(function* (
   target: ApiRequestTarget,
   path: string,
   init?: RequestInit,
+  options?: ApiRequestOptions,
 ) {
-  const { bytes } = yield* apiRequest(target, path, init);
+  const { bytes } = yield* apiRequest(target, path, init, options);
   return yield* decodeJson(bytes);
 });

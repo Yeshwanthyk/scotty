@@ -19,6 +19,10 @@ export interface ConversationTurn {
   readonly elapsedSeconds?: number;
 }
 
+export const activeConversationTurn = (
+  turns: ReadonlyArray<ConversationTurn>,
+): ConversationTurn | undefined => turns.findLast((turn) => turn.state === "streaming");
+
 export const streamedTextAt = (text: string, visibleCharacters: number): string =>
   text.slice(0, Math.max(0, Math.min(text.length, visibleCharacters)));
 

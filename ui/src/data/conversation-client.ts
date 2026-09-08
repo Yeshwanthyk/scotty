@@ -72,6 +72,15 @@ export type ConversationSteerResult =
         | { readonly kind: "stale" | "unavailable" | "ambiguous"; readonly message: string };
     };
 
+export type ConversationInterruptResult =
+  | { readonly ok: true; readonly status: "accepted" }
+  | {
+      readonly ok: false;
+      readonly failure:
+        | ConversationFailure
+        | { readonly kind: "stale" | "unavailable" | "ambiguous"; readonly message: string };
+    };
+
 export interface ConversationRequestOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly signal?: AbortSignal;
@@ -379,4 +388,79 @@ export const steerConversation = async (
       message: "Scotty returned an unknown delivery result.",
     },
   };
+};
+
+const interruptUnconfirmedMessage =
+  "The stop request could not be confirmed. Inspect the latest conversation before retrying.";
+
+const interruptOutcomeMessage = (status: "stale" | "unavailable" | "ambiguous"): string =>
+  status === "stale"
+    ? "The session changed before the turn could be stopped. Review the latest conversation."
+    : status === "ambiguous"
+      ? interruptUnconfirmedMessage
+      : "That turn has already finished or cannot be stopped.";
+
+const decodeInterruptOutcome = (
+  body: unknown,
+  sessionId: string,
+): ConversationInterruptResult | undefined => {
+  if (
+    !isJsonObject(body) ||
+    body.id !== sessionId ||
+    (body.status !== "stale" && body.status !== "unavailable" && body.status !== "ambiguous")
+  )
+    return undefined;
+  return {
+    ok: false,
+    failure: { kind: body.status, message: interruptOutcomeMessage(body.status) },
+  };
+};
+
+export const interruptConversation = async (
+  sessionId: string,
+  turnId: string | undefined,
+  sessionRevision: number,
+  options: ConversationRequestOptions = {},
+): Promise<ConversationInterruptResult> => {
+  let response: Response;
+  try {
+    response = await (options.fetch ?? globalThis.fetch)(
+      `/api/sessions/${encodeURIComponent(sessionId)}/interrupt`,
+      {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({
+          ...(turnId === undefined ? {} : { turnId }),
+          sessionRevision,
+        }),
+        signal: options.signal,
+      },
+    );
+  } catch {
+    return { ok: false, failure: { kind: "ambiguous", message: interruptUnconfirmedMessage } };
+  }
+  const body = await readJson(response);
+  if (!response.ok)
+    return (
+      decodeInterruptOutcome(body, sessionId) ?? {
+        ok: false,
+        failure: decodeHttpFailureBody(response, body),
+      }
+    );
+  if (
+    !isJsonObject(body) ||
+    body.id !== sessionId ||
+    body.status !== "accepted" ||
+    !isSafeSequence(body.sessionRevision)
+  )
+    return {
+      ok: false,
+      failure: {
+        kind: "ambiguous",
+        message: interruptUnconfirmedMessage,
+      },
+    };
+  return { ok: true, status: "accepted" };
 };

@@ -13,6 +13,7 @@ import {
   CodexControlToken,
   CodexGeneration,
   CodexSteer,
+  CodexInterrupt,
   CodexPrompt,
   CodexRuntimeStart,
   startCodexRuntime,
@@ -55,6 +56,9 @@ const CodexMessageRequest = Schema.Union([
   Schema.Struct({ mode: Schema.Literal("steer"), ...CodexSteer.fields }),
 ]);
 const decodeMessage = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexMessageRequest), {
+  onExcessProperty: "error",
+});
+const decodeInterrupt = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexInterrupt), {
   onExcessProperty: "error",
 });
 const respond = Effect.fnUntraced(function* (value: unknown, status = 200) {
@@ -216,6 +220,48 @@ export const makeCodexControl = Effect.fnUntraced(function* (
   );
   yield* router.add(
     "POST",
+    "/interrupt",
+    handle(
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (request.headers["content-type"] !== "application/json")
+          return yield* new CodexBridgeError({ code: "invalid_request", outcome: "rejected" });
+        if (request.headers["content-length"] !== undefined)
+          yield* decodeLength(request.headers["content-length"]).pipe(
+            Effect.mapError(
+              () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
+            ),
+          );
+        const buffer = yield* request.arrayBuffer.pipe(
+          Effect.provideService(
+            HttpIncomingMessage.MaxBodySize,
+            FileSystem.Size(CODEX_CONTROL_MAX_BODY),
+          ),
+          Effect.mapError(
+            () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
+          ),
+          Effect.timeoutOrElse({
+            duration: 2000,
+            orElse: () =>
+              Effect.fail(new CodexBridgeError({ code: "request_timeout", outcome: "rejected" })),
+          }),
+        );
+        const text = yield* Effect.try({
+          try: () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(buffer),
+          catch: () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
+        });
+        const command = yield* decodeInterrupt(text).pipe(
+          Effect.mapError(
+            () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
+          ),
+        );
+        const result = yield* runtime.interrupt(command);
+        return yield* respond(result, 202);
+      }),
+    ),
+  );
+  yield* router.add(
+    "POST",
     "/stop",
     handle(
       Effect.gen(function* () {
@@ -239,7 +285,9 @@ export const makeCodexControl = Effect.fnUntraced(function* (
     if (headers[CODEX_CONTROL_GENERATION_HEADER] !== runtime.generation)
       return yield* new CodexBridgeError({ code: "stale_generation", outcome: "rejected" });
     // No payload, token or alternate dispatch through the URL.
-    if (!["/health", "/snapshot", "/prompt", "/message", "/stop"].includes(request.url))
+    if (
+      !["/health", "/snapshot", "/prompt", "/message", "/interrupt", "/stop"].includes(request.url)
+    )
       return HttpServerResponse.empty({ status: 404 });
     return yield* routes;
   }).pipe(

@@ -7,6 +7,7 @@ import { sessionRoot } from "../../sandbox/workspace";
 import {
   CodexControlToken,
   CodexAdmission,
+  CodexInterruptResult,
   CodexGeneration,
   CODEX_CONTROL_GENERATION_HEADER,
   CODEX_CONTROL_TOKEN_HEADER,
@@ -26,10 +27,17 @@ const decodeIdentity = Schema.decodeUnknownEffect(CodexSandboxIdentitySchema);
 const decodeAdmission = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexAdmission), {
   onExcessProperty: "error",
 });
+const decodeInterruptResult = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(CodexInterruptResult),
+  { onExcessProperty: "error" },
+);
 export const codexSandboxProcessId = (generation: string) => `scotty-codex-${generation}`;
 const failure = (message: string) => new SandboxRuntimeFailure({ reason: "transport", message });
 export class CodexMessageAdmissionUnknown extends Data.TaggedError(
   "CodexMessageAdmissionUnknown",
+)<{}> {}
+export class CodexInterruptAdmissionUnknown extends Data.TaggedError(
+  "CodexInterruptAdmissionUnknown",
 )<{}> {}
 const headers = (identity: CodexSandboxIdentity) => ({
   [CODEX_CONTROL_GENERATION_HEADER]: identity.generation,
@@ -246,4 +254,63 @@ export const sendCodexSandboxMessage = Effect.fnUntraced(function* (
   )
     return yield* new CodexMessageAdmissionUnknown();
   return { mode: mode.mode, snapshot, turnId: admission.turnId } as const;
+});
+
+export const interruptCodexSandbox = Effect.fnUntraced(function* (
+  input: CodexSandboxIdentity,
+  threadId: string,
+  turnId: string,
+) {
+  const identity = yield* decodeIdentity(input).pipe(
+    Effect.mapError(() => failure("Codex identity is invalid")),
+  );
+  const runtime = yield* SandboxRuntime;
+  const before = yield* readCodexSandbox(identity, threadId);
+  if (!before.ready || before.failure !== null)
+    return yield* failure("Codex is not ready for an interrupt");
+  if (before.prompt.status !== "running" || before.prompt.turnId !== turnId)
+    return yield* failure("Codex interrupt requires the current active turn");
+
+  const response = yield* runtime
+    .fetchPortBody(
+      "/interrupt",
+      CODEX_SANDBOX_PORT,
+      "POST",
+      CODEX_CONTROL_MAX_RESPONSE,
+      headers(identity),
+      JSON.stringify({ threadId, turnId }),
+    )
+    .pipe(
+      Effect.timeoutOrElse({
+        duration: "20 seconds",
+        orElse: () => Effect.fail(new CodexInterruptAdmissionUnknown()),
+      }),
+      Effect.mapError(() => new CodexInterruptAdmissionUnknown()),
+      Effect.result,
+    );
+  const after = yield* readCodexSandbox(identity, threadId).pipe(
+    Effect.mapError(() => new CodexInterruptAdmissionUnknown()),
+  );
+  if (
+    after.prompt.status !== "terminal" ||
+    after.prompt.turnId !== turnId ||
+    (after.prompt.outcome !== "interrupted" &&
+      after.prompt.outcome !== "completed" &&
+      after.prompt.outcome !== "failed")
+  )
+    return yield* new CodexInterruptAdmissionUnknown();
+
+  if (Result.isFailure(response)) return { snapshot: after, turnId, outcome: after.prompt.outcome };
+  if (response.success.status !== 202) return yield* new CodexInterruptAdmissionUnknown();
+  const result = yield* decodeInterruptResult(response.success.body).pipe(
+    Effect.mapError(() => new CodexInterruptAdmissionUnknown()),
+  );
+  if (
+    result.generation !== identity.generation ||
+    result.threadId !== threadId ||
+    result.turnId !== turnId ||
+    result.status !== after.prompt.outcome
+  )
+    return yield* new CodexInterruptAdmissionUnknown();
+  return { snapshot: after, turnId, outcome: result.status } as const;
 });

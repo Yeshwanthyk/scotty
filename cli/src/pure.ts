@@ -9,6 +9,7 @@ import {
   type InspectResponse,
   type SessionResponse,
   type SessionOperationOutput,
+  type InterruptResponse,
   type SteerResponse,
   type VaporizeOutput,
 } from "./schemas";
@@ -289,6 +290,16 @@ export function humanSteer(result: SteerResponse): string {
   if (result.status === "unavailable")
     return `Steer unavailable for ${result.id}: ${result.reason}.\n`;
   return `Steer outcome is ambiguous for ${result.id}: ${result.reason}; do not retry automatically.\n`;
+}
+
+export function humanInterrupt(result: InterruptResponse): string {
+  if (result.status === "accepted")
+    return `Interrupt accepted for ${result.id} at revision ${result.sessionRevision}.\n`;
+  if (result.status === "stale")
+    return `Interrupt was stale for ${result.id}; no command was retried.\n`;
+  if (result.status === "unavailable")
+    return `Interrupt unavailable for ${result.id}: ${result.reason}.\n`;
+  return `Interrupt outcome is ambiguous for ${result.id}: ${result.reason}; do not retry automatically.\n`;
 }
 
 export function humanSession(record: SessionResponse): string {
