@@ -33,6 +33,10 @@ export const codexConversation = Effect.fnUntraced(function* (
     : prompt.status === "failed" || snapshot.failure !== null
       ? "failed"
       : "streaming";
+  const turns =
+    snapshot.turns === undefined || snapshot.turns.length === 0
+      ? [{ id: input.turnId, state, user, assistant, tools: snapshot.tools ?? [] }]
+      : snapshot.turns;
   return yield* decodeCanonicalConversationSnapshot({
     version: 1,
     transport: {
@@ -41,10 +45,10 @@ export const codexConversation = Effect.fnUntraced(function* (
       sequence: snapshot.sequence ?? (terminal || state === "failed" ? 2 : 1),
       sessionRevision: input.revision,
     },
-    turns: [{ id: input.turnId, state, user, assistant, tools: snapshot.tools ?? [] }],
+    turns,
     queue: { steer: [], followUp: [] },
     truncated: {
-      turns: false,
+      turns: snapshot.turnsTruncated === true,
       values: snapshot.toolsTruncated === true || user !== input.prompt || assistant !== text,
     },
   });

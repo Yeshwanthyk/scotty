@@ -808,7 +808,12 @@ app.post("/api/sessions/:id/steer", async (c) => {
   const body = decodeJsonValue(bodyText);
   if (Option.isNone(body)) throw badRequest("Request body must be valid JSON");
   const message = parseSteerInput(body.value);
-  return steerPassiveSession(sessionSandbox(c.env, id), id, message);
+  const idempotencyKey = c.req.header("idempotency-key");
+  if (idempotencyKey !== undefined) parseIdempotencyKey(idempotencyKey);
+  const sandbox = sessionSandbox(c.env, id);
+  const codex = await sandbox.steerScottyCodexSession(message, idempotencyKey);
+  if (codex !== null) return codex;
+  return steerPassiveSession(sandbox, id, message);
 });
 
 app.patch("/api/sessions/:id", async (c) => {

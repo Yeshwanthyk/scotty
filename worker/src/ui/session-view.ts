@@ -146,7 +146,7 @@ const capabilitiesView = (
     checkpoint: supportsPiWork && actions.has("checkpoint"),
     sleep: supportsPiWork && actions.has("sleep"),
     resume: supportsPiWork && actions.has("resume"),
-    work: supportsPiWork && actions.has("work"),
+    work: actions.has("work"),
     vaporize: actions.has("vaporize"),
   };
 };

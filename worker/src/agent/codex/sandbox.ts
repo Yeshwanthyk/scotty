@@ -1,4 +1,4 @@
-import { Clock, Effect, Result, Schedule, Schema } from "effect";
+import { Clock, Data, Effect, Result, Schedule, Schema } from "effect";
 import { CodexAgentSelectionSchema } from "../../../../protocol/agent-selection";
 import type { CredentialGrant } from "../../../../protocol/credentials";
 import { managedPiAccessToken, piAccessHandle, selectPiAuthGrant } from "../../credentials/managed";
@@ -6,6 +6,7 @@ import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "../../sandbox
 import { sessionRoot } from "../../sandbox/workspace";
 import {
   CodexControlToken,
+  CodexAdmission,
   CodexGeneration,
   CODEX_CONTROL_GENERATION_HEADER,
   CODEX_CONTROL_TOKEN_HEADER,
@@ -22,8 +23,14 @@ const CodexSandboxIdentitySchema = Schema.Struct({
 });
 export type CodexSandboxIdentity = typeof CodexSandboxIdentitySchema.Type;
 const decodeIdentity = Schema.decodeUnknownEffect(CodexSandboxIdentitySchema);
+const decodeAdmission = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexAdmission), {
+  onExcessProperty: "error",
+});
 export const codexSandboxProcessId = (generation: string) => `scotty-codex-${generation}`;
 const failure = (message: string) => new SandboxRuntimeFailure({ reason: "transport", message });
+export class CodexMessageAdmissionUnknown extends Data.TaggedError(
+  "CodexMessageAdmissionUnknown",
+)<{}> {}
 const headers = (identity: CodexSandboxIdentity) => ({
   [CODEX_CONTROL_GENERATION_HEADER]: identity.generation,
   [CODEX_CONTROL_TOKEN_HEADER]: identity.token,
@@ -166,4 +173,77 @@ export const admitCodexSandbox = Effect.fnUntraced(function* (
   const turnId = snapshot.prompt.turnId;
   if (turnId === null) return yield* failure("Codex prompt admission remains unknown");
   return { snapshot, turnId };
+});
+
+export const sendCodexSandboxMessage = Effect.fnUntraced(function* (
+  input: CodexSandboxIdentity,
+  threadId: string,
+  text: string,
+  clientUserMessageId?: string,
+) {
+  const identity = yield* decodeIdentity(input).pipe(
+    Effect.mapError(() => failure("Codex identity is invalid")),
+  );
+  const runtime = yield* SandboxRuntime;
+  const before = yield* readCodexSandbox(identity, threadId);
+  if (!before.ready || before.failure !== null)
+    return yield* failure("Codex is not ready for a message");
+  const mode =
+    before.prompt.status === "running"
+      ? { mode: "steer" as const, expectedTurnId: before.prompt.turnId }
+      : before.prompt.status === "terminal"
+        ? { mode: "message" as const }
+        : yield* failure("Codex message admission is unavailable");
+  const body =
+    mode.mode === "steer"
+      ? {
+          mode: mode.mode,
+          threadId,
+          text,
+          expectedTurnId: mode.expectedTurnId,
+          ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
+        }
+      : {
+          mode: mode.mode,
+          threadId,
+          text,
+          ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
+        };
+  const response = yield* runtime
+    .fetchPortBody(
+      "/message",
+      CODEX_SANDBOX_PORT,
+      "POST",
+      CODEX_CONTROL_MAX_RESPONSE,
+      headers(identity),
+      JSON.stringify(body),
+    )
+    .pipe(
+      Effect.timeoutOrElse({
+        duration: "20 seconds",
+        orElse: () => Effect.fail(new CodexMessageAdmissionUnknown()),
+      }),
+      Effect.mapError(() => new CodexMessageAdmissionUnknown()),
+    );
+  if (response.status !== 202) return yield* new CodexMessageAdmissionUnknown();
+  const admission = yield* decodeAdmission(response.body).pipe(
+    Effect.mapError(() => new CodexMessageAdmissionUnknown()),
+  );
+  if (
+    admission.generation !== identity.generation ||
+    admission.threadId !== threadId ||
+    (mode.mode === "steer" && admission.turnId !== mode.expectedTurnId)
+  )
+    return yield* new CodexMessageAdmissionUnknown();
+  const snapshot = yield* readCodexSandbox(identity, threadId).pipe(
+    Effect.mapError(() => new CodexMessageAdmissionUnknown()),
+  );
+  if (
+    mode.mode === "steer" &&
+    (snapshot.prompt.status === "idle" ||
+      snapshot.prompt.status === "admitting" ||
+      snapshot.prompt.turnId !== admission.turnId)
+  )
+    return yield* new CodexMessageAdmissionUnknown();
+  return { mode: mode.mode, snapshot, turnId: admission.turnId } as const;
 });

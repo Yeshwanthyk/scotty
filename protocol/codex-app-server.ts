@@ -47,10 +47,23 @@ export const CodexClientMessageSchema = Schema.Union([
     method: Schema.Literal("turn/start"),
     params: Schema.Struct({
       threadId: Identifier,
+      clientUserMessageId: Schema.optionalKey(Schema.NullOr(Identifier)),
       input: Schema.Tuple([
         Schema.Struct({ type: Schema.Literal("text"), text: Text.check(Schema.isMinLength(1)) }),
       ]),
       effort: Identifier,
+    }),
+  }),
+  Schema.Struct({
+    id: RequestId,
+    method: Schema.Literal("turn/steer"),
+    params: Schema.Struct({
+      threadId: Identifier,
+      clientUserMessageId: Schema.optionalKey(Schema.NullOr(Identifier)),
+      input: Schema.Tuple([
+        Schema.Struct({ type: Schema.Literal("text"), text: Text.check(Schema.isMinLength(1)) }),
+      ]),
+      expectedTurnId: Identifier,
     }),
   }),
   Schema.Struct({ id: RequestId, method: Schema.Literal("turn/interrupt"), params: TurnIdentity }),
@@ -109,6 +122,7 @@ const ThreadStartResult = Schema.Struct({
   reasoningEffort: Schema.optionalKey(Schema.NullOr(Identifier)),
 }).annotate(projection);
 const TurnStartResult = Schema.Struct({ turn: StartedTurn }).annotate(projection);
+const TurnSteerResult = Schema.Struct({ turnId: Identifier }).annotate(projection);
 
 const RpcError = Schema.Struct({
   id: RequestId,
@@ -217,6 +231,9 @@ export const decodeCodexThreadStartResponse = boundedJsonDecoder(
 );
 export const decodeCodexTurnStartResponse = boundedJsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(TurnStartResult)), strict),
+);
+export const decodeCodexSteerResponse = boundedJsonDecoder(
+  Schema.decodeUnknownResult(Schema.fromJsonString(response(TurnSteerResult)), strict),
 );
 export const decodeCodexInterruptResponse = boundedJsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(Empty)), strict),

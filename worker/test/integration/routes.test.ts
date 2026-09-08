@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
   readScottyCodexConversation: vi.fn().mockResolvedValue(null),
+  steerScottyCodexSession: vi.fn().mockResolvedValue(null),
   getScottyActorDiagnostics: vi.fn(),
   getScottySession: vi.fn(),
   getScottyDeploymentReadiness: vi.fn(),
@@ -514,6 +515,7 @@ describe("real Hono boundary", () => {
       reason: "sleeping_checkpointed",
     });
     sandbox.preparePiSessionAccess.mockResolvedValue(undefined);
+    sandbox.steerScottyCodexSession.mockResolvedValue(null);
     sandbox.prepareTerminalAccess.mockResolvedValue(undefined);
     sandbox.restartScottyTerminal.mockResolvedValue(undefined);
     proxyTerminal.mockResolvedValue(new Response("terminal-proxy"));
@@ -1606,6 +1608,107 @@ describe("real Hono boundary", () => {
       expect(harness.writtenFiles.some((file) => file.path.includes(".pi-agent"))).toBe(false);
     });
   }
+
+  it("preserves lost and native ambiguous Codex message replies", async () => {
+    let admitted = false;
+    let messageRequests = 0;
+    let messageFailure: "network" | "native" = "network";
+    const harness = await createSessionHarness({
+      credentialRegistryGrants: DEFAULT_CREDENTIAL_GRANTS,
+      containerFetch: async (request) => {
+        const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+        if (authority === undefined) throw new RouteTestFailure("missing authority");
+        const pathname = new URL(request.url).pathname;
+        const generation = request.headers.get("x-scotty-codex-generation");
+        if (pathname === "/prompt") {
+          admitted = true;
+          return Response.json(
+            { generation, threadId: "thread-message", turnId: "turn-message" },
+            { status: 202 },
+          );
+        }
+        if (pathname === "/message") {
+          messageRequests += 1;
+          if (messageFailure === "native")
+            return Response.json({ error: "host_failed", outcome: "ambiguous" }, { status: 502 });
+          throw new RouteTestFailure("lost Codex message reply");
+        }
+        return Response.json({
+          generation,
+          threadId: "thread-message",
+          version: CODEX_VERSION,
+          settings: {
+            model: "gpt-5.4",
+            effort: "high",
+            workspace: `/workspace/${authority.session.id}`,
+            modelProvider: "scotty-managed",
+            approvalPolicy: "never",
+            sandbox: "dangerFullAccess",
+          },
+          ready: true,
+          failure: null,
+          cleanup: null,
+          prompt: admitted ? { status: "running", turnId: "turn-message" } : { status: "idle" },
+        });
+      },
+    });
+    useRealSandbox(harness);
+    const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+    const created = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: "Codex message ambiguity",
+          prompt: "one prompt",
+          provider: "cloudflare",
+          repo: "owner/project",
+          agent: "codex",
+          model: "gpt-5.4",
+          effort: "high",
+        }),
+      },
+      env(),
+    );
+    expect(created.status).toBe(200);
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    if (authority === undefined) throw new RouteTestFailure("missing committed authority");
+    const response = await app.request(
+      `/api/sessions/${authority.session.id}/steer`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ message: "continue" }),
+      },
+      env(),
+    );
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      id: authority.session.id,
+      status: "ambiguous",
+      reason: "codex_message_admission_unknown",
+      retryable: false,
+    });
+    messageFailure = "native";
+    const nativeResponse = await app.request(
+      `/api/sessions/${authority.session.id}/steer`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ message: "continue after native ambiguity" }),
+      },
+      env(),
+    );
+    expect(nativeResponse.status).toBe(502);
+    await expect(nativeResponse.json()).resolves.toEqual({
+      id: authority.session.id,
+      status: "ambiguous",
+      reason: "codex_message_admission_unknown",
+      retryable: false,
+    });
+    expect(messageRequests).toBe(2);
+  });
 
   for (const change of [
     "unchanged",
@@ -2716,6 +2819,68 @@ describe("real Hono boundary", () => {
       });
       expect(sandbox.fetch).toHaveBeenCalledTimes("snapshot" in testCase ? 1 : 2);
     }
+  });
+
+  it("returns Codex follow-up and active-steer admissions with their native turn mode", async () => {
+    sandbox.steerScottyCodexSession
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            id: SESSION_ID,
+            status: "accepted",
+            mode: "message",
+            turnId: "turn-follow-up",
+            sessionRevision: 8,
+          },
+          { status: 202 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            id: SESSION_ID,
+            status: "accepted",
+            mode: "steer",
+            turnId: "turn-active",
+            sessionRevision: 8,
+          },
+          { status: 202 },
+        ),
+      );
+
+    const request = () =>
+      app.request(
+        `/api/sessions/${SESSION_ID}/steer`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ message: "continue" }),
+        },
+        env(),
+      );
+    const followUp = await request();
+    expect(followUp.status).toBe(202);
+    await expect(followUp.json()).resolves.toEqual({
+      id: SESSION_ID,
+      status: "accepted",
+      mode: "message",
+      turnId: "turn-follow-up",
+      sessionRevision: 8,
+    });
+    const steer = await request();
+    expect(steer.status).toBe(202);
+    await expect(steer.json()).resolves.toEqual({
+      id: SESSION_ID,
+      status: "accepted",
+      mode: "steer",
+      turnId: "turn-active",
+      sessionRevision: 8,
+    });
+    expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(1, "continue", undefined);
+    expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(2, "continue", undefined);
   });
 
   it("requires sessions:write and strictly bounds steer input before passive access", async () => {

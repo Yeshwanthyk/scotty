@@ -7,6 +7,7 @@ import {
   decodeCodexInitializeResponse,
   decodeCodexInterruptResponse,
   decodeCodexNotification,
+  decodeCodexSteerResponse,
   decodeCodexThreadStartResponse,
   decodeCodexTurnStartResponse,
   rejectCodexServerRequest,
@@ -36,6 +37,16 @@ const turn = {
   id: 2,
   method: "turn/start",
   params: { threadId: "thread-1", input: [{ type: "text", text: "hello" }], effort: "high" },
+};
+const steer = {
+  id: 3,
+  method: "turn/steer",
+  params: {
+    threadId: "thread-1",
+    clientUserMessageId: "message-1",
+    input: [{ type: "text", text: "continue" }],
+    expectedTurnId: "turn-1",
+  },
 };
 const started = { id: "turn-1", status: "inProgress", items: [], error: null };
 const terminal = (status: string, error: unknown = null) => ({
@@ -210,13 +221,30 @@ describe("Codex 0.153.4 bounded protocol subset", () => {
       { method: "initialized" },
       start,
       turn,
-      { id: 3, method: "turn/interrupt", params: { threadId: "thread-1", turnId: "turn-1" } },
+      steer,
+      { id: 4, method: "turn/interrupt", params: { threadId: "thread-1", turnId: "turn-1" } },
     ]) {
       assert.deepStrictEqual<unknown>(
         Result.getOrThrow(decodeCodexClientMessage(JSON.stringify(message))),
         message,
       );
     }
+  });
+
+  it("accepts the fenced steer request and only the native turn acknowledgment", () => {
+    assert.deepStrictEqual<unknown>(
+      Result.getOrThrow(decodeCodexClientMessage(JSON.stringify(steer))),
+      steer,
+    );
+    assert.deepStrictEqual<unknown>(
+      Result.getOrThrow(decodeCodexSteerResponse('{"id":3,"result":{"turnId":"turn-1"}}')),
+      { id: 3, result: { turnId: "turn-1" } },
+    );
+    for (const response of [
+      '{"id":3,"result":{"turnId":""}}',
+      '{"id":3,"result":{"status":"completed"}}',
+    ])
+      assert.isTrue(Result.isFailure(decodeCodexSteerResponse(response)));
   });
 
   it("rejects speculative capabilities, ambient defaults, extra fields and non-text input", () => {

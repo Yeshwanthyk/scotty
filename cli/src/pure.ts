@@ -280,8 +280,10 @@ export function humanRead(output: ReadOutput): string {
 }
 
 export function humanSteer(result: SteerResponse): string {
-  if (result.status === "accepted")
-    return `Steer accepted for ${result.id} at revision ${result.sessionRevision}.\n`;
+  if (result.status === "accepted") {
+    const label = "mode" in result && result.mode === "message" ? "Follow-up" : "Steer";
+    return `${label} accepted for ${result.id} at revision ${result.sessionRevision}.\n`;
+  }
   if (result.status === "stale")
     return `Steer was stale for ${result.id}; no command was retried.\n`;
   if (result.status === "unavailable")

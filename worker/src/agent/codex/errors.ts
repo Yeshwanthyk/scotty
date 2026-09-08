@@ -46,6 +46,7 @@ export class CodexHostError extends Data.TaggedError("CodexHostError")<{
     | "reused_turn_id"
     | "not_ready"
     | "turn_busy"
+    | "turn_mismatch"
     | "no_active_turn"
     | "stopped";
   readonly cleanup?: Cleanup;

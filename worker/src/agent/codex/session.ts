@@ -6,6 +6,7 @@ import {
   decodeCodexInitializeResponse,
   decodeCodexThreadStartResponse,
   decodeCodexTurnStartResponse,
+  decodeCodexSteerResponse,
   decodeCodexInterruptResponse,
   decodeCodexNotification,
   rejectCodexServerRequest,
@@ -21,6 +22,7 @@ import { launchProcess, type CodexProcess } from "./process";
 type Terminal = Extract<CodexNotification, { method: "turn/completed" }>["params"]["turn"];
 type Request = Exclude<CodexClientMessage, { method: "initialized" }>;
 type Pending = {
+  readonly fatal: boolean;
   readonly receive: (line: string) => Effect.Effect<void, CodexHostError>;
   readonly fail: (error: CodexHostError) => Effect.Effect<unknown>;
 };
@@ -174,12 +176,17 @@ export const makeSession = Effect.fnUntraced(function* (
     >,
     accept: (value: A) => Effect.Effect<void, CodexHostError> = () => Effect.void,
     startupDeadline?: number,
+    fatal = true,
   ) {
     const id = ++sequence;
     const message = yield* decoded(decodeCodexClientMessage(JSON.stringify({ ...request, id })));
     const response = yield* Deferred.make<A, CodexHostError>();
     pending.set(id, {
-      fail: (error) => Deferred.fail(response, error),
+      fatal,
+      fail: (error) => {
+        pending.delete(id);
+        return Deferred.fail(response, error);
+      },
       receive: Effect.fnUntraced(function* (line) {
         const value = yield* decoded(decoder(line));
         if (value.id !== id) return yield* new CodexHostError({ code: "unexpected_response_id" });
@@ -194,8 +201,20 @@ export const makeSession = Effect.fnUntraced(function* (
       write(message, startupDeadline).pipe(Effect.andThen(Deferred.await(response))),
       startupDeadline,
     ).pipe(
-      Effect.tapError(fail),
-      Effect.onInterrupt(() => fail(new CodexHostError({ code: "interrupted" }))),
+      Effect.tapError((error) =>
+        fatal
+          ? fail(error)
+          : Effect.sync(() => {
+              pending.delete(id);
+            }),
+      ),
+      Effect.onInterrupt(() =>
+        fatal
+          ? fail(new CodexHostError({ code: "interrupted" }))
+          : Effect.sync(() => {
+              pending.delete(id);
+            }),
+      ),
     );
   });
   const notification = Effect.fnUntraced(function* (message: CodexNotification) {
@@ -232,7 +251,15 @@ export const makeSession = Effect.fnUntraced(function* (
       }
       const entry = typeof route.id === "number" ? pending.get(route.id) : undefined;
       if (!entry) return yield* new CodexHostError({ code: "unexpected_response_id" });
-      return yield* entry.receive(line);
+      return yield* entry
+        .receive(line)
+        .pipe(
+          Effect.catchTag("CodexHostError", (error) =>
+            !entry.fatal && error.code === "rpc_rejected"
+              ? entry.fail(error).pipe(Effect.asVoid)
+              : Effect.fail(error),
+          ),
+        );
     }
     if (
       route.method === "turn/started" ||
@@ -297,7 +324,7 @@ export const makeSession = Effect.fnUntraced(function* (
 
   yield* Effect.addFinalizer(() => stop);
 
-  const prompt = Effect.fnUntraced(function* (text: string) {
+  const prompt = Effect.fnUntraced(function* (text: string, clientUserMessageId?: string) {
     if (!ready || closing || !threadId) return yield* new CodexHostError({ code: "not_ready" });
     if (active) return yield* new CodexHostError({ code: "turn_busy" });
     if (transport.options.credential.expiresAt <= (yield* Clock.currentTimeMillis))
@@ -307,6 +334,7 @@ export const makeSession = Effect.fnUntraced(function* (
     );
     const params = {
       threadId,
+      ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
       input: [{ type: "text", text }],
       effort: transport.options.effort,
     } as const;
@@ -338,6 +366,40 @@ export const makeSession = Effect.fnUntraced(function* (
       }),
     );
     return { turnId: result.turn.id, completed: Deferred.await(turn.terminal) };
+  });
+  const steer = Effect.fnUntraced(function* (
+    text: string,
+    expectedTurnId: string,
+    clientUserMessageId?: string,
+  ) {
+    if (!ready || closing || !threadId) return yield* new CodexHostError({ code: "not_ready" });
+    const turn = active;
+    if (!turn?.id) return yield* new CodexHostError({ code: "no_active_turn" });
+    if (turn.id !== expectedTurnId) return yield* new CodexHostError({ code: "turn_mismatch" });
+    if (transport.options.credential.expiresAt <= (yield* Clock.currentTimeMillis))
+      return yield* new CodexHostError({ code: "credential_expired" });
+    yield* decodePrompt(text).pipe(
+      Effect.mapError(() => new CodexHostError({ code: "invalid_message" })),
+    );
+    const params = {
+      threadId,
+      ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
+      input: [{ type: "text", text }],
+      expectedTurnId,
+    } as const;
+    yield* decoded(
+      decodeCodexClientMessage(JSON.stringify({ id: 0, method: "turn/steer", params })),
+    );
+    const result = yield* rpc(
+      { method: "turn/steer", params },
+      decodeCodexSteerResponse,
+      undefined,
+      undefined,
+      false,
+    );
+    if (result.turnId !== expectedTurnId)
+      return yield* new CodexHostError({ code: "turn_mismatch" });
+    return { turnId: result.turnId };
   });
   const interrupt = Effect.suspend(() => {
     const turn = active;
@@ -423,6 +485,7 @@ export const makeSession = Effect.fnUntraced(function* (
   );
   return {
     prompt,
+    steer,
     interrupt,
     stop,
     closed: Deferred.await(closed),

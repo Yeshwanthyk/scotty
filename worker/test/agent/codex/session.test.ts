@@ -10,19 +10,28 @@ import { makeFramer } from "../../../src/agent/codex/framing";
 import { makeSession } from "../../../src/agent/codex/session";
 import type { CodexProcess } from "../../../src/agent/codex/process";
 
-const fixture = Effect.fnUntraced(function* (
-  mode:
-    | "normal"
-    | "no-initialize"
-    | "delayed"
-    | "no-initialized-write"
-    | "no-thread-response"
-    | "no-interrupt-response"
-    | "wrong-id"
-    | "no-turn-response"
-    | "sandbox"
-    | "approval" = "normal",
-) {
+type SessionFixtureMode =
+  | "normal"
+  | "no-initialize"
+  | "delayed"
+  | "no-initialized-write"
+  | "no-thread-response"
+  | "no-interrupt-response"
+  | "wrong-id"
+  | "no-turn-response"
+  | "steer-rejected"
+  | "steer-malformed"
+  | "sandbox"
+  | "approval";
+
+const steerResponse = (mode: SessionFixtureMode, id: string | number, expectedTurnId: string) =>
+  mode === "steer-rejected"
+    ? { id, error: { code: 409, message: "synthetic rejection" } }
+    : mode === "steer-malformed"
+      ? { id, result: {} }
+      : { id, result: { turnId: expectedTurnId } };
+
+const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal") {
   const stdout = yield* Queue.bounded<Uint8Array, Cause.Done>(8);
   const exited = yield* Deferred.make<void>();
   let stopped = 0;
@@ -30,6 +39,10 @@ const fixture = Effect.fnUntraced(function* (
   const messages: Array<CodexClientMessage> = [];
   const emit = (value: unknown) =>
     Queue.offer(stdout, new TextEncoder().encode(`${JSON.stringify(value)}\n`)).pipe(Effect.asVoid);
+  const emitSteerResponse = (message: CodexClientMessage) =>
+    message.method === "turn/steer"
+      ? emit(steerResponse(mode, message.id, message.params.expectedTurnId))
+      : Effect.void;
   const transport: CodexProcess = {
     pid: ChildProcessSpawner.ProcessId(100),
     platformOs: "linux",
@@ -117,6 +130,7 @@ const fixture = Effect.fnUntraced(function* (
           params: { threadId: "thread", turn: { id: "turn", status: "inProgress", items: [] } },
         });
       }
+      yield* emitSteerResponse(message);
       if (message.method === "turn/interrupt" && mode !== "no-interrupt-response")
         yield* emit({ id: message.id, result: {} });
     }),
@@ -255,6 +269,34 @@ describe("scoped Codex session", () => {
       assert.strictEqual(yield* host.stop, first);
       assert.equal(first.cleanup, "ambiguous");
       assert.equal(f.stopped(), 1);
+    }),
+  );
+
+  it.effect("keeps the native host ready after a rejected nonfatal steer", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("steer-rejected");
+      const host = yield* makeSession(f.transport);
+      yield* host.prompt("hello");
+      const result = yield* Effect.result(host.steer("adjust", "turn"));
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure.code, "rpc_rejected");
+      assert.equal(host.inspect().ready, true);
+      assert.equal(host.inspect().failure, null);
+      yield* host.stop;
+    }),
+  );
+
+  it.effect("keeps malformed nonfatal steer responses fatal", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("steer-malformed");
+      const host = yield* makeSession(f.transport);
+      yield* host.prompt("hello");
+      const result = yield* Effect.result(host.steer("adjust", "turn"));
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure.code, "invalid_message");
+      assert.equal(host.inspect().ready, false);
+      assert.equal(host.inspect().failure, "invalid_message");
+      assert.equal((yield* host.closed).failure, "invalid_message");
     }),
   );
 

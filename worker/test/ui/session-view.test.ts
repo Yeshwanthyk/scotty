@@ -334,7 +334,7 @@ describe("UI session authority response", () => {
   });
 });
 
-it("withholds unsupported Codex lifecycle and work controls", () => {
+it("withholds unsupported Codex lifecycle controls while exposing work", () => {
   const authority = warmAuthority();
   const response = uiSessionResponseFromActor(
     {
@@ -351,7 +351,7 @@ it("withholds unsupported Codex lifecycle and work controls", () => {
     checkpoint: false,
     sleep: false,
     resume: false,
-    work: false,
+    work: true,
     vaporize: true,
   });
 });

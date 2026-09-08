@@ -8,14 +8,22 @@ import { makeSession } from "../../../src/agent/codex/session";
 import type { CodexProcess } from "../../../src/agent/codex/process";
 import { makeCodexRuntime, readCodexSnapshot } from "../../../src/agent/codex/runtime";
 
-const fixture = Effect.fnUntraced(function* (accept = true, expiresAt = Number.MAX_SAFE_INTEGER) {
+const fixture = Effect.fnUntraced(function* (
+  accept = true,
+  expiresAt = Number.MAX_SAFE_INTEGER,
+  steerMode: "accepted" | "lost" | "delayed" = "accepted",
+) {
   const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
   const exited = yield* Deferred.make<void>();
   const prompted = yield* Deferred.make<void>();
+  const steerReceived = yield* Deferred.make<void>();
   const emit = (value: unknown) =>
     Queue.offer(output, new TextEncoder().encode(`${JSON.stringify(value)}\n`)).pipe(Effect.asVoid);
   let stops = 0;
   let prompts = 0;
+  let steers = 0;
+  let activeTurnId = "turn";
+  let pendingSteerId: string | number | undefined;
   const transport: CodexProcess = {
     pid: ChildProcessSpawner.ProcessId(100),
     platformOs: "linux",
@@ -78,43 +86,68 @@ const fixture = Effect.fnUntraced(function* (accept = true, expiresAt = Number.M
         });
       if (message.method === "turn/start") {
         prompts++;
+        activeTurnId = prompts === 1 ? "turn" : `turn-${prompts}`;
         yield* Deferred.succeed(prompted, undefined);
         if (accept) {
           yield* emit({
             id: message.id,
-            result: { turn: { id: "turn", status: "inProgress", items: [] } },
+            result: { turn: { id: activeTurnId, status: "inProgress", items: [] } },
           });
           yield* emit({
             method: "turn/started",
-            params: { threadId: "thread", turn: { id: "turn", status: "inProgress", items: [] } },
+            params: {
+              threadId: "thread",
+              turn: { id: activeTurnId, status: "inProgress", items: [] },
+            },
           });
         }
+      }
+      if (message.method === "turn/steer") {
+        steers++;
+        yield* Deferred.succeed(steerReceived, undefined);
+        if (steerMode === "accepted")
+          yield* emit({ id: message.id, result: { turnId: message.params.expectedTurnId } });
+        else if (steerMode === "delayed") pendingSteerId = message.id;
       }
     }),
   };
   const host = yield* makeSession(transport);
   const runtime = yield* makeCodexRuntime(host, "generation-1");
-  const complete = (threadId = "thread") =>
+  const complete = (threadId = "thread", turnId = activeTurnId) =>
     emit({
       method: "turn/completed",
       params: {
         threadId,
         turn: {
-          id: "turn",
+          id: turnId,
           status: "completed",
-          items: [{ type: "agentMessage", id: "answer", text: "synthetic answer" }],
+          items: [
+            {
+              type: "agentMessage",
+              id: "answer",
+              text: turnId === "turn" ? "synthetic answer" : `synthetic answer ${turnId}`,
+            },
+          ],
         },
       },
     });
+  const releaseSteer = Effect.suspend(() =>
+    pendingSteerId === undefined
+      ? Effect.void
+      : emit({ id: pendingSteerId, result: { turnId: activeTurnId } }),
+  );
   return {
     runtime,
     host,
     emit,
     complete,
+    releaseSteer,
+    steerReceived,
     prompted,
     exited,
     stops: () => stops,
     prompts: () => prompts,
+    steers: () => steers,
   };
 });
 
@@ -172,6 +205,148 @@ describe("Codex generation bridge over production session adapter", () => {
         assert.equal(f.prompts(), 1);
         assert.equal(JSON.stringify(snapshot).includes("sentinel"), false);
       }),
+  );
+
+  it.effect("admits a terminal follow-up as a distinct turn with durable history", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.runtime.admit({ ...command, clientUserMessageId: "initial" });
+      yield* f.complete();
+      yield* TestClock.adjust(1);
+      const followUp = yield* f.runtime.message({
+        ...command,
+        text: "follow-up",
+        clientUserMessageId: "follow-up",
+      });
+      assert.deepEqual(followUp, {
+        generation: "generation-1",
+        threadId: "thread",
+        turnId: "turn-2",
+      });
+      assert.deepEqual(
+        (yield* f.runtime.snapshot).turns?.map(({ id, state, user }) => ({ id, state, user })),
+        [
+          { id: "turn", state: "completed", user: "hello" },
+          { id: "turn-2", state: "streaming", user: "follow-up" },
+        ],
+      );
+      yield* f.complete();
+      yield* TestClock.adjust(1);
+      const snapshot = yield* f.runtime.snapshot;
+      assert.deepEqual(snapshot.prompt, {
+        status: "terminal",
+        turnId: "turn-2",
+        outcome: "completed",
+        text: "synthetic answer turn-2",
+      });
+      assert.equal(snapshot.turns?.length, 2);
+      assert.equal(f.prompts(), 2);
+    }),
+  );
+
+  it.effect(
+    "steers only the fenced active turn and replays an accepted id without redispatch",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* f.runtime.admit(command);
+        const wrong = yield* Effect.result(
+          f.runtime.steer({
+            threadId: "thread",
+            text: "wrong",
+            expectedTurnId: "other",
+            clientUserMessageId: "wrong-steer",
+          }),
+        );
+        assert.ok(Result.isFailure(wrong));
+        assert.equal(wrong.failure.code, "wrong_turn");
+        const input = {
+          threadId: "thread",
+          text: "adjust",
+          expectedTurnId: "turn",
+          clientUserMessageId: "steer-1",
+        } as const;
+        const admitted = yield* f.runtime.steer(input);
+        assert.deepEqual(admitted, {
+          generation: "generation-1",
+          threadId: "thread",
+          turnId: "turn",
+        });
+        assert.deepEqual(yield* f.runtime.steer(input), admitted);
+        assert.equal(f.steers(), 1);
+        assert.equal((yield* f.runtime.snapshot).turns?.[0]?.user, "hello\nadjust");
+      }),
+  );
+
+  it.effect("marks a lost steer reply unknown and never replays the native request", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true, Number.MAX_SAFE_INTEGER, "lost");
+      yield* f.runtime.admit(command);
+      const input = {
+        threadId: "thread",
+        text: "lost",
+        expectedTurnId: "turn",
+        clientUserMessageId: "lost-steer",
+      } as const;
+      const pending = yield* f.runtime.steer(input).pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(f.steerReceived);
+      yield* TestClock.adjust(101);
+      const first = yield* Fiber.join(pending);
+      assert.ok(Result.isFailure(first));
+      assert.equal(first.failure.code, "host_failed");
+      assert.equal(first.failure.outcome, "ambiguous");
+      const replay = yield* Effect.result(f.runtime.steer(input));
+      assert.ok(Result.isFailure(replay));
+      assert.equal(replay.failure.code, "idempotency_unknown");
+      assert.equal(replay.failure.outcome, "ambiguous");
+      assert.equal(f.steers(), 1);
+      assert.equal(f.host.inspect().ready, true);
+    }),
+  );
+
+  it.effect("records steering text when completion wins the native steer race", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true, Number.MAX_SAFE_INTEGER, "delayed");
+      yield* f.runtime.admit(command);
+      const pending = yield* f.runtime
+        .steer({
+          threadId: "thread",
+          text: "race",
+          expectedTurnId: "turn",
+          clientUserMessageId: "race-steer",
+        })
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(f.steerReceived);
+      yield* f.complete();
+      yield* TestClock.adjust(1);
+      yield* f.releaseSteer;
+      const admitted = yield* Fiber.join(pending);
+      assert.ok(Result.isSuccess(admitted));
+      assert.equal(admitted.success.turnId, "turn");
+      const snapshot = yield* f.runtime.snapshot;
+      assert.equal(snapshot.prompt.status, "terminal");
+      assert.equal(snapshot.turns?.[0]?.user, "hello\nrace");
+    }),
+  );
+
+  it.effect("bounds retained turns while preserving the initial admission anchor", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.runtime.admit(command);
+      for (let index = 1; index <= 110; index++) {
+        yield* f.complete();
+        yield* TestClock.adjust(1);
+        yield* f.runtime.message({
+          threadId: "thread",
+          text: `follow-up-${index}`,
+        });
+      }
+      const snapshot = yield* f.runtime.snapshot;
+      assert.ok((snapshot.turns?.length ?? 0) <= 100);
+      assert.equal(snapshot.turns?.[0]?.id, "turn");
+      assert.equal(snapshot.turnsTruncated, true);
+      assert.equal(snapshot.prompt.status, "running");
+    }),
   );
 
   it.effect("rejects wrong thread and malformed/oversized prompt before any native write", () =>

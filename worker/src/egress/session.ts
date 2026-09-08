@@ -6,6 +6,7 @@ import {
   PI_CONSOLE_MAX_RESPONSE_BYTES,
   PiConsoleSnapshotSchema,
 } from "../../../protocol/pi-console";
+import { SessionSteerResponseSchema } from "../../../protocol/session-steer";
 import type { Bindings } from "../shared/bindings";
 import { readBoundedJson, readBoundedUtf8Body } from "../shared/bounded-http";
 import { decodeJsonValue } from "../shared/json";
@@ -78,56 +79,12 @@ const ErrorEnvelopeSchema = Schema.Struct({
     hint: Schema.optionalKey(Schema.NonEmptyString),
   }),
 });
-const SteerResponseSchema = Schema.Union([
-  Schema.Struct({
-    id: Schema.NonEmptyString,
-    status: Schema.Literal("accepted"),
-    commandId: Schema.NonEmptyString,
-    epoch: Schema.NonEmptyString,
-    sessionRevision: Schema.Int,
-  }),
-  Schema.Struct({
-    id: Schema.NonEmptyString,
-    status: Schema.Literal("stale"),
-    reason: Schema.Literals(["session_revision_changed", "epoch_changed"]),
-    expectedSessionRevision: Schema.Int,
-    sessionRevision: Schema.optionalKey(Schema.Int),
-    retryable: Schema.Literal(false),
-  }),
-  Schema.Struct({
-    id: Schema.NonEmptyString,
-    status: Schema.Literal("unavailable"),
-    reason: Schema.Literals([
-      "provider_passive_relay_unavailable",
-      "session_authority_unavailable",
-      "session_not_warm",
-      "session_operation_active",
-      "provider_unsupported",
-      "command_id_conflict",
-      "extension_ui_not_pending",
-      "extension_ui_response_already_delivered",
-      "invalid_command",
-      "pi_quiescing",
-      "command_rejected",
-    ]),
-    retryable: Schema.Boolean,
-  }),
-  Schema.Struct({
-    id: Schema.NonEmptyString,
-    status: Schema.Literal("ambiguous"),
-    reason: Schema.Literals([
-      "command_transport_failed",
-      "command_response_invalid",
-      "command_receipt_mismatch",
-    ]),
-  }),
-]);
 const decodeInspectResponse = Schema.decodeUnknownOption(
   Schema.Union([PiConsoleSnapshotSchema, ErrorEnvelopeSchema]),
   { onExcessProperty: "error" },
 );
 const decodeSteerResponse = Schema.decodeUnknownOption(
-  Schema.Union([SteerResponseSchema, ErrorEnvelopeSchema]),
+  Schema.Union([SessionSteerResponseSchema, ErrorEnvelopeSchema]),
   { onExcessProperty: "error" },
 );
 const decodeScottyError = Schema.decodeUnknownOption(

@@ -1,11 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Result } from "effect";
+import { Deferred, Effect, Fiber, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
 import type { CredentialGrant } from "../../../../protocol/credentials";
 import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
 import {
   admitCodexSandbox,
   readCodexSandbox,
+  sendCodexSandboxMessage,
   startCodexSandbox,
   type CodexSandboxIdentity,
 } from "../../../src/agent/codex/sandbox";
@@ -285,6 +286,84 @@ describe("Codex Sandbox adapter", () => {
       assert.equal(posts, 1);
     }),
   );
+
+  it.effect("preserves a lost message reply as a typed post-dispatch ambiguity", () =>
+    Effect.gen(function* () {
+      let posts = 0;
+      const layer = sandboxRuntimeLayer({
+        ...sandboxRuntimeCapabilitiesFake(),
+        fetchPort: (path, _port, method) => {
+          if (path === "/message" && method === "POST") {
+            posts += 1;
+            return Promise.reject(new Error("lost reply"));
+          }
+          return Promise.resolve(
+            Response.json({ ...snapshot, prompt: { status: "running", turnId: "turn-1" } }),
+          );
+        },
+      });
+      const result = yield* sendCodexSandboxMessage(
+        identity,
+        "thread-1",
+        "adjust",
+        "message-1",
+      ).pipe(Effect.provide(layer), Effect.result);
+      assert.ok(Result.isFailure(result));
+      assert.isTrue(Predicate.isTagged(result.failure, "CodexMessageAdmissionUnknown"));
+      assert.equal(posts, 1);
+    }),
+  );
+
+  for (const failureMode of [
+    "ambiguous-response",
+    "malformed-admission",
+    "post-admission-read",
+  ] as const)
+    it.effect(`preserves ${failureMode} as a typed post-dispatch ambiguity`, () =>
+      Effect.gen(function* () {
+        let posts = 0;
+        let snapshotReads = 0;
+        const layer = sandboxRuntimeLayer({
+          ...sandboxRuntimeCapabilitiesFake(),
+          fetchPort: (path, _port, method) => {
+            if (path === "/snapshot") {
+              snapshotReads += 1;
+              if (failureMode === "post-admission-read" && snapshotReads === 2)
+                return Promise.reject(new Error("post-admission snapshot unavailable"));
+              return Promise.resolve(
+                Response.json({ ...snapshot, prompt: { status: "running", turnId: "turn-1" } }),
+              );
+            }
+            if (path === "/message" && method === "POST") {
+              posts += 1;
+              if (failureMode === "ambiguous-response")
+                return Promise.resolve(
+                  Response.json({ error: "host_failed", outcome: "ambiguous" }, { status: 502 }),
+                );
+              if (failureMode === "malformed-admission")
+                return Promise.resolve(Response.json({ malformed: true }, { status: 202 }));
+              return Promise.resolve(
+                Response.json(
+                  { generation: identity.generation, threadId: "thread-1", turnId: "turn-1" },
+                  { status: 202 },
+                ),
+              );
+            }
+            return Promise.reject(new Error("unexpected Codex request"));
+          },
+        });
+        const result = yield* sendCodexSandboxMessage(
+          identity,
+          "thread-1",
+          "adjust",
+          `message-${failureMode}`,
+        ).pipe(Effect.provide(layer), Effect.result);
+        assert.ok(Result.isFailure(result));
+        assert.isTrue(Predicate.isTagged(result.failure, "CodexMessageAdmissionUnknown"));
+        assert.equal(posts, 1);
+        assert.equal(snapshotReads, failureMode === "post-admission-read" ? 2 : 1);
+      }),
+    );
 
   it.effect("bounds untrusted snapshots", () =>
     Effect.gen(function* () {

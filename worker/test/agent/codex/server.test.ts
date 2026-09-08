@@ -76,6 +76,7 @@ const fixture = Effect.fnUntraced(function* () {
         calls++;
         return { turnId: "turn", completed: Deferred.await(terminal) };
       }),
+    steer: () => Effect.succeed({ turnId: "turn" }),
     interrupt: Deferred.await(terminal),
     stop,
     closed: Deferred.await(closed),
@@ -283,6 +284,24 @@ createInterface({input:process.stdin}).on('line', (line) => {
           (yield* readCodexSnapshot(running.text, { generation: "generation-1" })).prompt.status,
           "running",
         );
+        const steered = yield* exchange(
+          f.port,
+          "POST",
+          "/message",
+          JSON.stringify({
+            mode: "steer",
+            threadId: "thread",
+            text: "adjust",
+            expectedTurnId: "turn",
+            clientUserMessageId: "steer-1",
+          }),
+        );
+        assert.equal(steered.status, 202);
+        assert.deepEqual(yield* decodeAdmission(steered.text), {
+          generation: "generation-1",
+          threadId: "thread",
+          turnId: "turn",
+        });
         const busy = yield* exchange(
           f.port,
           "POST",

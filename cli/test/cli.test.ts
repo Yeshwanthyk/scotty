@@ -3723,6 +3723,44 @@ describe("commands and schemas", () => {
     ]);
   });
 
+  test("steer renders Codex follow-up and active-steer admissions by mode", async () => {
+    const responses = [
+      {
+        id: "s1",
+        status: "accepted",
+        mode: "message",
+        turnId: "turn-2",
+        sessionRevision: 8,
+      },
+      {
+        id: "s1",
+        status: "accepted",
+        mode: "steer",
+        turnId: "turn-2",
+        sessionRevision: 8,
+      },
+    ] as const;
+    let calls = 0;
+    const h = harness({
+      stdoutIsTTY: true,
+      fetch: async () => Response.json(responses[calls++] ?? responses[1]),
+    });
+
+    expect(
+      await main(["steer", "s1", "follow up", "--host", "https://worker.example"], h.deps),
+    ).toBe(EXIT.OK);
+    expect(h.stdout.join("")).toBe("Follow-up accepted for s1 at revision 8.\n");
+    h.stdout.length = 0;
+    expect(
+      await main(
+        ["steer", "s1", "steer now", "--json", "--host", "https://worker.example"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(h.json()).toEqual(responses[1]);
+    expect(calls).toBe(2);
+  });
+
   test("steer surfaces stale, unavailable, and ambiguous outcomes once with bounded output", async () => {
     for (const [reply, exitCode, humanOutput] of [
       [
@@ -3748,9 +3786,24 @@ describe("commands and schemas", () => {
         "Steer unavailable for s1: session_not_warm.\n",
       ],
       [
+        {
+          id: "s1",
+          status: "unavailable",
+          reason: "codex_message_admission_unavailable",
+          retryable: false,
+        },
+        EXIT.WRONG_STATE,
+        "Steer unavailable for s1: codex_message_admission_unavailable.\n",
+      ],
+      [
         { id: "s1", status: "ambiguous", reason: "command_transport_failed" },
         EXIT.GENERIC,
         "Steer outcome is ambiguous for s1: command_transport_failed; do not retry automatically.\n",
+      ],
+      [
+        { id: "s1", status: "ambiguous", reason: "codex_message_admission_unknown" },
+        EXIT.GENERIC,
+        "Steer outcome is ambiguous for s1: codex_message_admission_unknown; do not retry automatically.\n",
       ],
     ] as const) {
       let calls = 0;

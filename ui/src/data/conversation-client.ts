@@ -258,8 +258,7 @@ export const decodeConversationSnapshot = (value: unknown): ConversationSnapshot
 const readJson = async (response: Response): Promise<unknown> =>
   response.json().catch(() => undefined);
 
-const decodeHttpFailure = async (response: Response): Promise<ConversationFailure> => {
-  const body = await readJson(response);
+const decodeHttpFailureBody = (response: Response, body: unknown): ConversationFailure => {
   if (isJsonObject(body) && isJsonObject(body.error))
     return {
       kind: "http",
@@ -273,6 +272,9 @@ const decodeHttpFailure = async (response: Response): Promise<ConversationFailur
     };
   return { kind: "http", status: response.status, message: "The conversation is unavailable." };
 };
+
+const decodeHttpFailure = async (response: Response): Promise<ConversationFailure> =>
+  decodeHttpFailureBody(response, await readJson(response));
 
 export const readConversation = async (
   sessionId: string,
@@ -312,6 +314,22 @@ const outcomeMessage = (status: "stale" | "unavailable" | "ambiguous"): string =
       ? "Delivery could not be confirmed. Check the conversation before sending again."
       : "The session cannot accept that message right now.";
 
+const decodeSteerOutcome = (
+  body: unknown,
+  sessionId: string,
+): ConversationSteerResult | undefined => {
+  if (
+    !isJsonObject(body) ||
+    body.id !== sessionId ||
+    (body.status !== "stale" && body.status !== "unavailable" && body.status !== "ambiguous")
+  )
+    return undefined;
+  return {
+    ok: false,
+    failure: { kind: body.status, message: outcomeMessage(body.status) },
+  };
+};
+
 export const steerConversation = async (
   sessionId: string,
   message: string,
@@ -333,7 +351,15 @@ export const steerConversation = async (
   } catch {
     return { ok: false, failure: { kind: "network", message: "Scotty could not be reached." } };
   }
-  if (!response.ok) return { ok: false, failure: await decodeHttpFailure(response) };
+  if (!response.ok) {
+    const body = await readJson(response);
+    return (
+      decodeSteerOutcome(body, sessionId) ?? {
+        ok: false,
+        failure: decodeHttpFailureBody(response, body),
+      }
+    );
+  }
   const body = await readJson(response);
   if (!isJsonObject(body) || body.id !== sessionId || typeof body.status !== "string")
     return {
@@ -344,8 +370,8 @@ export const steerConversation = async (
       },
     };
   if (body.status === "accepted") return { ok: true, status: "accepted" };
-  if (body.status === "stale" || body.status === "unavailable" || body.status === "ambiguous")
-    return { ok: false, failure: { kind: body.status, message: outcomeMessage(body.status) } };
+  const outcome = decodeSteerOutcome(body, sessionId);
+  if (outcome !== undefined) return outcome;
   return {
     ok: false,
     failure: {

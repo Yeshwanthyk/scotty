@@ -209,5 +209,64 @@ describe("conversation client boundary", () => {
         message: "Delivery could not be confirmed. Check the conversation before sending again.",
       },
     });
+
+    const ambiguousHttpFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      Response.json(
+        {
+          id: "session-1",
+          status: "ambiguous",
+          reason: "codex_message_admission_unknown",
+          retryable: false,
+        },
+        { status: 502 },
+      ),
+    );
+    await expect(
+      steerConversation("session-1", "Classify the unknown delivery", {
+        fetch: ambiguousHttpFetch,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      failure: {
+        kind: "ambiguous",
+        message: "Delivery could not be confirmed. Check the conversation before sending again.",
+      },
+    });
   });
+
+  it.each(["message", "steer"] as const)(
+    "accepts a Codex %s admission only for the requested session",
+    async (mode) => {
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+        Response.json({
+          id: "session-1",
+          status: "accepted",
+          mode,
+          turnId: "turn-2",
+          sessionRevision: 2,
+        }),
+      );
+      await expect(
+        steerConversation("session-1", "Continue the investigation", { fetch: fetchMock }),
+      ).resolves.toEqual({ ok: true, status: "accepted" });
+      const wrongSession = vi.fn<typeof fetch>().mockResolvedValueOnce(
+        Response.json({
+          id: "other-session",
+          status: "accepted",
+          mode,
+          turnId: "turn-2",
+          sessionRevision: 2,
+        }),
+      );
+      await expect(
+        steerConversation("session-1", "Continue the investigation", { fetch: wrongSession }),
+      ).resolves.toEqual({
+        ok: false,
+        failure: {
+          kind: "malformed-response",
+          message: "Scotty returned an unreadable delivery result.",
+        },
+      });
+    },
+  );
 });
