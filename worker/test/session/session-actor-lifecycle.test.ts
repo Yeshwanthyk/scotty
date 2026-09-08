@@ -1477,49 +1477,72 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.isUndefined(await harness.sandbox.getScottyHatchOpenRoute());
   });
 
-  it("does not reconcile lifecycle success after Hatch restore cleanup failed", async () => {
-    const harness = await createSessionHarness({
-      previewBase: "preview.example.test",
-      rawPiContainerRunning: true,
-      piSessionRunning: true,
-    });
-    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
-    await harness.sandbox.ensureScottyHatch({
-      service: {
-        name: "docs",
-        argv: ["npm", "run", "dev"],
-        workingDirectory: `/workspace/${SESSION_ID}`,
-        port: 4_173,
-        healthPath: "/health",
-      },
-    });
-    harness.injectFailure("hatchHealth");
+  it.effect("does not reconcile lifecycle success after Hatch restore cleanup failed", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      const restoreHealthEntered = deferred<void>();
+      let healthFails = false;
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          previewBase: "preview.example.test",
+          rawPiContainerRunning: true,
+          piSessionRunning: true,
+          containerFetch: makeHatchHealthContainerFetch(() => {
+            if (healthFails) restoreHealthEntered.resolve();
+            return healthFails ? 503 : 200;
+          }),
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.ensureScottyHatch({
+          service: {
+            name: "docs",
+            argv: ["npm", "run", "dev"],
+            workingDirectory: `/workspace/${SESSION_ID}`,
+            port: 4_173,
+            healthPath: "/health",
+          },
+        }),
+      );
+      healthFails = true;
+      const checkpoint = harness.sandbox.checkpointScottySession().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      yield* Effect.promise(() => restoreHealthEntered.promise);
+      yield* Effect.yieldNow;
+      yield* clock.adjust("30 seconds");
+      const failure = yield* Effect.promise(() => checkpoint);
+      assert.isDefined(failure);
+      const failedHatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+      assert.strictEqual(failedHatch?.desiredStatus, "open");
+      assert.strictEqual(failedHatch?.observedStatus, "failed");
+      assert.strictEqual(failedHatch?.exposure, "closed");
+      healthFails = false;
+      const retry = harness.schedules
+        .filter((schedule) => schedule.callback === "sessionActorDeadline")
+        .at(-1);
+      assert.isDefined(retry);
 
-    await expect(harness.sandbox.checkpointScottySession()).rejects.toBeDefined();
-    const failedHatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
-    assert.strictEqual(failedHatch?.desiredStatus, "open");
-    assert.strictEqual(failedHatch?.observedStatus, "failed");
-    assert.strictEqual(failedHatch?.exposure, "closed");
-    harness.clearFailure("hatchHealth");
-    const retry = harness.schedules
-      .filter((schedule) => schedule.callback === "sessionActorDeadline")
-      .at(-1);
-    assert.isDefined(retry);
+      yield* Effect.promise(() => harness.sandbox.sessionActorDeadline(retry.payload));
 
-    await harness.sandbox.sessionActorDeadline(retry.payload);
-
-    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
-    assert.ok(
-      authority !== undefined &&
-        Predicate.isTagged(authority.state, "Stable") &&
-        Predicate.isTagged(authority.state.stable, "Failed"),
-    );
-    assert.strictEqual(authority.state.stable.code, "reconciliation_outcome_unknown");
-    assert.strictEqual(
-      harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary?.observedStatus,
-      "failed",
-    );
-  });
+      const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        authority !== undefined &&
+          Predicate.isTagged(authority.state, "Stable") &&
+          Predicate.isTagged(authority.state.stable, "Failed"),
+      );
+      assert.strictEqual(authority.state.stable.code, "reconciliation_outcome_unknown");
+      assert.strictEqual(
+        harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary?.observedStatus,
+        "failed",
+      );
+    }),
+  );
 
   it("vaporizes through actor authority and removes every owned projection", async () => {
     const harness = await createSessionHarness();
