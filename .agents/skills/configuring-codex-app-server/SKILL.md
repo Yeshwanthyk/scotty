@@ -53,9 +53,9 @@ Session grant and substitutes the pinned credential. Do not add native OAuth imp
   native child cleanup belongs to scopes/finalizers.
 
 The public vertical supports create, canonical read, terminal follow-up messages, active-turn
-steering, and vaporize. Correlate message receipts with native turn IDs and preserve typed ambiguity
-after dispatch. Codex checkpoint, sleep/resume, queued follow-ups, public interruption, and shared
-skill discovery remain unavailable. Preserve their explicit guards; do not route them through Pi.
+steering, interruption, and vaporize. Correlate message receipts with native turn IDs and preserve
+typed ambiguity after dispatch. Codex checkpoint, sleep/resume, queued follow-ups, and shared skill
+discovery remain unavailable. Preserve their explicit guards; do not route them through Pi.
 
 ## Verify and report
 

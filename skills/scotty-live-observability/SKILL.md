@@ -40,8 +40,10 @@ Interpret boundaries precisely:
 
 For Codex, separate message admission from terminal response in canonical read. For an authorized
 messaging canary, correlate active steering and terminal follow-ups by returned turn ID and require
-completed tool receipts. A delivery-unknown result requires inspection, not blind resubmission.
-Checkpoint and resume remain unavailable for Codex.
+completed tool receipts. For interruption, require native terminal `interrupted` and its public
+canonical `aborted` projection. A delivery-unknown result requires inspection, not blind
+resubmission. Checkpoint, sleep/resume, queued follow-ups, and shared skill discovery remain
+unavailable for Codex.
 For Pi overrides, native settings readback must precede the first prompt. Local TOML defaults do
 not establish effective settings for an existing Session.
 
@@ -54,8 +56,9 @@ environment values, prompts, model content, or raw provider payloads. Preserve t
 request, authority snapshot, and relevant tail window before another reproduction. Stop if secret
 material appears.
 
-Mutation remains separately authorized. Creating, steering, checkpointing, sleeping, resuming,
-vaporizing, syncing, deploying, and resetting resources require explicit scope and targets. Track
+Mutation remains separately authorized. Creating, steering, interrupting, checkpointing, sleeping,
+resuming, vaporizing, syncing, deploying, and resetting resources require explicit scope and
+targets. Track
 canary IDs and clean up only owned canaries. Fault controls reproduce failures; they never set the
 desired final state directly.
 
