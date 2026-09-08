@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import {
   CONVERSATION_MAX_TEXT_BYTES,
   decodeCanonicalConversationSnapshot,
+  type CanonicalConversationTurn,
 } from "../../../../protocol/conversation";
 import type { CodexSnapshot } from "./runtime";
 
@@ -15,6 +16,27 @@ const boundedText = (text: string): string => {
     bounded += character;
   }
   return bounded;
+};
+
+type CodexPromptState = (typeof CodexSnapshot.Type)["prompt"];
+
+const projectFailedTurn = (
+  turn: CanonicalConversationTurn,
+  state: CanonicalConversationTurn["state"],
+  prompt: CodexPromptState,
+  fallbackId: string,
+  activitySummary: string | undefined,
+): CanonicalConversationTurn => {
+  const failedId =
+    state === "failed" && "turnId" in prompt && prompt.turnId !== null ? prompt.turnId : fallbackId;
+  if (state !== "failed" || turn.id !== failedId || turn.state !== "failed") return turn;
+  return {
+    ...turn,
+    ...(activitySummary === undefined ? {} : { activitySummary }),
+    tools: turn.tools.map((tool) =>
+      tool.state === "running" ? { ...tool, state: "failed" as const } : tool,
+    ),
+  };
 };
 
 export const codexConversation = Effect.fnUntraced(function* (
@@ -33,10 +55,23 @@ export const codexConversation = Effect.fnUntraced(function* (
     : prompt.status === "failed" || snapshot.failure !== null
       ? "failed"
       : "streaming";
+  const activitySummary =
+    state === "failed" && snapshot.failure !== null
+      ? boundedText(`Runtime failure: ${snapshot.failure}`)
+      : undefined;
+  const fallbackTurn: CanonicalConversationTurn = {
+    id: input.turnId,
+    state,
+    user,
+    assistant,
+    tools: snapshot.tools ?? [],
+  };
   const turns =
     snapshot.turns === undefined || snapshot.turns.length === 0
-      ? [{ id: input.turnId, state, user, assistant, tools: snapshot.tools ?? [] }]
-      : snapshot.turns;
+      ? [projectFailedTurn(fallbackTurn, state, prompt, input.turnId, activitySummary)]
+      : snapshot.turns.map((turn) =>
+          projectFailedTurn(turn, state, prompt, input.turnId, activitySummary),
+        );
   return yield* decodeCanonicalConversationSnapshot({
     version: 1,
     transport: {
