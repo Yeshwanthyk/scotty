@@ -300,6 +300,198 @@ describe("scoped Codex session", () => {
     }),
   );
 
+  it.effect("discards pinned informational events around command and steer progress", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      const turn = yield* host.prompt("hello");
+      yield* f.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "command",
+            command: "printf PROOF",
+            status: "inProgress",
+          },
+        },
+      });
+      yield* f.emit({
+        method: "item/commandExecution/outputDelta",
+        params: { threadId: "thread", turnId: "turn", itemId: "command", delta: "PROOF" },
+      });
+      yield* f.emit({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          itemId: "reasoning",
+          delta: "planning",
+          summaryIndex: 0,
+        },
+      });
+      assert.deepEqual(yield* host.steer("adjust", "turn"), { turnId: "turn" });
+      for (const event of [
+        {
+          method: "item/reasoning/summaryPartAdded",
+          params: { threadId: "thread", turnId: "turn", itemId: "reasoning", summaryIndex: 0 },
+        },
+        {
+          method: "item/reasoning/textDelta",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            itemId: "reasoning",
+            delta: "details",
+            contentIndex: 0,
+          },
+        },
+        {
+          method: "item/plan/delta",
+          params: { threadId: "thread", turnId: "turn", itemId: "plan", delta: "step" },
+        },
+        {
+          method: "turn/diff/updated",
+          params: { threadId: "thread", turnId: "turn", diff: "diff" },
+        },
+        {
+          method: "turn/plan/updated",
+          params: { threadId: "thread", turnId: "turn", explanation: null, plan: [] },
+        },
+        {
+          method: "item/commandExecution/terminalInteraction",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            itemId: "command",
+            processId: "process",
+            stdin: "",
+          },
+        },
+      ] as const)
+        yield* f.emit(event);
+      yield* f.emit({
+        method: "item/completed",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "command",
+            command: "printf PROOF",
+            status: "completed",
+            aggregatedOutput: "PROOF",
+          },
+        },
+      });
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+      });
+      assert.equal((yield* turn.completed).status, "completed");
+      assert.equal(host.inspect().ready, true);
+      assert.equal(host.inspect().failure, null);
+      assert.ok(host.inspect().discarded >= 7);
+      yield* host.stop;
+    }),
+  );
+
+  it.effect("ignores a fenced retryable upstream error until terminal completion", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      const turn = yield* host.prompt("hello");
+      yield* f.emit({
+        method: "error",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          willRetry: true,
+          error: { message: "untrusted transient detail", codexErrorInfo: "other" },
+        },
+      });
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+      });
+      assert.equal((yield* turn.completed).status, "completed");
+      assert.equal(host.inspect().ready, true);
+      assert.equal(host.inspect().failure, null);
+      assert.ok(host.inspect().discarded >= 1);
+      assert.notInclude(JSON.stringify(host.inspect()), "untrusted transient detail");
+      yield* host.stop;
+    }),
+  );
+
+  it.effect("keeps retryable upstream errors turn-fenced", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      const turn = yield* host.prompt("hello");
+      yield* f.emit({
+        method: "error",
+        params: {
+          threadId: "old-thread",
+          turnId: "turn",
+          willRetry: true,
+          error: { message: "untrusted transient detail" },
+        },
+      });
+      const result = yield* Effect.result(turn.completed);
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure.code, "stale_notification");
+      assert.equal((yield* host.closed).failure, "stale_notification");
+    }),
+  );
+
+  it.effect("keeps informational notifications turn-fenced", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      const turn = yield* host.prompt("hello");
+      yield* f.emit({
+        method: "item/reasoning/textDelta",
+        params: {
+          threadId: "other-thread",
+          turnId: "turn",
+          itemId: "reasoning",
+          delta: "stale",
+          contentIndex: 0,
+        },
+      });
+      const result = yield* Effect.result(turn.completed);
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure.code, "stale_notification");
+      assert.equal((yield* host.closed).failure, "stale_notification");
+    }),
+  );
+
+  for (const event of [
+    {
+      method: "item/reasoning/textDelta",
+      params: { threadId: "thread", itemId: "reasoning", delta: "missing turn", contentIndex: 0 },
+    },
+    { method: "future/notification", params: {} },
+    { method: "item/started", params: { threadId: "thread", turnId: "turn", item: {} } },
+  ] as const)
+    it.effect(`rejects malformed or unknown notification ${event.method}`, () =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const host = yield* makeSession(f.transport);
+        const turn = yield* host.prompt("hello");
+        yield* f.emit(event);
+        const result = yield* Effect.result(turn.completed);
+        assert.ok(Result.isFailure(result));
+        assert.equal(
+          result.failure.code,
+          event.method === "item/started" ? "invalid_message" : "unsupported_notification",
+        );
+        assert.equal((yield* host.closed).failure, result.failure.code);
+      }),
+    );
+
   it.effect("readiness can exceed the request budget within one startup budget", () =>
     Effect.gen(function* () {
       const f = yield* fixture("delayed");

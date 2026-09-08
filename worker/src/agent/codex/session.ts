@@ -48,31 +48,58 @@ const decodeUpstreamFailure = Schema.decodeUnknownEffect(
       params: Schema.Struct({
         threadId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
         turnId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
-        willRetry: Schema.Literal(false),
+        willRetry: Schema.Boolean,
         error: Schema.Struct({ message: Schema.String.check(Schema.isMaxLength(4096)) }),
       }),
     }),
   ),
 );
-const Advisory = Schema.Struct({
-  method: Schema.Literals([
-    "remoteControl/status/changed",
-    "configWarning",
-    "thread/started",
-    "thread/status/changed",
-    "item/started",
-    "item/completed",
-    "thread/tokenUsage/updated",
-    "account/rateLimits/updated",
-    "item/commandExecution/outputDelta",
-  ]),
-  params: Schema.JsonObject,
-  emittedAtMs: Schema.optionalKey(
-    Schema.Int.check(
-      Schema.isBetween({ minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER }),
-    ),
+const AdvisoryIdentifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+const AdvisoryThread = Schema.Struct({
+  threadId: AdvisoryIdentifier,
+  turnId: AdvisoryIdentifier,
+}).annotate({ parseOptions: { onExcessProperty: "ignore" } });
+const AdvisoryTimestamp = Schema.optionalKey(
+  Schema.Int.check(
+    Schema.isBetween({ minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER }),
   ),
-});
+);
+const ScopedAdvisoryMethod = Schema.Literals([
+  "turn/diff/updated",
+  "turn/plan/updated",
+  "item/plan/delta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/summaryPartAdded",
+  "item/reasoning/textDelta",
+  "item/commandExecution/terminalInteraction",
+]);
+const Advisory = Schema.Union([
+  Schema.Struct({
+    method: Schema.Literals([
+      "remoteControl/status/changed",
+      "configWarning",
+      "thread/started",
+      "thread/status/changed",
+      "item/started",
+      "item/completed",
+      "thread/tokenUsage/updated",
+      "account/rateLimits/updated",
+      "item/commandExecution/outputDelta",
+    ]),
+    params: Schema.JsonObject,
+    emittedAtMs: AdvisoryTimestamp,
+  }),
+  Schema.Struct({
+    method: ScopedAdvisoryMethod,
+    params: AdvisoryThread,
+    emittedAtMs: AdvisoryTimestamp,
+  }),
+]);
+type AdvisoryMessage = typeof Advisory.Type;
+type ScopedAdvisory = Extract<AdvisoryMessage, { method: typeof ScopedAdvisoryMethod.Type }>;
+const isScopedAdvisoryMethod = Schema.is(ScopedAdvisoryMethod);
+const isScopedAdvisory = (advisory: AdvisoryMessage): advisory is ScopedAdvisory =>
+  isScopedAdvisoryMethod(advisory.method);
 const decodeAdvisory = Schema.decodeUnknownEffect(Schema.fromJsonString(Advisory), {
   onExcessProperty: "error",
 });
@@ -237,6 +264,29 @@ export const makeSession = Effect.fnUntraced(function* (
       if (active === turn) active = undefined;
     }
   });
+  const handleUpstreamFailure = Effect.fnUntraced(function* (line: string) {
+    const rejection = yield* decodeUpstreamFailure(line).pipe(
+      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
+    );
+    if (!active || rejection.params.threadId !== threadId || rejection.params.turnId !== active.id)
+      return yield* new CodexHostError({ code: "stale_notification" });
+    if (rejection.params.willRetry) {
+      discarded++;
+      return;
+    }
+    return yield* new CodexHostError({ code: "upstream_failed" });
+  });
+  const handleAdvisory = Effect.fnUntraced(function* (line: string) {
+    const advisory = yield* decodeAdvisory(line).pipe(
+      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
+    );
+    if (
+      isScopedAdvisory(advisory) &&
+      (!active || advisory.params.threadId !== threadId || advisory.params.turnId !== active.id)
+    )
+      return yield* new CodexHostError({ code: "stale_notification" });
+    discarded++;
+  });
   const receive = Effect.fnUntraced(function* (line: string) {
     if (closing) return;
     if (++eventCount > limits.events) return yield* new CodexHostError({ code: "event_budget" });
@@ -270,22 +320,8 @@ export const makeSession = Effect.fnUntraced(function* (
       route.method === "item/commandExecution/outputDelta"
     )
       return yield* notification(yield* decoded(decodeCodexNotification(line)));
-    if (route.method === "error") {
-      const rejection = yield* decodeUpstreamFailure(line).pipe(
-        Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
-      );
-      if (
-        !active ||
-        rejection.params.threadId !== threadId ||
-        rejection.params.turnId !== active.id
-      )
-        return yield* new CodexHostError({ code: "stale_notification" });
-      return yield* new CodexHostError({ code: "upstream_failed" });
-    }
-    yield* decodeAdvisory(line).pipe(
-      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
-    );
-    discarded++;
+    if (route.method === "error") return yield* handleUpstreamFailure(line);
+    return yield* handleAdvisory(line);
   });
   const framer = makeFramer(limits.output);
   yield* supervise(transport.writer);
