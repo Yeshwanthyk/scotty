@@ -26,6 +26,7 @@ describe("session lifecycle invariants", () => {
 
   it("tracks every actor-owned session callback", () => {
     assert.deepStrictEqual(SESSION_SCHEDULE_CALLBACKS, [
+      "drainCodexFollowUps",
       "expireEvidenceJob",
       "expireRetainedEvidence",
       "retryHatchCleanup",
