@@ -27,6 +27,16 @@ const decode = (input: unknown) => {
   assert.ok(Result.isSuccess(result));
   return result.success;
 };
+const outputDelta = (delta: string) =>
+  decode({
+    method: "item/commandExecution/outputDelta",
+    params: {
+      threadId: "thread",
+      turnId: "turn",
+      itemId: "command-1",
+      delta,
+    },
+  });
 
 it("projects native command start, output and completion without excess native fields", () => {
   const tools = makeCodexTools();
@@ -34,18 +44,9 @@ it("projects native command start, output and completion without excess native f
   assert.notInclude(JSON.stringify(started), "MUST_NOT_RETAIN");
   tools.accept(started);
   assert.equal(tools.snapshot().tools[0]?.state, "running");
-  tools.accept(
-    decode({
-      method: "item/commandExecution/outputDelta",
-      params: {
-        threadId: "thread",
-        turnId: "turn",
-        itemId: "command-1",
-        delta: "PRO",
-      },
-    }),
-  );
-  assert.equal(tools.snapshot().tools[0]?.output, "PRO");
+  tools.accept(outputDelta("PRO"));
+  tools.accept(outputDelta("OF"));
+  assert.equal(tools.snapshot().tools[0]?.output, "PROOF");
   tools.accept(decode(item("completed", "PROOF")));
   assert.deepStrictEqual(tools.snapshot(), {
     tools: [
@@ -58,8 +59,24 @@ it("projects native command start, output and completion without excess native f
       },
     ],
     toolsTruncated: false,
-    sequence: 3,
+    sequence: 4,
   });
+});
+
+it("keeps ordered repeated deltas when the completion aggregate is ambiguous", () => {
+  const tools = makeCodexTools();
+  tools.accept(decode(item("inProgress")));
+  tools.accept(outputDelta("PRO"));
+  tools.accept(outputDelta("PRO"));
+  tools.accept(decode(item("completed", "PRO")));
+  assert.equal(tools.snapshot().tools[0]?.output, "PROPRO");
+});
+
+it("uses the completion aggregate when no output deltas arrive", () => {
+  const tools = makeCodexTools();
+  tools.accept(decode(item("inProgress")));
+  tools.accept(decode(item("completed", "PROOF")));
+  assert.equal(tools.snapshot().tools[0]?.output, "PROOF");
 });
 
 it("bounds UTF-8 output and records truncation, cancellation and a fresh turn", () => {
