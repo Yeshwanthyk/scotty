@@ -42,6 +42,21 @@ describe("explicit managed launch admission", () => {
     for (const startupTimeoutMs of [0, 9, 15001, 30000, Infinity, NaN, 10.5, "15000", null])
       assert.ok(Result.isFailure(decode({ ...selection, startupTimeoutMs })));
   });
+  it("keeps ephemeral history as the default and bounds durable resume input", () => {
+    assert.ok(Result.isSuccess(decode(selection)));
+    assert.ok(Result.isSuccess(decode({ ...selection, ephemeral: true })));
+    assert.ok(Result.isSuccess(decode({ ...selection, ephemeral: false })));
+    assert.ok(
+      Result.isSuccess(decode({ ...selection, ephemeral: false, resumeThreadId: "thread-01" })),
+    );
+    for (const resumeThreadId of ["", "x".repeat(257), "thread\nunsafe", null, 1])
+      assert.ok(Result.isFailure(decode({ ...selection, ephemeral: false, resumeThreadId })));
+    for (const launch of [
+      { ...selection, resumeThreadId: "thread-01" },
+      { ...selection, ephemeral: true, resumeThreadId: "thread-01" },
+    ])
+      assert.ok(Result.isFailure(decode(launch)));
+  });
   it("rejects incomplete or incompatible capability metadata", () => {
     for (const capability of codexModelCapabilities)
       assert.ok(Result.isSuccess(decodeCapability(capability)));

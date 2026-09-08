@@ -1,3 +1,7 @@
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { readCodexSavedState } from "../../../src/agent/codex/persistence";
+import type { CodexSavedHistory } from "../../../src/agent/codex/persistence-format";
 import { assert, describe, it } from "@effect/vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, Queue, Result, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
@@ -13,6 +17,7 @@ const fixture = Effect.fnUntraced(function* (
   expiresAt = Number.MAX_SAFE_INTEGER,
   steerMode: "accepted" | "lost" | "delayed" = "accepted",
   interruptStatus: "interrupted" | "completed" = "interrupted",
+  persistence?: { homes?: CodexProcess["homes"]; history?: typeof CodexSavedHistory.Type },
 ) {
   const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
   const exited = yield* Deferred.make<void>();
@@ -30,7 +35,11 @@ const fixture = Effect.fnUntraced(function* (
   const transport: CodexProcess = {
     pid: ChildProcessSpawner.ProcessId(100),
     platformOs: "linux",
-    homes: { home: "/runtime/home", codexHome: "/runtime/codex-home", cwd: "/workspace" },
+    homes: persistence?.homes ?? {
+      home: "/runtime/home",
+      codexHome: "/runtime/codex-home",
+      cwd: "/workspace",
+    },
     options: {
       binary: "/codex",
       runtimeDir: "/runtime",
@@ -68,7 +77,7 @@ const fixture = Effect.fnUntraced(function* (
           id: message.id,
           result: {
             userAgent: "scotty-component/0.153.4 fixture",
-            codexHome: "/runtime/codex-home",
+            codexHome: transport.homes.codexHome,
             platformFamily: "unix",
             platformOs: "linux",
           },
@@ -80,7 +89,7 @@ const fixture = Effect.fnUntraced(function* (
             thread: { id: "thread" },
             model: "gpt-5.4",
             modelProvider: "scotty-managed",
-            cwd: "/workspace",
+            cwd: transport.homes.cwd,
             approvalPolicy: "never",
             approvalsReviewer: "user",
             sandbox: { type: "dangerFullAccess" },
@@ -121,7 +130,7 @@ const fixture = Effect.fnUntraced(function* (
     }),
   };
   const host = yield* makeSession(transport);
-  const runtime = yield* makeCodexRuntime(host, "generation-1");
+  const runtime = yield* makeCodexRuntime(host, "generation-1", persistence?.history);
   const complete = (
     threadId = "thread",
     turnId = activeTurnId,
@@ -641,3 +650,99 @@ it.effect("rejects stale native command evidence at the active turn fence", () =
     assert.deepStrictEqual((yield* f.runtime.snapshot).tools, []);
   }),
 );
+
+describe("Codex automatic saved history", () => {
+  it.live(
+    "save interrupts and settles active work, survives repeat calls and permanently closes admission",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.acquireRelease(
+          Effect.promise(() => fs.mkdtemp(`${tmpdir()}/scotty-save-runtime-`)),
+          (root) => Effect.promise(() => fs.rm(root, { recursive: true, force: true })),
+        );
+        const homes = {
+          home: `${root}/home`,
+          codexHome: `${root}/codex`,
+          cwd: `${root}/workspace`,
+        };
+        yield* Effect.promise(async () => {
+          await fs.mkdir(homes.cwd);
+          await fs.mkdir(`${homes.codexHome}/sessions/2026/09/08`, { recursive: true });
+          await fs.writeFile(
+            `${homes.codexHome}/sessions/2026/09/08/rollout-fixture.jsonl`,
+            `${JSON.stringify({ type: "session_meta", payload: { id: "thread" } })}\n`,
+          );
+        });
+        const f = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "interrupted", {
+          homes,
+        });
+        yield* f.runtime.admit(command);
+        const saved = yield* f.runtime.save;
+        assert.deepStrictEqual(saved, { threadId: "thread", initialTurnId: "turn" });
+        assert.deepStrictEqual(yield* f.runtime.save, saved);
+        assert.equal(f.interrupts(), 1);
+        assert.equal(f.stops(), 1);
+        assert.equal((yield* f.runtime.snapshot).ready, false);
+        const archive = yield* readCodexSavedState(homes.cwd, saved);
+        assert.equal(archive.history.prompt.outcome, "interrupted");
+        assert.equal(archive.history.turns[0]?.state, "aborted");
+        const blocked = yield* Effect.result(f.runtime.message({ ...command, text: "after save" }));
+        assert.ok(Result.isFailure(blocked));
+        assert.equal(blocked.failure.code, "busy");
+        assert.equal(f.prompts(), 1);
+      }),
+  );
+  it.effect(
+    "hydrates canonical history and prior message receipts without replaying the initial prompt",
+    () =>
+      Effect.gen(function* () {
+        const history: typeof CodexSavedHistory.Type = {
+          threadId: "thread",
+          initialTurnId: "first",
+          prompt: { status: "terminal", turnId: "second", outcome: "completed", text: "answer" },
+          turns: [
+            {
+              id: "first",
+              user: "first user",
+              assistant: "first answer",
+              state: "completed",
+              tools: [],
+            },
+            {
+              id: "second",
+              user: "second user",
+              assistant: "answer",
+              state: "completed",
+              tools: [],
+            },
+          ],
+          turnsTruncated: false,
+          operations: [
+            {
+              id: "message-2",
+              mode: "message",
+              text: "second user",
+              status: "accepted",
+              turnId: "second",
+            },
+          ],
+        };
+        const f = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "interrupted", {
+          history,
+        });
+        assert.deepStrictEqual((yield* f.runtime.snapshot).turns, history.turns);
+        assert.deepStrictEqual(
+          yield* f.runtime.message({
+            threadId: "thread",
+            text: "second user",
+            clientUserMessageId: "message-2",
+          }),
+          { generation: "generation-1", threadId: "thread", turnId: "second" },
+        );
+        assert.equal(f.prompts(), 0);
+        const replay = yield* Effect.result(f.runtime.admit(command));
+        assert.ok(Result.isFailure(replay));
+        assert.equal(replay.failure.code, "already_admitted");
+      }),
+  );
+});

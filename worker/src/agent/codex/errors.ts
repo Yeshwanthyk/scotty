@@ -14,6 +14,7 @@ export type Cleanup = typeof Cleanup.Type;
 
 export class CodexHostError extends Data.TaggedError("CodexHostError")<{
   readonly code:
+    | "invalid_saved_state"
     | "invalid_launch_selection"
     | "credential_expired"
     | "upstream_failed"

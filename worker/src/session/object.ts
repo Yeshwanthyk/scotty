@@ -3434,10 +3434,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     kind: LifecycleCommandKind,
   ) {
     const current = yield* this.readActorSessionStateProgram();
-    if (current.authority.session.selection?.agent === "codex")
-      return yield* badRequest(
-        "Codex checkpoint, sleep and resume are not supported in this increment",
-      );
+    if (current.authority.session.selection?.agent === "codex" && kind === "Checkpoint")
+      return yield* badRequest("Codex checkpoint is not supported");
     const controller = yield* LifecycleController;
     const recovered = yield* this.recoverTransitioningActorForRequestProgram(kind).pipe(
       Effect.mapError((failure) =>

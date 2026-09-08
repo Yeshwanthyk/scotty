@@ -19,6 +19,7 @@ const SafeInteger = Schema.Int.check(
 const RequestId = Schema.Union([Identifier, SafeInteger]);
 const Empty = Schema.Record(Schema.String, Schema.Never);
 const TurnIdentity = Schema.Struct({ threadId: Identifier, turnId: Identifier });
+const ThreadHistoryMode = Schema.Literals(["legacy", "paginated"]);
 
 export const CodexClientMessageSchema = Schema.Union([
   Schema.Struct({
@@ -39,7 +40,25 @@ export const CodexClientMessageSchema = Schema.Union([
       cwd: Path,
       approvalPolicy: Schema.Literal("never"),
       sandbox: Schema.Literal("danger-full-access"),
-      ephemeral: Schema.Literal(true),
+      ephemeral: Schema.Boolean,
+    }),
+  }),
+  Schema.Struct({
+    id: RequestId,
+    method: Schema.Literal("thread/resume"),
+    params: Schema.Struct({
+      threadId: Identifier,
+      excludeTurns: Schema.optionalKey(Schema.Boolean),
+      approvalPolicy: Schema.Literal("never"),
+      sandbox: Schema.Literal("danger-full-access"),
+    }),
+  }),
+  Schema.Struct({
+    id: RequestId,
+    method: Schema.Literal("thread/read"),
+    params: Schema.Struct({
+      threadId: Identifier,
+      includeTurns: Schema.optionalKey(Schema.Boolean),
     }),
   }),
   Schema.Struct({
@@ -109,8 +128,13 @@ const InitializeResult = Schema.Struct({
   platformFamily: Identifier,
   platformOs: Identifier,
 }).annotate(projection);
-const ThreadStartResult = Schema.Struct({
-  thread: Schema.Struct({ id: Identifier }).annotate(projection),
+const ThreadReadback = Schema.Struct({
+  id: Identifier,
+  ephemeral: Schema.optionalKey(Schema.Boolean),
+  historyMode: Schema.optionalKey(ThreadHistoryMode),
+}).annotate(projection);
+const ThreadSettingsResult = Schema.Struct({
+  thread: ThreadReadback,
   model: Identifier,
   modelProvider: Identifier,
   cwd: Path,
@@ -121,6 +145,9 @@ const ThreadStartResult = Schema.Struct({
   }),
   reasoningEffort: Schema.optionalKey(Schema.NullOr(Identifier)),
 }).annotate(projection);
+const ThreadReadResult = Schema.Struct({ thread: ThreadReadback }).annotate(projection);
+export type CodexThreadSettings = typeof ThreadSettingsResult.Type;
+export type CodexThreadReadResult = typeof ThreadReadResult.Type;
 const TurnStartResult = Schema.Struct({ turn: StartedTurn }).annotate(projection);
 const TurnSteerResult = Schema.Struct({ turnId: Identifier }).annotate(projection);
 
@@ -227,7 +254,13 @@ export const decodeCodexInitializeResponse = boundedJsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(InitializeResult)), strict),
 );
 export const decodeCodexThreadStartResponse = boundedJsonDecoder(
-  Schema.decodeUnknownResult(Schema.fromJsonString(response(ThreadStartResult)), strict),
+  Schema.decodeUnknownResult(Schema.fromJsonString(response(ThreadSettingsResult)), strict),
+);
+export const decodeCodexThreadResumeResponse = boundedJsonDecoder(
+  Schema.decodeUnknownResult(Schema.fromJsonString(response(ThreadSettingsResult)), strict),
+);
+export const decodeCodexThreadReadResponse = boundedJsonDecoder(
+  Schema.decodeUnknownResult(Schema.fromJsonString(response(ThreadReadResult)), strict),
 );
 export const decodeCodexTurnStartResponse = boundedJsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(TurnStartResult)), strict),

@@ -1,3 +1,9 @@
+import {
+  CodexPersistenceIdentity,
+  CodexSavedHistory,
+  type CodexSavedState,
+} from "./persistence-format";
+import { readCodexSavedState, writeCodexSavedState } from "./persistence";
 import { Cause, Data, Deferred, Effect, Option, Predicate, Result, Schema, Scope } from "effect";
 import { CODEX_MAX_TEXT_BYTES, CODEX_VERSION } from "../../../../protocol/codex-app-server";
 import {
@@ -25,6 +31,7 @@ export const CodexControlToken = Schema.String.check(Schema.isPattern(/^[a-f0-9]
 export const CodexRuntimeStart = Schema.Struct({
   generation: CodexGeneration,
   launch: CodexLaunch,
+  restore: Schema.optionalKey(CodexPersistenceIdentity),
 });
 export const CodexPrompt = Schema.Struct({
   threadId: Identifier,
@@ -115,6 +122,7 @@ const decodeGeneration = Schema.decodeUnknownEffect(CodexGeneration);
 const decodePrompt = Schema.decodeUnknownEffect(CodexPrompt, { onExcessProperty: "error" });
 const decodeSteer = Schema.decodeUnknownEffect(CodexSteer, { onExcessProperty: "error" });
 const decodeInterrupt = Schema.decodeUnknownEffect(CodexInterrupt, { onExcessProperty: "error" });
+const decodeSavedHistory = Schema.decodeUnknownEffect(CodexSavedHistory);
 const decodeSnapshot = Schema.decodeUnknownEffect(CodexSnapshot, { onExcessProperty: "error" });
 const decodeSnapshotJson = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexSnapshot), {
   onExcessProperty: "error",
@@ -170,19 +178,40 @@ const boundedConversationText = (
 };
 const MAX_HISTORY_BYTES = 256 * 1024;
 
-export const makeCodexRuntime = Effect.fnUntraced(function* (host: Host, generationInput: unknown) {
+export const makeCodexRuntime = Effect.fnUntraced(function* (
+  host: Host,
+  generationInput: unknown,
+  restored?: (typeof CodexSavedState.Type)["history"],
+) {
   const generation = yield* decodeGeneration(generationInput).pipe(
     Effect.mapError(() => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" })),
   );
   const scope = yield* Scope.Scope;
   const initial = host.inspect();
-  let prompt: typeof PromptState.Type = { status: "idle" };
+  let prompt: typeof PromptState.Type = restored?.prompt ?? { status: "idle" };
+  let saving = false;
   let activeTurn: ConversationTurn | undefined;
   let steering = false;
-  const history: Array<ConversationTurn> = [];
-  let turnsTruncated = false;
+  const history: Array<ConversationTurn> = [...(restored?.turns ?? [])];
+  let turnsTruncated = restored?.turnsTruncated ?? false;
   const operations = new Map<string, OperationRecord>();
-  let operationAdmissionCount = 0;
+  for (const operation of restored?.operations ?? [])
+    operations.set(operation.id, {
+      mode: operation.mode,
+      text: operation.text,
+      expectedTurnId: operation.expectedTurnId,
+      status: operation.status,
+      ...(operation.turnId === undefined
+        ? {}
+        : {
+            admission: {
+              generation,
+              threadId: initial.settings.thread.id,
+              turnId: operation.turnId,
+            },
+          }),
+    });
+  let operationAdmissionCount = operations.size;
   let cleanup: typeof Cleanup.Type | null = null;
   let bridgeFailure: CodexBridgeError["code"] | CodexHostError["code"] | null = null;
   const recordOperation = (id: string | undefined, record: OperationRecord): boolean => {
@@ -258,7 +287,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (host: Host, generat
         approvalPolicy: initial.settings.approvalPolicy,
         sandbox: initial.settings.sandbox.type,
       },
-      ready: current.ready && bridgeFailure === null,
+      ready: current.ready && bridgeFailure === null && !saving,
       failure: current.failure ?? bridgeFailure,
       prompt,
       tools: current.tools,
@@ -293,6 +322,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (host: Host, generat
     Effect.forkIn(scope),
   );
   const startTurn = Effect.fnUntraced(function* (input: unknown, initialOnly: boolean) {
+    if (saving) return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
     const command = yield* decodePrompt(input).pipe(
       Effect.mapError(() => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" })),
     );
@@ -310,6 +340,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (host: Host, generat
     }
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
+        if (saving) return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
         if (prompt.status === "admitting" || prompt.status === "running")
           return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
         if (initialOnly && prompt.status !== "idle")
@@ -418,6 +449,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (host: Host, generat
   const admit = (input: unknown) => startTurn(input, true);
   const message = (input: unknown) => startTurn(input, false);
   const steer = Effect.fnUntraced(function* (input: unknown) {
+    if (saving) return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
     const command = yield* decodeSteer(input).pipe(
       Effect.mapError(() => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" })),
     );
@@ -437,6 +469,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (host: Host, generat
         return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
       return yield* new CodexBridgeError({ code: "idempotency_unknown", outcome: "ambiguous" });
     }
+    if (saving) return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
     if (prompt.status !== "running" || activeTurn === undefined)
       return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
     if (steering) return yield* new CodexBridgeError({ code: "busy", outcome: "rejected" });
@@ -521,13 +554,80 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (host: Host, generat
       status: result.success.status,
     };
   });
-  return { generation, snapshot, admit, message, steer, interrupt, stop };
+  const save = yield* Effect.cached(
+    Effect.gen(function* () {
+      saving = true;
+      while (prompt.status === "admitting" || steering) yield* Effect.sleep("10 millis");
+      if (prompt.status === "running")
+        yield* host.interrupt.pipe(
+          Effect.mapError(
+            () => new CodexBridgeError({ code: "host_failed", outcome: "ambiguous" }),
+          ),
+        );
+      while (prompt.status === "running" || activeTurn !== undefined)
+        yield* Effect.sleep("10 millis");
+      const first = history[0];
+      if (
+        prompt.status !== "terminal" ||
+        first === undefined ||
+        initial.threadId === undefined ||
+        bridgeFailure !== null
+      )
+        return yield* new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" });
+      const receipt = yield* stop;
+      if (receipt.parent !== "exited")
+        return yield* new CodexBridgeError({ code: "host_failed", outcome: "ambiguous" });
+      const saved = yield* decodeSavedHistory({
+        threadId: initial.threadId,
+        initialTurnId: first.id,
+        prompt,
+        turns: history,
+        turnsTruncated,
+        operations: [...operations].map(([id, operation]) => ({
+          id,
+          mode: operation.mode,
+          text: operation.text,
+          ...(operation.expectedTurnId === undefined
+            ? {}
+            : { expectedTurnId: operation.expectedTurnId }),
+          status: operation.status === "pending" ? "unknown" : operation.status,
+          ...(operation.admission === undefined ? {} : { turnId: operation.admission.turnId }),
+        })),
+      }).pipe(
+        Effect.mapError(
+          () => new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" }),
+        ),
+      );
+      return yield* writeCodexSavedState(initial.homes.cwd, initial.homes.codexHome, saved).pipe(
+        Effect.mapError(
+          () => new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" }),
+        ),
+      );
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: "15 seconds",
+        orElse: () =>
+          Effect.fail(new CodexBridgeError({ code: "request_timeout", outcome: "ambiguous" })),
+      }),
+    ),
+  );
+  return { generation, snapshot, admit, message, steer, interrupt, stop, save };
 });
 export type CodexRuntime = Effect.Success<ReturnType<typeof makeCodexRuntime>>;
 export const startCodexRuntime = Effect.fnUntraced(function* (input: unknown) {
   const selection = yield* decodeStart(input).pipe(
     Effect.mapError(() => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" })),
   );
-  const host = yield* startCodexSession(selection.launch);
-  return yield* makeCodexRuntime(host, selection.generation);
+  if (
+    (selection.restore === undefined) !== (selection.launch.resumeThreadId === undefined) ||
+    (selection.restore !== undefined &&
+      selection.restore.threadId !== selection.launch.resumeThreadId)
+  )
+    return yield* new CodexBridgeError({ code: "invalid_request", outcome: "rejected" });
+  const restored =
+    selection.restore === undefined
+      ? undefined
+      : yield* readCodexSavedState(selection.launch.workspace, selection.restore);
+  const host = yield* startCodexSession(selection.launch, undefined, restored);
+  return yield* makeCodexRuntime(host, selection.generation, restored?.history);
 });

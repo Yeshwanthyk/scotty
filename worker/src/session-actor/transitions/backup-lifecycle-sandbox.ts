@@ -1,3 +1,10 @@
+import {
+  startCodexSandbox,
+  saveCodexSandbox,
+  waitForCodexSandbox,
+  readCodexSandbox,
+  codexSandboxProcessId,
+} from "../../agent/codex/sandbox";
 import type { AgentSelection } from "../../../../protocol/agent-selection";
 import { Clock, Context, Effect, Layer, Match, Result, Schema } from "effect";
 import { BackupStore, type BackupStoreFailure } from "../../backups/store";
@@ -68,6 +75,11 @@ export class BackupLifecycleSandboxFailure extends Schema.TaggedError<BackupLife
 ) {}
 
 export interface BackupLifecycleAttempt {
+  readonly codex?: {
+    readonly token: string;
+    readonly threadId: string;
+    readonly initialTurnId: string;
+  };
   readonly selection?: AgentSelection;
   readonly sessionId: string;
   readonly attempt: string;
@@ -267,6 +279,26 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const quiescePi = Effect.fnUntraced(function* (
       input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
     ) {
+      if (input.selection?.agent === "codex") {
+        if (input.codex === undefined)
+          return yield* boundaryFailure(
+            "rejected_before_admission",
+            "codex_restore_identity_missing",
+          );
+        yield* saveCodexSandbox(
+          {
+            sessionId: input.sessionId,
+            generation: input.runtimeGeneration,
+            selection: input.selection,
+            token: input.codex.token,
+          },
+          input.codex,
+        ).pipe(
+          Effect.provideService(SandboxRuntime, runtime),
+          Effect.mapError((error) => mapRuntimeFailure(error, "codex_save_outcome_unknown")),
+        );
+        return;
+      }
       yield* auth
         .quiescePiSession(input.sessionId, input.credentials)
         .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "pi_quiesce_failed")));
@@ -319,6 +351,11 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
       return {
         handle,
         identity: {
+          ...(input.codex === undefined
+            ? {}
+            : {
+                codex: { threadId: input.codex.threadId, initialTurnId: input.codex.initialTurnId },
+              }),
           backupId: handle.id,
           preparedAt,
           confirmedAt: null,
@@ -420,6 +457,26 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const startSupervisor = Effect.fnUntraced(function* (
       input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
     ) {
+      if (input.selection?.agent === "codex") {
+        if (input.codex === undefined)
+          return yield* boundaryFailure(
+            "rejected_before_admission",
+            "codex_restore_identity_missing",
+          );
+        return yield* startCodexSandbox(
+          {
+            sessionId: input.sessionId,
+            generation: input.runtimeGeneration,
+            selection: input.selection,
+            token: input.codex.token,
+          },
+          input.credentials.grants,
+          { threadId: input.codex.threadId, initialTurnId: input.codex.initialTurnId },
+        ).pipe(
+          Effect.provideService(SandboxRuntime, runtime),
+          Effect.mapError((error) => mapRuntimeFailure(error, "codex_resume_outcome_unknown")),
+        );
+      }
       yield* auth
         .stopPiSession()
         .pipe(
@@ -441,6 +498,33 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     ) {
       if (input.runtime.runtimeGeneration !== input.runtimeGeneration)
         return yield* boundaryFailure("rejected_before_admission", "runtime_generation_mismatch");
+      if (input.selection?.agent === "codex") {
+        if (input.codex === undefined)
+          return yield* boundaryFailure(
+            "rejected_before_admission",
+            "codex_restore_identity_missing",
+          );
+        const snapshot = yield* waitForCodexSandbox({
+          sessionId: input.sessionId,
+          generation: input.runtimeGeneration,
+          selection: input.selection,
+          token: input.codex.token,
+        }).pipe(
+          Effect.provideService(SandboxRuntime, runtime),
+          Effect.mapError((error) => mapRuntimeFailure(error, "codex_resume_readiness_unknown")),
+        );
+        if (snapshot.threadId !== input.codex.threadId)
+          return yield* boundaryFailure(
+            "rejected_before_admission",
+            "codex_resume_thread_mismatch",
+          );
+        return {
+          processId: codexSandboxProcessId(input.runtimeGeneration),
+          supervisorEpoch: snapshot.threadId,
+          runtimeGeneration: input.runtimeGeneration,
+          containerIncarnation: input.runtime.containerIncarnation,
+        };
+      }
       yield* auth
         .waitForPiSessionReady(input.sessionId)
         .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "supervisor_readiness_unknown")));
@@ -470,6 +554,43 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
           "rejected_before_admission",
           "transport_proof_fence_mismatch",
         );
+      if (input.selection?.agent === "codex") {
+        if (input.codex === undefined)
+          return yield* boundaryFailure(
+            "rejected_before_admission",
+            "codex_restore_identity_missing",
+          );
+        const snapshot = yield* readCodexSandbox(
+          {
+            sessionId: input.sessionId,
+            generation: input.runtimeGeneration,
+            selection: input.selection,
+            token: input.codex.token,
+          },
+          input.codex.threadId,
+        ).pipe(
+          Effect.provideService(SandboxRuntime, runtime),
+          Effect.mapError((error) => mapRuntimeFailure(error, "codex_resume_transport_unknown")),
+        );
+        if (
+          !snapshot.ready ||
+          snapshot.failure !== null ||
+          snapshot.prompt.status !== "terminal" ||
+          snapshot.turns?.[0]?.id !== input.codex.initialTurnId ||
+          input.supervisor.supervisorEpoch !== input.codex.threadId ||
+          input.supervisor.processId !== codexSandboxProcessId(input.runtimeGeneration)
+        )
+          return yield* boundaryFailure(
+            "rejected_before_admission",
+            "codex_resume_history_mismatch",
+          );
+        return {
+          transportId: input.codex.initialTurnId,
+          supervisorEpoch: input.codex.threadId,
+          runtimeGeneration: input.runtimeGeneration,
+          containerIncarnation: input.runtime.containerIncarnation,
+        };
+      }
       const snapshot = yield* auth
         .verifyPiSessionSnapshot(input.sessionId, input.supervisor.supervisorEpoch)
         .pipe(
@@ -571,7 +692,7 @@ const checkpointAttempt = (context: CheckpointProviderContext): BackupLifecycleA
   },
 });
 
-const sleepAttempt = (context: SleepProviderContext): BackupLifecycleAttempt => ({
+const baseSleepAttempt = (context: SleepProviderContext): BackupLifecycleAttempt => ({
   sessionId: context.authority.session.id,
   selection: context.authority.session.selection,
   attempt: context.transition.attempt,
@@ -584,7 +705,7 @@ const sleepAttempt = (context: SleepProviderContext): BackupLifecycleAttempt => 
   },
 });
 
-const resumeAttempt = (
+const baseResumeAttempt = (
   context: ResumeProviderContext,
   runtimeGeneration: string,
 ): BackupLifecycleAttempt => ({
@@ -599,6 +720,43 @@ const resumeAttempt = (
     phase: context.transition.phase,
   },
 });
+
+const codexAttempt = Effect.fnUntraced(function* (
+  metadataStore: SessionActorMetadataStore["Service"],
+  authority: SleepProviderContext["authority"],
+  attempt: BackupLifecycleAttempt,
+  expected: BackupIdentity["codex"],
+) {
+  if (attempt.selection?.agent !== "codex") return attempt;
+  if (expected === undefined)
+    return yield* boundaryFailure("rejected_before_admission", "codex_restore_identity_missing");
+  const metadata = yield* metadataStore
+    .read(authority)
+    .pipe(
+      Effect.mapError(() =>
+        boundaryFailure("rejected_before_admission", "codex_metadata_unavailable"),
+      ),
+    );
+  if (metadata?.codexControl === undefined)
+    return yield* boundaryFailure("rejected_before_admission", "codex_metadata_unavailable");
+  return { ...attempt, codex: { ...expected, token: metadata.codexControl.token } };
+});
+const sleepAttempt = (context: SleepProviderContext, store: SessionActorMetadataStore["Service"]) =>
+  codexAttempt(store, context.authority, baseSleepAttempt(context), {
+    threadId: context.transition.proof.readiness.supervisor.supervisorEpoch,
+    initialTurnId: context.transition.proof.readiness.transport.transportId,
+  }).pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
+const resumeAttempt = (
+  context: ResumeProviderContext,
+  generation: string,
+  store: SessionActorMetadataStore["Service"],
+) =>
+  codexAttempt(
+    store,
+    context.authority,
+    baseResumeAttempt(context, generation),
+    context.transition.proof.backup.codex,
+  ).pipe(Effect.catchTag("BackupLifecycleSandboxFailure", resumeFailure));
 
 const resumedRuntimeGeneration = (context: ResumeProviderContext): string =>
   `resume-${context.transition.attempt}`;
@@ -824,7 +982,7 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
         Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure),
       );
       yield* sandbox
-        .quiescePi({ ...sleepAttempt(context), credentials })
+        .quiescePi({ ...(yield* sleepAttempt(context, metadataStore)), credentials })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
       const observedAt = yield* providerTimestamp();
       return {
@@ -837,7 +995,7 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
 
     const syncWorkspace = Effect.fnUntraced(function* (context: SleepProviderContext) {
       yield* sandbox
-        .syncWorkspace(sleepAttempt(context))
+        .syncWorkspace(yield* sleepAttempt(context, metadataStore))
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
       return {
         _tag: "WorkspaceSynced" as const,
@@ -847,7 +1005,7 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
     });
 
     const createConfirmedBackup = Effect.fnUntraced(function* (context: SleepProviderContext) {
-      const attemptInput = sleepAttempt(context);
+      const attemptInput = yield* sleepAttempt(context, metadataStore);
       const prepared = yield* sandbox
         .prepareBackup(attemptInput)
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
@@ -865,7 +1023,7 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
     const requestRuntimeStop = Effect.fnUntraced(function* (context: SleepProviderContext) {
       const requestedAt = yield* providerTimestamp();
       const acceptedAt = yield* sandbox
-        .requestRuntimeStop({ ...sleepAttempt(context), requestedAt })
+        .requestRuntimeStop({ ...(yield* sleepAttempt(context, metadataStore)), requestedAt })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
       return {
         _tag: "RuntimeStopRequested" as const,
@@ -882,7 +1040,7 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
           boundaryFailure("rejected_before_admission", "sleep_stop_request_missing"),
         );
       const stop = yield* sandbox
-        .observeRuntimeStopped({ ...sleepAttempt(context), requestedAt })
+        .observeRuntimeStopped({ ...(yield* sleepAttempt(context, metadataStore)), requestedAt })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
       return {
         _tag: "RuntimeStopped" as const,
@@ -899,7 +1057,10 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
           boundaryFailure("rejected_before_admission", "sleep_stop_observation_missing"),
         );
       const stop = yield* sandbox
-        .observeRuntimeStopped({ ...sleepAttempt(context), requestedAt: requested.requestedAt })
+        .observeRuntimeStopped({
+          ...(yield* sleepAttempt(context, metadataStore)),
+          requestedAt: requested.requestedAt,
+        })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
       return {
         _tag: "RuntimeStopConfirmed" as const,
@@ -953,7 +1114,7 @@ export const resumeSandboxTransitionProviderLayer: Layer.Layer<
       const backup = context.transition.proof.backup;
       yield* sandbox
         .restoreCurrentBackup({
-          ...resumeAttempt(context, resumedRuntimeGeneration(context)),
+          ...(yield* resumeAttempt(context, resumedRuntimeGeneration(context), metadataStore)),
           backup,
           ownedBackupIds: context.transition.proof.ownedBackupIds,
         })
@@ -973,7 +1134,7 @@ export const resumeSandboxTransitionProviderLayer: Layer.Layer<
         );
       const runtime = yield* sandbox
         .confirmRuntimeReady({
-          ...resumeAttempt(context, resumedRuntimeGeneration(context)),
+          ...(yield* resumeAttempt(context, resumedRuntimeGeneration(context), metadataStore)),
           providerRuntimeId: context.authority.session.execution.runtimeName,
         })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", resumeFailure));
@@ -991,7 +1152,7 @@ export const resumeSandboxTransitionProviderLayer: Layer.Layer<
       );
       yield* sandbox
         .startSupervisor({
-          ...resumeAttempt(context, resumedRuntimeGeneration(context)),
+          ...(yield* resumeAttempt(context, resumedRuntimeGeneration(context), metadataStore)),
           credentials,
         })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", resumeFailure));
@@ -1009,7 +1170,10 @@ export const resumeSandboxTransitionProviderLayer: Layer.Layer<
           boundaryFailure("rejected_before_admission", "resume_runtime_proof_missing"),
         );
       const supervisor = yield* sandbox
-        .confirmSupervisorReady({ ...resumeAttempt(context, runtime.runtimeGeneration), runtime })
+        .confirmSupervisorReady({
+          ...(yield* resumeAttempt(context, runtime.runtimeGeneration, metadataStore)),
+          runtime,
+        })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", resumeFailure));
       return {
         _tag: "SupervisorReadyConfirmed" as const,
@@ -1028,7 +1192,7 @@ export const resumeSandboxTransitionProviderLayer: Layer.Layer<
         );
       const transport = yield* sandbox
         .verifyTransport({
-          ...resumeAttempt(context, runtime.runtimeGeneration),
+          ...(yield* resumeAttempt(context, runtime.runtimeGeneration, metadataStore)),
           runtime,
           supervisor,
         })

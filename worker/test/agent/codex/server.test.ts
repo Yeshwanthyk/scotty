@@ -505,3 +505,43 @@ describe("native bounded private token-file ingress", () => {
       }).pipe(Effect.provide(NodeServices.layer)),
     );
 });
+
+it.effect(
+  "a lost save caller cannot cancel generation-owned save and retry returns the same identity",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const started = yield* Deferred.make<void>();
+      const finish = yield* Deferred.make<void>();
+      let saves = 0;
+      const identity = { threadId: "thread", initialTurnId: "first-turn" };
+      const save = yield* Effect.cached(
+        Effect.gen(function* () {
+          saves++;
+          yield* Deferred.succeed(started, undefined);
+          yield* Deferred.await(finish);
+          return identity;
+        }),
+      );
+      const control = yield* makeCodexControl({ ...f.runtime, save }, token);
+      const request = control.pipe(
+        Effect.provideService(
+          HttpServerRequest.HttpServerRequest,
+          HttpServerRequest.fromWeb(
+            new Request("http://localhost/save", { method: "POST", headers }),
+          ),
+        ),
+      );
+      const caller = yield* request.pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* Fiber.interrupt(caller);
+      yield* Deferred.succeed(finish, undefined);
+      const replay = yield* request;
+      assert.equal(replay.status, 200);
+      assert.equal(
+        yield* Effect.promise(() => HttpServerResponse.toWeb(replay).text()),
+        JSON.stringify({ generation: "generation-1", ...identity }),
+      );
+      assert.equal(saves, 1);
+    }),
+);

@@ -1,9 +1,12 @@
+import type { CodexSavedState } from "./persistence-format";
 import { Clock, Deferred, Effect, Predicate, Result, Schema, Scope, Stream } from "effect";
 import {
   CODEX_VERSION,
   CODEX_MAX_TEXT_BYTES,
   decodeCodexClientMessage,
   decodeCodexInitializeResponse,
+  decodeCodexThreadReadResponse,
+  decodeCodexThreadResumeResponse,
   decodeCodexThreadStartResponse,
   decodeCodexTurnStartResponse,
   decodeCodexSteerResponse,
@@ -12,6 +15,8 @@ import {
   rejectCodexServerRequest,
   type CodexClientMessage,
   type CodexNotification,
+  type CodexThreadReadResult,
+  type CodexThreadSettings,
   type CodexUnsupportedResponse,
 } from "../../../../protocol/codex-app-server";
 import { CodexHostError, type Cleanup } from "./errors";
@@ -100,6 +105,16 @@ type ScopedAdvisory = Extract<AdvisoryMessage, { method: typeof ScopedAdvisoryMe
 const isScopedAdvisoryMethod = Schema.is(ScopedAdvisoryMethod);
 const isScopedAdvisory = (advisory: AdvisoryMessage): advisory is ScopedAdvisory =>
   isScopedAdvisoryMethod(advisory.method);
+const decodeGoalCleared = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      method: Schema.Literal("thread/goal/cleared"),
+      params: Schema.Struct({ threadId: AdvisoryIdentifier }),
+      emittedAtMs: AdvisoryTimestamp,
+    }),
+  ),
+  { onExcessProperty: "error" },
+);
 const decodeAdvisory = Schema.decodeUnknownEffect(Schema.fromJsonString(Advisory), {
   onExcessProperty: "error",
 });
@@ -108,6 +123,28 @@ const decoded = <A>(result: Result.Result<A, "invalid_message" | "message_too_la
     onSuccess: Effect.succeed,
     onFailure: (code) => Effect.fail(new CodexHostError({ code })),
   });
+
+const matchesThreadSettings = (
+  settings: CodexThreadSettings,
+  transport: CodexProcess,
+  ephemeral: boolean,
+  resumeThreadId: string | undefined,
+) =>
+  settings.model === transport.options.model &&
+  settings.modelProvider === "scotty-managed" &&
+  settings.cwd === transport.homes.cwd &&
+  settings.reasoningEffort === transport.options.effort &&
+  (settings.thread.ephemeral === undefined || settings.thread.ephemeral === ephemeral) &&
+  (settings.thread.historyMode === undefined ||
+    settings.thread.historyMode === (ephemeral ? "legacy" : "paginated")) &&
+  (ephemeral ||
+    (settings.thread.ephemeral === false && settings.thread.historyMode === "paginated")) &&
+  (resumeThreadId === undefined || settings.thread.id === resumeThreadId);
+
+const matchesDurableReadback = (readback: CodexThreadReadResult, threadId: string) =>
+  readback.thread.id === threadId &&
+  readback.thread.ephemeral === false &&
+  readback.thread.historyMode === "paginated";
 
 // Each factory invocation is one process generation. No durable Session state is owned here.
 export const makeSession = Effect.fnUntraced(function* (
@@ -320,6 +357,15 @@ export const makeSession = Effect.fnUntraced(function* (
       route.method === "item/commandExecution/outputDelta"
     )
       return yield* notification(yield* decoded(decodeCodexNotification(line)));
+    if (route.method === "thread/goal/cleared") {
+      const event = yield* decodeGoalCleared(line).pipe(
+        Effect.mapError(() => new CodexHostError({ code: "invalid_message" })),
+      );
+      if (event.params.threadId !== (threadId ?? transport.options.resumeThreadId))
+        return yield* new CodexHostError({ code: "stale_notification" });
+      discarded++;
+      return;
+    }
     if (route.method === "error") return yield* handleUpstreamFailure(line);
     return yield* handleAdvisory(line);
   });
@@ -486,29 +532,55 @@ export const makeSession = Effect.fnUntraced(function* (
       yield* decoded(decodeCodexClientMessage('{"method":"initialized"}')),
       startupDeadline,
     );
-    const settings = yield* rpc(
-      {
-        method: "thread/start",
-        params: {
-          model: transport.options.model,
-          modelProvider: "scotty-managed",
-          cwd: transport.homes.cwd,
-          approvalPolicy: "never",
-          sandbox: "danger-full-access",
-          ephemeral: true,
-        },
-      },
-      decodeCodexThreadStartResponse,
-      undefined,
-      startupDeadline,
-    );
-    if (
-      settings.model !== transport.options.model ||
-      settings.modelProvider !== "scotty-managed" ||
-      settings.cwd !== transport.homes.cwd ||
-      settings.reasoningEffort !== transport.options.effort
-    )
+    const ephemeral = transport.options.ephemeral ?? true;
+    const resumeThreadId = transport.options.resumeThreadId;
+    const settings =
+      resumeThreadId === undefined
+        ? yield* rpc(
+            {
+              method: "thread/start",
+              params: {
+                model: transport.options.model,
+                modelProvider: "scotty-managed",
+                cwd: transport.homes.cwd,
+                approvalPolicy: "never",
+                sandbox: "danger-full-access",
+                ephemeral,
+              },
+            },
+            decodeCodexThreadStartResponse,
+            undefined,
+            startupDeadline,
+          )
+        : yield* rpc(
+            {
+              method: "thread/resume",
+              params: {
+                threadId: resumeThreadId,
+                excludeTurns: true,
+                approvalPolicy: "never",
+                sandbox: "danger-full-access",
+              },
+            },
+            decodeCodexThreadResumeResponse,
+            undefined,
+            startupDeadline,
+          );
+    if (!matchesThreadSettings(settings, transport, ephemeral, resumeThreadId))
       return yield* new CodexHostError({ code: "settings_mismatch" });
+    if (resumeThreadId !== undefined) {
+      const readback = yield* rpc(
+        {
+          method: "thread/read",
+          params: { threadId: settings.thread.id, includeTurns: false },
+        },
+        decodeCodexThreadReadResponse,
+        undefined,
+        startupDeadline,
+      );
+      if (!matchesDurableReadback(readback, settings.thread.id))
+        return yield* new CodexHostError({ code: "settings_mismatch" });
+    }
     if (closing || failure) return yield* failure ?? new CodexHostError({ code: "stopped" });
     if (Number(yield* Clock.monotonicTimeNanos) / 1_000_000 >= startupDeadline)
       return yield* new CodexHostError({ code: "startup_timeout" });
@@ -551,8 +623,9 @@ export const makeSession = Effect.fnUntraced(function* (
 export const startCodexSession = Effect.fnUntraced(function* (
   input: unknown,
   publish?: (event: CodexNotification) => Effect.Effect<void, CodexHostError>,
+  restored?: typeof CodexSavedState.Type,
 ) {
-  const transport = yield* launchProcess(input).pipe(
+  const transport = yield* launchProcess(input, restored).pipe(
     Effect.mapError(
       (error) =>
         new CodexHostError({

@@ -272,6 +272,18 @@ export const makeCodexControl = Effect.fnUntraced(function* (
       }),
     ),
   );
+  yield* router.add(
+    "POST",
+    "/save",
+    handle(
+      Effect.gen(function* () {
+        const saving = yield* runtime.save.pipe(Effect.forkIn(scope));
+        return yield* Fiber.join(saving).pipe(
+          Effect.flatMap((receipt) => respond({ generation: runtime.generation, ...receipt })),
+        );
+      }),
+    ),
+  );
   const routes = router
     .asHttpEffect()
     .pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 404 }))));
@@ -286,7 +298,9 @@ export const makeCodexControl = Effect.fnUntraced(function* (
       return yield* new CodexBridgeError({ code: "stale_generation", outcome: "rejected" });
     // No payload, token or alternate dispatch through the URL.
     if (
-      !["/health", "/snapshot", "/prompt", "/message", "/interrupt", "/stop"].includes(request.url)
+      !["/health", "/snapshot", "/prompt", "/message", "/interrupt", "/stop", "/save"].includes(
+        request.url,
+      )
     )
       return HttpServerResponse.empty({ status: 404 });
     return yield* routes;
@@ -331,7 +345,11 @@ export const serverProgram = Effect.fnUntraced(function* (argv: ReadonlyArray<st
     Effect.mapError(() => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" })),
   );
   const token = yield* consumeControlToken(input.tokenFile, input.launch.workspace);
-  const runtime = yield* startCodexRuntime({ generation: input.generation, launch: input.launch });
+  const runtime = yield* startCodexRuntime({
+    generation: input.generation,
+    launch: input.launch,
+    ...(input.restore === undefined ? {} : { restore: input.restore }),
+  });
   yield* serveCodexControl(runtime, token, input.port);
   // Keep the failed/stopped proof readable until the Session destroys its runtime.
   yield* Effect.never;

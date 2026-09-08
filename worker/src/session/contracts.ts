@@ -195,6 +195,7 @@ export const decodeSessionRecordResult = Schema.decodeUnknownResult(SessionRecor
 });
 
 export const SessionProjectionSchema = Schema.Struct({
+  agent: Schema.optionalKey(Schema.Literals(["pi", "codex"])),
   id: Schema.String,
   title: Schema.String,
   status: SessionStatusSchema,

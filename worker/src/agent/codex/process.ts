@@ -1,3 +1,5 @@
+import { importCodexSavedState } from "./persistence";
+import type { CodexSavedState } from "./persistence-format";
 import {
   Cause,
   Clock,
@@ -30,6 +32,13 @@ const AbsolutePath = Schema.String.check(
   ),
   Schema.isMaxLength(4096),
 );
+const ThreadId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
+  Schema.makeFilter(
+    (value) => !value.includes("\0") && !value.includes("\r") && !value.includes("\n"),
+  ),
+);
 const Deadline = Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 120000 }));
 export const CodexLaunch = Schema.Struct({
   binary: AbsolutePath,
@@ -37,6 +46,10 @@ export const CodexLaunch = Schema.Struct({
   workspace: AbsolutePath,
   model: CodexModelIdentifier,
   effort: CodexReasoningEffort,
+  // Direct host callers remain ephemeral by default. The Session adapter selects
+  // durable history and supplies the DO-owned identity when restoring a backup.
+  ephemeral: Schema.optionalKey(Schema.Boolean),
+  resumeThreadId: Schema.optionalKey(ThreadId),
   credential: Schema.Struct({
     sentinel: Schema.String.check(
       Schema.isMaxLength(4096),
@@ -57,7 +70,13 @@ export const CodexLaunch = Schema.Struct({
   requestTimeoutMs: Schema.optionalKey(Deadline),
   turnTimeoutMs: Schema.optionalKey(Deadline),
   stopTimeoutMs: Schema.optionalKey(Deadline),
-}).check(Schema.makeFilter(supportsCodexModelSelection));
+})
+  .check(Schema.makeFilter(supportsCodexModelSelection))
+  .check(
+    Schema.makeFilter(
+      (selection) => selection.resumeThreadId === undefined || selection.ephemeral === false,
+    ),
+  );
 const decodeLaunch = Schema.decodeUnknownEffect(CodexLaunch, { onExcessProperty: "error" });
 const decodePort = Schema.decodeUnknownEffect(
   Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
@@ -135,7 +154,10 @@ const verifyCodeModeHost = Effect.fnUntraced(function* (
   ).pipe(Effect.mapError(() => new CodexHostError({ code: "spawn_failed" })));
 });
 
-export const launchProcess = Effect.fnUntraced(function* (input: unknown) {
+export const launchProcess = Effect.fnUntraced(function* (
+  input: unknown,
+  restored?: typeof CodexSavedState.Type,
+) {
   const selection = yield* decodeLaunch(input).pipe(
     Effect.mapError(() => new CodexHostError({ code: "invalid_launch_selection" })),
   );
@@ -179,6 +201,7 @@ export const launchProcess = Effect.fnUntraced(function* (input: unknown) {
       `model = "${options.model}"\nmodel_provider = "scotty-managed"\nmodel_reasoning_effort = "${options.effort}"\n[analytics]\nenabled = false\n[model_providers.scotty-managed]\nname = "Scotty managed Codex"\nbase_url = "${baseUrl}"\nwire_api = "responses"\nenv_key = "SCOTTY_CODEX_SENTINEL"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`,
       { mode: 0o600, flag: "wx" },
     );
+    if (restored !== undefined) yield* importCodexSavedState(codexHome, restored);
     return { home, codexHome, cwd };
   }).pipe(Effect.mapError(() => new CodexHostError({ code: "isolation_setup_failed" })));
   if (codexModelCapability(options.model)?.toolMode === "code_mode_only")

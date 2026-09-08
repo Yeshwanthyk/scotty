@@ -390,3 +390,203 @@ describe("BackupLifecycleSandbox", () => {
     }),
   );
 });
+
+describe("Codex uses the existing backup lifecycle adapter", () => {
+  const codex: BackupLifecycleAttempt = {
+    ...attempt,
+    sessionId: "a0b1c2d3e4f5",
+    selection: { agent: "codex", model: "gpt-5.4", effort: "high" },
+    codex: { token: "a".repeat(64), threadId: "native-thread", initialTurnId: "first-turn" },
+  };
+  const snapshot = {
+    generation: codex.runtimeGeneration,
+    threadId: "native-thread",
+    version: "0.153.4",
+    settings: {
+      model: "gpt-5.4",
+      effort: "high",
+      workspace: "/workspace/a0b1c2d3e4f5",
+      modelProvider: "scotty-managed",
+      approvalPolicy: "never",
+      sandbox: "dangerFullAccess",
+    },
+    ready: true,
+    failure: null,
+    cleanup: null,
+    prompt: {
+      status: "terminal",
+      turnId: "second-turn",
+      outcome: "completed",
+      text: "second answer",
+    },
+    turns: [
+      {
+        id: "first-turn",
+        state: "completed",
+        user: "first prompt",
+        assistant: "first answer",
+        tools: [],
+      },
+      {
+        id: "second-turn",
+        state: "completed",
+        user: "second prompt",
+        assistant: "second answer",
+        tools: [],
+      },
+    ],
+  };
+  const runtimeProof = {
+    providerRuntimeId: "runtime-1",
+    runtimeGeneration: codex.runtimeGeneration,
+    containerIncarnation: "placement-1",
+  };
+  it.effect(
+    "saves Codex before workspace backup and carries its authority identity through the backup",
+    () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        yield* withProvider(
+          Effect.gen(function* () {
+            const provider = yield* BackupLifecycleSandbox;
+            yield* provider.quiescePi({ ...codex, credentials: sessionRuntimeCredentials([]) });
+            yield* provider.syncWorkspace(codex);
+            const prepared = yield* provider.prepareBackup(codex);
+            assert.deepStrictEqual(prepared.identity.codex, {
+              threadId: "native-thread",
+              initialTurnId: "first-turn",
+            });
+          }),
+          {
+            auth: authService({
+              quiescePiSession: () => Effect.die("Pi must not run"),
+              stopPiSession: () => Effect.die("Pi must not run"),
+            }),
+            runtime: runtimeCapabilities({
+              fetchPort: async (path) => {
+                calls.push(path);
+                return Response.json({
+                  generation: codex.runtimeGeneration,
+                  threadId: "native-thread",
+                  initialTurnId: "first-turn",
+                });
+              },
+              exec: async (command) => {
+                calls.push(command);
+                return success(command);
+              },
+            }),
+            backups: backupCapabilities({
+              createBackup: async () => {
+                calls.push("backup");
+                return backup;
+              },
+            }),
+          },
+        );
+        assert.deepStrictEqual(calls, ["/save", "sync", "backup"]);
+      }),
+  );
+  it.effect(
+    "resumes the saved native thread and restores the original transport gate without a prompt",
+    () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const credentials = sessionRuntimeCredentials([
+          {
+            name: "codex",
+            kind: "pi-auth",
+            versionRef: "version-1",
+            handleSlots: [{ provider: "openai-codex", slot: "access" }],
+            expires: 10000,
+          },
+        ]);
+        yield* withProvider(
+          Effect.gen(function* () {
+            const provider = yield* BackupLifecycleSandbox;
+            yield* provider.startSupervisor({ ...codex, credentials });
+            const supervisor = yield* provider.confirmSupervisorReady({
+              ...codex,
+              runtime: runtimeProof,
+            });
+            const transport = yield* provider.verifyTransport({
+              ...codex,
+              runtime: runtimeProof,
+              supervisor,
+            });
+            assert.equal(supervisor.supervisorEpoch, "native-thread");
+            assert.equal(transport.transportId, "first-turn");
+          }),
+          {
+            auth: authService({
+              startPiSession: () => Effect.die("Pi must not run"),
+              stopPiSession: () => Effect.die("Pi must not run"),
+            }),
+            runtime: runtimeCapabilities({
+              fetchPort: async (path) => {
+                calls.push(path);
+                return Response.json(snapshot);
+              },
+              startProcess: async (command) => {
+                calls.push("launch");
+                assert.include(
+                  command,
+                  '"restore":{"threadId":"native-thread","initialTurnId":"first-turn"}',
+                );
+                assert.include(command, '"ephemeral":false');
+                assert.include(command, '"resumeThreadId":"native-thread"');
+                return {
+                  id: `scotty-codex-${codex.runtimeGeneration}`,
+                  status: "running",
+                  kill: async () => {},
+                  waitForExit: async () => ({ exitCode: 0 }),
+                  waitForPort: async () => {},
+                };
+              },
+            }),
+          },
+        );
+        assert.deepStrictEqual(calls, ["launch", "/snapshot", "/snapshot"]);
+      }),
+  );
+  it.effect("rejects wrong saved identity and missing canonical first-turn proof", () =>
+    Effect.gen(function* () {
+      const saved = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          provider.quiescePi({ ...codex, credentials: sessionRuntimeCredentials([]) }),
+        ).pipe(Effect.result),
+        {
+          runtime: runtimeCapabilities({
+            fetchPort: async () =>
+              Response.json({
+                generation: codex.runtimeGeneration,
+                threadId: "wrong-thread",
+                initialTurnId: "first-turn",
+              }),
+          }),
+        },
+      );
+      assert.equal(failure(saved).safeResultCode, "codex_save_outcome_unknown");
+      const transport = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          provider.verifyTransport({
+            ...codex,
+            runtime: runtimeProof,
+            supervisor: {
+              processId: `scotty-codex-${codex.runtimeGeneration}`,
+              supervisorEpoch: "native-thread",
+              runtimeGeneration: codex.runtimeGeneration,
+              containerIncarnation: "placement-1",
+            },
+          }),
+        ).pipe(Effect.result),
+        {
+          runtime: runtimeCapabilities({
+            fetchPort: async () => Response.json({ ...snapshot, turns: snapshot.turns.slice(1) }),
+          }),
+        },
+      );
+      assert.equal(failure(transport).safeResultCode, "codex_resume_history_mismatch");
+    }),
+  );
+});

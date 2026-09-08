@@ -22,7 +22,9 @@ type SessionFixtureMode =
   | "steer-rejected"
   | "steer-malformed"
   | "sandbox"
-  | "approval";
+  | "approval"
+  | "durable-start"
+  | "durable-resume";
 
 const steerResponse = (mode: SessionFixtureMode, id: string | number, expectedTurnId: string) =>
   mode === "steer-rejected"
@@ -43,6 +45,68 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
     message.method === "turn/steer"
       ? emit(steerResponse(mode, message.id, message.params.expectedTurnId))
       : Effect.void;
+  const emitThreadStart = Effect.fnUntraced(function* (
+    message: Extract<CodexClientMessage, { method: "thread/start" }>,
+  ) {
+    if (mode === "no-thread-response") return;
+    if (mode === "delayed") yield* Effect.sleep(70);
+    const durable = mode === "durable-start";
+    yield* emit({
+      id: message.id,
+      result: {
+        thread: {
+          id: "thread",
+          ...(durable ? { ephemeral: false, historyMode: "paginated" } : {}),
+        },
+        model: "gpt-5.2",
+        modelProvider: "scotty-managed",
+        cwd: "/isolated/workspace",
+        approvalPolicy: mode === "approval" ? "on-request" : "never",
+        approvalsReviewer: "user",
+        sandbox: { type: mode === "sandbox" ? "readOnly" : "dangerFullAccess" },
+        reasoningEffort: "high",
+      },
+    });
+  });
+  const emitThreadResume = Effect.fnUntraced(function* (
+    message: Extract<CodexClientMessage, { method: "thread/resume" }>,
+  ) {
+    yield* emit({
+      id: message.id,
+      result: {
+        thread: {
+          id: "persisted-thread",
+          ephemeral: false,
+          historyMode: "paginated",
+          path: "/private/unstable-rollout.jsonl",
+          turns: [{ id: "discarded", items: [] }],
+        },
+        model: "gpt-5.2",
+        modelProvider: "scotty-managed",
+        cwd: "/isolated/workspace",
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: { type: "dangerFullAccess" },
+        reasoningEffort: "high",
+      },
+    });
+  });
+  const emitThreadRead = Effect.fnUntraced(function* (
+    message: Extract<CodexClientMessage, { method: "thread/read" }>,
+  ) {
+    yield* emit({
+      id: message.id,
+      result: {
+        thread: {
+          id: "persisted-thread",
+          ephemeral: false,
+          historyMode: "paginated",
+          path: "/private/unstable-rollout.jsonl",
+          turns: [{ id: "discarded", items: [] }],
+        },
+      },
+    });
+  });
   const transport: CodexProcess = {
     pid: ChildProcessSpawner.ProcessId(100),
     platformOs: "linux",
@@ -104,22 +168,13 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
           },
         });
       if (message.method === "thread/start") {
-        if (mode === "no-thread-response") return;
-        if (mode === "delayed") yield* Effect.sleep(70);
-        yield* emit({
-          id: message.id,
-          result: {
-            thread: { id: "thread" },
-            model: "gpt-5.2",
-            modelProvider: "scotty-managed",
-            cwd: "/isolated/workspace",
-            approvalPolicy: mode === "approval" ? "on-request" : "never",
-            approvalsReviewer: "user",
-            sandbox: { type: mode === "sandbox" ? "readOnly" : "dangerFullAccess" },
-            reasoningEffort: "high",
-          },
-        });
+        yield* emitThreadStart(message);
       }
+      if (message.method === "thread/resume") {
+        yield* emitThreadResume(message);
+        yield* emit({ method: "thread/goal/cleared", params: { threadId: "persisted-thread" } });
+      }
+      if (message.method === "thread/read") yield* emitThreadRead(message);
       if (message.method === "turn/start" && mode !== "no-turn-response") {
         yield* emit({
           id: message.id,
@@ -269,6 +324,64 @@ describe("scoped Codex session", () => {
       assert.strictEqual(yield* host.stop, first);
       assert.equal(first.cleanup, "ambiguous");
       assert.equal(f.stopped(), 1);
+    }),
+  );
+
+  it.effect("starts an explicitly durable native thread with exact history readback", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("durable-start");
+      const host = yield* makeSession({
+        ...f.transport,
+        options: { ...f.transport.options, ephemeral: false },
+      });
+      assert.deepEqual(f.sent, ["initialize", "initialized", "thread/start"]);
+      assert.equal(f.messages[2].method, "thread/start");
+      if (f.messages[2].method !== "thread/start") return;
+      assert.equal(f.messages[2].params.ephemeral, false);
+      assert.deepEqual(host.inspect().settings.thread, {
+        id: "thread",
+        ephemeral: false,
+        historyMode: "paginated",
+      });
+      yield* host.stop;
+    }),
+  );
+
+  it.effect("resumes only by thread ID and validates metadata-only readback", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("durable-resume");
+      const host = yield* makeSession({
+        ...f.transport,
+        options: {
+          ...f.transport.options,
+          ephemeral: false,
+          resumeThreadId: "persisted-thread",
+        },
+      });
+      assert.deepEqual(f.sent, ["initialize", "initialized", "thread/resume", "thread/read"]);
+      assert.deepEqual(f.messages[2], {
+        id: 2,
+        method: "thread/resume",
+        params: {
+          threadId: "persisted-thread",
+          excludeTurns: true,
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+        },
+      });
+      assert.deepEqual(f.messages[3], {
+        id: 3,
+        method: "thread/read",
+        params: { threadId: "persisted-thread", includeTurns: false },
+      });
+      assert.equal(host.inspect().threadId, "persisted-thread");
+      assert.equal(host.inspect().discarded, 1);
+      assert.deepEqual(host.inspect().settings.thread, {
+        id: "persisted-thread",
+        ephemeral: false,
+        historyMode: "paginated",
+      });
+      yield* host.stop;
     }),
   );
 
@@ -808,3 +921,12 @@ for (const stale of [false, true])
       assert.equal((yield* host.closed).failure, stale ? "stale_notification" : "upstream_failed");
     }),
   );
+
+it.effect("rejects a goal-cleared notification for a different thread", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    const host = yield* makeSession(f.transport);
+    yield* f.emit({ method: "thread/goal/cleared", params: { threadId: "another-thread" } });
+    assert.equal((yield* host.closed).failure, "stale_notification");
+  }),
+);

@@ -144,8 +144,8 @@ const capabilitiesView = (
   const supportsPiWork = authority.session.selection?.agent !== "codex";
   return {
     checkpoint: supportsPiWork && actions.has("checkpoint"),
-    sleep: supportsPiWork && actions.has("sleep"),
-    resume: supportsPiWork && actions.has("resume"),
+    sleep: actions.has("sleep"),
+    resume: actions.has("resume"),
     work: actions.has("work"),
     vaporize: actions.has("vaporize"),
   };
@@ -258,7 +258,7 @@ export const uiSessionListItemFromProjection = (
     capabilities: transitioning
       ? { checkpoint: false, sleep: false, resume: false, work: false, vaporize: false }
       : {
-          checkpoint: stableWarm,
+          checkpoint: stableWarm && projection.agent !== "codex",
           sleep: stableWarm,
           resume:
             authority.success.lifecycle === "sleeping" ||

@@ -334,7 +334,7 @@ describe("UI session authority response", () => {
   });
 });
 
-it("withholds unsupported Codex lifecycle controls while exposing work", () => {
+it("exposes Codex sleep while keeping checkpoint unavailable", () => {
   const authority = warmAuthority();
   const response = uiSessionResponseFromActor(
     {
@@ -349,9 +349,31 @@ it("withholds unsupported Codex lifecycle controls while exposing work", () => {
   );
   assert.deepStrictEqual(response.session.capabilities, {
     checkpoint: false,
-    sleep: false,
+    sleep: true,
     resume: false,
     work: true,
+    vaporize: true,
+  });
+});
+
+it("keeps Codex list sleep/resume capabilities aligned while checkpoint stays unavailable", () => {
+  const result = uiSessionListResponseFromProjections([
+    projected({ agent: "codex" }),
+    projected({ id: "sleeping-codex", agent: "codex", status: "sleeping" }),
+  ]);
+  assert.ok(Result.isSuccess(result));
+  assert.deepStrictEqual(result.success.sessions[0].capabilities, {
+    checkpoint: false,
+    sleep: true,
+    resume: false,
+    work: true,
+    vaporize: true,
+  });
+  assert.deepStrictEqual(result.success.sessions[1].capabilities, {
+    checkpoint: false,
+    sleep: false,
+    resume: true,
+    work: false,
     vaporize: true,
   });
 });

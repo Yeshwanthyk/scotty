@@ -1,3 +1,4 @@
+import { CodexPersistenceIdentity } from "./persistence-format";
 import { Clock, Data, Effect, Result, Schedule, Schema } from "effect";
 import { CodexAgentSelectionSchema } from "../../../../protocol/agent-selection";
 import type { CredentialGrant } from "../../../../protocol/credentials";
@@ -96,6 +97,7 @@ export const waitForCodexSandbox = Effect.fnUntraced(function* (identity: CodexS
 export const startCodexSandbox = Effect.fnUntraced(function* (
   input: CodexSandboxIdentity,
   grants: ReadonlyArray<CredentialGrant>,
+  restore?: typeof CodexPersistenceIdentity.Type,
 ) {
   const identity = yield* decodeIdentity(input).pipe(
     Effect.mapError(
@@ -125,6 +127,7 @@ export const startCodexSandbox = Effect.fnUntraced(function* (
   const start = {
     generation: identity.generation,
     port: CODEX_SANDBOX_PORT,
+    ...(restore === undefined ? {} : { restore }),
     tokenFile: `${root}/control.token`,
     launch: {
       binary: "/usr/local/bin/codex",
@@ -132,6 +135,8 @@ export const startCodexSandbox = Effect.fnUntraced(function* (
       workspace: sessionRoot(identity.sessionId),
       model: identity.selection.model,
       effort: identity.selection.effort,
+      ephemeral: false,
+      ...(restore === undefined ? {} : { resumeThreadId: restore.threadId }),
       credential: { sentinel: managedPiAccessToken(handle), expiresAt: selected.success.expires },
     },
   };
@@ -313,4 +318,45 @@ export const interruptCodexSandbox = Effect.fnUntraced(function* (
   )
     return yield* new CodexInterruptAdmissionUnknown();
   return { snapshot: after, turnId, outcome: result.status } as const;
+});
+
+const decodeSaved = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      generation: CodexGeneration,
+      ...CodexPersistenceIdentity.fields,
+    }),
+  ),
+  { onExcessProperty: "error" },
+);
+export const saveCodexSandbox = Effect.fnUntraced(function* (
+  identity: CodexSandboxIdentity,
+  expected: typeof CodexPersistenceIdentity.Type,
+) {
+  const runtime = yield* SandboxRuntime;
+  const response = yield* runtime
+    .fetchPortBody(
+      "/save",
+      CODEX_SANDBOX_PORT,
+      "POST",
+      CODEX_CONTROL_MAX_RESPONSE,
+      headers(identity),
+    )
+    .pipe(
+      Effect.timeoutOrElse({
+        duration: "20 seconds",
+        orElse: () => Effect.fail(failure("Codex save outcome is unknown")),
+      }),
+    );
+  if (response.status !== 200) return yield* failure("Codex save failed");
+  const saved = yield* decodeSaved(response.body).pipe(
+    Effect.mapError(() => failure("Codex saved state is invalid")),
+  );
+  if (
+    saved.generation !== identity.generation ||
+    saved.threadId !== expected.threadId ||
+    saved.initialTurnId !== expected.initialTurnId
+  )
+    return yield* failure("Codex saved state does not match Session authority");
+  return saved;
 });

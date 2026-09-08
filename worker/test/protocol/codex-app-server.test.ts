@@ -8,6 +8,8 @@ import {
   decodeCodexInterruptResponse,
   decodeCodexNotification,
   decodeCodexSteerResponse,
+  decodeCodexThreadReadResponse,
+  decodeCodexThreadResumeResponse,
   decodeCodexThreadStartResponse,
   decodeCodexTurnStartResponse,
   rejectCodexServerRequest,
@@ -32,6 +34,21 @@ const start = {
     sandbox: "danger-full-access",
     ephemeral: true,
   },
+};
+const resume = {
+  id: 4,
+  method: "thread/resume",
+  params: {
+    threadId: "thread-1",
+    excludeTurns: true,
+    approvalPolicy: "never",
+    sandbox: "danger-full-access",
+  },
+};
+const read = {
+  id: 5,
+  method: "thread/read",
+  params: { threadId: "thread-1", includeTurns: false },
 };
 const turn = {
   id: 2,
@@ -215,11 +232,14 @@ describe("Codex 0.153.4 bounded protocol subset", () => {
     );
   });
 
-  it("accepts the explicit component handshake, start, text turn and interrupt", () => {
+  it("accepts the explicit component handshake, durable start/resume/read, text turn and interrupt", () => {
     for (const message of [
       initialize,
       { method: "initialized" },
       start,
+      { ...start, params: { ...start.params, ephemeral: false } },
+      resume,
+      read,
       turn,
       steer,
       { id: 4, method: "turn/interrupt", params: { threadId: "thread-1", turnId: "turn-1" } },
@@ -265,7 +285,9 @@ describe("Codex 0.153.4 bounded protocol subset", () => {
       { ...turn, params: { ...turn.params, input: [] } },
       { ...turn, params: { ...turn.params, input: [{ type: "image", url: "file:///x" }] } },
       { ...turn, params: { ...turn.params, input: [{ type: "text", text: "" }] } },
-      { id: 4, method: "thread/resume", params: { threadId: "x" } },
+      { ...resume, params: { ...resume.params, threadId: "" } },
+      { ...resume, params: { ...resume.params, path: "/unstable" } },
+      { ...read, params: { ...read.params, includeTurns: "false" } },
     ])
       assert.isTrue(Result.isFailure(decodeCodexClientMessage(JSON.stringify(message))));
   });
@@ -321,6 +343,74 @@ describe("Codex 0.153.4 bounded protocol subset", () => {
         Result.isFailure(
           decodeCodexThreadStartResponse(
             JSON.stringify({ id: "start", result: { ...threadResult, sandbox } }),
+          ),
+        ),
+      );
+    }
+  });
+
+  it("projects durable thread metadata without retaining the unstable path or history", () => {
+    const result = {
+      ...threadResult,
+      thread: {
+        id: "thread-1",
+        ephemeral: false,
+        historyMode: "paginated",
+        path: "/private/unstable-rollout.jsonl",
+        turns: [{ id: "turn-1", items: [{ type: "commandExecution" }] }],
+      },
+    };
+    assert.deepStrictEqual<unknown>(
+      Result.getOrThrow(decodeCodexThreadStartResponse(JSON.stringify({ id: "start", result }))),
+      {
+        id: "start",
+        result: {
+          ...threadResult,
+          thread: { id: "thread-1", ephemeral: false, historyMode: "paginated" },
+        },
+      },
+    );
+    assert.deepStrictEqual<unknown>(
+      Result.getOrThrow(decodeCodexThreadResumeResponse(JSON.stringify({ id: "resume", result }))),
+      {
+        id: "resume",
+        result: {
+          ...threadResult,
+          thread: { id: "thread-1", ephemeral: false, historyMode: "paginated" },
+        },
+      },
+    );
+    assert.deepStrictEqual<unknown>(
+      Result.getOrThrow(
+        decodeCodexThreadReadResponse(
+          JSON.stringify({ id: "read", result: { thread: result.thread } }),
+        ),
+      ),
+      {
+        id: "read",
+        result: { thread: { id: "thread-1", ephemeral: false, historyMode: "paginated" } },
+      },
+    );
+    for (const historyMode of ["legacy", "paginated"]) {
+      assert.isTrue(
+        Result.isSuccess(
+          decodeCodexThreadReadResponse(
+            JSON.stringify({
+              id: "read",
+              result: { thread: { id: "thread-1", ephemeral: false, historyMode } },
+            }),
+          ),
+        ),
+      );
+    }
+    for (const historyMode of ["sqlite", null, 1]) {
+      assert.isTrue(
+        Result.isFailure(
+          decodeCodexThreadReadResponse(
+            JSON.stringify({
+              id: "read",
+              result: { thread: { id: "thread-1", ephemeral: false, historyMode } },
+            }),
           ),
         ),
       );
