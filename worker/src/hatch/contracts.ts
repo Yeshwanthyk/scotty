@@ -447,6 +447,14 @@ export type HatchStateFailureReason =
 export class HatchStateError extends Data.TaggedError("HatchStateError")<{
   readonly reason: HatchStateFailureReason;
   readonly message: string;
+  readonly phase?:
+    | "routing_config"
+    | "port_health"
+    | "exposure_url"
+    | "exposure_origin"
+    | "public_probe_unreachable"
+    | "public_probe_timeout"
+    | "public_probe_response";
 }> {}
 
 export const hatchOrigin = (

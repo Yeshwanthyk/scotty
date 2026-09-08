@@ -1583,6 +1583,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (previewBase === undefined)
       return yield* new HatchStateError({
         reason: "invalid_state",
+        phase: "routing_config",
         message: "Hatch routing is unavailable",
       });
     const origin = hatchOrigin(
@@ -1595,6 +1596,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       catch: () =>
         new HatchStateError({
           reason: "invalid_state",
+          phase: "public_probe_unreachable",
           message: "Hatch public route is unreachable",
         }),
     }).pipe(
@@ -1604,6 +1606,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           Effect.fail(
             new HatchStateError({
               reason: "invalid_state",
+              phase: "public_probe_timeout",
               message: "Hatch public route readiness timed out",
             }),
           ),
@@ -1617,6 +1620,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     )
       return yield* new HatchStateError({
         reason: "invalid_state",
+        phase: "public_probe_response",
         message: "Hatch public route did not reach Scotty",
       });
   });
@@ -1634,6 +1638,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (previewBase === undefined)
       return yield* new HatchStateError({
         reason: "invalid_state",
+        phase: "routing_config",
         message: "Hatch routing is unavailable",
       });
     const runtime = yield* SandboxRuntime;
@@ -1658,6 +1663,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (healthStatus < 200 || healthStatus > 399)
       return yield* new HatchStateError({
         reason: "invalid_state",
+        phase: "port_health",
         message: "Hatch service health check failed",
       });
     if (expectedIncarnation !== undefined) {
@@ -1682,11 +1688,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const exposedOrigin = yield* Effect.try({
       try: () => new URL(exposed.url).origin,
       catch: () =>
-        new HatchStateError({ reason: "invalid_state", message: "Hatch exposure is invalid" }),
+        new HatchStateError({
+          reason: "invalid_state",
+          phase: "exposure_url",
+          message: "Hatch exposure is invalid",
+        }),
     });
     if (exposedOrigin !== expectedOrigin)
       return yield* new HatchStateError({
         reason: "invalid_state",
+        phase: "exposure_origin",
         message: "Hatch exposure host did not match authority",
       });
     if (expectedIncarnation !== undefined) {
@@ -1822,7 +1833,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* Effect.sync(() =>
       console.error("Hatch restore completion failed before cleanup", {
         error: errorName(restored.failure),
-        ...(isHatchStateError(restored.failure) ? { reason: restored.failure.reason } : {}),
+        ...(isHatchStateError(restored.failure)
+          ? {
+              reason: restored.failure.reason,
+              phase: restored.failure.phase ?? "unclassified",
+            }
+          : {}),
       }),
     );
     const cleanup = yield* Effect.result(
