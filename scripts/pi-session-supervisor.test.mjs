@@ -527,3 +527,88 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       );
     },
   );
+
+for (const fixture of [
+  {
+    name: "Hatch descriptor rejection",
+    extensionPath: "/opt/scotty/pi-packages/sources/scotty-hatch/index.ts",
+    error: "Scotty Hatch restore request failed with HTTP 403",
+    failure: { phase: "descriptor", httpStatus: 403 },
+  },
+  {
+    name: "unclassified Hatch error",
+    extensionPath: "/opt/scotty/pi-packages/sources/scotty-hatch/index.ts",
+    error: "PRIVATE_ERROR_MUST_NOT_ESCAPE",
+    failure: { phase: "unknown" },
+  },
+  {
+    name: "unrelated extension error",
+    extensionPath: "/opt/scotty/pi-packages/sources/another-extension/index.ts",
+    error: "Scotty Hatch restore request failed with HTTP 403",
+    failure: undefined,
+  },
+])
+  test(`Pi readiness does not mask ${fixture.name}`, { timeout: 10000 }, async (t) => {
+    const work = await mkdtemp(path.join(tmpdir(), "scotty-hatch-startup-"));
+    const piHome = path.join(work, ".pi-agent");
+    await mkdir(piHome);
+    const tokenFile = path.join(piHome, "token");
+    await writeFile(tokenFile, "synthetic-health-token".repeat(3), { mode: 0o600 });
+    const promptPath = path.join(piHome, "initial-prompt");
+    await writeFile(promptPath, "Initial task");
+    const fakePi = path.join(work, "pi.mjs");
+    await writeFile(
+      fakePi,
+      `#!/usr/bin/env node
+import { createInterface } from "node:readline";
+const output = value => process.stdout.write(JSON.stringify(value) + "\\n");
+createInterface({ input: process.stdin }).on("line", line => {
+  const command = JSON.parse(line);
+  if (command.type === "get_state") output(${JSON.stringify({ type: "extension_error", event: "session_start", extensionPath: fixture.extensionPath, error: fixture.error })});
+  output({ id: command.id, type: "response", command: command.type, success: true, data: {} });
+});
+`,
+    );
+    await chmod(fakePi, 0o755);
+    const port = await unusedPort();
+    const supervisor = spawn(process.execPath, [supervisorPath], {
+      cwd: work,
+      env: {
+        PATH: process.env.PATH,
+        PI_CODING_AGENT_DIR: piHome,
+        SCOTTY_PI_BINARY: fakePi,
+        SCOTTY_PI_SESSION_PORT: String(port),
+        SCOTTY_PI_SESSION_TOKEN_FILE: tokenFile,
+        SCOTTY_WORKSPACE: work,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    t.after(async () => {
+      supervisor.kill("SIGTERM");
+      await once(supervisor, "exit");
+    });
+    let observed;
+    for (let attempt = 0; attempt < 250; attempt++) {
+      const response = await fetch(`http://127.0.0.1:${port}/health`).catch(() => undefined);
+      if (response) {
+        const body = await response.json();
+        if (body.status === "ready" || body.status === "failed") {
+          observed = { status: response.status, body };
+          break;
+        }
+      }
+      await delay(20);
+    }
+    assert.ok(observed);
+    if (fixture.failure) {
+      assert.deepEqual(observed, {
+        status: 503,
+        body: { status: "failed", reason: "hatch_restore_failed", hatchRestore: fixture.failure },
+      });
+      assert.equal(await readFile(promptPath, "utf8"), "Initial task");
+      assert.equal(JSON.stringify(observed).includes(fixture.error), false);
+    } else {
+      assert.equal(observed.status, 200);
+      assert.equal(observed.body.status, "ready");
+    }
+  });

@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Result, Schema } from "effect";
 import {
@@ -376,6 +377,54 @@ describe("Pi session production observations", () => {
       assert.ok(Result.isFailure(result));
       assert.strictEqual(result.failure.reason, "nonzero_exit");
       assert.strictEqual(result.failure.message, "Pi session snapshot epoch does not match health");
+    }),
+  );
+  it.effect("reports only classified Hatch startup failure after native readiness fails", () =>
+    Effect.gen(function* () {
+      const log = yield* Effect.acquireRelease(
+        Effect.sync(() => vi.spyOn(console, "error").mockImplementation(() => {})),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        getProcess: () =>
+          Promise.resolve({
+            id: PI_SESSION_PROCESS_ID,
+            status: "running",
+            kill: () => Promise.resolve(),
+            waitForExit: () => Promise.resolve({ exitCode: 0 }),
+            waitForPort: () => Promise.reject(new Error("PRIVATE_PROVIDER_ERROR")),
+          }),
+        fetchPort: () =>
+          Promise.resolve(
+            Response.json(
+              {
+                status: "failed",
+                reason: "hatch_restore_failed",
+                hatchRestore: { phase: "descriptor", httpStatus: 403 },
+              },
+              { status: 503 },
+            ),
+          ),
+      };
+      const runtimeLayer = sandboxRuntimeLayer(capabilities);
+      const layer = Layer.merge(runtimeLayer, containerAuthLayer.pipe(Layer.provide(runtimeLayer)));
+      const result = yield* Effect.flatMap(ContainerAuth, (auth) =>
+        auth.waitForPiSessionReady(SESSION_ID),
+      ).pipe(Effect.provide(layer), Effect.result);
+      assert.ok(Result.isFailure(result));
+      assert.strictEqual(result.failure.message, "Pi Hatch restore failed before readiness");
+      assert.deepStrictEqual(log.mock.calls, [
+        [
+          "Pi Hatch restore failed before readiness",
+          {
+            sessionId: SESSION_ID,
+            reason: "hatch_restore_failed",
+            phase: "descriptor",
+            httpStatus: 403,
+          },
+        ],
+      ]);
     }),
   );
 });

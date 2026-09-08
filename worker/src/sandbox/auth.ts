@@ -40,6 +40,28 @@ const decodePiSessionHealth = Schema.decodeUnknownEffect(
   Schema.fromJsonString(PiSessionHealthSchema),
   { onExcessProperty: "ignore" },
 );
+const decodePiHatchRestoreFailure = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      status: Schema.Literal("failed"),
+      reason: Schema.Literal("hatch_restore_failed"),
+      hatchRestore: Schema.Struct({
+        phase: Schema.Literals([
+          "descriptor",
+          "workspace",
+          "spawn",
+          "local_health",
+          "cleanup",
+          "unknown",
+        ]),
+        httpStatus: Schema.optionalKey(
+          Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 })),
+        ),
+      }),
+    }),
+  ),
+  { onExcessProperty: "error" },
+);
 const PiSessionSnapshotIdentitySchema = Schema.Struct({
   epoch: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
 });
@@ -604,6 +626,28 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         }),
       );
       if (Result.isSuccess(ready)) return;
+
+      const health = yield* Effect.result(
+        runtime
+          .fetchPortBody("/health", PI_SESSION_PORT, "GET", 4_096)
+          .pipe(Effect.timeout("2 seconds")),
+      );
+      const hatchFailure = Result.isSuccess(health)
+        ? decodePiHatchRestoreFailure(health.success.body)
+        : Option.none();
+      if (Option.isSome(hatchFailure)) {
+        yield* Effect.sync(() =>
+          console.error("Pi Hatch restore failed before readiness", {
+            sessionId: _id,
+            reason: hatchFailure.value.reason,
+            ...hatchFailure.value.hatchRestore,
+          }),
+        );
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Pi Hatch restore failed before readiness",
+        });
+      }
 
       const observed = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
       if (observed === null || (observed.status !== "starting" && observed.status !== "running"))

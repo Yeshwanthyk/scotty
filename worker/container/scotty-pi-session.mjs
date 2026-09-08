@@ -57,6 +57,7 @@ await unlink(tokenFile);
 
 let sequence = 0;
 let ready = false;
+let hatchRestoreFailure;
 let closing = false;
 let quiescing = false;
 let stdoutBuffer = "";
@@ -171,7 +172,41 @@ const sendRpcWithoutResponse = (command) =>
     });
   });
 
+const hatchRestorePhases = new Map([
+  ["Scotty Hatch restore request did not complete", "descriptor"],
+  ["Scotty Hatch restore response exceeds the 64 KiB limit or is invalid UTF-8", "descriptor"],
+  ["Scotty Hatch returned an invalid restore descriptor", "descriptor"],
+  ["Hatch restore cwd must stay inside the workspace", "workspace"],
+  ["Hatch restore cwd must resolve exactly inside the workspace", "workspace"],
+  ["Hatch restore command must not be empty", "spawn"],
+  ["Hatch service process could not be started", "spawn"],
+  ["Hatch service process did not provide a process-group identifier", "spawn"],
+  ["Hatch service process failed to start", "spawn"],
+  ["Hatch service exited before becoming ready", "local_health"],
+  ["Hatch service did not become ready in time", "local_health"],
+  ["Scotty Hatch restore failed and its child process could not be stopped", "cleanup"],
+]);
+
+const observeHatchRestoreFailure = (message) => {
+  if (
+    message?.type === "extension_error" &&
+    message.event === "session_start" &&
+    message.extensionPath === "/opt/scotty/pi-packages/sources/scotty-hatch/index.ts"
+  ) {
+    const status =
+      typeof message.error === "string"
+        ? /^Scotty Hatch restore request failed with HTTP ([1-5][0-9]{2})$/u.exec(message.error)
+        : null;
+    hatchRestoreFailure = {
+      phase: status ? "descriptor" : (hatchRestorePhases.get(message.error) ?? "unknown"),
+      ...(status ? { httpStatus: Number(status[1]) } : {}),
+    };
+    ready = false;
+  }
+};
+
 const handlePiMessage = (message) => {
+  observeHatchRestoreFailure(message);
   if (typeof message?.id === "string" && pendingRequests.has(message.id)) {
     const pending = pendingRequests.get(message.id);
     pendingRequests.delete(message.id);
@@ -487,11 +522,13 @@ const handleHealth = (_request, response) =>
   jsonResponse(
     response,
     quiescing ? 409 : ready ? 200 : 503,
-    quiescing
-      ? { status: "quiescing" }
-      : ready
-        ? { status: "ready", epoch }
-        : { status: "starting", stderr: stderrTail ? "available" : "empty" },
+    hatchRestoreFailure
+      ? { status: "failed", reason: "hatch_restore_failed", hatchRestore: hatchRestoreFailure }
+      : quiescing
+        ? { status: "quiescing" }
+        : ready
+          ? { status: "ready", epoch }
+          : { status: "starting", stderr: stderrTail ? "available" : "empty" },
   );
 
 const handleSnapshot = async (_request, response) => {
@@ -586,10 +623,19 @@ const close = (signal) => {
 process.on("SIGTERM", () => close("SIGTERM"));
 process.on("SIGINT", () => close("SIGINT"));
 
+const admitInitialPrompt = async () => {
+  if (!hasInitialPrompt) return;
+  const initialPrompt = await readFile(initialPromptPath, "utf8");
+  await rename(initialPromptPath, consumedPromptPath);
+  const promptResponse = await sendRpc({ type: "prompt", message: initialPrompt });
+  if (promptResponse.success === false) throw new Error("Pi rejected the initial prompt");
+};
+
 server.listen(port, "0.0.0.0", async () => {
   try {
     const stateResponse = await sendRpc({ type: "get_state" });
     if (stateResponse.success === false) throw new Error("Pi RPC state initialization failed");
+    if (hatchRestoreFailure !== undefined) return;
     if (
       hasInitialPrompt &&
       ((process.env.SCOTTY_PI_EXPECTED_PROVIDER !== undefined &&
@@ -606,12 +652,7 @@ server.listen(port, "0.0.0.0", async () => {
       await writeFile(nextPointerPath, `${sessionId}\n`, { mode: 0o600 });
       await rename(nextPointerPath, sessionPointerPath);
     }
-    if (hasInitialPrompt) {
-      const initialPrompt = await readFile(initialPromptPath, "utf8");
-      await rename(initialPromptPath, consumedPromptPath);
-      const promptResponse = await sendRpc({ type: "prompt", message: initialPrompt });
-      if (promptResponse.success === false) throw new Error("Pi rejected the initial prompt");
-    }
+    await admitInitialPrompt();
     ready = true;
   } catch (error) {
     stderrTail = `${stderrTail}${error instanceof Error ? error.message : String(error)}`.slice(
