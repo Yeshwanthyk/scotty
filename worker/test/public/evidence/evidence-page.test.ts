@@ -122,4 +122,21 @@ describe("evidence page", () => {
     assert.notInclude(evidenceScript, ".innerHTML");
     assert.notInclude(evidenceHtml, "<video");
   });
+
+  it("renders the authenticated recording only when the summary includes video", () => {
+    assert.include(
+      evidenceScript,
+      "return `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(jobId)}/video.webm`;",
+    );
+    assert.include(evidenceScript, "function renderRecording(parent, summary)");
+    assert.include(
+      evidenceScript,
+      "if (summary.video === undefined || !sessionId || !jobId) return;",
+    );
+    assert.include(evidenceScript, "video.controls = true");
+    assert.include(evidenceScript, 'video.preload = "metadata"');
+    assert.include(evidenceScript, 'video.setAttribute("aria-label", "Real browser recording")');
+    assert.include(evidenceScript, 'link.textContent = "Download recording"');
+    assert.include(evidenceScript, "renderRecording(panel, summary)");
+  });
 });

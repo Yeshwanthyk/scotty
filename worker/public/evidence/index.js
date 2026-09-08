@@ -44,6 +44,10 @@ function framePath(frameId) {
   )}/frames/${encodeURIComponent(frameId)}.png`;
 }
 
+function recordingPath() {
+  return `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(jobId)}/video.webm`;
+}
+
 function formatOffset(milliseconds) {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -133,7 +137,11 @@ function renderScreenshots(parent, summary) {
   const frames = orderedEvidenceFrames(summary);
   const panel = document.createElement("section");
   panel.className = "evidence-frames-panel";
-  panel.setAttribute("aria-label", "Verified screenshots");
+  panel.setAttribute(
+    "aria-label",
+    summary.video === undefined ? "Verified screenshots" : "Verified screenshots and recording",
+  );
+  renderRecording(panel, summary);
   addText(panel, "evidence-frames-title", "Verified screenshots", "h2");
   if (frames.length === 0) {
     addText(
@@ -174,6 +182,30 @@ function textCaption(value) {
   const caption = document.createElement("figcaption");
   caption.textContent = value;
   return caption;
+}
+
+function renderRecording(parent, summary) {
+  if (summary.video === undefined || !sessionId || !jobId) return;
+  const path = recordingPath();
+  const recording = document.createElement("section");
+  recording.setAttribute("aria-label", "Real browser recording");
+  addText(recording, "evidence-frames-title", "Real browser recording", "h2");
+  const video = document.createElement("video");
+  video.controls = true;
+  video.preload = "metadata";
+  video.playsInline = true;
+  video.src = path;
+  video.setAttribute("aria-label", "Real browser recording");
+  video.style.display = "block";
+  video.style.width = "100%";
+  const link = document.createElement("a");
+  link.className = "button button-primary";
+  link.textContent = "Download recording";
+  link.href = path;
+  link.download = `scotty-${jobId}-recording.webm`;
+  link.setAttribute("aria-label", "Download browser recording (WebM)");
+  recording.append(video, link);
+  parent.append(recording);
 }
 
 function renderSummary(summary) {
