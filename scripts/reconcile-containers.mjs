@@ -33,7 +33,7 @@ const decodeLegacySession = (value) => {
   };
 };
 
-const decodeCanonicalSession = (value) => {
+const decodeCanonicalSession = (value, observedAt) => {
   if (
     !isObject(value) ||
     !isObject(value.identity) ||
@@ -64,11 +64,11 @@ const decodeCanonicalSession = (value) => {
     id: value.identity.id,
     status,
     provider: value.runtime.provider,
-    hardCapAt: new Date(projectedAt + value.times.capRemainingSeconds * 1_000).toISOString(),
+    hardCapAt: new Date(observedAt + value.times.capRemainingSeconds * 1_000).toISOString(),
   };
 };
 
-export const decodeSessionInventory = (value) => {
+export const decodeSessionInventory = (value, observedAt = Date.now()) => {
   const source = Array.isArray(value)
     ? value
     : isObject(value) && value.version === 1 && Array.isArray(value.sessions)
@@ -76,10 +76,68 @@ export const decodeSessionInventory = (value) => {
       : undefined;
   if (source === undefined) return undefined;
   const sessions = source.map((session) =>
-    Array.isArray(value) ? decodeLegacySession(session) : decodeCanonicalSession(session),
+    Array.isArray(value)
+      ? decodeLegacySession(session)
+      : decodeCanonicalSession(session, observedAt),
   );
   return sessions.some((session) => session === undefined) ? undefined : sessions;
 };
+
+const decodeAuthoritativeHardCapAt = (value, sessionId) => {
+  if (
+    !isObject(value) ||
+    !isObject(value.authority) ||
+    !isObject(value.authority.session) ||
+    value.authority.session.id !== sessionId ||
+    !isObject(value.authority.hardCap) ||
+    typeof value.authority.hardCap.deadlineAt !== "string" ||
+    !Number.isFinite(Date.parse(value.authority.hardCap.deadlineAt))
+  )
+    return undefined;
+  return value.authority.hardCap.deadlineAt;
+};
+
+async function withAuthoritativeHardCaps({
+  payload,
+  sessions,
+  activeSessionIds,
+  credentials,
+  request,
+}) {
+  if (!isObject(payload) || payload.version !== 1 || !Array.isArray(payload.sessions))
+    return sessions;
+  const activeIds = new Set(activeSessionIds);
+  const activeSessions = sessions.filter((session) => activeIds.has(session.id));
+  if (activeSessions.length === 0) return sessions;
+  if (credentials === undefined) {
+    throw new Error("Authoritative hard-cap details are required for active canonical sessions.");
+  }
+  const deadlines = await Promise.all(
+    activeSessions.map(async (session) => {
+      const response = await request(
+        new URL(`/api/sessions/${encodeURIComponent(session.id)}/actor`, credentials.host),
+        { headers: { authorization: `Bearer ${credentials.token}`, accept: "application/json" } },
+      );
+      if (!response.ok) {
+        throw new Error(
+          `Scotty actor diagnostics for session ${session.id} failed with HTTP ${response.status}.`,
+        );
+      }
+      const hardCapAt = decodeAuthoritativeHardCapAt(await response.json(), session.id);
+      if (hardCapAt === undefined) {
+        throw new Error(
+          `Scotty actor diagnostics for session ${session.id} had no valid hard cap.`,
+        );
+      }
+      return [session.id, hardCapAt];
+    }),
+  );
+  const hardCaps = new Map(deadlines);
+  return sessions.map((session) => {
+    const hardCapAt = hardCaps.get(session.id);
+    return hardCapAt === undefined ? session : { ...session, hardCapAt };
+  });
+}
 
 export const isHealthyContainerApplicationState = (state) =>
   HEALTHY_APPLICATION_STATES.has(String(state));
@@ -275,7 +333,13 @@ async function namedInstallationCredentials(environment, home, readPrivateConfig
 
 export async function readSessions(
   environment = process.env,
-  { home = homedir(), request = fetch, readPrivateConfig = readPrivateInstallationConfig } = {},
+  {
+    home = homedir(),
+    request = fetch,
+    readPrivateConfig = readPrivateInstallationConfig,
+    activeSessionIds = [],
+    now = Date.now,
+  } = {},
 ) {
   const host = environment.SCOTTY_HOST;
   const token = environment.SCOTTY_TOKEN;
@@ -293,15 +357,28 @@ export async function readSessions(
     if (!response.ok) {
       throw new Error(`Scotty session inventory failed with HTTP ${response.status}.`);
     }
-    const sessions = decodeSessionInventory(await response.json());
+    const observedAt = now();
+    const payload = await response.json();
+    const sessions = decodeSessionInventory(payload, observedAt);
     if (sessions === undefined) throw new Error("Scotty session inventory was invalid.");
-    return sessions;
+    return withAuthoritativeHardCaps({
+      payload,
+      sessions,
+      activeSessionIds,
+      credentials,
+      request,
+    });
   }
-  const sessions = decodeSessionInventory(
-    await execJson("bun", ["cli/scotty.ts", "list", "--json"]),
-  );
+  const payload = await execJson("bun", ["cli/scotty.ts", "list", "--json"]);
+  const sessions = decodeSessionInventory(payload, now());
   if (sessions === undefined) throw new Error("Scotty session inventory was invalid.");
-  return sessions;
+  return withAuthoritativeHardCaps({
+    payload,
+    sessions,
+    activeSessionIds,
+    credentials: undefined,
+    request,
+  });
 }
 
 async function main() {
@@ -322,20 +399,28 @@ async function main() {
   const application = applications.find(
     (candidate) => isObject(candidate) && candidate.name === applicationName,
   );
-  const [instances, sessions] = await Promise.all([
-    application
-      ? execJson("npx", [
-          "--no-install",
-          "wrangler",
-          "containers",
-          "instances",
-          String(application.id),
-          "--json",
-        ])
-      : Promise.resolve([]),
-    readSessions(),
-  ]);
-  if (!Array.isArray(instances) || !Array.isArray(sessions)) {
+  const instances = application
+    ? await execJson("npx", [
+        "--no-install",
+        "wrangler",
+        "containers",
+        "instances",
+        String(application.id),
+        "--json",
+      ])
+    : [];
+  if (!Array.isArray(instances)) {
+    throw new Error("Container instance or Scotty session inventory was not an array.");
+  }
+  const sessions = await readSessions(undefined, {
+    activeSessionIds: instances
+      .filter(
+        (instance) =>
+          isObject(instance) && !NON_RUNNING_INSTANCE_STATES.has(String(instance.state)),
+      )
+      .map((instance) => String(instance.name)),
+  });
+  if (!Array.isArray(sessions)) {
     throw new Error("Container instance or Scotty session inventory was not an array.");
   }
   const report = reconcileContainerInventory({

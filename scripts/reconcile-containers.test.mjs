@@ -41,21 +41,52 @@ const session = (overrides = {}) => ({
 describe("Container reconciliation", () => {
   it("decodes the canonical public session envelope into audit rows", () => {
     assert.deepEqual(
-      decodeSessionInventory({
+      decodeSessionInventory(
+        {
+          version: 1,
+          sessions: [
+            {
+              identity: { id: "5794c31210f3" },
+              authority: { kind: "stable", lifecycle: "warm", failure: null },
+              runtime: { provider: "cloudflare", readiness: "unchecked" },
+              times: { capRemainingSeconds: 3_600 },
+              projection: { projectedAt: "2026-07-23T04:00:00.000Z" },
+            },
+          ],
+        },
+        NOW,
+      ),
+      [session({ hardCapAt: "2026-07-23T05:00:00.000Z" })],
+    );
+    assert.equal(decodeSessionInventory({ version: 1, sessions: [{}] }), undefined);
+  });
+
+  it("anchors a canonical countdown at the response observation time", () => {
+    const observedAt = Date.parse("2026-07-23T04:00:00.000Z");
+    const sessions = decodeSessionInventory(
+      {
         version: 1,
         sessions: [
           {
             identity: { id: "5794c31210f3" },
-            authority: { kind: "stable", lifecycle: "warm", failure: null },
-            runtime: { provider: "cloudflare", readiness: "unchecked" },
+            authority: { kind: "stable", lifecycle: "warm" },
+            runtime: { provider: "cloudflare" },
             times: { capRemainingSeconds: 3_600 },
-            projection: { projectedAt: "2026-07-23T04:00:00.000Z" },
+            projection: { projectedAt: "2026-07-23T03:00:00.000Z" },
           },
         ],
-      }),
-      [session({ hardCapAt: "2026-07-23T05:00:00.000Z" })],
+      },
+      observedAt,
     );
-    assert.equal(decodeSessionInventory({ version: 1, sessions: [{}] }), undefined);
+    const report = reconcileContainerInventory({
+      applicationName: APPLICATION_NAME,
+      applications: [application()],
+      instances: [instance()],
+      sessions,
+      now: observedAt + 31_000,
+    });
+    assert.equal(sessions[0].hardCapAt, "2026-07-23T05:00:00.000Z");
+    assert.equal(report.ok, true);
   });
 
   it("reads session authority from the explicitly named installation", async () => {
@@ -108,9 +139,63 @@ describe("Container reconciliation", () => {
               },
             ],
           }),
+        now: () => NOW,
       },
     );
     assert.deepEqual(sessions, [session({ hardCapAt: "2026-07-23T04:01:00.000Z" })]);
+  });
+
+  it("uses the actor hard-cap deadline when the canonical countdown is zero", async () => {
+    const requests = [];
+    const sessions = await readSessions(
+      { SCOTTY_HOST: "https://baseline.example", SCOTTY_TOKEN: "root-token" },
+      {
+        activeSessionIds: ["5794c31210f3"],
+        now: () => NOW,
+        request: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          if (new URL(request.url).pathname === "/api/sessions") {
+            return Response.json({
+              version: 1,
+              sessions: [
+                {
+                  identity: { id: "5794c31210f3" },
+                  authority: { kind: "stable", lifecycle: "warm" },
+                  runtime: { provider: "cloudflare" },
+                  times: { capRemainingSeconds: 0 },
+                  projection: { projectedAt: "2026-07-23T03:59:59.000Z" },
+                },
+              ],
+            });
+          }
+          return Response.json({
+            authority: {
+              session: { id: "5794c31210f3" },
+              hardCap: { deadlineAt: "2026-07-23T03:59:29.000Z" },
+            },
+          });
+        },
+      },
+    );
+    const report = reconcileContainerInventory({
+      applicationName: APPLICATION_NAME,
+      applications: [application()],
+      instances: [instance()],
+      sessions,
+      now: NOW,
+    });
+    assert.deepEqual(
+      requests.map((request) => new URL(request.url).pathname),
+      ["/api/sessions", "/api/sessions/5794c31210f3/actor"],
+    );
+    assert.equal(requests[1].headers.get("authorization"), "Bearer root-token");
+    assert.deepEqual(sessions, [session({ hardCapAt: "2026-07-23T03:59:29.000Z" })]);
+    assert.equal(report.ok, false);
+    assert.deepEqual(
+      report.issues.map((issue) => issue.code),
+      ["active_instance_past_hard_cap"],
+    );
   });
 
   it("rejects a named config owned by another installation", async () => {
