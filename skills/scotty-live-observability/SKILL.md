@@ -38,8 +38,10 @@ Interpret boundaries precisely:
 - Missing diagnostics after successful vaporize is compatible with deleted authority; distinguish
   an unknown session from an HTTP route fallback.
 
-For Codex, separate initial prompt admission from terminal response in canonical read. The current
-public path has one initial prompt; do not use steer, checkpoint, or resume as a canary step.
+For Codex, separate message admission from terminal response in canonical read. For an authorized
+messaging canary, correlate active steering and terminal follow-ups by returned turn ID and require
+completed tool receipts. A delivery-unknown result requires inspection, not blind resubmission.
+Checkpoint and resume remain unavailable for Codex.
 For Pi overrides, native settings readback must precede the first prompt. Local TOML defaults do
 not establish effective settings for an existing Session.
 

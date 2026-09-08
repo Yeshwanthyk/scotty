@@ -52,10 +52,10 @@ Session grant and substitutes the pinned credential. Do not add native OAuth imp
 - Use one bounded monotonic startup handshake budget. Keep post-ready request deadlines separate;
   native child cleanup belongs to scopes/finalizers.
 
-The current public vertical supports create, one initial prompt, canonical read, and vaporize.
-Native interruption support is not public follow-up/steer support. Codex checkpoint, sleep/resume,
-public follow-up, and shared skill discovery remain unavailable. Preserve their explicit guards.
-Do not route them through Pi merely because Pi supports them.
+The public vertical supports create, canonical read, terminal follow-up messages, active-turn
+steering, and vaporize. Correlate message receipts with native turn IDs and preserve typed ambiguity
+after dispatch. Codex checkpoint, sleep/resume, queued follow-ups, public interruption, and shared
+skill discovery remain unavailable. Preserve their explicit guards; do not route them through Pi.
 
 ## Verify and report
 
