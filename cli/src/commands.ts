@@ -1765,6 +1765,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Reuse this ID when retrying a queued follow-up"),
       ),
       followUp: Flag.boolean("follow-up").pipe(
+        Flag.withDefault(false),
         Flag.withDescription("Queue a Codex message after the current turn"),
       ),
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
