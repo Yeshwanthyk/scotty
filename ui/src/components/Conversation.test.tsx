@@ -12,6 +12,22 @@ const completed = (id: string): ConversationTurn => ({
 });
 
 describe("conversation disclosure", () => {
+  it.each([true, false])(
+    "renders the existing streaming snapshot immediately (animateStreaming=%s)",
+    (animateStreaming) => {
+      const streaming: ConversationTurn = {
+        ...completed("current"),
+        state: "streaming",
+        assistant: "Previously received response text",
+      };
+      const markup = renderToStaticMarkup(
+        <Conversation animateStreaming={animateStreaming} turns={[streaming]} />,
+      );
+
+      expect(markup).toContain(streaming.assistant);
+    },
+  );
+
   it("renders the newest completed turn in full and keeps older work folded", () => {
     const markup = renderToStaticMarkup(
       <Conversation animateStreaming={false} turns={[completed("one"), completed("two")]} />,

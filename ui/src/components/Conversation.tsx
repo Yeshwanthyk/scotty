@@ -374,8 +374,8 @@ export function Conversation({
   const foldedCompleted = latestCompleted === undefined ? completed : completed.slice(0, -1);
   const [visibleCompleted, setVisibleCompleted] = useState(3);
   const [generation, setGeneration] = useState(0);
-  const [visibleCharacters, setVisibleCharacters] = useState(0);
-  const activeTurnId = useRef<string | undefined>(undefined);
+  const [visibleCharacters, setVisibleCharacters] = useState(active?.assistant.length ?? 0);
+  const activeTurnId = useRef(active?.id);
   const viewport = useRef<HTMLDivElement | null>(null);
   const followTail = useRef(true);
 
