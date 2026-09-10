@@ -1,15 +1,22 @@
+import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import * as Cloudflare from "alchemy/Cloudflare";
+import * as Effect from "effect/Effect";
 import {
+  assertCloudflareDeploymentAssets,
   assertCloudflareStackConfig,
   CLOUDFLARE_STAGE,
   CLOUDFLARE_WORKER_SECRETS,
+  deploymentPlanResourcePropsForFingerprint,
   expectedCloudflareResourceConfirmation,
   expectedCloudflareStackApproval,
+  makeCloudflareAssetConfig,
   makeCloudflareStackTopology,
   type CloudflareStackConfig,
 } from "../cloudflare-stack.ts";
@@ -52,12 +59,126 @@ const enabledPreviewInstallation = makeInstallationTopology(
 const approvedConfig = (): CloudflareStackConfig => ({
   stage: "production",
   telemetryDisabled: true,
+  deploymentRoot: fileURLToPath(new URL("../..", import.meta.url)),
   installation,
   resourceConfirmation: expectedCloudflareResourceConfirmation(installation),
   approval: expectedCloudflareStackApproval(installation),
 });
 
+describe("Cloudflare deployment assets", () => {
+  it.effect("resolves the asset directory from the explicit deployment root", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.sync(() => mkdtempSync(join(tmpdir(), "scotty-asset-root-"))),
+        (root) => Effect.sync(() => rmSync(root, { recursive: true, force: true })),
+      );
+      const topology = makeCloudflareStackTopology(installation, true);
+      const config = makeCloudflareAssetConfig(root, topology);
+      assert.strictEqual(config.directory, resolve(root, "worker/public"));
+    }),
+  );
+
+  it.effect("rejects a missing generated shell or referenced application asset", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.sync(() => mkdtempSync(join(tmpdir(), "scotty-asset-preflight-"))),
+        (root) => Effect.sync(() => rmSync(root, { recursive: true, force: true })),
+      );
+      const topology = makeCloudflareStackTopology(installation, true);
+      assert.throws(
+        () => assertCloudflareDeploymentAssets(root, topology),
+        /missing the generated UI shell/u,
+      );
+      const app = join(root, "worker/public/app");
+      mkdirSync(app, { recursive: true });
+      writeFileSync(
+        join(app, "_shell.html"),
+        '<!doctype html><script type="module" src="/assets/app.js"></script>',
+      );
+      assert.throws(
+        () => assertCloudflareDeploymentAssets(root, topology),
+        /references a missing asset/u,
+      );
+      mkdirSync(join(app, "assets"), { recursive: true });
+      writeFileSync(join(app, "assets/app.js"), "export {};\n");
+      assert.doesNotThrow(() => assertCloudflareDeploymentAssets(root, topology));
+    }),
+  );
+
+  it.effect(
+    "makes Alchemy read the selected root and hash identical bytes independently of path",
+    () =>
+      Effect.gen(function* () {
+        const firstRoot = yield* Effect.acquireRelease(
+          Effect.sync(() => mkdtempSync(join(tmpdir(), "scotty-assets-first-"))),
+          (root) => Effect.sync(() => rmSync(root, { recursive: true, force: true })),
+        );
+        const secondRoot = yield* Effect.acquireRelease(
+          Effect.sync(() => mkdtempSync(join(tmpdir(), "scotty-assets-second-"))),
+          (root) => Effect.sync(() => rmSync(root, { recursive: true, force: true })),
+        );
+        for (const root of [firstRoot, secondRoot]) {
+          const directory = join(root, "worker/public");
+          mkdirSync(directory, { recursive: true });
+          writeFileSync(join(directory, "selected-root.txt"), "bundled assets\n");
+        }
+
+        const relative = yield* Cloudflare.Workers.readAssets({ directory: "worker/public" });
+        const first = yield* Cloudflare.Workers.readAssets({
+          directory: join(firstRoot, "worker/public"),
+        });
+        const second = yield* Cloudflare.Workers.readAssets({
+          directory: join(secondRoot, "worker/public"),
+        });
+
+        assert.isUndefined(relative.manifest["/selected-root.txt"]);
+        assert.deepStrictEqual(first.manifest, {
+          "/selected-root.txt": first.manifest["/selected-root.txt"],
+        });
+        assert.deepStrictEqual(first.manifest, second.manifest);
+        assert.strictEqual(first.hash, second.hash);
+        assert.notStrictEqual(first.hash, relative.hash);
+
+        writeFileSync(
+          join(secondRoot, "worker/public/selected-root.txt"),
+          "changed bundled assets\n",
+        );
+        const changedContent = yield* Cloudflare.Workers.readAssets({
+          directory: join(secondRoot, "worker/public"),
+        });
+        const changedConfig = yield* Cloudflare.Workers.readAssets({
+          directory: join(firstRoot, "worker/public"),
+          runWorkerFirst: true,
+        });
+        assert.notStrictEqual(first.hash, changedContent.hash);
+        assert.notStrictEqual(first.hash, changedConfig.hash);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
 describe("Cloudflare stack guard", () => {
+  it("canonicalizes only the Scotty Worker asset root for plan fingerprints", () => {
+    const first = deploymentPlanResourcePropsForFingerprint("Cloudflare.Worker", "Worker", {
+      name: "scotty-home-worker",
+      assets: { directory: "/tmp/first/worker/public", runWorkerFirst: true },
+    });
+    const second = deploymentPlanResourcePropsForFingerprint("Cloudflare.Worker", "Worker", {
+      name: "scotty-home-worker",
+      assets: { directory: "/tmp/second/worker/public", runWorkerFirst: true },
+    });
+    assert.deepStrictEqual(first, second);
+    assert.deepStrictEqual(first, {
+      name: "scotty-home-worker",
+      assets: { directory: "worker/public", runWorkerFirst: true },
+    });
+    assert.deepStrictEqual(
+      deploymentPlanResourcePropsForFingerprint("Cloudflare.Worker", "OtherWorker", {
+        assets: { directory: "/tmp/other" },
+      }),
+      { assets: { directory: "/tmp/other" } },
+    );
+  });
+
   it("accepts only exact installation-scoped approval", () => {
     assert.doesNotThrow(() => assertCloudflareStackConfig(approvedConfig()));
     assert.strictEqual(
