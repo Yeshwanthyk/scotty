@@ -48,9 +48,13 @@ import {
   type ContainerControlPlaneSnapshot,
 } from "../../scripts/container-control-plane.mjs";
 import {
+  assertCloudflareDeploymentAssets,
   cloudflareStack,
+  deploymentPlanResourcePropsForFingerprint,
   expectedCloudflareResourceConfirmation,
   expectedCloudflareStackApproval,
+  makeCloudflareAssetConfig,
+  makeCloudflareStackTopology,
 } from "../../infra/cloudflare-stack.ts";
 import {
   CLOUDFLARE_STAGE,
@@ -697,12 +701,19 @@ const previewConfiguration = (
   return decoded.value;
 };
 
-const makeStack = (request: InstallationDeployRequest, prebuiltWorkers: boolean) => {
+const makeStack = (
+  request: InstallationDeployRequest,
+  deploymentRoot: string,
+  prebuiltWorkers: boolean,
+  deploymentAssetsRequired = true,
+) => {
   const installation = makeInstallationTopology(
     request.installationName,
     previewConfiguration(request),
     request.evidenceEnabled === true,
   );
+  const topology = makeCloudflareStackTopology(installation, prebuiltWorkers);
+  if (deploymentAssetsRequired) assertCloudflareDeploymentAssets(deploymentRoot, topology);
   const stack = Alchemy.Stack(
     installation.stackName,
     {
@@ -712,13 +723,15 @@ const makeStack = (request: InstallationDeployRequest, prebuiltWorkers: boolean)
     cloudflareStack({
       stage: CLOUDFLARE_STAGE,
       telemetryDisabled: true,
+      deploymentRoot,
       installation,
       resourceConfirmation: expectedCloudflareResourceConfirmation(installation),
       approval: expectedCloudflareStackApproval(installation),
       prebuiltWorkers,
     }),
   );
-  return { installation, stack };
+  const assetConfig = makeCloudflareAssetConfig(deploymentRoot, topology);
+  return { assetConfig, installation, stack };
 };
 
 const bindingPlanAction = (
@@ -734,6 +747,7 @@ const fingerprintPlan = Effect.fnUntraced(function* (
   installationName: string,
   accountId: string,
   plan: Plan.Plan,
+  assetsHash: string,
 ) {
   const changes: InstallationPlan["changes"] = [
     ...Object.entries(plan.resources).flatMap(([id, node]) => [
@@ -763,8 +777,16 @@ const fingerprintPlan = Effect.fnUntraced(function* (
         id,
         action: node.action,
         type: node.resource.Type,
-        props: node.action === "noop" ? node.state.props : node.props,
-        previousProps: node.state?.props,
+        props: deploymentPlanResourcePropsForFingerprint(
+          node.resource.Type,
+          node.resource.LogicalId,
+          node.action === "noop" ? node.state.props : node.props,
+        ),
+        previousProps: deploymentPlanResourcePropsForFingerprint(
+          node.resource.Type,
+          node.resource.LogicalId,
+          node.state?.props,
+        ),
         bindings: node.bindings.map((binding) => ({
           sid: binding.sid,
           action: binding.action,
@@ -776,6 +798,7 @@ const fingerprintPlan = Effect.fnUntraced(function* (
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([id, node]) => ({ id, action: node.action })),
     actionDeletions: Object.keys(plan.actionDeletions).sort(),
+    assetsHash,
   };
   const encoded = new TextEncoder().encode(JSON.stringify(fingerprintInput));
   const digest = yield* Effect.tryPromise({
@@ -801,7 +824,7 @@ const planWithProfile = async (
   prebuiltWorkers: boolean,
   quiet = false,
 ): Promise<InstallationPlan> => {
-  const { stack } = makeStack(request, prebuiltWorkers);
+  const { assetConfig, stack } = makeStack(request, root, prebuiltWorkers);
   return runWithProfile(request.profile, root, () =>
     provideAlchemy(
       evalStack(
@@ -811,7 +834,8 @@ const planWithProfile = async (
             const environment = yield* Cloudflare.CloudflareEnvironment;
             const { accountId } = yield* environment;
             const plan = yield* Plan.make(compiled);
-            return yield* fingerprintPlan(request.installationName, accountId, plan);
+            const assets = yield* Cloudflare.Workers.readAssets(assetConfig);
+            return yield* fingerprintPlan(request.installationName, accountId, plan, assets.hash);
           }).pipe(Effect.provide(cloudflareApiLive())),
         { stage: CLOUDFLARE_STAGE },
       ),
@@ -829,7 +853,7 @@ const deployWithProfile = async (
   quiet = false,
   progress?: InstallationDeploymentProgress,
 ): Promise<InstallationResult> => {
-  const { installation, stack } = makeStack(request, prebuiltWorkers);
+  const { assetConfig, installation, stack } = makeStack(request, root, prebuiltWorkers);
   const providerReceipt: DeploymentProviderReceipt = { succeeded: new Set() };
   return runWithProfile(
     request.profile,
@@ -847,7 +871,13 @@ const deployWithProfile = async (
                   message: "The Cloudflare account changed after confirmation.",
                 });
               const plan = yield* Plan.make(compiled);
-              const summary = yield* fingerprintPlan(request.installationName, accountId, plan);
+              const assets = yield* Cloudflare.Workers.readAssets(assetConfig);
+              const summary = yield* fingerprintPlan(
+                request.installationName,
+                accountId,
+                plan,
+                assets.hash,
+              );
               if (summary.fingerprint !== request.expectedPlanFingerprint)
                 return yield* new InstallationDeploymentError({
                   message: "The deployment plan changed after confirmation.",
@@ -1374,7 +1404,7 @@ export async function uninstallInstallation(
       request.evidenceEnabled === true,
     );
     await prepareInstallationDeployment(deployment, installation);
-    const { stack } = makeStack(request, deployment.prebuiltWorkers);
+    const { stack } = makeStack(request, deployment.root, deployment.prebuiltWorkers, false);
     return await runWithProfile(request.profile, deployment.root, () =>
       provideAlchemy(
         evalStack(

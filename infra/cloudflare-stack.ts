@@ -1,6 +1,11 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { CLOUDFLARE_BINDING_TOPOLOGY } from "../scripts/cloudflare-topology-data.mjs";
 import { makeScottyRunnerWorker, ScottyRunnerWorker } from "../worker/src/runner-worker.ts";
 import { PREBUILT_MAIN_WORKER_ENTRY } from "../cli/src/prebuilt-worker-bundles.ts";
@@ -104,10 +109,86 @@ export const makeCloudflareStackTopology = (
 export interface CloudflareStackConfig {
   readonly stage: string;
   readonly telemetryDisabled: boolean;
+  readonly deploymentRoot: string;
   readonly installation: InstallationTopology;
   readonly resourceConfirmation: string | undefined;
   readonly approval: string | undefined;
   readonly prebuiltWorkers?: boolean;
+}
+
+export const makeCloudflareAssetConfig = (
+  deploymentRoot: string,
+  topology: ReturnType<typeof makeCloudflareStackTopology>,
+) => ({
+  directory: resolve(deploymentRoot, topology.assets.directory),
+  binding: topology.assets.binding,
+  runWorkerFirst: topology.assets.runWorkerFirst,
+  htmlHandling: topology.assets.htmlHandling,
+  notFoundHandling: topology.assets.notFoundHandling,
+});
+
+const DeploymentPlanWorkerPropsSchema = Schema.Struct({
+  assets: Schema.Struct({ directory: Schema.String }),
+});
+const decodeDeploymentPlanWorkerProps = Schema.decodeUnknownOption(
+  DeploymentPlanWorkerPropsSchema,
+  { onExcessProperty: "preserve" },
+);
+
+export const deploymentPlanResourcePropsForFingerprint = (
+  resourceType: string,
+  logicalId: string,
+  props: unknown,
+): unknown => {
+  if (resourceType !== "Cloudflare.Worker" || logicalId !== "Worker") return props;
+  const decoded = decodeDeploymentPlanWorkerProps(props);
+  if (Option.isNone(decoded)) return props;
+  return {
+    ...decoded.value,
+    assets: { ...decoded.value.assets, directory: "worker/public" },
+  };
+};
+
+export class CloudflareDeploymentAssetsError extends Data.TaggedError(
+  "CloudflareDeploymentAssetsError",
+)<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
+export function assertCloudflareDeploymentAssets(
+  deploymentRoot: string,
+  topology: ReturnType<typeof makeCloudflareStackTopology>,
+): void {
+  const directory = resolve(deploymentRoot, topology.assets.directory);
+  const shellPath = join(directory, "app/_shell.html");
+  if (!existsSync(shellPath)) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Alchemy stack construction rejects an incomplete generated UI before evaluation
+    throw new CloudflareDeploymentAssetsError({
+      message: `Cloudflare deployment assets are missing the generated UI shell: ${shellPath}`,
+    });
+  }
+  const shell = readFileSync(shellPath, "utf8");
+  const references = new Set(
+    Array.from(shell.matchAll(/["'](\/assets\/[^"'?#\s]+)(?:[?#][^"']*)?["']/gu), (match) =>
+      match[1]?.slice(1),
+    ).filter((reference): reference is string => reference !== undefined),
+  );
+  if (references.size === 0) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Alchemy stack construction rejects an incomplete generated UI before evaluation
+    throw new CloudflareDeploymentAssetsError({
+      message: `Cloudflare deployment UI shell references no built application assets: ${shellPath}`,
+    });
+  }
+  for (const reference of references) {
+    const assetPath = join(directory, "app", reference);
+    if (!existsSync(assetPath)) {
+      // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Alchemy stack construction rejects an incomplete generated UI before evaluation
+      throw new CloudflareDeploymentAssetsError({
+        message: `Cloudflare deployment UI shell references a missing asset: ${assetPath}`,
+      });
+    }
+  }
 }
 
 export const expectedCloudflareResourceConfirmation = (
@@ -216,13 +297,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
     className: topology.runnerDurableObject.className,
     scriptName: runnerWorker.workerName,
   });
-  const assetConfig = {
-    directory: topology.assets.directory,
-    binding: topology.assets.binding,
-    runWorkerFirst: topology.assets.runWorkerFirst,
-    htmlHandling: topology.assets.htmlHandling,
-    notFoundHandling: topology.assets.notFoundHandling,
-  };
+  const assetConfig = makeCloudflareAssetConfig(config.deploymentRoot, topology);
   const worker = yield* Cloudflare.Worker(topology.worker.logicalId, {
     name: topology.worker.name,
     main: topology.worker.main,

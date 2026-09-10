@@ -2,10 +2,13 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import { fileURLToPath } from "node:url";
 import {
+  assertCloudflareDeploymentAssets,
   cloudflareStack,
   expectedCloudflareResourceConfirmation,
   expectedCloudflareStackApproval,
+  makeCloudflareStackTopology,
 } from "./infra/cloudflare-stack.ts";
 import {
   decodeInstallationPreviewConfiguration,
@@ -44,6 +47,8 @@ if (Option.isNone(decodedPreview)) {
 const preview: InstallationPreviewConfiguration = decodedPreview.value;
 
 const installation = makeInstallationTopology(installationName, preview, true);
+const deploymentRoot = fileURLToPath(new URL(".", import.meta.url));
+assertCloudflareDeploymentAssets(deploymentRoot, makeCloudflareStackTopology(installation));
 
 export default Alchemy.Stack(
   installation.stackName,
@@ -56,6 +61,7 @@ export default Alchemy.Stack(
     return yield* cloudflareStack({
       stage,
       telemetryDisabled: process.env.ALCHEMY_TELEMETRY_DISABLED === "1",
+      deploymentRoot,
       installation,
       resourceConfirmation: process.env.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED,
       approval: process.env.SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL,
