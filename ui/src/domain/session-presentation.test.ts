@@ -11,6 +11,7 @@ import {
   transitionSleep,
   transitionVaporize,
   warmIdle,
+  warmWorking,
 } from "../fixtures/sessions";
 import {
   classifySessionFailure,
@@ -44,8 +45,11 @@ describe("presentSession", () => {
 
   it("offers only actions admitted by stable authority", () => {
     expect(
-      presentSession(warmIdle, { now: FIXTURE_NOW, source: "actor" }).availableActions,
+      presentSession(warmWorking, { now: FIXTURE_NOW, source: "actor" }).availableActions,
     ).toEqual(["checkpoint", "sleep", "work", "vaporize"]);
+    expect(
+      presentSession(warmIdle, { now: FIXTURE_NOW, source: "actor" }).availableActions,
+    ).toEqual(["sleep", "work", "vaporize"]);
     expect(
       presentSession(sleepingRetained, { now: FIXTURE_NOW, source: "actor" }).availableActions,
     ).toEqual(["resume", "vaporize"]);
