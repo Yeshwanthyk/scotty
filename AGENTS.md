@@ -14,7 +14,7 @@ Read this before changing Scotty.
 
 ## Effect v4: source first
 
-Effect is pinned for this repository at `vendor/effect`, commit `2600f62f4532026928454dcea8d1c48557b3f942`, corresponding to the `4.0.0-rc.112` package set. Treat the submodule as read-only reference source. The Effect RC migration plan and its Scotty-facing API breaks are recorded in `docs/research/effect-4-rc-alchemy-upgrade.md`.
+Effect is pinned for this repository at `vendor/effect`, commit `2600f62f4532026928454dcea8d1c48557b3f942`, corresponding to the `4.0.0-rc.112` package set. Treat the submodule as read-only reference source. Use the pinned submodule's `MIGRATION.md`, `.patterns/`, source, and tests as the maintained migration evidence.
 
 Before adding or changing any non-trivial Effect pattern:
 

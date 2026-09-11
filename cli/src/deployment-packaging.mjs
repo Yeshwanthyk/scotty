@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +8,7 @@ import {
   CONTAINER_CONTEXT_BUDGET,
   CONTAINER_CONTEXT_PATH,
   CONTAINER_IMAGE_BUDGET,
+  CONTAINER_STATIC_INPUTS,
   isExcludedProjectPath,
   isIncludedProjectPath,
   isSafeProjectPath,
@@ -129,6 +130,83 @@ export async function materializeProjectInputs(root, destination, inputs) {
   }
 }
 
+export const listDockerfileProjectCopySources = (dockerfile) => {
+  const sources = [];
+  for (const line of dockerfile.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("COPY ") || trimmed.startsWith("COPY --from=")) continue;
+    const tokens = trimmed
+      .slice("COPY ".length)
+      .split(/\s+/u)
+      .filter((token) => !token.startsWith("--"));
+    sources.push(...tokens.slice(0, -1).map(assertSafeProjectPath));
+  }
+  return sources;
+};
+
+export async function assertContainerCopyInputs(contextRoot) {
+  const dockerfilePath = join(contextRoot, "worker/container/Dockerfile");
+  const sources = listDockerfileProjectCopySources(await readFile(dockerfilePath, "utf8"));
+  const missing = [];
+  for (const source of sources) {
+    const present = await access(join(contextRoot, source)).then(
+      () => true,
+      () => false,
+    );
+    if (!present) missing.push(source);
+  }
+  if (missing.length > 0)
+    throw new Error(
+      `Prepared container context is missing Docker COPY inputs: ${missing.join(", ")}`,
+    );
+  return sources;
+}
+
+const dockerignoreRuleMatches = (source, rawPattern) => {
+  const pattern = rawPattern.replace(/^\//u, "").replace(/\/$/u, "");
+  if (pattern === "**") return true;
+  let expression = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === "*") {
+      if (pattern[index + 1] === "*") {
+        index += 1;
+        if (pattern[index + 1] === "/") {
+          index += 1;
+          expression += "(?:.*/)?";
+        } else expression += ".*";
+      } else expression += "[^/]*";
+    } else if (character === "?") expression += "[^/]";
+    else expression += character.replace(/[\\^$.*+?()[\]{}|]/gu, "\\$&");
+  }
+  return pattern.includes("/")
+    ? new RegExp(`^${expression}(?:/.*)?$`, "u").test(source)
+    : new RegExp(`(?:^|/)${expression}(?:/|$)`, "u").test(source);
+};
+
+const dockerignoreAllows = (source, rules) => {
+  let included = true;
+  for (const rule of rules) {
+    const negated = rule.startsWith("!");
+    const pattern = negated ? rule.slice(1) : rule;
+    if (pattern !== "" && dockerignoreRuleMatches(source, pattern)) included = negated;
+  }
+  return included;
+};
+
+export async function assertRootDockerignoreInputs(root, inputs = CONTAINER_STATIC_INPUTS) {
+  const rules = (await readFile(join(root, ".dockerignore"), "utf8"))
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+  const excluded = inputs.filter((source) => !dockerignoreAllows(source, rules));
+  if (excluded.length > 0)
+    throw new Error(
+      `Root .dockerignore excludes required container inputs: ${excluded.join(", ")}`,
+    );
+  return inputs;
+}
+
 const collectAllFilesWithBytes = async (root, directory, files) => {
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
@@ -194,7 +272,21 @@ export const assertContainerImageBudget = (sizeBytes) => {
 
 export async function inspectContainerImageBudget(
   image,
-  { exec = execFileAsync, inspectArgs = ["image", "inspect", image, "--format", "{{.Size}}"] } = {},
+  {
+    exec = execFileAsync,
+    inspectArgs = [
+      "run",
+      "--rm",
+      "--platform",
+      "linux/amd64",
+      "--network=none",
+      "--entrypoint",
+      "du",
+      image,
+      "-sbx",
+      "/",
+    ],
+  } = {},
 ) {
   let stdout;
   try {
@@ -204,7 +296,8 @@ export async function inspectContainerImageBudget(
     throw new Error(`Failed to ${CONTAINER_IMAGE_BUDGET.metric} for ${image}: ${detail}`);
   }
   const raw = String(stdout ?? "").trim();
-  const sizeBytes = Number(raw);
+  const match = /^([0-9]+)\s+\/$/u.exec(raw);
+  const sizeBytes = Number(match?.[1]);
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
     throw new Error(`${CONTAINER_IMAGE_BUDGET.metric} for ${image} was not an integer: ${raw}`);
   }
@@ -218,7 +311,18 @@ export async function prepareContainerContext(
   const contextInputs =
     inputs === undefined ? projectContainerContextInputs(await discoverCliInputs(root)) : inputs;
   const context = join(root, CONTAINER_CONTEXT_PATH);
+  const hasRootDockerignore = await access(join(root, ".dockerignore")).then(
+    () => true,
+    () => false,
+  );
+  if (hasRootDockerignore)
+    await assertRootDockerignoreInputs(root, await listPackagedFiles(root, contextInputs));
   await rm(context, { recursive: true, force: true });
   await materializeProjectInputs(root, context, contextInputs);
+  const hasDockerfile = await access(join(context, "worker/container/Dockerfile")).then(
+    () => true,
+    () => false,
+  );
+  if (hasDockerfile) await assertContainerCopyInputs(context);
   await assertContainerContextBudget(context);
 }

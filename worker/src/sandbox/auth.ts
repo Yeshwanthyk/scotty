@@ -19,6 +19,7 @@ import {
   type SandboxBundleItemKind,
 } from "./config-contracts";
 import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "./runtime";
+import { buildMergedSkillsCommand, buildSkillsPreflightCommands } from "./skill-commands";
 import { sessionRoot } from "./workspace";
 
 export { piAuthJson } from "../credentials/managed";
@@ -126,9 +127,6 @@ const decodeBundleItemName = Schema.decodeUnknownOption(SandboxBundleItemNameSch
 
 const pathUnderRoot = (root: string, path: string): boolean =>
   path === root || path.startsWith(`${root}/`);
-
-const extraSkillLinkCommand = (target: string, source: string): string =>
-  `{ [ ! -e ${shellQuote(target)} ] || [ "$(readlink ${shellQuote(target)})" = ${shellQuote(source)} ]; } && ln -sfn ${shellQuote(source)} ${shellQuote(target)}`;
 
 const resolveSeedExtras = (
   options?: ContainerAuthSeedOptions,
@@ -282,29 +280,23 @@ const piSettings = (
     extensions: extensionPaths,
   });
 
-const buildMergedSkillsCommand = (
+const mergedSkillCommand = (
   id: SessionRecord["id"],
   extraSkills: ReadonlyArray<{ readonly name: string }>,
   bundleRoot: string | undefined,
 ): string => {
   const merged = mergedSkillsPath(id);
-  const codexSkills = `${sessionRoot(id)}/.codex/skills`;
-  const piSkills = `${sessionRoot(id)}/.pi-agent/skills`;
-  const parts = [
-    `mkdir -p ${shellQuote(merged)}`,
-    `for skill in /opt/scotty/skills/*; do [ -e "$skill" ] || continue; ln -sfn "$skill" ${shellQuote(`${merged}/`)}; done`,
-  ];
-  for (const skill of extraSkills) {
-    parts.push(
-      extraSkillLinkCommand(
-        `${merged}/${skill.name}`,
-        extraSkillSourcePath(bundleRoot!, skill.name),
-      ),
-    );
-  }
-  parts.push(`ln -sfn ${shellQuote(merged)} ${shellQuote(codexSkills)}`);
-  parts.push(`ln -sfn ${shellQuote(merged)} ${shellQuote(piSkills)}`);
-  return parts.join(" && ");
+  return buildMergedSkillsCommand(
+    {
+      merged,
+      codexSkills: `${sessionRoot(id)}/.codex/skills`,
+      piSkills: `${sessionRoot(id)}/.pi-agent/skills`,
+    },
+    extraSkills.map((skill) => ({
+      name: skill.name,
+      source: extraSkillSourcePath(bundleRoot!, skill.name),
+    })),
+  );
 };
 
 const gitConfig = (): string => `[credential]
@@ -324,7 +316,7 @@ const terminalShell = (
     ...agentEnv(id, credentials),
     ...(toolPaths.length === 0
       ? {}
-      : { PATH: `${toolPaths.join(":")}:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin` }),
+      : { PATH: `${toolPaths.join(":")}:/usr/local/bin:/usr/bin:/bin` }),
   };
   const exports = Object.entries(env)
     .map(([name, value]) => `export ${name}=${shellQuote(value)}`)
@@ -479,8 +471,9 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
             reason: "nonzero_exit",
             message: "Sandbox configured path references a staging directory",
           });
-        yield* runtime.execChecked(`test -e ${shellQuote(skillPath)}`);
       }
+      for (const command of buildSkillsPreflightCommands(merged, skills))
+        yield* runtime.execChecked(command);
       const settingsBytes = yield* runtime.readFile(
         `${sessionRoot(id)}/.pi-agent/settings.json`,
         65_536,
@@ -552,13 +545,13 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       if (options?.initialPrompt !== undefined)
         yield* runtime.writeFile(promptPath, options.initialPrompt);
       yield* runtime.execChecked(
-        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, skills, options?.bundleRoot)}`,
+        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(gitConfigPath)} && ${mergedSkillCommand(id, skills, options?.bundleRoot)}`,
       );
       const env = {
         ...agentEnv(id, credentials),
         ...(toolPaths.length === 0
           ? {}
-          : { PATH: `${toolPaths.join(":")}:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin` }),
+          : { PATH: `${toolPaths.join(":")}:/usr/local/bin:/usr/bin:/bin` }),
       };
       yield* runtime.setEnvVars(env);
       const root = sessionRoot(id);
@@ -795,9 +788,6 @@ export function agentEnv(
     GH_NO_UPDATE_NOTIFIER: "1",
     GIT_TERMINAL_PROMPT: "0",
     NODE_OPTIONS: "--use-system-ca",
-    GOTOOLCHAIN: "auto",
-    GOPROXY: "https://proxy.golang.org",
-    GOSUMDB: "sum.golang.org",
     TERM: "xterm-256color",
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",

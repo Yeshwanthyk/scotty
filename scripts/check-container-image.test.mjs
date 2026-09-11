@@ -13,10 +13,14 @@ import {
   containerImageCodexPackagingArgs,
   containerImageCodexVersionArgs,
   containerImageBuildArgs,
-  containerImageInspectArgs,
+  containerImageNativeCodexAdapterArgs,
+  containerImageNativePiSupervisorArgs,
   containerImagePiPackagesSmokeArgs,
   containerImagePiVersionArgs,
   containerImagePlan,
+  containerImageSizeArgs,
+  containerImageSyncedSkillSetupArgs,
+  containerImageToolInventoryArgs,
 } from "./check-container-image.mjs";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -24,7 +28,7 @@ const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import
 describe("final container image gate", () => {
   it("preserves the verified Codex archive and wires the bundled native host", () => {
     const dockerfile = read("worker/container/Dockerfile");
-    const start = dockerfile.indexOf("# Pin evidence and root archive layout:");
+    const start = dockerfile.indexOf("# Pinned release provenance and regeneration evidence:");
     assert.ok(start >= 0);
     const install = dockerfile.slice(start, dockerfile.indexOf("RUN apt-get update", start));
     assert.ok(
@@ -64,21 +68,7 @@ describe("final container image gate", () => {
     assert.doesNotMatch(aptInstall, /\b(?:bubblewrap|bwrap)\b/u);
     assert.doesNotMatch(dockerfile, /--privileged|--cap-add|seccomp|chmod [2467][0-7]{3}/u);
     assert.match(dockerfile, /ARG PI_VERSION=0\.84\.0/u);
-    assert.ok(
-      dockerfile.includes(
-        "RUN bun build worker/src/agent/codex/main.ts --target=node --format=esm --outfile=/out/scotty-codex-host.mjs",
-      ),
-    );
-    assert.ok(
-      dockerfile.includes(
-        "COPY --from=scotty-cli-build /out/scotty-codex-host.mjs /usr/local/bin/scotty-codex-host.mjs",
-      ),
-    );
-    assert.ok(
-      dockerfile.includes(
-        "COPY worker/container/scotty-codex-session.mjs /usr/local/bin/scotty-codex-session",
-      ),
-    );
+    assert.doesNotMatch(dockerfile, /scotty-codex-(?:host|session)/u);
     assert.ok(
       dockerfile.includes(
         "RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs",
@@ -103,6 +93,7 @@ describe("final container image gate", () => {
         .join(" ")
         .includes("prepared-generation"),
     );
+    assert.doesNotMatch(dockerfile, /scotty-skill-commands/u);
     assert.ok(dockerfile.includes('test "$(pi --version)" = "${PI_VERSION}"'));
     assert.match(
       dockerfile,
@@ -111,10 +102,11 @@ describe("final container image gate", () => {
     assert.doesNotMatch(install, /npm|auth\.json|app-server --listen/u);
   });
 
-  it("builds and loads the final linux/amd64 image, then smokes Pi packages and inspects Size", async () => {
+  it("builds and loads the final linux/amd64 image, then smokes packages and measures its rootfs", async () => {
     const prepared = [];
     const dockerCalls = [];
     const inspected = [];
+    const reports = [];
     const plan = await checkContainerImage({
       root: "/repo",
       environment: {},
@@ -128,6 +120,7 @@ describe("final container image gate", () => {
         inspected.push({ image, options });
         return 1_038_798_880;
       },
+      report: (message) => reports.push(message),
     });
 
     assert.deepEqual(prepared, ["/repo"]);
@@ -152,8 +145,12 @@ describe("final container image gate", () => {
       { command: "docker", args: containerImageBuildArgs(plan) },
       { command: "docker", args: containerImagePiVersionArgs(plan) },
       { command: "docker", args: containerImagePiPackagesSmokeArgs(plan) },
+      { command: "docker", args: containerImageNativePiSupervisorArgs(plan) },
       { command: "docker", args: containerImageCodexVersionArgs(plan) },
+      { command: "docker", args: containerImageNativeCodexAdapterArgs(plan) },
       { command: "docker", args: containerImageCodexPackagingArgs(plan) },
+      { command: "docker", args: containerImageToolInventoryArgs(plan) },
+      { command: "docker", args: containerImageSyncedSkillSetupArgs(plan) },
     ]);
     assert.deepEqual(containerImageBuildArgs(plan), [
       "buildx",
@@ -174,7 +171,13 @@ describe("final container image gate", () => {
     assert.match(piPackagesSmokeCommand, /pi list/u);
     for (const name of CONTAINER_IMAGE_PI_PACKAGES) {
       assert.match(piPackagesSmokeCommand, new RegExp(name, "u"));
+      assert.ok(piPackagesSmokeCommand.includes(`${name}/package.json`));
+      assert.ok(piPackagesSmokeCommand.includes(`${name}/package-lock.json`));
+      assert.ok(piPackagesSmokeCommand.includes(`${name}/LICENSE`));
     }
+    assert.match(piPackagesSmokeCommand, /\*\.test\.ts/u);
+    assert.match(piPackagesSmokeCommand, /tsconfig\.json/u);
+    assert.match(piPackagesSmokeCommand, /\.gitignore/u);
     for (const name of CONTAINER_IMAGE_ABSENT_PI_PACKAGES) {
       assert.ok(
         piPackagesSmokeCommand.includes(
@@ -188,13 +191,8 @@ describe("final container image gate", () => {
       );
     }
     const dockerfile = read("worker/container/Dockerfile");
-    assert.doesNotMatch(dockerfile, /project-container-pi-install/u);
-    assert.match(dockerfile, /RUN mkdir -p \/workspace \/opt\/scotty\/skills/u);
-    assert.doesNotMatch(dockerfile, /COPY worker\/container\/skills\/(?:bundled|licenses)/u);
-    assert.match(
-      dockerfile,
-      /find \/opt\/scotty\/skills -mindepth 1 -maxdepth 1 -type d \| wc -l\)" -eq 0/u,
-    );
+    assert.match(dockerfile, /RUN mkdir -p \/workspace/u);
+    assert.doesNotMatch(dockerfile, /\/opt\/scotty\/skills|skills\.lock/u);
     for (const name of CONTAINER_IMAGE_ABSENT_PI_PACKAGES) {
       assert.ok(piPackagesSmokeCommand.includes(`grep -F -- ${JSON.stringify(name)}`));
       assert.ok(
@@ -221,21 +219,60 @@ describe("final container image gate", () => {
     assert.ok(codexSmoke.includes("! dpkg-query"));
     assert.doesNotMatch(codexSmoke, /--as-pid-1|--perms/u);
     assert.doesNotMatch(codexSmoke, /--volume|--mount|auth\.json|app-server/u);
-    assert.deepEqual(containerImageInspectArgs(plan), [
-      "image",
-      "inspect",
+    const nativePi = containerImageNativePiSupervisorArgs(plan).join(" ");
+    assert.match(nativePi, /scotty-pi-session/u);
+    assert.match(nativePi, /\/health/u);
+    assert.match(nativePi, /\/snapshot/u);
+    assert.match(nativePi, /x-scotty-pi-session/u);
+    assert.match(nativePi, /PI_OFFLINE/u);
+    assert.match(nativePi, /https:\/\/scotty\.internal\/api\/hatch\/restore/u);
+    assert.match(nativePi, /hatch-restore\.called/u);
+    assert.doesNotMatch(nativePi, /packagedSettings\.packages\s*=/u);
+    const nativeCodex = containerImageNativeCodexAdapterArgs(plan).join(" ");
+    assert.match(nativeCodex, /scotty-codex-server/u);
+    assert.match(nativeCodex, /\/opt\/codex\/bin\/codex/u);
+    assert.match(nativeCodex, /\/health/u);
+    assert.match(nativeCodex, /\/snapshot/u);
+    assert.match(nativeCodex, /x-scotty-codex-token/u);
+    assert.match(nativeCodex, /wrong|repeat\(64\)/u);
+    assert.match(nativeCodex, /settings\.effort/u);
+    assert.match(nativeCodex, /approvalPolicy/u);
+    assert.match(nativeCodex, /dangerFullAccess/u);
+    assert.match(nativeCodex, /\/stop/u);
+    assert.match(nativeCodex, /--network=none/u);
+    const inventory = containerImageToolInventoryArgs(plan).join(" ");
+    assert.match(inventory, /standard\.json/u);
+    assert.match(inventory, /expectedVersion/u);
+    const syncedSkill = containerImageSyncedSkillSetupArgs(plan).join(" ");
+    assert.match(syncedSkill, /mkdir -p/u);
+    assert.match(syncedSkill, /ln -sfn/u);
+    assert.match(syncedSkill, /sample-synced/u);
+    assert.match(syncedSkill, /\.codex\/skills/u);
+    assert.match(syncedSkill, /\.pi-agent\/skills/u);
+    assert.doesNotMatch(syncedSkill, /scotty-skill-commands/u);
+    assert.deepEqual(containerImageSizeArgs(plan), [
+      "run",
+      "--rm",
+      "--platform",
+      "linux/amd64",
+      "--network=none",
+      "--entrypoint",
+      "du",
       "scotty-container:ci",
-      "--format",
-      "{{.Size}}",
+      "-sbx",
+      "/",
     ]);
     assert.deepEqual(
       inspected.map(({ image }) => image),
       ["scotty-container:ci"],
     );
-    assert.deepEqual(inspected[0].options.inspectArgs, containerImageInspectArgs(plan));
+    assert.deepEqual(inspected[0].options.inspectArgs, containerImageSizeArgs(plan));
+    assert.deepEqual(reports, [
+      `Container image ${CONTAINER_IMAGE_BUDGET.metric}: 1038798880 bytes (budget: ${CONTAINER_IMAGE_BUDGET.maxBytes} bytes)`,
+    ]);
   });
 
-  it("fails closed when image inspect is missing or over budget", async () => {
+  it("fails closed when image measurement is missing or over budget", async () => {
     await assert.rejects(
       checkContainerImage({
         root: "/repo",
@@ -248,7 +285,7 @@ describe("final container image gate", () => {
           );
         },
       }),
-      /Failed to docker image inspect Size/u,
+      /Failed to visible root filesystem apparent size/u,
     );
     await assert.rejects(
       checkContainerImage({
@@ -262,7 +299,7 @@ describe("final container image gate", () => {
           );
         },
       }),
-      /docker image inspect Size is \d+ bytes; budget is/u,
+      /visible root filesystem apparent size.*is \d+ bytes; budget is/u,
     );
   });
 
@@ -286,7 +323,7 @@ describe("final container image gate", () => {
     assert.ok(args.includes(`type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`));
   });
 
-  it("keeps the explicit full-image command available without running it in PR CI", () => {
+  it("runs the explicit full-image command in its own PR CI job", () => {
     const pkg = JSON.parse(read("package.json"));
     const ci = read(".github/workflows/ci.yml");
 
@@ -296,7 +333,25 @@ describe("final container image gate", () => {
     assert.doesNotMatch(pkg.scripts.check, /check:cli-clean-room/u);
     assert.match(ci, /npm run check:cli-clean-room/u);
     assert.match(ci, /cli-clean-room:/u);
-    assert.doesNotMatch(ci, /container-image:/u);
-    assert.doesNotMatch(ci, /npm run check:container-image/u);
+    assert.match(ci, /container-image:/u);
+    assert.match(ci, /npm run check:container-image/u);
+  });
+
+  it("records probes for supported native, media, browser, and Scotty tools", () => {
+    const inventory = JSON.parse(read("worker/container/toolsets/standard.json"));
+    const tools = new Map(inventory.tools.map((tool) => [tool.name, tool]));
+    for (const name of ["Codex", "Scotty CLI", "ffmpeg", "Xvfb", "Playwright Chromium"]) {
+      assert.ok(tools.has(name), `missing ${name}`);
+      assert.ok(tools.get(name).probe.length > 0, `missing ${name} probe`);
+    }
+    assert.equal(tools.get("git").source, "Debian");
+    assert.equal(tools.has("Go"), false);
+    assert.match(tools.get("Playwright Chromium").probe.join(" "), /channel: 'chromium'/u);
+    for (const name of CONTAINER_IMAGE_PI_PACKAGES) {
+      const probe = tools.get(name).probe.join(" ");
+      assert.match(probe, /mktemp -d/u);
+      assert.match(probe, /PI_CODING_AGENT_DIR/u);
+      assert.match(probe, /settings\.json/u);
+    }
   });
 });

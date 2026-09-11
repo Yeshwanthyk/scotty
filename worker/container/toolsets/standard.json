@@ -83,19 +83,10 @@
       "probe": ["python", "--version"]
     },
     {
-      "name": "Go",
-      "category": "go",
-      "commands": ["go", "gofmt"],
-      "source": "go.dev release",
-      "versionPolicy": "pinned",
-      "expectedVersion": "go1.26.1",
-      "probe": ["go", "version"]
-    },
-    {
       "name": "git",
       "category": "git-process",
       "commands": ["git"],
-      "source": "base image",
+      "source": "Debian",
       "versionPolicy": "image",
       "probe": ["git", "--version"]
     },
@@ -187,12 +178,64 @@
       "probe": ["pi", "--version"]
     },
     {
+      "name": "Codex",
+      "category": "scotty",
+      "commands": ["codex"],
+      "source": "OpenAI GitHub release",
+      "versionPolicy": "pinned",
+      "expectedVersion": "0.153.4",
+      "probe": ["codex", "--version"]
+    },
+    {
+      "name": "Scotty CLI",
+      "category": "scotty",
+      "commands": ["scotty"],
+      "source": "first-party compiled CLI",
+      "versionPolicy": "pinned",
+      "expectedVersion": "0.3.14",
+      "probe": ["scotty", "--version"]
+    },
+    {
+      "name": "ffmpeg",
+      "category": "media",
+      "commands": ["ffmpeg", "ffprobe"],
+      "source": "Debian",
+      "versionPolicy": "image",
+      "probe": ["ffmpeg", "-version"]
+    },
+    {
+      "name": "Xvfb",
+      "category": "browser",
+      "commands": ["Xvfb"],
+      "source": "Debian",
+      "versionPolicy": "image",
+      "probe": ["sh", "-lc", "command -v Xvfb >/dev/null && dpkg-query -W -f='${Version}\\n' xvfb"]
+    },
+    {
+      "name": "Playwright Chromium",
+      "category": "browser",
+      "commands": [],
+      "source": "npm plus Playwright browser install",
+      "versionPolicy": "pinned",
+      "expectedVersion": "1.62.1",
+      "probe": [
+        "node",
+        "--input-type=module",
+        "-e",
+        "import assert from 'node:assert/strict'; import { chromium } from '/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/index.mjs'; import pkg from '/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/package.json' with { type: 'json' }; const browser = await chromium.launch({ channel: 'chromium', headless: true }); try { const page = await browser.newPage(); await page.goto('data:text/html,<title>Scotty Chromium Probe</title><main>SCOTTY_BROWSER_OK</main>'); assert.equal(await page.title(), 'Scotty Chromium Probe'); assert.equal(await page.textContent('main'), 'SCOTTY_BROWSER_OK'); } finally { await browser.close(); } process.stdout.write(pkg.version)"
+      ]
+    },
+    {
       "name": "scotty-browser-test",
       "category": "scotty",
       "commands": [],
       "source": "first-party Pi package",
       "versionPolicy": "image",
-      "probe": ["sh", "-lc", "pi list | grep -F scotty-browser-test >/dev/null"]
+      "probe": [
+        "sh",
+        "-lc",
+        "agent=$(mktemp -d); trap 'rm -rf \"$agent\"' EXIT; cp /opt/scotty/pi-packages/settings.json \"$agent/settings.json\"; PI_CODING_AGENT_DIR=\"$agent\" PI_OFFLINE=1 pi list | grep -F scotty-browser-test >/dev/null"
+      ]
     },
     {
       "name": "scotty-hatch",
@@ -200,7 +243,11 @@
       "commands": [],
       "source": "first-party Pi package",
       "versionPolicy": "image",
-      "probe": ["sh", "-lc", "pi list | grep -F scotty-hatch >/dev/null"]
+      "probe": [
+        "sh",
+        "-lc",
+        "agent=$(mktemp -d); trap 'rm -rf \"$agent\"' EXIT; cp /opt/scotty/pi-packages/settings.json \"$agent/settings.json\"; PI_CODING_AGENT_DIR=\"$agent\" PI_OFFLINE=1 pi list | grep -F scotty-hatch >/dev/null"
+      ]
     }
   ]
 }

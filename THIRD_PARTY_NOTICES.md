@@ -2,8 +2,7 @@
 
 Scotty includes pinned source snapshots for its container image. Package provenance and license
 locations are recorded in
-[`worker/container/pi-packages/THIRD_PARTY_NOTICES.md`](worker/container/pi-packages/THIRD_PARTY_NOTICES.md). Bundled skill provenance and license copies
-are recorded in [`worker/container/skills/THIRD_PARTY_NOTICES.md`](worker/container/skills/THIRD_PARTY_NOTICES.md).
+[`worker/container/pi-packages/THIRD_PARTY_NOTICES.md`](worker/container/pi-packages/THIRD_PARTY_NOTICES.md).
 
 ## UsefulSoftwareCo/executor
 

@@ -18,8 +18,11 @@ export const CodexModelCapability = Schema.Struct({
   toolMode: Schema.NullOr(Schema.Literal("code_mode_only")),
 });
 
-// Exact minimal projection of rust-v0.153.4 models-manager/models.json;
-// source commit and regeneration/proof instructions: docs/research/codex-agent-pin.md.
+// Exact minimal projection of rust-v0.153.4 models-manager/models.json at commit
+// 3d2ee51ca2d5db578f328aa75e20aa22c0197c9a. Regenerate by projecting each model's
+// slug, supported_reasoning_levels[].effort, and tool_type ("code_mode" maps to
+// "code_mode_only"), then compare the result with this catalog. The complete Linux
+// package installed by worker/container/Dockerfile is independently SHA-256 pinned.
 export const codexModelCapabilities: ReadonlyArray<typeof CodexModelCapability.Type> = [
   {
     slug: "gpt-6-astra",

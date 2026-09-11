@@ -66,8 +66,67 @@ const grants: ReadonlyArray<CredentialGrant> = [
 ];
 const credentials = sessionRuntimeCredentials(grants);
 
+const seedSkillMergeCommand = (
+  items: ReadonlyArray<{ readonly kind: "skill"; readonly name: string }>,
+  bundleRoot?: string,
+) =>
+  Effect.gen(function* () {
+    const commands: string[] = [];
+    const capabilities: SandboxRuntimeCapabilities = {
+      ...sandboxRuntimeCapabilitiesFake(),
+      exec: async (command) => {
+        commands.push(command);
+        return {
+          success: true,
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+          command,
+          duration: 1,
+          timestamp: "2026-09-10T00:00:00.000Z",
+        };
+      },
+    };
+    const runtimeLayer = sandboxRuntimeLayer(capabilities);
+    const layer = Layer.merge(runtimeLayer, containerAuthLayer.pipe(Layer.provide(runtimeLayer)));
+    yield* Effect.flatMap(ContainerAuth, (auth) =>
+      auth.seed(SESSION_ID, credentials, {
+        items,
+        ...(bundleRoot === undefined ? {} : { bundleRoot }),
+      }),
+    ).pipe(Effect.provide(layer));
+    const merge = commands.find((command) => command.includes(".scotty/merged-skills"));
+    assert.ok(merge);
+    return merge;
+  });
+
 // Keep this assertion close to the ContainerAuth boundary: native files only receive projections.
 describe("container managed credential projection", () => {
+  it.effect("merges zero user-synced skills and links both native homes", () =>
+    Effect.gen(function* () {
+      const merge = yield* seedSkillMergeCommand([]);
+      assert.notInclude(merge, "/opt/scotty/skills");
+      assert.include(merge, `'/workspace/${SESSION_ID}/.codex/skills'`);
+      assert.include(merge, `'/workspace/${SESSION_ID}/.pi-agent/skills'`);
+      assert.notInclude(merge, "review-patch");
+    }),
+  );
+
+  it.effect("merges one user-synced skill and links both native homes", () =>
+    Effect.gen(function* () {
+      const bundleRoot = "/workspace/.scotty/bundles/bundle-1";
+      const merge = yield* seedSkillMergeCommand(
+        [{ kind: "skill", name: "review-patch" }],
+        bundleRoot,
+      );
+      assert.notInclude(merge, "/opt/scotty/skills");
+      assert.include(merge, `'/workspace/${SESSION_ID}/.codex/skills'`);
+      assert.include(merge, `'/workspace/${SESSION_ID}/.pi-agent/skills'`);
+      assert.include(merge, "review-patch");
+      assert.include(merge, `${bundleRoot}/skills/review-patch`);
+    }),
+  );
+
   it.effect(
     "seeds requested Pi settings and preserves changed settings during credential refresh",
     () =>
@@ -164,6 +223,9 @@ describe("container managed credential projection", () => {
     assert.deepStrictEqual(JSON.parse(managedPiAuthJson(empty)), {});
     const env = agentEnv(SESSION_ID, empty);
     assert.strictEqual(env.GH_TOKEN, undefined);
+    assert.strictEqual(env.GOTOOLCHAIN, undefined);
+    assert.strictEqual(env.GOPROXY, undefined);
+    assert.strictEqual(env.GOSUMDB, undefined);
   });
 
   it("rejects multiple Pi grants while preserving single-grant selection", () => {
@@ -211,7 +273,7 @@ describe("Pi session production observations", () => {
       assert.strictEqual(writes[0]?.path, `/workspace/${SESSION_ID}/.pi-agent/scotty-shell`);
       assert.include(writes[0]?.content ?? "", `cd '/workspace/${SESSION_ID}'`);
       assert.include(writes[0]?.content ?? "", "exec /bin/bash --noprofile --norc -i");
-      assert.notInclude(writes[0]?.content ?? "", "scotty-pi-shell");
+      assert.notInclude(writes[0]?.content ?? "", "/usr/local/go/bin");
       assert.ok(commands.some((command) => command.startsWith("chmod 700 ")));
     }),
   );

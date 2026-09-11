@@ -16,10 +16,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import {
-  CODEX_BUNDLE_SMOKE,
+  CODEX_SERVER_BUNDLE_SMOKE,
+  CODEX_SERVER_FAILURE_CLEANUP_PROOF,
   CODEX_SERVER_PROOF,
-  CODEX_FAKE_CHILD,
-  codexFixtureLaunch,
 } from "./check-container-image.mjs";
 import {
   CONTAINER_CONTEXT_PATH,
@@ -27,8 +26,10 @@ import {
   CONTAINER_IMAGE_BUDGET,
   CONTAINER_INPUTS,
   CONTAINER_STATIC_INPUTS,
+  assertContainerCopyInputs,
   assertContainerContextBudget,
   assertContainerImageBudget,
+  assertRootDockerignoreInputs,
   assertSafeProjectPath,
   discoverContainerCliInputs,
   inspectContainerImageBudget,
@@ -65,20 +66,103 @@ const listAllFiles = async (root) => {
   return files;
 };
 
-test("prepared context does not run package preparation hooks", async () => {
-  const root = await mkdtemp(join(tmpdir(), "scotty-container-context-no-npm-"));
+test("prepared contexts fail before Docker when a COPY source is missing", async () => {
+  const context = await mkdtemp(join(tmpdir(), "scotty-missing-copy-input-"));
+  try {
+    await writeTree(context, {
+      "worker/container/Dockerfile":
+        "FROM scratch\nCOPY worker/container/notices.txt /notices.txt\n",
+    });
+    await assert.rejects(
+      assertContainerCopyInputs(context),
+      /missing Docker COPY inputs: worker\/container\/notices\.txt/u,
+    );
+  } finally {
+    await rm(context, { recursive: true, force: true });
+  }
+});
+
+test("root Docker ignore rules fail closed when a required input is excluded", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scotty-dockerignore-input-"));
+  try {
+    await writeFile(join(root, ".dockerignore"), "**\n!package.json\n");
+    await assert.rejects(
+      assertRootDockerignoreInputs(root, ["package.json", "patches/required.patch"]),
+      /excludes required container inputs: patches\/required\.patch/u,
+    );
+    await writeFile(
+      join(root, ".dockerignore"),
+      "**\n!package.json\n!patches/\n!patches/required.patch\n",
+    );
+    assert.deepEqual(
+      await assertRootDockerignoreInputs(root, ["package.json", "patches/required.patch"]),
+      ["package.json", "patches/required.patch"],
+    );
+    await writeFile(
+      join(root, ".dockerignore"),
+      "**\n!package.json\n!patches/\n!patches/required.patch\npatches/required.patch\n",
+    );
+    await assert.rejects(
+      assertRootDockerignoreInputs(root, ["package.json", "patches/required.patch"]),
+      /excludes required container inputs: patches\/required\.patch/u,
+    );
+    await writeFile(join(root, ".dockerignore"), "**\n!package.json\npackage.json\n");
+    await assert.rejects(
+      assertRootDockerignoreInputs(root, ["package.json"]),
+      /excludes required container inputs: package\.json/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("prepared contexts validate required copied leaves against final ignore rules", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scotty-dockerignore-leaves-"));
   try {
     await writeTree(root, {
-      "cli/src/index.ts": "export {};\n",
+      ".dockerignore":
+        "**\n!worker/\n!worker/container/\n!worker/container/pi-packages/\n!worker/container/pi-packages/settings.json\nworker/container/pi-packages/settings.json\n",
+      "worker/container/pi-packages/settings.json": "{}\n",
     });
-    const calls = [];
-    await prepareContainerContext(root, {
-      inputs: ["cli/src"],
-      projectPiInstall: async (context, options) => {
-        calls.push({ context, options });
-      },
+    await assert.rejects(
+      prepareContainerContext(root, { inputs: ["worker/container"] }),
+      /excludes required container inputs: worker\/container\/pi-packages\/settings\.json/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("root Docker ignore validation applies ordinary wildcard exclusions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scotty-dockerignore-wildcard-"));
+  try {
+    await writeFile(
+      join(root, ".dockerignore"),
+      "**\n!worker/container/**\nworker/container/pi-packages/*.json\n",
+    );
+    await assert.rejects(
+      assertRootDockerignoreInputs(root, ["worker/container/pi-packages/settings.json"]),
+      /excludes required container inputs: worker\/container\/pi-packages\/settings\.json/u,
+    );
+    await writeFile(join(root, ".dockerignore"), "*.tmp\n");
+    assert.deepEqual(await assertRootDockerignoreInputs(root, ["package.json"]), ["package.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("prepared contexts validate discovered Codex leaves against final ignore rules", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scotty-dockerignore-codex-"));
+  const source = "worker/src/agent/codex/main.ts";
+  try {
+    await writeTree(root, {
+      ".dockerignore": `**\n!worker/\n!worker/src/\n!worker/src/agent/\n!worker/src/agent/codex/\n!${source}\n${source}\n`,
+      [source]: "export {};\n",
     });
-    assert.equal(calls.length, 0);
+    await assert.rejects(
+      prepareContainerContext(root, { inputs: [source] }),
+      /excludes required container inputs: worker\/src\/agent\/codex\/main\.ts/u,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -170,10 +254,6 @@ test("the Container context contains only static runtime assets and CLI graph in
         "utf8",
       ),
       { code: "ENOENT" },
-    );
-    assert.equal(
-      CONTAINER_STATIC_INPUTS.includes("scripts/project-container-pi-install.mjs"),
-      false,
     );
     assert.equal(
       await readFile(join(root, CONTAINER_CONTEXT_PATH, workerCliInput), "utf8"),
@@ -332,18 +412,19 @@ test("container context budget rejects node_modules, preinstalled Playwright, an
 test("named context and image budgets sit above the current measured sizes", async () => {
   assert.equal(CONTAINER_CONTEXT_BUDGET.maxFiles, 2_000);
   assert.equal(CONTAINER_CONTEXT_BUDGET.maxBytes, 40 * 1024 * 1024);
-  assert.equal(CONTAINER_IMAGE_BUDGET.metric, "docker image inspect Size");
-  assert.equal(CONTAINER_IMAGE_BUDGET.maxBytes, 1_250 * 1024 * 1024);
-  assertContainerImageBudget(1_038_798_880);
+  assert.equal(CONTAINER_IMAGE_BUDGET.metric, "visible root filesystem apparent size (du -sbx /)");
+  assert.equal(CONTAINER_IMAGE_BUDGET.baselineBytes, 3_119_833_948);
+  assert.equal(CONTAINER_IMAGE_BUDGET.maxBytes, 3_250 * 1024 * 1024);
+  assertContainerImageBudget(CONTAINER_IMAGE_BUDGET.baselineBytes);
   assert.throws(
     () => assertContainerImageBudget(CONTAINER_IMAGE_BUDGET.maxBytes + 1),
-    /docker image inspect Size/u,
+    /visible root filesystem apparent size/u,
   );
   assert.equal(
     await inspectContainerImageBudget("scotty-container:ci", {
-      exec: async () => ({ stdout: "1038798880\n" }),
+      exec: async () => ({ stdout: "3119833948\t/\n" }),
     }),
-    1_038_798_880,
+    3_119_833_948,
   );
   await assert.rejects(
     inspectContainerImageBudget("scotty-container:ci", {
@@ -351,7 +432,7 @@ test("named context and image budgets sit above the current measured sizes", asy
         throw new Error("Error: No such object: scotty-container:ci");
       },
     }),
-    /Failed to docker image inspect Size for scotty-container:ci/u,
+    /Failed to visible root filesystem apparent size.*for scotty-container:ci/u,
   );
   await assert.rejects(
     inspectContainerImageBudget("scotty-container:ci", {
@@ -361,9 +442,9 @@ test("named context and image budgets sit above the current measured sizes", asy
   );
   await assert.rejects(
     inspectContainerImageBudget("scotty-container:ci", {
-      exec: async () => ({ stdout: `${CONTAINER_IMAGE_BUDGET.maxBytes + 1}\n` }),
+      exec: async () => ({ stdout: `${CONTAINER_IMAGE_BUDGET.maxBytes + 1}\t/\n` }),
     }),
-    /docker image inspect Size is \d+ bytes; budget is/u,
+    /visible root filesystem apparent size.*is \d+ bytes; budget is/u,
   );
 });
 
@@ -376,6 +457,7 @@ test("discovery follows transitive container-only source imports without includi
       "worker/src/agent/codex/server-only.ts": "export const value = 1;",
       "worker/src/agent/codex/main.ts":
         "export { value } from '../../../../protocol/codex-app-server.ts';",
+      "worker/src/sandbox/skill-commands.ts": "export const value = 1;",
       "protocol/codex-app-server.ts": "export { value } from './codex-dependency.ts';",
       "protocol/codex-dependency.ts": "export { value } from './nested/value.ts';",
       "protocol/nested/value.ts": "export const value = 42;",
@@ -389,13 +471,14 @@ test("discovery follows transitive container-only source imports without includi
       "worker/src/agent/codex/main.ts",
       "worker/src/agent/codex/server-only.ts",
       "worker/src/agent/codex/server.ts",
+      "worker/src/sandbox/skill-commands.ts",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("real discovery prepares and bundles the Effect Codex host for standalone native Node", async (t) => {
+test("real discovery prepares and bundles the Effect Codex server for standalone native Node", async (t) => {
   const checkout = fileURLToPath(new URL("../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "scotty-real-container-context-"));
   try {
@@ -442,22 +525,6 @@ test("real discovery prepares and bundles the Effect Codex host for standalone n
     const output = join(root, "native");
     await mkdir(output);
     const dockerfile = await readFile(join(context, "worker/container/Dockerfile"), "utf8");
-    const build = dockerfile
-      .split("\n")
-      .find((line) => line.startsWith("RUN bun build worker/src/agent/codex/main.ts "));
-    assert.ok(build, "Dockerfile must build the Effect host bundle");
-    execFileSync(
-      "bun",
-      build
-        .slice("RUN bun ".length)
-        .split(" ")
-        .map((arg) =>
-          arg === "--outfile=/out/scotty-codex-host.mjs"
-            ? `--outfile=${join(output, "scotty-codex-host.mjs")}`
-            : arg,
-        ),
-      { cwd: context, stdio: "pipe" },
-    );
     const serverBuild = dockerfile
       .split("\n")
       .find((line) => line.startsWith("RUN bun build worker/src/agent/codex/server.ts "));
@@ -490,49 +557,25 @@ test("real discovery prepares and bundles the Effect Codex host for standalone n
         });
       },
     );
-    execFileSync(process.execPath, ["--input-type=module", "-e", CODEX_BUNDLE_SMOKE], {
+    await t.test(
+      "installed private server cleans up a forced native child on probe failure",
+      () => {
+        execFileSync(
+          process.execPath,
+          ["--input-type=module", "-e", CODEX_SERVER_FAILURE_CLEANUP_PROOF],
+          {
+            cwd: output,
+            stdio: "pipe",
+            env: { PATH: process.env.PATH },
+            timeout: 20_000,
+          },
+        );
+      },
+    );
+    execFileSync(process.execPath, ["--input-type=module", "-e", CODEX_SERVER_BUNDLE_SMOKE], {
       cwd: output,
       stdio: "pipe",
       env: { PATH: process.env.PATH },
-    });
-
-    await t.test("stages the actual native host beside its bundle", async () => {
-      const host = join(context, "worker/container/scotty-codex-session.mjs");
-      const source = await readFile(host, "utf8");
-      assert.match(source, /from ["']\.\/scotty-codex-host\.mjs["']/u);
-      await copyFile(host, join(output, "scotty-codex-session"));
-      execFileSync(process.execPath, ["--check", join(output, "scotty-codex-session")], {
-        stdio: "pipe",
-      });
-      const fake = join(output, "fake-codex");
-      await writeFile(fake, `#!${process.execPath}\n${CODEX_FAKE_CHILD}`);
-      await chmod(fake, 0o755);
-      const workspace = join(root, "parent-workspace");
-      await mkdir(workspace);
-      const transcript = execFileSync(
-        process.execPath,
-        [
-          join(output, "scotty-codex-session"),
-          JSON.stringify(codexFixtureLaunch(fake, join(root, "isolated"), workspace)),
-        ],
-        {
-          input: "",
-          encoding: "utf8",
-          env: {},
-          timeout: 10000,
-        },
-      )
-        .trim()
-        .split("\n")
-        .map(JSON.parse);
-      assert.deepEqual(
-        transcript.map((record) => record.type),
-        ["ready", "stopped"],
-      );
-      assert.equal(transcript[0].settings.reasoningEffort, "high");
-      assert.equal(transcript[1].shutdown, "eof");
-      assert.equal(transcript[1].parent, "exited");
-      assert.equal(transcript[1].descendants, "unverified");
     });
   } finally {
     await rm(root, { recursive: true, force: true });
