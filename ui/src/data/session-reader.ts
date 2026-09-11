@@ -1,3 +1,5 @@
+import type { AgentSelection } from "../../../protocol/agent-selection";
+
 export const SESSION_WIRE_VERSION = 1 as const;
 
 export type SessionLifecycle = "warm" | "sleeping" | "failed" | "gone";
@@ -35,8 +37,11 @@ export interface SessionCapabilities {
   readonly vaporize: boolean;
 }
 
+export type SessionSelection = AgentSelection;
+
 export interface SessionModel {
   readonly id: string;
+  readonly selection?: SessionSelection;
   readonly authority: SessionAuthority;
   readonly runtime: {
     readonly provider: "cloudflare" | "runner";
@@ -194,6 +199,87 @@ const identityFrom = (value: JsonValue | undefined): string | undefined =>
     ? value.id
     : undefined;
 
+type PiEffort = NonNullable<Extract<SessionSelection, { agent: "pi" }>["effort"]>;
+type CodexEffort = Extract<SessionSelection, { agent: "codex" }>["effort"];
+
+const piEffortFrom = (value: JsonValue | undefined): PiEffort | undefined => {
+  switch (value) {
+    case "off":
+    case "minimal":
+    case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+    case "max":
+      return value;
+    default:
+      return undefined;
+  }
+};
+
+const codexEffortFrom = (value: JsonValue | undefined): CodexEffort | undefined => {
+  switch (value) {
+    case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+    case "max":
+    case "ultra":
+      return value;
+    default:
+      return undefined;
+  }
+};
+
+const codexEffortsByModel: Readonly<Record<string, ReadonlySet<CodexEffort>>> = {
+  "gpt-6-astra": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
+  "gpt-5.6-sol": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
+  "gpt-5.6-terra": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
+  "gpt-5.6-luna": new Set(["low", "medium", "high", "xhigh", "max"]),
+  "gpt-daybreak-blue-latest": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
+  "gpt-daybreak-red-latest": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
+  "gpt-5.5": new Set(["low", "medium", "high", "xhigh"]),
+  "gpt-5.4": new Set(["low", "medium", "high", "xhigh"]),
+  "gpt-5.4-mini": new Set(["low", "medium", "high", "xhigh"]),
+  "gpt-5.2": new Set(["low", "medium", "high", "xhigh"]),
+  "codex-auto-review": new Set(["low", "medium", "high", "xhigh", "max"]),
+};
+
+const isModelSetting = (value: JsonValue | undefined): value is string =>
+  typeof value === "string" && value.length <= 200 && /^[^\s\p{Cc}]+$/u.test(value);
+
+const selectionFrom = (value: JsonValue | undefined): SessionSelection | undefined => {
+  if (!isJsonObject(value)) return undefined;
+  if (value.agent === "pi") {
+    const effort = value.effort === undefined ? undefined : piEffortFrom(value.effort);
+    if (
+      !hasOnlyKeys(value, ["agent", "modelProvider", "model", "effort"]) ||
+      (value.modelProvider !== undefined && !isModelSetting(value.modelProvider)) ||
+      (value.model !== undefined && !isModelSetting(value.model)) ||
+      (value.effort !== undefined && effort === undefined)
+    )
+      return undefined;
+    return {
+      agent: "pi",
+      ...(typeof value.modelProvider === "string" ? { modelProvider: value.modelProvider } : {}),
+      ...(typeof value.model === "string" ? { model: value.model } : {}),
+      ...(effort === undefined ? {} : { effort }),
+    };
+  }
+  const effort = codexEffortFrom(value.effort);
+  if (
+    value.agent !== "codex" ||
+    !hasOnlyKeys(value, ["agent", "model", "effort"]) ||
+    typeof value.model !== "string" ||
+    !/^[a-z0-9][a-z0-9._-]*$/u.test(value.model) ||
+    value.model.length > 128 ||
+    effort === undefined ||
+    codexEffortsByModel[value.model]?.has(effort) !== true
+  )
+    return undefined;
+  return { agent: "codex", model: value.model, effort };
+};
+
 const runtimeFrom = (value: JsonValue | undefined): SessionModel["runtime"] | undefined => {
   if (
     !isJsonObject(value) ||
@@ -301,9 +387,20 @@ export const decodeSessionWireValue = (
 ): SessionModel | undefined => {
   if (!isJsonObject(value)) return undefined;
   const wire = value;
-  if (!hasOnlyKeys(wire, ["identity", "authority", "runtime", "capabilities", "display", "times"]))
+  if (
+    !hasOnlyKeys(wire, [
+      "identity",
+      "selection",
+      "authority",
+      "runtime",
+      "capabilities",
+      "display",
+      "times",
+    ])
+  )
     return undefined;
   const id = identityFrom(wire.identity);
+  const selection = wire.selection === undefined ? undefined : selectionFrom(wire.selection);
   const authority = authorityFrom(wire.authority);
   const runtime = runtimeFrom(wire.runtime);
   const capabilities = capabilitiesFrom(wire.capabilities);
@@ -311,6 +408,7 @@ export const decodeSessionWireValue = (
   const times = timesFrom(wire.times);
   if (
     id === undefined ||
+    (wire.selection !== undefined && selection === undefined) ||
     authority === undefined ||
     runtime === undefined ||
     capabilities === undefined ||
@@ -320,6 +418,7 @@ export const decodeSessionWireValue = (
     return undefined;
   const session = {
     id,
+    ...(selection === undefined ? {} : { selection }),
     authority,
     runtime,
     capabilities,

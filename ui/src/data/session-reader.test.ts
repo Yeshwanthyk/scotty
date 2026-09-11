@@ -18,6 +18,7 @@ const wireSession = (
   version: SESSION_WIRE_VERSION,
   session: {
     identity: { id },
+    selection: { agent: "pi", modelProvider: "openai", model: "gpt-5.4", effort: "high" },
     authority: { kind: "stable", lifecycle, failure: null },
     runtime: {
       provider: "cloudflare",
@@ -48,6 +49,12 @@ describe("readAuthoritativeSession", () => {
       ok: true,
       session: {
         id: "abc-123",
+        selection: {
+          agent: "pi",
+          modelProvider: "openai",
+          model: "gpt-5.4",
+          effort: "high",
+        },
         authority: { kind: "stable", lifecycle: "warm" },
         runtime: { readiness: "unchecked" },
         source: "authority",
@@ -69,6 +76,24 @@ describe("readAuthoritativeSession", () => {
         ok: false,
         classification: "malformed",
       });
+    }
+  });
+
+  it("rejects malformed configured selections at the client boundary", async () => {
+    const base = wireSession("abc-123");
+    const invalidSelections = [
+      { agent: "pi", modelProvider: " leading-space" },
+      { agent: "pi", effort: "ultra" },
+      { agent: "codex", model: "gpt-5.6-luna", effort: "ultra" },
+      { agent: "codex", model: "invented-model", effort: "high" },
+    ];
+    for (const selection of invalidSelections) {
+      const fetchMock = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ ...base, session: { ...base.session, selection } }));
+      await expect(
+        readAuthoritativeSession("abc-123", { fetch: fetchMock }),
+      ).resolves.toMatchObject({ ok: false, classification: "malformed" });
     }
   });
 

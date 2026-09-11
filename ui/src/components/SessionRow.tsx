@@ -121,7 +121,6 @@ const styles = stylex.create({
   },
   separator: { opacity: 0.55 },
   status: { overflow: "hidden", textOverflow: "ellipsis" },
-  operationDetails: { color: colors.warning },
   provenance: { color: colors.focus },
   stale: { color: colors.warning },
   spin: {
@@ -156,18 +155,6 @@ const ArchivedIcon = () => (
   <MessageSquare aria-hidden {...stylex.props(styles.icon, styles.sleeping)} />
 );
 
-const operationDetailsFor = (presentation: SessionPresentation): string | undefined => {
-  const operation = presentation.operation;
-  if (operation === null) return undefined;
-  return `${operation.action} · ${operation.mode} · ${operation.phase}`;
-};
-
-const operationSummaryFor = (presentation: SessionPresentation): string | undefined => {
-  const operation = presentation.operation;
-  if (operation === null) return undefined;
-  return `${operation.label} · ${operation.phase}`;
-};
-
 const provenanceFor = (
   presentation: SessionPresentation,
   actorCorrected: boolean,
@@ -183,8 +170,6 @@ function SessionMetadata({
   projectedFreshness,
   session,
 }: Pick<SessionRowProps, "actorCorrected" | "presentation" | "projectedFreshness" | "session">) {
-  const operationDetails = operationDetailsFor(presentation);
-  const operationSummary = operationSummaryFor(presentation);
   const provenance = provenanceFor(presentation, actorCorrected ?? false);
   return (
     <span {...stylex.props(styles.metadata)}>
@@ -197,11 +182,6 @@ function SessionMetadata({
       <span title={presentation.railLabel} {...stylex.props(styles.status)}>
         {presentation.railLabel}
       </span>
-      {operationSummary ? (
-        <span title={operationDetails} {...stylex.props(styles.operationDetails)}>
-          {operationSummary}
-        </span>
-      ) : null}
       {provenance ? (
         <span
           title={
@@ -218,10 +198,8 @@ function SessionMetadata({
   );
 }
 
-const rowAriaLabel = (session: SessionRowProps["session"], presentation: SessionPresentation) => {
-  const operationDetails = operationDetailsFor(presentation);
-  return `${session.display.title}, ${presentation.railLabel}${operationDetails ? `, operation ${operationDetails}` : ""}`;
-};
+const rowAriaLabel = (session: SessionRowProps["session"], presentation: SessionPresentation) =>
+  `${session.display.title}, ${presentation.railLabel}`;
 
 const repositoryName = (repository: string): string => repository.split("/").at(-1) ?? repository;
 

@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { Check, CircleAlert, LoaderCircle, RotateCcw } from "lucide-react";
+import { Check, CircleAlert, LoaderCircle } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   streamedTextAt,
@@ -9,17 +9,16 @@ import {
   type ToolActivity,
 } from "../domain/conversation";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
-import { Button } from "./Button";
 import { Markdown } from "./Markdown";
 
 const styles = stylex.create({
   viewport: {
     minHeight: 0,
     overflowY: "auto",
-    padding: "0 clamp(16px, 5vw, 52px) 28px",
+    padding: "28px clamp(16px, 3vw, 32px)",
   },
   feed: {
-    width: "min(760px, 100%)",
+    width: "min(840px, 100%)",
     marginInline: "auto",
     display: "grid",
   },
@@ -139,7 +138,6 @@ const styles = stylex.create({
   workingHeader: {
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
     gap: spacing.md,
   },
   workingLabel: {
@@ -158,7 +156,6 @@ const styles = stylex.create({
     animationIterationCount: "infinite",
     animationTimingFunction: "linear",
   },
-  replayIcon: { width: "13px", height: "13px" },
   thinking: {
     margin: 0,
     paddingLeft: spacing.md,
@@ -373,7 +370,6 @@ export function Conversation({
   const latestCompleted = active === undefined ? completed.at(-1) : undefined;
   const foldedCompleted = latestCompleted === undefined ? completed : completed.slice(0, -1);
   const [visibleCompleted, setVisibleCompleted] = useState(3);
-  const [generation, setGeneration] = useState(0);
   const [visibleCharacters, setVisibleCharacters] = useState(active?.assistant.length ?? 0);
   const activeTurnId = useRef(active?.id);
   const viewport = useRef<HTMLDivElement | null>(null);
@@ -406,7 +402,7 @@ export function Conversation({
       });
     }, 28);
     return () => window.clearInterval(timer);
-  }, [active?.assistant, animateStreaming, generation]);
+  }, [active?.assistant, animateStreaming]);
 
   useLayoutEffect(() => {
     const element = viewport.current;
@@ -464,17 +460,6 @@ export function Conversation({
                 <LoaderCircle aria-hidden {...stylex.props(styles.spin)} />
                 Working
               </span>
-              <Button
-                aria-label="Replay streaming response"
-                onClick={() => {
-                  setVisibleCharacters(0);
-                  setGeneration((current) => current + 1);
-                }}
-                variant="quiet"
-              >
-                <RotateCcw aria-hidden {...stylex.props(styles.replayIcon)} />
-                Replay
-              </Button>
             </div>
             <TurnContent assistant="" showUser={false} turn={active} />
             <div aria-live="polite" {...stylex.props(styles.assistantMessage)}>

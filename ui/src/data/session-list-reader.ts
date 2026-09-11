@@ -77,6 +77,7 @@ export const decodeSessionListResponse = (
       !isJsonObject(item) ||
       !hasOnlyKeys(item, [
         "identity",
+        "selection",
         "authority",
         "runtime",
         "capabilities",
@@ -93,6 +94,7 @@ export const decodeSessionListResponse = (
     const projectedAt = item.projection.projectedAt;
     const sessionValue = {
       identity: item.identity,
+      ...(item.selection === undefined ? {} : { selection: item.selection }),
       authority: item.authority,
       runtime: item.runtime,
       capabilities: item.capabilities,

@@ -1,4 +1,5 @@
 import { Match, Predicate, Result, Schema } from "effect";
+import { AgentSelectionSchema } from "../../../protocol/agent-selection";
 import type { SessionOperation, SessionView } from "../session/contracts";
 import type { SessionActorMetadata } from "../session-actor/metadata";
 import type { SessionAuthority } from "../session-actor/authority";
@@ -46,6 +47,7 @@ const UiSessionCapabilitiesSchema = Schema.Struct({
 
 export const UiSessionSchema = Schema.Struct({
   identity: Schema.Struct({ id: Schema.String }),
+  selection: Schema.optionalKey(AgentSelectionSchema),
   authority: UiSessionAuthoritySchema,
   runtime: Schema.Struct({
     provider: Schema.Literals(["cloudflare", "runner"]),
@@ -173,6 +175,9 @@ const uiSessionFromActor = (
     Predicate.isTagged(authority.state.stable, "Warm");
   return {
     identity: { id: authority.session.id },
+    ...(authority.session.selection === undefined
+      ? {}
+      : { selection: authority.session.selection }),
     authority: authorityView(authority),
     runtime: {
       provider,

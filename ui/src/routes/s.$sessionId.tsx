@@ -18,8 +18,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "../components/AppShell";
 import { Button } from "../components/Button";
-import { Conversation } from "../components/Conversation";
-import { LiveConversation } from "../components/LiveConversation";
+import { ConversationPreview, LiveConversation } from "../components/LiveConversation";
 import { SessionWorkbench } from "../components/SessionWorkbench";
 import {
   mutateSessionLifecycle,
@@ -137,37 +136,21 @@ const styles = stylex.create({
   page: {
     height: "100dvh",
     minHeight: "100dvh",
-    display: "grid",
-    gridTemplateRows: "auto minmax(0, 1fr)",
     overflow: "hidden",
     backgroundColor: colors.space,
     "@media (max-width: 760px)": {
       height: "calc(100dvh - 52px)",
       minHeight: "calc(100dvh - 52px)",
-      gridTemplateRows: "minmax(0, 1fr)",
     },
-  },
-  topbar: {
-    minHeight: "64px",
-    paddingInline: spacing.xl,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.lg,
-    borderBottomWidth: "1px",
-    borderBottomStyle: "solid",
-    borderBottomColor: colors.line,
-    backgroundColor: colors.shell,
-    "@media (max-width: 760px)": { display: "none" },
   },
   breadcrumb: {
     minWidth: 0,
     display: "flex",
     alignItems: "center",
-    gap: spacing.sm,
+    gap: "6px",
     color: colors.quiet,
-    fontSize: "12px",
-    "@media (max-width: 760px)": { gap: spacing.xs, fontSize: "10px" },
+    fontSize: "11px",
+    "@media (max-width: 760px)": { fontSize: "10px" },
   },
   repo: {
     overflow: "hidden",
@@ -186,92 +169,74 @@ const styles = stylex.create({
     minWidth: 0,
     minHeight: 0,
     width: "100%",
-    padding: "clamp(22px, 3vw, 40px) clamp(24px, 4vw, 52px) 0",
+    height: "100%",
+    padding: `16px clamp(20px, 3vw, 40px) 0`,
     display: "grid",
     gridTemplateRows: "auto minmax(0, 1fr)",
-    gap: spacing.xl,
+    gap: spacing.md,
     overflow: "hidden",
     "@media (max-width: 760px)": {
-      padding: `6px ${spacing.md} 0`,
-      gap: "4px",
+      padding: `8px ${spacing.md} 0`,
+      gap: spacing.sm,
     },
   },
   headingRow: {
     minWidth: 0,
     display: "flex",
-    alignItems: "flex-start",
+    alignItems: "center",
     justifyContent: "space-between",
-    gap: spacing.xl,
+    gap: spacing.lg,
     "@media (max-width: 760px)": {
       flexDirection: "row",
-      flexWrap: "wrap",
       alignItems: "center",
-      gap: "4px",
+      gap: spacing.sm,
     },
   },
   titleBlock: {
     minWidth: 0,
     display: "grid",
-    gap: spacing.sm,
+    gap: "4px",
     "@media (max-width: 760px)": {
-      display: "flex",
-      alignItems: "center",
       flex: 1,
       overflow: "hidden",
     },
   },
   statusLine: {
-    display: "flex",
+    display: "inline-flex",
     alignItems: "center",
-    gap: spacing.sm,
+    gap: "6px",
     color: colors.muted,
-    fontSize: "12px",
-    "@media (max-width: 760px)": { display: "none" },
+    fontSize: "11px",
   },
-  stateIcon: { width: "14px", height: "14px", color: colors.warning, strokeWidth: 1.8 },
+  stateIcon: { width: "12px", height: "12px", color: colors.warning, strokeWidth: 1.8 },
   heading: {
     maxWidth: "720px",
     margin: 0,
     color: colors.ink,
-    fontSize: "28px",
+    overflow: "hidden",
+    fontSize: "20px",
     fontWeight: 680,
     lineHeight: 1.15,
     letterSpacing: "-0.025em",
-    textWrap: "balance",
-    "@media (max-width: 760px)": { display: "none" },
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    "@media (max-width: 760px)": { fontSize: "16px" },
   },
   metadata: {
     display: "flex",
     flexWrap: "wrap",
-    gap: spacing.lg,
-    color: colors.quiet,
-    fontSize: "12px",
-    fontVariantNumeric: "tabular-nums",
-    "@media (max-width: 760px)": { display: "none" },
-  },
-  mobileContext: {
-    minWidth: 0,
-    flex: 1,
-    display: "flex",
-    alignItems: "center",
-    gap: spacing.xs,
-    overflow: "hidden",
+    gap: spacing.md,
     color: colors.quiet,
     fontSize: "11px",
-    whiteSpace: "nowrap",
-    "@media (min-width: 761px)": { display: "none" },
+    fontVariantNumeric: "tabular-nums",
+    "@media (max-width: 760px)": { gap: spacing.sm, fontSize: "10px" },
   },
-  mobileStatus: { flexShrink: 0, color: colors.muted },
-  mobilePath: {
-    minWidth: 0,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-  },
-  mobileCap: { flexShrink: 0 },
+  defaultBranchItem: { "@media (max-width: 760px)": { display: "none" } },
   metadataItem: { display: "inline-flex", alignItems: "center", gap: "6px" },
+  selectionMetadata: { minWidth: 0, overflowWrap: "anywhere" },
   smallIcon: { width: "13px", height: "13px", strokeWidth: 1.8 },
   actionArea: {
-    minWidth: "250px",
+    minWidth: 0,
     display: "grid",
     justifyItems: "end",
     gap: spacing.sm,
@@ -282,7 +247,7 @@ const styles = stylex.create({
       justifyItems: "end",
     },
   },
-  actionRow: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: spacing.sm },
+  actionRow: { display: "flex", alignItems: "center", gap: "4px" },
   actionMenu: { position: "relative" },
   actionSummary: {
     width: "40px",
@@ -438,6 +403,14 @@ const formatDuration = (seconds: number): string => {
   return `${hours}h ${minutes % 60}m`;
 };
 
+const configuredSelectionLabel = (selection: SessionModel["selection"]): string => {
+  if (selection === undefined) return "Selection unavailable";
+  const effort =
+    selection.effort === undefined ? "default thinking" : `${selection.effort} thinking`;
+  if (selection.agent === "codex") return `OpenAI · Codex · ${selection.model} · ${effort}`;
+  return `Pi · ${selection.modelProvider ?? "provider unavailable"} · ${selection.model ?? "default model"} · ${effort}`;
+};
+
 function SessionRoute() {
   const data = Route.useLoaderData();
   const router = useRouter();
@@ -489,61 +462,50 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
   }, [router]);
   const rail = buildSessionRail(data.projections, { selectedActor: session });
   return (
-    <AppShell
-      archivedSessions={rail.archivedSessions}
-      mobileTitle={session.display.title}
-      mobileTitleHeading
-      repositories={rail.repositories}
-    >
+    <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>
       <div data-session-source={fixture ? "fixture" : "actor"} {...stylex.props(styles.page)}>
-        <header {...stylex.props(styles.topbar)}>
-          <div {...stylex.props(styles.breadcrumb)}>
-            <span {...stylex.props(styles.repo)}>{session.display.repository}</span>
-            <span aria-hidden {...stylex.props(styles.slash)}>
-              /
-            </span>
-            <span {...stylex.props(styles.branch)}>{session.display.branch ?? "Vaporized"}</span>
-          </div>
-        </header>
         <div {...stylex.props(styles.workspace)}>
-          <section {...stylex.props(styles.headingRow)}>
+          <header {...stylex.props(styles.headingRow)}>
             <div {...stylex.props(styles.titleBlock)}>
-              <div {...stylex.props(styles.statusLine)}>
-                {presentation.operation === null ? (
-                  <Cloud aria-hidden {...stylex.props(styles.stateIcon)} />
-                ) : (
-                  <LoaderCircle aria-hidden {...stylex.props(styles.stateIcon, styles.spin)} />
-                )}
-                {presentation.railLabel}
+              <div {...stylex.props(styles.breadcrumb)}>
+                <span {...stylex.props(styles.repo)}>{session.display.repository}</span>
+                <span aria-hidden {...stylex.props(styles.slash)}>
+                  /
+                </span>
+                <span {...stylex.props(styles.branch)}>
+                  {session.display.branch ?? "Vaporized"}
+                </span>
               </div>
               <h1 {...stylex.props(styles.heading)}>{session.display.title}</h1>
               <div {...stylex.props(styles.metadata)}>
-                <span {...stylex.props(styles.metadataItem)}>
+                <span {...stylex.props(styles.statusLine)}>
+                  {presentation.operation === null ? (
+                    <Cloud aria-hidden {...stylex.props(styles.stateIcon)} />
+                  ) : (
+                    <LoaderCircle aria-hidden {...stylex.props(styles.stateIcon, styles.spin)} />
+                  )}
+                  {presentation.railLabel}
+                </span>
+                <span {...stylex.props(styles.metadataItem, styles.defaultBranchItem)}>
                   <GitBranch aria-hidden {...stylex.props(styles.smallIcon)} />
                   {session.display.defaultBranch ?? "No active branch"}
+                </span>
+                <span
+                  aria-label="Configured agent, model, and thinking"
+                  title="Configured session selection"
+                  {...stylex.props(styles.metadataItem, styles.selectionMetadata)}
+                >
+                  <Sparkles aria-hidden {...stylex.props(styles.smallIcon)} />
+                  {configuredSelectionLabel(session.selection)}
                 </span>
                 <span {...stylex.props(styles.metadataItem)}>
                   <Clock3 aria-hidden {...stylex.props(styles.smallIcon)} />
                   {formatDuration(session.times.capRemainingSeconds)} remaining
                 </span>
               </div>
-              <span aria-label="Session status and context" {...stylex.props(styles.mobileContext)}>
-                <span {...stylex.props(styles.mobileStatus)}>{presentation.railLabel}</span>
-                <span aria-hidden>·</span>
-                <span
-                  title={`${session.display.repository} / ${session.display.branch ?? "Vaporized"}`}
-                  {...stylex.props(styles.mobilePath)}
-                >
-                  {session.display.repository} / {session.display.branch ?? "Vaporized"}
-                </span>
-                <span aria-hidden>·</span>
-                <span {...stylex.props(styles.mobileCap)}>
-                  {formatDuration(session.times.capRemainingSeconds)} left
-                </span>
-              </span>
             </div>
             <LifecycleControls presentation={presentation} sessionId={session.id} />
-          </section>
+          </header>
 
           <section aria-label="Conversation" {...stylex.props(styles.surface)}>
             <SessionWorkbench runtimeAvailable={eligibility.eligible} sessionId={session.id}>
@@ -817,12 +779,7 @@ function LifecycleActionRow({
         </div>
       )}
       {primary !== undefined || secondary.length > 0 || canVaporize ? (
-        <details
-          {...stylex.props(
-            styles.actionMenu,
-            secondary.length === 0 && styles.mobileOnlyActionMenu,
-          )}
-        >
+        <details {...stylex.props(styles.actionMenu)}>
           <summary aria-label="More session actions" {...stylex.props(styles.actionSummary)}>
             <MoreHorizontal aria-hidden {...stylex.props(styles.actionIcon)} />
           </summary>
@@ -836,20 +793,10 @@ function LifecycleActionRow({
               <LifecycleButton action={action} key={action} onAction={onAction} />
             ))}
             {canVaporize ? (
-              <div {...stylex.props(styles.mobileOnlyAction)}>
-                <LifecycleButton action="vaporize" onAction={() => onVaporize()} />
-              </div>
+              <LifecycleButton action="vaporize" onAction={() => onVaporize()} />
             ) : null}
           </div>
         </details>
-      ) : null}
-      {canVaporize ? (
-        <div {...stylex.props(styles.desktopOnlyAction)}>
-          <Button onClick={onVaporize} variant="quiet">
-            <Trash2 aria-hidden {...stylex.props(styles.actionIcon, styles.dangerButton)} />
-            Vaporize
-          </Button>
-        </div>
       ) : null}
     </div>
   );
@@ -891,7 +838,7 @@ function SessionSurface({
   readonly sessionId: string;
   readonly simulateConversation: boolean;
 }) {
-  if (simulateConversation) return <Conversation animateStreaming turns={conversationFixture} />;
+  if (simulateConversation) return <ConversationPreview turns={conversationFixture} />;
   if (eligibility.eligible)
     return (
       <LiveConversation

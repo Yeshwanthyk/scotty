@@ -354,6 +354,12 @@ it("exposes Codex sleep while keeping checkpoint unavailable", () => {
     work: true,
     vaporize: true,
   });
+  assert.deepStrictEqual(response.session.selection, {
+    agent: "codex",
+    model: "gpt-6-astra",
+    effort: "low",
+  });
+  assert.deepStrictEqual(decodeResponse(response), response);
 });
 
 it("keeps Codex list sleep/resume capabilities aligned while checkpoint stays unavailable", () => {

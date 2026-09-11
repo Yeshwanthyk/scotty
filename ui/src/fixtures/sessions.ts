@@ -3,6 +3,7 @@ import type {
   SessionCapabilities,
   SessionLifecycle,
   SessionModel,
+  SessionSelection,
   SessionTransitionAction,
 } from "../data/session-reader";
 
@@ -23,10 +24,19 @@ const none: SessionCapabilities = {
   vaporize: false,
 };
 
-const capabilitiesFor = (authority: SessionAuthority): SessionCapabilities => {
+const capabilitiesFor = (
+  authority: SessionAuthority,
+  selection: SessionSelection | undefined,
+): SessionCapabilities => {
   if (authority.kind === "transitioning" || authority.lifecycle === "gone") return none;
   if (authority.lifecycle === "warm")
-    return { checkpoint: true, sleep: true, resume: false, work: true, vaporize: true };
+    return {
+      checkpoint: selection?.agent !== "codex",
+      sleep: true,
+      resume: false,
+      work: true,
+      vaporize: true,
+    };
   if (authority.lifecycle === "sleeping") return { ...none, resume: true, vaporize: true };
   return {
     ...none,
@@ -39,6 +49,7 @@ interface SessionInput {
   readonly id: string;
   readonly title: string;
   readonly authority: SessionAuthority;
+  readonly selection?: SessionSelection;
   readonly repository?: string;
   readonly capRemainingSeconds?: number;
   readonly tombstone?: boolean;
@@ -46,6 +57,7 @@ interface SessionInput {
 
 const session = (input: SessionInput): SessionModel => ({
   id: input.id,
+  ...(input.selection === undefined ? {} : { selection: input.selection }),
   authority: input.authority,
   runtime: {
     provider: "cloudflare",
@@ -54,7 +66,7 @@ const session = (input: SessionInput): SessionModel => ({
         ? "unchecked"
         : "not-applicable",
   },
-  capabilities: capabilitiesFor(input.authority),
+  capabilities: capabilitiesFor(input.authority, input.selection),
   display: {
     title: input.title,
     repository: input.repository ?? repositories[0],
@@ -87,12 +99,14 @@ export const warmIdle = session({
   id: "warm-idle-001",
   title: "Tighten session lifecycle boundaries",
   authority: stable("warm"),
+  selection: { agent: "codex", model: "gpt-5.6-sol", effort: "medium" },
 });
 
 export const warmWorking = session({
   id: "warm-working-001",
   title: "Streaming the TanStack Start rebuild",
   authority: stable("warm"),
+  selection: { agent: "pi", modelProvider: "openai", model: "gpt-5.4", effort: "high" },
 });
 
 export const sleepingRetained = session({
