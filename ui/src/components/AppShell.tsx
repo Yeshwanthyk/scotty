@@ -88,7 +88,7 @@ export function AppShell({
   useEffect(() => {
     if (!mobileOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMobileOpen(false);
+      if (!event.defaultPrevented && event.key === "Escape") setMobileOpen(false);
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -100,7 +100,6 @@ export function AppShell({
         archivedSessions={archivedSessions}
         open={mobileOpen}
         onClose={() => setMobileOpen(false)}
-        onOpen={() => setMobileOpen(true)}
         repositories={repositories}
       />
       {mobileOpen ? (

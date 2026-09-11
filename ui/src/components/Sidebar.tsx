@@ -1,19 +1,11 @@
 import * as stylex from "@stylexjs/stylex";
 import { Link } from "@tanstack/react-router";
-import {
-  BarChart3,
-  ChevronDown,
-  Ellipsis,
-  MonitorSmartphone,
-  Plus,
-  Search,
-  Server,
-  X,
-} from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { BarChart3, ChevronDown, Ellipsis, MonitorSmartphone, Plus, Server, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { readCurrentPrincipal } from "../data/admin";
 import { Button } from "./Button";
 import { SessionRow, type SessionRowProps } from "./SessionRow";
+import { SessionSwitcher } from "./SessionSwitcher";
 import { colors, spacing } from "../theme/tokens.stylex";
 import scottyMark from "../../../worker/public/brand/scotty-mark-128.png?url";
 
@@ -149,45 +141,6 @@ const styles = stylex.create({
     borderRadius: "6px",
     objectFit: "cover",
   },
-  search: {
-    height: "40px",
-    paddingInline: spacing.sm,
-    display: "grid",
-    gridTemplateColumns: "16px minmax(0, 1fr) auto",
-    alignItems: "center",
-    gap: spacing.sm,
-    borderRadius: "6px",
-    borderBottomWidth: "1px",
-    borderBottomStyle: "solid",
-    borderBottomColor: "transparent",
-    cursor: "text",
-    transitionProperty: "background-color, border-color",
-    transitionDuration: "120ms",
-    transitionTimingFunction: "cubic-bezier(0.22, 1, 0.36, 1)",
-    ":hover": { backgroundColor: colors.panel },
-    ":focus-within": {
-      borderBottomColor: colors.focus,
-      backgroundColor: colors.panelRaised,
-    },
-    "@media (max-width: 760px)": { height: "44px" },
-  },
-  searchIcon: { width: "14px", height: "14px", color: colors.quiet, strokeWidth: 1.8 },
-  searchInput: {
-    width: "100%",
-    minWidth: 0,
-    height: "28px",
-    padding: 0,
-    appearance: "none",
-    borderWidth: "0px",
-    outline: 0,
-    backgroundColor: "transparent",
-    color: colors.ink,
-    fontSize: "13px",
-    ":focus-visible": { outline: "none" },
-    "::placeholder": { color: colors.muted },
-    "::-webkit-search-cancel-button": { display: "none" },
-  },
-  shortcut: { color: colors.quiet, fontSize: "10px", fontVariantNumeric: "tabular-nums" },
   navigation: {
     minHeight: 0,
     paddingBlock: spacing.sm,
@@ -249,72 +202,21 @@ const styles = stylex.create({
   icon: { width: "14px", height: "14px", strokeWidth: 1.8 },
 });
 
-const searchableText = (row: SessionRowProps): string =>
-  [
-    row.session.display.title,
-    row.session.display.repository,
-    row.session.display.branch,
-    row.session.id,
-    row.presentation.railLabel,
-  ]
-    .join(" ")
-    .toLocaleLowerCase("en-US");
-
-const filterGroups = (
-  repositories: ReadonlyArray<RepositoryGroup>,
-  query: string,
-): ReadonlyArray<RepositoryGroup> => {
-  const normalizedQuery = query.trim().toLocaleLowerCase("en-US");
-  if (normalizedQuery.length === 0) return repositories;
-
-  return repositories
-    .map((repository) => ({
-      ...repository,
-      sessions: repository.sessions.filter((session) =>
-        searchableText(session).includes(normalizedQuery),
-      ),
-    }))
-    .filter((repository) => repository.sessions.length > 0);
-};
-
 export function Sidebar({
   archivedSessions = [],
   onClose,
-  onOpen,
   open = false,
   repositories,
 }: {
   readonly archivedSessions?: ReadonlyArray<SessionRowProps>;
   readonly onClose?: () => void;
-  readonly onOpen?: () => void;
   readonly open?: boolean;
   readonly repositories: ReadonlyArray<RepositoryGroup>;
 }) {
-  const [query, setQuery] = useState("");
   const [showAllArchived, setShowAllArchived] = useState(false);
   const [owner, setOwner] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const visibleRepositories = filterGroups(repositories, query);
-  const visibleActiveSessions = visibleRepositories.flatMap((repository) => repository.sessions);
-  const normalizedQuery = query.trim().toLocaleLowerCase("en-US");
-  const visibleArchivedSessions = archivedSessions.filter(
-    (session) => normalizedQuery.length === 0 || searchableText(session).includes(normalizedQuery),
-  );
-  const shownArchivedSessions =
-    showAllArchived || normalizedQuery.length > 0
-      ? visibleArchivedSessions
-      : visibleArchivedSessions.slice(0, 10);
-
-  useEffect(() => {
-    const focusSearch = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLocaleLowerCase() !== "k") return;
-      event.preventDefault();
-      onOpen?.();
-      searchInputRef.current?.focus();
-    };
-    window.addEventListener("keydown", focusSearch);
-    return () => window.removeEventListener("keydown", focusSearch);
-  }, [onOpen]);
+  const visibleActiveSessions = repositories.flatMap((repository) => repository.sessions);
+  const shownArchivedSessions = showAllArchived ? archivedSessions : archivedSessions.slice(0, 10);
 
   useEffect(() => {
     let active = true;
@@ -409,26 +311,17 @@ export function Sidebar({
             </span>
           </div>
         </div>
-        <label {...stylex.props(styles.search)}>
-          <Search aria-hidden {...stylex.props(styles.searchIcon)} />
-          <input
-            ref={searchInputRef}
-            aria-label="Search sessions"
-            type="search"
-            placeholder="Search sessions"
-            autoComplete="off"
-            value={query}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            {...stylex.props(styles.searchInput)}
-          />
-          <kbd {...stylex.props(styles.shortcut)}>⌘K</kbd>
-        </label>
+        <SessionSwitcher
+          onNavigate={onClose}
+          sessions={[
+            ...repositories.flatMap((repository) => repository.sessions),
+            ...archivedSessions,
+          ]}
+        />
       </header>
       <nav aria-label="Repositories" data-scrollbar="quiet" {...stylex.props(styles.navigation)}>
-        {visibleActiveSessions.length === 0 && visibleArchivedSessions.length === 0 ? (
-          <p {...stylex.props(styles.empty)}>
-            {query.trim().length > 0 ? "No matching sessions" : "No sessions yet"}
-          </p>
+        {visibleActiveSessions.length === 0 && archivedSessions.length === 0 ? (
+          <p {...stylex.props(styles.empty)}>No sessions yet</p>
         ) : (
           <>
             <div {...stylex.props(styles.list)}>
@@ -436,25 +329,25 @@ export function Sidebar({
                 <SessionRow key={session.session.id} {...session} onNavigate={onClose} />
               ))}
             </div>
-            {visibleArchivedSessions.length > 0 ? (
+            {archivedSessions.length > 0 ? (
               <details open {...stylex.props(styles.repository, styles.archive)}>
                 <summary {...stylex.props(styles.summary)}>
                   <ChevronDown aria-hidden {...stylex.props(styles.chevron)} />
                   <span {...stylex.props(styles.repoName)}>Archived</span>
-                  <span {...stylex.props(styles.count)}>{visibleArchivedSessions.length}</span>
+                  <span {...stylex.props(styles.count)}>{archivedSessions.length}</span>
                 </summary>
                 <div {...stylex.props(styles.list)}>
                   {shownArchivedSessions.map((session) => (
                     <SessionRow key={session.session.id} {...session} onNavigate={onClose} />
                   ))}
-                  {visibleArchivedSessions.length > shownArchivedSessions.length ? (
+                  {archivedSessions.length > shownArchivedSessions.length ? (
                     <button
                       type="button"
                       onClick={() => setShowAllArchived(true)}
                       {...stylex.props(styles.showMore)}
                     >
                       <Plus aria-hidden {...stylex.props(styles.chevron)} />
-                      Show {visibleArchivedSessions.length - shownArchivedSessions.length} more
+                      Show {archivedSessions.length - shownArchivedSessions.length} more
                     </button>
                   ) : null}
                 </div>
