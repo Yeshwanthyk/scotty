@@ -16,10 +16,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import {
-  CODEX_BUNDLE_SMOKE,
+  CODEX_SERVER_BUNDLE_SMOKE,
+  CODEX_SERVER_FAILURE_CLEANUP_PROOF,
   CODEX_SERVER_PROOF,
-  CODEX_FAKE_CHILD,
-  codexFixtureLaunch,
 } from "./check-container-image.mjs";
 import {
   CONTAINER_CONTEXT_PATH,
@@ -479,7 +478,7 @@ test("discovery follows transitive container-only source imports without includi
   }
 });
 
-test("real discovery prepares and bundles the Effect Codex host for standalone native Node", async (t) => {
+test("real discovery prepares and bundles the Effect Codex server for standalone native Node", async (t) => {
   const checkout = fileURLToPath(new URL("../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "scotty-real-container-context-"));
   try {
@@ -526,22 +525,6 @@ test("real discovery prepares and bundles the Effect Codex host for standalone n
     const output = join(root, "native");
     await mkdir(output);
     const dockerfile = await readFile(join(context, "worker/container/Dockerfile"), "utf8");
-    const build = dockerfile
-      .split("\n")
-      .find((line) => line.startsWith("RUN bun build worker/src/agent/codex/main.ts "));
-    assert.ok(build, "Dockerfile must build the Effect host bundle");
-    execFileSync(
-      "bun",
-      build
-        .slice("RUN bun ".length)
-        .split(" ")
-        .map((arg) =>
-          arg === "--outfile=/out/scotty-codex-host.mjs"
-            ? `--outfile=${join(output, "scotty-codex-host.mjs")}`
-            : arg,
-        ),
-      { cwd: context, stdio: "pipe" },
-    );
     const serverBuild = dockerfile
       .split("\n")
       .find((line) => line.startsWith("RUN bun build worker/src/agent/codex/server.ts "));
@@ -574,49 +557,25 @@ test("real discovery prepares and bundles the Effect Codex host for standalone n
         });
       },
     );
-    execFileSync(process.execPath, ["--input-type=module", "-e", CODEX_BUNDLE_SMOKE], {
+    await t.test(
+      "installed private server cleans up a forced native child on probe failure",
+      () => {
+        execFileSync(
+          process.execPath,
+          ["--input-type=module", "-e", CODEX_SERVER_FAILURE_CLEANUP_PROOF],
+          {
+            cwd: output,
+            stdio: "pipe",
+            env: { PATH: process.env.PATH },
+            timeout: 20_000,
+          },
+        );
+      },
+    );
+    execFileSync(process.execPath, ["--input-type=module", "-e", CODEX_SERVER_BUNDLE_SMOKE], {
       cwd: output,
       stdio: "pipe",
       env: { PATH: process.env.PATH },
-    });
-
-    await t.test("stages the actual native host beside its bundle", async () => {
-      const host = join(context, "worker/container/scotty-codex-session.mjs");
-      const source = await readFile(host, "utf8");
-      assert.match(source, /from ["']\.\/scotty-codex-host\.mjs["']/u);
-      await copyFile(host, join(output, "scotty-codex-session"));
-      execFileSync(process.execPath, ["--check", join(output, "scotty-codex-session")], {
-        stdio: "pipe",
-      });
-      const fake = join(output, "fake-codex");
-      await writeFile(fake, `#!${process.execPath}\n${CODEX_FAKE_CHILD}`);
-      await chmod(fake, 0o755);
-      const workspace = join(root, "parent-workspace");
-      await mkdir(workspace);
-      const transcript = execFileSync(
-        process.execPath,
-        [
-          join(output, "scotty-codex-session"),
-          JSON.stringify(codexFixtureLaunch(fake, join(root, "isolated"), workspace)),
-        ],
-        {
-          input: "",
-          encoding: "utf8",
-          env: {},
-          timeout: 10000,
-        },
-      )
-        .trim()
-        .split("\n")
-        .map(JSON.parse);
-      assert.deepEqual(
-        transcript.map((record) => record.type),
-        ["ready", "stopped"],
-      );
-      assert.equal(transcript[0].settings.reasoningEffort, "high");
-      assert.equal(transcript[1].shutdown, "eof");
-      assert.equal(transcript[1].parent, "exited");
-      assert.equal(transcript[1].descendants, "unverified");
     });
   } finally {
     await rm(root, { recursive: true, force: true });

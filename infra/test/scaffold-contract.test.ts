@@ -49,7 +49,8 @@ describe("pinned Task 4 contracts", () => {
       "cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe",
     );
     expect(dockerfile).not.toContain("ARG CODEX_VERSION=");
-    expect(dockerfile).toContain("ARG GO_VERSION=1.26.1");
+    expect(dockerfile).not.toContain("ARG GO_VERSION=");
+    expect(dockerfile).not.toContain("ARG GO_SHA256=");
     expect(dockerfile).not.toContain("@openai/codex");
     expect(dockerfile).toContain("COPY protocol protocol");
     expect(dockerignore).toContain("!protocol/");

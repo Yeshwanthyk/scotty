@@ -223,6 +223,9 @@ describe("container managed credential projection", () => {
     assert.deepStrictEqual(JSON.parse(managedPiAuthJson(empty)), {});
     const env = agentEnv(SESSION_ID, empty);
     assert.strictEqual(env.GH_TOKEN, undefined);
+    assert.strictEqual(env.GOTOOLCHAIN, undefined);
+    assert.strictEqual(env.GOPROXY, undefined);
+    assert.strictEqual(env.GOSUMDB, undefined);
   });
 
   it("rejects multiple Pi grants while preserving single-grant selection", () => {
@@ -270,6 +273,7 @@ describe("Pi session production observations", () => {
       assert.strictEqual(writes[0]?.path, `/workspace/${SESSION_ID}/.pi-agent/scotty-shell`);
       assert.include(writes[0]?.content ?? "", `cd '/workspace/${SESSION_ID}'`);
       assert.include(writes[0]?.content ?? "", "exec /bin/bash --noprofile --norc -i");
+      assert.notInclude(writes[0]?.content ?? "", "/usr/local/go/bin");
       assert.ok(commands.some((command) => command.startsWith("chmod 700 ")));
     }),
   );

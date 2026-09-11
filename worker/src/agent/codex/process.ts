@@ -222,7 +222,7 @@ export const launchProcess = Effect.fnUntraced(function* (
       CODEX_HOME: homes.codexHome,
       TMPDIR: homes.home,
       // Match the image tool directories without inheriting ambient credentials.
-      PATH: "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin",
+      PATH: "/usr/local/bin:/usr/bin:/bin",
       ...(options.sessionId === undefined ? {} : { SCOTTY_SESSION_ID: options.sessionId }),
       SCOTTY_CODEX_SENTINEL: options.credential.sentinel,
       ...(port === undefined

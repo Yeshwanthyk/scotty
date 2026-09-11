@@ -83,15 +83,6 @@
       "probe": ["python", "--version"]
     },
     {
-      "name": "Go",
-      "category": "go",
-      "commands": ["go", "gofmt"],
-      "source": "go.dev release",
-      "versionPolicy": "pinned",
-      "expectedVersion": "go1.26.1",
-      "probe": ["go", "version"]
-    },
-    {
       "name": "git",
       "category": "git-process",
       "commands": ["git"],
@@ -231,7 +222,7 @@
         "node",
         "--input-type=module",
         "-e",
-        "import assert from 'node:assert/strict'; import { chromium } from '/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/index.mjs'; import pkg from '/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/package.json' with { type: 'json' }; const browser = await chromium.launch({ headless: true }); try { const page = await browser.newPage(); await page.goto('data:text/html,<title>Scotty Chromium Probe</title><main>SCOTTY_BROWSER_OK</main>'); assert.equal(await page.title(), 'Scotty Chromium Probe'); assert.equal(await page.textContent('main'), 'SCOTTY_BROWSER_OK'); } finally { await browser.close(); } process.stdout.write(pkg.version)"
+        "import assert from 'node:assert/strict'; import { chromium } from '/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/index.mjs'; import pkg from '/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/package.json' with { type: 'json' }; const browser = await chromium.launch({ channel: 'chromium', headless: true }); try { const page = await browser.newPage(); await page.goto('data:text/html,<title>Scotty Chromium Probe</title><main>SCOTTY_BROWSER_OK</main>'); assert.equal(await page.title(), 'Scotty Chromium Probe'); assert.equal(await page.textContent('main'), 'SCOTTY_BROWSER_OK'); } finally { await browser.close(); } process.stdout.write(pkg.version)"
       ]
     },
     {

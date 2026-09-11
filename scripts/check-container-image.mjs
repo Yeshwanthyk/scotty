@@ -3,11 +3,16 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   CONTAINER_CONTEXT_PATH,
+  CONTAINER_IMAGE_BUDGET,
   inspectContainerImageBudget,
   prepareContainerContext,
 } from "../cli/src/deployment-packaging.mjs";
 import { CLEAN_ROOM_CACHE_SCOPE, CLEAN_ROOM_CLI_PLATFORM } from "./check-cli-clean-room.mjs";
 import { containerProbeProcessSource } from "./container-probe-process.mjs";
+import {
+  buildMergedSkillsCommand,
+  buildSkillsPreflightCommands,
+} from "../worker/src/sandbox/skill-commands.ts";
 
 export const CONTAINER_IMAGE = "scotty-container:ci";
 export const CONTAINER_IMAGE_PLATFORM = CLEAN_ROOM_CLI_PLATFORM;
@@ -100,6 +105,15 @@ export const containerImagePiPackagesSmokeArgs = (plan) =>
       ...CONTAINER_IMAGE_PI_PACKAGES.map(
         (name) => `grep -F ${JSON.stringify(name)} /tmp/scotty-pi-packages.list >/dev/null`,
       ),
+      ...CONTAINER_IMAGE_PI_PACKAGES.flatMap((name) => {
+        const root = `/opt/scotty/pi-packages/sources/${name}`;
+        return [
+          `test -f ${JSON.stringify(`${root}/package.json`)}`,
+          `test -f ${JSON.stringify(`${root}/package-lock.json`)}`,
+          `test -f ${JSON.stringify(`${root}/LICENSE`)}`,
+          `test -z "$(find ${JSON.stringify(root)} -maxdepth 1 -type f \\( -name '*.test.ts' -o -name tsconfig.json -o -name .gitignore \\) -print -quit)"`,
+        ];
+      }),
       "test ! -d /tmp/scotty-pi-agent/git",
     ].join(" && "),
   ]);
@@ -237,9 +251,11 @@ export const containerImageCodexVersionArgs = (plan) =>
 const NATIVE_CODEX_ADAPTER_PROOF = `
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:net";
 ${containerProbeProcessSource()}
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-native-codex-"));
 const workspace = path.join(root, "workspace");
@@ -253,55 +269,105 @@ const sentinel = [
   }})).toString("base64url"),
   "scotty-managed",
 ].join(".");
-const launch = {
-  binary: "/opt/codex/bin/codex",
-  runtimeDir: path.join(root, "runtime"),
-  workspace,
-  model: "gpt-5.2",
-  effort: "high",
-  credential: { sentinel, expiresAt: Date.now() + 120000 },
+const generation = "native-generation";
+const token = "a".repeat(64);
+const tokenFile = path.join(root, "control.token");
+fs.writeFileSync(tokenFile, token, { mode: 0o600 });
+const reservation = createServer();
+reservation.listen(0, "127.0.0.1");
+await once(reservation, "listening");
+const port = reservation.address().port;
+await new Promise((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
+const start = {
+  generation,
+  port,
+  tokenFile,
+  launch: {
+    binary: "/opt/codex/bin/codex",
+    runtimeDir: path.join(root, "runtime"),
+    workspace,
+    model: "gpt-5.2",
+    effort: "high",
+    credential: { sentinel, expiresAt: Date.now() + 120000 },
+  },
 };
-const child = spawn("/usr/local/bin/scotty-codex-session", [JSON.stringify(launch)], {
+const child = spawn("/usr/local/bin/scotty-codex-server", [JSON.stringify(start)], {
   cwd: workspace,
   env: { PATH: process.env.PATH },
-  stdio: ["pipe", "pipe", "pipe"],
+  stdio: ["ignore", "pipe", "pipe"],
 });
 const observed = observeChildExit(child);
-const records = [];
-const parser = createJsonlAccumulator();
+let nativePid;
 let errors = "";
 child.stderr.on("data", bytes => { errors += bytes; });
-child.stdout.on("data", bytes => { records.push(...parser.push(bytes)); });
+child.stdout.on("data", bytes => { errors += bytes; });
+const headers = {
+  "x-scotty-codex-token": token,
+  "x-scotty-codex-generation": generation,
+};
+const request = (route, options = {}) => fetch("http://127.0.0.1:" + port + route, {
+  headers,
+  signal: AbortSignal.timeout(2000),
+  ...options,
+});
+const captureNativePid = () => {
+  if (nativePid !== undefined) return;
+  try {
+    const [pid] = fs.readFileSync("/proc/" + child.pid + "/task/" + child.pid + "/children", "utf8").trim().split(/\\s+/u);
+    const parsed = Number(pid);
+    if (Number.isSafeInteger(parsed) && parsed > 0) nativePid = parsed;
+  } catch {}
+};
 try {
-  let ready;
+  let ready = null;
   for (let attempt = 0; attempt < 300; attempt++) {
-    ready = records.find(row => row.type === "ready");
-    if (ready) break;
+    captureNativePid();
     if (observed.isSettled()) {
       const exit = await observed.exit;
-      throw new Error("native packaged Codex adapter exited early: " + JSON.stringify(exit) + " " + errors);
+      throw new Error("native packaged Codex server exited early: " + JSON.stringify(exit) + " " + errors);
     }
+    try {
+      const response = await request("/health");
+      if (response.status === 200) { ready = await response.json(); break; }
+    } catch {}
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  assert.ok(ready, "native packaged Codex adapter readiness deadline: " + errors);
+  assert.ok(ready, "native packaged Codex server readiness deadline: " + errors);
+  assert.equal(ready.generation, generation);
+  assert.equal(typeof ready.threadId, "string");
+  assert.ok(ready.threadId.length > 0);
+  assert.equal(ready.ready, true);
+  assert.equal(ready.failure, null);
   assert.equal(ready.settings.model, "gpt-5.2");
   assert.equal(ready.settings.modelProvider, "scotty-managed");
-  assert.equal(ready.settings.reasoningEffort, "high");
+  assert.equal(ready.settings.effort, "high");
   assert.equal(ready.settings.approvalPolicy, "never");
-  assert.deepEqual(ready.settings.sandbox, { type: "dangerFullAccess" });
-  assert.equal(ready.settings.cwd, workspace);
-  child.stdin.end();
-  const exit = await Promise.race([
-    observed.exit,
-    new Promise(resolve => setTimeout(() => resolve(undefined), 5000)),
-  ]);
-  if (exit === undefined) await terminateObservedChild(child, observed);
-  else assert.equal(exit.code, 0, errors);
-  assert.ok(records.some(row => row.type === "stopped"));
+  assert.equal(ready.settings.sandbox, "dangerFullAccess");
+  assert.equal(ready.settings.workspace, workspace);
+  assert.equal(ready.prompt.status, "idle");
+  captureNativePid();
+  assert.ok(Number.isSafeInteger(nativePid) && nativePid > 0);
+  assert.equal(fs.existsSync(tokenFile), false, "Codex server must consume its token file");
+  assert.equal((await request("/health", {
+    headers: { ...headers, "x-scotty-codex-token": "b".repeat(64) },
+  })).status, 401);
+  const state = await (await request("/snapshot")).json();
+  assert.equal(state.threadId, ready.threadId);
+  assert.deepEqual(state.settings, ready.settings);
+  const stopped = await (await request("/stop", {
+    method: "POST",
+    signal: AbortSignal.timeout(10000),
+  })).json();
+  assert.equal(stopped.parent, "exited");
+  assert.throws(() => process.kill(nativePid, 0), { code: "ESRCH" });
+  assert.equal((await request("/health")).status, 503);
 } finally {
-  if (!observed.isSettled()) await terminateObservedChild(child, observed);
+  await terminateObservedChild(child, observed, { termMilliseconds: 10000, killMilliseconds: 2000 });
+  if (nativePid) assert.throws(() => process.kill(nativePid, 0), { code: "ESRCH" });
   fs.rmSync(root, { recursive: true, force: true });
+  assert.equal(errors.includes(token), false);
   assert.equal(errors.includes(sentinel), false);
+  assert.equal(errors.includes("scotty-managed://"), false);
 }
 `;
 
@@ -344,6 +410,31 @@ export const containerImageToolInventoryArgs = (plan) =>
     ["--network=none"],
   );
 
+const syncedSkillCommandCases = [0, 1].map((count) => {
+  const session = `/tmp/scotty-synced-skills/session-${count}`;
+  const paths = {
+    merged: `${session}/.scotty/merged-skills`,
+    codexSkills: `${session}/.codex/skills`,
+    piSkills: `${session}/.pi-agent/skills`,
+  };
+  const skills =
+    count === 0
+      ? []
+      : [
+          {
+            name: "sample-synced",
+            source: "/tmp/scotty-synced-skills/bundle/skills/sample-synced",
+          },
+        ];
+  return {
+    count,
+    paths,
+    skills,
+    mergedCommand: buildMergedSkillsCommand(paths, skills),
+    preflightCommands: buildSkillsPreflightCommands(paths.merged, skills),
+  };
+});
+
 export const containerImageSyncedSkillSetupArgs = (plan) =>
   containerImageRunArgs(
     plan,
@@ -355,31 +446,23 @@ export const containerImageSyncedSkillSetupArgs = (plan) =>
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { buildMergedSkillsCommand, buildSkillsPreflightCommands } from "/usr/local/lib/scotty-skill-commands.mjs";
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-synced-skills-"));
+const root = "/tmp/scotty-synced-skills";
 const execute = command => execFileSync("sh", ["-c", command]);
+const cases = ${JSON.stringify(syncedSkillCommandCases)};
 try {
-  for (const count of [0, 1]) {
-    const session = path.join(root, "session-" + count);
-    const paths = {
-      merged: path.join(session, ".scotty/merged-skills"),
-      codexSkills: path.join(session, ".codex/skills"),
-      piSkills: path.join(session, ".pi-agent/skills"),
-    };
+  fs.rmSync(root, { recursive: true, force: true });
+  for (const { count, paths, skills, mergedCommand, preflightCommands } of cases) {
     fs.mkdirSync(path.dirname(paths.codexSkills), { recursive: true });
     fs.mkdirSync(path.dirname(paths.piSkills), { recursive: true });
-    const skills = [];
     const contents = "# Sample synced skill\\nproduction-generated setup proof\\n";
     if (count === 1) {
-      const source = path.join(root, "bundle/skills/sample-synced");
+      const source = skills[0].source;
       fs.mkdirSync(source, { recursive: true });
       fs.writeFileSync(path.join(source, "SKILL.md"), contents);
-      skills.push({ name: "sample-synced", source });
     }
-    execute(buildMergedSkillsCommand(paths, skills));
-    for (const command of buildSkillsPreflightCommands(paths.merged, skills)) execute(command);
+    execute(mergedCommand);
+    for (const command of preflightCommands) execute(command);
     assert.equal(fs.readlinkSync(paths.codexSkills), paths.merged);
     assert.equal(fs.readlinkSync(paths.piSkills), paths.merged);
     assert.deepEqual(fs.readdirSync(paths.merged), count === 0 ? [] : ["sample-synced"]);
@@ -396,14 +479,11 @@ try {
     ["--network=none"],
   );
 
-export const CODEX_BUNDLE_SMOKE = `
+export const CODEX_SERVER_BUNDLE_SMOKE = `
 import { strict as assert } from "node:assert";
-import { program, run } from "./scotty-codex-host.mjs";
 import { serverProgram, runServer } from "./scotty-codex-server.mjs";
 assert.equal(typeof serverProgram, "function");
 assert.equal(typeof runServer, "function");
-assert.equal(typeof program, "function");
-assert.equal(typeof run, "function");
 `;
 
 export const containerImageCodexPackagingArgs = (plan) =>
@@ -415,11 +495,9 @@ export const containerImageCodexPackagingArgs = (plan) =>
       [
         "set -eu",
         "cd /usr/local/bin",
-        "test -x scotty-codex-session",
-        "node --check scotty-codex-session",
         "test -x scotty-codex-server",
         "node --check scotty-codex-server",
-        `node --input-type=module -e '${CODEX_BUNDLE_SMOKE.replaceAll("'", "'\\''")}'`,
+        `node --input-type=module -e '${CODEX_SERVER_BUNDLE_SMOKE.replaceAll("'", "'\\''")}'`,
         `node --input-type=module -e '${CODEX_SERVER_PROOF.replaceAll("'", "'\\''")}'`,
       ].join(" && "),
     ],
@@ -462,6 +540,7 @@ export const checkContainerImage = async ({
   prepare = prepareContainerContext,
   docker = run,
   inspect = inspectContainerImageBudget,
+  report = console.log,
 } = {}) => {
   const plan = containerImagePlan(root, environment);
   await prepare(root);
@@ -474,10 +553,13 @@ export const checkContainerImage = async ({
   docker("docker", containerImageCodexPackagingArgs(plan));
   docker("docker", containerImageToolInventoryArgs(plan));
   docker("docker", containerImageSyncedSkillSetupArgs(plan));
-  await inspect(plan.image, {
+  const sizeBytes = await inspect(plan.image, {
     exec: async (_command, args) => capture("docker", args),
     inspectArgs: containerImageSizeArgs(plan),
   });
+  report(
+    `Container image ${CONTAINER_IMAGE_BUDGET.metric}: ${sizeBytes} bytes (budget: ${CONTAINER_IMAGE_BUDGET.maxBytes} bytes)`,
+  );
   return plan;
 };
 
@@ -526,7 +608,7 @@ createInterface({input:process.stdin}).on('line', line => {
 });
 `;
 
-const proveInstalledServer = async (makeLaunch, fakeSource) => {
+const proveInstalledServer = async (makeLaunch, fakeSource, failAfterReady = false) => {
   const { strict: assert } = await import("node:assert");
   const fs = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
@@ -535,6 +617,19 @@ const proveInstalledServer = async (makeLaunch, fakeSource) => {
   const { once } = await import("node:events");
   const { createServer } = await import("node:net");
   const root = await fs.mkdtemp(join(tmpdir(), "scotty-installed-server-"));
+  const waitForExit = async (exit, milliseconds) => {
+    let timer;
+    try {
+      return await Promise.race([
+        exit.then(() => true),
+        new Promise((resolveWait) => {
+          timer = setTimeout(() => resolveWait(false), milliseconds);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   let child;
   let exited;
   let nativePid;
@@ -615,6 +710,7 @@ const proveInstalledServer = async (makeLaunch, fakeSource) => {
     assert.equal(health.settings.sandbox, "dangerFullAccess");
     assert.equal(health.prompt.status, "idle");
     await assert.rejects(fs.stat(tokenFile), { code: "ENOENT" });
+    if (failAfterReady) throw new Error("intentional installed-server probe failure");
     assert.equal(
       (
         await request("/health", {
@@ -657,8 +753,15 @@ const proveInstalledServer = async (makeLaunch, fakeSource) => {
     assert.equal(child.exitCode, null);
     await fs.stat(launch.runtimeDir);
   } finally {
-    if (child && child.exitCode === null) child.kill("SIGTERM");
-    if (exited) await exited;
+    if (child && child.exitCode === null) {
+      child.kill("SIGTERM");
+      const graceful = await waitForExit(exited, 10000);
+      if (!graceful) {
+        child.kill("SIGKILL");
+        const forced = await waitForExit(exited, 2000);
+        assert.equal(forced, true, "installed server did not exit after SIGTERM and SIGKILL");
+      }
+    } else if (exited) await exited;
     if (child?.pid) assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
     if (nativePid) assert.throws(() => process.kill(nativePid, 0), { code: "ESRCH" });
     await fs.rm(root, { recursive: true, force: true });
@@ -670,6 +773,10 @@ const proveInstalledServer = async (makeLaunch, fakeSource) => {
 };
 
 export const CODEX_SERVER_PROOF = `await (${proveInstalledServer.toString()})(${codexFixtureLaunch.toString()}, ${JSON.stringify(CODEX_FAKE_CHILD)});`;
+export const CODEX_SERVER_FAILURE_CLEANUP_PROOF = `
+import { strict as assert } from "node:assert";
+await assert.rejects((${proveInstalledServer.toString()})(${codexFixtureLaunch.toString()}, ${JSON.stringify(`${CODEX_FAKE_CHILD}\nprocess.on("SIGTERM", () => {});\nsetInterval(() => {}, 1000);\n`)}, true), /intentional installed-server probe failure/);
+`;
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   await checkContainerImage();

@@ -316,7 +316,7 @@ const terminalShell = (
     ...agentEnv(id, credentials),
     ...(toolPaths.length === 0
       ? {}
-      : { PATH: `${toolPaths.join(":")}:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin` }),
+      : { PATH: `${toolPaths.join(":")}:/usr/local/bin:/usr/bin:/bin` }),
   };
   const exports = Object.entries(env)
     .map(([name, value]) => `export ${name}=${shellQuote(value)}`)
@@ -551,7 +551,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         ...agentEnv(id, credentials),
         ...(toolPaths.length === 0
           ? {}
-          : { PATH: `${toolPaths.join(":")}:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin` }),
+          : { PATH: `${toolPaths.join(":")}:/usr/local/bin:/usr/bin:/bin` }),
       };
       yield* runtime.setEnvVars(env);
       const root = sessionRoot(id);
@@ -788,9 +788,6 @@ export function agentEnv(
     GH_NO_UPDATE_NOTIFIER: "1",
     GIT_TERMINAL_PROMPT: "0",
     NODE_OPTIONS: "--use-system-ca",
-    GOTOOLCHAIN: "auto",
-    GOPROXY: "https://proxy.golang.org",
-    GOSUMDB: "sum.golang.org",
     TERM: "xterm-256color",
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",

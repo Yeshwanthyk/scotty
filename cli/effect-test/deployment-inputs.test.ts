@@ -261,8 +261,12 @@ describe("standalone deployment archive", () => {
     expect(installRun).toContain(
       "chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers",
     );
-    expect(installRun).toContain("/usr/local/bin/scotty-codex-session");
+    expect(installRun).not.toContain("/usr/local/bin/scotty-codex-session");
     expect(installRun).toContain("/usr/local/bin/scotty-codex-server");
+    expect(installRun).toContain("install --with-deps --no-shell chromium");
+    expect(installRun).toContain("-name '*.test.ts'");
+    expect(installRun).toContain("-name tsconfig.json");
+    expect(installRun).toContain("-name .gitignore");
     expect(installRun).not.toContain("claudeBackend|codexBackend|claude-agent-sdk");
     expect(dockerfile).not.toContain("--assert-image");
     expect(installRun).toContain("/usr/local/bin/scotty-pi-session");
@@ -281,8 +285,9 @@ describe("standalone deployment archive", () => {
     expect(finalRun).not.toContain("chmod -R");
     expect(finalRun).toContain("scotty --version");
     expect(finalRun).toContain("! -type l -perm /222");
-    expect(finalRun).toContain("python go gofmt git");
-    expect(finalRun).toContain("pi codex scotty scotty-codex-session scotty-pi-session");
+    expect(finalRun).toContain("python git gh shellcheck");
+    expect(finalRun).not.toMatch(/\bgo(?:fmt)?\b/u);
+    expect(finalRun).toContain("pi codex scotty scotty-codex-server scotty-pi-session");
     expect(finalRun).toContain(
       'test "$(stat -c \'%a\' /usr/local/bin/scotty-codex-server)" = "755"',
     );
@@ -320,31 +325,31 @@ describe("standalone deployment archive", () => {
     expect(dockerfile).not.toMatch(
       /if command -v codex|--privileged|--cap-add|seccomp|chmod [2467][0-7]{3}/u,
     );
-    for (const [source, bundle, launcher] of [
-      ["main", "host", "session"],
-      ["server", "server", "server"],
-    ]) {
-      expect(dockerfile).toContain(
-        `RUN bun build worker/src/agent/codex/${source}.ts --target=node --format=esm --outfile=/out/scotty-codex-${bundle}.mjs`,
-      );
-      expect(dockerfile).toContain(
-        `COPY --from=scotty-cli-build /out/scotty-codex-${bundle}.mjs /usr/local/bin/scotty-codex-${bundle}.mjs`,
-      );
-      expect(dockerfile).toContain(
-        `COPY worker/container/scotty-codex-${launcher}.mjs /usr/local/bin/scotty-codex-${launcher}`,
-      );
-    }
+    expect(dockerfile).toContain(
+      "RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs",
+    );
+    expect(dockerfile).toContain(
+      "COPY --from=scotty-cli-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs",
+    );
+    expect(dockerfile).toContain(
+      "COPY worker/container/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server",
+    );
+    expect(dockerfile).not.toMatch(/scotty-codex-(?:host|session)/u);
 
     const cliBuildIndex = dockerfile.indexOf("chmod 0755 /out/scotty");
     expect(cliBuildIndex).toBeGreaterThan(-1);
     expect(cliBuildIndex).toBeLessThan(
       dockerfile.indexOf("COPY --from=scotty-cli-build /out/scotty"),
     );
-    expect(dockerfile).toContain("ARG GO_VERSION=1.26.1");
+    expect(dockerfile).not.toContain("ARG GO_VERSION=");
+    expect(dockerfile).not.toContain("ARG GO_SHA256=");
     expect(dockerfile).not.toContain("ARG CODEX_VERSION=");
     expect(dockerfile).not.toContain("@openai/codex");
-    expect(dockerfile).toContain("GO_VERSION=1.26.1");
-    expect(dockerfile).toContain("PATH=/usr/local/go/bin:${PATH}");
+    expect(dockerfile).not.toContain("go.dev/dl/");
+    expect(dockerfile).not.toContain("/usr/local/go/bin");
+    expect(dockerfile).not.toContain("GOTOOLCHAIN=");
+    expect(dockerfile).not.toContain("GOPROXY=");
+    expect(dockerfile).not.toContain("GOSUMDB=");
     expect(dockerfile).toContain("@ogulcancelik/pi-codex-compaction");
     expect(dockerfile).toContain("test ! -e");
   });
