@@ -272,7 +272,21 @@ export const assertContainerImageBudget = (sizeBytes) => {
 
 export async function inspectContainerImageBudget(
   image,
-  { exec = execFileAsync, inspectArgs = ["image", "inspect", image, "--format", "{{.Size}}"] } = {},
+  {
+    exec = execFileAsync,
+    inspectArgs = [
+      "run",
+      "--rm",
+      "--platform",
+      "linux/amd64",
+      "--network=none",
+      "--entrypoint",
+      "du",
+      image,
+      "-sbx",
+      "/",
+    ],
+  } = {},
 ) {
   let stdout;
   try {
@@ -282,7 +296,8 @@ export async function inspectContainerImageBudget(
     throw new Error(`Failed to ${CONTAINER_IMAGE_BUDGET.metric} for ${image}: ${detail}`);
   }
   const raw = String(stdout ?? "").trim();
-  const sizeBytes = Number(raw);
+  const match = /^([0-9]+)\s+\/$/u.exec(raw);
+  const sizeBytes = Number(match?.[1]);
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
     throw new Error(`${CONTAINER_IMAGE_BUDGET.metric} for ${image} was not an integer: ${raw}`);
   }

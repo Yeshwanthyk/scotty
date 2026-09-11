@@ -13,12 +13,12 @@ import {
   containerImageCodexPackagingArgs,
   containerImageCodexVersionArgs,
   containerImageBuildArgs,
-  containerImageInspectArgs,
   containerImageNativeCodexAdapterArgs,
   containerImageNativePiSupervisorArgs,
   containerImagePiPackagesSmokeArgs,
   containerImagePiVersionArgs,
   containerImagePlan,
+  containerImageSizeArgs,
   containerImageSyncedSkillSetupArgs,
   containerImageToolInventoryArgs,
 } from "./check-container-image.mjs";
@@ -115,7 +115,7 @@ describe("final container image gate", () => {
     assert.doesNotMatch(install, /npm|auth\.json|app-server --listen/u);
   });
 
-  it("builds and loads the final linux/amd64 image, then smokes Pi packages and inspects Size", async () => {
+  it("builds and loads the final linux/amd64 image, then smokes packages and measures its rootfs", async () => {
     const prepared = [];
     const dockerCalls = [];
     const inspected = [];
@@ -251,21 +251,26 @@ describe("final container image gate", () => {
     assert.match(syncedSkill, /sample-synced/u);
     assert.match(syncedSkill, /\.codex\/skills/u);
     assert.match(syncedSkill, /\.pi-agent\/skills/u);
-    assert.deepEqual(containerImageInspectArgs(plan), [
-      "image",
-      "inspect",
+    assert.deepEqual(containerImageSizeArgs(plan), [
+      "run",
+      "--rm",
+      "--platform",
+      "linux/amd64",
+      "--network=none",
+      "--entrypoint",
+      "du",
       "scotty-container:ci",
-      "--format",
-      "{{.Size}}",
+      "-sbx",
+      "/",
     ]);
     assert.deepEqual(
       inspected.map(({ image }) => image),
       ["scotty-container:ci"],
     );
-    assert.deepEqual(inspected[0].options.inspectArgs, containerImageInspectArgs(plan));
+    assert.deepEqual(inspected[0].options.inspectArgs, containerImageSizeArgs(plan));
   });
 
-  it("fails closed when image inspect is missing or over budget", async () => {
+  it("fails closed when image measurement is missing or over budget", async () => {
     await assert.rejects(
       checkContainerImage({
         root: "/repo",
@@ -278,7 +283,7 @@ describe("final container image gate", () => {
           );
         },
       }),
-      /Failed to docker image inspect Size/u,
+      /Failed to visible root filesystem apparent size/u,
     );
     await assert.rejects(
       checkContainerImage({
@@ -292,7 +297,7 @@ describe("final container image gate", () => {
           );
         },
       }),
-      /docker image inspect Size is \d+ bytes; budget is/u,
+      /visible root filesystem apparent size.*is \d+ bytes; budget is/u,
     );
   });
 

@@ -413,18 +413,19 @@ test("container context budget rejects node_modules, preinstalled Playwright, an
 test("named context and image budgets sit above the current measured sizes", async () => {
   assert.equal(CONTAINER_CONTEXT_BUDGET.maxFiles, 2_000);
   assert.equal(CONTAINER_CONTEXT_BUDGET.maxBytes, 40 * 1024 * 1024);
-  assert.equal(CONTAINER_IMAGE_BUDGET.metric, "docker image inspect Size");
-  assert.equal(CONTAINER_IMAGE_BUDGET.maxBytes, 1_250 * 1024 * 1024);
-  assertContainerImageBudget(1_038_798_880);
+  assert.equal(CONTAINER_IMAGE_BUDGET.metric, "visible root filesystem apparent size (du -sbx /)");
+  assert.equal(CONTAINER_IMAGE_BUDGET.baselineBytes, 3_119_833_948);
+  assert.equal(CONTAINER_IMAGE_BUDGET.maxBytes, 3_250 * 1024 * 1024);
+  assertContainerImageBudget(CONTAINER_IMAGE_BUDGET.baselineBytes);
   assert.throws(
     () => assertContainerImageBudget(CONTAINER_IMAGE_BUDGET.maxBytes + 1),
-    /docker image inspect Size/u,
+    /visible root filesystem apparent size/u,
   );
   assert.equal(
     await inspectContainerImageBudget("scotty-container:ci", {
-      exec: async () => ({ stdout: "1038798880\n" }),
+      exec: async () => ({ stdout: "3119833948\t/\n" }),
     }),
-    1_038_798_880,
+    3_119_833_948,
   );
   await assert.rejects(
     inspectContainerImageBudget("scotty-container:ci", {
@@ -432,7 +433,7 @@ test("named context and image budgets sit above the current measured sizes", asy
         throw new Error("Error: No such object: scotty-container:ci");
       },
     }),
-    /Failed to docker image inspect Size for scotty-container:ci/u,
+    /Failed to visible root filesystem apparent size.*for scotty-container:ci/u,
   );
   await assert.rejects(
     inspectContainerImageBudget("scotty-container:ci", {
@@ -442,9 +443,9 @@ test("named context and image budgets sit above the current measured sizes", asy
   );
   await assert.rejects(
     inspectContainerImageBudget("scotty-container:ci", {
-      exec: async () => ({ stdout: `${CONTAINER_IMAGE_BUDGET.maxBytes + 1}\n` }),
+      exec: async () => ({ stdout: `${CONTAINER_IMAGE_BUDGET.maxBytes + 1}\t/\n` }),
     }),
-    /docker image inspect Size is \d+ bytes; budget is/u,
+    /visible root filesystem apparent size.*is \d+ bytes; budget is/u,
   );
 });
 

@@ -85,8 +85,14 @@ export const CONTAINER_CONTEXT_BUDGET = Object.freeze({
 } as const);
 
 export const CONTAINER_IMAGE_BUDGET = Object.freeze({
-  maxBytes: 1_250 * 1024 * 1024,
-  metric: "docker image inspect Size",
+  // Baseline 2026-09-11: 3,119,833,948 bytes for the final local linux/amd64 rootfs.
+  // Equivalent-source CI classic-store and local containerd-store builds reported
+  // 3,114,170,001 and 1,159,166,713 bytes through inspect; identical digests were not
+  // established, so the gate measures visible content in-container.
+  // Store distinction: https://docs.docker.com/engine/storage/containerd/
+  baselineBytes: 3_119_833_948,
+  maxBytes: 3_250 * 1024 * 1024,
+  metric: "visible root filesystem apparent size (du -sbx /)",
 } as const);
 
 export const isDeploymentArchiveFileName = (value: string): boolean =>

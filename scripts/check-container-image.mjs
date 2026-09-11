@@ -426,12 +426,17 @@ export const containerImageCodexPackagingArgs = (plan) =>
     ["--network=none"],
   );
 
-export const containerImageInspectArgs = (plan) => [
-  "image",
-  "inspect",
+export const containerImageSizeArgs = (plan) => [
+  "run",
+  "--rm",
+  "--platform",
+  plan.platform,
+  "--network=none",
+  "--entrypoint",
+  "du",
   plan.image,
-  "--format",
-  "{{.Size}}",
+  "-sbx",
+  "/",
 ];
 
 const run = (command, args) => {
@@ -471,7 +476,7 @@ export const checkContainerImage = async ({
   docker("docker", containerImageSyncedSkillSetupArgs(plan));
   await inspect(plan.image, {
     exec: async (_command, args) => capture("docker", args),
-    inspectArgs: containerImageInspectArgs(plan),
+    inspectArgs: containerImageSizeArgs(plan),
   });
   return plan;
 };
