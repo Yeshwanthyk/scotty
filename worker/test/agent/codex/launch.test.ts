@@ -36,6 +36,11 @@ describe("explicit managed launch admission", () => {
     });
     assert.equal(codexModelCapability("unknown"), undefined);
   });
+  it("accepts only bounded Session-owned identities while preserving standalone launch", () => {
+    assert.ok(Result.isSuccess(decode({ ...selection, sessionId: "a0b1c2d3e4f5" })));
+    for (const sessionId of ["", "../session", "a0b1c2d3e4f5\n", null, 1])
+      assert.ok(Result.isFailure(decode({ ...selection, sessionId })));
+  });
   it("bounds the optional handshake budget below the outer 30s readiness deadline", () => {
     for (const startupTimeoutMs of [10, 1000, 15000])
       assert.ok(Result.isSuccess(decode({ ...selection, startupTimeoutMs })));
