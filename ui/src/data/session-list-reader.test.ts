@@ -4,6 +4,7 @@ import { decodeSessionListResponse, readSessionList } from "./session-list-reade
 
 const listItem = (id: string) => ({
   identity: { id },
+  selection: { agent: "codex", model: "gpt-5.6-sol", effort: "medium" },
   authority: { kind: "stable", lifecycle: "warm", failure: null },
   runtime: { provider: "cloudflare", readiness: "unchecked" },
   capabilities: { checkpoint: true, sleep: true, resume: false, work: true, vaporize: true },
@@ -22,7 +23,11 @@ describe("session list boundary", () => {
     expect(decodeSessionListResponse({ version: 1, sessions: [listItem("session-1")] })).toEqual([
       expect.objectContaining({
         projectedAt: "2026-09-03T16:00:00.000Z",
-        session: expect.objectContaining({ id: "session-1", source: "projection" }),
+        session: expect.objectContaining({
+          id: "session-1",
+          selection: { agent: "codex", model: "gpt-5.6-sol", effort: "medium" },
+          source: "projection",
+        }),
       }),
     ]);
   });

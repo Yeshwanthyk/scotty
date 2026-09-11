@@ -1,6 +1,14 @@
 import * as stylex from "@stylexjs/stylex";
 import { CircleAlert, RefreshCw, Send, Square, Wifi, WifiOff } from "lucide-react";
-import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   type ConversationFailure,
   type ConversationQueueItem,
@@ -10,7 +18,7 @@ import {
   readConversation,
   steerConversation,
 } from "../data/conversation-client";
-import { activeConversationTurn } from "../domain/conversation";
+import { activeConversationTurn, type ConversationTurn } from "../domain/conversation";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { Button } from "./Button";
 import { Conversation } from "./Conversation";
@@ -41,8 +49,17 @@ const styles = stylex.create({
   root: {
     height: "100%",
     minHeight: 0,
+    position: "relative",
     display: "grid",
-    gridTemplateRows: "auto minmax(0, 1fr) auto",
+    gridTemplateRows: "auto minmax(0, 1fr) auto auto",
+  },
+  rootHealthy: { gridTemplateRows: "minmax(0, 1fr) auto auto" },
+  blockedNotice: {
+    margin: 0,
+    padding: `${spacing.sm} clamp(16px, 3vw, 32px)`,
+    color: colors.warning,
+    fontSize: "11px",
+    lineHeight: 1.45,
   },
   connection: {
     minHeight: "34px",
@@ -57,14 +74,25 @@ const styles = stylex.create({
     color: colors.quiet,
     fontSize: "11px",
   },
+  connectionHealthy: {
+    position: "absolute",
+    zIndex: 1,
+    top: spacing.md,
+    left: "clamp(16px, 3vw, 32px)",
+    minHeight: 0,
+    padding: 0,
+    borderBottomWidth: 0,
+    pointerEvents: "none",
+  },
   connectionIdentity: { display: "inline-flex", alignItems: "center", gap: "6px" },
   connectionIcon: { width: "12px", height: "12px", color: colors.success, strokeWidth: 2 },
   reconnectingIcon: { color: colors.warning },
   unavailableIcon: { color: colors.danger },
   connectionDetail: {
     overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
+    lineHeight: 1.4,
+    textAlign: "right",
+    "@media (max-width: 540px)": { textAlign: "left" },
   },
   skeleton: {
     minHeight: 0,
@@ -103,7 +131,7 @@ const styles = stylex.create({
     lineHeight: 1.6,
   },
   composer: {
-    padding: `${spacing.md} clamp(0px, 3vw, 32px) ${spacing.lg}`,
+    padding: `${spacing.md} clamp(16px, 3vw, 32px) calc(${spacing.lg} + env(safe-area-inset-bottom, 0px))`,
     display: "grid",
     justifyItems: "center",
     gap: spacing.sm,
@@ -112,28 +140,32 @@ const styles = stylex.create({
     borderTopColor: colors.lineSoft,
     backgroundColor: colors.space,
     boxShadow: "0 -16px 32px rgb(0 0 0 / 0.18)",
-    "@media (max-width: 720px)": { paddingBottom: spacing.md },
+    "@media (max-width: 720px)": {
+      paddingTop: spacing.sm,
+      paddingRight: spacing.md,
+      paddingBottom: `calc(${spacing.md} + env(safe-area-inset-bottom, 0px))`,
+      paddingLeft: spacing.md,
+    },
   },
   composerControl: {
-    width: "min(840px, 100%)",
-    minHeight: "52px",
+    width: "min(900px, 100%)",
+    minHeight: "56px",
     display: "grid",
     gridTemplateColumns: "minmax(0, 1fr) auto auto",
     alignItems: "end",
     gap: spacing.sm,
-    padding: "7px",
+    padding: spacing.sm,
     borderWidth: "1px",
     borderStyle: "solid",
     borderColor: colors.line,
     borderRadius: "14px",
     backgroundColor: colors.control,
     boxShadow: "0 1px 0 rgb(255 255 255 / 0.04) inset, 0 10px 28px rgb(0 0 0 / 0.2)",
-    transitionProperty: "width, min-height, border-color, background-color, box-shadow",
+    transitionProperty: "min-height, border-color, background-color, box-shadow",
     transitionDuration: motion.standard,
     transitionTimingFunction: motion.easeOut,
     ":focus-within": {
-      width: "min(1040px, 100%)",
-      minHeight: "92px",
+      minHeight: "84px",
       borderColor: colors.focus,
       backgroundColor: colors.panelRaised,
       boxShadow:
@@ -160,7 +192,7 @@ const styles = stylex.create({
     "::placeholder": { color: colors.muted },
   },
   composerFooter: {
-    width: "min(1040px, 100%)",
+    width: "min(900px, 100%)",
     minHeight: "16px",
     display: "flex",
     alignItems: "center",
@@ -168,12 +200,18 @@ const styles = stylex.create({
     gap: spacing.md,
     color: colors.quiet,
     fontSize: "10px",
+    textAlign: "left",
+    "@media (max-width: 540px)": {
+      alignItems: "flex-start",
+      flexWrap: "wrap",
+      rowGap: "2px",
+    },
   },
   deliveryError: { color: colors.danger },
   deliveryWarning: { color: colors.warning },
   sendIcon: { width: "14px", height: "14px", strokeWidth: 1.8 },
   queue: {
-    width: "min(1040px, 100%)",
+    width: "min(900px, 100%)",
     margin: 0,
     padding: 0,
     display: "grid",
@@ -362,8 +400,16 @@ function ConnectionStatus({
   const reconnecting =
     connection.kind === "loading" ||
     (connection.kind === "ready" && connection.connection === "reconnecting");
+  const healthy =
+    connection.kind === "ready" &&
+    connection.connection === "connected" &&
+    connection.detail === undefined;
   return (
-    <div role="status" aria-live="polite" {...stylex.props(styles.connection)}>
+    <div
+      role="status"
+      aria-live="polite"
+      {...stylex.props(styles.connection, healthy && styles.connectionHealthy)}
+    >
       <span {...stylex.props(styles.connectionIdentity)}>
         {connection.kind === "unavailable" || connection.kind === "paused" ? (
           <WifiOff aria-hidden {...stylex.props(styles.connectionIcon, styles.unavailableIcon)} />
@@ -378,6 +424,33 @@ function ConnectionStatus({
       {connection.kind === "ready" && connection.detail !== undefined ? (
         <span {...stylex.props(styles.connectionDetail)}>{connection.detail}</span>
       ) : null}
+    </div>
+  );
+}
+
+function ConversationShell({
+  children,
+  composer,
+  healthy,
+  status,
+  warning,
+}: {
+  readonly children: ReactNode;
+  readonly composer: ReactNode;
+  readonly healthy: boolean;
+  readonly status: ReactNode;
+  readonly warning?: ReactNode;
+}) {
+  return (
+    <div {...stylex.props(styles.root, healthy && styles.rootHealthy)}>
+      {status}
+      {children}
+      {warning === undefined ? null : (
+        <p role="alert" {...stylex.props(styles.blockedNotice)}>
+          {warning}
+        </p>
+      )}
+      {composer}
     </div>
   );
 }
@@ -429,6 +502,7 @@ function ConversationComposer({
   enabled,
   onAccepted,
   queue,
+  preview = false,
   sessionRevision,
   sessionId,
 }: {
@@ -438,6 +512,7 @@ function ConversationComposer({
   readonly enabled: boolean;
   readonly onAccepted: () => void;
   readonly queue: ConversationSnapshot["queue"];
+  readonly preview?: boolean;
   readonly sessionRevision: number | undefined;
   readonly sessionId: string;
 }) {
@@ -465,6 +540,10 @@ function ConversationComposer({
     if (!canSubmit) return;
     const message = draft.trim();
     setDelivery({ kind: "submitting" });
+    if (preview) {
+      setDelivery({ kind: "accepted", message: "Preview only" });
+      return;
+    }
     if (followUp && queuedRequest.current?.text !== message)
       queuedRequest.current = { text: message, id: crypto.randomUUID() };
     const result = await steerConversation(
@@ -622,27 +701,70 @@ export function LiveConversation({
   const snapshot = connection.kind === "ready" ? connection.snapshot : undefined;
   const activeTurn = activeConversationTurn(snapshot?.turns ?? []);
   const active = activeTurn !== undefined;
+  const healthy =
+    connection.kind === "ready" &&
+    connection.connection === "connected" &&
+    connection.detail === undefined;
 
   return (
-    <div {...stylex.props(styles.root)}>
-      <ConnectionStatus active={active} connection={connection} />
+    <ConversationShell
+      healthy={healthy}
+      status={<ConnectionStatus active={active} connection={connection} />}
+      warning={
+        snapshot?.followUpBlocked === true
+          ? "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue."
+          : undefined
+      }
+      composer={
+        <ConversationComposer
+          active={active}
+          activeTurnId={activeTurn?.id}
+          followUpAvailable={snapshot?.followUpAvailable === true}
+          enabled={connection.kind === "ready" && connection.connection === "connected"}
+          onAccepted={refresh}
+          queue={snapshot?.queue ?? { steer: [], followUp: [] }}
+          sessionRevision={snapshot?.transport.sessionRevision}
+          sessionId={sessionId}
+        />
+      }
+    >
       <ConversationContent connection={connection} retry={refresh} />
-      {snapshot?.followUpBlocked === true ? (
-        <p role="alert">
-          A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before
-          continuing the queue.
-        </p>
-      ) : null}
-      <ConversationComposer
-        active={active}
-        activeTurnId={activeTurn?.id}
-        followUpAvailable={snapshot?.followUpAvailable === true}
-        enabled={connection.kind === "ready" && connection.connection === "connected"}
-        onAccepted={refresh}
-        queue={snapshot?.queue ?? { steer: [], followUp: [] }}
-        sessionRevision={snapshot?.transport.sessionRevision}
-        sessionId={sessionId}
-      />
-    </div>
+    </ConversationShell>
+  );
+}
+
+export function ConversationPreview({
+  turns,
+}: {
+  readonly turns: ReadonlyArray<ConversationTurn>;
+}) {
+  const activeTurn = activeConversationTurn(turns);
+  return (
+    <ConversationShell
+      healthy
+      status={
+        <div role="status" {...stylex.props(styles.connection, styles.connectionHealthy)}>
+          <span {...stylex.props(styles.connectionIdentity)}>
+            <Wifi aria-hidden {...stylex.props(styles.connectionIcon)} />
+            {activeTurn === undefined ? "Preview" : "Preview · working"}
+          </span>
+        </div>
+      }
+      composer={
+        <ConversationComposer
+          active={activeTurn !== undefined}
+          activeTurnId={activeTurn?.id}
+          followUpAvailable={false}
+          enabled
+          onAccepted={() => undefined}
+          preview
+          queue={{ steer: [], followUp: [] }}
+          sessionRevision={undefined}
+          sessionId="fixture-preview"
+        />
+      }
+    >
+      <Conversation animateStreaming turns={turns} />
+    </ConversationShell>
   );
 }

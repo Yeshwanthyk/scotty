@@ -36,9 +36,9 @@ const styles = stylex.create({
     minHeight: 0,
     position: "relative",
     display: "grid",
-    gridTemplateRows: "42px minmax(0, 1fr)",
+    gridTemplateRows: "38px minmax(0, 1fr)",
     overflow: "hidden",
-    "@media (max-width: 760px)": { gridTemplateRows: "44px minmax(0, 1fr)" },
+    "@media (max-width: 760px)": { gridTemplateRows: "40px minmax(0, 1fr)" },
   },
   toolbar: {
     minWidth: 0,
@@ -50,7 +50,7 @@ const styles = stylex.create({
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
     borderBottomColor: colors.lineSoft,
-    "@media (max-width: 760px)": { gap: spacing.xs, paddingInline: spacing.xs },
+    "@media (max-width: 760px)": { gap: spacing.xs },
   },
   toolbarLabel: {
     color: colors.quiet,
@@ -60,7 +60,46 @@ const styles = stylex.create({
     "@media (max-width: 760px)": { fontSize: "10px" },
     "@media (max-width: 360px)": { display: "none" },
   },
-  toolbarActions: { minWidth: 0, display: "flex", alignItems: "center", gap: "2px" },
+  toolbarActions: {
+    minWidth: 0,
+    display: "flex",
+    alignItems: "center",
+    gap: "2px",
+    "@media (max-width: 760px)": { display: "none" },
+  },
+  mobileTools: {
+    position: "relative",
+    "@media (min-width: 761px)": { display: "none" },
+  },
+  mobileToolsSummary: {
+    minHeight: "36px",
+    paddingInline: "8px",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    borderRadius: "7px",
+    color: colors.muted,
+    fontSize: "11px",
+    fontWeight: 620,
+    cursor: "pointer",
+    listStyle: "none",
+    "::-webkit-details-marker": { display: "none" },
+  },
+  mobileToolsMenu: {
+    position: "absolute",
+    zIndex: 20,
+    top: "calc(100% + 4px)",
+    right: 0,
+    width: "150px",
+    padding: spacing.xs,
+    display: "grid",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colors.line,
+    borderRadius: "8px",
+    backgroundColor: colors.panelRaised,
+    boxShadow: "0 8px 24px rgb(0 0 0 / 35%)",
+  },
   toolButton: {
     minHeight: "30px",
     paddingInline: "9px",
@@ -76,7 +115,7 @@ const styles = stylex.create({
     transitionProperty: "background-color, color",
     transitionDuration: motion.fast,
     ":hover": { backgroundColor: "rgb(255 255 255 / 0.05)", color: colors.ink },
-    "@media (max-width: 760px)": { minHeight: "44px", paddingInline: "6px" },
+    "@media (max-width: 760px)": { minHeight: "36px", paddingInline: "6px" },
     "@media (max-width: 360px)": { paddingInline: "4px" },
   },
   toolButtonActive: { backgroundColor: colors.panelRaised, color: colors.ink },
@@ -362,6 +401,33 @@ export function SessionWorkbench({
             onClick={() => setTerminalOpen((open) => !open)}
           />
         </div>
+        <details {...stylex.props(styles.mobileTools)}>
+          <summary {...stylex.props(styles.mobileToolsSummary)}>
+            <PanelRight aria-hidden {...stylex.props(styles.icon)} />
+            Tools
+          </summary>
+          <div {...stylex.props(styles.mobileToolsMenu)}>
+            <ToolButton
+              active={summaryOpen}
+              icon={PanelRight}
+              label="Summary"
+              onClick={() => setSummaryOpen((open) => !open)}
+            />
+            <ToolButton
+              active={changesOpen}
+              icon={FileDiff}
+              label="Diff"
+              onClick={() => setChangesOpen((open) => !open)}
+            />
+            <ToolButton
+              active={terminalOpen}
+              disabled={!runtimeAvailable}
+              icon={TerminalSquare}
+              label="Terminal"
+              onClick={() => setTerminalOpen((open) => !open)}
+            />
+          </div>
+        </details>
       </nav>
       <div {...stylex.props(styles.stage, summaryOpen && styles.stageWithSummary)}>
         <div {...stylex.props(styles.main)}>
