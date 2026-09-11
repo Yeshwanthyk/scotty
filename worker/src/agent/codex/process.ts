@@ -44,6 +44,7 @@ export const CodexLaunch = Schema.Struct({
   binary: AbsolutePath,
   runtimeDir: AbsolutePath,
   workspace: AbsolutePath,
+  sessionId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u))),
   model: CodexModelIdentifier,
   effort: CodexReasoningEffort,
   // Direct host callers remain ephemeral by default. The Session adapter selects
@@ -220,7 +221,9 @@ export const launchProcess = Effect.fnUntraced(function* (
       HOME: homes.home,
       CODEX_HOME: homes.codexHome,
       TMPDIR: homes.home,
-      PATH: "/usr/bin:/bin",
+      // Match the image tool directories without inheriting ambient credentials.
+      PATH: "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin",
+      ...(options.sessionId === undefined ? {} : { SCOTTY_SESSION_ID: options.sessionId }),
       SCOTTY_CODEX_SENTINEL: options.credential.sentinel,
       ...(port === undefined
         ? {}

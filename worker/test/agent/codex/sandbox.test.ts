@@ -161,6 +161,7 @@ describe("Codex Sandbox adapter", () => {
       assert.include(launch, '"runtimeDir":"/tmp/scotty-codex-generation-1/runtime"');
       assert.include(launch, '"model":"gpt-5.4","effort":"high"');
       assert.include(launch, '"expiresAt":1000');
+      assert.include(launch, '"sessionId":"a0b1c2d3e4f5"');
       assert.notInclude(launch, identity.token);
       assert.notInclude(launch, "auth.json");
     }),

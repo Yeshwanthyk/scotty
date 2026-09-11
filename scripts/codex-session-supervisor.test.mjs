@@ -290,6 +290,15 @@ test("native delayed readiness exceeds request timing without changing post-read
   assert.equal((await host.stop()).parent, "exited");
 });
 
+test("passes explicit Session identity without inheriting the parent environment", async (t) => {
+  const f = await fixture(t, "normal", { sessionId: "a0b1c2d3e4f5" });
+  const host = await f.launch();
+  const rows = await f.rows();
+  assert.equal(rows[0].env.SCOTTY_SESSION_ID, "a0b1c2d3e4f5");
+  assert.equal(rows[0].env.PATH, "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin");
+  assert.equal((await host.stop()).parent, "exited");
+});
+
 test("staged native bundle: readiness, isolation, Unicode, follow-up and repeated graceful stop", async (t) => {
   const f = await fixture(t);
   const host = await f.launch();
@@ -315,7 +324,7 @@ test("staged native bundle: readiness, isolation, Unicode, follow-up and repeate
       "SCOTTY_CODEX_SENTINEL",
     ].sort(),
   );
-  assert.equal(rows[0].env.PATH, "/usr/bin:/bin");
+  assert.equal(rows[0].env.PATH, "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin");
   assert.match(rows[0].config, /model_reasoning_effort = "high"/u);
   assert.equal(
     rows.some((r) => r.method === "turn/start"),
@@ -1050,7 +1059,7 @@ test(
           call_id: "call-write",
           name: "exec_command",
           arguments: JSON.stringify({
-            cmd: "printf SCOTTY_YOLO_WRITE_OK > yolo-proof.txt && /bin/cat yolo-proof.txt",
+            cmd: 'case ":$PATH:" in *:/usr/local/bin:*) ;; *) exit 91;; esac; test "$SCOTTY_SESSION_ID" = a0b1c2d3e4f5 && printf SCOTTY_YOLO_WRITE_OK > yolo-proof.txt && /bin/cat yolo-proof.txt',
             shell: "/bin/sh",
             login: false,
             yield_time_ms: 1000,
@@ -1086,6 +1095,7 @@ test(
         ...args({
           binary: native,
           runtimeDir: join(stage, "native-executable-write"),
+          sessionId: "a0b1c2d3e4f5",
           workspace: join(stage, "executable-workspace"),
           model: "gpt-5.2",
           effort: "high",

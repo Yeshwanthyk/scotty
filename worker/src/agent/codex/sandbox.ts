@@ -133,6 +133,7 @@ export const startCodexSandbox = Effect.fnUntraced(function* (
       binary: "/usr/local/bin/codex",
       runtimeDir: `${root}/runtime`,
       workspace: sessionRoot(identity.sessionId),
+      sessionId: identity.sessionId,
       model: identity.selection.model,
       effort: identity.selection.effort,
       ephemeral: false,
