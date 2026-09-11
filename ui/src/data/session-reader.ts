@@ -202,34 +202,26 @@ const identityFrom = (value: JsonValue | undefined): string | undefined =>
 type PiEffort = NonNullable<Extract<SessionSelection, { agent: "pi" }>["effort"]>;
 type CodexEffort = Extract<SessionSelection, { agent: "codex" }>["effort"];
 
-const piEffortFrom = (value: JsonValue | undefined): PiEffort | undefined => {
-  switch (value) {
-    case "off":
-    case "minimal":
-    case "low":
-    case "medium":
-    case "high":
-    case "xhigh":
-    case "max":
-      return value;
-    default:
-      return undefined;
-  }
-};
+const piEffortFrom = (value: JsonValue | undefined): PiEffort | undefined =>
+  value === "off" ||
+  value === "minimal" ||
+  value === "low" ||
+  value === "medium" ||
+  value === "high" ||
+  value === "xhigh" ||
+  value === "max"
+    ? value
+    : undefined;
 
-const codexEffortFrom = (value: JsonValue | undefined): CodexEffort | undefined => {
-  switch (value) {
-    case "low":
-    case "medium":
-    case "high":
-    case "xhigh":
-    case "max":
-    case "ultra":
-      return value;
-    default:
-      return undefined;
-  }
-};
+const codexEffortFrom = (value: JsonValue | undefined): CodexEffort | undefined =>
+  value === "low" ||
+  value === "medium" ||
+  value === "high" ||
+  value === "xhigh" ||
+  value === "max" ||
+  value === "ultra"
+    ? value
+    : undefined;
 
 const codexEffortsByModel: Readonly<Record<string, ReadonlySet<CodexEffort>>> = {
   "gpt-6-astra": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
@@ -248,24 +240,24 @@ const codexEffortsByModel: Readonly<Record<string, ReadonlySet<CodexEffort>>> = 
 const isModelSetting = (value: JsonValue | undefined): value is string =>
   typeof value === "string" && value.length <= 200 && /^[^\s\p{Cc}]+$/u.test(value);
 
-const selectionFrom = (value: JsonValue | undefined): SessionSelection | undefined => {
-  if (!isJsonObject(value)) return undefined;
-  if (value.agent === "pi") {
-    const effort = value.effort === undefined ? undefined : piEffortFrom(value.effort);
-    if (
-      !hasOnlyKeys(value, ["agent", "modelProvider", "model", "effort"]) ||
-      (value.modelProvider !== undefined && !isModelSetting(value.modelProvider)) ||
-      (value.model !== undefined && !isModelSetting(value.model)) ||
-      (value.effort !== undefined && effort === undefined)
-    )
-      return undefined;
-    return {
-      agent: "pi",
-      ...(typeof value.modelProvider === "string" ? { modelProvider: value.modelProvider } : {}),
-      ...(typeof value.model === "string" ? { model: value.model } : {}),
-      ...(effort === undefined ? {} : { effort }),
-    };
-  }
+const piSelectionFrom = (value: JsonObject): SessionSelection | undefined => {
+  const effort = value.effort === undefined ? undefined : piEffortFrom(value.effort);
+  if (
+    !hasOnlyKeys(value, ["agent", "modelProvider", "model", "effort"]) ||
+    (value.modelProvider !== undefined && !isModelSetting(value.modelProvider)) ||
+    (value.model !== undefined && !isModelSetting(value.model)) ||
+    (value.effort !== undefined && effort === undefined)
+  )
+    return undefined;
+  return {
+    agent: "pi",
+    ...(typeof value.modelProvider === "string" ? { modelProvider: value.modelProvider } : {}),
+    ...(typeof value.model === "string" ? { model: value.model } : {}),
+    ...(effort === undefined ? {} : { effort }),
+  };
+};
+
+const codexSelectionFrom = (value: JsonObject): SessionSelection | undefined => {
   const effort = codexEffortFrom(value.effort);
   if (
     value.agent !== "codex" ||
@@ -278,6 +270,11 @@ const selectionFrom = (value: JsonValue | undefined): SessionSelection | undefin
   )
     return undefined;
   return { agent: "codex", model: value.model, effort };
+};
+
+const selectionFrom = (value: JsonValue | undefined): SessionSelection | undefined => {
+  if (!isJsonObject(value)) return undefined;
+  return value.agent === "pi" ? piSelectionFrom(value) : codexSelectionFrom(value);
 };
 
 const runtimeFrom = (value: JsonValue | undefined): SessionModel["runtime"] | undefined => {
