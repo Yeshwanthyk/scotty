@@ -7,6 +7,7 @@ import {
   prepareContainerContext,
 } from "../cli/src/deployment-packaging.mjs";
 import { CLEAN_ROOM_CACHE_SCOPE, CLEAN_ROOM_CLI_PLATFORM } from "./check-cli-clean-room.mjs";
+import { containerProbeProcessSource } from "./container-probe-process.mjs";
 
 export const CONTAINER_IMAGE = "scotty-container:ci";
 export const CONTAINER_IMAGE_PLATFORM = CLEAN_ROOM_CLI_PLATFORM;
@@ -103,6 +104,116 @@ export const containerImagePiPackagesSmokeArgs = (plan) =>
     ].join(" && "),
   ]);
 
+const NATIVE_PI_SUPERVISOR_PROOF = `
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createServer } from "node:net";
+${containerProbeProcessSource()}
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-native-pi-"));
+const agent = path.join(root, "agent");
+const workspace = path.join(root, "workspace");
+fs.mkdirSync(agent);
+fs.mkdirSync(workspace);
+fs.copyFileSync("/opt/scotty/pi-packages/settings.json", path.join(agent, "settings.json"));
+const settingsPath = path.join(agent, "settings.json");
+const packagedSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+assert.ok(packagedSettings.packages.includes("/opt/scotty/pi-packages/sources/scotty-hatch"));
+fs.writeFileSync(path.join(agent, "auth.json"), "{}\\n", { mode: 0o600 });
+const hatchMarker = path.join(root, "hatch-restore.called");
+const hatchShim = path.join(root, "hatch-restore-shim.mjs");
+fs.writeFileSync(hatchShim, ${JSON.stringify(`
+import { appendFileSync } from "node:fs";
+const nativeFetch = globalThis.fetch;
+const probeFetch = (input, init) => {
+  const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+  const method = init?.method ?? (typeof input === "object" ? input.method : undefined) ?? "GET";
+  if (url === "https://scotty.internal/api/hatch/restore" && method === "GET") {
+    appendFileSync(process.env.SCOTTY_HATCH_PROBE_MARKER, "GET\\n");
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }
+  return nativeFetch(input, init);
+};
+Object.defineProperty(globalThis, "fetch", {
+  configurable: true,
+  enumerable: true,
+  get: () => probeFetch,
+  set: () => {},
+});
+`)});
+const token = "p".repeat(64);
+const tokenFile = path.join(agent, "scotty-pi-session.token");
+fs.writeFileSync(tokenFile, token, { mode: 0o600 });
+const reservation = createServer();
+reservation.listen(0, "127.0.0.1");
+await once(reservation, "listening");
+const port = reservation.address().port;
+await new Promise((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
+const child = spawn("/usr/local/bin/scotty-pi-session", [], {
+  cwd: workspace,
+  env: {
+    HOME: root,
+    PATH: process.env.PATH,
+    PI_CODING_AGENT_DIR: agent,
+    PI_OFFLINE: "1",
+    NODE_OPTIONS: "--import=" + hatchShim,
+    SCOTTY_HATCH_PROBE_MARKER: hatchMarker,
+    SCOTTY_PI_SESSION_PORT: String(port),
+    SCOTTY_PI_SESSION_TOKEN_FILE: tokenFile,
+    SCOTTY_WORKSPACE: workspace,
+  },
+  stdio: ["ignore", "pipe", "pipe"],
+});
+const observed = observeChildExit(child);
+let errors = "";
+child.stderr.on("data", bytes => { errors += bytes; });
+const request = (route, options = {}) => fetch("http://127.0.0.1:" + port + route, {
+  signal: AbortSignal.timeout(1000),
+  ...options,
+});
+try {
+  let health;
+  for (let attempt = 0; attempt < 300; attempt++) {
+    if (observed.isSettled()) {
+      const exit = await observed.exit;
+      throw new Error("native packaged Pi supervisor exited early: " + JSON.stringify(exit) + " " + errors);
+    }
+    try {
+      const response = await request("/health");
+      if (response.status === 200) { health = await response.json(); break; }
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.equal(health?.status, "ready", "native packaged Pi supervisor readiness deadline: " + errors);
+  assert.equal(typeof health.epoch, "string");
+  assert.equal(fs.readFileSync(hatchMarker, "utf8"), "GET\\n");
+  assert.equal(fs.existsSync(tokenFile), false, "Pi supervisor must consume its token file");
+  assert.equal((await request("/snapshot", { headers: { "x-scotty-pi-session": "wrong" } })).status, 401);
+  const snapshotResponse = await request("/snapshot", {
+    headers: { "x-scotty-pi-session": token },
+  });
+  assert.equal(snapshotResponse.status, 200);
+  const snapshot = await snapshotResponse.json();
+  assert.equal(snapshot.epoch, health.epoch);
+  assert.match(snapshot.state.sessionId, /^[0-9a-f-]{36}$/u);
+  assert.equal(typeof snapshot.state, "object");
+} finally {
+  await terminateObservedChild(child, observed);
+  fs.rmSync(root, { recursive: true, force: true });
+}
+`;
+
+export const containerImageNativePiSupervisorArgs = (plan) =>
+  containerImageRunArgs(
+    plan,
+    "node",
+    ["--input-type=module", "-e", NATIVE_PI_SUPERVISOR_PROOF],
+    ["--network=none"],
+  );
+
 export const containerImageCodexVersionArgs = (plan) =>
   containerImageRunArgs(plan, "sh", [
     "-c",
@@ -122,6 +233,168 @@ export const containerImageCodexVersionArgs = (plan) =>
       'test "$(env -i HOME=/tmp/scotty-codex-smoke/home CODEX_HOME=/tmp/scotty-codex-smoke/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.153.4"',
     ].join(" && "),
   ]);
+
+const NATIVE_CODEX_ADAPTER_PROOF = `
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+${containerProbeProcessSource()}
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-native-codex-"));
+const workspace = path.join(root, "workspace");
+fs.mkdirSync(workspace);
+const sentinel = [
+  Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+  Buffer.from(JSON.stringify({ "https://api.openai.com/auth": {
+    chatgpt_account_id: "scotty-managed",
+    chatgpt_plan_type: "managed",
+    scotty_managed_handle: "scotty-managed://openai/openai-codex/access",
+  }})).toString("base64url"),
+  "scotty-managed",
+].join(".");
+const launch = {
+  binary: "/opt/codex/bin/codex",
+  runtimeDir: path.join(root, "runtime"),
+  workspace,
+  model: "gpt-5.2",
+  effort: "high",
+  credential: { sentinel, expiresAt: Date.now() + 120000 },
+};
+const child = spawn("/usr/local/bin/scotty-codex-session", [JSON.stringify(launch)], {
+  cwd: workspace,
+  env: { PATH: process.env.PATH },
+  stdio: ["pipe", "pipe", "pipe"],
+});
+const observed = observeChildExit(child);
+const records = [];
+const parser = createJsonlAccumulator();
+let errors = "";
+child.stderr.on("data", bytes => { errors += bytes; });
+child.stdout.on("data", bytes => { records.push(...parser.push(bytes)); });
+try {
+  let ready;
+  for (let attempt = 0; attempt < 300; attempt++) {
+    ready = records.find(row => row.type === "ready");
+    if (ready) break;
+    if (observed.isSettled()) {
+      const exit = await observed.exit;
+      throw new Error("native packaged Codex adapter exited early: " + JSON.stringify(exit) + " " + errors);
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.ok(ready, "native packaged Codex adapter readiness deadline: " + errors);
+  assert.equal(ready.settings.model, "gpt-5.2");
+  assert.equal(ready.settings.modelProvider, "scotty-managed");
+  assert.equal(ready.settings.reasoningEffort, "high");
+  assert.equal(ready.settings.approvalPolicy, "never");
+  assert.deepEqual(ready.settings.sandbox, { type: "dangerFullAccess" });
+  assert.equal(ready.settings.cwd, workspace);
+  child.stdin.end();
+  const exit = await Promise.race([
+    observed.exit,
+    new Promise(resolve => setTimeout(() => resolve(undefined), 5000)),
+  ]);
+  if (exit === undefined) await terminateObservedChild(child, observed);
+  else assert.equal(exit.code, 0, errors);
+  assert.ok(records.some(row => row.type === "stopped"));
+} finally {
+  if (!observed.isSettled()) await terminateObservedChild(child, observed);
+  fs.rmSync(root, { recursive: true, force: true });
+  assert.equal(errors.includes(sentinel), false);
+}
+`;
+
+export const containerImageNativeCodexAdapterArgs = (plan) =>
+  containerImageRunArgs(
+    plan,
+    "node",
+    ["--input-type=module", "-e", NATIVE_CODEX_ADAPTER_PROOF],
+    ["--network=none"],
+  );
+
+const TOOL_INVENTORY_PROOF = `
+const assert = require("node:assert/strict");
+const { readFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const inventory = JSON.parse(readFileSync("/opt/scotty/toolsets/standard.json", "utf8"));
+assert.equal(inventory.schemaVersion, 1);
+assert.equal(inventory.name, "standard");
+assert.ok(Array.isArray(inventory.tools) && inventory.tools.length > 0);
+for (const tool of inventory.tools) {
+  assert.equal(typeof tool.name, "string");
+  assert.ok(Array.isArray(tool.commands));
+  assert.ok(Array.isArray(tool.probe) && tool.probe.length > 0);
+  for (const command of tool.commands) {
+    const found = spawnSync("sh", ["-lc", "command -v " + JSON.stringify(command) + " >/dev/null"]);
+    assert.equal(found.status, 0, tool.name + " command missing: " + command);
+  }
+  const result = spawnSync(tool.probe[0], tool.probe.slice(1), { encoding: "utf8", timeout: 30000 });
+  assert.equal(result.status, 0, tool.name + " probe failed: " + result.stderr);
+  if (tool.expectedVersion !== undefined)
+    assert.ok((result.stdout + result.stderr).includes(tool.expectedVersion), tool.name + " version mismatch");
+}
+`;
+
+export const containerImageToolInventoryArgs = (plan) =>
+  containerImageRunArgs(
+    plan,
+    "node",
+    ["--input-type=commonjs", "-e", TOOL_INVENTORY_PROOF],
+    ["--network=none"],
+  );
+
+export const containerImageSyncedSkillSetupArgs = (plan) =>
+  containerImageRunArgs(
+    plan,
+    "node",
+    [
+      "--input-type=module",
+      "-e",
+      `
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { buildMergedSkillsCommand, buildSkillsPreflightCommands } from "/usr/local/lib/scotty-skill-commands.mjs";
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-synced-skills-"));
+const execute = command => execFileSync("sh", ["-c", command]);
+try {
+  for (const count of [0, 1]) {
+    const session = path.join(root, "session-" + count);
+    const paths = {
+      merged: path.join(session, ".scotty/merged-skills"),
+      codexSkills: path.join(session, ".codex/skills"),
+      piSkills: path.join(session, ".pi-agent/skills"),
+    };
+    fs.mkdirSync(path.dirname(paths.codexSkills), { recursive: true });
+    fs.mkdirSync(path.dirname(paths.piSkills), { recursive: true });
+    const skills = [];
+    const contents = "# Sample synced skill\\nproduction-generated setup proof\\n";
+    if (count === 1) {
+      const source = path.join(root, "bundle/skills/sample-synced");
+      fs.mkdirSync(source, { recursive: true });
+      fs.writeFileSync(path.join(source, "SKILL.md"), contents);
+      skills.push({ name: "sample-synced", source });
+    }
+    execute(buildMergedSkillsCommand(paths, skills));
+    for (const command of buildSkillsPreflightCommands(paths.merged, skills)) execute(command);
+    assert.equal(fs.readlinkSync(paths.codexSkills), paths.merged);
+    assert.equal(fs.readlinkSync(paths.piSkills), paths.merged);
+    assert.deepEqual(fs.readdirSync(paths.merged), count === 0 ? [] : ["sample-synced"]);
+    if (count === 1) {
+      assert.equal(fs.readFileSync(path.join(paths.codexSkills, "sample-synced/SKILL.md"), "utf8"), contents);
+      assert.equal(fs.readFileSync(path.join(paths.piSkills, "sample-synced/SKILL.md"), "utf8"), contents);
+    }
+  }
+} finally {
+  fs.rmSync(root, { recursive: true, force: true });
+}
+`,
+    ],
+    ["--network=none"],
+  );
 
 export const CODEX_BUNDLE_SMOKE = `
 import { strict as assert } from "node:assert";
@@ -190,8 +463,12 @@ export const checkContainerImage = async ({
   docker("docker", containerImageBuildArgs(plan));
   docker("docker", containerImagePiVersionArgs(plan));
   docker("docker", containerImagePiPackagesSmokeArgs(plan));
+  docker("docker", containerImageNativePiSupervisorArgs(plan));
   docker("docker", containerImageCodexVersionArgs(plan));
+  docker("docker", containerImageNativeCodexAdapterArgs(plan));
   docker("docker", containerImageCodexPackagingArgs(plan));
+  docker("docker", containerImageToolInventoryArgs(plan));
+  docker("docker", containerImageSyncedSkillSetupArgs(plan));
   await inspect(plan.image, {
     exec: async (_command, args) => capture("docker", args),
     inspectArgs: containerImageInspectArgs(plan),

@@ -14,9 +14,13 @@ import {
   containerImageCodexVersionArgs,
   containerImageBuildArgs,
   containerImageInspectArgs,
+  containerImageNativeCodexAdapterArgs,
+  containerImageNativePiSupervisorArgs,
   containerImagePiPackagesSmokeArgs,
   containerImagePiVersionArgs,
   containerImagePlan,
+  containerImageSyncedSkillSetupArgs,
+  containerImageToolInventoryArgs,
 } from "./check-container-image.mjs";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -24,7 +28,7 @@ const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import
 describe("final container image gate", () => {
   it("preserves the verified Codex archive and wires the bundled native host", () => {
     const dockerfile = read("worker/container/Dockerfile");
-    const start = dockerfile.indexOf("# Pin evidence and root archive layout:");
+    const start = dockerfile.indexOf("# Pinned release provenance and regeneration evidence:");
     assert.ok(start >= 0);
     const install = dockerfile.slice(start, dockerfile.indexOf("RUN apt-get update", start));
     assert.ok(
@@ -152,8 +156,12 @@ describe("final container image gate", () => {
       { command: "docker", args: containerImageBuildArgs(plan) },
       { command: "docker", args: containerImagePiVersionArgs(plan) },
       { command: "docker", args: containerImagePiPackagesSmokeArgs(plan) },
+      { command: "docker", args: containerImageNativePiSupervisorArgs(plan) },
       { command: "docker", args: containerImageCodexVersionArgs(plan) },
+      { command: "docker", args: containerImageNativeCodexAdapterArgs(plan) },
       { command: "docker", args: containerImageCodexPackagingArgs(plan) },
+      { command: "docker", args: containerImageToolInventoryArgs(plan) },
+      { command: "docker", args: containerImageSyncedSkillSetupArgs(plan) },
     ]);
     assert.deepEqual(containerImageBuildArgs(plan), [
       "buildx",
@@ -188,13 +196,8 @@ describe("final container image gate", () => {
       );
     }
     const dockerfile = read("worker/container/Dockerfile");
-    assert.doesNotMatch(dockerfile, /project-container-pi-install/u);
-    assert.match(dockerfile, /RUN mkdir -p \/workspace \/opt\/scotty\/skills/u);
-    assert.doesNotMatch(dockerfile, /COPY worker\/container\/skills\/(?:bundled|licenses)/u);
-    assert.match(
-      dockerfile,
-      /find \/opt\/scotty\/skills -mindepth 1 -maxdepth 1 -type d \| wc -l\)" -eq 0/u,
-    );
+    assert.match(dockerfile, /RUN mkdir -p \/workspace/u);
+    assert.doesNotMatch(dockerfile, /\/opt\/scotty\/skills|skills\.lock/u);
     for (const name of CONTAINER_IMAGE_ABSENT_PI_PACKAGES) {
       assert.ok(piPackagesSmokeCommand.includes(`grep -F -- ${JSON.stringify(name)}`));
       assert.ok(
@@ -221,6 +224,33 @@ describe("final container image gate", () => {
     assert.ok(codexSmoke.includes("! dpkg-query"));
     assert.doesNotMatch(codexSmoke, /--as-pid-1|--perms/u);
     assert.doesNotMatch(codexSmoke, /--volume|--mount|auth\.json|app-server/u);
+    const nativePi = containerImageNativePiSupervisorArgs(plan).join(" ");
+    assert.match(nativePi, /scotty-pi-session/u);
+    assert.match(nativePi, /\/health/u);
+    assert.match(nativePi, /\/snapshot/u);
+    assert.match(nativePi, /x-scotty-pi-session/u);
+    assert.match(nativePi, /PI_OFFLINE/u);
+    assert.match(nativePi, /https:\/\/scotty\.internal\/api\/hatch\/restore/u);
+    assert.match(nativePi, /hatch-restore\.called/u);
+    assert.doesNotMatch(nativePi, /packagedSettings\.packages\s*=/u);
+    const nativeCodex = containerImageNativeCodexAdapterArgs(plan).join(" ");
+    assert.match(nativeCodex, /scotty-codex-session/u);
+    assert.match(nativeCodex, /\/opt\/codex\/bin\/codex/u);
+    assert.match(nativeCodex, /reasoningEffort/u);
+    assert.match(nativeCodex, /approvalPolicy/u);
+    assert.match(nativeCodex, /dangerFullAccess/u);
+    assert.match(nativeCodex, /createJsonlAccumulator/u);
+    assert.doesNotMatch(nativeCodex, /split\(.*filter\(Boolean\).*map\(JSON\.parse\)/u);
+    assert.match(nativeCodex, /--network=none/u);
+    const inventory = containerImageToolInventoryArgs(plan).join(" ");
+    assert.match(inventory, /standard\.json/u);
+    assert.match(inventory, /expectedVersion/u);
+    const syncedSkill = containerImageSyncedSkillSetupArgs(plan).join(" ");
+    assert.match(syncedSkill, /buildMergedSkillsCommand/u);
+    assert.match(syncedSkill, /buildSkillsPreflightCommands/u);
+    assert.match(syncedSkill, /sample-synced/u);
+    assert.match(syncedSkill, /\.codex\/skills/u);
+    assert.match(syncedSkill, /\.pi-agent\/skills/u);
     assert.deepEqual(containerImageInspectArgs(plan), [
       "image",
       "inspect",
@@ -286,7 +316,7 @@ describe("final container image gate", () => {
     assert.ok(args.includes(`type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`));
   });
 
-  it("keeps the explicit full-image command available without running it in PR CI", () => {
+  it("runs the explicit full-image command in its own PR CI job", () => {
     const pkg = JSON.parse(read("package.json"));
     const ci = read(".github/workflows/ci.yml");
 
@@ -296,7 +326,23 @@ describe("final container image gate", () => {
     assert.doesNotMatch(pkg.scripts.check, /check:cli-clean-room/u);
     assert.match(ci, /npm run check:cli-clean-room/u);
     assert.match(ci, /cli-clean-room:/u);
-    assert.doesNotMatch(ci, /container-image:/u);
-    assert.doesNotMatch(ci, /npm run check:container-image/u);
+    assert.match(ci, /container-image:/u);
+    assert.match(ci, /npm run check:container-image/u);
+  });
+
+  it("records probes for supported native, media, browser, and Scotty tools", () => {
+    const inventory = JSON.parse(read("worker/container/toolsets/standard.json"));
+    const tools = new Map(inventory.tools.map((tool) => [tool.name, tool]));
+    for (const name of ["Codex", "Scotty CLI", "ffmpeg", "Xvfb", "Playwright Chromium"]) {
+      assert.ok(tools.has(name), `missing ${name}`);
+      assert.ok(tools.get(name).probe.length > 0, `missing ${name} probe`);
+    }
+    assert.equal(tools.get("git").source, "Debian");
+    for (const name of CONTAINER_IMAGE_PI_PACKAGES) {
+      const probe = tools.get(name).probe.join(" ");
+      assert.match(probe, /mktemp -d/u);
+      assert.match(probe, /PI_CODING_AGENT_DIR/u);
+      assert.match(probe, /settings\.json/u);
+    }
   });
 });

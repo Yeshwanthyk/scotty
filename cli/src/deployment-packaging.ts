@@ -76,6 +76,7 @@ export const CONTAINER_BUILD_ENTRYPOINTS = Object.freeze([
   "cli/scotty.ts",
   "worker/src/agent/codex/main.ts",
   "worker/src/agent/codex/server.ts",
+  "worker/src/sandbox/skill-commands.ts",
 ] as const);
 
 export const CONTAINER_CONTEXT_BUDGET = Object.freeze({

@@ -27,8 +27,10 @@ import {
   CONTAINER_IMAGE_BUDGET,
   CONTAINER_INPUTS,
   CONTAINER_STATIC_INPUTS,
+  assertContainerCopyInputs,
   assertContainerContextBudget,
   assertContainerImageBudget,
+  assertRootDockerignoreInputs,
   assertSafeProjectPath,
   discoverContainerCliInputs,
   inspectContainerImageBudget,
@@ -65,20 +67,103 @@ const listAllFiles = async (root) => {
   return files;
 };
 
-test("prepared context does not run package preparation hooks", async () => {
-  const root = await mkdtemp(join(tmpdir(), "scotty-container-context-no-npm-"));
+test("prepared contexts fail before Docker when a COPY source is missing", async () => {
+  const context = await mkdtemp(join(tmpdir(), "scotty-missing-copy-input-"));
+  try {
+    await writeTree(context, {
+      "worker/container/Dockerfile":
+        "FROM scratch\nCOPY worker/container/notices.txt /notices.txt\n",
+    });
+    await assert.rejects(
+      assertContainerCopyInputs(context),
+      /missing Docker COPY inputs: worker\/container\/notices\.txt/u,
+    );
+  } finally {
+    await rm(context, { recursive: true, force: true });
+  }
+});
+
+test("root Docker ignore rules fail closed when a required input is excluded", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scotty-dockerignore-input-"));
+  try {
+    await writeFile(join(root, ".dockerignore"), "**\n!package.json\n");
+    await assert.rejects(
+      assertRootDockerignoreInputs(root, ["package.json", "patches/required.patch"]),
+      /excludes required container inputs: patches\/required\.patch/u,
+    );
+    await writeFile(
+      join(root, ".dockerignore"),
+      "**\n!package.json\n!patches/\n!patches/required.patch\n",
+    );
+    assert.deepEqual(
+      await assertRootDockerignoreInputs(root, ["package.json", "patches/required.patch"]),
+      ["package.json", "patches/required.patch"],
+    );
+    await writeFile(
+      join(root, ".dockerignore"),
+      "**\n!package.json\n!patches/\n!patches/required.patch\npatches/required.patch\n",
+    );
+    await assert.rejects(
+      assertRootDockerignoreInputs(root, ["package.json", "patches/required.patch"]),
+      /excludes required container inputs: patches\/required\.patch/u,
+    );
+    await writeFile(join(root, ".dockerignore"), "**\n!package.json\npackage.json\n");
+    await assert.rejects(
+      assertRootDockerignoreInputs(root, ["package.json"]),
+      /excludes required container inputs: package\.json/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("prepared contexts validate required copied leaves against final ignore rules", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scotty-dockerignore-leaves-"));
   try {
     await writeTree(root, {
-      "cli/src/index.ts": "export {};\n",
+      ".dockerignore":
+        "**\n!worker/\n!worker/container/\n!worker/container/pi-packages/\n!worker/container/pi-packages/settings.json\nworker/container/pi-packages/settings.json\n",
+      "worker/container/pi-packages/settings.json": "{}\n",
     });
-    const calls = [];
-    await prepareContainerContext(root, {
-      inputs: ["cli/src"],
-      projectPiInstall: async (context, options) => {
-        calls.push({ context, options });
-      },
+    await assert.rejects(
+      prepareContainerContext(root, { inputs: ["worker/container"] }),
+      /excludes required container inputs: worker\/container\/pi-packages\/settings\.json/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("root Docker ignore validation applies ordinary wildcard exclusions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scotty-dockerignore-wildcard-"));
+  try {
+    await writeFile(
+      join(root, ".dockerignore"),
+      "**\n!worker/container/**\nworker/container/pi-packages/*.json\n",
+    );
+    await assert.rejects(
+      assertRootDockerignoreInputs(root, ["worker/container/pi-packages/settings.json"]),
+      /excludes required container inputs: worker\/container\/pi-packages\/settings\.json/u,
+    );
+    await writeFile(join(root, ".dockerignore"), "*.tmp\n");
+    assert.deepEqual(await assertRootDockerignoreInputs(root, ["package.json"]), ["package.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("prepared contexts validate discovered Codex leaves against final ignore rules", async () => {
+  const root = await mkdtemp(join(tmpdir(), "scotty-dockerignore-codex-"));
+  const source = "worker/src/agent/codex/main.ts";
+  try {
+    await writeTree(root, {
+      ".dockerignore": `**\n!worker/\n!worker/src/\n!worker/src/agent/\n!worker/src/agent/codex/\n!${source}\n${source}\n`,
+      [source]: "export {};\n",
     });
-    assert.equal(calls.length, 0);
+    await assert.rejects(
+      prepareContainerContext(root, { inputs: [source] }),
+      /excludes required container inputs: worker\/src\/agent\/codex\/main\.ts/u,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -170,10 +255,6 @@ test("the Container context contains only static runtime assets and CLI graph in
         "utf8",
       ),
       { code: "ENOENT" },
-    );
-    assert.equal(
-      CONTAINER_STATIC_INPUTS.includes("scripts/project-container-pi-install.mjs"),
-      false,
     );
     assert.equal(
       await readFile(join(root, CONTAINER_CONTEXT_PATH, workerCliInput), "utf8"),
@@ -376,6 +457,7 @@ test("discovery follows transitive container-only source imports without includi
       "worker/src/agent/codex/server-only.ts": "export const value = 1;",
       "worker/src/agent/codex/main.ts":
         "export { value } from '../../../../protocol/codex-app-server.ts';",
+      "worker/src/sandbox/skill-commands.ts": "export const value = 1;",
       "protocol/codex-app-server.ts": "export { value } from './codex-dependency.ts';",
       "protocol/codex-dependency.ts": "export { value } from './nested/value.ts';",
       "protocol/nested/value.ts": "export const value = 42;",
@@ -389,6 +471,7 @@ test("discovery follows transitive container-only source imports without includi
       "worker/src/agent/codex/main.ts",
       "worker/src/agent/codex/server-only.ts",
       "worker/src/agent/codex/server.ts",
+      "worker/src/sandbox/skill-commands.ts",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });

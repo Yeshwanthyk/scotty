@@ -43,6 +43,12 @@ export const materializeProjectInputs: (
   destination: string,
   inputs: readonly string[],
 ) => Promise<void>;
+export const listDockerfileProjectCopySources: (dockerfile: string) => string[];
+export const assertContainerCopyInputs: (contextRoot: string) => Promise<string[]>;
+export const assertRootDockerignoreInputs: (
+  root: string,
+  inputs?: readonly string[],
+) => Promise<readonly string[]>;
 export const measureContainerContext: (contextRoot: string) => Promise<{
   readonly files: string[];
   readonly fileCount: number;
@@ -69,6 +75,5 @@ export const prepareContainerContext: (
   options?: {
     readonly discoverCliInputs?: (root: string) => Promise<readonly string[]>;
     readonly inputs?: readonly string[];
-    readonly projectPiInstall?: (context: string) => Promise<unknown>;
   },
 ) => Promise<void>;

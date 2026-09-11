@@ -25,6 +25,7 @@ COPY protocol protocol
 COPY worker/src worker/src
 RUN bun build worker/src/agent/codex/main.ts --target=node --format=esm --outfile=/out/scotty-codex-host.mjs
 RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs
+RUN bun build worker/src/sandbox/skill-commands.ts --target=node --format=esm --outfile=/out/scotty-skill-commands.mjs
 RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
   && chmod 0755 /out/scotty \
   && test "$(stat -c '%a' /out/scotty)" = "755" \
@@ -54,7 +55,7 @@ ENV COREPACK_HOME=/opt/corepack
 
 USER root
 
-# Pin evidence and root archive layout: docs/research/codex-agent-pin.md.
+# Pinned release provenance and regeneration evidence: protocol/codex-model-capabilities.ts.
 RUN set -eu; \
   mkdir -p /tmp/scotty-codex-install/home /tmp/scotty-codex-install/codex-home \
   && curl --fail --location --silent --show-error \
@@ -149,24 +150,20 @@ ENV LANG=en_US.UTF-8 \
   UV_PYTHON_INSTALL_DIR=/opt/uv/python \
   UV_PYTHON_BIN_DIR=/usr/local/bin
 
-RUN mkdir -p /workspace /opt/scotty/skills
+RUN mkdir -p /workspace
 
 COPY --from=scotty-cli-build /out/scotty /usr/local/bin/scotty
 COPY --from=scotty-cli-build /out/scotty-codex-host.mjs /usr/local/bin/scotty-codex-host.mjs
 COPY worker/container/scotty-codex-session.mjs /usr/local/bin/scotty-codex-session
 COPY --from=scotty-cli-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs
+COPY --from=scotty-cli-build /out/scotty-skill-commands.mjs /usr/local/lib/scotty-skill-commands.mjs
 COPY worker/container/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server
-COPY worker/container/skills/THIRD_PARTY_NOTICES.md /opt/scotty/THIRD_PARTY_NOTICES.md
-COPY worker/container/skills/skills.lock.json /opt/scotty/skills.lock.json
 COPY worker/container/pi-packages /opt/scotty/pi-packages
 COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json
-COPY worker/container/scotty-runner-bootstrap /usr/local/bin/scotty-runner-bootstrap
-COPY worker/container/scotty-pi-shell /usr/local/bin/scotty-pi-shell
 COPY worker/container/scotty-pi-session.mjs /usr/local/bin/scotty-pi-session
 COPY worker/container/scotty-jsonl.mjs /usr/local/bin/scotty-jsonl.mjs
 COPY worker/container/scotty-pi-protocol.mjs /usr/local/bin/scotty-pi-protocol.mjs
 COPY protocol/pi-console-shared.mjs /usr/protocol/pi-console-shared.mjs
-COPY scripts/is-direct-run.mjs /tmp/is-direct-run.mjs
 RUN set -eu; \
   for package_dir in /opt/scotty/pi-packages/sources/*; do \
     test -f "${package_dir}/package.json"; \
@@ -179,19 +176,16 @@ RUN set -eu; \
         --no-fund \
         --legacy-peer-deps; \
   done \
-  && rm -f /tmp/is-direct-run.mjs \
   && test "$(node --input-type=module -e "import('/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/package.json', { with: { type: 'json' } }).then(({ default: packageJson }) => process.stdout.write(packageJson.version))")" = "${PLAYWRIGHT_VERSION}" \
   && node \
     /opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/cli.js \
     install --with-deps chromium \
   && test -z "$(find /opt/scotty/pi-packages/sources -mindepth 2 -maxdepth 2 -name .git -print -quit)" \
   && chmod 0755 \
-    /usr/local/bin/scotty-runner-bootstrap \
-    /usr/local/bin/scotty-pi-shell \
     /usr/local/bin/scotty-pi-session \
     /usr/local/bin/scotty-codex-session \
     /usr/local/bin/scotty-codex-server \
-  && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills \
+  && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers \
   && npm cache clean --force \
   && rm -rf /root/.cache /tmp/* \
   && apt-get clean \
@@ -238,10 +232,8 @@ RUN set -eu; \
       grep -F -- "${package_name}" /tmp/scotty-pi-packages.list >/dev/null || exit 1; \
     done \
   && rm -rf /tmp/scotty-pi-agent /tmp/scotty-pi-help /tmp/scotty-pi-packages.list \
-  && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-pi-shell \
-  && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 0 \
   && test "$(stat -c '%a' /usr/local/bin/scotty)" = "755" \
-  && test -z "$(find /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills ! -type l -perm /222 -print -quit)" \
+  && test -z "$(find /opt/scotty/pi-packages /opt/scotty/playwright-browsers ! -type l -perm /222 -print -quit)" \
   && test "$(stat -c '%a' /usr/local/bin/scotty-codex-server)" = "755" \
   && node --check /usr/local/bin/scotty-codex-server \
   && node --check /usr/local/bin/scotty-codex-server.mjs \
@@ -249,7 +241,7 @@ RUN set -eu; \
   && scotty --version \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh shellcheck ffmpeg Xvfb \
-    node npm bun corepack cc pkg-config pi codex scotty-codex-session scotty-pi-session scotty-pi-shell scotty-runner-bootstrap; do \
+    node npm bun corepack cc pkg-config pi codex scotty scotty-codex-session scotty-pi-session ffprobe; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done \
   && rm -rf /root/.cache /root/.npm /tmp/*

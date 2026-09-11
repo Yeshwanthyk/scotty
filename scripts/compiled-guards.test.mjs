@@ -14,10 +14,6 @@ const guardedScripts = [
     path: "deploy-production.mjs",
     invocation: ".then(() => parseProductionDeployOptions(process.argv.slice(2)))",
   },
-  {
-    path: "project-container-pi-install.mjs",
-    invocation: "const parsed = parseProjectContainerPiInstallArgs(process.argv.slice(2));",
-  },
   { path: "container-control-plane.mjs", invocation: "main().catch((error) =>" },
 ];
 
@@ -82,31 +78,19 @@ describe("bundled script guards", () => {
   for (const runtime of [process.execPath, "bun"]) {
     const label = basename(runtime);
     it(`keeps safe direct-run probes valid under ${label}`, async () => {
-      const projectRoot = await mkdtemp(join(tmpdir(), "scotty-pi-projection-probe-"));
-      try {
-        const project = probe(runtime, "project-container-pi-install.mjs", [
-          "--package",
-          projectRoot,
-        ]);
-        assert.equal(project.status, 0, project.stderr);
-        assert.match(project.stdout, /Prepared pi-subagents package at .*projected=false/u);
+      const controlPlane = probe(runtime, "container-control-plane.mjs", []);
+      assert.equal(controlPlane.status, 1);
+      assert.match(
+        controlPlane.stderr,
+        /Container control-plane read failed: Container control-plane read requires an application ID\./u,
+      );
 
-        const controlPlane = probe(runtime, "container-control-plane.mjs", []);
-        assert.equal(controlPlane.status, 1);
-        assert.match(
-          controlPlane.stderr,
-          /Container control-plane read failed: Container control-plane read requires an application ID\./u,
-        );
-
-        const deploy = probe(runtime, "deploy-production.mjs", ["--safe-probe-invalid-option"]);
-        assert.equal(deploy.status, 1);
-        assert.match(
-          deploy.stderr,
-          /Production deployment failed: Unknown production deploy option: --safe-probe-invalid-option/u,
-        );
-      } finally {
-        await rm(projectRoot, { recursive: true, force: true });
-      }
+      const deploy = probe(runtime, "deploy-production.mjs", ["--safe-probe-invalid-option"]);
+      assert.equal(deploy.status, 1);
+      assert.match(
+        deploy.stderr,
+        /Production deployment failed: Unknown production deploy option: --safe-probe-invalid-option/u,
+      );
     });
   }
 });

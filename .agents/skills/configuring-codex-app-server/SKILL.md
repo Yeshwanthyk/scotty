@@ -12,8 +12,12 @@ persisted selection. Native Codex thread and turn IDs are adapter state, not a s
 
 1. Read `AGENTS.md`, `protocol/agent-selection.ts`, `protocol/codex-model-capabilities.ts`, and
    the current Session and Credential Registry contracts.
-2. Inspect the pinned native package and protocol evidence in `docs/research/codex-agent-pin.md`.
-   The current pin is `rust-v0.153.4`, commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`.
+2. Inspect the pinned package URL, digest, and layout assertions in
+   `worker/container/Dockerfile`, plus the model projection provenance in
+   `protocol/codex-model-capabilities.ts`. The current pin is `rust-v0.153.4`, commit
+   `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`. Regenerate app-server JSON schemas
+   with the pinned binary in isolated `HOME` and `CODEX_HOME`, and compare them with
+   that commit's `codex-rs/app-server-protocol/schema/json` sources.
 3. Trace `worker/src/agent/codex/` through the private runtime server and public Session adapter.
    Use the matching Effect skills and pinned Effect rc.112 source before changing async patterns.
 4. Identify each durable owner, native callback, deadline, and unknown-after-dispatch outcome before

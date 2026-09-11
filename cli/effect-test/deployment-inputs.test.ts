@@ -23,10 +23,6 @@ const dockerfile = readFileSync(
   new URL("../../worker/container/Dockerfile", import.meta.url),
   "utf8",
 );
-const piProjectionScript = readFileSync(
-  new URL("../../scripts/project-container-pi-install.mjs", import.meta.url),
-  "utf8",
-);
 
 const normalizePath = (path: string): string => path.replaceAll("\\", "/");
 
@@ -234,9 +230,7 @@ describe("standalone deployment archive", () => {
     expect(dockerfile.indexOf("RUN bun build")).toBeGreaterThan(
       dockerfile.indexOf("RUN node scripts/apply-dependency-patches.mjs"),
     );
-    expect(dockerfile).toContain("COPY scripts/is-direct-run.mjs /tmp/is-direct-run.mjs");
-    expect(dockerfile).toContain("rm -f /tmp/is-direct-run.mjs");
-    expect(dockerfile).not.toContain("project-container-pi-install.mjs");
+    expect(dockerfile).not.toContain("COPY scripts/is-direct-run.mjs /tmp/is-direct-run.mjs");
   });
 
   it("catalogs and COPYs every maintainer script reachable from the bundled source graph", () => {
@@ -265,15 +259,11 @@ describe("standalone deployment archive", () => {
       .find((block) => block.includes("playwright-core/cli.js") && block.includes("npm ci"));
     expect(installRun).toBeDefined();
     expect(installRun).toContain(
-      "chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills",
+      "chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers",
     );
     expect(installRun).toContain("/usr/local/bin/scotty-codex-session");
     expect(installRun).toContain("/usr/local/bin/scotty-codex-server");
-    expect(installRun).not.toContain("project-container-pi-install.mjs");
     expect(installRun).not.toContain("claudeBackend|codexBackend|claude-agent-sdk");
-    expect(piProjectionScript).toContain("export const assertPiSubagentsSource");
-    expect(piProjectionScript).not.toContain("assertPiTasksSource");
-    expect(piProjectionScript).not.toContain("PI_TASKS_SOURCE");
     expect(dockerfile).not.toContain("--assert-image");
     expect(installRun).toContain("/usr/local/bin/scotty-pi-session");
     expect(installRun).not.toMatch(/^\s+\/usr\/local\/bin\/scotty\s*\\?$/mu);
@@ -292,7 +282,7 @@ describe("standalone deployment archive", () => {
     expect(finalRun).toContain("scotty --version");
     expect(finalRun).toContain("! -type l -perm /222");
     expect(finalRun).toContain("python go gofmt git");
-    expect(finalRun).toContain("pi codex scotty-codex-session scotty-pi-session");
+    expect(finalRun).toContain("pi codex scotty scotty-codex-session scotty-pi-session");
     expect(finalRun).toContain(
       'test "$(stat -c \'%a\' /usr/local/bin/scotty-codex-server)" = "755"',
     );

@@ -24,8 +24,11 @@
 !scripts/deploy-production.mjs
 !scripts/is-direct-run.mjs
 !patches/
-!patches/alchemy+2.0.0-beta.72.patch
-!patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch
+!patches/alchemy+2.0.0-beta.76.patch
+!patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch
+!patches/@cloudflare+sandbox+0.12.9.patch
 !skills/
 !skills/scotty/
 !skills/scotty/SKILL.md
+!skills/scotty-live-observability/
+!skills/scotty-live-observability/SKILL.md
