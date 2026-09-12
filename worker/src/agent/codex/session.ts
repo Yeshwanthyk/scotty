@@ -31,6 +31,12 @@ type Pending = {
   readonly receive: (line: string) => Effect.Effect<void, CodexHostError>;
   readonly fail: (error: CodexHostError) => Effect.Effect<unknown>;
 };
+const activityChildThreadId = (message: CodexNotification) =>
+  (message.method === "item/started" || message.method === "item/completed") &&
+  message.params.item.type === "subAgentActivity" &&
+  Predicate.hasProperty(message.params.item, "agentThreadId")
+    ? message.params.item.agentThreadId
+    : undefined;
 type Turn = {
   id: string | undefined;
   started: boolean;
@@ -45,6 +51,15 @@ const Route = Schema.Struct({
   method: Schema.optionalKey(Schema.String),
 });
 const decodeRoute = Schema.decodeUnknownEffect(Schema.fromJsonString(Route));
+const decodeNotificationThread = Schema.decodeUnknownResult(
+  Schema.fromJsonString(
+    Schema.Struct({
+      params: Schema.Struct({
+        threadId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+      }).annotate({ parseOptions: { onExcessProperty: "ignore" } }),
+    }).annotate({ parseOptions: { onExcessProperty: "ignore" } }),
+  ),
+);
 // Native 0.153.4 can label HTTP 401 as "other"; never classify auth from remote prose.
 const decodeUpstreamFailure = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -158,6 +173,25 @@ export const makeSession = Effect.fnUntraced(function* (
   const usedTurns = new Set<string>();
   const events: Array<CodexNotification> = [];
   const tools = makeCodexTools();
+  // Native child-turn traffic shares the app-server stdout with its parent.
+  // Only parent-fenced subAgentActivity can authorize a child thread here.
+  const childTurnOwners = new Map<string, Set<string>>();
+  const completedTurns = new Set<string>();
+  const isKnownChildNotification = (line: string) => {
+    const routed = decodeNotificationThread(line);
+    return Result.isSuccess(routed) && childTurnOwners.has(routed.success.params.threadId);
+  };
+  // A child's final activity can arrive on the parent thread after that turn completes.
+  const isTrailingChildActivity = (message: CodexNotification) => {
+    const childThreadId = activityChildThreadId(message);
+    return (
+      childThreadId !== undefined &&
+      Predicate.hasProperty(message.params, "turnId") &&
+      message.params.threadId === threadId &&
+      completedTurns.has(message.params.turnId) &&
+      childTurnOwners.get(childThreadId)?.has(message.params.turnId) === true
+    );
+  };
   let ready = false,
     closing = false,
     threadId: string | undefined,
@@ -285,6 +319,10 @@ export const makeSession = Effect.fnUntraced(function* (
     const id = Predicate.hasProperty(message.params, "turnId")
       ? message.params.turnId
       : message.params.turn.id;
+    if (isTrailingChildActivity(message)) {
+      discarded++;
+      return;
+    }
     if (!active || message.params.threadId !== threadId || id !== active.id)
       return yield* new CodexHostError({ code: "stale_notification" });
     const turn = active;
@@ -292,13 +330,20 @@ export const makeSession = Effect.fnUntraced(function* (
       if (turn.started) return yield* new CodexHostError({ code: "duplicate_turn_started" });
       turn.started = true;
     } else if (!turn.started) return yield* new CodexHostError({ code: "turn_not_started" });
+    const childThreadId = activityChildThreadId(message);
+    if (childThreadId !== undefined && childThreadId !== threadId) {
+      const owners = childTurnOwners.get(childThreadId) ?? new Set<string>();
+      owners.add(id);
+      childTurnOwners.set(childThreadId, owners);
+    }
     tools.accept(message);
     events.push(message);
     yield* publish(message);
     if (closing || failure || active !== turn) return;
     if (message.method === "turn/completed") {
-      yield* Deferred.succeed(turn.terminal, message.params.turn);
+      completedTurns.add(id);
       if (active === turn) active = undefined;
+      yield* Deferred.succeed(turn.terminal, message.params.turn);
     }
   });
   const handleUpstreamFailure = Effect.fnUntraced(function* (line: string) {
@@ -347,6 +392,10 @@ export const makeSession = Effect.fnUntraced(function* (
               : Effect.fail(error),
           ),
         );
+    }
+    if (isKnownChildNotification(line)) {
+      discarded++;
+      return;
     }
     if (
       route.method === "turn/started" ||

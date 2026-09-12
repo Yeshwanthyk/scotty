@@ -347,6 +347,12 @@ describe("conversation client boundary", () => {
 });
 
 describe("queued follow-up public intent", () => {
+  it("preserves the explicit runtime stopped signal and rejects malformed values", () => {
+    expect(decodeConversationSnapshot({ ...snapshot, runtimeStopped: true })).toMatchObject({
+      runtimeStopped: true,
+    });
+    expect(decodeConversationSnapshot({ ...snapshot, runtimeStopped: "yes" })).toBeUndefined();
+  });
   it("advertises Codex queue capability and preserves blocked delivery state", () => {
     expect(
       decodeConversationSnapshot({ ...snapshot, followUpAvailable: true, followUpBlocked: true }),

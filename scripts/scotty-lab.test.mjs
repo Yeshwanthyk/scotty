@@ -28,6 +28,7 @@ import {
   readEvidenceManifest,
   readPrivateToken,
   recoverPendingCreateSessionId,
+  readManagedPendingCreateSessionId,
   recordActorDiagnostics,
   recordCleanupResult,
   recordOwnedSession,
@@ -129,6 +130,26 @@ test("failed create ownership is recovered only from the exact private pending r
     assert.throws(
       () => recoverPendingCreateSessionId(manifest, { ...body, repo: "other/repo" }),
       /ENOENT/u,
+    );
+    assert.equal(
+      readManagedPendingCreateSessionId({ cliHome: manifest.cliHome, host: manifest.host }, body),
+      createHash("sha256").update(key).digest("hex").slice(0, 12),
+    );
+    assert.throws(
+      () =>
+        readManagedPendingCreateSessionId(
+          { cliHome: manifest.cliHome, host: "https://other.example" },
+          body,
+        ),
+      /ENOENT/u,
+    );
+    assert.throws(
+      () =>
+        readManagedPendingCreateSessionId(
+          { cliHome: manifest.cliHome, host: "https://user:secret@example.com" },
+          body,
+        ),
+      /exact installation origin/u,
     );
     chmodSync(pendingPath, 0o644);
     assert.throws(() => recoverPendingCreateSessionId(manifest, body), /mode 0600/u);

@@ -351,6 +351,16 @@ export function assertLifecycleSessionId(sessionId) {
 
 export function recoverPendingCreateSessionId(manifest, body) {
   validateLabManifestPaths(manifest);
+  return readManagedPendingCreateSessionId(manifest, body);
+}
+
+/** Read-only lookup of an exact managed CLI request; never creates pending state. */
+export function readManagedPendingCreateSessionId(manifest, body) {
+  if (!path.isAbsolute(manifest.cliHome)) throw new Error("CLI home must be absolute");
+  const origin = new URL(manifest.host);
+  if (origin.origin !== manifest.host || origin.username || origin.password)
+    throw new Error("An exact installation origin is required");
+
   const fingerprint = createHash("sha256")
     .update(JSON.stringify([manifest.host, body]))
     .digest("hex");

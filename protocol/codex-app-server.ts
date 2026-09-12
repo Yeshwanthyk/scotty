@@ -166,10 +166,18 @@ const CommandItem = Schema.Struct({
   id: Identifier,
   command: Text,
   status: Schema.Literals(["inProgress", "completed", "failed", "declined"]),
-  aggregatedOutput: Schema.optionalKey(Schema.NullOr(Text)),
+  // Native sends the complete command aggregate even after bounded output deltas.
+  // The record limit still bounds this field before it reaches conversation storage.
+  aggregatedOutput: Schema.optionalKey(Schema.NullOr(boundedText(CODEX_MAX_MESSAGE_BYTES))),
+}).annotate(projection);
+const SubAgentActivityItem = Schema.Struct({
+  type: Schema.Literal("subAgentActivity"),
+  agentThreadId: Identifier,
 }).annotate(projection);
 const OtherItem = Schema.Struct({
-  type: Identifier.check(Schema.makeFilter((type) => type !== "commandExecution")),
+  type: Identifier.check(
+    Schema.makeFilter((type) => type !== "commandExecution" && type !== "subAgentActivity"),
+  ),
 }).annotate(projection);
 
 const NotificationSchema = Schema.Union([
@@ -179,7 +187,7 @@ const NotificationSchema = Schema.Union([
     params: Schema.Struct({
       threadId: Identifier,
       turnId: Identifier,
-      item: Schema.Union([CommandItem, OtherItem]),
+      item: Schema.Union([CommandItem, SubAgentActivityItem, OtherItem]),
     }).annotate(projection),
   }),
   Schema.Struct({

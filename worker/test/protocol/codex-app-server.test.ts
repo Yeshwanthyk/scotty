@@ -633,6 +633,29 @@ describe("Codex 0.153.4 bounded protocol subset", () => {
   });
 
   it("bounds UTF-8 fields and whole records before parsing, including ignored payloads", () => {
+    const aggregate = (output: string) => ({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          type: "commandExecution",
+          id: "command",
+          command: "rg hatch",
+          status: "completed",
+          aggregatedOutput: output,
+        },
+      },
+    });
+    assert.isTrue(
+      Result.isSuccess(decodeCodexNotification(JSON.stringify(aggregate("x".repeat(211_769))))),
+    );
+    assert.deepStrictEqual<unknown>(
+      Result.getFailure(
+        decodeCodexNotification(JSON.stringify(aggregate("x".repeat(CODEX_MAX_MESSAGE_BYTES)))),
+      ),
+      Result.getFailure(Result.fail("message_too_large")),
+    );
     assert.isTrue(
       Result.isSuccess(
         decodeCodexNotification(JSON.stringify(delta("x".repeat(CODEX_MAX_TEXT_BYTES)))),

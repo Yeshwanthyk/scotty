@@ -581,6 +581,45 @@ describe("scoped Codex session", () => {
     }),
   );
 
+  it.effect("ignores only child threads identified by a parent-fenced activity item", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      const turn = yield* host.prompt("delegate");
+      yield* f.emit({
+        method: "item/completed",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "subAgentActivity",
+            id: "activity",
+            agentThreadId: "child",
+            kind: "started",
+            agentPath: "/root/child",
+          },
+        },
+      });
+      yield* f.emit({
+        method: "turn/started",
+        params: { threadId: "child", turn: { id: "child-turn", status: "inProgress", items: [] } },
+      });
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "child", turn: { id: "child-turn", status: "completed", items: [] } },
+      });
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+      });
+      assert.equal((yield* turn.completed).status, "completed");
+      assert.equal(host.inspect().failure, null);
+      assert.ok(host.inspect().discarded >= 2);
+      assert.ok(host.drainEvents().every((event) => event.params.threadId === "thread"));
+      yield* host.stop;
+    }),
+  );
+
   for (const event of [
     {
       method: "item/reasoning/textDelta",

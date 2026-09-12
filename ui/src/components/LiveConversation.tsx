@@ -382,12 +382,16 @@ function useConversationConnection(
   };
 }
 
+const runtimeStopped = (connection: ConnectionState): boolean =>
+  connection.kind === "ready" && connection.snapshot.runtimeStopped === true;
+
 const connectionLabelFor = (connection: ConnectionState, active: boolean): string => {
   if (connection.kind === "loading") return "Connecting";
   if (connection.kind === "paused") return "Session paused";
   if (connection.kind === "unavailable") return "Unavailable";
   if (connection.connection === "paused") return "Session paused";
   if (connection.connection === "reconnecting") return "Reconnecting";
+  if (runtimeStopped(connection)) return "Agent stopped";
   return active ? "Live · working" : "Live · ready";
 };
 
@@ -404,7 +408,8 @@ function ConnectionStatus({
   const healthy =
     connection.kind === "ready" &&
     connection.connection === "connected" &&
-    connection.detail === undefined;
+    connection.detail === undefined &&
+    !runtimeStopped(connection);
   return (
     <div
       role="status"
@@ -710,23 +715,30 @@ export function LiveConversation({
   const healthy =
     connection.kind === "ready" &&
     connection.connection === "connected" &&
-    connection.detail === undefined;
+    connection.detail === undefined &&
+    !runtimeStopped(connection);
 
   return (
     <ConversationShell
       healthy={healthy}
       status={<ConnectionStatus active={active} connection={connection} />}
       warning={
-        snapshot?.followUpBlocked === true
-          ? "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue."
-          : undefined
+        runtimeStopped(connection)
+          ? "The agent runtime stopped after an error and cannot accept messages. Start a new session after the runtime issue is resolved."
+          : snapshot?.followUpBlocked === true
+            ? "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue."
+            : undefined
       }
       composer={
         <ConversationComposer
           active={active}
           activeTurnId={activeTurn?.id}
           followUpAvailable={snapshot?.followUpAvailable === true}
-          enabled={connection.kind === "ready" && connection.connection === "connected"}
+          enabled={
+            connection.kind === "ready" &&
+            connection.connection === "connected" &&
+            !runtimeStopped(connection)
+          }
           onAccepted={refresh}
           queue={snapshot?.queue ?? { steer: [], followUp: [] }}
           sessionRevision={snapshot?.transport.sessionRevision}

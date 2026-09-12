@@ -70,7 +70,7 @@ const transitionLabels = {
 } as const satisfies Record<SessionTransitionAction, string>;
 
 const stableRailLabels = {
-  warm: "Ready",
+  warm: "Awake",
   sleeping: "Sleeping",
   failed: "Failed",
   gone: "Vaporized",
