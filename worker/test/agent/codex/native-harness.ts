@@ -30,3 +30,4 @@ export { CodexSyntheticUpstream } from "../../../src/agent/codex/process";
 export { launchProcess } from "../../../src/agent/codex/process";
 export { managedPiAccessToken } from "../../../src/credentials/managed";
 export { NodeRuntime } from "@effect/platform-node";
+export { ScottyHatchManager } from "../../../container/pi-packages/sources/scotty-hatch/index";

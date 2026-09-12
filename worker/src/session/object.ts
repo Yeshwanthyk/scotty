@@ -1370,7 +1370,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
           Effect.provide(hatch),
         ),
       beforeSupervisorStart: (input) =>
-        this.prepareHatchRestoreProgram(input.operationNonce).pipe(
+        this.cleanupHatchProgram(input.operationNonce, "sleeping", false, "runtime_start").pipe(
+          Effect.andThen(this.prepareHatchRestoreProgram(input.operationNonce)),
           Effect.asVoid,
           Effect.provide(Layer.mergeAll(actorStore, hatch)),
         ),

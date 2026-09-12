@@ -89,6 +89,7 @@ const {
   readCodexSavedState,
   startCodexRuntime,
   startCodexSession: acquireSession,
+  ScottyHatchManager,
 } = await import(pathToFileURL(join(stage, "native-harness.mjs")).href);
 const credential = {
   sentinel: managedPiAccessToken("scotty-managed://openai/openai-codex/access"),
@@ -883,12 +884,42 @@ test(
     await Effect.runPromise(Scope.close(firstScope, Exit.void));
     held.destroy();
 
+    const app = join(workspace, ".scotty-hatch-proof");
+    await mkdir(app);
+    await writeFile(
+      join(app, "server.mjs"),
+      "import { createServer } from 'node:http'; createServer((_req, res) => { res.writeHead(200); res.end('ready'); }).listen(Number(process.argv[2]), '127.0.0.1');",
+    );
+    const portProbe = createServer();
+    await new Promise((done) => portProbe.listen(0, "127.0.0.1", done));
+    const hatchPort = portProbe.address().port;
+    await new Promise((done) => portProbe.close(done));
+
     const nextScope = await Effect.runPromise(Scope.make());
     scopes.push(nextScope);
     const resumedToolCalls = [];
+    const hatch = new ScottyHatchManager({
+      workspaceRoot: workspace,
+      authorityTransport: async (_input, init) => {
+        assert.equal(init?.method, "GET");
+        return Response.json({
+          hatchId: "hatch-resumed-proof",
+          generation: 1,
+          operationNonce: "resume-resumed-proof",
+          runtimeEpoch: "runtime-resumed-proof",
+          service: {
+            name: "web",
+            argv: [process.execPath, "server.mjs", String(hatchPort)],
+            workingDirectory: app,
+            port: hatchPort,
+            healthPath: "/",
+          },
+        });
+      },
+    });
     const resumedTools = {
-      restore: async () => {},
-      shutdown: async () => {},
+      restore: (signal) => hatch.restore(signal),
+      shutdown: () => hatch.shutdown(),
       execute: async (tool, input) => {
         resumedToolCalls.push({ tool, input });
         return { text: "scotty-hatch:resumed-proof", success: true };
@@ -911,6 +942,7 @@ test(
     );
     const ready = await scoped(nextScope, resumed.snapshot);
     assert.equal(ready.ready, true);
+    assert.equal((await fetch(`http://127.0.0.1:${hatchPort}/`)).status, 200);
     assert.equal(ready.threadId, saved.threadId);
     assert.deepEqual(ready.prompt, state.history.prompt);
     const replay = await scoped(

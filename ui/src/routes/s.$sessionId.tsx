@@ -459,6 +459,25 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
   const refreshLifecycle = useCallback(() => {
     void router.invalidate();
   }, [router]);
+  const transitioning = presentation.operation !== null;
+  useEffect(() => {
+    if (fixture || !transitioning) return;
+    let active = true;
+    let timer: number | undefined;
+    const refresh = async () => {
+      try {
+        await router.invalidate();
+      } catch {
+        // A transient read failure should not leave a transition frozen on screen.
+      }
+      if (active) timer = window.setTimeout(() => void refresh(), 2_000);
+    };
+    timer = window.setTimeout(() => void refresh(), 2_000);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [fixture, router, session.id, transitioning]);
   const rail = buildSessionRail(data.projections, { selectedActor: session });
   return (
     <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>

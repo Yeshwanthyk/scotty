@@ -1,5 +1,5 @@
 import { assert, describe, expect, it } from "@effect/vitest";
-import { Effect, Option, Predicate, Schema } from "effect";
+import { Effect, Option, Predicate, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { defaultCloudSettings, type CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
 import type { SessionAuthority } from "../../src/session-actor/authority";
@@ -11,6 +11,7 @@ import {
   type HatchRouteAuthorization,
   type HatchState,
 } from "../../src/hatch/contracts";
+import { HatchStore, hatchStoreLayer } from "../../src/hatch/store";
 import { sha256Hex } from "../../src/shared/digest";
 import { ScottyError } from "../../src/session/contracts";
 import {
@@ -1174,6 +1175,128 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.strictEqual(publicStatus.observedStatus, "running");
     assert.strictEqual(publicStatus.exposure, "active");
   });
+
+  it("reclaims a retained prior Hatch restore before retrying Resume", async () => {
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    await harness.sandbox.sleepScottySession();
+    const state = harness.read<HatchState>(sessionHarnessKeys.hatch);
+    assert.isDefined(state?.primary);
+    harness.memory.values.set(sessionHarnessKeys.hatch, {
+      primary: {
+        ...state.primary,
+        generation: state.primary.generation + 1,
+        observedStatus: "starting",
+        exposure: "unexpose_pending",
+        runtimeEpoch: "prior-resume-runtime",
+        transitionNonce: "prior-resume-nonce",
+      },
+    } satisfies HatchState);
+
+    const resumed = await harness.sandbox.resumeScottySession();
+    assert.strictEqual(resumed.status, "warm");
+    const hatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.isDefined(hatch);
+    assert.strictEqual(hatch.observedStatus, "running");
+    assert.strictEqual(hatch.exposure, "active");
+    assert.isUndefined(hatch.transitionNonce);
+    assert.notStrictEqual(hatch.runtimeEpoch, "prior-resume-runtime");
+    assert.include(harness.events, "host:preview:unexpose:4173");
+  });
+
+  it.effect("rejects a stale runtime-start cleanup before its pending fast path", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          previewBase: "preview.example.test",
+          rawPiContainerRunning: true,
+          piSessionRunning: true,
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.ensureScottyHatch({
+          service: {
+            name: "docs",
+            argv: ["npm", "run", "dev"],
+            workingDirectory: `/workspace/${SESSION_ID}`,
+            port: 4_173,
+            healthPath: "/health",
+          },
+        }),
+      );
+      yield* Effect.promise(() => harness.sandbox.sleepScottySession());
+      const state = harness.read<HatchState>(sessionHarnessKeys.hatch);
+      const record = harness.readRecord();
+      assert.isDefined(state?.primary);
+      assert.isDefined(record);
+      const priorNonce = "prior-resume-nonce";
+      const generation = state.primary.generation + 1;
+      const pending: HatchState = {
+        primary: {
+          ...state.primary,
+          generation,
+          exposure: "unexpose_pending",
+          transitionNonce: priorNonce,
+          cleanup: {
+            operationNonce: priorNonce,
+            target: "sleeping",
+            generation,
+            requestedAt: record.createdAt,
+          },
+        },
+      };
+      let stored = pending;
+      const layer = hatchStoreLayer({
+        get: async () => stored,
+        transaction: async (operation) =>
+          operation({
+            getHatch: async () => stored,
+            getActorAuthority: async () => undefined,
+            getRecord: async () => ({
+              ...record,
+              status: "booting",
+              operation: {
+                kind: "resume",
+                nonce: "current-resume-nonce",
+                startedAt: record.createdAt,
+              },
+            }),
+            getRuntimeEpoch: async () => "current-resume-runtime",
+            putHatch: async (state) => {
+              stored = state;
+            },
+            deleteHatch: async () => undefined,
+          }),
+      });
+      const result = yield* Effect.gen(function* () {
+        const store = yield* HatchStore;
+        return yield* Effect.result(
+          store.beginCleanup(priorNonce, "sleeping", false, "runtime_start"),
+        );
+      }).pipe(Effect.provide(layer));
+      assert.deepStrictEqual(
+        Option.map(Result.getFailure(result), (failure) => failure.reason),
+        Option.some("lease_changed"),
+      );
+      assert.deepStrictEqual(stored, pending);
+    }),
+  );
 
   it("polls Hatch port health after Pi supervisor readiness during resume", async () => {
     let healthCalls = 0;
