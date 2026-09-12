@@ -1357,6 +1357,91 @@ test(
   },
 );
 
+test(
+  "packaged Codex delegation preserves parent turn identity",
+  { skip: !native, timeout: 60000 },
+  async (t) => {
+    let requests = 0;
+    const server = createServer(async (req, res) => {
+      for await (const _chunk of req) {
+        /* drain synthetic request */
+      }
+      requests++;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const send = (type, fields) =>
+        res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`);
+      send("response.created", {
+        response: { id: `resp-delegate-${requests}`, status: "in_progress" },
+      });
+      const item =
+        requests === 1
+          ? {
+              type: "function_call",
+              id: "call-delegate",
+              call_id: "call-delegate",
+              namespace: "collaboration",
+              name: "spawn_agent",
+              arguments: JSON.stringify({
+                task_name: "proof",
+                message: "Reply CHILD_OK without tools.",
+              }),
+            }
+          : {
+              type: "message",
+              id: `msg-delegate-${requests}`,
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "DELEGATION_COMPLETE", annotations: [] }],
+            };
+      send("response.output_item.done", { output_index: 0, item });
+      send("response.completed", {
+        response: {
+          id: `resp-delegate-${requests}`,
+          status: "completed",
+          output: [item],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      });
+      res.end();
+    });
+    await new Promise((done) => server.listen(0, "127.0.0.1", done));
+    let host;
+    t.after(async () => {
+      if (host) await host.stop();
+      server.closeAllConnections();
+      await new Promise((done) => server.close(done));
+    });
+    host = await startCodexSession({
+      binary: native,
+      runtimeDir: join(stage, "delegation-runtime"),
+      workspace: join(stage, "delegation-workspace"),
+      model: "gpt-6-astra",
+      effort: "ultra",
+      ephemeral: false,
+      credential,
+      upstreamPort: server.address().port,
+    });
+    const turn = await host.prompt("Spawn one child and wait for its answer.");
+    assert.equal((await turn.completed).status, "completed");
+    assert.equal(requests, 3);
+    assert.ok(host.inspect().discarded >= 1);
+    assert.ok(
+      host.drainEvents().every((event) => event.params.threadId === host.inspect().threadId),
+    );
+    const followUp = await host
+      .prompt("Complete one more turn after delegation.")
+      .catch((error) => {
+        throw new Error(JSON.stringify(observeCodexFailure(error)));
+      });
+    const followUpTerminal = await followUp.completed.catch((error) => {
+      throw new Error(JSON.stringify(observeCodexFailure(error)));
+    });
+    assert.equal(followUpTerminal.status, "completed");
+    assert.equal(requests, 4);
+    assert.equal(host.inspect().failure, null);
+  },
+);
+
 for (const mode of [
   "ready",
   "missing",
