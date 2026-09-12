@@ -116,7 +116,7 @@ NodeRuntime.runMain(program(process.argv.slice(2,3)).pipe(Effect.provideService(
 `,
 );
 // Test-only Promise facade; production owns no Promise supervisor or hidden runtime.
-async function startCodexSession(options, firstPartyTools) {
+async function startCodexSession(options, firstPartyTools, observeEvent) {
   await mkdir(options.workspace, { recursive: true });
   const scope = await Effect.runPromise(Scope.make());
   const run = (effect) => Effect.runPromise(effect);
@@ -126,13 +126,14 @@ async function startCodexSession(options, firstPartyTools) {
     return result.success;
   };
   let host;
+  const publish = observeEvent && ((event) => Effect.sync(() => observeEvent(event)));
   try {
     host = await runTyped(
       (firstPartyTools === undefined
-        ? acquireSession(selection(options), undefined, undefined, passiveFirstPartyTools)
+        ? acquireSession(selection(options), publish, undefined, passiveFirstPartyTools)
         : Effect.gen(function* () {
             const transport = yield* launchProcess(selection(options));
-            return yield* makeSession(transport, undefined, firstPartyTools);
+            return yield* makeSession(transport, publish, firstPartyTools);
           })
       ).pipe(
         Effect.provideService(CodexSyntheticUpstream, { port: options.upstreamPort }),
@@ -595,12 +596,50 @@ for (const [model, effort] of [
     `real pinned binary / synthetic upstream: ${model} ${effort}`,
     { skip: !native, timeout: 60000 },
     async (t) => {
+      let host;
+      const observed = [];
+      const knownTurns = [];
+      const observeEvent = (event) => {
+        observed.push({
+          method: event.method,
+          threadId: event.params?.threadId,
+          turnId: event.params?.turnId,
+          itemType: event.params?.item?.type,
+        });
+        if (observed.length > 24) observed.shift();
+      };
       const withNativePhase = async (phase, operation) => {
         try {
           return await operation;
         } catch (error) {
           const failure = observeCodexFailure(error);
-          throw new Error(`native_fixture_${phase}:${failure.code ?? failure.tag}`);
+          const snapshot = host?.inspect();
+          const timeline = observed
+            .map((event) => {
+              const thread =
+                event.threadId === undefined
+                  ? "none"
+                  : event.threadId === snapshot?.threadId
+                    ? "parent"
+                    : "other";
+              const turnIndex = knownTurns.indexOf(event.turnId);
+              const turn =
+                event.turnId === undefined
+                  ? "none"
+                  : turnIndex >= 0
+                    ? `turn${turnIndex + 1}`
+                    : "other";
+              const item = ["subAgentActivity", "commandExecution", "agentMessage"].includes(
+                event.itemType,
+              )
+                ? event.itemType
+                : "other";
+              return `${event.method},${thread},${turn},${item}`;
+            })
+            .join("|");
+          throw new Error(
+            `native_fixture_${phase}:${failure.code ?? failure.tag}; stale=${snapshot?.failureDiagnostic ?? "none"}; events=${timeline}`,
+          );
         }
       };
       const requests = [];
@@ -673,7 +712,6 @@ for (const [model, effort] of [
         res.end();
       });
       await new Promise((done) => server.listen(0, "127.0.0.1", done));
-      let host;
       t.after(async () => {
         if (host) await withNativePhase("cleanup", host.stop());
         held?.destroy();
@@ -682,15 +720,19 @@ for (const [model, effort] of [
       });
       host = await withNativePhase(
         "startup",
-        startCodexSession({
-          binary: native,
-          runtimeDir: join(stage, `native-${model}-${effort}`),
-          workspace: join(stage, `native-workspace-${model}-${effort}`),
-          model,
-          credential,
-          upstreamPort: server.address().port,
-          effort,
-        }),
+        startCodexSession(
+          {
+            binary: native,
+            runtimeDir: join(stage, `native-${model}-${effort}`),
+            workspace: join(stage, `native-workspace-${model}-${effort}`),
+            model,
+            credential,
+            upstreamPort: server.address().port,
+            effort,
+          },
+          undefined,
+          observeEvent,
+        ),
       );
       assert.equal(requests.length, 0);
       assert.equal(host.inspect().settings.approvalPolicy, "never");
@@ -698,6 +740,7 @@ for (const [model, effort] of [
       assert.equal(host.inspect().settings.reasoningEffort, effort);
       for (let i = 0; i < 2; i++) {
         const turn = await withNativePhase("prompt", host.prompt("Return the synthetic answer."));
+        knownTurns.push(turn.turnId);
         const terminal = await withNativePhase("turn", turn.completed);
         assert.equal(terminal.status, "completed");
         assert.equal(terminal.items[0].text, "SYNTHETIC_OK");
@@ -706,6 +749,7 @@ for (const [model, effort] of [
       assert.ok(host.drainEvents().some((e) => e.method === "item/agentMessage/delta"));
       hold = true;
       const turn = await withNativePhase("interrupt_prompt", host.prompt("Wait for interruption."));
+      knownTurns.push(turn.turnId);
       await wait(() => held);
       assert.equal((await withNativePhase("interrupt", host.interrupt())).status, "interrupted");
       assert.equal((await withNativePhase("interrupt_turn", turn.completed)).status, "interrupted");
