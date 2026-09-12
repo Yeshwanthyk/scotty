@@ -12,6 +12,10 @@ type CommandOutputEvent = Extract<
   { method: "item/commandExecution/outputDelta" }
 >;
 type TurnCompletedEvent = Extract<CodexNotification, { method: "turn/completed" }>;
+type DynamicToolItemEvent = Extract<
+  CodexNotification,
+  { method: "item/started" | "item/completed" }
+>;
 
 export const makeCodexTools = () => {
   const tools = new Map<string, CanonicalConversationTool>();
@@ -59,6 +63,39 @@ export const makeCodexTools = () => {
           : {}),
     });
   };
+  const acceptDynamicItem = (event: DynamicToolItemEvent) => {
+    const item = event.params.item;
+    if (
+      item.type !== "dynamicToolCall" ||
+      !Predicate.hasProperty(item, "id") ||
+      !Predicate.hasProperty(item, "tool") ||
+      !Predicate.hasProperty(item, "status")
+    )
+      return;
+    if (!tools.has(item.id) && tools.size >= CONVERSATION_MAX_TOOLS_PER_TURN) {
+      truncated = true;
+      return;
+    }
+    const previous = tools.get(item.id);
+    const label =
+      item.tool === "scotty_hatch"
+        ? "Hatch"
+        : item.tool === "scotty_browser_test"
+          ? "Browser evidence"
+          : "Tool";
+    tools.set(item.id, {
+      id: item.id,
+      label,
+      invocation: label,
+      state: item.status === "inProgress" ? "running" : item.status,
+      ...(previous?.output === undefined ? {} : { output: previous.output }),
+    });
+  };
+  const acceptDynamicResult = (callId: string, text: string) => {
+    const previous = tools.get(callId);
+    if (previous === undefined) return;
+    tools.set(callId, { ...previous, output: bound(text) });
+  };
   const acceptOutputDelta = (event: CommandOutputEvent) => {
     const previous = tools.get(event.params.itemId);
     const hadOutputDeltas = outputDeltas.has(event.params.itemId);
@@ -89,6 +126,7 @@ export const makeCodexTools = () => {
       truncated = false;
     } else if (event.method === "item/started" || event.method === "item/completed") {
       acceptItem(event);
+      acceptDynamicItem(event);
     } else if (event.method === "item/commandExecution/outputDelta") {
       acceptOutputDelta(event);
     } else if (event.method === "turn/completed") {
@@ -97,6 +135,7 @@ export const makeCodexTools = () => {
   };
   return {
     accept,
+    acceptDynamicResult,
     snapshot: () => ({ tools: [...tools.values()], toolsTruncated: truncated, sequence }),
   };
 };

@@ -1,5 +1,6 @@
 import type { CodexSavedState } from "./persistence-format";
-import { Clock, Deferred, Effect, Predicate, Result, Schema, Scope, Stream } from "effect";
+import { createHash } from "node:crypto";
+import { Clock, Deferred, Effect, Fiber, Predicate, Result, Schema, Scope, Stream } from "effect";
 import {
   CODEX_VERSION,
   CODEX_MAX_TEXT_BYTES,
@@ -12,8 +13,11 @@ import {
   decodeCodexSteerResponse,
   decodeCodexInterruptResponse,
   decodeCodexNotification,
+  decodeCodexDynamicToolCall,
   rejectCodexServerRequest,
   type CodexClientMessage,
+  type CodexDynamicToolResponse,
+  type CodexDynamicToolCall,
   type CodexNotification,
   type CodexThreadReadResult,
   type CodexThreadSettings,
@@ -21,6 +25,12 @@ import {
 } from "../../../../protocol/codex-app-server";
 import { CodexHostError, type Cleanup } from "./errors";
 import { makeCodexTools } from "./tools";
+import {
+  codexFirstPartyToolSpecs,
+  makeCodexFirstPartyTools,
+  type CodexFirstPartyToolName,
+  type CodexFirstPartyTools,
+} from "./first-party-tools";
 import { limits, makeFramer } from "./framing";
 import { launchProcess, type CodexProcess } from "./process";
 
@@ -40,6 +50,7 @@ const activityChildThreadId = (message: CodexNotification) =>
 type Turn = {
   id: string | undefined;
   started: boolean;
+  readonly beforeAdmissionReply: Array<BeforeAdmissionReply>;
   readonly terminal: Deferred.Deferred<Terminal, CodexHostError>;
   interruption?: Effect.Effect<Terminal, CodexHostError>;
 };
@@ -164,6 +175,15 @@ const Advisory = Schema.Union([
 ]);
 type AdvisoryMessage = typeof Advisory.Type;
 type ScopedAdvisory = Extract<AdvisoryMessage, { method: typeof ScopedAdvisoryMethod.Type }>;
+type UpstreamFailure =
+  ReturnType<typeof decodeUpstreamFailure> extends Effect.Effect<infer A, infer _E, infer _R>
+    ? A
+    : never;
+type BeforeAdmissionReply =
+  | { readonly kind: "notification"; readonly message: CodexNotification }
+  | { readonly kind: "dynamic"; readonly request: CodexDynamicToolCall }
+  | { readonly kind: "advisory"; readonly advisory: ScopedAdvisory }
+  | { readonly kind: "upstream"; readonly rejection: UpstreamFailure };
 const isScopedAdvisoryMethod = Schema.is(ScopedAdvisoryMethod);
 const isScopedAdvisory = (advisory: AdvisoryMessage): advisory is ScopedAdvisory =>
   isScopedAdvisoryMethod(advisory.method);
@@ -212,6 +232,7 @@ const matchesDurableReadback = (readback: CodexThreadReadResult, threadId: strin
 export const makeSession = Effect.fnUntraced(function* (
   transport: CodexProcess,
   publish: (event: CodexNotification) => Effect.Effect<void, CodexHostError> = () => Effect.void,
+  firstPartyTools?: CodexFirstPartyTools,
 ) {
   const scope = yield* Scope.Scope;
   const failed = yield* Deferred.make<never, CodexHostError>();
@@ -220,6 +241,17 @@ export const makeSession = Effect.fnUntraced(function* (
   const usedTurns = new Set<string>();
   const events: Array<CodexNotification> = [];
   const tools = makeCodexTools();
+  const startedDynamicTools = new Map<string, string>();
+  const toolReceipts = new Map<
+    string,
+    {
+      readonly turnId: string;
+      readonly tool: CodexFirstPartyToolName;
+      readonly argumentsHash: string;
+      readonly result: Deferred.Deferred<CodexDynamicToolResponse["result"]>;
+    }
+  >();
+  const toolFibers = new Map<string, Fiber.Fiber<void, CodexHostError>>();
   // Native child-turn traffic shares the app-server stdout with its parent.
   // Only parent-fenced subAgentActivity can authorize a child thread here.
   const childTurnOwners = new Map<string, Set<string>>();
@@ -244,6 +276,7 @@ export const makeSession = Effect.fnUntraced(function* (
       | CodexNotification["method"]
       | typeof ScopedAdvisoryMethod.Type
       | "error"
+      | "item/tool/call"
       | "thread/goal/cleared",
     eventThreadId: string,
     eventTurnId?: string,
@@ -300,12 +333,28 @@ export const makeSession = Effect.fnUntraced(function* (
     Effect.gen(function* () {
       closing = true;
       ready = false;
+      yield* Fiber.interruptAll(toolFibers.values());
+      toolFibers.clear();
       const stopped = failure ?? new CodexHostError({ code: "stopped" });
       for (const entry of pending.values()) yield* entry.fail(stopped);
       pending.clear();
       if (active) yield* Deferred.fail(active.terminal, stopped);
       active = undefined;
-      const receipt = { ...(yield* transport.stop), failure: failure?.code ?? null };
+      const toolCleanup = firstPartyTools
+        ? yield* Effect.result(
+            Effect.tryPromise({
+              try: () => firstPartyTools.shutdown(),
+              catch: () => new CodexHostError({ code: "hatch_cleanup_failed" }),
+            }),
+          )
+        : undefined;
+      const receipt = {
+        ...(yield* transport.stop),
+        failure:
+          toolCleanup !== undefined && Result.isFailure(toolCleanup)
+            ? "hatch_cleanup_failed"
+            : (failure?.code ?? null),
+      };
       yield* Deferred.succeed(closed, receipt);
       return receipt;
     }).pipe(Effect.uninterruptible),
@@ -337,7 +386,7 @@ export const makeSession = Effect.fnUntraced(function* (
     return yield* effect.pipe(Effect.timeoutOrElse({ duration, orElse: timeout }));
   });
   const write = Effect.fnUntraced(function* (
-    message: CodexClientMessage | CodexUnsupportedResponse,
+    message: CodexClientMessage | CodexUnsupportedResponse | CodexDynamicToolResponse,
     startupDeadline?: number,
   ) {
     if (closing || failure) return yield* new CodexHostError({ code: "stopped" });
@@ -399,14 +448,71 @@ export const makeSession = Effect.fnUntraced(function* (
       ),
     );
   });
+  const recordDynamicItem = (message: CodexNotification) => {
+    if (message.method === "item/started") {
+      const item = message.params.item;
+      if (
+        item.type === "dynamicToolCall" &&
+        Predicate.hasProperty(item, "id") &&
+        Predicate.hasProperty(item, "tool")
+      )
+        startedDynamicTools.set(item.id, item.tool);
+    } else if (message.method === "item/completed") {
+      const item = message.params.item;
+      if (item.type === "dynamicToolCall" && Predicate.hasProperty(item, "id"))
+        startedDynamicTools.delete(item.id);
+    }
+  };
+  const admissionIdentity = (
+    entry: BeforeAdmissionReply,
+  ): {
+    readonly method:
+      | CodexNotification["method"]
+      | typeof ScopedAdvisoryMethod.Type
+      | "item/tool/call"
+      | "error";
+    readonly threadId: string;
+    readonly turnId: string;
+  } => {
+    if (entry.kind === "notification")
+      return {
+        method: entry.message.method,
+        threadId: entry.message.params.threadId,
+        turnId: Predicate.hasProperty(entry.message.params, "turnId")
+          ? entry.message.params.turnId
+          : entry.message.params.turn.id,
+      };
+    if (entry.kind === "dynamic") return { method: "item/tool/call", ...entry.request.params };
+    if (entry.kind === "advisory")
+      return { method: entry.advisory.method, ...entry.advisory.params };
+    return { method: "error", ...entry.rejection.params };
+  };
+  const bufferBeforeAdmissionReply = Effect.fnUntraced(function* (entry: BeforeAdmissionReply) {
+    if (
+      active === undefined ||
+      active.id !== undefined ||
+      admissionIdentity(entry).threadId !== threadId
+    )
+      return false;
+    if (active.beforeAdmissionReply.length >= 64)
+      return yield* new CodexHostError({ code: "event_budget" });
+    active.beforeAdmissionReply.push(entry);
+    return true;
+  });
+  const consumeBeforeActive = Effect.fnUntraced(function* (message: CodexNotification) {
+    if (isTrailingChildActivity(message)) {
+      discarded++;
+      return true;
+    }
+    return yield* bufferBeforeAdmissionReply({ kind: "notification", message });
+  });
   const notification = Effect.fnUntraced(function* (message: CodexNotification) {
     const id = Predicate.hasProperty(message.params, "turnId")
       ? message.params.turnId
       : message.params.turn.id;
-    if (isTrailingChildActivity(message)) {
-      discarded++;
-      return;
-    }
+    // Native starts the turn before enqueuing the turn/start RPC response. Hold
+    // only this parent's events until that response supplies the exact turn ID.
+    if (yield* consumeBeforeActive(message)) return;
     if (!active || message.params.threadId !== threadId || id !== active.id)
       return yield* stale(
         message.method,
@@ -418,7 +524,10 @@ export const makeSession = Effect.fnUntraced(function* (
     if (message.method === "turn/started") {
       if (turn.started) return yield* new CodexHostError({ code: "duplicate_turn_started" });
       turn.started = true;
+      startedDynamicTools.clear();
+      toolReceipts.clear();
     } else if (!turn.started) return yield* new CodexHostError({ code: "turn_not_started" });
+    recordDynamicItem(message);
     const childThreadId = activityChildThreadId(message);
     if (childThreadId !== undefined && childThreadId !== threadId) {
       const owners = childTurnOwners.get(childThreadId) ?? new Set<string>();
@@ -431,14 +540,120 @@ export const makeSession = Effect.fnUntraced(function* (
     if (closing || failure || active !== turn) return;
     if (message.method === "turn/completed") {
       completedTurns.add(id);
+      startedDynamicTools.clear();
+      for (const [callId, fiber] of toolFibers) {
+        const receipt = toolReceipts.get(callId);
+        if (receipt !== undefined)
+          yield* Deferred.succeed(receipt.result, toolResult("Tool call interrupted.", false));
+        yield* Fiber.interrupt(fiber).pipe(Effect.forkIn(scope));
+      }
+      toolFibers.clear();
       if (active === turn) active = undefined;
       yield* Deferred.succeed(turn.terminal, message.params.turn);
     }
   });
-  const handleUpstreamFailure = Effect.fnUntraced(function* (line: string) {
-    const rejection = yield* decodeUpstreamFailure(line).pipe(
-      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
+  const toolResult = (text: string, success: boolean): CodexDynamicToolResponse["result"] => ({
+    contentItems: [
+      {
+        type: "inputText",
+        text:
+          new TextEncoder().encode(text).byteLength <= 1200
+            ? text
+            : "Tool result exceeded the safe output limit.",
+      },
+    ],
+    success,
+  });
+  const canAdmitDynamicCall = (
+    params: {
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly callId: string;
+      readonly namespace?: string | null;
+    },
+    tool: CodexFirstPartyToolName | undefined,
+  ) =>
+    firstPartyTools !== undefined &&
+    ready &&
+    !closing &&
+    !failure &&
+    active?.started === true &&
+    active.id === params.turnId &&
+    threadId === params.threadId &&
+    (params.namespace === undefined || params.namespace === null) &&
+    tool !== undefined &&
+    (startedDynamicTools.get(params.callId) === tool || toolReceipts.has(params.callId));
+  const handleDynamicToolCall = Effect.fnUntraced(function* (request: CodexDynamicToolCall) {
+    const params = request.params;
+    const tool =
+      params.tool === "scotty_hatch" || params.tool === "scotty_browser_test"
+        ? params.tool
+        : undefined;
+    const admitted = canAdmitDynamicCall(params, tool);
+    if (!admitted || tool === undefined || firstPartyTools === undefined) {
+      yield* write({ id: request.id, result: toolResult("Tool call unavailable.", false) });
+      rejected++;
+      return;
+    }
+    const argumentsHash = createHash("sha256")
+      .update(JSON.stringify(params.arguments))
+      .digest("hex");
+    const previous = toolReceipts.get(params.callId);
+    if (
+      previous !== undefined &&
+      (previous.turnId !== params.turnId ||
+        previous.tool !== tool ||
+        previous.argumentsHash !== argumentsHash)
+    ) {
+      yield* write({ id: request.id, result: toolResult("Tool call identity conflict.", false) });
+      rejected++;
+      return;
+    }
+    if (previous === undefined && toolReceipts.size >= 64) {
+      yield* write({ id: request.id, result: toolResult("Tool call budget reached.", false) });
+      rejected++;
+      return;
+    }
+    const result = previous?.result ?? (yield* Deferred.make<CodexDynamicToolResponse["result"]>());
+    if (previous === undefined) {
+      toolReceipts.set(params.callId, { turnId: params.turnId, tool, argumentsHash, result });
+      const execution = Effect.tryPromise({
+        try: (signal) => firstPartyTools.execute(tool, params.arguments, signal),
+        catch: () => new CodexHostError({ code: "tool_execution_failed" }),
+      }).pipe(
+        Effect.map((value) => toolResult(value.text, value.success)),
+        Effect.catch(() =>
+          Effect.succeed(toolResult("Tool outcome unknown; do not repeat this call.", false)),
+        ),
+        Effect.tap((value) =>
+          Effect.sync(() => {
+            tools.acceptDynamicResult(params.callId, value.contentItems[0].text);
+          }),
+        ),
+        Effect.andThen((value) => Deferred.succeed(result, value)),
+        Effect.onInterrupt(() =>
+          Deferred.succeed(result, toolResult("Tool call interrupted.", false)),
+        ),
+        Effect.asVoid,
+      );
+      const fiber = yield* execution.pipe(Effect.forkIn(scope));
+      toolFibers.set(params.callId, fiber);
+      yield* Fiber.await(fiber).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if (toolFibers.get(params.callId) === fiber) toolFibers.delete(params.callId);
+          }),
+        ),
+        Effect.forkIn(scope),
+      );
+    }
+    yield* supervise(
+      Deferred.await(result).pipe(
+        Effect.flatMap((value) => write({ id: request.id, result: value })),
+      ),
     );
+  });
+  const handleUpstreamFailure = Effect.fnUntraced(function* (rejection: UpstreamFailure) {
     if (!active || rejection.params.threadId !== threadId || rejection.params.turnId !== active.id)
       return yield* stale("error", rejection.params.threadId, rejection.params.turnId);
     if (rejection.params.willRetry) {
@@ -450,16 +665,42 @@ export const makeSession = Effect.fnUntraced(function* (
       upstreamDiagnostic: upstreamDiagnostic(rejection.params.error.codexErrorInfo),
     });
   });
-  const handleAdvisory = Effect.fnUntraced(function* (line: string) {
-    const advisory = yield* decodeAdvisory(line).pipe(
-      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
-    );
+  const handleAdvisory = Effect.fnUntraced(function* (advisory: AdvisoryMessage) {
     if (
       isScopedAdvisory(advisory) &&
       (!active || advisory.params.threadId !== threadId || advisory.params.turnId !== active.id)
     )
       return yield* stale(advisory.method, advisory.params.threadId, advisory.params.turnId);
     discarded++;
+  });
+  const receiveDynamicToolCall = Effect.fnUntraced(function* (line: string) {
+    const decodedCall = decodeCodexDynamicToolCall(line);
+    if (Result.isFailure(decodedCall)) {
+      yield* write(yield* decoded(rejectCodexServerRequest(line)));
+      rejected++;
+      return;
+    }
+    const request = decodedCall.success;
+    if (yield* bufferBeforeAdmissionReply({ kind: "dynamic", request })) return;
+    return yield* handleDynamicToolCall(request);
+  });
+  const receiveUpstreamFailure = Effect.fnUntraced(function* (line: string) {
+    const rejection = yield* decodeUpstreamFailure(line).pipe(
+      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
+    );
+    if (yield* bufferBeforeAdmissionReply({ kind: "upstream", rejection })) return;
+    return yield* handleUpstreamFailure(rejection);
+  });
+  const receiveAdvisory = Effect.fnUntraced(function* (line: string) {
+    const advisory = yield* decodeAdvisory(line).pipe(
+      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
+    );
+    if (
+      isScopedAdvisory(advisory) &&
+      (yield* bufferBeforeAdmissionReply({ kind: "advisory", advisory }))
+    )
+      return;
+    return yield* handleAdvisory(advisory);
   });
   const receive = Effect.fnUntraced(function* (line: string) {
     if (closing) return;
@@ -469,6 +710,8 @@ export const makeSession = Effect.fnUntraced(function* (
     );
     if (route.id !== undefined) {
       if (route.method !== undefined) {
+        if (route.method === "item/tool/call" && firstPartyTools !== undefined)
+          return yield* receiveDynamicToolCall(line);
         yield* write(yield* decoded(rejectCodexServerRequest(line)));
         rejected++;
         return;
@@ -507,8 +750,8 @@ export const makeSession = Effect.fnUntraced(function* (
       discarded++;
       return;
     }
-    if (route.method === "error") return yield* handleUpstreamFailure(line);
-    return yield* handleAdvisory(line);
+    if (route.method === "error") return yield* receiveUpstreamFailure(line);
+    return yield* receiveAdvisory(line);
   });
   const framer = makeFramer(limits.output);
   yield* supervise(transport.writer);
@@ -547,6 +790,13 @@ export const makeSession = Effect.fnUntraced(function* (
 
   yield* Effect.addFinalizer(() => stop);
 
+  const replayBeforeAdmissionReply = Effect.fnUntraced(function* (entry: BeforeAdmissionReply) {
+    if (entry.kind === "notification") return yield* notification(entry.message);
+    if (entry.kind === "dynamic") return yield* handleDynamicToolCall(entry.request);
+    if (entry.kind === "advisory") return yield* handleAdvisory(entry.advisory);
+    return yield* handleUpstreamFailure(entry.rejection);
+  });
+
   const prompt = Effect.fnUntraced(function* (text: string, clientUserMessageId?: string) {
     if (!ready || closing || !threadId) return yield* new CodexHostError({ code: "not_ready" });
     if (active) return yield* new CodexHostError({ code: "turn_busy" });
@@ -567,6 +817,7 @@ export const makeSession = Effect.fnUntraced(function* (
     const turn: Turn = {
       id: undefined,
       started: false,
+      beforeAdmissionReply: [],
       terminal: yield* Deferred.make<Terminal, CodexHostError>(),
     };
     active = turn;
@@ -588,8 +839,15 @@ export const makeSession = Effect.fnUntraced(function* (
       Effect.fnUntraced(function* (result) {
         if (usedTurns.has(result.turn.id))
           return yield* new CodexHostError({ code: "reused_turn_id" });
+        for (const entry of turn.beforeAdmissionReply) {
+          const identity = admissionIdentity(entry);
+          if (identity.threadId !== threadId || identity.turnId !== result.turn.id)
+            return yield* stale(identity.method, identity.threadId, identity.turnId);
+        }
         usedTurns.add(result.turn.id);
         turn.id = result.turn.id;
+        for (const entry of turn.beforeAdmissionReply) yield* replayBeforeAdmissionReply(entry);
+        turn.beforeAdmissionReply.length = 0;
       }),
     );
     return { turnId: result.turn.id, completed: Deferred.await(turn.terminal) };
@@ -655,7 +913,7 @@ export const makeSession = Effect.fnUntraced(function* (
         method: "initialize",
         params: {
           clientInfo: { name: "scotty-component", version: "slice-1" },
-          capabilities: { experimentalApi: false },
+          capabilities: { experimentalApi: firstPartyTools !== undefined },
         },
       },
       decodeCodexInitializeResponse,
@@ -687,6 +945,9 @@ export const makeSession = Effect.fnUntraced(function* (
                 approvalPolicy: "never",
                 sandbox: "danger-full-access",
                 ephemeral,
+                ...(firstPartyTools === undefined
+                  ? {}
+                  : { dynamicTools: codexFirstPartyToolSpecs }),
               },
             },
             decodeCodexThreadStartResponse,
@@ -722,6 +983,15 @@ export const makeSession = Effect.fnUntraced(function* (
       if (!matchesDurableReadback(readback, settings.thread.id))
         return yield* new CodexHostError({ code: "settings_mismatch" });
     }
+    // A fresh native thread has no retained Hatch authority to restore.
+    if (firstPartyTools !== undefined && resumeThreadId !== undefined)
+      yield* timed(
+        Effect.tryPromise({
+          try: (signal) => firstPartyTools.restore(signal),
+          catch: () => new CodexHostError({ code: "hatch_restore_failed" }),
+        }),
+        startupDeadline,
+      );
     if (closing || failure) return yield* failure ?? new CodexHostError({ code: "stopped" });
     if (Number(yield* Clock.monotonicTimeNanos) / 1_000_000 >= startupDeadline)
       return yield* new CodexHostError({ code: "startup_timeout" });
@@ -766,6 +1036,7 @@ export const startCodexSession = Effect.fnUntraced(function* (
   input: unknown,
   publish?: (event: CodexNotification) => Effect.Effect<void, CodexHostError>,
   restored?: typeof CodexSavedState.Type,
+  firstPartyTools?: CodexFirstPartyTools,
 ) {
   const transport = yield* launchProcess(input, restored).pipe(
     Effect.mapError(
@@ -783,5 +1054,9 @@ export const startCodexSession = Effect.fnUntraced(function* (
         }),
     ),
   );
-  return yield* makeSession(transport, publish);
+  return yield* makeSession(
+    transport,
+    publish,
+    firstPartyTools ?? makeCodexFirstPartyTools(transport.homes.cwd),
+  );
 });

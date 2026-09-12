@@ -20,6 +20,12 @@ const RequestId = Schema.Union([Identifier, SafeInteger]);
 const Empty = Schema.Record(Schema.String, Schema.Never);
 const TurnIdentity = Schema.Struct({ threadId: Identifier, turnId: Identifier });
 const ThreadHistoryMode = Schema.Literals(["legacy", "paginated"]);
+const DynamicToolSpec = Schema.Struct({
+  type: Schema.Literal("function"),
+  name: Identifier,
+  description: Text,
+  inputSchema: Schema.JsonObject,
+});
 
 export const CodexClientMessageSchema = Schema.Union([
   Schema.Struct({
@@ -27,7 +33,7 @@ export const CodexClientMessageSchema = Schema.Union([
     method: Schema.Literal("initialize"),
     params: Schema.Struct({
       clientInfo: Schema.Struct({ name: Identifier, version: Identifier }),
-      capabilities: Schema.Struct({ experimentalApi: Schema.Literal(false) }),
+      capabilities: Schema.Struct({ experimentalApi: Schema.Boolean }),
     }),
   }),
   Schema.Struct({ method: Schema.Literal("initialized") }),
@@ -41,6 +47,7 @@ export const CodexClientMessageSchema = Schema.Union([
       approvalPolicy: Schema.Literal("never"),
       sandbox: Schema.Literal("danger-full-access"),
       ephemeral: Schema.Boolean,
+      dynamicTools: Schema.optionalKey(Schema.Array(DynamicToolSpec).check(Schema.isMaxLength(2))),
     }),
   }),
   Schema.Struct({
@@ -174,9 +181,18 @@ const SubAgentActivityItem = Schema.Struct({
   type: Schema.Literal("subAgentActivity"),
   agentThreadId: Identifier,
 }).annotate(projection);
+const DynamicToolItem = Schema.Struct({
+  type: Schema.Literal("dynamicToolCall"),
+  id: Identifier,
+  tool: Identifier,
+  status: Schema.Literals(["inProgress", "completed", "failed"]),
+}).annotate(projection);
 const OtherItem = Schema.Struct({
   type: Identifier.check(
-    Schema.makeFilter((type) => type !== "commandExecution" && type !== "subAgentActivity"),
+    Schema.makeFilter(
+      (type) =>
+        type !== "commandExecution" && type !== "subAgentActivity" && type !== "dynamicToolCall",
+    ),
   ),
 }).annotate(projection);
 
@@ -187,7 +203,7 @@ const NotificationSchema = Schema.Union([
     params: Schema.Struct({
       threadId: Identifier,
       turnId: Identifier,
-      item: Schema.Union([CommandItem, SubAgentActivityItem, OtherItem]),
+      item: Schema.Union([CommandItem, SubAgentActivityItem, DynamicToolItem, OtherItem]),
     }).annotate(projection),
   }),
   Schema.Struct({
@@ -229,6 +245,27 @@ const ServerRequest = Schema.Struct({
   params: Schema.optionalKey(Schema.Unknown),
   trace: Schema.optionalKey(Schema.Unknown),
 });
+const DynamicToolCall = Schema.Struct({
+  id: RequestId,
+  method: Schema.Literal("item/tool/call"),
+  params: Schema.Struct({
+    threadId: Identifier,
+    turnId: Identifier,
+    callId: Identifier,
+    namespace: Schema.optionalKey(Schema.NullOr(Identifier)),
+    tool: Identifier,
+    arguments: Schema.Unknown,
+  }),
+});
+const DynamicToolResponse = Schema.Struct({
+  id: RequestId,
+  result: Schema.Struct({
+    contentItems: Schema.Tuple([Schema.Struct({ type: Schema.Literal("inputText"), text: Text })]),
+    success: Schema.Boolean,
+  }),
+});
+export type CodexDynamicToolCall = typeof DynamicToolCall.Type;
+export type CodexDynamicToolResponse = typeof DynamicToolResponse.Type;
 const UnsupportedResponse = Schema.Struct({
   id: RequestId,
   error: Schema.Struct({
@@ -281,6 +318,12 @@ export const decodeCodexInterruptResponse = boundedJsonDecoder(
 );
 const decodeServerRequest = boundedJsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(ServerRequest), strict),
+);
+export const decodeCodexDynamicToolCall = boundedJsonDecoder(
+  Schema.decodeUnknownResult(Schema.fromJsonString(DynamicToolCall), strict),
+);
+export const decodeCodexDynamicToolResponse = boundedJsonDecoder(
+  Schema.decodeUnknownResult(Schema.fromJsonString(DynamicToolResponse), strict),
 );
 
 export const rejectCodexServerRequest = (line: string) =>

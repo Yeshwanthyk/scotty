@@ -84,6 +84,8 @@ const {
   observeCodexFailure,
   observeCleanup,
   makeCodexRuntime,
+  makeSession,
+  launchProcess,
   readCodexSavedState,
   startCodexRuntime,
   startCodexSession: acquireSession,
@@ -97,6 +99,13 @@ const selection = (options) => {
   return launch;
 };
 const args = (options) => [JSON.stringify(selection(options)), String(options.upstreamPort)];
+const passiveFirstPartyTools = {
+  restore: async () => {},
+  shutdown: async () => {},
+  execute: async () => {
+    throw new Error("unexpected_first_party_tool_call");
+  },
+};
 await copyFile(join(stage, "scotty-codex-session"), join(stage, "production-entry"));
 await writeFile(
   join(stage, "scotty-codex-session"),
@@ -107,7 +116,7 @@ NodeRuntime.runMain(program(process.argv.slice(2,3)).pipe(Effect.provideService(
 `,
 );
 // Test-only Promise facade; production owns no Promise supervisor or hidden runtime.
-async function startCodexSession(options) {
+async function startCodexSession(options, firstPartyTools, observeEvent) {
   await mkdir(options.workspace, { recursive: true });
   const scope = await Effect.runPromise(Scope.make());
   const run = (effect) => Effect.runPromise(effect);
@@ -117,9 +126,16 @@ async function startCodexSession(options) {
     return result.success;
   };
   let host;
+  const publish = observeEvent && ((event) => Effect.sync(() => observeEvent(event)));
   try {
     host = await runTyped(
-      acquireSession(selection(options)).pipe(
+      (firstPartyTools === undefined
+        ? acquireSession(selection(options), publish, undefined, passiveFirstPartyTools)
+        : Effect.gen(function* () {
+            const transport = yield* launchProcess(selection(options));
+            return yield* makeSession(transport, publish, firstPartyTools);
+          })
+      ).pipe(
         Effect.provideService(CodexSyntheticUpstream, { port: options.upstreamPort }),
         Scope.provide(scope),
         Effect.provide(NodeServices.layer),
@@ -580,6 +596,52 @@ for (const [model, effort] of [
     `real pinned binary / synthetic upstream: ${model} ${effort}`,
     { skip: !native, timeout: 60000 },
     async (t) => {
+      let host;
+      const observed = [];
+      const knownTurns = [];
+      const observeEvent = (event) => {
+        observed.push({
+          method: event.method,
+          threadId: event.params?.threadId,
+          turnId: event.params?.turnId,
+          itemType: event.params?.item?.type,
+        });
+        if (observed.length > 24) observed.shift();
+      };
+      const withNativePhase = async (phase, operation) => {
+        try {
+          return await operation;
+        } catch (error) {
+          const failure = observeCodexFailure(error);
+          const snapshot = host?.inspect();
+          const timeline = observed
+            .map((event) => {
+              const thread =
+                event.threadId === undefined
+                  ? "none"
+                  : event.threadId === snapshot?.threadId
+                    ? "parent"
+                    : "other";
+              const turnIndex = knownTurns.indexOf(event.turnId);
+              const turn =
+                event.turnId === undefined
+                  ? "none"
+                  : turnIndex >= 0
+                    ? `turn${turnIndex + 1}`
+                    : "other";
+              const item = ["subAgentActivity", "commandExecution", "agentMessage"].includes(
+                event.itemType,
+              )
+                ? event.itemType
+                : "other";
+              return `${event.method},${thread},${turn},${item}`;
+            })
+            .join("|");
+          throw new Error(
+            `native_fixture_${phase}:${failure.code ?? failure.tag}; stale=${snapshot?.failureDiagnostic ?? "none"}; events=${timeline}`,
+          );
+        }
+      };
       const requests = [];
       let hold = false,
         held;
@@ -650,39 +712,47 @@ for (const [model, effort] of [
         res.end();
       });
       await new Promise((done) => server.listen(0, "127.0.0.1", done));
-      let host;
       t.after(async () => {
-        if (host) await host.stop();
+        if (host) await withNativePhase("cleanup", host.stop());
         held?.destroy();
         server.closeAllConnections();
         await new Promise((done) => server.close(done));
       });
-      host = await startCodexSession({
-        binary: native,
-        runtimeDir: join(stage, `native-${model}-${effort}`),
-        workspace: join(stage, `native-workspace-${model}-${effort}`),
-        model,
-        credential,
-        upstreamPort: server.address().port,
-        effort,
-      });
+      host = await withNativePhase(
+        "startup",
+        startCodexSession(
+          {
+            binary: native,
+            runtimeDir: join(stage, `native-${model}-${effort}`),
+            workspace: join(stage, `native-workspace-${model}-${effort}`),
+            model,
+            credential,
+            upstreamPort: server.address().port,
+            effort,
+          },
+          undefined,
+          observeEvent,
+        ),
+      );
       assert.equal(requests.length, 0);
       assert.equal(host.inspect().settings.approvalPolicy, "never");
       assert.deepEqual(host.inspect().settings.sandbox, { type: "dangerFullAccess" });
       assert.equal(host.inspect().settings.reasoningEffort, effort);
       for (let i = 0; i < 2; i++) {
-        const turn = await host.prompt("Return the synthetic answer.");
-        const terminal = await turn.completed;
+        const turn = await withNativePhase("prompt", host.prompt("Return the synthetic answer."));
+        knownTurns.push(turn.turnId);
+        const terminal = await withNativePhase("turn", turn.completed);
         assert.equal(terminal.status, "completed");
         assert.equal(terminal.items[0].text, "SYNTHETIC_OK");
       }
       assert.equal(host.inspect().rejected, 0);
       assert.ok(host.drainEvents().some((e) => e.method === "item/agentMessage/delta"));
       hold = true;
-      const turn = await host.prompt("Wait for interruption.");
+      const turn = await withNativePhase("interrupt_prompt", host.prompt("Wait for interruption."));
+      knownTurns.push(turn.turnId);
       await wait(() => held);
-      assert.equal((await host.interrupt()).status, "interrupted");
-      assert.equal((await turn.completed).status, "interrupted");
+      assert.equal((await withNativePhase("interrupt", host.interrupt())).status, "interrupted");
+      assert.equal((await withNativePhase("interrupt_turn", turn.completed)).status, "interrupted");
       assert.deepEqual(
         requests,
         Array.from({ length: 3 }, () => ({
@@ -692,7 +762,7 @@ for (const [model, effort] of [
           auth: `Bearer ${credential.sentinel}`,
         })),
       );
-      const receipt = await host.stop();
+      const receipt = await withNativePhase("stop", host.stop());
       assert.equal(receipt.shutdown, "eof");
       assert.equal(receipt.parent, "exited");
       assert.deepEqual(receipt.exit, { code: 0, signal: null });
@@ -701,16 +771,23 @@ for (const [model, effort] of [
   );
 
 test(
-  "pinned native failed turn saves and resumes with a distinct follow-up",
+  "pinned native failed turn saves and resumes with a distinct follow-up and first-party tool",
   { skip: !native, timeout: 60000 },
   async (t) => {
     let requests = 0;
     let held;
+    const requestBodies = [];
     const server = createServer(async (req, res) => {
-      for await (const _chunk of req) {
-        /* drain synthetic request */
+      let text = "";
+      for await (const chunk of req) {
+        if (Buffer.byteLength(text) + chunk.length > 1024 * 1024) {
+          req.destroy();
+          return;
+        }
+        text += chunk.toString("utf8");
       }
       assert.equal(req.url, "/backend-api/codex/responses");
+      requestBodies.push(JSON.parse(text));
       requests++;
       res.writeHead(200, { "content-type": "text/event-stream" });
       const send = (type, fields) =>
@@ -722,13 +799,22 @@ test(
         held = res;
         return;
       }
-      const item = {
-        id: "msg-recovery",
-        type: "message",
-        role: "assistant",
-        status: "completed",
-        content: [{ type: "output_text", text: "RECOVERED_OK", annotations: [] }],
-      };
+      const item =
+        requests === 2
+          ? {
+              id: "hatch-resumed-item",
+              type: "function_call",
+              call_id: "hatch-resumed-call",
+              name: "scotty_hatch",
+              arguments: JSON.stringify({ operation: "status" }),
+            }
+          : {
+              id: "msg-recovery",
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "RECOVERED_OK", annotations: [] }],
+            };
       send("response.output_item.done", { output_index: 0, item });
       send("response.completed", {
         response: {
@@ -771,7 +857,10 @@ test(
     };
     const firstScope = await Effect.runPromise(Scope.make());
     scopes.push(firstScope);
-    const host = await scoped(firstScope, acquireSession(launch));
+    const host = await scoped(
+      firstScope,
+      acquireSession(launch, undefined, undefined, passiveFirstPartyTools),
+    );
     const first = await scoped(firstScope, makeCodexRuntime(host, "generation-first"));
     const admitted = await scoped(
       firstScope,
@@ -796,17 +885,29 @@ test(
 
     const nextScope = await Effect.runPromise(Scope.make());
     scopes.push(nextScope);
+    const resumedToolCalls = [];
+    const resumedTools = {
+      restore: async () => {},
+      shutdown: async () => {},
+      execute: async (tool, input) => {
+        resumedToolCalls.push({ tool, input });
+        return { text: "scotty-hatch:resumed-proof", success: true };
+      },
+    };
     const resumed = await scoped(
       nextScope,
-      startCodexRuntime({
-        generation: "generation-next",
-        launch: {
-          ...launch,
-          runtimeDir: join(stage, "native-recovery-next"),
-          resumeThreadId: saved.threadId,
+      startCodexRuntime(
+        {
+          generation: "generation-next",
+          launch: {
+            ...launch,
+            runtimeDir: join(stage, "native-recovery-next"),
+            resumeThreadId: saved.threadId,
+          },
+          restore: saved,
         },
-        restore: saved,
-      }),
+        resumedTools,
+      ),
     );
     const ready = await scoped(nextScope, resumed.snapshot);
     assert.equal(ready.ready, true);
@@ -837,9 +938,24 @@ test(
     );
     const final = await scoped(nextScope, resumed.snapshot);
     assert.equal(final.prompt.outcome, "completed");
+    for (const body of requestBodies.slice(0, 2))
+      assert.equal(
+        body.tools.filter((tool) => tool.type === "function" && tool.name === "scotty_hatch")
+          .length,
+        1,
+      );
+    assert.deepEqual(resumedToolCalls, [{ tool: "scotty_hatch", input: { operation: "status" } }]);
+    assert.match(
+      JSON.stringify(
+        requestBodies[2].input.find(
+          (item) => item.type === "function_call_output" && item.call_id === "hatch-resumed-call",
+        ),
+      ),
+      /scotty-hatch:resumed-proof/u,
+    );
     assert.equal(final.turns[0].state, "failed");
     assert.equal(final.turns[1].assistant, "RECOVERED_OK");
-    assert.equal(requests, 2);
+    assert.equal(requests, 3);
   },
 );
 
@@ -1526,6 +1642,160 @@ test(
             tool.output?.includes("SCOTTY_CODE_MODE_OK 42"),
         ),
     );
+    assert.equal(host.inspect().rejected, 0);
+    assert.equal((await host.stop()).parent, "exited");
+  },
+);
+
+test(
+  "packaged Codex calls both Scotty first-party tools and consumes their results",
+  { skip: !native, timeout: 60000 },
+  async (t) => {
+    const requests = [];
+    const calls = [];
+    const browserJob = {
+      port: 4174,
+      viewport: { width: 800, height: 600 },
+      steps: [
+        {
+          name: "home",
+          action: { kind: "goto", path: "/" },
+          expect: [{ kind: "urlPath", expected: "/" }],
+        },
+      ],
+      capture: { screenshots: "after-each-step", video: false },
+    };
+    const server = createServer(async (req, res) => {
+      let text = "";
+      for await (const chunk of req) {
+        if (Buffer.byteLength(text) + chunk.length > 1024 * 1024) {
+          req.destroy();
+          return;
+        }
+        text += chunk.toString("utf8");
+      }
+      assert.equal(req.url, "/backend-api/codex/responses");
+      assert.equal(req.headers.authorization, `Bearer ${credential.sentinel}`);
+      const body = JSON.parse(text);
+      requests.push(body);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const send = (type, fields) =>
+        res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`);
+      send("response.created", {
+        response: { id: `resp-first-party-${requests.length}`, status: "in_progress" },
+      });
+      const item =
+        requests.length === 1
+          ? {
+              type: "function_call",
+              id: "hatch-item",
+              call_id: "hatch-call",
+              name: "scotty_hatch",
+              arguments: JSON.stringify({ operation: "status" }),
+            }
+          : requests.length === 2
+            ? {
+                type: "function_call",
+                id: "evidence-item",
+                call_id: "evidence-call",
+                name: "scotty_browser_test",
+                arguments: JSON.stringify(browserJob),
+              }
+            : {
+                type: "message",
+                id: `msg-first-party-${requests.length}`,
+                role: "assistant",
+                status: "completed",
+                content: [
+                  {
+                    type: "output_text",
+                    text: requests.length === 3 ? "FIRST_PARTY_COMPLETE" : "FOLLOW_UP_COMPLETE",
+                    annotations: [],
+                  },
+                ],
+              };
+      send("response.output_item.done", { output_index: 0, item });
+      send("response.completed", {
+        response: {
+          id: `resp-first-party-${requests.length}`,
+          status: "completed",
+          output: [item],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      });
+      res.end();
+    });
+    await new Promise((done) => server.listen(0, "127.0.0.1", done));
+    let host;
+    t.after(async () => {
+      if (host) await host.stop();
+      server.closeAllConnections();
+      await new Promise((done) => server.close(done));
+    });
+    host = await startCodexSession(
+      {
+        binary: native,
+        runtimeDir: join(stage, "first-party-runtime"),
+        workspace: join(stage, "first-party-workspace"),
+        model: "gpt-5.4",
+        effort: "high",
+        credential,
+        upstreamPort: server.address().port,
+      },
+      {
+        restore: async () => {},
+        shutdown: async () => {},
+        execute: async (tool, input) => {
+          calls.push({ tool, input });
+          return {
+            text: tool === "scotty_hatch" ? "scotty-hatch:proof" : "scotty-evidence:proof",
+            success: true,
+          };
+        },
+      },
+    );
+    const first = await host.prompt("Use both Scotty tools and report their references.");
+    const terminal = await first.completed;
+    assert.equal(terminal.status, "completed");
+    assert.equal(
+      terminal.items.find((item) => item.type === "agentMessage").text,
+      "FIRST_PARTY_COMPLETE",
+    );
+    assert.equal(requests.length, 3);
+    for (const name of ["scotty_hatch", "scotty_browser_test"])
+      assert.equal(
+        requests[0].tools.filter((tool) => tool.type === "function" && tool.name === name).length,
+        1,
+      );
+    assert.deepEqual(calls, [
+      { tool: "scotty_hatch", input: { operation: "status" } },
+      { tool: "scotty_browser_test", input: browserJob },
+    ]);
+    assert.match(
+      JSON.stringify(
+        requests[1].input.find(
+          (item) => item.type === "function_call_output" && item.call_id === "hatch-call",
+        ),
+      ),
+      /scotty-hatch:proof/u,
+    );
+    assert.match(
+      JSON.stringify(
+        requests[2].input.find(
+          (item) => item.type === "function_call_output" && item.call_id === "evidence-call",
+        ),
+      ),
+      /scotty-evidence:proof/u,
+    );
+    const followUp = await host.prompt("Finish one follow-up turn.");
+    const followUpTerminal = await followUp.completed;
+    assert.equal(followUpTerminal.status, "completed");
+    assert.equal(
+      followUpTerminal.items.find((item) => item.type === "agentMessage").text,
+      "FOLLOW_UP_COMPLETE",
+    );
+    assert.equal(requests.length, 4);
+    assert.equal(host.inspect().failure, null);
     assert.equal(host.inspect().rejected, 0);
     assert.equal((await host.stop()).parent, "exited");
   },

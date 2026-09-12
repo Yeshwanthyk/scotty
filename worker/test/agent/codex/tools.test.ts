@@ -63,6 +63,89 @@ it("projects native command start, output and completion without excess native f
   });
 });
 
+it("projects Hatch and evidence calls with safe labels and bounded result references", () => {
+  const tools = makeCodexTools();
+  tools.accept(
+    decode({
+      method: "turn/started",
+      params: { threadId: "thread", turn: { id: "turn", status: "inProgress", items: [] } },
+    }),
+  );
+  tools.accept(
+    decode({
+      method: "item/started",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          type: "dynamicToolCall",
+          id: "hatch-1",
+          tool: "scotty_hatch",
+          status: "inProgress",
+          arguments: { argv: ["private"] },
+        },
+      },
+    }),
+  );
+  tools.acceptDynamicResult("hatch-1", "scotty-hatch:proof");
+  tools.accept(
+    decode({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: { type: "dynamicToolCall", id: "hatch-1", tool: "scotty_hatch", status: "completed" },
+      },
+    }),
+  );
+  tools.accept(
+    decode({
+      method: "item/started",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          type: "dynamicToolCall",
+          id: "evidence-1",
+          tool: "scotty_browser_test",
+          status: "inProgress",
+        },
+      },
+    }),
+  );
+  tools.acceptDynamicResult("evidence-1", "scotty-evidence:proof");
+  tools.accept(
+    decode({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          type: "dynamicToolCall",
+          id: "evidence-1",
+          tool: "scotty_browser_test",
+          status: "completed",
+        },
+      },
+    }),
+  );
+  assert.deepEqual(
+    tools
+      .snapshot()
+      .tools.map(({ label, invocation, state, output }) => ({ label, invocation, state, output })),
+    [
+      { label: "Hatch", invocation: "Hatch", state: "completed", output: "scotty-hatch:proof" },
+      {
+        label: "Browser evidence",
+        invocation: "Browser evidence",
+        state: "completed",
+        output: "scotty-evidence:proof",
+      },
+    ],
+  );
+  assert.notInclude(JSON.stringify(tools.snapshot()), "private");
+});
+
 it("keeps ordered repeated deltas when the completion aggregate is ambiguous", () => {
   const tools = makeCodexTools();
   tools.accept(decode(item("inProgress")));

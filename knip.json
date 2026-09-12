@@ -19,7 +19,8 @@
     },
     "worker": {
       "entry": ["test/**/*.test.ts", "src/agent/codex/main.ts"],
-      "project": ["src/**/*.ts"]
+      "project": ["src/**/*.ts"],
+      "ignoreDependencies": ["smol-toml"]
     }
   },
   "ignore": ["worker/container/**"]

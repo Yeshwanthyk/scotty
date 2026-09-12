@@ -286,7 +286,7 @@ async function readBoundedResponse(response: Response): Promise<string | undefin
     offset += chunk.byteLength;
   }
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
   } catch {
     return undefined;
   }
@@ -505,9 +505,13 @@ async function requestAuthority(
 
 async function requestRestoreDescriptor(
   transport: HatchTransport,
+  signal?: AbortSignal,
 ): Promise<RestoreDescriptor | undefined> {
+  if (signal?.aborted) throw abortError();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SCOTTY_HATCH_AUTHORITY_TIMEOUT_MILLIS);
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
   let response: Response;
   let text: string | undefined;
   try {
@@ -521,9 +525,11 @@ async function requestRestoreDescriptor(
     }
     text = await readBoundedResponse(response);
   } catch {
+    if (signal?.aborted) throw abortError();
     throw new Error("Scotty Hatch restore request did not complete");
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
   }
   if (!response.ok)
     throw new Error(`Scotty Hatch restore request failed with HTTP ${response.status}`);
@@ -607,7 +613,7 @@ export async function loadRepositoryHatchConfig(workspaceRoot: string): Promise<
 
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
   } catch {
     throw new Error("Repository hatch.toml is not valid UTF-8");
   }
@@ -711,8 +717,8 @@ export class ScottyHatchManager {
     });
   }
 
-  restore(): Promise<void> {
-    return this.#exclusive(() => this.#restore());
+  restore(signal?: AbortSignal): Promise<void> {
+    return this.#exclusive(() => this.#restore(signal));
   }
 
   shutdown(): Promise<void> {
@@ -796,8 +802,8 @@ export class ScottyHatchManager {
     }
   }
 
-  async #restore(): Promise<void> {
-    const descriptor = await requestRestoreDescriptor(this.#authorityTransport);
+  async #restore(signal?: AbortSignal): Promise<void> {
+    const descriptor = await requestRestoreDescriptor(this.#authorityTransport, signal);
     if (descriptor === undefined) return;
     const workspaceRoot = await this.#workspaceRoot;
     const workingDirectory = await resolveRestoreWorkingDirectory(
@@ -823,7 +829,7 @@ export class ScottyHatchManager {
       await waitForLoopbackReadiness(
         service,
         owned.child,
-        undefined,
+        signal,
         this.#localTransport,
         this.#readyTimeoutMillis,
       );
