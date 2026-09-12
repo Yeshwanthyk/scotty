@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { open, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { Check } from "typebox/value";
 import {
@@ -16,6 +17,7 @@ const PROCESS_START_TIMEOUT_MILLIS = 5_000;
 const PROCESS_STOP_TIMEOUT_MILLIS = 15_000;
 const MAX_FRAME_BYTES = 5 * 1_024 * 1_024;
 const MAX_VIDEO_BYTES = 25 * 1_024 * 1_024;
+const RECORDER_FRAME_INTERVAL_MICROS = Math.ceil(1_000_000 / 15);
 const PNG_SIGNATURE = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const WEBM_SIGNATURE = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3]);
 
@@ -128,6 +130,7 @@ export interface RunnerDisplay {
 }
 
 export interface RunnerRecorder {
+  readonly checkpoint: () => Promise<void>;
   readonly stop: () => Promise<void>;
 }
 
@@ -198,9 +201,13 @@ const withTimeout = async <A>(evaluate: () => Promise<A>, millis: number): Promi
   }
 };
 
-const managedProcess = (command: string, arguments_: readonly string[]): ManagedProcess => {
+const managedProcess = (
+  command: string,
+  arguments_: readonly string[],
+  captureProgress = false,
+): ManagedProcess => {
   const child = spawn(command, arguments_, {
-    stdio: "ignore",
+    stdio: captureProgress ? ["ignore", "pipe", "ignore"] : "ignore",
     env: process.env,
   });
   const managed: ManagedProcess = {
@@ -369,6 +376,12 @@ const startNodeRecorder = async (
   viewport: BrowserEvidenceJob["viewport"],
   path: string,
 ): Promise<RunnerRecorder> => {
+  const startedAtWallMillis = Date.now();
+  const startedAtMonotonicMillis = performance.now();
+  const clockDiscontinuous = () =>
+    Math.abs(
+      (Date.now() - startedAtWallMillis - (performance.now() - startedAtMonotonicMillis)) * 1_000,
+    ) > RECORDER_FRAME_INTERVAL_MICROS;
   const process_ = managedProcess("ffmpeg", [
     "-nostdin",
     "-hide_banner",
@@ -401,9 +414,56 @@ const startNodeRecorder = async (
     String(MAX_VIDEO_BYTES),
     "-t",
     "300",
+    "-stats_period",
+    "0.1",
+    "-progress",
+    "pipe:1",
     "-y",
     path,
-  ]);
+  ], true);
+  const progress = process_.child.stdout;
+  if (progress === null) {
+    await stopProcess(process_, "SIGINT").catch(() => undefined);
+    throw new BrowserTestFailure("unsupported", "unsupported");
+  }
+  let recordedMicros = 0;
+  let partial = "";
+  let invalidProgress = false;
+  let exited = false;
+  const changed = new Set<() => void>();
+  const notify = () => {
+    for (const listener of changed) listener();
+  };
+  progress.on("data", (chunk: Buffer) => {
+    partial += chunk.toString("utf8");
+    if (partial.length > 8_192) {
+      invalidProgress = true;
+      partial = "";
+      notify();
+      return;
+    }
+    const lines = partial.split("\n");
+    partial = lines.pop() ?? "";
+    for (const line of lines) {
+      const match = /^out_time_us=(\d+)\r?$/u.exec(line);
+      if (match === null) continue;
+      const micros = Number(match[1]);
+      if (!Number.isSafeInteger(micros) || micros > 300_000_000) {
+        invalidProgress = true;
+        break;
+      }
+      recordedMicros = Math.max(recordedMicros, micros);
+    }
+    notify();
+  });
+  progress.on("error", () => {
+    invalidProgress = true;
+    notify();
+  });
+  void process_.exit.then(() => {
+    exited = true;
+    notify();
+  });
   try {
     await waitForFile(path, process_);
   } catch (error) {
@@ -412,6 +472,35 @@ const startNodeRecorder = async (
   }
   let stopped = false;
   return {
+    checkpoint: async () => {
+      // x11grab produces real-time frames and output PTS starts after spawn.
+      // Two frame intervals cover packet-end reporting and the maximum allowed
+      // wall-clock drift relative to this monotonic checkpoint.
+      const targetMicros =
+        Math.max(1, (performance.now() - startedAtMonotonicMillis) * 1_000) +
+        2 * RECORDER_FRAME_INTERVAL_MICROS;
+      await new Promise<void>((resolve, reject) => {
+        const finish = (error?: BrowserTestFailure) => {
+          clearTimeout(timeout);
+          changed.delete(check);
+          if (error === undefined) resolve();
+          else reject(error);
+        };
+        const check = () => {
+          if (invalidProgress || clockDiscontinuous())
+            finish(new BrowserTestFailure("failed", "artifact_invalid"));
+          else if (recordedMicros >= targetMicros) finish();
+          else if (exited)
+            finish(new BrowserTestFailure("failed", "artifact_invalid"));
+        };
+        const timeout = setTimeout(
+          () => finish(new BrowserTestFailure("failed", "artifact_invalid")),
+          PROCESS_START_TIMEOUT_MILLIS,
+        );
+        changed.add(check);
+        check();
+      });
+    },
     stop: async () => {
       if (stopped) return;
       stopped = true;
@@ -621,6 +710,7 @@ export async function runBrowserEvidenceJob(
           throw new BrowserTestFailure("failed", "artifact_invalid", index);
         });
       await runtime.validateArtifact(framePath, "png", index);
+      await recorder?.checkpoint();
       const completedAtMillis = runtime.now();
       const completedAt = new Date(completedAtMillis).toISOString();
       const offsetMillis = Math.max(0, completedAtMillis - startedAtMillis);

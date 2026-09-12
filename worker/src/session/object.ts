@@ -341,6 +341,42 @@ const sameCodexAuthorityProof = (
   );
 };
 
+// Evidence and Hatch lease the warm runtime without replacing its readiness.
+// This is read-only: message admission retains the Stable/Warm authority fence above.
+const codexConversationReadiness = (authority: SessionAuthority): ReadinessProof | null => {
+  if (AuthorityStateSchema.guards.Stable(authority.state))
+    return StableStateSchema.guards.Warm(authority.state.stable)
+      ? authority.state.stable.readiness
+      : null;
+  const transition = authority.state.transition;
+  return TransitionSchema.guards.WarmWork(transition) &&
+    (transition.workKind === "Evidence" || transition.workKind === "Hatch")
+    ? transition.proof.readiness
+    : null;
+};
+
+const sameCodexConversationAuthorityProof = (
+  current: SessionAuthority | undefined,
+  observed: SessionAuthority,
+  readiness: ReadinessProof,
+  incarnation: string | null,
+): boolean => {
+  if (
+    current === undefined ||
+    current.revision !== observed.revision ||
+    current.session.id !== observed.session.id
+  )
+    return false;
+  const currentReadiness = codexConversationReadiness(current);
+  return (
+    currentReadiness !== null &&
+    sameRuntimeProof(currentReadiness.runtime, readiness.runtime) &&
+    incarnation === readiness.runtime.containerIncarnation &&
+    currentReadiness.supervisor.supervisorEpoch === readiness.supervisor.supervisorEpoch &&
+    currentReadiness.transport.transportId === readiness.transport.transportId
+  );
+};
+
 type ActorRequestRecovery =
   | { readonly _tag: "NotNeeded"; readonly snapshot: ActorStoreSnapshot }
   | { readonly _tag: "Contended"; readonly snapshot: ActorStoreSnapshot }
@@ -5515,12 +5551,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
         const selection = state.authority.session.selection;
         if (selection?.agent !== "codex") return null;
         const authority = state.authority;
-        if (
-          !AuthorityStateSchema.guards.Stable(authority.state) ||
-          !StableStateSchema.guards.Warm(authority.state.stable)
-        )
+        const readiness = codexConversationReadiness(authority);
+        if (readiness === null)
           return yield* conflict("Codex conversation requires an admitted warm session");
-        const readiness = authority.state.stable.readiness;
         const control = state.metadata.codexControl;
         if (control === undefined)
           return yield* this.upstreamError("Codex control metadata is unavailable", undefined);
@@ -5548,7 +5581,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           );
         const store = yield* ActorStore;
         const current = (yield* store.read).authority;
-        if (!sameCodexAuthorityProof(current, authority, readiness, currentIncarnation))
+        if (!sameCodexConversationAuthorityProof(current, authority, readiness, currentIncarnation))
           return yield* conflict("Session changed while reading Codex conversation");
         const queue = yield* this.readCodexFollowUpsProgram();
         return yield* codexConversation(snapshot, {
@@ -5556,6 +5589,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           turnId: readiness.transport.transportId,
           revision: authority.revision,
           followUpBlocked: queue.pending[0]?.attempt !== undefined,
+          messageAdmissionAvailable: AuthorityStateSchema.guards.Stable(authority.state),
           followUp: queue.pending.map(({ id, text }) => ({
             id,
             text,

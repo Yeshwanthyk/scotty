@@ -56,11 +56,23 @@ const interruptedSnapshot = (): typeof CodexSnapshot.Type =>
 const makeCodexHarness = async (
   containerFetch: HarnessOptions["containerFetch"],
   containerPlacementId = CODEX_INCARNATION,
+  warmWork?: "evidence" | "hatch" | "down",
 ): Promise<SessionHarness> => {
   const harness = await createSessionHarness({
     containerPlacementId,
     initialEntries: {
-      [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({ id: SESSION_ID }),
+      [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
+        id: SESSION_ID,
+        ...(warmWork === undefined
+          ? {}
+          : {
+              operation: {
+                kind: warmWork,
+                nonce: "warm-work-read",
+                startedAt: "2026-01-01T00:00:01.000Z",
+              },
+            }),
+      }),
     },
     containerFetch,
   });
@@ -83,6 +95,57 @@ const makeCodexHarness = async (
 const queueKey = "scotty:codex-follow-ups";
 
 describe("DO-owned Codex follow-ups", () => {
+  for (const workKind of ["evidence", "hatch"] as const)
+    it(`reads the same live Codex generation during ${workKind} warm work`, async () => {
+      let nativeReads = 0;
+      const harness = await makeCodexHarness(
+        async () => {
+          nativeReads++;
+          return Response.json(runningSnapshot());
+        },
+        CODEX_INCARNATION,
+        workKind,
+      );
+      const conversation = await harness.sandbox.readScottyCodexConversation();
+      expect(conversation?.transport.sessionRevision).toBe(1);
+      expect(conversation?.runtimeStopped).toBe(false);
+      expect(conversation?.messageAdmissionAvailable).toBe(false);
+      expect(conversation?.turns[0]?.id).toBe(CODEX_TURN);
+      expect((await harness.sandbox.steerScottyCodexSession("later"))?.status).toBe(409);
+      expect(nativeReads).toBe(1);
+    });
+
+  it("does not read Codex during Down warm work", async () => {
+    const harness = await makeCodexHarness(
+      async () => Response.json(runningSnapshot()),
+      CODEX_INCARNATION,
+      "down",
+    );
+    await expect(harness.sandbox.readScottyCodexConversation()).rejects.toMatchObject({
+      code: "conflict",
+    });
+  });
+
+  it("rejects a warm-work conversation read when the actor revision changes mid-read", async () => {
+    let harness: SessionHarness;
+    harness = await makeCodexHarness(
+      async () => {
+        const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+        if (authority !== undefined)
+          harness.memory.values.set(sessionHarnessKeys.actorAuthority, {
+            ...authority,
+            revision: authority.revision + 1,
+          });
+        return Response.json(runningSnapshot());
+      },
+      CODEX_INCARNATION,
+      "evidence",
+    );
+    await expect(harness.sandbox.readScottyCodexConversation()).rejects.toMatchObject({
+      code: "conflict",
+    });
+  });
+
   it("queues during an active turn, survives reconstruction, and admits once after terminal", async () => {
     let active = true;
     let posts = 0;
@@ -108,6 +171,7 @@ describe("DO-owned Codex follow-ups", () => {
     await first.sandbox.drainCodexFollowUps();
     expect(posts).toBe(0);
     const conversation = await first.sandbox.readScottyCodexConversation();
+    expect(conversation?.messageAdmissionAvailable).toBe(true);
     expect(conversation?.queue.followUp).toEqual([{ id: "queued-1", text: "Check the tests" }]);
     const restored = await createSessionHarness({
       containerPlacementId: CODEX_INCARNATION,

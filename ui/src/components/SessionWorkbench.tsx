@@ -530,40 +530,52 @@ function SummaryPanel({
   }>({});
   useEffect(() => {
     if (previewTurns !== undefined) return;
-    const controller = new AbortController();
-    void readConversation(sessionId, { signal: controller.signal }).then((conversation) => {
-      if (controller.signal.aborted) return;
-      setState((current) =>
-        conversation.ok
-          ? { ...current, snapshot: conversation.snapshot }
-          : { ...current, conversationError: conversation.failure.message },
+    let controller: AbortController | undefined;
+    const refresh = () => {
+      controller?.abort();
+      controller = new AbortController();
+      const signal = controller.signal;
+      void readConversation(sessionId, { signal }).then((conversation) => {
+        if (signal.aborted) return;
+        setState((current) =>
+          conversation.ok
+            ? { ...current, snapshot: conversation.snapshot, conversationError: undefined }
+            : { ...current, conversationError: conversation.failure.message },
+        );
+      });
+      void readEvidence(sessionId, signal).then(
+        (evidence) => {
+          if (!signal.aborted)
+            setState((current) => ({ ...current, evidence, evidenceError: undefined }));
+        },
+        (error: unknown) => {
+          if (!signal.aborted)
+            setState((current) => ({
+              ...current,
+              evidenceError: error instanceof Error ? error.message : "Evidence unavailable",
+            }));
+        },
       );
-    });
-    void readEvidence(sessionId, controller.signal).then(
-      (evidence) => {
-        if (!controller.signal.aborted) setState((current) => ({ ...current, evidence }));
-      },
-      (error: unknown) => {
-        if (!controller.signal.aborted)
-          setState((current) => ({
-            ...current,
-            evidenceError: error instanceof Error ? error.message : "Evidence unavailable",
-          }));
-      },
-    );
-    void readHatch(sessionId, controller.signal).then(
-      (hatch) => {
-        if (!controller.signal.aborted) setState((current) => ({ ...current, hatch }));
-      },
-      (error: unknown) => {
-        if (!controller.signal.aborted)
-          setState((current) => ({
-            ...current,
-            hatchError: error instanceof Error ? error.message : "Hatch unavailable",
-          }));
-      },
-    );
-    return () => controller.abort();
+      void readHatch(sessionId, signal).then(
+        (hatch) => {
+          if (!signal.aborted)
+            setState((current) => ({ ...current, hatch, hatchError: undefined }));
+        },
+        (error: unknown) => {
+          if (!signal.aborted)
+            setState((current) => ({
+              ...current,
+              hatchError: error instanceof Error ? error.message : "Hatch unavailable",
+            }));
+        },
+      );
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5_000);
+    return () => {
+      window.clearInterval(timer);
+      controller?.abort();
+    };
   }, [sessionId, previewTurns]);
   const latest = (previewTurns ?? state.snapshot?.turns)?.findLast(
     (turn) => turn.assistant.trim().length > 0,

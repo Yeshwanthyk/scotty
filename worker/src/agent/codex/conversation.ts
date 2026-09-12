@@ -54,6 +54,7 @@ export const codexConversation = Effect.fnUntraced(function* (
     readonly revision: number;
     readonly followUpBlocked?: boolean;
     readonly followUp?: ReadonlyArray<{ readonly id: string; readonly text: string }>;
+    readonly messageAdmissionAvailable?: boolean;
   },
 ) {
   const prompt = snapshot.prompt;
@@ -87,6 +88,7 @@ export const codexConversation = Effect.fnUntraced(function* (
     runtimeStopped: !snapshot.ready,
     followUpAvailable: snapshot.ready,
     followUpBlocked: input.followUpBlocked ?? false,
+    messageAdmissionAvailable: input.messageAdmissionAvailable ?? true,
     transport: {
       epoch: snapshot.generation,
       baseSequence: 0,

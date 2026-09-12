@@ -48,7 +48,9 @@ const job = (video = true): BrowserEvidenceJob => ({
   capture: { screenshots: "after-each-step", video },
 });
 
-const fakeRuntime = (options: { readonly browserCloseFails?: boolean } = {}) => {
+const fakeRuntime = (
+  options: { readonly browserCloseFails?: boolean; readonly failCheckpoint?: number } = {},
+) => {
   const events: string[] = [];
   const screenshots: Array<{
     readonly animations: "disabled";
@@ -56,6 +58,7 @@ const fakeRuntime = (options: { readonly browserCloseFails?: boolean } = {}) => 
     readonly type: "png";
   }> = [];
   let clock = 1_700_000_000_000;
+  let checkpoints = 0;
   let currentUrl = "about:blank";
   const locator: RunnerLocator = {
     click: async () => {
@@ -147,6 +150,10 @@ const fakeRuntime = (options: { readonly browserCloseFails?: boolean } = {}) => 
       },
     }),
     startRecorder: async () => ({
+      checkpoint: async () => {
+        events.push("recorder:checkpoint");
+        if (++checkpoints === options.failCheckpoint) throw new Error("unconfirmed frame");
+      },
       stop: async () => {
         events.push("recorder:stop");
       },
@@ -183,6 +190,8 @@ test("runs every action and assertion, blocks cross-origin traffic, and finalize
   assert.equal(events.includes("ws:continue"), false);
   assert.ok(events.includes("ws:close-local"));
   assert.ok(events.includes("ws:close"));
+  assert.equal(events.filter((event) => event === "recorder:checkpoint").length, 4);
+  assert.ok(events.lastIndexOf("recorder:checkpoint") < events.indexOf("recorder:stop"));
   assert.ok(events.indexOf("recorder:stop") < events.indexOf("context:close"));
   assert.ok(events.indexOf("context:close") < events.indexOf("browser:close"));
   assert.ok(events.indexOf("browser:close") < events.indexOf("display:close"));
@@ -200,6 +209,17 @@ test("disables finite animations at the screenshot capture boundary", async () =
   assert.equal(result.status, "succeeded");
   assert.equal(screenshots.length, 4);
   assert.ok(screenshots.every((options) => options.animations === "disabled"));
+});
+
+test("does not publish video when the final frame checkpoint is unconfirmed", async () => {
+  const { events, runtime } = fakeRuntime({ failCheckpoint: 4 });
+  const result = await runBrowserEvidenceJob(job(), "/tmp/scotty-browser-runner-test", runtime);
+
+  assert.equal(result.status, "interrupted");
+  assert.equal(result.completedSteps, 3);
+  assert.equal(result.video, undefined);
+  assert.ok(events.includes("recorder:stop"));
+  assert.equal(events.some((event) => event.startsWith("move:")), false);
 });
 
 test("retains the mismatch step PNG and omits video", async () => {

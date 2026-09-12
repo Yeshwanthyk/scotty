@@ -84,6 +84,8 @@ export const CanonicalConversationSnapshotSchema = Schema.Struct({
   runtimeStopped: Schema.optionalKey(Schema.Boolean),
   followUpAvailable: Schema.optionalKey(Schema.Boolean),
   followUpBlocked: Schema.optionalKey(Schema.Boolean),
+  // Actor admission may pause while a warm runtime remains readable.
+  messageAdmissionAvailable: Schema.optionalKey(Schema.Boolean),
   version: Schema.Literal(CONVERSATION_WIRE_VERSION),
   transport: CanonicalConversationTransportSchema,
   turns: Schema.Array(CanonicalConversationTurnSchema).check(

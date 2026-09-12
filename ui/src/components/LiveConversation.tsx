@@ -505,9 +505,13 @@ const queueDeliveryIntent = (
   queueAfterTurn: boolean,
 ): boolean => retryingQueued || (supportsQueue && queueAfterTurn);
 
+const canIssueSessionCommand = (enabled: boolean, admissionAvailable: boolean): boolean =>
+  enabled && admissionAvailable;
+
 function ConversationComposer({
   active,
   activeTurnId,
+  admissionAvailable,
   followUpAvailable,
   enabled,
   onAccepted,
@@ -518,6 +522,7 @@ function ConversationComposer({
 }: {
   readonly active: boolean;
   readonly activeTurnId: string | undefined;
+  readonly admissionAvailable: boolean;
   readonly followUpAvailable: boolean;
   readonly enabled: boolean;
   readonly onAccepted: () => void;
@@ -533,9 +538,13 @@ function ConversationComposer({
   const draftBytes = useMemo(() => new TextEncoder().encode(draft).byteLength, [draft]);
   const draftTooLong = draftBytes > MAX_MESSAGE_BYTES;
   const deliveryBusy = delivery.kind === "submitting" || delivery.kind === "interrupting";
-  const canSubmit = enabled && draft.trim().length > 0 && !draftTooLong && !deliveryBusy;
+  const canSubmit =
+    canIssueSessionCommand(enabled, admissionAvailable) &&
+    draft.trim().length > 0 &&
+    !draftTooLong &&
+    !deliveryBusy;
   const canInterrupt =
-    enabled &&
+    canIssueSessionCommand(enabled, admissionAvailable) &&
     active &&
     activeTurnId !== undefined &&
     sessionRevision !== undefined &&
@@ -727,12 +736,15 @@ export function LiveConversation({
           ? "The agent runtime stopped after an error and cannot accept messages. Start a new session after the runtime issue is resolved."
           : snapshot?.followUpBlocked === true
             ? "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue."
-            : undefined
+            : snapshot?.messageAdmissionAvailable === false
+              ? "A Hatch or browser evidence operation is in progress. Messages will be available when it finishes."
+              : undefined
       }
       composer={
         <ConversationComposer
           active={active}
           activeTurnId={activeTurn?.id}
+          admissionAvailable={snapshot?.messageAdmissionAvailable !== false}
           followUpAvailable={snapshot?.followUpAvailable === true}
           enabled={
             connection.kind === "ready" &&
@@ -776,6 +788,7 @@ export function ConversationPreview({
         <ConversationComposer
           active={activeTurn !== undefined}
           activeTurnId={activeTurn?.id}
+          admissionAvailable
           followUpAvailable={false}
           enabled
           onAccepted={() => undefined}

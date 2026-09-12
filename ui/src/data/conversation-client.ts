@@ -33,6 +33,7 @@ export interface ConversationSnapshot {
   readonly runtimeStopped?: boolean;
   readonly followUpAvailable?: boolean;
   readonly followUpBlocked?: boolean;
+  readonly messageAdmissionAvailable?: boolean;
   readonly version: 1;
   readonly transport: ConversationTransport;
   readonly turns: ReadonlyArray<ConversationTurn>;
@@ -235,10 +236,13 @@ const hasConversationSnapshotKeys = (value: JsonObject): boolean =>
     ...(value.runtimeStopped === undefined ? [] : ["runtimeStopped"]),
     ...(value.followUpAvailable === undefined ? [] : ["followUpAvailable"]),
     ...(value.followUpBlocked === undefined ? [] : ["followUpBlocked"]),
+    ...(value.messageAdmissionAvailable === undefined ? [] : ["messageAdmissionAvailable"]),
   ]) &&
   (value.runtimeStopped === undefined || typeof value.runtimeStopped === "boolean") &&
   (value.followUpAvailable === undefined || typeof value.followUpAvailable === "boolean") &&
-  (value.followUpBlocked === undefined || typeof value.followUpBlocked === "boolean");
+  (value.followUpBlocked === undefined || typeof value.followUpBlocked === "boolean") &&
+  (value.messageAdmissionAvailable === undefined ||
+    typeof value.messageAdmissionAvailable === "boolean");
 
 const decodeFollowUpCapabilities = (value: JsonObject) => ({
   ...(typeof value.runtimeStopped === "boolean" ? { runtimeStopped: value.runtimeStopped } : {}),
@@ -246,6 +250,9 @@ const decodeFollowUpCapabilities = (value: JsonObject) => ({
     ? { followUpAvailable: value.followUpAvailable }
     : {}),
   ...(typeof value.followUpBlocked === "boolean" ? { followUpBlocked: value.followUpBlocked } : {}),
+  ...(typeof value.messageAdmissionAvailable === "boolean"
+    ? { messageAdmissionAvailable: value.messageAdmissionAvailable }
+    : {}),
 });
 
 export const decodeConversationSnapshot = (value: unknown): ConversationSnapshot | undefined => {
