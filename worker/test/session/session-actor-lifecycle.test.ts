@@ -1175,6 +1175,47 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.strictEqual(publicStatus.exposure, "active");
   });
 
+  it("reclaims a retained prior Hatch restore before retrying Resume", async () => {
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    await harness.sandbox.sleepScottySession();
+    const state = harness.read<HatchState>(sessionHarnessKeys.hatch);
+    assert.isDefined(state?.primary);
+    harness.memory.values.set(sessionHarnessKeys.hatch, {
+      primary: {
+        ...state.primary,
+        generation: state.primary.generation + 1,
+        observedStatus: "starting",
+        exposure: "unexpose_pending",
+        runtimeEpoch: "prior-resume-runtime",
+        transitionNonce: "prior-resume-nonce",
+      },
+    } satisfies HatchState);
+
+    const resumed = await harness.sandbox.resumeScottySession();
+    assert.strictEqual(resumed.status, "warm");
+    const hatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.isDefined(hatch);
+    assert.strictEqual(hatch.observedStatus, "running");
+    assert.strictEqual(hatch.exposure, "active");
+    assert.isUndefined(hatch.transitionNonce);
+    assert.notStrictEqual(hatch.runtimeEpoch, "prior-resume-runtime");
+    assert.include(harness.events, "host:preview:unexpose:4173");
+  });
+
   it("polls Hatch port health after Pi supervisor readiness during resume", async () => {
     let healthCalls = 0;
     const statuses = [200, 503, 200];
