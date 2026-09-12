@@ -4,11 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Archive,
   CircleAlert,
-  Clock3,
-  Cloud,
-  GitBranch,
   LoaderCircle,
-  MoreHorizontal,
   Moon,
   Play,
   RefreshCw,
@@ -16,6 +12,8 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
+import { SessionMenu } from "../components/SessionMenu";
+import { SessionSelection } from "../components/SessionSelection";
 import { AppShell } from "../components/AppShell";
 import { Button } from "../components/Button";
 import { ConversationPreview, LiveConversation } from "../components/LiveConversation";
@@ -339,6 +337,7 @@ const styles = stylex.create({
     animationTimingFunction: motion.easeOut,
   },
   surface: {
+    position: "relative",
     minWidth: 0,
     minHeight: 0,
     overflow: "hidden",
@@ -464,10 +463,10 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
   return (
     <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>
       <div data-session-source={fixture ? "fixture" : "actor"} {...stylex.props(styles.page)}>
-        <div {...stylex.props(styles.workspace)}>
-          <header {...stylex.props(styles.headingRow)}>
-            <div {...stylex.props(styles.titleBlock)}>
-              <div {...stylex.props(styles.breadcrumb)}>
+        <div data-design="workspace" {...stylex.props(styles.workspace)}>
+          <header data-design="session-header" {...stylex.props(styles.headingRow)}>
+            <div data-design="session-title" {...stylex.props(styles.titleBlock)}>
+              <div data-design="breadcrumb" {...stylex.props(styles.breadcrumb)}>
                 <span {...stylex.props(styles.repo)}>{session.display.repository}</span>
                 <span aria-hidden {...stylex.props(styles.slash)}>
                   /
@@ -477,46 +476,47 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
                 </span>
               </div>
               <h1 {...stylex.props(styles.heading)}>{session.display.title}</h1>
-              <div {...stylex.props(styles.metadata)}>
-                <span {...stylex.props(styles.statusLine)}>
-                  {presentation.operation === null ? (
-                    <Cloud aria-hidden {...stylex.props(styles.stateIcon)} />
-                  ) : (
-                    <LoaderCircle aria-hidden {...stylex.props(styles.stateIcon, styles.spin)} />
-                  )}
-                  {presentation.railLabel}
-                </span>
-                <span {...stylex.props(styles.metadataItem, styles.defaultBranchItem)}>
-                  <GitBranch aria-hidden {...stylex.props(styles.smallIcon)} />
-                  {session.display.defaultBranch ?? "No active branch"}
-                </span>
-                <span
-                  aria-label="Configured agent, model, and thinking"
-                  title="Configured session selection"
-                  {...stylex.props(styles.metadataItem, styles.selectionMetadata)}
-                >
-                  <Sparkles aria-hidden {...stylex.props(styles.smallIcon)} />
-                  {configuredSelectionLabel(session.selection)}
-                </span>
-                <span {...stylex.props(styles.metadataItem)}>
-                  <Clock3 aria-hidden {...stylex.props(styles.smallIcon)} />
-                  {formatDuration(session.times.capRemainingSeconds)} remaining
-                </span>
-              </div>
             </div>
-            <LifecycleControls presentation={presentation} sessionId={session.id} />
+            <SessionMenu>
+              <dl>
+                <dt>Repository</dt>
+                <dd>{session.display.repository}</dd>
+                <dt>Working branch</dt>
+                <dd>{session.display.branch ?? "Vaporized"}</dd>
+                <dt>Base branch</dt>
+                <dd>{session.display.defaultBranch ?? "Unavailable"}</dd>
+                <dt>Time remaining</dt>
+                <dd>{formatDuration(session.times.capRemainingSeconds)}</dd>
+                <dt>Status</dt>
+                <dd>{presentation.operation?.label ?? presentation.railLabel}</dd>
+                <dt>Agent, model, and thinking</dt>
+                <dd>{configuredSelectionLabel(session.selection)}</dd>
+              </dl>
+              <LifecycleControls presentation={presentation} sessionId={session.id} />
+            </SessionMenu>
           </header>
 
           <section aria-label="Conversation" {...stylex.props(styles.surface)}>
-            <SessionWorkbench runtimeAvailable={eligibility.eligible} sessionId={session.id}>
-              <SessionSurface
-                eligibility={eligibility}
-                presentation={presentation}
-                onLifecycleMismatch={refreshLifecycle}
+            <SessionSelection.Provider value={configuredSelectionLabel(session.selection)}>
+              <SessionWorkbench
+                previewTurns={fixture ? conversationFixture : undefined}
+                runtimeAvailable={eligibility.eligible}
                 sessionId={session.id}
-                simulateConversation={fixture && session.id === "warm-working-001"}
-              />
-            </SessionWorkbench>
+              >
+                <SessionSurface
+                  eligibility={eligibility}
+                  presentation={presentation}
+                  onLifecycleMismatch={refreshLifecycle}
+                  sessionId={session.id}
+                  simulateConversation={fixture && session.id === "warm-working-001"}
+                />
+              </SessionWorkbench>
+            </SessionSelection.Provider>
+            {presentation.operation !== null ? (
+              <div className="session-selection-paused">
+                {configuredSelectionLabel(session.selection)}
+              </div>
+            ) : null}
           </section>
         </div>
       </div>
@@ -673,7 +673,11 @@ function LifecycleControls({
 
   if (presentation.operation !== null)
     return (
-      <div {...stylex.props(styles.actionArea)}>
+      <div
+        data-design="session-actions"
+        data-design-operation="true"
+        {...stylex.props(styles.actionArea)}
+      >
         <Button disabled>
           <LoaderCircle aria-hidden {...stylex.props(styles.actionIcon, styles.spin)} />
           {presentation.operation.label}
@@ -698,6 +702,7 @@ function LifecycleControls({
       <div
         aria-busy="true"
         data-session-action={currentPending.action}
+        data-design="session-actions"
         {...stylex.props(styles.actionArea)}
       >
         <Button disabled variant={currentPending.action === "checkpoint" ? "default" : "primary"}>
@@ -734,7 +739,7 @@ function LifecycleControls({
     );
 
   return (
-    <div {...stylex.props(styles.actionArea)}>
+    <div data-design="session-actions" {...stylex.props(styles.actionArea)}>
       <LifecycleActionRow
         canVaporize={canVaporize}
         onAction={runAction}
@@ -772,32 +777,14 @@ function LifecycleActionRow({
   readonly secondary: ReadonlyArray<SessionAction>;
 }) {
   return (
-    <div {...stylex.props(styles.actionRow)}>
+    <div data-design="menu-actions">
       {primary === undefined ? null : (
-        <div {...stylex.props(styles.desktopOnlyAction)}>
-          <LifecycleButton action={primary} onAction={onAction} primary />
-        </div>
+        <LifecycleButton action={primary} onAction={onAction} primary />
       )}
-      {primary !== undefined || secondary.length > 0 || canVaporize ? (
-        <details {...stylex.props(styles.actionMenu)}>
-          <summary aria-label="More session actions" {...stylex.props(styles.actionSummary)}>
-            <MoreHorizontal aria-hidden {...stylex.props(styles.actionIcon)} />
-          </summary>
-          <div {...stylex.props(styles.menuPanel)}>
-            {primary === undefined ? null : (
-              <div {...stylex.props(styles.mobileOnlyAction)}>
-                <LifecycleButton action={primary} onAction={onAction} primary />
-              </div>
-            )}
-            {secondary.map((action) => (
-              <LifecycleButton action={action} key={action} onAction={onAction} />
-            ))}
-            {canVaporize ? (
-              <LifecycleButton action="vaporize" onAction={() => onVaporize()} />
-            ) : null}
-          </div>
-        </details>
-      ) : null}
+      {secondary.map((action) => (
+        <LifecycleButton key={action} action={action} onAction={onAction} />
+      ))}
+      {canVaporize ? <LifecycleButton action="vaporize" onAction={() => onVaporize()} /> : null}
     </div>
   );
 }

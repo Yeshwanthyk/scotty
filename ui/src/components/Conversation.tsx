@@ -344,7 +344,9 @@ function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
     >
       <summary {...stylex.props(styles.completedSummary, open && styles.completedSummaryOpen)}>
         <span {...stylex.props(styles.summaryCopy)}>
-          <span {...stylex.props(styles.summaryLabel)}>{turnPreview(turn)}</span>
+          <span data-design="turn-summary-label" {...stylex.props(styles.summaryLabel)}>
+            {turnPreview(turn)}
+          </span>
         </span>
         <span {...stylex.props(styles.summaryMeta)}>
           {turnActivityLabel(turn)}
@@ -427,6 +429,7 @@ export function Conversation({
             onClick={() =>
               setVisibleCompleted((current) => Math.min(foldedCompleted.length, current + 5))
             }
+            data-design="show-earlier"
             {...stylex.props(styles.showEarlier)}
           >
             Show {Math.min(5, foldedCompleted.length - visibleCompleted)} earlier{" "}
