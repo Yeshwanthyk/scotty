@@ -359,6 +359,15 @@ describe("queued follow-up public intent", () => {
     ).toMatchObject({ followUpAvailable: true, followUpBlocked: true });
     expect(decodeConversationSnapshot({ ...snapshot, followUpAvailable: "yes" })).toBeUndefined();
   });
+  it("accepts the optional message admission gate without changing older snapshots", () => {
+    expect(decodeConversationSnapshot(snapshot)?.messageAdmissionAvailable).toBeUndefined();
+    expect(
+      decodeConversationSnapshot({ ...snapshot, messageAdmissionAvailable: false }),
+    ).toMatchObject({ messageAdmissionAvailable: false });
+    expect(
+      decodeConversationSnapshot({ ...snapshot, messageAdmissionAvailable: "no" }),
+    ).toBeUndefined();
+  });
   it("sends explicit follow-up intent with the same client ID on retry", async () => {
     const requests = vi
       .fn<typeof fetch>()
