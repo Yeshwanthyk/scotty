@@ -80,6 +80,7 @@ export const codexConversation = Effect.fnUntraced(function* (
         );
   return yield* decodeCanonicalConversationSnapshot({
     version: 1,
+    runtimeStopped: prompt.status === "failed" || snapshot.failure !== null,
     followUpAvailable: prompt.status !== "failed" && snapshot.failure === null,
     followUpBlocked: input.followUpBlocked ?? false,
     transport: {

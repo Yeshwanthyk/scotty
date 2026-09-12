@@ -46,6 +46,7 @@ describe("Codex conversation failure projection", () => {
       });
 
       assert.isFalse(conversation.followUpAvailable);
+      assert.isTrue(conversation.runtimeStopped);
       assert.deepStrictEqual(conversation.turns, [
         {
           id: "failed-turn",
@@ -108,7 +109,22 @@ describe("Codex conversation failure projection", () => {
         { prompt: "try the task", turnId: "turn-1", revision: 4 },
       );
       assert.isTrue(conversation.followUpAvailable);
+      assert.isFalse(conversation.runtimeStopped);
       assert.equal(conversation.turns[0]?.state, "failed");
+    }),
+  );
+  it.effect("reports a stopped runtime without rewriting a completed turn", () =>
+    Effect.gen(function* () {
+      const conversation = yield* codexConversation(
+        makeSnapshot({
+          failure: "unexpected_exit",
+          prompt: { status: "terminal", turnId: "turn-1", outcome: "completed", text: "Done" },
+        }),
+        { prompt: "task", turnId: "turn-1", revision: 4 },
+      );
+      assert.isTrue(conversation.runtimeStopped);
+      assert.isFalse(conversation.followUpAvailable);
+      assert.equal(conversation.turns[0]?.state, "completed");
     }),
   );
 });

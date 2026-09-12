@@ -81,6 +81,7 @@ export const CanonicalConversationTruncationSchema = Schema.Struct({
 export type CanonicalConversationTruncation = typeof CanonicalConversationTruncationSchema.Type;
 
 export const CanonicalConversationSnapshotSchema = Schema.Struct({
+  runtimeStopped: Schema.optionalKey(Schema.Boolean),
   followUpAvailable: Schema.optionalKey(Schema.Boolean),
   followUpBlocked: Schema.optionalKey(Schema.Boolean),
   version: Schema.Literal(CONVERSATION_WIRE_VERSION),

@@ -382,14 +382,8 @@ function useConversationConnection(
   };
 }
 
-// Fatal runtime summaries are emitted by the canonical Codex projection. Ordinary
-// failed turns can still accept follow-ups and must not disable the composer.
 const runtimeStopped = (connection: ConnectionState): boolean =>
-  connection.kind === "ready" &&
-  connection.snapshot.followUpAvailable === false &&
-  connection.snapshot.turns.some(
-    (turn) => turn.state === "failed" && turn.activitySummary?.startsWith("Runtime failure:"),
-  );
+  connection.kind === "ready" && connection.snapshot.runtimeStopped === true;
 
 const connectionLabelFor = (connection: ConnectionState, active: boolean): string => {
   if (connection.kind === "loading") return "Connecting";
