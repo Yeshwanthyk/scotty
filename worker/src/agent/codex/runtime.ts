@@ -354,7 +354,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
           return yield* new CodexBridgeError({ code: "already_admitted", outcome: "rejected" });
         if (!initialOnly && prompt.status === "idle")
           return yield* new CodexBridgeError({ code: "not_admitted", outcome: "rejected" });
-        if (!initialOnly && prompt.status === "failed")
+        if (!initialOnly && prompt.status === "failed" && restored === undefined)
           return yield* new CodexBridgeError({ code: "host_failed", outcome: "ambiguous" });
         if (!host.inspect().ready || bridgeFailure !== null)
           return yield* new CodexBridgeError({ code: "host_failed", outcome: "rejected" });
@@ -575,10 +575,9 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
         yield* Effect.sleep("10 millis");
       const first = history[0];
       if (
-        prompt.status !== "terminal" ||
+        (prompt.status !== "terminal" && (prompt.status !== "failed" || prompt.turnId === null)) ||
         first === undefined ||
-        initial.threadId === undefined ||
-        bridgeFailure !== null
+        initial.threadId === undefined
       )
         return yield* new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" });
       const receipt = yield* stop;
