@@ -1,5 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
+import workspaceCss from "../workspace.css?url";
 import globalCss from "../global.css?url";
 import { colors } from "../theme/tokens.stylex";
 import scottyFavicon from "../../../worker/public/brand/scotty-favicon-32.png?url";
@@ -25,6 +26,7 @@ export const Route = createRootRoute({
       { rel: "icon", type: "image/png", sizes: "32x32", href: scottyFavicon },
       { rel: "apple-touch-icon", href: scottyMark },
       { rel: "stylesheet", href: globalCss },
+      { rel: "stylesheet", href: workspaceCss },
       ...(import.meta.env.DEV ? [{ rel: "stylesheet", href: "/virtual:stylex.css" }] : []),
     ],
   }),

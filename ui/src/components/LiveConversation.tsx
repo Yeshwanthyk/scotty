@@ -20,6 +20,7 @@ import {
 } from "../data/conversation-client";
 import { activeConversationTurn, type ConversationTurn } from "../domain/conversation";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
+import { SessionSelectionLabel } from "./SessionSelection";
 import { Button } from "./Button";
 import { Conversation } from "./Conversation";
 
@@ -408,6 +409,7 @@ function ConnectionStatus({
     <div
       role="status"
       aria-live="polite"
+      data-design="connection"
       {...stylex.props(styles.connection, healthy && styles.connectionHealthy)}
     >
       <span {...stylex.props(styles.connectionIdentity)}>
@@ -442,7 +444,10 @@ function ConversationShell({
   readonly warning?: ReactNode;
 }) {
   return (
-    <div {...stylex.props(styles.root, healthy && styles.rootHealthy)}>
+    <div
+      data-design="conversation-shell"
+      {...stylex.props(styles.root, healthy && styles.rootHealthy)}
+    >
       {status}
       {children}
       {warning === undefined ? null : (
@@ -620,8 +625,9 @@ function ConversationComposer({
           <Send aria-hidden {...stylex.props(styles.sendIcon)} />
           {delivery.kind === "submitting" ? "Sending" : sendLabel}
         </Button>
+        <SessionSelectionLabel />
       </div>
-      <div {...stylex.props(styles.composerFooter)}>
+      <div data-design="composer-footer" {...stylex.props(styles.composerFooter)}>
         {supportsQueue ? (
           <label>
             <input
@@ -633,7 +639,7 @@ function ConversationComposer({
             Queue after this turn
           </label>
         ) : (
-          <span>Enter to send · Shift+Enter for a new line</span>
+          <span data-design="keyboard-hint">Enter to send · Shift+Enter for a new line</span>
         )}
         <span
           role={delivery.kind === "failed" || delivery.kind === "ambiguous" ? "alert" : "status"}
@@ -743,7 +749,11 @@ export function ConversationPreview({
     <ConversationShell
       healthy
       status={
-        <div role="status" {...stylex.props(styles.connection, styles.connectionHealthy)}>
+        <div
+          role="status"
+          data-design="connection"
+          {...stylex.props(styles.connection, styles.connectionHealthy)}
+        >
           <span {...stylex.props(styles.connectionIdentity)}>
             <Wifi aria-hidden {...stylex.props(styles.connectionIcon)} />
             {activeTurn === undefined ? "Preview" : "Preview · working"}

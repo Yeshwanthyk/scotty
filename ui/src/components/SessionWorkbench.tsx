@@ -27,6 +27,7 @@ import {
   readHatch,
 } from "../data/session-workbench";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
+import type { ConversationTurn } from "../domain/conversation";
 import { Markdown } from "./Markdown";
 
 const styles = stylex.create({
@@ -363,10 +364,12 @@ const styles = stylex.create({
 });
 
 export function SessionWorkbench({
+  previewTurns,
   children,
   runtimeAvailable,
   sessionId,
 }: {
+  readonly previewTurns?: ReadonlyArray<ConversationTurn>;
   readonly children: ReactNode;
   readonly runtimeAvailable: boolean;
   readonly sessionId: string;
@@ -374,8 +377,23 @@ export function SessionWorkbench({
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  useEffect(() => {
+    if (!summaryOpen) return;
+    const previousFocus = document.activeElement;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSummaryOpen(false);
+      }
+    };
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("keydown", escape);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, [summaryOpen]);
   return (
-    <div {...stylex.props(styles.root)}>
+    <div data-design="workbench" {...stylex.props(styles.root)}>
       <nav aria-label="Session workbench" {...stylex.props(styles.toolbar)}>
         <span {...stylex.props(styles.toolbarLabel)}>
           {changesOpen ? "Working changes" : "Conversation"}
@@ -395,7 +413,7 @@ export function SessionWorkbench({
           />
           <ToolButton
             active={terminalOpen}
-            disabled={!runtimeAvailable}
+            disabled={!runtimeAvailable || previewTurns !== undefined}
             icon={TerminalSquare}
             label="Terminal"
             onClick={() => setTerminalOpen((open) => !open)}
@@ -421,7 +439,7 @@ export function SessionWorkbench({
             />
             <ToolButton
               active={terminalOpen}
-              disabled={!runtimeAvailable}
+              disabled={!runtimeAvailable || previewTurns !== undefined}
               icon={TerminalSquare}
               label="Terminal"
               onClick={() => setTerminalOpen((open) => !open)}
@@ -429,12 +447,30 @@ export function SessionWorkbench({
           </div>
         </details>
       </nav>
-      <div {...stylex.props(styles.stage, summaryOpen && styles.stageWithSummary)}>
+      <div
+        data-design="workbench-stage"
+        {...stylex.props(styles.stage, summaryOpen && styles.stageWithSummary)}
+      >
         <div {...stylex.props(styles.main)}>
-          {changesOpen ? <ChangesView sessionId={sessionId} /> : children}
+          {changesOpen ? (
+            previewTurns ? (
+              <div className="tool-empty">
+                <h2>Working changes</h2>
+                <p>This local design preview has no connected worktree.</p>
+              </div>
+            ) : (
+              <ChangesView sessionId={sessionId} />
+            )
+          ) : (
+            children
+          )}
         </div>
         {summaryOpen ? (
-          <SummaryPanel close={() => setSummaryOpen(false)} sessionId={sessionId} />
+          <SummaryPanel
+            previewTurns={previewTurns}
+            close={() => setSummaryOpen(false)}
+            sessionId={sessionId}
+          />
         ) : null}
       </div>
       {terminalOpen ? (
@@ -461,7 +497,11 @@ function ToolButton({
     <button
       aria-pressed={active}
       disabled={disabled}
-      onClick={onClick}
+      onClick={(event) => {
+        onClick();
+        const menu = event.currentTarget.closest("details");
+        if (menu !== null) menu.open = false;
+      }}
       type="button"
       {...stylex.props(styles.toolButton, active && styles.toolButtonActive)}
     >
@@ -472,9 +512,11 @@ function ToolButton({
 }
 
 function SummaryPanel({
+  previewTurns,
   close,
   sessionId,
 }: {
+  readonly previewTurns?: ReadonlyArray<ConversationTurn>;
   readonly close: () => void;
   readonly sessionId: string;
 }) {
@@ -487,6 +529,7 @@ function SummaryPanel({
     hatchError?: string;
   }>({});
   useEffect(() => {
+    if (previewTurns !== undefined) return;
     const controller = new AbortController();
     void readConversation(sessionId, { signal: controller.signal }).then((conversation) => {
       if (controller.signal.aborted) return;
@@ -521,8 +564,10 @@ function SummaryPanel({
       },
     );
     return () => controller.abort();
-  }, [sessionId]);
-  const latest = state.snapshot?.turns.findLast((turn) => turn.assistant.trim().length > 0);
+  }, [sessionId, previewTurns]);
+  const latest = (previewTurns ?? state.snapshot?.turns)?.findLast(
+    (turn) => turn.assistant.trim().length > 0,
+  );
   return (
     <aside aria-label="Session summary" {...stylex.props(styles.panel)}>
       <header {...stylex.props(styles.panelHeader)}>
@@ -543,7 +588,7 @@ function SummaryPanel({
             <p role="alert" {...stylex.props(styles.muted)}>
               {state.conversationError}
             </p>
-          ) : state.snapshot === undefined ? (
+          ) : state.snapshot === undefined && previewTurns === undefined ? (
             <LoaderCircle
               aria-label="Loading latest update"
               {...stylex.props(styles.icon, styles.spin)}
@@ -554,12 +599,24 @@ function SummaryPanel({
             <Markdown source={latest.assistant} />
           )}
         </section>
-        <HatchSection error={state.hatchError} hatch={state.hatch} sessionId={sessionId} />
-        <EvidenceSection
-          error={state.evidenceError}
-          evidence={state.evidence}
-          sessionId={sessionId}
-        />
+        {previewTurns ? (
+          <section className="tool-empty">
+            <h3>Local preview</h3>
+            <p>
+              Summary text comes from the conversation fixture. Browser evidence and workspace
+              services are not connected.
+            </p>
+          </section>
+        ) : (
+          <>
+            <HatchSection error={state.hatchError} hatch={state.hatch} sessionId={sessionId} />
+            <EvidenceSection
+              error={state.evidenceError}
+              evidence={state.evidence}
+              sessionId={sessionId}
+            />
+          </>
+        )}
       </div>
     </aside>
   );

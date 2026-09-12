@@ -172,8 +172,12 @@ function SessionMetadata({
 }: Pick<SessionRowProps, "actorCorrected" | "presentation" | "projectedFreshness" | "session">) {
   const provenance = provenanceFor(presentation, actorCorrected ?? false);
   return (
-    <span {...stylex.props(styles.metadata)}>
-      <span title={session.display.branch ?? undefined} {...stylex.props(styles.branch)}>
+    <span data-design="row-metadata" {...stylex.props(styles.metadata)}>
+      <span
+        title={session.display.branch ?? undefined}
+        data-design="row-branch"
+        {...stylex.props(styles.branch)}
+      >
         {session.display.branch}
       </span>
       <span aria-hidden {...stylex.props(styles.separator)}>
@@ -240,18 +244,22 @@ export function SessionRow({
       )}
     >
       {placement === "archived" ? <ArchivedIcon /> : <StatusIcon presentation={presentation} />}
-      <span {...stylex.props(styles.text)}>
+      <span data-design="row-text" {...stylex.props(styles.text)}>
         {placement === "active" ? (
-          <span title={session.display.repository} {...stylex.props(styles.repository)}>
+          <span
+            title={session.display.repository}
+            data-design="row-repository"
+            {...stylex.props(styles.repository)}
+          >
             <FolderClosed aria-hidden {...stylex.props(styles.repositoryIcon)} />
             {session.display.repository}
           </span>
         ) : null}
-        <span title={session.display.title} {...stylex.props(styles.title)}>
+        <span title={session.display.title} data-design="row-title" {...stylex.props(styles.title)}>
           {session.display.title}
         </span>
         {placement === "archived" ? (
-          <span {...stylex.props(styles.metadata)}>
+          <span data-design="row-metadata" {...stylex.props(styles.metadata)}>
             <span>{repositoryName(session.display.repository)}</span>
             <span aria-hidden {...stylex.props(styles.separator)}>
               ·
