@@ -595,6 +595,14 @@ for (const [model, effort] of [
     `real pinned binary / synthetic upstream: ${model} ${effort}`,
     { skip: !native, timeout: 60000 },
     async (t) => {
+      const withNativePhase = async (phase, operation) => {
+        try {
+          return await operation;
+        } catch (error) {
+          const failure = observeCodexFailure(error);
+          throw new Error(`native_fixture_${phase}:${failure.code ?? failure.tag}`);
+        }
+      };
       const requests = [];
       let hold = false,
         held;
@@ -667,37 +675,40 @@ for (const [model, effort] of [
       await new Promise((done) => server.listen(0, "127.0.0.1", done));
       let host;
       t.after(async () => {
-        if (host) await host.stop();
+        if (host) await withNativePhase("cleanup", host.stop());
         held?.destroy();
         server.closeAllConnections();
         await new Promise((done) => server.close(done));
       });
-      host = await startCodexSession({
-        binary: native,
-        runtimeDir: join(stage, `native-${model}-${effort}`),
-        workspace: join(stage, `native-workspace-${model}-${effort}`),
-        model,
-        credential,
-        upstreamPort: server.address().port,
-        effort,
-      });
+      host = await withNativePhase(
+        "startup",
+        startCodexSession({
+          binary: native,
+          runtimeDir: join(stage, `native-${model}-${effort}`),
+          workspace: join(stage, `native-workspace-${model}-${effort}`),
+          model,
+          credential,
+          upstreamPort: server.address().port,
+          effort,
+        }),
+      );
       assert.equal(requests.length, 0);
       assert.equal(host.inspect().settings.approvalPolicy, "never");
       assert.deepEqual(host.inspect().settings.sandbox, { type: "dangerFullAccess" });
       assert.equal(host.inspect().settings.reasoningEffort, effort);
       for (let i = 0; i < 2; i++) {
-        const turn = await host.prompt("Return the synthetic answer.");
-        const terminal = await turn.completed;
+        const turn = await withNativePhase("prompt", host.prompt("Return the synthetic answer."));
+        const terminal = await withNativePhase("turn", turn.completed);
         assert.equal(terminal.status, "completed");
         assert.equal(terminal.items[0].text, "SYNTHETIC_OK");
       }
       assert.equal(host.inspect().rejected, 0);
       assert.ok(host.drainEvents().some((e) => e.method === "item/agentMessage/delta"));
       hold = true;
-      const turn = await host.prompt("Wait for interruption.");
+      const turn = await withNativePhase("interrupt_prompt", host.prompt("Wait for interruption."));
       await wait(() => held);
-      assert.equal((await host.interrupt()).status, "interrupted");
-      assert.equal((await turn.completed).status, "interrupted");
+      assert.equal((await withNativePhase("interrupt", host.interrupt())).status, "interrupted");
+      assert.equal((await withNativePhase("interrupt_turn", turn.completed)).status, "interrupted");
       assert.deepEqual(
         requests,
         Array.from({ length: 3 }, () => ({
@@ -707,7 +718,7 @@ for (const [model, effort] of [
           auth: `Bearer ${credential.sentinel}`,
         })),
       );
-      const receipt = await host.stop();
+      const receipt = await withNativePhase("stop", host.stop());
       assert.equal(receipt.shutdown, "eof");
       assert.equal(receipt.parent, "exited");
       assert.deepEqual(receipt.exit, { code: 0, signal: null });
