@@ -51,4 +51,5 @@ export class CodexHostError extends Data.TaggedError("CodexHostError")<{
     | "no_active_turn"
     | "stopped";
   readonly cleanup?: Cleanup;
+  readonly staleDiagnostic?: string;
 }> {}

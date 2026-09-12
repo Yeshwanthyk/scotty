@@ -555,6 +555,7 @@ describe("scoped Codex session", () => {
       const result = yield* Effect.result(turn.completed);
       assert.ok(Result.isFailure(result));
       assert.equal(result.failure.code, "stale_notification");
+      assert.equal(result.failure.staleDiagnostic, "error foreign active none");
       assert.equal((yield* host.closed).failure, "stale_notification");
     }),
   );
@@ -577,6 +578,7 @@ describe("scoped Codex session", () => {
       const result = yield* Effect.result(turn.completed);
       assert.ok(Result.isFailure(result));
       assert.equal(result.failure.code, "stale_notification");
+      assert.equal(result.failure.staleDiagnostic, "item/reasoning/textDelta foreign active none");
       assert.equal((yield* host.closed).failure, "stale_notification");
     }),
   );

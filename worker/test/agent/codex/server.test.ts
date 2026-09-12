@@ -86,6 +86,7 @@ const fixture = Effect.fnUntraced(function* () {
       threadId: "thread",
       activeTurnId: null,
       failure,
+      failureDiagnostic: null,
       pid: ChildProcessSpawner.ProcessId(1),
       homes: { home: "/runtime/home", codexHome: "/runtime/codex-home", cwd: "/workspace" },
       settings: {
