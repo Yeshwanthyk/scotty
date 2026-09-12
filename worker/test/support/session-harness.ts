@@ -30,7 +30,10 @@ import type {
   ReadinessProof,
   SessionAuthority,
 } from "../../src/session-actor/authority";
-import type { SessionActorMetadata } from "../../src/session-actor/metadata";
+import {
+  decodeSessionActorMetadata,
+  type SessionActorMetadata,
+} from "../../src/session-actor/metadata";
 import type { EvidenceArtifact } from "../../src/evidence/contracts";
 import {
   HATCH_PRIVATE_READINESS_HEADER,
@@ -554,6 +557,7 @@ export type HarnessFailureStage =
   | "hardCapSchedule"
   | "hardCapDrainSchedule"
   | "hardCapScheduleOnce"
+  | "metadataScrubOnce"
   | "hatchHealth"
   | "previewExpose"
   | "previewUnexpose"
@@ -690,7 +694,7 @@ class HarnessStorage {
     private readonly events: string[],
     private readonly schedules: ReadonlyArray<RecordedSchedule>,
     initialEntries: InitialStorageEntries,
-    private readonly failures: ReadonlySet<HarnessFailureStage>,
+    private readonly failures: Set<HarnessFailureStage>,
     private readonly onStorageGet?: HarnessOptions["onStorageGet"],
     transactionFailureCountdown?: number,
     sharedMemory?: InMemoryFaultInjectableFake,
@@ -823,6 +827,16 @@ class HarnessStorage {
             return deleted;
           },
         });
+        if (
+          mutations.some((mutation) => {
+            if (mutation.kind !== "put" || mutation.key !== SESSION_ACTOR_METADATA_KEY)
+              return false;
+            const decoded = decodeSessionActorMetadata(mutation.value);
+            return Result.isSuccess(decoded) && decoded.success.privateCreateInput === null;
+          }) &&
+          this.failures.delete("metadataScrubOnce")
+        )
+          throw injectedHarnessFailure("injected metadata scrub failure");
         this.memory.values.clear();
         for (const [key, value] of staged) this.memory.values.set(key, value);
         for (const mutation of mutations) {

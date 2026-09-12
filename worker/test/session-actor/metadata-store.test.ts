@@ -80,6 +80,30 @@ const stableAuthority = (): SessionAuthority => ({
   state: { _tag: "Stable", stable: failed() },
 });
 
+const vaporizingAuthority = (): SessionAuthority => ({
+  ...createAuthority(),
+  revision: 3,
+  state: {
+    _tag: "Transitioning",
+    transition: {
+      _tag: "Vaporize",
+      nonce: "vaporize-nonce",
+      origin: "Warm",
+      attempt: "vaporize-attempt",
+      startedAt: T1,
+      lastProgressAt: T1,
+      deadlineAt: DEADLINE,
+      mode: "reconciling",
+      phase: "EvidenceDeleting",
+      proof: {
+        revokedAt: T1,
+        ownedBackupIds: [],
+        cleanup: { absent: ["runtime", "backups", "evidence"], lastObservedAt: T1 },
+      },
+    },
+  },
+});
+
 interface FakeMetadataStorage extends MetadataStoragePort {
   readonly inspect: () => unknown | undefined;
   readonly writeCount: () => number;
@@ -273,6 +297,30 @@ describe("session actor metadata store", () => {
       const replay = yield* store.scrubSettledCreate(stableAuthority());
       assert.ok(Predicate.isTagged(replay, "PrivateInputAlreadyScrubbed"));
       assert.equal(port.writeCount(), 2);
+    }),
+  );
+
+  it.effect("recovers a reconciling Create's private input during Vaporize", () =>
+    Effect.gen(function* () {
+      const port = fakeStorage();
+      const store = makeSessionActorMetadataStore(port);
+      yield* store.admitCreate(createAuthority(), input());
+
+      const before = yield* Effect.flip(store.read(vaporizingAuthority()));
+      assert.ok(Predicate.isTagged(before, "SessionActorMetadataViolation"));
+      assert.equal(before.code, "private_create_input_not_scrubbed");
+
+      const scrubbed = yield* store.scrubVaporizingCreate(vaporizingAuthority());
+      assert.ok(Predicate.isTagged(scrubbed, "PrivateInputScrubbed"));
+      assert.strictEqual(scrubbed.metadata.privateCreateInput, null);
+      assert.strictEqual((yield* store.read(vaporizingAuthority()))?.privateCreateInput, null);
+
+      const replay = yield* store.scrubVaporizingCreate(vaporizingAuthority());
+      assert.ok(Predicate.isTagged(replay, "PrivateInputAlreadyScrubbed"));
+      yield* store.deleteForVaporize(vaporizingAuthority());
+      const deletedReplay = yield* store.scrubVaporizingCreate(vaporizingAuthority());
+      assert.ok(Predicate.isTagged(deletedReplay, "AlreadyDeletedForVaporize"));
+      assert.equal(port.writeCount(), 3);
     }),
   );
 

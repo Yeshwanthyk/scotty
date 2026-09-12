@@ -1,13 +1,13 @@
 import { Context, Duration, Effect, Layer, Predicate, Result, Schema } from "effect";
-import { AuthorityStateSchema, type SessionAuthority } from "./authority";
+import { AuthorityStateSchema, TransitionSchema, type SessionAuthority } from "./authority";
 import {
   decodeSessionActorMetadata,
   makeSessionActorMetadata,
   recordCreateObservation,
   scrubSettledCreatePrivateInput,
+  SessionActorMetadataViolation,
   type SessionActorMetadata,
   type SessionActorMetadataInput,
-  type SessionActorMetadataViolation,
   validateSessionActorMetadata,
   validateSessionActorMetadataUpdate,
 } from "./metadata";
@@ -116,6 +116,9 @@ export interface SessionActorMetadataStoreShape {
     observation: CreateMetadataObservation,
   ) => Effect.Effect<MetadataMutationOutcome, MetadataStoreMutationError>;
   readonly scrubSettledCreate: (
+    authority: SessionAuthority,
+  ) => Effect.Effect<MetadataMutationOutcome, MetadataStoreMutationError>;
+  readonly scrubVaporizingCreate: (
     authority: SessionAuthority,
   ) => Effect.Effect<MetadataMutationOutcome, MetadataStoreMutationError>;
   readonly deleteForVaporize: (
@@ -315,6 +318,14 @@ export const makeSessionActorMetadataStore = (
             _tag: "NoWrite",
             outcome: new MetadataStoreConflict({ code: "metadata_missing" }),
           };
+        if (
+          decoded.success.privateCreateInput !== null &&
+          decoded.success.privateCreateInput.attempt !== decoded.success.createAttempt
+        )
+          return {
+            _tag: "NoWrite",
+            outcome: new SessionActorMetadataViolation({ code: "create_attempt_mismatch" }),
+          };
         const scrubbed = scrubSettledCreatePrivateInput(authority, decoded.success);
         if (Result.isFailure(scrubbed)) return { _tag: "NoWrite", outcome: scrubbed.failure };
         const update = validateSessionActorMetadataUpdate(
@@ -339,6 +350,51 @@ export const makeSessionActorMetadataStore = (
     });
   });
 
+  const scrubVaporizingCreate = Effect.fnUntraced(function* (authority: SessionAuthority) {
+    return yield* mutate("scrub", authority, (raw) => {
+      if (
+        !AuthorityStateSchema.guards.Transitioning(authority.state) ||
+        !TransitionSchema.guards.Vaporize(authority.state.transition)
+      )
+        return {
+          _tag: "NoWrite",
+          outcome: new SessionActorMetadataViolation({ code: "create_transition_required" }),
+        };
+      const decoded = decodeCurrent(raw, "scrub");
+      if (Result.isFailure(decoded)) return { _tag: "NoWrite", outcome: decoded.failure };
+      if (decoded.success === undefined)
+        return {
+          _tag: "NoWrite",
+          outcome: { _tag: "AlreadyDeletedForVaporize" },
+        };
+      const current = decoded.success;
+      const validCurrent = validateSessionActorMetadata(authority, current);
+      if (Result.isSuccess(validCurrent))
+        return {
+          _tag: "NoWrite",
+          outcome: { _tag: "PrivateInputAlreadyScrubbed", metadata: validCurrent.success },
+        };
+      if (validCurrent.failure.code !== "private_create_input_not_scrubbed")
+        return { _tag: "NoWrite", outcome: validCurrent.failure };
+      if (
+        current.privateCreateInput !== null &&
+        current.privateCreateInput.attempt !== current.createAttempt
+      )
+        return {
+          _tag: "NoWrite",
+          outcome: new SessionActorMetadataViolation({ code: "create_attempt_mismatch" }),
+        };
+      const next = { ...current, privateCreateInput: null };
+      const validated = validateSessionActorMetadataUpdate(authority, current, next);
+      if (Result.isFailure(validated)) return { _tag: "NoWrite", outcome: validated.failure };
+      return {
+        _tag: "Put",
+        value: validated.success,
+        outcome: { _tag: "PrivateInputScrubbed", metadata: validated.success },
+      };
+    });
+  });
+
   const deleteForVaporize = Effect.fnUntraced(function* (authority: SessionAuthority) {
     return yield* mutate("vaporize", authority, (raw) => {
       if (raw === undefined)
@@ -356,6 +412,7 @@ export const makeSessionActorMetadataStore = (
     admitCreate,
     recordObservation,
     scrubSettledCreate,
+    scrubVaporizingCreate,
     deleteForVaporize,
   });
 };

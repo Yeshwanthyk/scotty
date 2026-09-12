@@ -406,6 +406,43 @@ describe("Sandbox actor create boundary", () => {
     assert.isFalse(harness.events.some((event) => event.startsWith("host:exec:workspace")));
   });
 
+  it("scrubs private Create input when an alarm settles the actor", async () => {
+    const harness = await createSessionHarness({ failureStage: "actorAlarmScheduleOnce" });
+    await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+    await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+    const alarm = harness.schedules
+      .filter((schedule) => schedule.callback === "sessionActorDeadline")
+      .at(-1);
+    assert.isDefined(alarm);
+
+    harness.injectFailure("metadataScrubOnce");
+    assert.isDefined(await rejection(harness.sandbox.sessionActorDeadline(alarm.payload)));
+    const committed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      committed !== undefined &&
+        AuthorityStateSchema.guards.Stable(committed.state) &&
+        Predicate.isTagged(committed.state.stable, "Warm"),
+    );
+    assert.isNotNull(
+      harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata)?.privateCreateInput,
+    );
+
+    await harness.sandbox.sessionActorDeadline(alarm.payload);
+
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined &&
+        AuthorityStateSchema.guards.Stable(authority.state) &&
+        Predicate.isTagged(authority.state.stable, "Warm"),
+    );
+    const metadata = harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata);
+    assert.strictEqual(metadata?.privateCreateInput, null);
+  });
+
   it("does not recover a lifecycle transition from a create replay", async () => {
     const harness = await createWarmHarness();
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
