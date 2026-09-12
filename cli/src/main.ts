@@ -1,6 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { Effect } from "effect";
 import { execute } from "./commands";
+import { CliError, EXIT } from "./core";
 import { cliLayer, defaultDependencies, type CliDependencies } from "./dependencies";
 import { outputJson } from "./pure";
 
@@ -12,11 +13,18 @@ export function main(
   const program = execute(args).pipe(
     Effect.catch((error) =>
       Effect.sync(() => {
+        const failure =
+          error ??
+          new CliError(
+            "internal_error",
+            "Scotty failed unexpectedly",
+            "Retry the command.",
+            EXIT.GENERIC,
+          );
         outputJson(dependencies.stderr, {
-          // oxlint-disable-next-line scotty/no-unknown-error-message -- boundary: Effect.catch has narrowed the value to typed CliError
-          error: { code: error.code, message: error.message, hint: error.hint },
+          error: { code: failure.code, message: failure.message, hint: failure.hint },
         });
-        return error.exitCode;
+        return failure.exitCode;
       }),
     ),
     Effect.provide(NodeServices.layer),

@@ -19,6 +19,8 @@ import {
   type CredentialRegistryGithubCliResolveInput,
   type CredentialRegistrySyncInput,
   type CredentialRegistrySyncResult,
+  type CredentialRegistryStatus,
+  type CredentialRegistryUpsertInput,
 } from "./contracts";
 import type { CredentialRedactedMetadata } from "../../../protocol/credentials";
 
@@ -67,6 +69,16 @@ export class ScottyCredentialRegistry extends DurableObject<Bindings> {
     input: CredentialRegistrySyncInput | unknown,
   ): Promise<CredentialRegistryRpcResult<CredentialRegistrySyncResult>> {
     return this.#run(Effect.flatMap(CredentialStore, (store) => store.sync(input)));
+  }
+
+  upsert(
+    input: CredentialRegistryUpsertInput | unknown,
+  ): Promise<CredentialRegistryRpcResult<CredentialRegistryStatus>> {
+    return this.#run(Effect.flatMap(CredentialStore, (store) => store.upsert(input)));
+  }
+
+  statuses(): Promise<CredentialRegistryRpcResult<ReadonlyArray<CredentialRegistryStatus>>> {
+    return this.#run(Effect.flatMap(CredentialStore, (store) => store.statuses));
   }
 
   list(): Promise<CredentialRegistryRpcResult<ReadonlyArray<CredentialRedactedMetadata>>> {
@@ -125,7 +137,14 @@ export class ScottyCredentialRegistry extends DurableObject<Bindings> {
 
 export type ScottyCredentialRegistryStub = Pick<
   ScottyCredentialRegistry,
-  "issueGrants" | "list" | "release" | "resolve" | "resolveGithubCliCredential" | "sync"
+  | "issueGrants"
+  | "list"
+  | "release"
+  | "resolve"
+  | "resolveGithubCliCredential"
+  | "statuses"
+  | "sync"
+  | "upsert"
 >;
 
 export interface ScottyCredentialRegistryNamespace {

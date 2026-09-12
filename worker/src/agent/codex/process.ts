@@ -1,4 +1,6 @@
 import { importCodexSavedState } from "./persistence";
+import { CloudSettingsEnvironmentSchema } from "../../../../protocol/cloud-settings";
+import { SandboxDigestSchema } from "../../sandbox/config-contracts";
 import type { CodexSavedState } from "./persistence-format";
 import {
   Cause,
@@ -41,6 +43,8 @@ const ThreadId = Schema.String.check(
 );
 const Deadline = Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 120000 }));
 export const CodexLaunch = Schema.Struct({
+  environment: Schema.optionalKey(CloudSettingsEnvironmentSchema),
+  sandboxBundleDigest: Schema.optionalKey(SandboxDigestSchema),
   binary: AbsolutePath,
   runtimeDir: AbsolutePath,
   workspace: AbsolutePath,
@@ -197,6 +201,10 @@ export const launchProcess = Effect.fnUntraced(function* (
     )
       return yield* new CodexHostError({ code: "isolation_setup_failed" });
     for (const dir of [home, codexHome]) yield* fs.makeDirectory(dir, { mode: 0o700 });
+    if (options.sandboxBundleDigest !== undefined) {
+      const skills = `${cwd}/.scotty/sandbox/${options.sandboxBundleDigest}/skills`;
+      if (yield* fs.exists(skills)) yield* fs.symlink(skills, `${codexHome}/skills`);
+    }
     yield* fs.writeFileString(
       `${codexHome}/config.toml`,
       `model = "${options.model}"\nmodel_provider = "scotty-managed"\nmodel_reasoning_effort = "${options.effort}"\n[analytics]\nenabled = false\n[model_providers.scotty-managed]\nname = "Scotty managed Codex"\nbase_url = "${baseUrl}"\nwire_api = "responses"\nenv_key = "SCOTTY_CODEX_SENTINEL"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`,
@@ -218,6 +226,7 @@ export const launchProcess = Effect.fnUntraced(function* (
     forceKillAfter: options.stopTimeoutMs,
     stdin: { stream: "pipe", endOnDone: true },
     env: {
+      ...options.environment,
       HOME: homes.home,
       CODEX_HOME: homes.codexHome,
       TMPDIR: homes.home,

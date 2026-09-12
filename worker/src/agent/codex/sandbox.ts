@@ -1,4 +1,5 @@
 import { CodexPersistenceIdentity } from "./persistence-format";
+import { SessionConfigurationSchema } from "../../session-actor/configuration";
 import { Clock, Data, Effect, Result, Schedule, Schema } from "effect";
 import { CodexAgentSelectionSchema } from "../../../../protocol/agent-selection";
 import type { CredentialGrant } from "../../../../protocol/credentials";
@@ -18,6 +19,7 @@ import {
 
 export const CODEX_SANDBOX_PORT = 43_118;
 const CodexSandboxIdentitySchema = Schema.Struct({
+  configuration: Schema.optionalKey(SessionConfigurationSchema),
   sessionId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u)),
   generation: CodexGeneration,
   selection: CodexAgentSelectionSchema,
@@ -130,6 +132,16 @@ export const startCodexSandbox = Effect.fnUntraced(function* (
     ...(restore === undefined ? {} : { restore }),
     tokenFile: `${root}/control.token`,
     launch: {
+      ...(identity.configuration === undefined
+        ? {}
+        : {
+            environment: identity.configuration.environment,
+            ...(identity.configuration.bundleDigest === null
+              ? {}
+              : {
+                  sandboxBundleDigest: identity.configuration.bundleDigest,
+                }),
+          }),
       binary: "/usr/local/bin/codex",
       runtimeDir: `${root}/runtime`,
       workspace: sessionRoot(identity.sessionId),

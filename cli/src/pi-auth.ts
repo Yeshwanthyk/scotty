@@ -5,12 +5,104 @@ import {
   piProviderMetadata,
   type PiCredential,
 } from "../../protocol/pi-auth";
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema, Result } from "effect";
 import { CliError, EXIT } from "./core";
 import { CliRuntime, FileSystem, ProcessRunner } from "./services";
 
 const authFailure = (message: string, hint: string): CliError =>
   new CliError("invalid_pi_auth", message, hint, EXIT.USAGE);
+
+const NativeCodexTokenSchema = Schema.Struct({
+  access_token: Schema.NonEmptyString,
+  refresh_token: Schema.NonEmptyString,
+  account_id: Schema.optionalKey(Schema.NonEmptyString),
+  id_token: Schema.optionalKey(Schema.NonEmptyString),
+  expires: Schema.optionalKey(Schema.Finite),
+});
+const NativeCodexAuthSchema = Schema.Struct({
+  tokens: NativeCodexTokenSchema,
+  expires: Schema.optionalKey(Schema.Finite),
+});
+const decodeNativeCodexAuth = Schema.decodeUnknownResult(
+  Schema.fromJsonString(NativeCodexAuthSchema),
+  {
+    onExcessProperty: "preserve",
+  },
+);
+const decodeJwtPayload = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ exp: Schema.optionalKey(Schema.Number) })),
+  { onExcessProperty: "preserve" },
+);
+
+const jwtExpiryMillis = Effect.fnUntraced(function* (token: string) {
+  const encoded = token.split(".")[1];
+  if (encoded === undefined) return undefined;
+  const normalized = encoded
+    .replace(/-/gu, "+")
+    .replace(/_/gu, "/")
+    .padEnd(Math.ceil(encoded.length / 4) * 4, "=");
+  const text = yield* Effect.try({ try: () => atob(normalized), catch: () => undefined });
+  if (text === undefined) return undefined;
+  const payload = decodeJwtPayload(
+    new TextDecoder().decode(Uint8Array.from(text, (character) => character.codePointAt(0) ?? 0)),
+  );
+  if (
+    Option.isNone(payload) ||
+    payload.value.exp === undefined ||
+    !Number.isFinite(payload.value.exp)
+  )
+    return undefined;
+  return payload.value.exp * 1_000;
+});
+
+export const readLocalCodexAuth = Effect.fnUntraced(function* (path?: string) {
+  const runtime = yield* CliRuntime;
+  const fileSystem = yield* FileSystem;
+  const authPath = path ?? join(runtime.home, ".codex", "auth.json");
+  const raw = yield* fileSystem
+    .readPrivateText(authPath)
+    .pipe(
+      Effect.mapError(() =>
+        authFailure(
+          "Codex auth.json must be a readable private regular file",
+          `Use a non-symlinked mode-0600 file at ${authPath}.`,
+        ),
+      ),
+    );
+  const decoded = decodeNativeCodexAuth(raw);
+  if (Result.isFailure(decoded))
+    return yield* authFailure(
+      "Codex auth.json has no supported OAuth credential",
+      "Run Codex login, then retry scotty sync.",
+    );
+  const token = decoded.success.tokens;
+  const jwtExpiry = yield* jwtExpiryMillis(token.access_token);
+  const expires = token.expires ?? decoded.success.expires ?? jwtExpiry;
+  if (expires === undefined || !Number.isFinite(expires))
+    return yield* authFailure(
+      "Codex auth.json has no usable token expiry",
+      "Refresh Codex login and retry scotty sync.",
+    );
+  const providerStore = {
+    "openai-codex": {
+      type: "oauth" as const,
+      refresh: token.refresh_token,
+      access: token.access_token,
+      expires,
+      ...(token.account_id === undefined ? {} : { accountId: token.account_id }),
+      ...(token.id_token === undefined ? {} : { idToken: token.id_token }),
+    },
+  };
+  return {
+    path: authPath,
+    providerStore,
+    sourceDigest: yield* Effect.tryPromise({
+      try: () => digestPiAuthProviders(providerStore),
+      catch: () => authFailure("Could not digest Codex auth.json", "Retry scotty sync."),
+    }),
+    providers: piProviderMetadata(providerStore),
+  };
+});
 
 const resolveTemplate = (
   value: string,

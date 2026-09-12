@@ -179,6 +179,12 @@ export const CredentialRegistryDesiredSyncInputSchema = Schema.Struct({
 export type CredentialRegistryDesiredSyncInput =
   typeof CredentialRegistryDesiredSyncInputSchema.Type;
 
+export const CredentialRegistryUpsertInputSchema = Schema.Struct({
+  credential: CredentialRegistrySyncMaterialSchema,
+  expectedVersionRef: Schema.optionalKey(CredentialVersionRefSchema),
+});
+export type CredentialRegistryUpsertInput = typeof CredentialRegistryUpsertInputSchema.Type;
+
 export const CredentialRegistrySyncEntriesSchema = Schema.Array(
   CredentialRegistrySyncEntrySchema,
 ).check(
@@ -198,6 +204,17 @@ export const CredentialRegistrySyncResultSchema = Schema.Struct({
   credentials: Schema.Array(CredentialRedactedMetadataSchema),
 });
 export type CredentialRegistrySyncResult = typeof CredentialRegistrySyncResultSchema.Type;
+
+export const CredentialRegistryStatusSchema = Schema.Struct({
+  name: CredentialNameSchema,
+  kind: CredentialKindSchema,
+  scope: CredentialScopeSchema,
+  ...CredentialRepositoryPolicyShape,
+  configured: Schema.Boolean,
+  versionRef: CredentialVersionRefSchema,
+  expires: Schema.optionalKey(Schema.Finite),
+});
+export type CredentialRegistryStatus = typeof CredentialRegistryStatusSchema.Type;
 
 export const CredentialRegistryGrantInputSchema = Schema.Struct({
   sessionId: CredentialSessionIdSchema,
@@ -343,6 +360,10 @@ export const decodeCredentialRegistrySyncInputResult = Schema.decodeUnknownResul
 );
 export const decodeCredentialRegistryDesiredSyncInputResult = Schema.decodeUnknownResult(
   CredentialRegistryDesiredSyncInputSchema,
+  { onExcessProperty: "error" },
+);
+export const decodeCredentialRegistryUpsertInputResult = Schema.decodeUnknownResult(
+  CredentialRegistryUpsertInputSchema,
   { onExcessProperty: "error" },
 );
 

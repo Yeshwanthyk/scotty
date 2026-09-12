@@ -256,6 +256,74 @@ describe("CredentialStore", () => {
     }),
   );
 
+  it.effect("upserts one credential without replacing unrelated records", () =>
+    Effect.gen(function* () {
+      const storage = memoryStorage();
+      yield* useStore(storage, (store) =>
+        store.sync({
+          credentials: [
+            {
+              name: "openai",
+              kind: "pi-auth",
+              scope: "global",
+              providers: { openai: { type: "api_key", key: `${BASE}-a` } },
+            },
+            { name: "github", kind: "github-cli", scope: "global", token: `${BASE}-github` },
+          ],
+        }),
+      );
+      const first = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
+      const firstVersionRef = first.credentials.find(
+        ({ name }) => name === "openai",
+      )?.currentVersionRef;
+      assert.isString(firstVersionRef);
+      const updated = yield* useStore(storage, (store) =>
+        store.upsert({
+          expectedVersionRef: firstVersionRef,
+          credential: {
+            name: "openai",
+            kind: "pi-auth",
+            scope: "global",
+            providers: { openai: { type: "api_key", key: `${BASE}-b` } },
+          },
+        }),
+      );
+      assert.strictEqual(updated.name, "openai");
+      const statuses = yield* useStore(storage, (store) => store.statuses);
+      assert.deepStrictEqual(
+        statuses.map(({ name }) => name),
+        ["github", "openai"],
+      );
+      const stale = yield* Effect.result(
+        useStore(storage, (store) =>
+          store.upsert({
+            expectedVersionRef: firstVersionRef,
+            credential: {
+              name: "openai",
+              kind: "pi-auth",
+              scope: "global",
+              providers: { openai: { type: "api_key", key: `${BASE}-c` } },
+            },
+          }),
+        ),
+      );
+      assert.deepInclude(failure(stale), { reason: "credential_conflict" });
+      const missingExpectation = yield* Effect.result(
+        useStore(storage, (store) =>
+          store.upsert({
+            credential: {
+              name: "openai",
+              kind: "pi-auth",
+              scope: "global",
+              providers: { openai: { type: "api_key", key: `${BASE}-d` } },
+            },
+          }),
+        ),
+      );
+      assert.deepInclude(failure(missingExpectation), { reason: "credential_conflict" });
+    }),
+  );
+
   it.effect("resolves the selected GitHub version transiently for repository verification", () =>
     Effect.gen(function* () {
       const storage = memoryStorage();

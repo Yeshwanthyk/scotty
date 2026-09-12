@@ -132,7 +132,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "read");
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
-        assert.notInclude(rootHelp, "\n  sandbox");
+        assert.include(rootHelp, "\n  sandbox");
         assert.notInclude(rootHelp, "\n  tools");
         assert.include(rootHelp, "runner");
         assert.notInclude(rootHelp, "tui");
@@ -226,6 +226,16 @@ describe("Effect command tree", () => {
         assert.include(repo.stdout.join(""), "list");
         assert.include(repo.stdout.join(""), "remove");
         assert.strictEqual(repo.stderr.join(""), "");
+        const sandbox = run(["sandbox", "--help"]);
+        assert.strictEqual(yield* sandbox.effect, EXIT.OK);
+        assert.include(sandbox.stdout.join(""), "push");
+        const sandboxPush = run(["sandbox", "push", "--help"]);
+        assert.strictEqual(yield* sandboxPush.effect, EXIT.OK);
+        assert.include(sandboxPush.stdout.join(""), "--config");
+        assert.include(sandboxPush.stdout.join(""), "--skills-root");
+        assert.include(sandboxPush.stdout.join(""), "--package");
+        assert.include(sandboxPush.stdout.join(""), "--tools-root");
+        assert.include(sandboxPush.stdout.join(""), "--extensions-root");
 
         const auth = run(["auth"]);
         const authError = failure(yield* Effect.result(auth.effect));
@@ -233,16 +243,7 @@ describe("Effect command tree", () => {
         assert.strictEqual(authError.message, "Unknown command: auth");
         assert.strictEqual(auth.stdout.join(""), "");
         assert.strictEqual(auth.stderr.join(""), "");
-        for (const args of [
-          ["sandbox"],
-          ["sandbox", "add"],
-          ["sandbox", "remove"],
-          ["sandbox", "list"],
-          ["sandbox", "sync"],
-          ["tools"],
-          ["tools", "list"],
-          ["tools", "doctor"],
-        ] as const) {
+        for (const args of [["tools"], ["tools", "list"], ["tools", "doctor"]] as const) {
           const invocation = run(args);
           const error = failure(yield* Effect.result(invocation.effect));
           assert.strictEqual(error.code, "bad_usage");

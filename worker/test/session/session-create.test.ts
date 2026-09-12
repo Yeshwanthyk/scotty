@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate, Schema } from "effect";
 import { TestClock } from "effect/testing";
+import { defaultCloudSettings, type CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
 import {
   commandIntentDigest,
   decodePiConsoleCommandPromise,
@@ -75,6 +76,68 @@ const createWarmHarness = () =>
   });
 
 describe("Sandbox actor create boundary", () => {
+  it("pins cloud defaults and environment across an idempotent create replay", async () => {
+    const bundleDigest = "a".repeat(64);
+    const initial: CloudSettingsSnapshot = {
+      revision: 7,
+      activeDigest: bundleDigest,
+      settings: {
+        ...defaultCloudSettings,
+        pi: { agent: "pi", modelProvider: "openai", model: "gpt-5.6-sol", effort: "high" },
+        environment: { APP_MODE: "original" },
+      },
+    };
+    let cloudSettings = initial;
+    const harness = await createSessionHarness({
+      readCloudSettings: () => cloudSettings,
+      sandboxConfigStatus: { revision: 7, activeDigest: bundleDigest },
+    });
+
+    const created = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+    assert.strictEqual(created.status, "warm");
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    const metadata = harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata);
+    assert.isDefined(authority);
+    assert.deepStrictEqual(authority.session.selection, initial.settings.pi);
+    assert.deepStrictEqual(authority.session.configuration, {
+      revision: 7,
+      bundleDigest,
+      environment: { APP_MODE: "original" },
+    });
+    assert.deepStrictEqual(metadata?.configuration, authority.session.configuration);
+    assert.ok(harness.environmentUpdates.some((update) => update.APP_MODE === "original"));
+
+    const settingsFile = harness.writtenFiles.find(
+      (file) => file.path === `/workspace/${SESSION_ID}/.pi-agent/settings.json`,
+    );
+    assert.isDefined(settingsFile);
+    assert.include(settingsFile.content, "gpt-5.6-sol");
+    cloudSettings = {
+      revision: 8,
+      activeDigest: null,
+      settings: { ...defaultCloudSettings, environment: { APP_MODE: "changed" } },
+    };
+    const configurationReads = harness.sandboxConfigStatusCallCount();
+    const environmentWrites = harness.environmentUpdates.length;
+
+    const replay = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+    assert.strictEqual(replay.status, "warm");
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), configurationReads);
+    assert.strictEqual(harness.environmentUpdates.length, environmentWrites);
+    assert.deepStrictEqual(
+      harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority)?.session.configuration,
+      authority.session.configuration,
+    );
+  });
+
   it("arms the hard cap before provider work and reaches public Warm through actor authority", async () => {
     const harness = await createWarmHarness();
 
@@ -287,7 +350,15 @@ describe("Sandbox actor create boundary", () => {
   });
 
   it("rearms reconciliation on create request retry after ambiguous deadline scheduling", async () => {
-    const harness = await createSessionHarness({ failureStage: "actorAlarmScheduleOnce" });
+    let cloudSettings: CloudSettingsSnapshot = {
+      revision: 5,
+      activeDigest: null,
+      settings: { ...defaultCloudSettings, environment: { APP_MODE: "admitted" } },
+    };
+    const harness = await createSessionHarness({
+      failureStage: "actorAlarmScheduleOnce",
+      readCloudSettings: () => cloudSettings,
+    });
 
     const first = await rejection(
       harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
@@ -301,7 +372,18 @@ describe("Sandbox actor create boundary", () => {
     );
     assert.strictEqual(committed.state.transition.mode, "executing");
     assert.strictEqual(committed.revision, 1);
+    assert.deepStrictEqual(committed.session.configuration, {
+      revision: 5,
+      bundleDigest: null,
+      environment: { APP_MODE: "admitted" },
+    });
     assert.isFalse(harness.events.some((event) => event.startsWith("host:exec:workspace")));
+    cloudSettings = {
+      revision: 6,
+      activeDigest: null,
+      settings: { ...defaultCloudSettings, environment: { APP_MODE: "changed" } },
+    };
+    const settingsReads = harness.sandboxConfigStatusCallCount();
 
     const replay = await rejection(
       harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
@@ -315,6 +397,8 @@ describe("Sandbox actor create boundary", () => {
     );
     assert.strictEqual(recovering.state.transition.mode, "reconciling");
     assert.strictEqual(recovering.revision, 2);
+    assert.deepStrictEqual(recovering.session.configuration, committed.session.configuration);
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), settingsReads);
     const recoveryAlarm = harness.schedules
       .filter((schedule) => schedule.callback === "sessionActorDeadline")
       .at(-1);

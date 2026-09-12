@@ -1,9 +1,13 @@
 import { lstat, realpath } from "node:fs/promises";
 import { join, parse as parsePath, resolve } from "node:path";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
 import { CliError, EXIT } from "./core";
-import { ScottyTomlConfigSchema, type ScottyTomlConfig } from "./scotty-config-contracts";
+import {
+  ScottyLocalRootPathSchema,
+  ScottyTomlConfigSchema,
+  type ScottyTomlConfig,
+} from "./scotty-config-contracts";
 import { FileSystem } from "./services";
 
 export const SCOTTY_TOML_CONFIG_FILE_NAME = "scotty.toml";
@@ -14,6 +18,7 @@ export const scottyTomlConfigPath = (home: string): string =>
 const decodeScottyTomlUnknown = Schema.decodeUnknownEffect(ScottyTomlConfigSchema, {
   onExcessProperty: "error",
 });
+const decodeScottyLocalRoot = Schema.decodeUnknownOption(ScottyLocalRootPathSchema);
 
 const invalidScottyConfig = (path: string, reason: string): CliError =>
   new CliError(
@@ -26,14 +31,12 @@ const invalidScottyConfig = (path: string, reason: string): CliError =>
 const configFileFailure = (path: string, reason: string): CliError =>
   invalidScottyConfig(path, reason);
 
-const readScottyToml = Effect.fnUntraced(function* (path: string, optional = false) {
+const readScottyToml = Effect.fnUntraced(function* (path: string) {
   const fileSystem = yield* FileSystem;
   return yield* fileSystem.readPrivateText(path).pipe(
     Effect.catch((error) => {
       if (error.reason === "missing")
-        return optional
-          ? Effect.succeed(undefined)
-          : Effect.fail(configFileFailure(path, "the file is missing"));
+        return Effect.fail(configFileFailure(path, "the file is missing"));
       if (
         error.reason === "permissions" ||
         error.reason === "not_file" ||
@@ -70,14 +73,6 @@ export const decodeScottyTomlText = Effect.fnUntraced(function* (
   return yield* decodeScottyTomlUnknown(parsed).pipe(
     Effect.mapError(() => configFileFailure(path, "it contains unsupported or malformed keys")),
   );
-});
-
-export const loadOptionalScottyAgentConfig = Effect.fnUntraced(function* (home: string) {
-  const path = scottyTomlConfigPath(home);
-  const text = yield* readScottyToml(path, true);
-  if (text === undefined) return undefined;
-  const config = yield* decodeScottyTomlText(text, path);
-  return { agent: config.agent, agents: config.agents };
 });
 
 type ScottyRootCategory = keyof ScottyTomlConfig["sync"];
@@ -179,28 +174,55 @@ const resolveConfiguredRoots = Effect.fnUntraced(function* (input: {
   return resolved;
 });
 
-export const resolveConfiguredCredentialSource = (
-  source: string | undefined,
-  home: string,
-  cwd: string,
-): string =>
-  resolve(
-    cwd,
-    source === undefined
-      ? ""
-      : source === "~"
-        ? home
-        : source.startsWith("~/")
-          ? join(home, source.slice(2))
-          : source,
-  );
-
 export type ResolvedScottyTomlRoots = {
   readonly skills: ReadonlyArray<string>;
   readonly packages: ReadonlyArray<string>;
   readonly tools: ReadonlyArray<string>;
   readonly extensions: ReadonlyArray<string>;
 };
+
+export const resolveSandboxBundleRoots = Effect.fnUntraced(function* (input: {
+  readonly home: string;
+  readonly cwd: string;
+  readonly skills: ReadonlyArray<string>;
+  readonly packages: ReadonlyArray<string>;
+  readonly tools: ReadonlyArray<string>;
+  readonly extensions: ReadonlyArray<string>;
+}) {
+  const load = Effect.fnUntraced(function* (category: ScottyRootCategory) {
+    for (const source of input[category])
+      if (Option.isNone(decodeScottyLocalRoot(source)))
+        return yield* new CliError(
+          "sandbox_source_invalid",
+          `Invalid ${category} root`,
+          `Choose a local directory without placeholders; checked ${source}.`,
+          EXIT.USAGE,
+        );
+    return yield* resolveConfiguredRoots({
+      configPath: "sandbox push",
+      category,
+      sources: input[category],
+      home: input.home,
+      cwd: input.cwd,
+    }).pipe(
+      Effect.mapError(
+        () =>
+          new CliError(
+            "sandbox_source_invalid",
+            `Invalid ${category} root`,
+            `Use an existing, non-symlinked directory outside the filesystem or home root.`,
+            EXIT.USAGE,
+          ),
+      ),
+    );
+  });
+  return {
+    skills: yield* load("skills"),
+    packages: yield* load("packages"),
+    tools: yield* load("tools"),
+    extensions: yield* load("extensions"),
+  } satisfies ResolvedScottyTomlRoots;
+});
 
 export type LoadedScottyTomlConfig = {
   readonly path: string;
@@ -211,10 +233,11 @@ export type LoadedScottyTomlConfig = {
 export const loadScottyTomlConfig = Effect.fnUntraced(function* (input: {
   readonly home: string;
   readonly cwd: string;
+  /** Explicit compatibility/import path. Normal commands use the managed default. */
+  readonly path?: string;
 }) {
-  const path = scottyTomlConfigPath(input.home);
+  const path = input.path ?? scottyTomlConfigPath(input.home);
   const text = yield* readScottyToml(path);
-  if (text === undefined) return yield* configFileFailure(path, "the file is missing");
   const config = yield* decodeScottyTomlText(text, path);
   const resolvedRoots: ResolvedScottyTomlRoots = {
     skills: yield* resolveConfiguredRoots({

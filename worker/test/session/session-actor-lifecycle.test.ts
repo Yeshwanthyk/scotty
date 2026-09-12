@@ -1,6 +1,7 @@
 import { assert, describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Predicate, Schema } from "effect";
 import { TestClock } from "effect/testing";
+import { defaultCloudSettings, type CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { EvidenceState } from "../../src/evidence/contracts";
@@ -499,6 +500,34 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.ok(harness.events.includes("host:createBackup"));
     assert.ok(harness.events.includes("host:stop"));
     assert.ok(harness.events.includes("host:restoreBackup"));
+  });
+
+  it("restores the session's pinned environment after cloud settings change", async () => {
+    let cloudSettings: CloudSettingsSnapshot = {
+      revision: 3,
+      activeDigest: null,
+      settings: { ...defaultCloudSettings, environment: { APP_MODE: "pinned" } },
+    };
+    const harness = await createSessionHarness({ readCloudSettings: () => cloudSettings });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.sleepScottySession();
+    cloudSettings = {
+      revision: 4,
+      activeDigest: null,
+      settings: { ...defaultCloudSettings, environment: { APP_MODE: "new-default" } },
+    };
+    const readsBeforeResume = harness.sandboxConfigStatusCallCount();
+    const updatesBeforeResume = harness.environmentUpdates.length;
+
+    const resumed = await harness.sandbox.resumeScottySession();
+    assert.strictEqual(resumed.status, "warm");
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), readsBeforeResume);
+    assert.ok(harness.environmentUpdates.length > updatesBeforeResume);
+    assert.deepStrictEqual(harness.environmentUpdates.at(-1), { APP_MODE: "pinned" });
+    assert.deepStrictEqual(
+      harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority)?.session.configuration,
+      { revision: 3, bundleDigest: null, environment: { APP_MODE: "pinned" } },
+    );
   });
 
   it("rearms reconciliation on lifecycle request retry after ambiguous deadline scheduling", async () => {

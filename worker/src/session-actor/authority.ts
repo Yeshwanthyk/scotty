@@ -1,5 +1,6 @@
 import { AgentSelectionSchema } from "../../../protocol/agent-selection";
 import { Schema } from "effect";
+import { SessionConfigurationSchema } from "./configuration";
 
 const SafeIdentifierSchema = Schema.NonEmptyString.check(Schema.isMaxLength(256));
 const SafeTimestampSchema = Schema.NonEmptyString.check(Schema.isMaxLength(64));
@@ -25,6 +26,7 @@ export const ExecutionBindingSchema = Schema.Union([
 ]);
 export const SessionIdentitySchema = Schema.Struct({
   selection: Schema.optionalKey(AgentSelectionSchema),
+  configuration: Schema.optionalKey(SessionConfigurationSchema),
   id: Schema.String,
   title: Schema.String,
   repository: Schema.String,

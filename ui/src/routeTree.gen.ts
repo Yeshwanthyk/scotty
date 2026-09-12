@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as DevicesRouteImport } from './routes/devices'
 import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as SessionsRouteImport } from './routes/sessions'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as StatsRouteImport } from './routes/stats'
 import { Route as SSessionIdRouteImport } from './routes/s.$sessionId'
 import { Route as SessionsCreateRouteImport } from './routes/sessions.create'
@@ -37,6 +38,11 @@ const SessionsRoute = SessionsRouteImport.update({
   path: '/sessions',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const StatsRoute = StatsRouteImport.update({
   id: '/stats',
   path: '/stats',
@@ -58,6 +64,7 @@ export interface FileRoutesByFullPath {
   '/devices': typeof DevicesRoute
   '/providers': typeof ProvidersRoute
   '/sessions': typeof SessionsRouteWithChildren
+  '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
   '/s/$sessionId': typeof SSessionIdRoute
   '/sessions/create': typeof SessionsCreateRoute
@@ -67,6 +74,7 @@ export interface FileRoutesByTo {
   '/devices': typeof DevicesRoute
   '/providers': typeof ProvidersRoute
   '/sessions': typeof SessionsRouteWithChildren
+  '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
   '/s/$sessionId': typeof SSessionIdRoute
   '/sessions/create': typeof SessionsCreateRoute
@@ -77,6 +85,7 @@ export interface FileRoutesById {
   '/devices': typeof DevicesRoute
   '/providers': typeof ProvidersRoute
   '/sessions': typeof SessionsRouteWithChildren
+  '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
   '/s/$sessionId': typeof SSessionIdRoute
   '/sessions/create': typeof SessionsCreateRoute
@@ -88,6 +97,7 @@ export interface FileRouteTypes {
     | '/devices'
     | '/providers'
     | '/sessions'
+    | '/settings'
     | '/stats'
     | '/s/$sessionId'
     | '/sessions/create'
@@ -97,6 +107,7 @@ export interface FileRouteTypes {
     | '/devices'
     | '/providers'
     | '/sessions'
+    | '/settings'
     | '/stats'
     | '/s/$sessionId'
     | '/sessions/create'
@@ -106,6 +117,7 @@ export interface FileRouteTypes {
     | '/devices'
     | '/providers'
     | '/sessions'
+    | '/settings'
     | '/stats'
     | '/s/$sessionId'
     | '/sessions/create'
@@ -116,6 +128,7 @@ export interface RootRouteChildren {
   DevicesRoute: typeof DevicesRoute
   ProvidersRoute: typeof ProvidersRoute
   SessionsRoute: typeof SessionsRouteWithChildren
+  SettingsRoute: typeof SettingsRoute
   StatsRoute: typeof StatsRoute
   SSessionIdRoute: typeof SSessionIdRoute
 }
@@ -148,6 +161,13 @@ declare module '@tanstack/react-router' {
       path: '/sessions'
       fullPath: '/sessions'
       preLoaderRoute: typeof SessionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/stats': {
@@ -191,6 +211,7 @@ const rootRouteChildren: RootRouteChildren = {
   DevicesRoute: DevicesRoute,
   ProvidersRoute: ProvidersRoute,
   SessionsRoute: SessionsRouteWithChildren,
+  SettingsRoute: SettingsRoute,
   StatsRoute: StatsRoute,
   SSessionIdRoute: SSessionIdRoute,
 }

@@ -274,12 +274,12 @@ const archiveMembers = (
   return [...members.values()];
 };
 
-export const buildScottyTomlBundle = Effect.fnUntraced(function* (
-  loaded: LoadedScottyTomlConfig,
+export const buildSandboxBundle = Effect.fnUntraced(function* (
+  roots: ResolvedScottyTomlRoots,
   options: BuildScottyTomlBundleOptions = {},
 ) {
   const items = yield* discoverItems(
-    loaded.resolvedRoots,
+    roots,
     options.installPackageDependencies ?? installPiPackageDependencies,
   );
   const fileCount = items.reduce((total, item) => total + item.files.length, 0);
@@ -300,6 +300,11 @@ export const buildScottyTomlBundle = Effect.fnUntraced(function* (
     archive: built.archive,
   } satisfies BuiltSandboxBundle;
 });
+
+export const buildScottyTomlBundle = (
+  loaded: LoadedScottyTomlConfig,
+  options: BuildScottyTomlBundleOptions = {},
+) => buildSandboxBundle(loaded.resolvedRoots, options);
 
 export const bundleItemSummaries = (
   manifest: SandboxBundleManifest,

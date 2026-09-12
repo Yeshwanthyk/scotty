@@ -7,6 +7,7 @@ import {
   decodeCredentialRegistryReleaseInputResult,
   decodeCredentialRegistryResolveInputResult,
   decodeCredentialRegistrySyncInputResult,
+  decodeCredentialRegistryUpsertInputResult,
   type CredentialRegistryAuthority,
   type CredentialRegistryCredential,
   type CredentialRegistryGrantResult,
@@ -15,6 +16,7 @@ import {
   type CredentialRegistrySyncEntry,
   type CredentialRegistrySyncInput,
   type CredentialRegistrySyncResult,
+  type CredentialRegistryStatus,
   type CredentialRegistryVersionRecord,
   type EncryptedCredentialEnvelope,
 } from "./contracts";
@@ -68,6 +70,13 @@ export interface CredentialStoreShape {
   readonly sync: (
     input: unknown,
   ) => Effect.Effect<CredentialRegistrySyncResult, CredentialRegistryFailure>;
+  readonly upsert: (
+    input: unknown,
+  ) => Effect.Effect<CredentialRegistryStatus, CredentialRegistryFailure>;
+  readonly statuses: Effect.Effect<
+    ReadonlyArray<CredentialRegistryStatus>,
+    CredentialRegistryFailure
+  >;
   readonly list: Effect.Effect<
     ReadonlyArray<CredentialRedactedMetadata>,
     CredentialRegistryFailure
@@ -242,10 +251,38 @@ const makeCredentialStore = (
     configured: true,
   });
 
+  const status = (
+    credential: CredentialRegistryCredential,
+    authority: CredentialRegistryAuthority,
+  ): CredentialRegistryStatus | undefined => {
+    const version = authority.versions.find(
+      (candidate) =>
+        candidate.name === credential.name &&
+        candidate.kind === credential.kind &&
+        candidate.versionRef === credential.currentVersionRef,
+    );
+    if (version === undefined) return undefined;
+    return {
+      ...metadata(credential),
+      versionRef: credential.currentVersionRef,
+      ...(version.expires === undefined ? {} : { expires: version.expires }),
+    };
+  };
+
   const list: Effect.Effect<
     ReadonlyArray<CredentialRedactedMetadata>,
     CredentialRegistryFailure
   > = read((authority) => Result.succeed(authority.credentials.map(metadata)));
+
+  const statuses: Effect.Effect<
+    ReadonlyArray<CredentialRegistryStatus>,
+    CredentialRegistryFailure
+  > = read((authority) => {
+    const values = authority.credentials.map((credential) => status(credential, authority));
+    return values.some((value) => value === undefined)
+      ? Result.fail(invalidAuthority())
+      : Result.succeed(values as ReadonlyArray<CredentialRegistryStatus>);
+  });
 
   const validateIncoming = (
     input: CredentialRegistrySyncInput,
@@ -507,6 +544,100 @@ const makeCredentialStore = (
     });
   };
 
+  const upsert = (
+    input: unknown,
+  ): Effect.Effect<CredentialRegistryStatus, CredentialRegistryFailure> => {
+    const decoded = decode(decodeCredentialRegistryUpsertInputResult(input));
+    if (Result.isFailure(decoded)) return Effect.fail(decoded.failure);
+    return Effect.gen(function* () {
+      const entry = decoded.success.credential;
+      const plaintextValue =
+        entry.kind === "pi-auth" ? serializePiAuthProviders(entry.providers) : entry.token;
+      const codexCredential =
+        entry.kind === "pi-auth" ? entry.providers["openai-codex"] : undefined;
+      const expires = codexCredential?.type === "oauth" ? codexCredential.expires : undefined;
+      const versionRef = yield* Effect.tryPromise({
+        try: async () => {
+          const digest = await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(plaintextValue),
+          );
+          return Array.from(new Uint8Array(digest), (byte) =>
+            byte.toString(16).padStart(2, "0"),
+          ).join("");
+        },
+        catch: () => invalidInput(),
+      });
+      const plaintext = Redacted.make(plaintextValue);
+      const envelope = yield* credentialCrypto
+        .encrypt(installation, entry.name, versionRef, entry.kind, plaintext)
+        .pipe(
+          Effect.mapError(cryptoFailure),
+          Effect.ensuring(Effect.sync(() => void Redacted.wipeUnsafe(plaintext))),
+        );
+      return yield* transact(async (authority, now) => {
+        const existing = authority.credentials.find(({ name }) => name === entry.name);
+        if (existing !== undefined && existing.kind !== entry.kind)
+          return Result.fail(
+            failure("credential_conflict", "Credential kind conflicts with authority"),
+          );
+        if (existing !== undefined && decoded.success.expectedVersionRef === undefined)
+          return Result.fail(
+            failure(
+              "credential_conflict",
+              "Credential version is required when updating an existing credential",
+            ),
+          );
+        if (
+          decoded.success.expectedVersionRef !== undefined &&
+          existing?.currentVersionRef !== decoded.success.expectedVersionRef
+        )
+          return Result.fail(failure("credential_conflict", "Credential version is stale"));
+        const versions = [...authority.versions];
+        const current = versions.find(
+          (version) =>
+            version.name === entry.name &&
+            version.kind === entry.kind &&
+            version.versionRef === versionRef,
+        );
+        if (
+          current !== undefined &&
+          (!sameCredential(current.envelope, envelope) || current.expires !== expires)
+        )
+          return Result.fail(
+            failure("credential_conflict", "Credential version conflicts with authority"),
+          );
+        if (current === undefined)
+          versions.push({
+            name: entry.name,
+            kind: entry.kind,
+            versionRef,
+            envelope,
+            createdAt: new Date(now).toISOString(),
+            ...(expires === undefined ? {} : { expires }),
+          });
+        const credentials: CredentialRegistryCredential[] = [
+          ...authority.credentials.filter(({ name }) => name !== entry.name),
+          {
+            name: entry.name,
+            kind: entry.kind,
+            scope: entry.scope,
+            ...(entry.kind === "github-cli" && entry.repositories !== undefined
+              ? { repositories: entry.repositories }
+              : {}),
+            currentVersionRef: versionRef,
+          },
+        ];
+        const next = garbageCollect({ ...authority, credentials, versions });
+        const updated = next.credentials.find(({ name }) => name === entry.name);
+        const result = updated === undefined ? undefined : status(updated, next);
+        return result === undefined
+          ? Result.fail(invalidAuthority())
+          : Result.succeed({ value: result, authority: next });
+      });
+    });
+  };
+
   const syncEncrypted = (
     input: unknown,
   ): Effect.Effect<CredentialRegistrySyncResult, CredentialRegistryFailure> => {
@@ -643,7 +774,9 @@ const makeCredentialStore = (
 
   return CredentialStore.of({
     sync,
+    upsert,
     list,
+    statuses,
     issueGrants: issue,
     resolve,
     resolveGithubCliCredential,

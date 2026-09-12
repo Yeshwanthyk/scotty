@@ -247,6 +247,9 @@ const command = (
 
 const metadataInput = (request: CreateControllerRequest): SessionActorMetadataInput => ({
   ...(request.session.selection === undefined ? {} : { selection: request.session.selection }),
+  ...(request.session.configuration === undefined
+    ? {}
+    : { configuration: request.session.configuration }),
   ...(request.codexControl === undefined ? {} : { codexControl: request.codexControl }),
   branch: request.branch,
   createRepositoryIfMissing: request.createRepositoryIfMissing,
@@ -273,7 +276,8 @@ const validateExistingMetadata = (
     return Effect.fail(new CreateControllerConflict({ sessionId: request.session.id }));
   return metadata.sessionId === request.session.id &&
     metadata.repository === request.session.repository &&
-    JSON.stringify(metadata.selection) === JSON.stringify(request.session.selection)
+    JSON.stringify(metadata.selection) === JSON.stringify(request.session.selection) &&
+    JSON.stringify(metadata.configuration) === JSON.stringify(request.session.configuration)
     ? Effect.void
     : Effect.fail(new CreateControllerInvariantFailure({ code: "metadata_reservation_invalid" }));
 };

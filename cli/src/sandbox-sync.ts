@@ -1,6 +1,8 @@
 import { Effect, Schema } from "effect";
 import {
-  CredentialRedactedMetadataSchema,
+  CredentialNameSchema,
+  CredentialRepositoriesSchema,
+  CredentialVersionRefSchema,
   type CredentialName,
   type CredentialRepositories,
   type CredentialScope,
@@ -42,13 +44,20 @@ export type ScottyCredentialSyncMaterial =
       readonly token: string;
     };
 
-const CredentialRegistrySyncResultSchema = Schema.Struct({
-  credentials: Schema.Array(CredentialRedactedMetadataSchema),
+const CredentialRegistryStatusSchema = Schema.Struct({
+  name: CredentialNameSchema,
+  kind: Schema.Literals(["pi-auth", "github-cli"]),
+  scope: Schema.Literals(["global", "repository"]),
+  repositories: Schema.optionalKey(CredentialRepositoriesSchema),
+  configured: Schema.Boolean,
+  versionRef: CredentialVersionRefSchema,
+  expires: Schema.optionalKey(Schema.Finite),
 });
-const decodeCredentialRegistrySyncResult = Schema.decodeUnknownEffect(
-  CredentialRegistrySyncResultSchema,
+const decodeCredentialRegistryStatuses = Schema.decodeUnknownEffect(
+  Schema.Array(CredentialRegistryStatusSchema),
   { onExcessProperty: "error" },
 );
+const decodeCredentialRegistryStatus = Schema.decodeUnknownEffect(CredentialRegistryStatusSchema);
 const decodeSandboxRemoteConfigStatus = Schema.decodeUnknownEffect(SandboxRemoteConfigStatusSchema);
 
 const sandboxBundleActivationConflict = (message: string, hint: string): CliError =>
@@ -77,14 +86,6 @@ const credentialRegistrySyncConflict = (): CliError =>
     "Credential registry synchronization conflicted",
     "Retry scotty sync.",
     EXIT.WRONG_STATE,
-  );
-
-const credentialRegistrySyncPartial = (): CliError =>
-  new CliError(
-    "credential_registry_sync_partial",
-    "Credentials committed, but bundle synchronization did not complete",
-    "Credentials are committed; retry scotty sync so the operation converges.",
-    EXIT.GENERIC,
   );
 
 const credentialRegistrySyncFailed = (): CliError =>
@@ -174,37 +175,53 @@ export const synchronizeSandboxBundle = Effect.fnUntraced(function* (input: {
   return remoteSnapshot(input.built, uploaded);
 });
 
-export const synchronizeScottyToml = Effect.fnUntraced(function* (input: {
-  readonly built: BuiltSandboxBundle;
-  readonly target: SandboxSyncTarget;
-}) {
-  const remote = yield* synchronizeSandboxBundle({ target: input.target, built: input.built });
-  return { built: input.built, remote };
-});
-
 export const synchronizeCredentialRegistry = Effect.fnUntraced(function* (input: {
   readonly target: SandboxSyncTarget;
   readonly credentials: ReadonlyArray<ScottyCredentialSyncMaterial>;
 }) {
-  const value = yield* requestJson(input.target, "/api/credentials/sync", {
-    method: "POST",
-    body: JSON.stringify({
-      credentials: input.credentials,
-    }),
-  }).pipe(Effect.mapError(mapCredentialTransportError));
-  return yield* decodeCredentialRegistrySyncResult(value).pipe(
+  const existing = yield* requestJson(input.target, "/api/credentials").pipe(
+    Effect.mapError(mapCredentialTransportError),
+    Effect.flatMap((value) => decodeCredentialRegistryStatuses(value)),
     Effect.mapError(() => credentialRegistrySyncFailed()),
   );
-});
-
-export const synchronizeCredentialedScottyToml = Effect.fnUntraced(function* (input: {
-  readonly target: SandboxSyncTarget;
-  readonly built: BuiltSandboxBundle;
-  readonly credentials: ReadonlyArray<ScottyCredentialSyncMaterial>;
-}) {
-  yield* synchronizeCredentialRegistry({ target: input.target, credentials: input.credentials });
-  const remote = yield* synchronizeSandboxBundle({ target: input.target, built: input.built }).pipe(
-    Effect.mapError(() => credentialRegistrySyncPartial()),
-  );
-  return { built: input.built, remote };
+  const statuses: Array<typeof CredentialRegistryStatusSchema.Type> = [];
+  for (const credential of input.credentials) {
+    const agentCredentials = existing.filter(({ kind }) => kind === "pi-auth");
+    if (credential.kind === "pi-auth" && agentCredentials.length > 1)
+      return yield* credentialRegistrySyncConflict();
+    const name =
+      credential.kind === "pi-auth" && agentCredentials.length === 1
+        ? agentCredentials[0].name
+        : credential.name;
+    const current = existing.find((status) => status.name === name);
+    if (current !== undefined && current.kind !== credential.kind)
+      return yield* credentialRegistrySyncConflict();
+    if (
+      credential.kind === "github-cli" &&
+      current?.scope === "repository" &&
+      current.repositories === undefined
+    )
+      return yield* credentialRegistrySyncConflict();
+    const material =
+      credential.kind === "github-cli" && current !== undefined
+        ? {
+            ...credential,
+            name,
+            scope: current.scope,
+            ...(current.repositories === undefined ? {} : { repositories: current.repositories }),
+          }
+        : { ...credential, name };
+    const value = yield* requestJson(input.target, `/api/credentials/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        credential: material,
+        ...(current === undefined ? {} : { expectedVersionRef: current.versionRef }),
+      }),
+    }).pipe(Effect.mapError(mapCredentialTransportError));
+    const decoded = yield* decodeCredentialRegistryStatus(value).pipe(
+      Effect.mapError(() => credentialRegistrySyncFailed()),
+    );
+    statuses.push(decoded);
+  }
+  return { credentials: statuses };
 });

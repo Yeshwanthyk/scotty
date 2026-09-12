@@ -113,6 +113,36 @@ const runCommand = (
 };
 
 describe("Scotty TOML configuration boundary", () => {
+  it.effect("publishes an explicit skills directory without a TOML file", () =>
+    withTempDirectory((home) =>
+      Effect.gen(function* () {
+        const skills = join(home, "skills");
+        yield* Effect.promise(() => mkdir(join(skills, "example"), { recursive: true }));
+        yield* Effect.promise(() => writeFile(join(skills, "example", "SKILL.md"), "# Example\n"));
+        const paths: string[] = [];
+        const invocation = runCommand(["--json", "sandbox", "push", "--skills-root", skills], {
+          home,
+          cwd: home,
+          env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "root-secret" },
+          fetch: async (input, init) => {
+            const path = new URL(new Request(input, init).url).pathname;
+            paths.push(path);
+            return Response.json({
+              revision: path === "/api/sandbox/configuration" ? 0 : 1,
+              activeDigest: null,
+            });
+          },
+        });
+        assert.strictEqual(yield* invocation.effect, EXIT.OK);
+        const result = JSON.parse(invocation.stdout.join(""));
+        assert.deepStrictEqual(result.items, [{ kind: "skill", name: "example" }]);
+        assert.deepStrictEqual(paths, [
+          "/api/sandbox/configuration",
+          `/api/sandbox/bundles/${result.digest}`,
+        ]);
+      }),
+    ),
+  );
   it.effect("parses as unknown and strictly decodes the target surface", () =>
     Effect.gen(function* () {
       const decoded = success(
