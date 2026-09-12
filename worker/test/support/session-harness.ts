@@ -578,6 +578,7 @@ export interface HarnessOptions {
   readonly commandStdout?: (command: string) => string | undefined;
   readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
   readonly containerPlacementId?: string | null;
+  readonly onGetContainerPlacementId?: () => void | Promise<void>;
   readonly containerPlacementIdAfterExpose?: string | null;
   readonly destroyBehavior?: "pending" | "reject" | "success";
   readonly evidenceEnabled?: boolean;
@@ -1631,7 +1632,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: async () => ({ status: runtimeStatus }),
     },
     getContainerPlacementId: {
-      value: async () => currentContainerPlacementId,
+      value: async () => {
+        await options.onGetContainerPlacementId?.();
+        return currentContainerPlacementId;
+      },
     },
     acceptScottyEvidenceJob: {
       value: (value: unknown) => sandbox[SANDBOX_TEST_ACCEPT_EVIDENCE](value),

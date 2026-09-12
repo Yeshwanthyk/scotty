@@ -31,6 +31,7 @@ const sandbox = vi.hoisted(() => ({
   sleepScottySession: vi.fn(),
   resumeScottySession: vi.fn(),
   prepareDownArchive: vi.fn(),
+  prepareCodexRolloutArchive: vi.fn(),
   readScottyArchiveStream: vi.fn(),
   getSession: vi.fn(),
   vaporizeScottySession: vi.fn(),
@@ -2574,6 +2575,27 @@ describe("real Hono boundary", () => {
     );
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.text()).toBe("archive");
+  });
+
+  it("streams the authenticated Codex rollout archive without invoking Down", async () => {
+    sandbox.prepareCodexRolloutArchive.mockResolvedValue({
+      bytes: new TextEncoder().encode("native archive"),
+      filename: "scotty-a0b1c2d3e4f5-codex-rollouts.tar",
+    });
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/codex/rollouts",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/x-tar");
+    expect(response.headers.get("content-disposition")).toBe(
+      'attachment; filename="scotty-a0b1c2d3e4f5-codex-rollouts.tar"',
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toBe("native archive");
+    expect(sandbox.prepareDownArchive).not.toHaveBeenCalled();
+    expect(sandbox.readScottyArchiveStream).not.toHaveBeenCalled();
   });
 
   it("preserves 200 pass-through output for ordinary session command routes", async () => {

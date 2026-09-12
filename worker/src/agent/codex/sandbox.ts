@@ -35,6 +35,8 @@ const decodeInterruptResult = Schema.decodeUnknownEffect(
   { onExcessProperty: "error" },
 );
 export const codexSandboxProcessId = (generation: string) => `scotty-codex-${generation}`;
+export const codexSandboxHome = (generation: string) =>
+  `/tmp/scotty-codex-${generation}/runtime/codex-home`;
 const failure = (message: string) => new SandboxRuntimeFailure({ reason: "transport", message });
 export class CodexMessageAdmissionUnknown extends Data.TaggedError(
   "CodexMessageAdmissionUnknown",

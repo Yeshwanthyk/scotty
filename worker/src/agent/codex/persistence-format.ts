@@ -59,17 +59,15 @@ export const CodexSavedHistory = Schema.Struct({
 );
 export const CODEX_SAVED_STATE_MAX_BYTES = 16 * 1024 * 1024;
 export const CODEX_SAVED_HISTORY_MAX_BYTES = 512 * 1024;
+export const CODEX_ROLLOUT_RELATIVE_PATH =
+  /^sessions\/[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/rollout-[A-Za-z0-9_.-]+\.jsonl$/u;
 export const CodexSavedState = Schema.Struct({
   version: Schema.Literal(1),
   nativeVersion: Schema.Literal(CODEX_VERSION),
   history: CodexSavedHistory,
   files: Schema.Array(
     Schema.Struct({
-      path: Schema.String.check(
-        Schema.isPattern(
-          /^sessions\/[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/rollout-[A-Za-z0-9_.-]+\.jsonl$/u,
-        ),
-      ),
+      path: Schema.String.check(Schema.isPattern(CODEX_ROLLOUT_RELATIVE_PATH)),
       content: Schema.NonEmptyString,
     }),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(128)),

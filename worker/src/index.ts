@@ -1116,6 +1116,23 @@ app.get("/api/sessions/:id/down", async (c) => {
   });
 });
 
+app.get("/api/sessions/:id/codex/rollouts", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const id = parseSessionId(c.req.param("id"));
+  const sandbox = sessionSandbox(c.env, id);
+  const archive = await sandbox.prepareCodexRolloutArchive();
+  const bytes = new Uint8Array(archive.bytes.byteLength);
+  bytes.set(archive.bytes);
+  return new Response(new Blob([bytes]), {
+    headers: {
+      "content-type": "application/x-tar",
+      "content-disposition": `attachment; filename="${archive.filename}"`,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
+});
+
 app.delete("/api/sessions/:id", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));

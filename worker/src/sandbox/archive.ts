@@ -69,6 +69,7 @@ const parseTarMember = (
   offset: number,
   seen: Set<string>,
   fileCount: number,
+  maximumFileBytes: number,
 ): Result.Result<ParsedTarMemberResult, SandboxArchiveInvalid> => {
   const header = bytes.subarray(offset, offset + BLOCK);
   const name = field(header, 0, 100);
@@ -85,7 +86,7 @@ const parseTarMember = (
     return Result.fail(sandboxArchiveInvalid("Sandbox archive contains an unsupported mode"));
   if (!Number.isFinite(size) || size < 0)
     return Result.fail(sandboxArchiveInvalid("Sandbox archive is malformed"));
-  if (size > SANDBOX_MAX_FILE_BYTES)
+  if (size > maximumFileBytes)
     return Result.fail(
       sandboxArchiveInvalid("Sandbox archive file exceeds the per-file size limit"),
     );
@@ -118,6 +119,7 @@ const parseTarMember = (
 };
 export const parseSandboxTar = (
   bytes: Uint8Array,
+  maximumFileBytes = SANDBOX_MAX_FILE_BYTES,
 ): Result.Result<ReadonlyArray<ParsedTarMember>, SandboxArchiveInvalid> => {
   const members: ParsedTarMember[] = [];
   const seen = new Set<string>();
@@ -126,7 +128,7 @@ export const parseSandboxTar = (
   while (offset + BLOCK <= bytes.length) {
     const header = bytes.subarray(offset, offset + BLOCK);
     if (header.every((byte) => byte === 0)) break;
-    const parsed = parseTarMember(bytes, offset, seen, fileCount);
+    const parsed = parseTarMember(bytes, offset, seen, fileCount, maximumFileBytes);
     if (Result.isFailure(parsed)) return Result.fail(parsed.failure);
     members.push(parsed.success.member);
     fileCount = parsed.success.fileCount;
