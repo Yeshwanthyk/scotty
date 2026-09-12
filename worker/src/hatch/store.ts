@@ -1054,6 +1054,12 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
               : isRestoreCleanupAuthorized(hatch, operationNonce, authority);
           if (!matches) return Result.fail(changed());
         }
+        // A delayed prior Resume must not replay cleanup against a newer lease,
+        // including the already-pending path that can revoke an exposed port.
+        if (authority === "runtime_start") {
+          const lease = await requireRestoreLease(transaction, hatch.sessionId, operationNonce);
+          if (Result.isFailure(lease)) return Result.fail(lease.failure);
+        }
         if (isCleanupAlreadyPending(hatch, operationNonce, target, closeDesired))
           return Result.succeed(hatch);
         if (isCleanupAlreadySettled(hatch, target, closeDesired)) return Result.succeed(undefined);
