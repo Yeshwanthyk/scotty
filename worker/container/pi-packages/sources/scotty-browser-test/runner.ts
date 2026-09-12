@@ -376,7 +376,12 @@ const startNodeRecorder = async (
   viewport: BrowserEvidenceJob["viewport"],
   path: string,
 ): Promise<RunnerRecorder> => {
-  const startedAtMillis = performance.now();
+  const startedAtWallMillis = Date.now();
+  const startedAtMonotonicMillis = performance.now();
+  const clockDiscontinuous = () =>
+    Math.abs(
+      (Date.now() - startedAtWallMillis - (performance.now() - startedAtMonotonicMillis)) * 1_000,
+    ) > RECORDER_FRAME_INTERVAL_MICROS;
   const process_ = managedProcess("ffmpeg", [
     "-nostdin",
     "-hide_banner",
@@ -469,11 +474,11 @@ const startNodeRecorder = async (
   return {
     checkpoint: async () => {
       // x11grab produces real-time frames and output PTS starts after spawn.
-      // One full frame interval beyond this monotonic checkpoint excludes a
-      // previously captured frame even if FFmpeg reports its packet end time.
+      // Two frame intervals cover packet-end reporting and the maximum allowed
+      // wall-clock drift relative to this monotonic checkpoint.
       const targetMicros =
-        Math.max(1, (performance.now() - startedAtMillis) * 1_000) +
-        RECORDER_FRAME_INTERVAL_MICROS;
+        Math.max(1, (performance.now() - startedAtMonotonicMillis) * 1_000) +
+        2 * RECORDER_FRAME_INTERVAL_MICROS;
       await new Promise<void>((resolve, reject) => {
         const finish = (error?: BrowserTestFailure) => {
           clearTimeout(timeout);
@@ -482,8 +487,10 @@ const startNodeRecorder = async (
           else reject(error);
         };
         const check = () => {
-          if (recordedMicros >= targetMicros) finish();
-          else if (invalidProgress || exited)
+          if (invalidProgress || clockDiscontinuous())
+            finish(new BrowserTestFailure("failed", "artifact_invalid"));
+          else if (recordedMicros >= targetMicros) finish();
+          else if (exited)
             finish(new BrowserTestFailure("failed", "artifact_invalid"));
         };
         const timeout = setTimeout(
