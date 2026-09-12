@@ -18,8 +18,8 @@ Redact secrets, recovery fragments, authenticated links, cookies, and nonces.
 
 Keep these owners separate:
 
-- Local TOML declares capability sources, repository policy, and credential-source pointers.
-- Installation state owns the deployed resource identity and registered repositories.
+- The local installation pointer names deployed resources and carries root access.
+- Cloud settings own agent defaults and application environment; the installation registry owns repositories.
 - The credential registry owns grants, refresh leases, and immutable credential versions.
 - Each Session Durable Object owns lifecycle, operation, backup, Hatch, and session-grant state.
 - KV, lists, browser summaries, container files, and process memory are projections, not authority.
@@ -38,7 +38,9 @@ Run `scotty upgrade` to install the latest published signed CLI and its bundled 
 Then read `scotty skill show` and, for live diagnostics, `scotty skill show scotty-live-observability`.
 Upgrade does not deploy the Worker: review `deploy --plan --json` before an authorized
 `deploy --yes --json`. The executable deploys its bundled release code, not current Git main.
-Keep the managed installation/profile, Cloudflare auth, Docker, and TOML source roots available.
+Keep the managed installation/profile, Cloudflare auth, and Docker available.
+Use `scotty sandbox push` with explicit `--skills-root`, `--package`, `--tools-root`, or
+`--extensions-root` paths when publishing local resources.
 
 Host-agent loaders are separate from the bundled guides. `init` and `upgrade` do not write them.
 For automatic discovery, use the host agent's configured filesystem skill directory and a small
@@ -52,32 +54,30 @@ Use this order, adapting command arguments from current help:
 
 1. Verify executable provenance and freshness, prerequisites, Cloudflare target, GitHub access, and
    repository.
-2. Validate mode-0600 local TOML before `init`. It contains pointers and policy, never credentials.
-   A repository-scoped GitHub grant must be no broader than the allow-list.
-3. Review the exact init plan before approval. If resource creation succeeds but final config or
-   bundle sync fails, preserve the installation pointer, fix the local cause, and run `sync`; do not
-   rerun create-only init.
-4. Sync, register the repository, and establish browser ownership. Local allow-list, credential
-   scope, synchronized grant, and deployed registration are separate checks; registration repairs
-   none of the others.
+2. Collect the explicit installation name, preview DNS base and zone, default agent/model, repository,
+   ordinary application environment, and optional private local credential sources. Keep Pi and
+   Codex auth sources mutually exclusive; use a single active agent credential.
+3. Review the exact init plan before approval. Init saves cloud defaults and registers the supplied
+   repositories after deployment. If cloud setup fails after the local pointer is saved, retry init
+   with the same name and setup flags; the CLI resumes setup without reprovisioning.
+4. Confirm cloud settings, repository registration, any refreshed credential, and browser ownership.
 5. Create a fresh session and prove repository access, Pi work, and any intended Hatch service.
 
-Complete only when config validation, sync, doctor, registration, browser ownership, and one fresh
+Complete only when cloud setup, doctor, registration, browser ownership, and one fresh
 warm session agree. Stop on multiple matching Pi grants, missing GitHub identity, or binding
 overwrite ambiguity; never select, fabricate, or replace authority implicitly.
 
 ## Select an agent
 
-Inspect `scotty beam --help` and the private `~/.config/scotty/scotty.toml`. Precedence is explicit
-`--agent`, then `[agent].default`, then Pi. Use `pi` or `codex`; `codex-app-server` is not a config
-value. The TOML still requires its existing version, sync, and repos sections.
+Inspect `scotty beam --help` and cloud Settings. Precedence is explicit
+`--agent`, then the saved cloud default. Use `pi` or `codex`; `codex-app-server` is not a config
+value.
 
-`[agents.codex]` owns model and effort. `[agents.pi]` owns provider, model, and effort. Flags
+Cloud Codex settings own model and effort; Pi settings own provider, model, and effort. Flags
 `--model` and `--effort` override only the selected profile; Pi's `--model-provider` overrides its
-model provider. `--provider` remains execution placement. Missing TOML preserves existing Pi
-behavior; malformed present config fails. Beam validates config without reading credential sources
-or resolving sync directories. Do not add a `codex-auth` declaration: current credential kinds are
-`pi-auth` and `github-cli`.
+model provider. `--provider` remains execution placement. Beam reads cloud settings without reading local credential sources or resolving bundle
+directories. The credential kinds are `pi-auth` and `github-cli`; `--codex-auth` refreshes the sole
+agent credential with a local Codex OAuth source.
 
 Codex supports creation, passive read, terminal follow-up messages, active-turn steering,
 interruption, sleep/resume, and vaporize. `scotty steer` selects a new message when idle and native
@@ -90,7 +90,7 @@ Standalone checkpoint and Scotty's public shared skill catalog remain unavailabl
 filesystem skills are separate. Pi keeps its
 current controls.
 
-TOML changes affect new Sessions. Pi verifies requested settings before its first prompt; native
+Cloud settings changes affect new Sessions. Pi verifies requested settings before its first prompt; native
 saved Session settings remain current on resume. A successful beam proves admission, so read until
 the intended terminal response before claiming the agent completed work.
 

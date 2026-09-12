@@ -1,4 +1,9 @@
 import { Schema } from "effect";
+import {
+  CloudSettingsSchema,
+  CloudSettingsUpdateSchema,
+  type CloudSettingsUpdate,
+} from "../../../protocol/cloud-settings";
 
 export const SandboxDigestSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -83,8 +88,19 @@ export const SandboxConfigAuthoritySchema = Schema.Struct({
   revision: NonNegativeIntSchema,
   activeDigest: Schema.NullOr(SandboxDigestSchema),
   lastSync: Schema.NullOr(SandboxConfigLastSyncSchema),
+  settings: Schema.optionalKey(CloudSettingsSchema),
+  lastSettingsUpdate: Schema.optionalKey(
+    Schema.Struct({
+      idempotencyKey: Schema.NonEmptyString,
+      expectedRevision: NonNegativeIntSchema,
+      settings: CloudSettingsSchema,
+    }),
+  ),
 });
 export type SandboxConfigAuthority = typeof SandboxConfigAuthoritySchema.Type;
+
+export const SandboxSettingsUpdateSchema = CloudSettingsUpdateSchema;
+export type SandboxSettingsUpdate = CloudSettingsUpdate;
 
 export const SandboxActivateInputSchema = Schema.Struct({
   digest: SandboxDigestSchema,

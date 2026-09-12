@@ -45,8 +45,13 @@ import {
   type SessionOperationOutput,
   type VaporizeOutput,
 } from "./schemas";
-import { readLocalPiAuth } from "./pi-auth";
+import { readLocalCodexAuth, readLocalPiAuth } from "./pi-auth";
+import { configureInitCloud, initCloudFailure, parseInitCloudChoices } from "./init-cloud";
 import { PI_AUTH_MAX_MATERIAL_BYTES, serializePiAuthProviders } from "../../protocol/pi-auth";
+import {
+  decodeCloudSettingsSnapshot,
+  type CloudSettingsSnapshot,
+} from "../../protocol/cloud-settings";
 import { isRepositoryIdentity } from "../../protocol/repository";
 import {
   browserUrl,
@@ -66,20 +71,13 @@ import {
   usage,
   type ReadMessage,
 } from "./pure";
+import { resolveSandboxBundleRoots } from "./sandbox-roots";
 import {
-  formatScottyConfigCheck,
-  loadScottyTomlConfig,
-  loadOptionalScottyAgentConfig,
-  resolveConfiguredCredentialSource,
-  scottyConfigCheckOutput,
-} from "./scotty-config";
-import {
-  synchronizeCredentialedScottyToml,
-  synchronizeScottyToml,
+  synchronizeCredentialRegistry,
+  synchronizeSandboxBundle,
   type ScottyCredentialSyncMaterial,
-  type SandboxSyncTarget,
 } from "./sandbox-sync";
-import { buildScottyTomlBundle, bundleItemSummaries } from "./scotty-bundle";
+import { buildSandboxBundle, bundleItemSummaries } from "./sandbox-bundle-builder";
 import {
   BrowserLauncher,
   CliRuntime,
@@ -113,20 +111,24 @@ import {
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 
 const beamAgentSelection = Effect.fnUntraced(function* (
-  home: string,
+  target: { readonly host: string; readonly token: string },
   agent: Option.Option<"pi" | "codex">,
   modelProvider: Option.Option<string>,
   model: Option.Option<string>,
   effort: Option.Option<string>,
 ) {
-  const configured = yield* loadOptionalScottyAgentConfig(home);
-  const selectedAgent = Option.getOrElse(agent, () => configured?.agent?.default ?? "pi");
-  const profile = configured?.agents?.[selectedAgent];
-  const piProvider = selectedAgent === "pi" ? configured?.agents?.pi?.provider : undefined;
+  const snapshotValue = yield* requestJson(target, "/api/settings");
+  const decoded = decodeCloudSettingsSnapshot(snapshotValue);
+  if (Result.isFailure(decoded)) return yield* invalidResponse("Server returned invalid settings");
+  const snapshot: CloudSettingsSnapshot = decoded.success;
+  const selectedAgent = Option.getOrElse(agent, () => snapshot.settings.agent);
+  const profile = snapshot.settings[selectedAgent];
+  const piProvider =
+    selectedAgent === "pi" && profile.agent === "pi" ? profile.modelProvider : undefined;
   const selection = decodeAgentSelection({
     agent: selectedAgent,
-    ...(profile?.model === undefined ? {} : { model: profile.model }),
-    ...(profile?.effort === undefined ? {} : { effort: profile.effort }),
+    ...(profile.model === undefined ? {} : { model: profile.model }),
+    ...(profile.effort === undefined ? {} : { effort: profile.effort }),
     ...(piProvider === undefined ? {} : { modelProvider: piProvider }),
     ...(Option.isSome(modelProvider) ? { modelProvider: modelProvider.value } : {}),
     ...(Option.isSome(model) ? { model: model.value } : {}),
@@ -134,7 +136,7 @@ const beamAgentSelection = Effect.fnUntraced(function* (
   });
   if (Result.isFailure(selection))
     return yield* usage(
-      "Codex requires a supported model and effort from flags or its TOML profile; --model-provider is Pi-only; Pi overrides must be valid model settings",
+      "Codex requires a supported model and effort from flags or cloud settings; --model-provider is Pi-only; overrides must be valid model settings",
     );
   return Option.isSome(agent) || selectedAgent !== "pi" || Object.keys(selection.success).length > 1
     ? selection.success
@@ -259,79 +261,88 @@ const readLocalGithubCliToken = Effect.fnUntraced(function* () {
   return token;
 });
 
-const prepareScottyTomlBundle = Effect.fnUntraced(function* (home: string, cwd: string) {
-  const loaded = yield* loadScottyTomlConfig({ home, cwd });
-  return yield* buildScottyTomlBundle(loaded);
+const readPrivateCredentialText = Effect.fnUntraced(function* (path: string) {
+  const fileSystem = yield* CliFileSystem;
+  return yield* fileSystem
+    .readPrivateText(path)
+    .pipe(
+      Effect.mapError(
+        () =>
+          new CliError(
+            "credential_registry_sync_invalid",
+            "Credential source must be a readable private regular file",
+            `Use a non-symlinked mode-0600 file at ${path} and retry scotty sync.`,
+            EXIT.USAGE,
+          ),
+      ),
+    );
 });
 
-const prepareScottyTomlSync = Effect.fnUntraced(function* (home: string, cwd: string) {
-  const loaded = yield* loadScottyTomlConfig({ home, cwd });
-  const built = yield* buildScottyTomlBundle(loaded);
+const localCredentialMaterials = Effect.fnUntraced(function* (input: {
+  readonly home: string;
+  readonly cwd: string;
+  readonly piAuth?: string;
+  readonly codexAuth?: string;
+  readonly githubTokenFile?: string;
+  readonly githubCli: boolean;
+}) {
+  if (input.piAuth !== undefined && input.codexAuth !== undefined)
+    return yield* usage(
+      "Choose either --pi-auth or --codex-auth; only one agent credential can be active",
+    );
   const credentials: ScottyCredentialSyncMaterial[] = [];
-  for (const [name, declaration] of Object.entries(loaded.config.credentials ?? {}).toSorted(
-    ([left], [right]) => left.localeCompare(right),
-  )) {
-    if (declaration.kind === "pi-auth") {
-      const local = yield* readLocalPiAuth(
-        resolveConfiguredCredentialSource(declaration.source, home, cwd),
+  const path = (value: string): string => (isAbsolute(value) ? value : join(input.cwd, value));
+  if (input.piAuth !== undefined) {
+    const local = yield* readLocalPiAuth(path(input.piAuth));
+    if (
+      new TextEncoder().encode(serializePiAuthProviders(local.providerStore)).byteLength >
+      PI_AUTH_MAX_MATERIAL_BYTES
+    )
+      return yield* new CliError(
+        "credential_registry_sync_invalid",
+        "Pi auth material exceeds the size limit",
+        "Reduce the auth file and retry scotty sync.",
+        EXIT.USAGE,
       );
-      if (
-        new TextEncoder().encode(serializePiAuthProviders(local.providerStore)).byteLength >
-        PI_AUTH_MAX_MATERIAL_BYTES
-      )
-        return yield* new CliError(
-          "credential_registry_sync_invalid",
-          "Declared Pi auth material exceeds the size limit",
-          "Reduce the declared Pi auth file and retry scotty sync.",
-          EXIT.USAGE,
-        );
-      credentials.push({
-        name,
-        kind: "pi-auth",
-        scope: declaration.scope,
-        providers: local.providerStore,
-      });
-    } else {
-      const token = yield* readLocalGithubCliToken();
-      credentials.push({
-        name,
-        kind: "github-cli",
-        scope: declaration.scope,
-        ...(declaration.repositories === undefined
-          ? {}
-          : { repositories: declaration.repositories }),
-        token,
-      });
-    }
+    credentials.push({
+      name: "pi",
+      kind: "pi-auth",
+      scope: "global",
+      providers: local.providerStore,
+    });
   }
-  return { built, credentials } as const;
-});
-
-const mapLifecycleSyncError = (failure: CliError): CliError => {
-  const hint = failure.hint;
-  const preservesCorrectionContext =
-    failure.code === "scotty_config_invalid" ||
-    failure.code === "scotty_config_read_failed" ||
-    failure.code === "sandbox_source_invalid" ||
-    failure.code === "sandbox_package_unsupported" ||
-    failure.code === "sandbox_bundle_too_large";
-  const mappedHint = hint.includes("scotty sync")
-    ? hint
-    : preservesCorrectionContext
-      ? `${hint} Run scotty sync after correcting the issue.`
-      : "Retry scotty sync.";
-  return new CliError(failure.code, failure.message, mappedHint, failure.exitCode);
-};
-
-const synchronizeInstallationSandbox = Effect.fnUntraced(function* (
-  home: string,
-  cwd: string,
-  target: SandboxSyncTarget,
-) {
-  return yield* Effect.gen(function* () {
-    const built = yield* prepareScottyTomlBundle(home, cwd);
-    return yield* synchronizeScottyToml({ built, target });
-  }).pipe(Effect.mapError(mapLifecycleSyncError));
+  if (input.codexAuth !== undefined) {
+    const local = yield* readLocalCodexAuth(path(input.codexAuth));
+    credentials.push({
+      name: "codex",
+      kind: "pi-auth",
+      scope: "global",
+      providers: local.providerStore,
+    });
+  }
+  if (input.githubTokenFile !== undefined || input.githubCli) {
+    const token =
+      input.githubTokenFile === undefined
+        ? yield* readLocalGithubCliToken()
+        : (yield* readPrivateCredentialText(path(input.githubTokenFile))).trim();
+    if (
+      token.length === 0 ||
+      new TextEncoder().encode(token).byteLength > PI_AUTH_MAX_MATERIAL_BYTES
+    )
+      return yield* new CliError(
+        "credential_registry_sync_invalid",
+        "GitHub credential is empty or too large",
+        "Provide a valid private token source and retry scotty sync.",
+        EXIT.USAGE,
+      );
+    credentials.push({ name: "github", kind: "github-cli", scope: "global", token });
+  }
+  if (credentials.length === 0)
+    return yield* usage(
+      "sync requires a credential source",
+      "Pass --pi-auth, --codex-auth, --github-token-file, or --github.",
+    );
+  return credentials;
 });
 
 const consumeAuthorizedDeploymentPlan = Effect.fnUntraced(function* (
@@ -352,8 +363,7 @@ const consumeAuthorizedDeploymentPlan = Effect.fnUntraced(function* (
         authorized.cliVersion !== current.cliVersion ||
         authorized.installationName !== current.installationName ||
         authorized.accountId !== current.accountId ||
-        authorized.planFingerprint !== current.planFingerprint ||
-        authorized.bundleDigest !== current.bundleDigest;
+        authorized.planFingerprint !== current.planFingerprint;
       if (changed)
         return yield* new CliError(
           "deployment_plan_changed",
@@ -670,7 +680,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Unique lowercase name for this Scotty installation"),
       ),
       profile: Flag.string("profile").pipe(
-        Flag.withDefault("default"),
+        Flag.optional,
         Flag.withDescription("Alchemy Cloudflare authentication profile"),
       ),
       previewBase: Flag.string("preview-base").pipe(
@@ -685,8 +695,61 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDefault(false),
         Flag.withDescription("Confirm the displayed installation"),
       ),
+      agent: Flag.choice("agent", ["pi", "codex"]).pipe(
+        Flag.optional,
+        Flag.withDescription("Default agent (pi or codex)"),
+      ),
+      modelProvider: Flag.string("model-provider").pipe(
+        Flag.optional,
+        Flag.withDescription("Default Pi model provider"),
+      ),
+      model: Flag.string("model").pipe(Flag.optional, Flag.withDescription("Default agent model")),
+      effort: Flag.string("effort").pipe(
+        Flag.optional,
+        Flag.withDescription("Default agent reasoning effort"),
+      ),
+      repos: Flag.string("repos").pipe(
+        Flag.optional,
+        Flag.withDescription("Comma-separated GitHub OWNER/NAME repositories"),
+      ),
+      environment: Flag.string("env").pipe(
+        Flag.optional,
+        Flag.withDescription("Comma-separated application KEY=VALUE entries (non-secret)"),
+      ),
+      piAuth: Flag.string("pi-auth").pipe(
+        Flag.optional,
+        Flag.withDescription("Private Pi auth.json source"),
+      ),
+      codexAuth: Flag.string("codex-auth").pipe(
+        Flag.optional,
+        Flag.withDescription("Private Codex auth.json source"),
+      ),
+      githubTokenFile: Flag.string("github-token-file").pipe(
+        Flag.optional,
+        Flag.withDescription("Private GitHub token source"),
+      ),
+      github: Flag.boolean("github").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Read local gh auth token"),
+      ),
     },
-    ({ name, previewBase, previewZoneId, profile, yes }) =>
+    ({
+      name,
+      previewBase,
+      previewZoneId,
+      profile,
+      yes,
+      agent,
+      modelProvider,
+      model,
+      effort,
+      repos,
+      environment,
+      piAuth,
+      codexAuth,
+      githubTokenFile,
+      github,
+    }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         const interactive = !options.json && runtime.stdinIsTTY && runtime.stdoutIsTTY;
@@ -695,7 +758,18 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (options.host || options.tokenFile)
           return yield* usage("init does not accept --host or --token-file");
         const installationName = yield* requireInstallationName("init", name);
-        const preview = yield* optionalPreviewConfiguration(previewBase, previewZoneId);
+        const selectedProfile =
+          Option.getOrUndefined(profile) ??
+          ((interactive ? runtime.prompt("Cloudflare profile [default]: ")?.trim() : undefined) ||
+            "default");
+        const preview = yield* optionalPreviewConfiguration(
+          interactive && Option.isNone(previewBase)
+            ? Option.fromNullishOr(runtime.prompt("Preview DNS base: ")?.trim())
+            : previewBase,
+          interactive && Option.isNone(previewZoneId)
+            ? Option.fromNullishOr(runtime.prompt("Cloudflare preview zone ID: ")?.trim())
+            : previewZoneId,
+        );
         if (preview === undefined)
           return yield* usage(
             "init requires --preview-base and --preview-zone-id for Hatch and Evidence",
@@ -706,6 +780,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const lockPath = join(runtime.home, ".scotty", "locks", `init-${installationName}`);
         yield* fileSystem.withLock(
           lockPath,
+          // oxlint-disable-next-line complexity -- init composes journal recovery, provider creation, and cloud setup in one fenced operation
           Effect.gen(function* () {
             const journalText = yield* fileSystem.readPrivateText(journalPath).pipe(
               Effect.map(Option.some),
@@ -737,6 +812,112 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 `Verify Cloudflare state before removing ${journalPath} or retrying scotty init; the journal was preserved and init will not retry automatically.`,
                 EXIT.GENERIC,
               );
+            const setupInput = {
+              agent: Option.getOrUndefined(agent),
+              modelProvider: Option.getOrUndefined(modelProvider),
+              model: Option.getOrUndefined(model),
+              effort: Option.getOrUndefined(effort),
+              repos: Option.getOrUndefined(repos),
+              environment: Option.getOrUndefined(environment),
+            };
+            const settingsExplicit = [
+              setupInput.agent,
+              setupInput.modelProvider,
+              setupInput.model,
+              setupInput.effort,
+              setupInput.environment,
+            ].some((value) => value !== undefined);
+            const credentialSources = {
+              home: runtime.home,
+              cwd: runtime.cwd,
+              piAuth: Option.getOrUndefined(piAuth),
+              codexAuth: Option.getOrUndefined(codexAuth),
+              githubTokenFile: Option.getOrUndefined(githubTokenFile),
+              githubCli: github,
+            };
+            if (interactive && !yes && Option.isNone(existingJournal)) {
+              const answer = (label: string): string | undefined =>
+                runtime.prompt(label)?.trim() || undefined;
+              const selected =
+                setupInput.agent ?? answer("Default agent [pi/codex, default pi]: ") ?? "pi";
+              if (selected !== "pi" && selected !== "codex")
+                return yield* usage("Default agent must be pi or codex");
+              setupInput.agent = selected;
+              if (selected === "pi") {
+                setupInput.modelProvider ??= answer("Pi model provider [agent default]: ");
+                setupInput.model ??= answer("Pi model [agent default]: ");
+                setupInput.effort ??= answer("Pi reasoning effort [agent default]: ");
+                credentialSources.piAuth ??= answer("Private Pi auth.json path [skip]: ");
+              } else {
+                setupInput.model ??= answer("Codex model [gpt-5.6-sol]: ") ?? "gpt-5.6-sol";
+                setupInput.effort ??= answer("Codex effort [high]: ") ?? "high";
+                credentialSources.codexAuth ??= answer("Private Codex auth.json path [skip]: ");
+              }
+              setupInput.repos ??= answer(
+                "GitHub repositories, comma-separated OWNER/NAME [skip]: ",
+              );
+              setupInput.environment ??= answer(
+                "Non-secret app environment, comma-separated KEY=VALUE [skip]: ",
+              );
+              if (credentialSources.githubTokenFile === undefined && !credentialSources.githubCli) {
+                const source = answer("GitHub credential source [skip/gh/private file path]: ");
+                if (source === "gh") credentialSources.githubCli = true;
+                else credentialSources.githubTokenFile = source;
+              }
+            }
+            const setup = yield* parseInitCloudChoices(setupInput);
+            if (github && credentialSources.githubTokenFile !== undefined)
+              return yield* usage("Choose --github or --github-token-file, not both");
+            const hasCredentialSources =
+              credentialSources.piAuth !== undefined ||
+              credentialSources.codexAuth !== undefined ||
+              credentialSources.githubTokenFile !== undefined ||
+              credentialSources.githubCli;
+            const localCredentials = hasCredentialSources
+              ? yield* localCredentialMaterials(credentialSources)
+              : [];
+            initUi.reviewSetup(
+              setup.settings.agent,
+              setup.repositories.length,
+              Object.keys(setup.settings.environment).length,
+              localCredentials.map(({ name }) => name),
+            );
+            const configureCloud = (target: { readonly host: string; readonly token: string }) =>
+              Effect.gen(function* () {
+                yield* configureInitCloud({
+                  target,
+                  settings: setup.settings,
+                  repositories: setup.repositories,
+                  settingsExplicit,
+                });
+                if (localCredentials.length > 0)
+                  yield* synchronizeCredentialRegistry({ target, credentials: localCredentials });
+              }).pipe(Effect.mapError(initCloudFailure));
+            const configPath = managedInstallationPath(runtime.home);
+            const existingConfig = yield* readConfig(configPath);
+            if (
+              Option.isNone(existingJournal) &&
+              existingConfig.installationName === installationName &&
+              existingConfig.host &&
+              existingConfig.token
+            ) {
+              yield* configureCloud({ host: existingConfig.host, token: existingConfig.token });
+              const result = {
+                configPath,
+                installationName,
+                profile: existingConfig.profile,
+                accountId: existingConfig.accountId,
+                workerName: existingConfig.workerName,
+                host: existingConfig.host,
+                rootTokenRotated: false,
+              };
+              if (autoJson) outputJson(runtime.stdout, result);
+              else
+                runtime.stdout(
+                  "Cloud setup is ready. Run `scotty owner recover` to activate browser access.\n",
+                );
+              return;
+            }
             const dockerPhase = initUi.phase("Checking Docker");
             yield* ensureDocker().pipe(
               Effect.onExit((exit) =>
@@ -746,7 +927,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const creator = yield* InstallationCreator;
             const deploymentTarget = {
               installationName,
-              profile,
+              profile: selectedProfile,
               previewBase: preview.base,
               previewZoneId: preview.zoneId,
               evidenceEnabled,
@@ -768,7 +949,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             yield* validateInitPlan(
               existingJournal,
               installationName,
-              profile,
+              selectedProfile,
               plan,
               topology,
               journalPath,
@@ -781,7 +962,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 );
               initUi.review({
                 installationName,
-                profile,
+                profile: selectedProfile,
                 accountId: plan.accountId,
                 workerName: topology.workerName,
                 runnerWorkerName: topology.runnerWorkerName,
@@ -812,7 +993,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               operation: "init" as const,
               phase: "prepared" as const,
               installationName,
-              profile,
+              profile: selectedProfile,
               accountId: plan.accountId,
               stackName: topology.stackName,
               workerName: topology.workerName,
@@ -858,7 +1039,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 ),
               );
             const host = yield* Effect.fromResult(normalizeHost(deployed.host));
-            const configPath = managedInstallationPath(runtime.home);
             yield* secureWrite(
               configPath,
               `${JSON.stringify(managedConfig({ ...deployed, host }, token), null, 2)}\n`,
@@ -879,6 +1059,17 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                       ),
                 ),
               );
+            const setupPhase = initUi.phase("Saving cloud settings");
+            yield* configureCloud({ host, token }).pipe(
+              Effect.onExit((exit) =>
+                finishUiPhase(
+                  setupPhase,
+                  exit,
+                  "Cloud settings saved",
+                  "Cloud setup needs a retry",
+                ),
+              ),
+            );
             const result = {
               configPath,
               installationName: deployed.installationName,
@@ -888,23 +1079,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               host,
               rootTokenRotated: true,
             };
-            const syncPhase = initUi.phase("Synchronizing sandbox capabilities");
-            yield* synchronizeInstallationSandbox(runtime.home, runtime.cwd, { host, token }).pipe(
-              Effect.onExit((exit) =>
-                finishUiPhase(
-                  syncPhase,
-                  exit,
-                  "Sandbox capabilities synchronized",
-                  "Sandbox capability synchronization failed",
-                ),
-              ),
-            );
             if (autoJson) outputJson(runtime.stdout, result);
             else {
               initUi.complete();
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
               runtime.stdout(
-                "Scotty is deployed and synchronized. Browser access is not active yet.\nRun `scotty owner recover` next to activate it.\n",
+                "Scotty is deployed. Browser access is not active yet.\nRun `scotty owner recover` next to activate it.\n",
               );
             }
           }),
@@ -1247,11 +1427,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               "Managed installation credentials are missing",
               "Run scotty recover --name NAME first.",
             );
-          const built = yield* prepareScottyTomlBundle(runtime.home, runtime.cwd).pipe(
-            Effect.mapError(mapLifecycleSyncError),
-          );
           yield* ensureDocker();
-          return { accountId, built, config, installationName, profile, token };
+          return { accountId, config, installationName, profile, token };
         }).pipe(
           Effect.onExit((exit) =>
             finishUiPhase(
@@ -1262,7 +1439,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             ),
           ),
         );
-        const { accountId, built, config, installationName, profile, token } = prerequisites;
+        const { accountId, config, installationName, profile, token } = prerequisites;
         const deployer = yield* InstallationDeployer;
         const request = {
           installationName,
@@ -1297,11 +1474,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           installationName,
           accountId: plan.accountId,
           planFingerprint: plan.fingerprint,
-          bundleDigest: built.digest,
         };
         deployUi.review({
           fingerprint: plan.fingerprint,
-          bundleDigest: built.digest,
           changes: plan.changes,
         });
         if (planOnly) {
@@ -1310,7 +1485,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             installationName,
             version: VERSION,
             plan: plan.fingerprint,
-            bundle: built.digest,
             changes: plan.changes,
           };
           if (autoJson) outputJson(runtime.stdout, result);
@@ -1322,7 +1496,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             installationName,
             version: VERSION,
             plan: plan.fingerprint,
-            bundle: built.digest,
             changed: false,
             changes: [],
             rootTokenRotated: false,
@@ -1332,30 +1505,11 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               "Scotty host is not configured",
               "Run scotty init or pass --host / SCOTTY_HOST.",
             );
-          const host = yield* Effect.fromResult(normalizeHost(config.host));
           yield* consumeAuthorizedDeploymentPlan(runtime.home, savedPlan);
           const resourcePhase = deployUi.phase("Applying resource changes");
           resourcePhase.succeed("No provider resource operations needed");
           const readinessPhase = deployUi.phase("Verifying rollout readiness");
           readinessPhase.succeed("No provider rollout was required");
-          const syncPhase = deployUi.phase("Synchronizing sandbox bundle");
-          yield* synchronizeScottyToml({
-            built,
-            target: {
-              host,
-              token,
-            },
-          }).pipe(
-            Effect.mapError(mapLifecycleSyncError),
-            Effect.onExit((exit) =>
-              finishUiPhase(
-                syncPhase,
-                exit,
-                "Sandbox bundle is synchronized",
-                "Sandbox bundle synchronization failed",
-              ),
-            ),
-          );
           if (autoJson) outputJson(runtime.stdout, result);
           else deployUi.applyComplete(0, 0);
           return;
@@ -1435,7 +1589,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           installationName: deployed.installationName,
           version: VERSION,
           plan: plan.fingerprint,
-          bundle: built.digest,
           profile: deployed.profile,
           workerName: deployed.workerName,
           host,
@@ -1443,18 +1596,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           changes: plan.changes,
           rootTokenRotated: false,
         };
-        const syncPhase = deployUi.phase("Synchronizing sandbox bundle");
-        yield* synchronizeScottyToml({ built, target: { host, token } }).pipe(
-          Effect.mapError(mapLifecycleSyncError),
-          Effect.onExit((exit) =>
-            finishUiPhase(
-              syncPhase,
-              exit,
-              "Sandbox bundle is synchronized",
-              "Sandbox bundle synchronization failed",
-            ),
-          ),
-        );
         if (autoJson) outputJson(runtime.stdout, result);
         else deployUi.applyComplete(plan.changes.length, succeededProviderOperations);
       }),
@@ -1475,7 +1616,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       ),
       agent: Flag.choice("agent", ["pi", "codex"]).pipe(
         Flag.optional,
-        Flag.withDescription("Agent override; otherwise agent.default in scotty.toml, then Pi"),
+        Flag.withDescription("Agent override; otherwise use the cloud default"),
       ),
       modelProvider: Flag.string("model-provider").pipe(
         Flag.optional,
@@ -1483,11 +1624,11 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       ),
       model: Flag.string("model").pipe(
         Flag.optional,
-        Flag.withDescription("Model override for the selected agent's TOML profile"),
+        Flag.withDescription("Model override for the selected cloud agent profile"),
       ),
       effort: Flag.string("effort").pipe(
         Flag.optional,
-        Flag.withDescription("Reasoning effort override for the selected agent's TOML profile"),
+        Flag.withDescription("Reasoning effort override for the selected cloud agent profile"),
       ),
       cap: Flag.string("cap").pipe(
         Flag.optional,
@@ -1519,14 +1660,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (!normalizedTitle || normalizedTitle.length > 120)
           return yield* usage("--title must be between 1 and 120 characters");
         if (!isRepositoryIdentity(repo)) return yield* usage("--repo must be OWNER/NAME");
-        const selection = yield* beamAgentSelection(
-          runtime.home,
-          agent,
-          modelProvider,
-          model,
-          effort,
-        );
         const auth = yield* credentials(options);
+        const selection = yield* beamAgentSelection(auth, agent, modelProvider, model, effort);
         const hardCapSeconds = Option.isSome(cap)
           ? yield* Effect.fromResult(durationSeconds(cap.value))
           : undefined;
@@ -1869,44 +2004,103 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Stop the active turn in a warm session or sandbox peer"));
 
-  const configCheck = Command.make("check", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, options, runtime } = yield* commandContext();
-      if (options.host !== undefined || options.tokenFile !== undefined)
-        return yield* usage(
-          "config check does not accept --host or --token-file",
-          "This command only reads the local TOML configuration.",
-        );
-      const loaded = yield* loadScottyTomlConfig({ home: runtime.home, cwd: runtime.cwd });
-      const result = scottyConfigCheckOutput(loaded);
-      if (autoJson) outputJson(runtime.stdout, result);
-      else runtime.stdout(formatScottyConfigCheck(loaded));
-    }),
-  ).pipe(Command.withDescription("Validate the local TOML configuration without network access"));
+  const sync = Command.make(
+    "sync",
+    {
+      piAuth: Flag.string("pi-auth").pipe(Flag.optional, Flag.withDescription("Pi auth.json path")),
+      codexAuth: Flag.string("codex-auth").pipe(
+        Flag.optional,
+        Flag.withDescription("Codex auth.json path"),
+      ),
+      githubTokenFile: Flag.string("github-token-file").pipe(
+        Flag.optional,
+        Flag.withDescription("Private file containing a GitHub token"),
+      ),
+      github: Flag.boolean("github").pipe(
+        Flag.withDefault(false),
+        Flag.withDescription("Read the GitHub CLI credential from gh auth token"),
+      ),
+    },
+    ({ codexAuth, github, githubTokenFile, piAuth }) =>
+      Effect.gen(function* () {
+        const { autoJson, options, runtime } = yield* commandContext();
+        const target = yield* credentials(options);
+        const synced = yield* synchronizeCredentialRegistry({
+          target,
+          credentials: yield* localCredentialMaterials({
+            home: runtime.home,
+            cwd: runtime.cwd,
+            piAuth: Option.getOrUndefined(piAuth),
+            codexAuth: Option.getOrUndefined(codexAuth),
+            githubTokenFile: Option.getOrUndefined(githubTokenFile),
+            githubCli: github,
+          }),
+        });
+        const result = {
+          credentials: synced.credentials,
+        };
+        if (autoJson) outputJson(runtime.stdout, result);
+        else runtime.stdout(`Refreshed ${result.credentials.length} credential(s).\n`);
+      }),
+  ).pipe(Command.withDescription("Refresh selected local credentials in the cloud vault"));
 
-  const config = Command.make("config").pipe(
-    Command.withDescription("Inspect local Scotty configuration"),
-    Command.withSubcommands([configCheck]),
+  const sandboxPush = Command.make(
+    "push",
+    {
+      skills: Flag.string("skills-root").pipe(
+        Flag.atMost(100),
+        Flag.withDescription("Directory containing skills; repeat for multiple roots"),
+      ),
+      packages: Flag.string("package").pipe(
+        Flag.atMost(100),
+        Flag.withDescription("Pi package directory; repeat for multiple packages"),
+      ),
+      tools: Flag.string("tools-root").pipe(
+        Flag.atMost(100),
+        Flag.withDescription("Directory containing tools; repeat for multiple roots"),
+      ),
+      extensions: Flag.string("extensions-root").pipe(
+        Flag.atMost(100),
+        Flag.withDescription("Directory containing extensions; repeat for multiple roots"),
+      ),
+    },
+    ({ extensions, packages, skills, tools }) =>
+      Effect.gen(function* () {
+        const { autoJson, options, runtime } = yield* commandContext();
+        const target = yield* credentials(options);
+        const hasRoots = [skills, packages, tools, extensions].some((roots) => roots.length > 0);
+        if (!hasRoots)
+          return yield* usage(
+            "sandbox push requires at least one resource directory",
+            "Pass --skills-root, --package, --tools-root, or --extensions-root.",
+          );
+        const roots = yield* resolveSandboxBundleRoots({
+          home: runtime.home,
+          cwd: runtime.cwd,
+          skills,
+          packages,
+          tools,
+          extensions,
+        });
+        const built = yield* buildSandboxBundle(roots);
+        const synced = yield* synchronizeSandboxBundle({ target, built });
+        const result = {
+          digest: built.digest,
+          items: bundleItemSummaries(built.manifest),
+          status: synced,
+        };
+        if (autoJson) outputJson(runtime.stdout, result);
+        else
+          runtime.stdout(
+            `Published sandbox bundle ${result.digest} (${result.items.length} items).\n`,
+          );
+      }),
+  ).pipe(Command.withDescription("Publish selected local sandbox resources"));
+
+  const sandbox = Command.make("sandbox").pipe(
+    Command.withDescription("Manage explicit sandbox resource bundles"),
+    Command.withSubcommands([sandboxPush]),
   );
-
-  const sync = Command.make("sync", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, options, runtime } = yield* commandContext();
-      const prepared = yield* prepareScottyTomlSync(runtime.home, runtime.cwd);
-      const target = yield* credentials(options);
-      const synced = yield* synchronizeCredentialedScottyToml({
-        built: prepared.built,
-        credentials: prepared.credentials,
-        target,
-      });
-      const result = {
-        digest: synced.built.digest,
-        items: bundleItemSummaries(synced.built.manifest),
-      };
-      if (autoJson) outputJson(runtime.stdout, result);
-      else runtime.stdout(`Synchronized bundle ${result.digest} (${result.items.length} items).\n`);
-    }),
-  ).pipe(Command.withDescription("Build and synchronize the configured TOML bundle"));
 
   const skillShow = Command.make(
     "show",
@@ -2424,8 +2618,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       upgrade,
       uninstall,
       repo,
-      config,
       sync,
+      sandbox,
       skill,
       beam,
       list,

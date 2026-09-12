@@ -96,6 +96,10 @@ export type MetadataStoreMutationError =
   | MetadataStoreMutationOutcomeUnknown;
 
 export interface SessionActorMetadataStoreShape {
+  readonly readCreateReservation: () => Effect.Effect<
+    SessionActorMetadata | undefined,
+    MetadataStoreReadError
+  >;
   readonly inspectCreate: (
     authority: SessionAuthority,
     input: SessionActorMetadataInput,
@@ -174,6 +178,11 @@ export const makeSessionActorMetadataStore = (
   port: MetadataStoragePort,
   mutationTimeout: Duration.Input = "5 seconds",
 ): SessionActorMetadataStoreShape => {
+  const readCreateReservation = () =>
+    Effect.tryPromise({
+      try: () => port.read(),
+      catch: () => new MetadataStoreReadFailure({ operation: "read" }),
+    }).pipe(Effect.flatMap((raw) => Effect.fromResult(decodeCurrent(raw, "read"))));
   const read: SessionActorMetadataStoreShape["read"] = (authority) =>
     Effect.tryPromise({
       try: () => port.read(),
@@ -341,6 +350,7 @@ export const makeSessionActorMetadataStore = (
   });
 
   return SessionActorMetadataStore.of({
+    readCreateReservation,
     inspectCreate,
     read,
     admitCreate,

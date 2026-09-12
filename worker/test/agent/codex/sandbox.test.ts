@@ -149,7 +149,17 @@ describe("Codex Sandbox adapter", () => {
           });
         },
       });
-      const processId = yield* startCodexSandbox(identity, [grant]).pipe(Effect.provide(layer));
+      const processId = yield* startCodexSandbox(
+        {
+          ...identity,
+          configuration: {
+            revision: 3,
+            bundleDigest: "b".repeat(64),
+            environment: { APP_MODE: "pinned" },
+          },
+        },
+        [grant],
+      ).pipe(Effect.provide(layer));
       assert.equal(processId, "scotty-codex-generation-1");
       assert.include(commands[0], "umask 077 && mkdir");
       assert.notInclude(commands[0], "mkdir -p");
@@ -162,6 +172,8 @@ describe("Codex Sandbox adapter", () => {
       assert.include(launch, '"model":"gpt-5.4","effort":"high"');
       assert.include(launch, '"expiresAt":1000');
       assert.include(launch, '"sessionId":"a0b1c2d3e4f5"');
+      assert.include(launch, '"environment":{"APP_MODE":"pinned"}');
+      assert.include(launch, `"sandboxBundleDigest":"${"b".repeat(64)}"`);
       assert.notInclude(launch, identity.token);
       assert.notInclude(launch, "auth.json");
     }),

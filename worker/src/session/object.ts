@@ -1,4 +1,6 @@
 import { codexFollowUpStorage } from "./store";
+import { resolveSessionConfiguration } from "../session-actor/configuration";
+import { decodeCloudSettingsSnapshot } from "../../../protocol/cloud-settings";
 import {
   decodeCodexFollowUps,
   emptyCodexFollowUps,
@@ -1153,11 +1155,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
             )
               return yield* rejectBoundary("create_private_payload_fence_mismatch");
 
-            const config = yield* Effect.tryPromise({
-              try: () => env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).status(),
-              catch: () => rejectBoundary("create_sandbox_config_unavailable"),
-            });
-            if (!config.ok) return yield* rejectBoundary("create_sandbox_config_unavailable");
+            // Older admitted sessions have no configuration snapshot. Only their legacy
+            // recovery path reads the active bundle; all new sessions use admission's pin.
+            const bundleDigest =
+              authority.session.configuration === undefined
+                ? yield* Effect.tryPromise({
+                    try: () => env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).status(),
+                    catch: () => rejectBoundary("create_sandbox_config_unavailable"),
+                  }).pipe(
+                    Effect.flatMap((config) =>
+                      config.ok
+                        ? Effect.succeed(config.value.activeDigest)
+                        : Effect.fail(rejectBoundary("create_sandbox_config_unavailable")),
+                    ),
+                  )
+                : authority.session.configuration.bundleDigest;
 
             const registry = env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
             if (registry === undefined)
@@ -1188,7 +1200,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             return {
               payloadReference,
               runtimeGeneration: transition.attempt,
-              sandboxBundleDigest: config.value.activeDigest,
+              sandboxBundleDigest: bundleDigest,
               githubHandle,
               credentials: sessionRuntimeCredentials(decoded.success.grants),
               grants: decoded.success.grants,
@@ -3268,10 +3280,49 @@ export class Sandbox extends BaseSandbox<Bindings> {
         { httpStatus: 400, exitCode: 2 },
       );
     const controller = yield* CreateController;
+    const metadataStore = yield* SessionActorMetadataStore;
+    const reservation = yield* metadataStore
+      .readCreateReservation()
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Session configuration is unavailable", undefined),
+        ),
+      );
+    const pinned =
+      reservation === undefined
+        ? yield* Effect.tryPromise({
+            try: () => this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).settings(),
+            catch: () => this.upstreamError("Cloud settings are unavailable", undefined),
+          }).pipe(
+            Effect.flatMap((result) =>
+              result.ok
+                ? Effect.fromResult(decodeCloudSettingsSnapshot(result.value)).pipe(
+                    Effect.mapError(() =>
+                      this.upstreamError("Cloud settings are invalid", undefined),
+                    ),
+                  )
+                : Effect.fail(this.upstreamError("Cloud settings are unavailable", undefined)),
+            ),
+            Effect.flatMap((snapshot) =>
+              Effect.fromResult(resolveSessionConfiguration(snapshot, input.selection)),
+            ),
+            Effect.mapError(() =>
+              this.upstreamError("Cloud settings are invalid or unavailable", undefined),
+            ),
+          )
+        : { selection: reservation.selection, configuration: reservation.configuration };
+    if (
+      pinned.selection?.agent === "codex" &&
+      new TextEncoder().encode(input.prompt).length > 64 * 1024
+    )
+      return yield* new ScottyError("bad_request", "Codex prompt exceeds its UTF-8 byte limit", {
+        httpStatus: 400,
+        exitCode: 2,
+      });
     const now = yield* Clock.currentTimeMillis;
     const nowIso = new Date(now).toISOString();
     const request: CreateControllerRequest = {
-      ...(input.selection?.agent === "codex"
+      ...(pinned.selection?.agent === "codex"
         ? {
             codexControl: {
               token: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
@@ -3285,7 +3336,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
         id,
         title: input.title,
         repository: input.repo,
-        ...(input.selection === undefined ? {} : { selection: input.selection }),
+        ...(pinned.selection === undefined ? {} : { selection: pinned.selection }),
+        ...(pinned.configuration === undefined ? {} : { configuration: pinned.configuration }),
         execution: { provider: "cloudflare", runtimeName: id },
         createdAt: nowIso,
       },

@@ -4,32 +4,6 @@ export const AMBIENT_CREDENTIAL_ENV_NAMES = Object.freeze([
   "CREDENTIAL_WRAPPING_KEY",
 ]);
 
-export function formatCredentialToml({ repo, piAuthPath }) {
-  return [
-    "version = 1",
-    "",
-    "[sync]",
-    "skills = []",
-    "packages = []",
-    "tools = []",
-    "extensions = []",
-    "",
-    "[repos]",
-    `allowed = [${JSON.stringify(repo)}]`,
-    "",
-    "[credentials.codex]",
-    'kind = "pi-auth"',
-    `source = ${JSON.stringify(piAuthPath)}`,
-    'scope = "global"',
-    "",
-    "[credentials.github]",
-    'kind = "github-cli"',
-    'scope = "repository"',
-    `repositories = [${JSON.stringify(repo)}]`,
-    "",
-  ].join("\n");
-}
-
 export function withoutAmbientCredentialEnvironment(source = process.env) {
   return Object.fromEntries(
     Object.entries(source).filter(([name]) => !AMBIENT_CREDENTIAL_ENV_NAMES.includes(name)),

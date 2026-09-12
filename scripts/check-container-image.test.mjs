@@ -227,6 +227,8 @@ describe("final container image gate", () => {
     assert.match(nativePi, /PI_OFFLINE/u);
     assert.match(nativePi, /https:\/\/scotty\.internal\/api\/hatch\/restore/u);
     assert.match(nativePi, /hatch-restore\.called/u);
+    assert.match(nativePi, /cloud-example/u);
+    assert.match(nativePi, /listedPackages/u);
     assert.doesNotMatch(nativePi, /packagedSettings\.packages\s*=/u);
     const nativeCodex = containerImageNativeCodexAdapterArgs(plan).join(" ");
     assert.match(nativeCodex, /scotty-codex-server/u);
@@ -238,6 +240,10 @@ describe("final container image gate", () => {
     assert.match(nativeCodex, /settings\.effort/u);
     assert.match(nativeCodex, /approvalPolicy/u);
     assert.match(nativeCodex, /dangerFullAccess/u);
+    assert.match(nativeCodex, /APP_MODE=pinned/u);
+    assert.match(nativeCodex, /skills\/list/u);
+    assert.match(nativeCodex, /cloud-example/u);
+    assert.match(nativeCodex, /sandboxBundleDigest/u);
     assert.match(nativeCodex, /\/stop/u);
     assert.match(nativeCodex, /--network=none/u);
     const inventory = containerImageToolInventoryArgs(plan).join(" ");

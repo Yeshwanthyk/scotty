@@ -147,6 +147,7 @@ const providerLayer = (
   );
   const metadataStore = Layer.succeed(SessionActorMetadataStore)(
     SessionActorMetadataStore.of({
+      readCreateReservation: () => Effect.die("unused"),
       read: (current) => Effect.succeed(metadata(current)),
       inspectCreate: () => Effect.die("unused"),
       admitCreate: () => Effect.die("unused"),

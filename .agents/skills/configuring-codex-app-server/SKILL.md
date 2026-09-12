@@ -62,8 +62,8 @@ and preserve typed ambiguity after dispatch. Sleep settles the active turn and s
 native conversation files and bounded display history through the existing Session backup. Resume
 requires that backup's native thread and initial turn identities, regenerates private configuration,
 and verifies the same thread in a fresh runtime before publishing readiness. A missing or invalid
-save must fail rather than start a new conversation. Standalone checkpoint and shared skill
-discovery remain unavailable; preserve those guards.
+save must fail rather than start a new conversation. Standalone checkpoint remains unavailable;
+shared skill discovery is supported by the native session.
 
 Public `steer` remains active steering by default; `--follow-up` explicitly selects the DO-owned
 queue. Preserve its bounded pending items and idempotency receipts across eviction and sleep.

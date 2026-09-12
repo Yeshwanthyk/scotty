@@ -169,9 +169,7 @@ const resolveInput = Effect.fnUntraced(function* (
       "create_sandbox_input_fence_mismatch",
       observedAt,
     );
-  return context.authority.session.selection?.agent === "codex"
-    ? { ...input, sandboxBundleDigest: null }
-    : input;
+  return input;
 });
 
 const runtimeProof = Effect.fnUntraced(function* (
@@ -298,6 +296,11 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         sessionId: context.authority.session.id,
         generation,
         selection,
+        ...(context.authority.session.configuration === undefined
+          ? {}
+          : {
+              configuration: context.authority.session.configuration,
+            }),
         token: metadata.codexControl.token,
         initialPrompt: metadata.codexControl.initialPrompt,
       };
@@ -408,12 +411,10 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       const materialized = yield* beforeTransitionDeadline(
         context,
         "create_bundle_materialization_timeout",
-        context.authority.session.selection?.agent === "codex"
-          ? Effect.succeed({ items: [], bundleRoot: undefined, digest: null })
-          : materializer.materialize({
-              sessionId: context.authority.session.id,
-              digest: input.sandboxBundleDigest,
-            }),
+        materializer.materialize({
+          sessionId: context.authority.session.id,
+          digest: input.sandboxBundleDigest,
+        }),
       ).pipe(
         Effect.mapError((error) =>
           Predicate.isTagged(error, "CreateProviderFailure")
@@ -474,6 +475,19 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         );
       }
       const proof = yield* runtimeProof(runtime, context, input.runtimeGeneration);
+      const environment = context.authority.session.configuration?.environment;
+      if (environment !== undefined && Object.keys(environment).length > 0)
+        yield* beforeTransitionDeadline(
+          context,
+          "create_environment_timeout",
+          runtime.setEnvVars(environment),
+        ).pipe(
+          Effect.mapError((error) =>
+            Predicate.isTagged(error, "CreateProviderFailure")
+              ? error
+              : mapRuntimeFailure(error, "create_environment_failed", observedAt),
+          ),
+        );
       const marker: RuntimeMaterializationMarker = {
         attempt: context.transition.attempt,
         payloadReference: context.payload.reference,

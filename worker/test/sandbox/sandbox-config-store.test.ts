@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import type { SandboxConfigAuthority } from "../../src/sandbox/config-contracts";
+import { defaultCloudSettings } from "../../../protocol/cloud-settings";
 import {
   type SandboxConfigAuthorityStorage,
   SandboxConfigStore,
@@ -60,6 +61,50 @@ describe("sandbox config store", () => {
       const persisted = storage.snapshot() as SandboxConfigAuthority;
       assert.strictEqual(persisted.revision, 1);
       assert.strictEqual(persisted.activeDigest, "a".repeat(64));
+    }),
+  );
+
+  it.effect("stores cloud settings under the same revision as the active bundle", () =>
+    Effect.gen(function* () {
+      const storage = makeStorage();
+      const initial = yield* Effect.flatMap(SandboxConfigStore, (store) => store.settings()).pipe(
+        Effect.provide(storage.layer),
+      );
+      assert.deepEqual(initial, {
+        revision: 0,
+        activeDigest: null,
+        settings: defaultCloudSettings,
+      });
+      const settings = {
+        ...defaultCloudSettings,
+        environment: { APP_MODE: "test" },
+      };
+      const updated = yield* Effect.flatMap(SandboxConfigStore, (store) =>
+        store.updateSettings({ expectedRevision: 0, idempotencyKey: "settings-1", settings }),
+      ).pipe(Effect.provide(storage.layer));
+      assert.deepEqual(updated, { revision: 1, activeDigest: null, settings });
+      const replay = yield* Effect.flatMap(SandboxConfigStore, (store) =>
+        store.updateSettings({ expectedRevision: 0, idempotencyKey: "settings-1", settings }),
+      ).pipe(Effect.provide(storage.layer));
+      assert.deepEqual(replay, updated);
+      const activated = yield* Effect.flatMap(SandboxConfigStore, (store) =>
+        store.activate({
+          digest: "a".repeat(64),
+          idempotencyKey: "bundle-after-settings",
+          expectedRevision: 1,
+        }),
+      ).pipe(Effect.provide(storage.layer));
+      assert.deepEqual(activated, { revision: 2, activeDigest: "a".repeat(64) });
+      const afterBundle = yield* Effect.flatMap(SandboxConfigStore, (store) =>
+        store.settings(),
+      ).pipe(Effect.provide(storage.layer));
+      assert.deepEqual(afterBundle, { revision: 2, activeDigest: "a".repeat(64), settings });
+      const stale = yield* Effect.flip(
+        Effect.flatMap(SandboxConfigStore, (store) =>
+          store.updateSettings({ expectedRevision: 0, idempotencyKey: "settings-2", settings }),
+        ).pipe(Effect.provide(storage.layer)),
+      );
+      assert.strictEqual(stale.reason, "conflict");
     }),
   );
 

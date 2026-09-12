@@ -111,6 +111,8 @@ const runnerRegistry = vi.hoisted(() => ({
 
 const sandboxConfig = vi.hoisted(() => ({
   status: vi.fn(),
+  settings: vi.fn(),
+  updateSettings: vi.fn(),
   activate: vi.fn(),
   listRepos: vi.fn(),
   addRepo: vi.fn(),
@@ -124,12 +126,13 @@ vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
 }));
 
 const credentialRegistry = vi.hoisted(() => ({
-  sync: vi.fn(),
   issueGrants: vi.fn(),
   list: vi.fn(),
   resolve: vi.fn(),
   resolveGithubCliCredential: vi.fn(),
   release: vi.fn(),
+  statuses: vi.fn(),
+  upsert: vi.fn(),
 }));
 
 import { createDeterministicTarGz } from "../../../cli/src/sandbox-archive";
@@ -619,6 +622,19 @@ describe("real Hono boundary", () => {
       ok: true,
       value: { revision: 0, activeDigest: null },
     });
+    sandboxConfig.settings.mockResolvedValue({
+      ok: true,
+      value: {
+        revision: 0,
+        activeDigest: null,
+        settings: {
+          agent: "pi",
+          pi: { agent: "pi" },
+          codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
+          environment: {},
+        },
+      },
+    });
     sandboxConfig.activate.mockResolvedValue({
       ok: true,
       value: { revision: 1, activeDigest: "a".repeat(64) },
@@ -644,7 +660,7 @@ describe("real Hono boundary", () => {
         value: { sessionId: input.sessionId, grants: DEFAULT_CREDENTIAL_GRANTS },
       }),
     );
-    credentialRegistry.sync.mockResolvedValue({ ok: true, value: { credentials: [] } });
+    credentialRegistry.statuses.mockResolvedValue({ ok: true, value: [] });
   });
 
   it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
@@ -952,54 +968,109 @@ describe("real Hono boundary", () => {
     expect(sandbox.getScottyDeploymentReadiness).toHaveBeenCalledTimes(1);
   });
 
-  it("syncs a complete redacted credential desired set through the Registry", async () => {
-    credentialRegistry.sync.mockResolvedValue({
-      ok: true,
-      value: {
-        credentials: [
-          {
-            name: "github",
-            kind: "github-cli",
-            scope: "repository",
-            repositories: ["owner/repo"],
-            configured: true,
-          },
-        ],
+  it("reads and updates cloud settings through the authenticated API", async () => {
+    const read = await app.request(
+      "/api/settings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toEqual({
+      revision: 0,
+      activeDigest: null,
+      settings: {
+        agent: "pi",
+        pi: { agent: "pi" },
+        codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
+        environment: {},
       },
     });
-    const request = {
-      credentials: [
-        {
-          name: "github",
-          kind: "github-cli",
-          scope: "repository",
-          repositories: ["owner/repo"],
-          token: "github-token-must-not-be-returned",
+
+    const settings = {
+      agent: "pi",
+      pi: { agent: "pi" },
+      codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
+      environment: { APP_MODE: "test" },
+    } as const;
+    sandboxConfig.updateSettings.mockResolvedValueOnce({
+      ok: true,
+      value: { revision: 1, activeDigest: null, settings },
+    });
+    const update = await app.request(
+      "/api/settings",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
         },
-      ],
+        body: JSON.stringify({ expectedRevision: 0, idempotencyKey: "settings-route-1", settings }),
+      },
+      env(),
+    );
+    expect(update.status).toBe(200);
+    expect(sandboxConfig.updateSettings).toHaveBeenCalledWith({
+      expectedRevision: 0,
+      idempotencyKey: "settings-route-1",
+      settings,
+    });
+  });
+
+  it("lists and upserts named credentials without returning secret material", async () => {
+    const status = {
+      name: "github",
+      kind: "github-cli",
+      scope: "global",
+      configured: true,
+      versionRef: "a".repeat(64),
+    } as const;
+    credentialRegistry.statuses.mockResolvedValueOnce({ ok: true, value: [status] });
+    const listed = await app.request(
+      "/api/credentials",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toEqual([status]);
+
+    credentialRegistry.upsert.mockResolvedValueOnce({ ok: true, value: status });
+    const input = {
+      credential: {
+        name: "github",
+        kind: "github-cli",
+        scope: "global",
+        token: "secret-token",
+      },
     };
+    const updated = await app.request(
+      "/api/credentials/github",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(input),
+      },
+      env(),
+    );
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toEqual(status);
+    expect(credentialRegistry.upsert).toHaveBeenCalledWith(input);
+  });
+
+  it("does not expose full credential replacement", async () => {
     const response = await app.request(
       "/api/credentials/sync",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify(request),
+        body: JSON.stringify({ credentials: [] }),
       },
       env(),
     );
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      credentials: [
-        {
-          name: "github",
-          kind: "github-cli",
-          scope: "repository",
-          repositories: ["owner/repo"],
-          configured: true,
-        },
-      ],
-    });
-    expect(credentialRegistry.sync).toHaveBeenCalledWith(request);
+    expect(response.status).toBe(404);
+    expect(credentialRegistry.upsert).not.toHaveBeenCalled();
   });
 
   it("reports providers separately from dynamically named runners", async () => {

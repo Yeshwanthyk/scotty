@@ -16,7 +16,6 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { formatCredentialToml } from "../e2e/support/credential-canary.mjs";
 import {
   assertPortAvailable,
   formatLocalDevVars,
@@ -813,7 +812,7 @@ export function activeRunManifest() {
 
 const shellWord = (value) => `'${value.replaceAll("'", `'\\''`)}'`;
 
-export function prepareCredentialSetup(manifest, repo, suppliedInputs) {
+export function prepareCredentialSetup(manifest, suppliedInputs) {
   validateLabExecManifest(manifest);
   const inputs =
     suppliedInputs ??
@@ -821,23 +820,8 @@ export function prepareCredentialSetup(manifest, repo, suppliedInputs) {
       githubHome: homedir(),
       githubExecutable: execFileSync("which", ["gh"], { encoding: "utf8" }).trim(),
     });
-  const configDirectory = path.join(manifest.cliHome, ".config", "scotty");
-  const configPath = path.join(configDirectory, "scotty.toml");
   const credentialBin = path.join(manifest.cliHome, ".local", "credential-bin");
   const githubLauncher = path.join(credentialBin, "gh");
-  mkdirSync(configDirectory, { recursive: true, mode: 0o700 });
-  validateExistingPath(
-    configDirectory,
-    "Lab Scotty config directory",
-    (info) => info.isDirectory(),
-    "directory",
-  );
-  chmodSync(configDirectory, 0o700);
-  validateExistingPath(configPath, "Lab Scotty config", (info) => info.isFile(), "regular file");
-  writeFileSync(configPath, formatCredentialToml({ repo, piAuthPath: inputs.piAuthPath }), {
-    mode: 0o600,
-  });
-  chmodSync(configPath, 0o600);
   mkdirSync(credentialBin, { recursive: true, mode: 0o700 });
   chmodSync(credentialBin, 0o700);
   writeFileSync(
@@ -846,7 +830,7 @@ export function prepareCredentialSetup(manifest, repo, suppliedInputs) {
     { mode: 0o700 },
   );
   chmodSync(githubLauncher, 0o700);
-  return { credentialBin };
+  return { credentialBin, piAuthPath: inputs.piAuthPath };
 }
 
 export function spawnCli(manifest, argv, explicitEnvironment = {}, stdio = "inherit") {

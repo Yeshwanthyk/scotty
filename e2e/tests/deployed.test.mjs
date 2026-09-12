@@ -8,7 +8,6 @@ import { git, poll, runCli, runProcess } from "../support/harness.mjs";
 import {
   credentialCanaryValues,
   findCredentialLeaks,
-  formatCredentialToml,
   scrubAmbientCredentialEnvironment,
 } from "../support/credential-canary.mjs";
 
@@ -162,16 +161,6 @@ const recoverOwnerCookie = async () => {
   return cookie.split(";", 1)[0];
 };
 
-const writeCanaryToml = (home, repo, piAuthFile) => {
-  const directory = path.join(home, ".config", "scotty");
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(
-    path.join(directory, "scotty.toml"),
-    formatCredentialToml({ repo, piAuthPath: piAuthFile }),
-    { mode: 0o600 },
-  );
-};
-
 const readCanaryCredentialValues = async (piAuthFile, githubConfigDir) => {
   const piAuthJson = fs.readFileSync(piAuthFile, "utf8");
   const github = await runProcess("gh", ["auth", "token"], {
@@ -238,10 +227,24 @@ test(
       fs.statSync(cwd).isDirectory(),
       "SCOTTY_E2E_LOCAL_REPO must be a local checkout of SCOTTY_E2E_REPO",
     );
-    writeCanaryToml(home, process.env.SCOTTY_E2E_REPO, piAuthFile);
-    const sync = await runCli(["sync", "--json"], { env, cwd, timeoutMs: 120_000 });
+    const sync = await runCli(["sync", "--pi-auth", piAuthFile, "--github", "--json"], {
+      env,
+      cwd,
+      timeoutMs: 120_000,
+    });
     assertCanaryValuesAbsent(`${sync.stdout}\n${sync.stderr}`, knownValues, "sync response");
     assert.equal(sync.code, 0, sync.stderr);
+    const registered = await runCli(["repo", "add", process.env.SCOTTY_E2E_REPO, "--json"], {
+      env,
+      cwd,
+      timeoutMs: 120_000,
+    });
+    assertCanaryValuesAbsent(
+      `${registered.stdout}\n${registered.stderr}`,
+      knownValues,
+      "repo response",
+    );
+    assert.equal(registered.code, 0, registered.stderr);
     let id;
     let peerTargetId;
     let sourceId;

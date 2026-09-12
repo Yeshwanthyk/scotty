@@ -2,10 +2,12 @@ import { Context, Data, Effect, Layer, Result, Schema } from "effect";
 import {
   SandboxActivateInputSchema,
   SandboxConfigAuthoritySchema,
+  SandboxSettingsUpdateSchema,
   type SandboxActivateInput,
   type SandboxConfigAuthority,
   type SandboxConfigStatus,
 } from "./config-contracts";
+import { defaultCloudSettings, type CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
 
 const AUTHORITY_KEY = "scotty:sandbox-config:1";
 
@@ -33,6 +35,10 @@ export interface SandboxConfigAuthorityStorage {
 
 interface SandboxConfigStoreShape {
   readonly status: () => Effect.Effect<SandboxConfigStatus, SandboxConfigFailure>;
+  readonly settings: () => Effect.Effect<CloudSettingsSnapshot, SandboxConfigFailure>;
+  readonly updateSettings: (
+    input: unknown,
+  ) => Effect.Effect<CloudSettingsSnapshot, SandboxConfigFailure>;
   readonly activate: (
     input: SandboxActivateInput,
   ) => Effect.Effect<SandboxConfigStatus, SandboxConfigFailure>;
@@ -66,11 +72,15 @@ const decodeAuthority = Schema.decodeUnknownResult(SandboxConfigAuthoritySchema,
 const decodeActivateInput = Schema.decodeUnknownResult(SandboxActivateInputSchema, {
   onExcessProperty: "error",
 });
+const decodeSettingsUpdate = Schema.decodeUnknownResult(SandboxSettingsUpdateSchema, {
+  onExcessProperty: "error",
+});
 
 const emptyAuthority = (): SandboxConfigAuthority => ({
   revision: 0,
   activeDigest: null,
   lastSync: null,
+  settings: defaultCloudSettings,
 });
 
 const makeSandboxConfigStore = (
@@ -87,7 +97,7 @@ const makeSandboxConfigStore = (
   const revisionConflict = (): SandboxConfigFailure =>
     failure("conflict", "Sandbox configuration revision conflict");
   const idempotencyConflict = (): SandboxConfigFailure =>
-    failure("conflict", "Idempotency key was reused with different sandbox bundle input");
+    failure("conflict", "Idempotency key was reused with different configuration input");
 
   const parseAuthority = (
     value: unknown | undefined,
@@ -95,7 +105,10 @@ const makeSandboxConfigStore = (
     if (value === undefined) return Result.succeed(emptyAuthority());
     const decoded = decodeAuthority(value);
     return Result.isSuccess(decoded)
-      ? Result.succeed(decoded.success)
+      ? Result.succeed({
+          ...decoded.success,
+          settings: decoded.success.settings ?? defaultCloudSettings,
+        })
       : Result.fail(invalidAuthority());
   };
 
@@ -103,6 +116,13 @@ const makeSandboxConfigStore = (
     revision: authority.revision,
     activeDigest: authority.activeDigest,
   });
+  const toSettings = (authority: SandboxConfigAuthority): CloudSettingsSnapshot => ({
+    revision: authority.revision,
+    activeDigest: authority.activeDigest,
+    settings: authority.settings ?? defaultCloudSettings,
+  });
+  const sameSettings = (left: unknown, right: unknown): boolean =>
+    JSON.stringify(left) === JSON.stringify(right);
 
   const transact = <A>(
     operation: (
@@ -133,6 +153,39 @@ const makeSandboxConfigStore = (
     status: () =>
       transact(async (authority) => Result.succeed({ value: toStatus(authority), authority })),
 
+    settings: () =>
+      transact(async (authority) => Result.succeed({ value: toSettings(authority), authority })),
+
+    updateSettings: (inputValue) =>
+      Effect.gen(function* () {
+        const decoded = Result.mapError(decodeSettingsUpdate(inputValue), invalidInput);
+        if (Result.isFailure(decoded)) return yield* Effect.fail(decoded.failure);
+        const input = decoded.success;
+        return yield* transact(async (authority) => {
+          const replay = authority.lastSettingsUpdate;
+          if (replay !== undefined && replay.idempotencyKey === input.idempotencyKey) {
+            if (
+              replay.expectedRevision === input.expectedRevision &&
+              sameSettings(replay.settings, input.settings)
+            )
+              return Result.succeed({ value: toSettings(authority), authority });
+            return Result.fail(idempotencyConflict());
+          }
+          if (input.expectedRevision !== authority.revision) return Result.fail(revisionConflict());
+          const next: SandboxConfigAuthority = {
+            ...authority,
+            revision: authority.revision + 1,
+            settings: input.settings,
+            lastSettingsUpdate: {
+              idempotencyKey: input.idempotencyKey,
+              expectedRevision: input.expectedRevision,
+              settings: input.settings,
+            },
+          };
+          return Result.succeed({ value: toSettings(next), authority: next });
+        });
+      }),
+
     activate: (inputValue) =>
       Effect.gen(function* () {
         const decoded = Result.mapError(decodeActivateInput(inputValue), invalidInput);
@@ -157,6 +210,7 @@ const makeSandboxConfigStore = (
             activeDigest: input.digest,
           };
           const next: SandboxConfigAuthority = {
+            ...authority,
             revision: status.revision,
             activeDigest: status.activeDigest,
             lastSync: {

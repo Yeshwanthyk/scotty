@@ -2,7 +2,12 @@ import { DurableObject } from "cloudflare:workers";
 import { Effect, Result } from "effect";
 import type { Bindings } from "../shared/bindings";
 import type { RepositoryRegistryEntry } from "../../../protocol/repository";
-import type { SandboxActivateInput, SandboxConfigStatus } from "./config-contracts";
+import type { CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
+import type {
+  SandboxActivateInput,
+  SandboxConfigStatus,
+  SandboxSettingsUpdate,
+} from "./config-contracts";
 import {
   SandboxConfigStore,
   type SandboxConfigFailure,
@@ -49,6 +54,18 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
 
   status(): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
     return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.status()));
+  }
+
+  settings(): Promise<SandboxConfigRpcResult<CloudSettingsSnapshot>> {
+    return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.settings()));
+  }
+
+  updateSettings(
+    input: SandboxSettingsUpdate,
+  ): Promise<SandboxConfigRpcResult<CloudSettingsSnapshot>> {
+    return this.#runConfig(
+      Effect.flatMap(SandboxConfigStore, (store) => store.updateSettings(input)),
+    );
   }
 
   activate(input: SandboxActivateInput): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
@@ -99,6 +116,10 @@ export type ScottySandboxConfigStub = {
   readonly activate: (
     input: SandboxActivateInput,
   ) => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;
+  readonly settings: () => Promise<SandboxConfigRpcResult<CloudSettingsSnapshot>>;
+  readonly updateSettings: (
+    input: SandboxSettingsUpdate,
+  ) => Promise<SandboxConfigRpcResult<CloudSettingsSnapshot>>;
   readonly listRepos: () => Promise<SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>>;
   readonly addRepo: (input: unknown) => Promise<SandboxConfigRpcResult<RepositoryRegistryEntry>>;
   readonly removeRepo: (repo: unknown) => Promise<SandboxConfigRpcResult<boolean>>;

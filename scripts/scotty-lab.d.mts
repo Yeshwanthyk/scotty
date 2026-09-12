@@ -172,9 +172,8 @@ export function execManifest(runId: string): LabManifest;
 export function activeRunManifest(): LabManifest;
 export function prepareCredentialSetup(
   manifest: LabManifest,
-  repo: string,
   inputs?: CredentialSetupInputs,
-): { readonly credentialBin: string };
+): { readonly credentialBin: string; readonly piAuthPath: string };
 export function spawnCli(
   manifest: LabManifest,
   argv: ReadonlyArray<string>,

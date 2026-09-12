@@ -26,8 +26,8 @@ sources and Registry sync. Set `SCOTTY_PI_AUTH_FILE` to a mode-0600 Pi auth file
 a healthy Docker daemon and `gh auth login`. It uses temporary Wrangler state and a temporary
 control-token file, opens a one-time browser pairing page after the lifecycle check, and keeps
 Wrangler alive until `Ctrl-C`.
-The harness writes a complete TOML declaration, runs `scotty sync` before Session creation, and
-uses Registry-backed Pi/GitHub grants. Provider values are read only from the local source boundary
+The harness refreshes explicit Pi/GitHub credentials and registers its repository before
+Session creation, then uses Registry-backed grants. Provider values are read only from the local source boundary
 and are never placed in Worker environment configuration.
 It does not read or change any deployed Scotty resources. The local SDK host uses its documented
 HTTP control transport; deployed Scotty remains on RPC.
@@ -68,37 +68,15 @@ export SCOTTY_E2E_APPROVE_CLEANUP="destroy:$stage:disposable"
 npx alchemy deploy e2e/canary/full-stack-canary.run.ts --stage "$stage" --yes
 ```
 
-Use the `workerName` and `workerUrl` printed by Alchemy. Publish disposable credentials through the
-TOML sync path rather than Worker environment secrets:
+Use the `workerName` and `workerUrl` printed by Alchemy. Publish disposable credentials from
+private local sources through the CLI:
 
 ```sh
-mkdir -p ~/.config/scotty
-chmod 700 ~/.config/scotty
-cat > ~/.config/scotty/scotty.toml <<'EOF'
-version = 1
-
-[sync]
-skills = []
-packages = []
-tools = []
-extensions = []
-
-[repos]
-allowed = ["owner/disposable-repo"]
-
-[credentials.codex]
-kind = "pi-auth"
-source = "/absolute/path/to/disposable-pi-auth.json"
-scope = "global"
-
-[credentials.github]
-kind = "github-cli"
-scope = "repository"
-repositories = ["owner/disposable-repo"]
-EOF
-SCOTTY_HOST='https://scotty-e2e-<stage-suffix>-worker.<account>.workers.dev' \
-SCOTTY_TOKEN='<root-token-from-the-disposable-stage>' \
-GH_CONFIG_DIR='/absolute/path/to/disposable-gh-config' scotty sync
+export SCOTTY_HOST='https://scotty-e2e-<stage-suffix>-worker.<account>.workers.dev'
+export SCOTTY_TOKEN='<root-token-from-the-disposable-stage>'
+export GH_CONFIG_DIR='/absolute/path/to/disposable-gh-config'
+scotty sync --pi-auth /absolute/path/to/disposable-pi-auth.json --github
+scotty repo add owner/disposable-repo
 ```
 
 The Registry owns encrypted credential versions. Containers receive only fixed managed handles;

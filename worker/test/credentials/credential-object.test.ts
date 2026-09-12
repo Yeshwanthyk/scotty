@@ -42,8 +42,8 @@ describe("ScottyCredentialRegistry", () => {
   it("confirms an already-released Session grant on RPC retry", async () => {
     const registry = registryWithEmptyStorage();
 
-    await registry.sync({
-      credentials: [{ name: "github", kind: "github-cli", scope: "global", token: "token" }],
+    await registry.upsert({
+      credential: { name: "github", kind: "github-cli", scope: "global", token: "token" },
     });
     const issued = await registry.issueGrants({
       sessionId: "a0b1c2d3e4f5",
@@ -69,17 +69,18 @@ describe("ScottyCredentialRegistry", () => {
     const registry = registryWithEmptyStorage();
     const secret = "registry-rpc-secret";
 
-    assert.deepStrictEqual(
-      await registry.sync({
-        credentials: [{ name: "github", kind: "github-cli", scope: "global", token: secret }],
-      }),
-      {
-        ok: true,
-        value: {
-          credentials: [{ name: "github", kind: "github-cli", scope: "global", configured: true }],
-        },
-      },
-    );
+    const updated = await registry.upsert({
+      credential: { name: "github", kind: "github-cli", scope: "global", token: secret },
+    });
+    assert.isTrue(updated.ok);
+    if (!updated.ok) return;
+    assert.deepInclude(updated.value, {
+      name: "github",
+      kind: "github-cli",
+      scope: "global",
+      configured: true,
+    });
+    assert.isString(updated.value.versionRef);
     const result = await registry.resolveGithubCliCredential({
       repository: "owner/repo",
     });

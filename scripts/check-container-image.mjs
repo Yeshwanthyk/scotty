@@ -120,7 +120,7 @@ export const containerImagePiPackagesSmokeArgs = (plan) =>
 
 const NATIVE_PI_SUPERVISOR_PROOF = `
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -136,6 +136,21 @@ fs.copyFileSync("/opt/scotty/pi-packages/settings.json", path.join(agent, "setti
 const settingsPath = path.join(agent, "settings.json");
 const packagedSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 assert.ok(packagedSettings.packages.includes("/opt/scotty/pi-packages/sources/scotty-hatch"));
+const cloudPackage = path.join(root, "cloud", "pi-packages", "cloud-example");
+fs.mkdirSync(path.join(cloudPackage, "skills", "cloud-example"), { recursive: true });
+fs.writeFileSync(path.join(cloudPackage, "package.json"), JSON.stringify({
+  name: "cloud-example", version: "1.0.0", pi: { skills: ["./skills"] },
+}));
+fs.writeFileSync(path.join(cloudPackage, "skills", "cloud-example", "SKILL.md"),
+  "---\\nname: cloud-example\\ndescription: Cloud package skill probe.\\n---\\n\\n# Cloud example\\n");
+packagedSettings.packages.push(cloudPackage);
+fs.writeFileSync(settingsPath, JSON.stringify(packagedSettings));
+const listedPackages = spawnSync("pi", ["list"], {
+  env: { HOME: root, PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1" },
+  encoding: "utf8", timeout: 10000,
+});
+assert.equal(listedPackages.status, 0, listedPackages.stderr);
+assert.ok(listedPackages.stdout.includes(cloudPackage), "native Pi omitted cloud package");
 fs.writeFileSync(path.join(agent, "auth.json"), "{}\\n", { mode: 0o600 });
 const hatchMarker = path.join(root, "hatch-restore.called");
 const hatchShim = path.join(root, "hatch-restore-shim.mjs");
@@ -256,10 +271,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:net";
+import { createInterface } from "node:readline";
 ${containerProbeProcessSource()}
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-native-codex-"));
 const workspace = path.join(root, "workspace");
 fs.mkdirSync(workspace);
+const bundleDigest = "b".repeat(64);
+const skillDirectory = path.join(workspace, ".scotty", "sandbox", bundleDigest, "skills", "cloud-example");
+fs.mkdirSync(skillDirectory, { recursive: true });
+fs.writeFileSync(path.join(skillDirectory, "SKILL.md"), "---\\nname: cloud-example\\ndescription: A cloud-linked native discovery probe.\\n---\\n\\n# Cloud example\\n");
 const sentinel = [
   Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
   Buffer.from(JSON.stringify({ "https://api.openai.com/auth": {
@@ -286,6 +306,8 @@ const start = {
     binary: "/opt/codex/bin/codex",
     runtimeDir: path.join(root, "runtime"),
     workspace,
+    environment: { APP_MODE: "pinned" },
+    sandboxBundleDigest: bundleDigest,
     model: "gpt-5.2",
     effort: "high",
     credential: { sentinel, expiresAt: Date.now() + 120000 },
@@ -347,6 +369,11 @@ try {
   assert.equal(ready.prompt.status, "idle");
   captureNativePid();
   assert.ok(Number.isSafeInteger(nativePid) && nativePid > 0);
+  const nativeEnvironment = fs.readFileSync("/proc/" + nativePid + "/environ", "utf8").split("\\0");
+  assert.ok(nativeEnvironment.includes("APP_MODE=pinned"), "ordinary settings must reach native Codex");
+  assert.equal(nativeEnvironment.some(entry => entry.startsWith("OPENAI_API_KEY=")), false);
+  const codexHome = path.join(root, "runtime", "codex-home");
+  assert.equal(fs.readlinkSync(path.join(codexHome, "skills")), path.dirname(skillDirectory));
   assert.equal(fs.existsSync(tokenFile), false, "Codex server must consume its token file");
   assert.equal((await request("/health", {
     headers: { ...headers, "x-scotty-codex-token": "b".repeat(64) },
@@ -361,6 +388,50 @@ try {
   assert.equal(stopped.parent, "exited");
   assert.throws(() => process.kill(nativePid, 0), { code: "ESRCH" });
   assert.equal((await request("/health")).status, 503);
+  // Query the same pinned native executable against the session's private home.
+  // A readable symlink alone does not prove Codex actually loads a linked skill.
+  const discovery = spawn("/opt/codex/bin/codex", ["app-server", "--listen", "stdio://"], {
+    cwd: workspace,
+    env: { HOME: path.join(root, "runtime", "home"), CODEX_HOME: codexHome,
+      PATH: "/usr/local/bin:/usr/bin:/bin", TMPDIR: path.join(root, "runtime", "home") },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const discovered = observeChildExit(discovery);
+  const pending = new Map();
+  createInterface({ input: discovery.stdout }).on("line", line => {
+    let message;
+    try { message = JSON.parse(line); } catch { return; }
+    if (message.id !== undefined && pending.has(message.id)) {
+      pending.get(message.id)(message);
+      pending.delete(message.id);
+    }
+  });
+  const rpc = (id, method, params) => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error("native skills/list deadline: " + method));
+    }, 10000);
+    pending.set(id, message => { clearTimeout(timeout); resolve(message); });
+    discovery.stdin.write(JSON.stringify({ id, method, params }) + "\\n");
+  });
+  try {
+    const initialized = await rpc(1, "initialize", {
+      clientInfo: { name: "scotty-image-proof", version: "1" },
+      capabilities: { experimentalApi: false },
+    });
+    assert.equal(initialized.error, undefined, JSON.stringify(initialized.error));
+    discovery.stdin.write('{"method":"initialized"}\\n');
+    const listed = await rpc(2, "skills/list", { cwds: [workspace], forceReload: true });
+    assert.equal(listed.error, undefined, JSON.stringify(listed.error));
+    const entry = listed.result?.data?.find(value => value.cwd === workspace);
+    assert.ok(entry, "native skills/list omitted workspace");
+    assert.deepEqual(entry.errors, []);
+    assert.ok(entry.skills.some(skill => skill.name === "cloud-example" &&
+      skill.enabled === true && skill.path === path.join(skillDirectory, "SKILL.md")),
+      "native skills/list omitted cloud-linked skill");
+  } finally {
+    await terminateObservedChild(discovery, discovered);
+  }
 } finally {
   await terminateObservedChild(child, observed, { termMilliseconds: 10000, killMilliseconds: 2000 });
   if (nativePid) assert.throws(() => process.kill(nativePid, 0), { code: "ESRCH" });

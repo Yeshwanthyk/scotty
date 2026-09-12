@@ -7,6 +7,11 @@ import type {
 } from "@cloudflare/sandbox";
 import { Data, Effect, Match, Result } from "effect";
 import {
+  defaultCloudSettings,
+  type CloudSettingsSnapshot,
+  type CloudSettingsUpdate,
+} from "../../../protocol/cloud-settings";
+import {
   createDeterministicTarGz,
   gunzipSandboxArchive,
   parseSandboxTar,
@@ -560,6 +565,7 @@ export type HarnessFailureStage =
   | "workspacePrepare";
 
 export interface HarnessOptions {
+  readonly readCloudSettings?: () => CloudSettingsSnapshot;
   readonly containerFetch?: (request: Request, port: number) => Promise<Response>;
   readonly actorRequestRecoveryAfterResume?: SandboxEffectOptions["actorRequestRecoveryAfterResume"];
   readonly actorRequestRecoveryBeforeResume?: SandboxEffectOptions["actorRequestRecoveryBeforeResume"];
@@ -650,6 +656,7 @@ export interface SessionHarness {
     readonly path: string;
     readonly content: string;
   }>;
+  readonly environmentUpdates: ReadonlyArray<Readonly<Record<string, string | undefined>>>;
   readonly r2DeletedKeys: ReadonlyArray<ReadonlyArray<string>>;
   readonly artifactDeletedKeys: ReadonlyArray<string>;
   readonly artifactKeys: () => ReadonlyArray<string>;
@@ -1162,6 +1169,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const piRequests: Request[] = [];
   const rawPiRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
+  const environmentUpdates: Array<Readonly<Record<string, string | undefined>>> = [];
   const runtimeFiles = new Map<string, Uint8Array>();
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
   const artifactDeletedKeys: string[] = [];
@@ -1413,6 +1421,31 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     CREDENTIALS: credentialRegistry,
     SANDBOX_CONFIG: {
       getByName: () => ({
+        settings: async () => {
+          sandboxConfigStatusCalls += 1;
+          if (options.sandboxConfigStatusFailure !== undefined)
+            return {
+              ok: false as const,
+              error: {
+                reason: "storage" as const,
+                message: "injected sandbox config status failure",
+              },
+            };
+          return {
+            ok: true as const,
+            value: options.readCloudSettings?.() ?? {
+              ...sandboxConfigStatus,
+              settings: defaultCloudSettings,
+            },
+          };
+        },
+        updateSettings: async (input: CloudSettingsUpdate) => ({
+          ok: true as const,
+          value: {
+            ...sandboxConfigStatus,
+            settings: input.settings,
+          },
+        }),
         status: async (): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> => {
           sandboxConfigStatusCalls += 1;
           if (options.sandboxConfigStatusFailure === "throw")
@@ -1737,7 +1770,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     },
     setEnvVars: {
-      value: async (_envVars: Record<string, string | undefined>): Promise<void> => {
+      value: async (envVars: Record<string, string | undefined>): Promise<void> => {
+        environmentUpdates.push({ ...envVars });
         events.push("host:setEnvVars");
       },
     },
@@ -1908,6 +1942,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     piRequests,
     rawPiRequests,
     writtenFiles,
+    environmentUpdates,
     r2DeletedKeys,
     artifactDeletedKeys,
     artifactKeys: () => [...artifactObjects.keys()],

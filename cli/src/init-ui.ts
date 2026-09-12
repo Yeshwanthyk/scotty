@@ -24,13 +24,18 @@ export interface UiPhase {
 export interface InitUi {
   readonly start: () => void;
   readonly review: (review: InitReview) => void;
+  readonly reviewSetup: (
+    agent: string,
+    repositories: number,
+    environmentKeys: number,
+    credentialSources: ReadonlyArray<string>,
+  ) => void;
   readonly phase: (message: string) => UiPhase;
   readonly complete: () => void;
 }
 
 export interface DeployPlanReview {
   readonly fingerprint: string;
-  readonly bundleDigest: string;
   readonly changes: ReadonlyArray<InstallationPlanChange>;
 }
 
@@ -87,7 +92,6 @@ const count = (value: number, singular: string, plural: string): string =>
 const deployPlanLines = (review: DeployPlanReview): string =>
   [
     `Plan fingerprint  ${review.fingerprint}`,
-    `Bundle digest     ${review.bundleDigest}`,
     `Planned changes   ${review.changes.length}`,
     "",
     ...(review.changes.length === 0
@@ -100,6 +104,7 @@ const deployPlanLines = (review: DeployPlanReview): string =>
 export const makeSilentInitUi = (): InitUi => ({
   start: () => undefined,
   review: () => undefined,
+  reviewSetup: () => undefined,
   phase: () => ({ succeed: () => undefined, fail: () => undefined }),
   complete: () => undefined,
 });
@@ -136,6 +141,17 @@ export const makeInitUi = (writer: Writer): InitUi => {
           "Evidence      enabled",
         ].join("\n"),
         "Installation review",
+        { output },
+      ),
+    reviewSetup: (agent, repositories, environmentKeys, credentialSources): void =>
+      note(
+        [
+          `Default agent     ${agent}`,
+          `Repositories     ${repositories}`,
+          `App env keys     ${environmentKeys}`,
+          `Local credentials ${credentialSources.join(", ") || "none (refresh later with scotty sync)"}`,
+        ].join("\n"),
+        "Cloud setup",
         { output },
       ),
     phase: (message: string): UiPhase => phase(output, message),

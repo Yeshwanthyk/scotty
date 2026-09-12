@@ -1,6 +1,15 @@
 import * as stylex from "@stylexjs/stylex";
 import { Link } from "@tanstack/react-router";
-import { BarChart3, ChevronDown, Ellipsis, MonitorSmartphone, Plus, Server, X } from "lucide-react";
+import {
+  BarChart3,
+  ChevronDown,
+  Ellipsis,
+  MonitorSmartphone,
+  Plus,
+  Server,
+  Settings2,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { readCurrentPrincipal } from "../data/admin";
 import { Button } from "./Button";
@@ -297,6 +306,10 @@ export function Sidebar({
                     </span>
                   </span>
                 )}
+                <Link to="/settings" onClick={onClose} {...stylex.props(styles.menuItem)}>
+                  <Settings2 aria-hidden {...stylex.props(styles.menuIcon)} />
+                  <span {...stylex.props(styles.menuLabel)}>Settings</span>
+                </Link>
               </nav>
             </details>
             <span {...stylex.props(styles.close)}>

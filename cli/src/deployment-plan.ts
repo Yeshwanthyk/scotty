@@ -9,7 +9,6 @@ const DeploymentPlanSchema = Schema.Struct({
   installationName: Schema.NonEmptyString,
   accountId: Schema.NonEmptyString,
   planFingerprint: Schema.NonEmptyString,
-  bundleDigest: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
 });
 
 export type DeploymentPlan = typeof DeploymentPlanSchema.Type;

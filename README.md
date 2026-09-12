@@ -30,9 +30,10 @@ Run setup one step at a time. Before any command that creates, changes, or delet
 resources, show me the exact account, resource plan, and command, then wait for my approval. Never
 add `--yes` on your own. Keep credentials out of output and source files.
 
-Finish only after `scotty config check`, `scotty sync --json`, and `scotty doctor --json` pass; owner
-recovery is opened in my browser; and one sandbox for the repository I supplied reaches warm. Report
-the installed Scotty version, installation name, Worker host, bundle digest, and sandbox ID.
+Finish only after `scotty init` has saved cloud settings and the supplied repository, `scotty doctor
+--json` passes, owner recovery is opened in my browser, and one sandbox for the repository I
+supplied reaches warm. Report the installed Scotty version, installation name, Worker host, and
+sandbox ID.
 ```
 
 ## Update the CLI and bundled guidance
@@ -53,7 +54,7 @@ release artifact for deployment; a direct `bun build cli/scotty.ts --compile` om
 Upgrading the executable does not update the Worker. Follow the production runbook below to
 review `scotty deploy --plan --json`, then apply with `scotty deploy --yes --json`. Deployment
 uses the code bundled in that release and requires the managed installation/profile, Cloudflare
-authentication, Docker, and the source paths declared in your local TOML.
+authentication, and Docker. Explicit sandbox resource publishing remains a separate command.
 
 `init` and `upgrade` do not install host-agent skill loaders. Your agent can read the guides with
 `scotty skill show`. For automatic discovery, add a small `SKILL.md` in your agent's configured
@@ -259,14 +260,21 @@ For a clean first run:
 
 1. Run `scotty init --name NAME --preview-base DOMAIN --preview-zone-id ZONE_ID` and confirm the
    displayed Cloudflare account, Hatch/Evidence domain, and resource names.
-2. Declare the Pi and GitHub credential sources in `scotty.toml`, then run `scotty sync`.
+2. Supply the default agent/model, repositories, ordinary application environment, and optional
+   private local credential source paths in the init prompts (or use the equivalent `--agent`,
+   `--model`, `--effort`, `--repos`, `--env`, `--pi-auth`/`--codex-auth`, and `--github` flags).
+   Use `scotty sync` later to refresh a selected local credential.
 3. Run `scotty doctor --json`.
 4. Run `scotty owner recover` on the browser that will own the installation.
 5. If another browser needs access, open `/devices` in the owner browser and create a one-use pairing link.
 6. Use `scotty beam` to start a session and open its authenticated worklog in your browser.
 
-`sync` uses the account, Worker name, and origin saved by `init`. It fails before reading local
-credential sources if Cloudflare does not match that saved installation.
+`sync` refreshes only the selected credential in the cloud vault. Application defaults and allowed
+repositories live in cloud settings.
+
+Publish local sandbox resources separately with `scotty sandbox push --skills-root ./skills
+--package ./packages/my-pi-package --tools-root ./tools --extensions-root ./extensions`.
+Repeat a directory flag to include multiple roots; omit categories you do not use.
 
 On a replacement machine, run `scotty recover --name NAME`. Cloudflare profile ownership is the
 recovery authority. The CLI discovers the conventionally named resources and rotates only the root
@@ -274,10 +282,10 @@ token after confirmation. It writes a mode-0600 recovery journal before the remo
 stopped command can reuse the same token.
 
 Use the signed executable for normal updates. `scotty deploy --plan --json` reads the managed
-installation, plans the embedded release, builds the configured capability bundle, and saves a
+installation, plans the embedded release, and saves a
 private one-use authorization record without changing provider or Worker state. Review its
 `version`, `plan`, `bundle`, and `changes`, then run `scotty deploy --yes --json`. Apply recomputes
-both identities and refuses any drift before provider writes. Deployment never generates or changes
+the plan identity and refuses drift before provider writes. Deployment never generates or changes
 the root token. On interactive macOS, Scotty offers to start Colima when the current Docker context
 is unavailable. It never changes `DOCKER_HOST`.
 

@@ -75,6 +75,7 @@ export class BackupLifecycleSandboxFailure extends Schema.TaggedError<BackupLife
 ) {}
 
 export interface BackupLifecycleAttempt {
+  readonly configuration?: import("../configuration").SessionConfiguration;
   readonly codex?: {
     readonly token: string;
     readonly threadId: string;
@@ -457,6 +458,10 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const startSupervisor = Effect.fnUntraced(function* (
       input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
     ) {
+      if (input.configuration !== undefined)
+        yield* runtime
+          .setEnvVars(input.configuration.environment)
+          .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "resume_environment_failed")));
       if (input.selection?.agent === "codex") {
         if (input.codex === undefined)
           return yield* boundaryFailure(
@@ -469,6 +474,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
             generation: input.runtimeGeneration,
             selection: input.selection,
             token: input.codex.token,
+            ...(input.configuration === undefined ? {} : { configuration: input.configuration }),
           },
           input.credentials.grants,
           { threadId: input.codex.threadId, initialTurnId: input.codex.initialTurnId },
@@ -711,6 +717,7 @@ const baseResumeAttempt = (
 ): BackupLifecycleAttempt => ({
   sessionId: context.authority.session.id,
   selection: context.authority.session.selection,
+  configuration: context.authority.session.configuration,
   attempt: context.transition.attempt,
   operationNonce: context.transition.nonce,
   runtimeGeneration,

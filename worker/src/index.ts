@@ -103,6 +103,22 @@ import {
 } from "./runner/registry-object";
 import { validateSandboxArchive } from "./sandbox/archive";
 import {
+  MAX_RESOURCE_BODY_BYTES,
+  base64Content,
+  buildResourceBundle,
+  resourceFiles,
+  validateResourceFiles,
+} from "./sandbox/cloud-resources";
+import {
+  CloudResourceKindSchema,
+  CloudResourceNameSchema,
+  decodeCloudResourceDelete,
+  decodeCloudResourcePut,
+  type CloudResourceKind,
+} from "../../protocol/cloud-resources";
+import { sandboxBundleItemFilePath } from "../../protocol/sandbox-bundle";
+import { type SandboxBundleManifest } from "./sandbox/config-contracts";
+import {
   SandboxBundleStore,
   SANDBOX_BUNDLE_MAX_GZIP_BYTES,
   sandboxBundleStoreLayer,
@@ -129,10 +145,14 @@ import {
   type ScottyCredentialRegistryStub,
 } from "./credentials/object";
 import {
-  CREDENTIAL_REGISTRY_SYNC_MAX_BODY_BYTES,
-  decodeCredentialRegistryDesiredSyncInputResult,
+  CREDENTIAL_REGISTRY_UPSERT_MAX_BODY_BYTES,
   decodeCredentialRegistryResolvedCredentialResult,
+  decodeCredentialRegistryUpsertInputResult,
 } from "./credentials/contracts";
+import {
+  CLOUD_SETTINGS_MAX_BODY_BYTES,
+  decodeCloudSettingsUpdate,
+} from "../../protocol/cloud-settings";
 
 export {
   ContainerProxy,
@@ -466,17 +486,230 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
   return c.json({ client: issued.client });
 });
 
-app.post("/api/credentials/sync", async (c) => {
-  requireRootPrincipal(c.get("auth"));
+app.get("/api/credentials", async (c) => {
+  requireAuthScope(c.get("auth"), "access:read");
+  return c.json(unwrapCredentialRegistryRpc(await credentialRegistry(c.env).statuses()));
+});
+
+app.put("/api/credentials/:name", async (c) => {
+  requireAuthScope(c.get("auth"), "access:write");
   requireJsonContentType(c.req.raw);
-  const bodyText = await readBoundedUtf8Body(c.req.raw, CREDENTIAL_REGISTRY_SYNC_MAX_BODY_BYTES);
-  if (bodyText === undefined)
-    throw badRequest("Credential registry request body exceeds the size limit");
+  const bodyText = await readBoundedUtf8Body(c.req.raw, CREDENTIAL_REGISTRY_UPSERT_MAX_BODY_BYTES);
+  if (bodyText === undefined) throw badRequest("Credential request body exceeds the size limit");
   const body = decodeJsonValue(bodyText);
-  if (Option.isNone(body)) throw badRequest("Credential registry request must be valid JSON");
-  const decoded = decodeCredentialRegistryDesiredSyncInputResult(body.value);
-  if (Result.isFailure(decoded)) throw badRequest("Credential registry request is invalid");
-  return c.json(unwrapCredentialRegistryRpc(await credentialRegistry(c.env).sync(decoded.success)));
+  if (Option.isNone(body)) throw badRequest("Credential request must be valid JSON");
+  const decoded = decodeCredentialRegistryUpsertInputResult(body.value);
+  if (Result.isFailure(decoded)) throw badRequest("Credential request is invalid");
+  if (decoded.success.credential.name !== c.req.param("name"))
+    throw badRequest("Credential name does not match the request path");
+  return c.json(
+    unwrapCredentialRegistryRpc(await credentialRegistry(c.env).upsert(decoded.success)),
+  );
+});
+
+app.get("/api/settings", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  return c.json(unwrapSandboxConfigRpc(await sandboxConfig(c.env).settings()));
+});
+
+app.put("/api/settings", async (c) => {
+  requireAuthScope(c.get("auth"), "access:write");
+  requireJsonContentType(c.req.raw);
+  const bodyText = await readBoundedUtf8Body(c.req.raw, CLOUD_SETTINGS_MAX_BODY_BYTES);
+  if (bodyText === undefined) throw badRequest("Settings request body exceeds the size limit");
+  const body = decodeJsonValue(bodyText);
+  if (Option.isNone(body)) throw badRequest("Settings request must be valid JSON");
+  const decoded = decodeCloudSettingsUpdate(body.value);
+  if (Result.isFailure(decoded)) throw badRequest("Settings request is invalid");
+  return c.json(unwrapSandboxConfigRpc(await sandboxConfig(c.env).updateSettings(decoded.success)));
+});
+
+const decodeResourceKind = Schema.decodeUnknownOption(CloudResourceKindSchema);
+const decodeResourceName = Schema.decodeUnknownOption(CloudResourceNameSchema);
+const emptyResourceManifest: SandboxBundleManifest = { items: [] };
+
+function resourceIdentity(
+  kindValue: string,
+  nameValue: string,
+): { kind: CloudResourceKind; name: string } {
+  const kind = decodeResourceKind(kindValue);
+  const name = decodeResourceName(nameValue);
+  if (Option.isNone(kind) || Option.isNone(name))
+    throw badRequest("Resource kind or name is invalid");
+  return { kind: kind.value, name: name.value };
+}
+
+async function readActiveResources(env: Bindings) {
+  const status = unwrapSandboxConfigRpc(await sandboxConfig(env).status());
+  if (status.activeDigest === null)
+    return {
+      ...status,
+      manifest: emptyResourceManifest,
+      members: [] as ReadonlyArray<import("./sandbox/archive").ParsedTarMember>,
+    };
+  const digest = status.activeDigest;
+  const result = await Effect.runPromise(
+    Effect.flatMap(SandboxBundleStore, (store) => store.getBundle(digest)).pipe(
+      Effect.provide(
+        sandboxBundleStoreLayer(r2SandboxBundleCapabilities(env.SANDBOX_BUNDLE_BUCKET)),
+      ),
+      Effect.result,
+    ),
+  );
+  if (Result.isFailure(result))
+    throw new ScottyError("upstream", "Active sandbox bundle is unavailable", {
+      httpStatus: 502,
+      exitCode: 1,
+    });
+  const bytes = new Uint8Array(await new Response(result.success.gzipStream).arrayBuffer());
+  const validated = await Effect.runPromise(
+    validateSandboxArchive(bytes, status.activeDigest).pipe(Effect.result),
+  );
+  if (Result.isFailure(validated))
+    throw new ScottyError("internal", "Active sandbox bundle is invalid", {
+      httpStatus: 500,
+      exitCode: 1,
+    });
+  return { ...status, manifest: validated.success.manifest, members: validated.success.members };
+}
+
+app.get("/api/resources", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const active = await readActiveResources(c.env);
+  return c.json({
+    revision: active.revision,
+    activeDigest: active.activeDigest,
+    items: active.manifest.items,
+  });
+});
+
+app.get("/api/resources/:kind/:name", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const { kind, name } = resourceIdentity(c.req.param("kind"), c.req.param("name"));
+  const active = await readActiveResources(c.env);
+  const item = active.manifest.items.find((entry) => entry.kind === kind && entry.name === name);
+  if (item === undefined)
+    return c.json({ error: { code: "not_found", message: "Resource not found" } }, 404);
+  const members = resourceFiles(active, kind, name);
+  const byPath = new Map(members.map((member) => [member.path, member]));
+  return c.json({
+    kind,
+    name,
+    shape: item.shape,
+    files: item.files.map((file) => {
+      const member = byPath.get(sandboxBundleItemFilePath(item, file.path));
+      if (member === undefined)
+        throw new ScottyError("internal", "Active resource file is missing", {
+          httpStatus: 500,
+          exitCode: 1,
+        });
+      return {
+        path: file.path,
+        modeClass: file.modeClass,
+        contentBase64: base64Content(member.bytes),
+      };
+    }),
+  });
+});
+
+async function resourceMutationBody(request: Request): Promise<unknown> {
+  requireJsonContentType(request);
+  const text = await readBoundedUtf8Body(request, MAX_RESOURCE_BODY_BYTES);
+  if (text === undefined) throw badRequest("Resource request body exceeds the size limit");
+  const json = decodeJsonValue(text);
+  if (Option.isNone(json)) throw badRequest("Resource request must be valid JSON");
+  return json.value;
+}
+
+async function publishResources(
+  env: Bindings,
+  manifest: SandboxBundleManifest,
+  members: ReadonlyArray<import("./sandbox/archive").ParsedTarMember>,
+  idempotencyKey: string,
+  expectedRevision: number,
+) {
+  const built = await Effect.runPromise(buildResourceBundle(manifest, members));
+  if (built === undefined || built.gzipBytes.byteLength > SANDBOX_BUNDLE_MAX_GZIP_BYTES)
+    throw badRequest("Resource bundle is invalid or exceeds the size limit");
+  await Effect.runPromise(
+    Effect.flatMap(SandboxBundleStore, (store) =>
+      store.putBundle({
+        digest: built.digest,
+        gzipBytes: built.gzipBytes,
+        manifestJson: built.manifestJson,
+      }),
+    ).pipe(
+      Effect.provide(
+        sandboxBundleStoreLayer(r2SandboxBundleCapabilities(env.SANDBOX_BUNDLE_BUCKET)),
+      ),
+    ),
+  );
+  return unwrapSandboxConfigRpc(
+    await sandboxConfig(env).activate({ digest: built.digest, idempotencyKey, expectedRevision }),
+  );
+}
+
+app.put("/api/resources/:kind/:name", async (c) => {
+  requireAuthScope(c.get("auth"), "access:write");
+  const { kind, name } = resourceIdentity(c.req.param("kind"), c.req.param("name"));
+  const decoded = decodeCloudResourcePut(await resourceMutationBody(c.req.raw));
+  if (Result.isFailure(decoded)) throw badRequest("Resource request is invalid");
+  const input = decoded.success;
+  const active = await readActiveResources(c.env);
+  if (active.revision !== input.expectedRevision)
+    throw conflict("Sandbox configuration revision conflict");
+  const replacement = await validateResourceFiles(kind, name, input);
+  if (replacement === undefined)
+    throw badRequest("Resource files are invalid or require a prepared package");
+  const prior = active.manifest.items.find((item) => item.kind === kind && item.name === name);
+  const items = [...active.manifest.items.filter((item) => item !== prior), replacement.item];
+  if (items.reduce((sum, item) => sum + item.files.length, 0) > 8192)
+    throw badRequest("Resource bundle exceeds the file-count limit");
+  const manifest: SandboxBundleManifest = { items };
+  const retained = active.members.filter(
+    (member) =>
+      member.type === "file" &&
+      member.path !== "manifest.json" &&
+      (prior === undefined ||
+        !resourceFiles(active, kind, name).some((file) => file.path === member.path)),
+  );
+  const status = await publishResources(
+    c.env,
+    manifest,
+    [...retained, ...replacement.members],
+    input.idempotencyKey,
+    input.expectedRevision,
+  );
+  return c.json({ ...status, items: manifest.items });
+});
+
+app.delete("/api/resources/:kind/:name", async (c) => {
+  requireAuthScope(c.get("auth"), "access:write");
+  const { kind, name } = resourceIdentity(c.req.param("kind"), c.req.param("name"));
+  const decoded = decodeCloudResourceDelete(await resourceMutationBody(c.req.raw));
+  if (Result.isFailure(decoded)) throw badRequest("Resource request is invalid");
+  const active = await readActiveResources(c.env);
+  if (active.revision !== decoded.success.expectedRevision)
+    throw conflict("Sandbox configuration revision conflict");
+  const prior = active.manifest.items.find((item) => item.kind === kind && item.name === name);
+  if (prior === undefined)
+    return c.json({ error: { code: "not_found", message: "Resource not found" } }, 404);
+  const manifest: SandboxBundleManifest = {
+    items: active.manifest.items.filter((item) => item !== prior),
+  };
+  const removedPaths = new Set(resourceFiles(active, kind, name).map((file) => file.path));
+  const retained = active.members.filter(
+    (member) =>
+      member.type === "file" && member.path !== "manifest.json" && !removedPaths.has(member.path),
+  );
+  const status = await publishResources(
+    c.env,
+    manifest,
+    retained,
+    decoded.success.idempotencyKey,
+    decoded.success.expectedRevision,
+  );
+  return c.json({ ...status, items: manifest.items });
 });
 
 app.get("/api/providers", async (c) => {
@@ -552,13 +785,11 @@ app.put("/api/sandbox/bundles/:digest", async (c) => {
   if (idempotencyKeyHeader === undefined) throw badRequest("Idempotency-Key header is required");
   const idempotencyKey = parseIdempotencyKey(idempotencyKeyHeader);
   const ifMatchHeader = c.req.header("if-match");
-  let expectedRevision: number | null = null;
-  if (ifMatchHeader !== undefined) {
-    const parsed = Number(ifMatchHeader);
-    if (!Number.isInteger(parsed) || parsed < 0)
-      throw badRequest("If-Match revision must be a non-negative integer");
-    expectedRevision = parsed;
-  }
+  if (ifMatchHeader === undefined) throw badRequest("If-Match revision is required");
+  const parsed = Number(ifMatchHeader);
+  if (!Number.isInteger(parsed) || parsed < 0)
+    throw badRequest("If-Match revision must be a non-negative integer");
+  const expectedRevision: number | null = parsed;
   const gzipBytes = await readBoundedBytes(c.req.raw, SANDBOX_BUNDLE_MAX_GZIP_BYTES);
   if (gzipBytes === undefined) throw badRequest("Sandbox bundle body exceeds the size limit");
   const validated = await Effect.runPromise(
@@ -1130,6 +1361,16 @@ app.get("/sessions", async (c) => {
 });
 
 app.get("/sessions/*", async (c) => {
+  rejectRootQuery(c.req.raw);
+  const principal = await authenticateRequest(c.req.raw, c.env);
+  if (principal === undefined) return authAsset(c.env, c.req.raw, "/auth/locked.html");
+  if (principal.kind !== "client" || principal.source !== "cookie")
+    await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  return secureAsset(c.env, c.req.raw, "/app/_shell.html");
+});
+
+app.get("/settings", async (c) => {
   rejectRootQuery(c.req.raw);
   const principal = await authenticateRequest(c.req.raw, c.env);
   if (principal === undefined) return authAsset(c.env, c.req.raw, "/auth/locked.html");

@@ -20,7 +20,6 @@ import {
 import {
   credentialCanaryValues,
   findCredentialLeaks,
-  formatCredentialToml,
   scrubAmbientCredentialEnvironment,
   withoutAmbientCredentialEnvironment,
 } from "../support/credential-canary.mjs";
@@ -30,8 +29,6 @@ export { formatLocalDevVars, localHarnessContainerIds } from "../support/local-w
 const DEFAULT_PORT = 8791;
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-export const formatLocalCredentialToml = formatCredentialToml;
 
 export function localLiveCanaryValues(inputs, source = process.env) {
   return buildSecretSet([
@@ -241,18 +238,27 @@ async function proveFreshManagedSession({
     SCOTTY_TOKEN: inputs.rootToken,
     GH_CONFIG_DIR: inputs.githubConfigDir,
   };
-  const tomlPath = path.join(cliHome, ".config", "scotty", "scotty.toml");
-  mkdirSync(path.dirname(tomlPath), { recursive: true, mode: 0o700 });
-  writeFileSync(tomlPath, formatLocalCredentialToml({ repo, piAuthPath: inputs.piAuthPath }), {
-    mode: 0o600,
+  const synced = await runCli(["sync", "--pi-auth", inputs.piAuthPath, "--github", "--json"], {
+    env: cliEnv,
+    timeoutMs: 5 * 60_000,
   });
-  const synced = await runCli(["sync", "--json"], { env: cliEnv, timeoutMs: 5 * 60_000 });
   assertNoCredentialLeaks(
     "Credential Registry sync",
     `${synced.stdout}\n${synced.stderr}`,
     canaryValues,
   );
   if (synced.code !== 0) throw new Error(`Credential Registry sync failed:\n${synced.stderr}`);
+  const registered = await runCli(["repo", "add", repo, "--json"], {
+    env: cliEnv,
+    timeoutMs: 5 * 60_000,
+  });
+  assertNoCredentialLeaks(
+    "Repository registration",
+    `${registered.stdout}\n${registered.stderr}`,
+    canaryValues,
+  );
+  if (registered.code !== 0)
+    throw new Error(`Repository registration failed:\n${registered.stderr}`);
   const up = await runCli(
     [
       "beam",

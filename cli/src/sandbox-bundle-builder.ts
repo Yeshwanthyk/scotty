@@ -25,7 +25,7 @@ import {
   usePreparedPiPackage,
 } from "./pi-package-prepare";
 import { createDeterministicTarGz, type TarMember } from "./sandbox-archive";
-import type { LoadedScottyTomlConfig, ResolvedScottyTomlRoots } from "./scotty-config";
+import type { SandboxBundleRoots } from "./sandbox-roots";
 import { walkSandboxItem, type SandboxWalkOptions, type WalkedSandboxFile } from "./sandbox-walk";
 const PiPackageMetadataSchema = Schema.Struct({
   extensions: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
@@ -72,7 +72,7 @@ const preparedPackageWalkOptions = {
   skipNodeModulesBin: true,
 } as const;
 
-export interface BuildScottyTomlBundleOptions {
+export interface BuildSandboxBundleOptions {
   readonly installPackageDependencies?: PiPackageDependencyInstaller;
 }
 
@@ -162,7 +162,7 @@ const preparePackageItem = Effect.fnUntraced(function* (
 });
 
 const rootsByKind = (
-  roots: ResolvedScottyTomlRoots,
+  roots: SandboxBundleRoots,
 ): ReadonlyArray<readonly [SandboxBundleItemKind, ReadonlyArray<string>]> => [
   ["skill", roots.skills],
   ["tool", roots.tools],
@@ -170,7 +170,7 @@ const rootsByKind = (
 ];
 
 const discoverItems = Effect.fnUntraced(function* (
-  roots: ResolvedScottyTomlRoots,
+  roots: SandboxBundleRoots,
   install: PiPackageDependencyInstaller,
 ) {
   const items: PreparedBundleItem[] = [];
@@ -274,12 +274,12 @@ const archiveMembers = (
   return [...members.values()];
 };
 
-export const buildScottyTomlBundle = Effect.fnUntraced(function* (
-  loaded: LoadedScottyTomlConfig,
-  options: BuildScottyTomlBundleOptions = {},
+export const buildSandboxBundle = Effect.fnUntraced(function* (
+  roots: SandboxBundleRoots,
+  options: BuildSandboxBundleOptions = {},
 ) {
   const items = yield* discoverItems(
-    loaded.resolvedRoots,
+    roots,
     options.installPackageDependencies ?? installPiPackageDependencies,
   );
   const fileCount = items.reduce((total, item) => total + item.files.length, 0);
