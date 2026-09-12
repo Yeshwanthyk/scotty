@@ -720,6 +720,110 @@ describe("session actor restart", () => {
     }),
   );
 
+  it.effect("retries an expired reconciling Vaporize phase through its fenced provider", () =>
+    Effect.gen(function* () {
+      const persistedTransition = {
+        ...transition("Vaporize", "EvidenceDeleting"),
+        mode: "reconciling" as const,
+      };
+      const persisted = authority(persistedTransition);
+      const memory = actorPort(undefined, false, {
+        authority: persisted,
+        revision: persisted.revision,
+        journalSequence: 1,
+        journalTail: {
+          sequence: 1,
+          revision: persisted.revision,
+          timestamp: DEADLINE,
+          correlationId: "correlation-vaporize",
+          transitionNonce: persistedTransition.nonce,
+          eventType: "deadline_reconciling",
+          transitionKind: "Vaporize",
+          transitionPhase: persistedTransition.phase,
+          resultCode: "deadline_elapsed",
+          causeSequence: null,
+          causeAttempt: persistedTransition.attempt,
+        },
+      });
+      let providerCalls = 0;
+      const runner = actorEffectRunnerLayer.pipe(
+        Layer.provide(
+          Layer.merge(
+            actorAlarmSchedulerLayer(() => Effect.void),
+            providerEffectExecutorLayer((committed) => {
+              providerCalls += 1;
+              if (committed.intent.phase === "EvidenceDeleting")
+                return Effect.succeed({
+                  _tag: "ProviderObservation" as const,
+                  revision: committed.authority.revision,
+                  transitionNonce: committed.intent.transitionNonce,
+                  attempt: committed.intent.attempt,
+                  expectedPhase: committed.intent.phase,
+                  timestamp: DEADLINE,
+                  correlationId: committed.journalEvent.correlationId,
+                  expectedProviderRuntimeId: null,
+                  nextPhase: "GrantsReleasing",
+                  proof: persistedTransition.proof,
+                  resultCode: "owned_authority_released",
+                });
+              return Effect.fail(
+                new ProviderEffectBoundaryFailure({
+                  expectedRevision: committed.authority.revision,
+                  transitionNonce: committed.intent.transitionNonce,
+                  attempt: committed.intent.attempt,
+                  expectedPhase: committed.intent.phase,
+                  expectedProviderRuntimeId: null,
+                  outcome: "unknown_after_admission",
+                  safeResultCode: "cleanup_attempt_unknown",
+                  observedAt: DEADLINE,
+                }),
+              );
+            }),
+          ),
+        ),
+      );
+      const actor = sessionActorLayer.pipe(
+        Layer.provide(Layer.merge(actorStoreLayer(memory.port), runner)),
+      );
+      const result = yield* Effect.flatMap(SessionActor, (service) =>
+        service.resume({
+          timestamp: "2026-03-03T02:00:00.000Z",
+          correlationId: "correlation-expired-reconcile",
+          fence: {
+            kind: "reconcile",
+            alarmId: actorAlarmId(
+              "reconcile",
+              persistedTransition.nonce,
+              persistedTransition.attempt,
+              DEADLINE,
+              persistedTransition.phase,
+            ),
+            revision: persisted.revision,
+            transitionNonce: persistedTransition.nonce,
+            attempt: persistedTransition.attempt,
+            expectedPhase: persistedTransition.phase,
+            expectedDeadlineAt: DEADLINE,
+            correlationId: "correlation-vaporize",
+          },
+        }),
+      ).pipe(Effect.provide(actor));
+
+      assert.strictEqual(providerCalls, 2);
+      assert.ok(
+        result?.committed.some(
+          (entry) =>
+            entry.journalEvent.resultCode === "owned_authority_released" &&
+            entry.journalEvent.transitionPhase === "GrantsReleasing",
+        ),
+      );
+      const retained = result?.committed.at(-1)?.authority;
+      assert.ok(
+        retained !== undefined && AuthorityStateSchema.guards.Transitioning(retained.state),
+      );
+      assert.strictEqual(retained.state.transition.phase, "GrantsReleasing");
+    }),
+  );
+
   it.effect("reconstructs every transition phase from storage without runtime-memory state", () =>
     Effect.gen(function* () {
       for (const kind of Object.keys(phases) as ReadonlyArray<TransitionKind>) {
