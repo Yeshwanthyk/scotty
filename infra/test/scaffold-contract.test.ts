@@ -38,6 +38,11 @@ describe("pinned Task 4 contracts", () => {
       effect: "4.0.0-rc.112",
       hono: "4.12.31",
       "qrcode-generator": "1.4.4",
+      "smol-toml": "1.8.0",
+      typebox: "1.3.7",
+    });
+    expect(workerPackage.devDependencies).toEqual({
+      "@earendil-works/pi-coding-agent": "0.84.0",
     });
   });
 
