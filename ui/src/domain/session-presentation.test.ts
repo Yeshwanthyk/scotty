@@ -20,6 +20,9 @@ import {
 } from "./session-presentation";
 
 describe("presentSession", () => {
+  it("labels warm lifecycle without claiming agent readiness", () => {
+    expect(presentSession(warmIdle, { now: FIXTURE_NOW, source: "actor" }).railLabel).toBe("Awake");
+  });
   it("preserves transitioning authority without synthesizing a stable lifecycle", () => {
     const sleeping = presentSession(transitionSleep, {
       now: FIXTURE_NOW,
