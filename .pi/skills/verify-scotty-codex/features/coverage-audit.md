@@ -13,6 +13,8 @@ records under `.scotty-lab/evidence/RUN_ID/` before marking any row passed.
 | Sleep and resume | `sleep-resume` calls the authenticated public sleep route, waits for stable actor `Sleeping`, invokes CLI `resume`, then requires same ID, CLI `warm` and stable actor `Warm`. | No confirmed backup identity, prior turn preservation, same native thread, new runtime generation, queued work or fresh command assertion. A non-2xx sleep response can still proceed if actor state settles. Failed-host recovery is not proved. |
 | Vaporize | `vaporize` accepts only a lab-owned ID, requires CLI `gone` and stable actor `Gone`. | Does not independently enumerate provider resources, backup objects or credential destruction. `stop` alone is not a session vaporize operation. |
 | Full lifecycle | `full` composes create, checkpoint, sleep-resume and vaporize, then records success. | Its checkpoint step is unsupported for Codex, so `full` cannot be a Codex all-flows gate. A failure before vaporize leaves the owned ID for explicit cleanup. |
+| Codex workflow | `codex-workflow` selects Sol/medium, requires canonical command completion, follows up, steers an active turn, queues and interrupts it, observes the queued command, then checks healthy sleep/resume continuity and a fresh command before owned vaporize. | This is a real local Worker/native-model path only when the scenario itself passes. The 2026-09-12 local run failed at its initial turn with `upstream_failed (other)` and no tool activity, so none of the later controls or resume steps were proved by that run. It does not cover delegation, browser controls, failed-host recovery or Pi continuity. |
+| Captured failure states | `npm run test:lab` schema-decodes two redacted production snapshot/actor pairs and asserts their public UI projection: Warm actor with stopped host, and Failed sleep without a backup. | One conversation is current at capture; the other is last-observed. These are deterministic state-projection fixtures, not native event replay or evidence that either old session can recover. Earlier deleted sessions have no recoverable native event capture. |
 | Runtime loss and hard cap | Both scenarios record `not-available` before a lifecycle action. | No live fault, hard-cap deadline, failure recovery or retention proof. |
 | Nine fault controls | Any `--fault` value records `not-available` before the selected action. | No injection or post-dispatch ambiguity/reconciliation proof. |
 | Actor diagnostics | Each supported action reads validated actor diagnostics and compares stable authority, revision and journal tail. | Journal may be truncated at 256 events; provider snapshots are `not-available`. CLI/HTTP outcome is not correlated with an operation ID or independently verified provider state. |
@@ -29,15 +31,15 @@ delivery beyond the canonical cap remains unproven. The smoke does not cover del
 steering, queueing, interruption, sleep, resume, failed-host
 recovery, provider state or browser controls.
 
-To close the Codex release gap, add the smallest lab-owned, public-path checks in this order:
+To close the Codex release gap, make the existing public-path checks pass in this order:
 
-1. Decode the created session's selected agent/model/effort and require a completed native command
-   turn before treating `create-and-ready` as Codex-ready. Retain the CLI receipt and actor
-   observation together.
-2. For supported Codex sleep-resume, compare pre/post transcript and native thread identity,
-   confirm backup identity and runtime-generation change, then run a fresh command after
-   restoration. Keep checkpoint and therefore `full` out of the Codex gate unless that public
-   capability is deliberately added.
+1. Resolve the local initial-turn `upstream_failed (other)` and rerun `codex-workflow` to a passing
+   result. Its current source asserts selected agent/model/effort, canonical commands, receipt
+   correlation, queue/interrupt, runtime generation, native thread identity, transcript continuity,
+   fresh post-resume command and owned cleanup; a failed run proves only the reached prefix.
+2. Confirm the supported Codex sleep-resume path also preserves backup identity and model context
+   beyond the prior transcript and fresh command. Keep checkpoint and therefore `full` out of the
+   Codex gate unless that public capability is deliberately added.
 3. Expose bounded, lab-owned fault controls and provider observations before claiming runtime-loss,
    hard-cap or ambiguous-outcome recovery. Keep `not-available` until those paths exist.
 4. Exercise delegated research, queued follow-up and browser controls through separate recipes;

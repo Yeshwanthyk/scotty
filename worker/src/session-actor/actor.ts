@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Predicate } from "effect";
 import { actorAlarmId, type ActorAlarmFence } from "./alarm";
-import { AuthorityStateSchema, type SessionAuthority } from "./authority";
+import { AuthorityStateSchema, TransitionSchema, type SessionAuthority } from "./authority";
 import { transitionOf } from "./control";
 import type { Decision } from "./decision";
 import { ActorEffectRunner, type EffectRunnerError } from "./effect-runner";
@@ -117,6 +117,19 @@ const matchesAlarmFence = (
     (transition.mode === "reconciling" &&
       fence.revision === authority.revision &&
       fence.expectedPhase === transition.phase));
+
+const dispatchDeadline = (
+  fence: ActorAlarmFence | undefined,
+  transition: Extract<SessionAuthority["state"], { readonly _tag: "Transitioning" }>["transition"],
+  timestamp: string,
+): fence is ActorAlarmFence =>
+  !(
+    fence?.kind === "reconcile" &&
+    TransitionSchema.guards.Vaporize(transition) &&
+    transition.mode === "reconciling"
+  ) &&
+  (fence?.kind === "deadline" ||
+    (fence?.kind === "reconcile" && Date.parse(timestamp) >= Date.parse(transition.deadlineAt)));
 
 const unknownObservationCommit = (
   authority: SessionAuthority,
@@ -245,11 +258,7 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
         const fence = input.fence;
         if (fence !== undefined && !matchesAlarmFence(fence, authority, transition))
           return undefined;
-        if (
-          fence?.kind === "deadline" ||
-          (fence?.kind === "reconcile" &&
-            Date.parse(input.timestamp) >= Date.parse(transition.deadlineAt))
-        )
+        if (dispatchDeadline(fence, transition, input.timestamp))
           return yield* handle({
             _tag: "DeadlineAlarm",
             revision: authority.revision,

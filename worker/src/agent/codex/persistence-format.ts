@@ -19,6 +19,10 @@ export const CodexSavedTerminal = Schema.Struct({
   outcome: Schema.Literals(["completed", "interrupted", "failed"]),
   text: Text,
 });
+export const CodexSavedFailed = Schema.Struct({
+  status: Schema.Literal("failed"),
+  turnId: Identifier,
+});
 export const CodexSavedOperation = Schema.Struct({
   id: Identifier,
   mode: Schema.Literals(["message", "steer"]),
@@ -29,7 +33,7 @@ export const CodexSavedOperation = Schema.Struct({
 });
 export const CodexSavedHistory = Schema.Struct({
   ...CodexPersistenceIdentity.fields,
-  prompt: CodexSavedTerminal,
+  prompt: Schema.Union([CodexSavedTerminal, CodexSavedFailed]),
   turns: Schema.Array(CanonicalConversationTurnSchema).check(
     Schema.isMinLength(1),
     Schema.isMaxLength(CONVERSATION_MAX_TURNS),
@@ -41,7 +45,11 @@ export const CodexSavedHistory = Schema.Struct({
     (value) =>
       value.turns[0]?.id === value.initialTurnId &&
       value.turns.every((turn) => turn.state !== "streaming") &&
-      value.turns.some((turn) => turn.id === value.prompt.turnId) &&
+      value.turns.some(
+        (turn) =>
+          turn.id === value.prompt.turnId &&
+          (value.prompt.status !== "failed" || turn.state === "failed"),
+      ) &&
       new Set(value.turns.map((turn) => turn.id)).size === value.turns.length &&
       new Set(value.operations.map((operation) => operation.id)).size === value.operations.length &&
       value.operations.every(

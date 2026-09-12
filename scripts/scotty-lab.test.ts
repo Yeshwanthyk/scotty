@@ -1,17 +1,47 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
 import { spawn } from "node:child_process";
-import { Effect, Layer, Predicate, Result } from "effect";
+import { Effect, Layer, Predicate, Result, Schema } from "effect";
 import packageMetadata from "../package.json" with { type: "json" };
+import { CanonicalConversationSnapshotSchema } from "../protocol/conversation.ts";
+import { SessionAuthoritySchema } from "../worker/src/session-actor/authority.ts";
+import { uiSessionResponseFromActor } from "../worker/src/ui/session-view.ts";
+import capturedFailureStates from "./fixtures/codex-failure-states.json" with { type: "json" };
 import {
   LAB_VERSION,
   LabOperations,
   LabUsageError,
+  codexTerminalProof,
   runLab,
   waitForCapturedChild,
 } from "./scotty-lab.ts";
 
 const RUN_ID = "lab-12345678-1234-4123-8123-123456789abc";
+
+const CapturedFailureStatesSchema = Schema.Struct({
+  fixtureVersion: Schema.Literal(1),
+  cases: Schema.Array(
+    Schema.Struct({
+      kind: Schema.Literals(["warm-host-dead", "failed-sleep-no-backup"]),
+      source: Schema.Struct({
+        snapshotFileCapturedAt: Schema.String,
+        actorFileCapturedAt: Schema.String,
+        nativeObservationAt: Schema.Null,
+        snapshotAuthority: Schema.Literals(["captured-current", "last-observed"]),
+        nativeEventCaptured: Schema.Literal(false),
+      }),
+      canonical: CanonicalConversationSnapshotSchema,
+      actor: Schema.Struct({
+        authority: SessionAuthoritySchema,
+        revision: Schema.Int,
+        journalSequence: Schema.Int,
+        tail: Schema.Struct({ eventType: Schema.String, resultCode: Schema.NullOr(Schema.String) }),
+      }),
+    }),
+  ),
+});
+const decodeCapturedFailureStates = Schema.decodeUnknownResult(CapturedFailureStatesSchema);
+const capturedStates = decodeCapturedFailureStates(capturedFailureStates);
 
 const run = (args: ReadonlyArray<string>, calls: string[]): Effect.Effect<void, unknown> =>
   runLab(args).pipe(
@@ -46,6 +76,10 @@ const run = (args: ReadonlyArray<string>, calls: string[]): Effect.Effect<void, 
           Effect.sync(() => calls.push(`vaporize:${sessionId}:${fault ?? "none"}`)).pipe(
             Effect.asVoid,
           ),
+        codexWorkflow: (repo, fault) =>
+          Effect.sync(() => calls.push(`codex-workflow:${repo}:${fault ?? "none"}`)).pipe(
+            Effect.asVoid,
+          ),
         full: (repo, fault) => Effect.sync(() => calls.push(`full:${repo}:${fault ?? "none"}`)),
       }),
     ),
@@ -64,6 +98,188 @@ const assertUsageFailure = (result: Result.Result<void, unknown>): void => {
 };
 
 describe("Effect Scotty lab command grammar", () => {
+  it("projects captured Warm actor with a stopped Codex host", () => {
+    assert.ok(Result.isSuccess(capturedStates));
+    assert.equal(capturedStates.success.cases.length, 2);
+    const observed = capturedStates.success.cases.find(({ kind }) => kind === "warm-host-dead");
+    assert.isDefined(observed);
+    assert.equal(observed.source.snapshotAuthority, "captured-current");
+    assert.isNull(observed.source.nativeObservationAt);
+    assert.isFalse(observed.source.nativeEventCaptured);
+    assert.isTrue(observed.canonical.runtimeStopped);
+    assert.isFalse(observed.canonical.followUpAvailable);
+    assert.equal(
+      observed.canonical.turns.at(-1)?.activitySummary,
+      "Runtime failure: stale_notification",
+    );
+    const ui = uiSessionResponseFromActor(
+      observed.actor.authority,
+      undefined,
+      Date.parse(observed.source.actorFileCapturedAt),
+    );
+    assert.deepEqual(ui.session.authority, {
+      kind: "stable",
+      lifecycle: "warm",
+      failure: null,
+    });
+    assert.isTrue(ui.session.capabilities.vaporize);
+  });
+
+  it("projects captured Failed sleep without a backup from last-observed Codex state", () => {
+    assert.ok(Result.isSuccess(capturedStates));
+    const observed = capturedStates.success.cases.find(
+      ({ kind }) => kind === "failed-sleep-no-backup",
+    );
+    assert.isDefined(observed);
+    assert.equal(observed.source.snapshotAuthority, "last-observed");
+    assert.isNull(observed.source.nativeObservationAt);
+    assert.isFalse(observed.source.nativeEventCaptured);
+    assert.isTrue(observed.canonical.runtimeStopped);
+    assert.isFalse(observed.canonical.followUpAvailable);
+    assert.equal(
+      observed.canonical.turns.at(-1)?.activitySummary,
+      "Runtime failure: stale_notification",
+    );
+    const ui = uiSessionResponseFromActor(
+      observed.actor.authority,
+      undefined,
+      Date.parse(observed.source.actorFileCapturedAt),
+    );
+    assert.deepEqual(ui.session.authority, {
+      kind: "stable",
+      lifecycle: "failed",
+      failure: { code: "reconciliation_outcome_unknown", recoverable: false },
+    });
+    assert.isFalse(ui.session.capabilities.resume);
+    assert.isTrue(ui.session.capabilities.vaporize);
+  });
+
+  it("requires a healthy matching Codex command and reply", () => {
+    const snapshot = {
+      id: "a0b1c2d3e4f5",
+      version: 1 as const,
+      runtimeStopped: false,
+      followUpAvailable: true,
+      transport: { epoch: "epoch", baseSequence: 0, sequence: 1, sessionRevision: 1 },
+      turns: [
+        {
+          id: "turn-1",
+          state: "completed" as const,
+          user: "Run the command",
+          assistant: "SCOTTY_LAB_CODEX_READY",
+          tools: [
+            {
+              id: "tool-1",
+              state: "completed" as const,
+              label: "Command",
+              invocation: "printf SCOTTY_LAB_CODEX_INITIAL",
+              output: "SCOTTY_LAB_CODEX_INITIAL",
+            },
+          ],
+        },
+      ],
+      queue: { steer: [], followUp: [] },
+      truncated: { turns: false, values: false },
+    };
+    assert.deepEqual(
+      codexTerminalProof(snapshot, undefined, "SCOTTY_LAB_CODEX_INITIAL", "SCOTTY_LAB_CODEX_READY"),
+      { status: "passed", turnId: "turn-1" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
+        snapshot,
+        "other-turn",
+        "SCOTTY_LAB_CODEX_INITIAL",
+        "SCOTTY_LAB_CODEX_READY",
+      ),
+      { status: "pending" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(snapshot, "turn-1", "UNRUN_COMMAND", "SCOTTY_LAB_CODEX_READY"),
+      { status: "failed", reason: "Codex terminal lacks the requested command or reply" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
+        {
+          ...snapshot,
+          turns: [
+            {
+              ...snapshot.turns[0],
+              tools: [
+                { ...snapshot.turns[0].tools[0], invocation: "echo SCOTTY_LAB_CODEX_INITIAL" },
+              ],
+            },
+          ],
+        },
+        "turn-1",
+        "SCOTTY_LAB_CODEX_INITIAL",
+        "SCOTTY_LAB_CODEX_READY",
+      ),
+      { status: "failed", reason: "Codex terminal lacks the requested command or reply" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
+        {
+          ...snapshot,
+          turns: [
+            { ...snapshot.turns[0], state: "aborted", assistant: "", tools: [] },
+            {
+              ...snapshot.turns[0],
+              id: "queued-turn",
+              user: "Run printf SCOTTY_LAB_CODEX_QUEUED once",
+              assistant: "SCOTTY_LAB_CODEX_QUEUE_DONE",
+              tools: [
+                {
+                  ...snapshot.turns[0].tools[0],
+                  invocation: "printf SCOTTY_LAB_CODEX_QUEUED",
+                  output: "SCOTTY_LAB_CODEX_QUEUED",
+                },
+              ],
+            },
+          ],
+        },
+        undefined,
+        "SCOTTY_LAB_CODEX_QUEUED",
+        "SCOTTY_LAB_CODEX_QUEUE_DONE",
+        "SCOTTY_LAB_CODEX_QUEUED",
+      ),
+      { status: "passed", turnId: "queued-turn" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
+        { ...snapshot, runtimeStopped: true },
+        "turn-1",
+        "SCOTTY_LAB_CODEX_INITIAL",
+        "SCOTTY_LAB_CODEX_READY",
+      ),
+      { status: "failed", reason: "Codex runtime stopped or health was unavailable" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
+        {
+          ...snapshot,
+          runtimeStopped: true,
+          turns: [
+            {
+              ...snapshot.turns[0],
+              state: "failed",
+              activitySummary:
+                "Runtime failure: stale_notification (item/started parent completed subAgentActivity)",
+            },
+          ],
+        },
+        "turn-1",
+        "SCOTTY_LAB_CODEX_INITIAL",
+        "SCOTTY_LAB_CODEX_READY",
+      ),
+      {
+        status: "failed",
+        reason:
+          "Runtime failure: stale_notification (item/started parent completed subAgentActivity)",
+      },
+    );
+  });
+
   it("uses the package version", () => {
     assert.strictEqual(LAB_VERSION, packageMetadata.version);
   });
@@ -81,6 +297,14 @@ describe("Effect Scotty lab command grammar", () => {
         `exec:${RUN_ID}:["doctor","--json"]`,
         `stop:${RUN_ID}`,
       ]);
+    }),
+  );
+
+  it.effect("dispatches the explicit Codex workflow scenario", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      yield* run(["lifecycle", "codex-workflow", "--repo", "owner/repo"], calls);
+      assert.deepEqual(calls, ["codex-workflow:owner/repo:none"]);
     }),
   );
 

@@ -1,0 +1,324 @@
+{
+  "fixtureVersion": 1,
+  "cases": [
+    {
+      "kind": "warm-host-dead",
+      "source": {
+        "snapshotAuthority": "captured-current",
+        "nativeEventCaptured": false,
+        "snapshotFileCapturedAt": "2026-09-12T15:43:44Z",
+        "actorFileCapturedAt": "2026-09-12T15:44:29Z",
+        "nativeObservationAt": null
+      },
+      "canonical": {
+        "version": 1,
+        "runtimeStopped": true,
+        "followUpAvailable": false,
+        "followUpBlocked": false,
+        "transport": {
+          "epoch": "fixture-epoch",
+          "baseSequence": 0,
+          "sequence": 155,
+          "sessionRevision": 8
+        },
+        "turns": [
+          {
+            "id": "turn-1",
+            "state": "completed",
+            "user": "[redacted]",
+            "assistant": "[redacted]",
+            "tools": [
+              {
+                "id": "tool-1-1",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              }
+            ]
+          },
+          {
+            "id": "turn-2",
+            "state": "completed",
+            "user": "[redacted]",
+            "assistant": "[redacted]",
+            "tools": []
+          },
+          {
+            "id": "turn-3",
+            "state": "completed",
+            "user": "[redacted]",
+            "assistant": "[redacted]",
+            "tools": [
+              {
+                "id": "tool-3-1",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              }
+            ]
+          },
+          {
+            "id": "turn-4",
+            "state": "failed",
+            "user": "[redacted]",
+            "assistant": "[redacted]",
+            "tools": [
+              {
+                "id": "tool-4-1",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              },
+              {
+                "id": "tool-4-2",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              },
+              {
+                "id": "tool-4-3",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              },
+              {
+                "id": "tool-4-4",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              },
+              {
+                "id": "tool-4-5",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              }
+            ],
+            "activitySummary": "Runtime failure: stale_notification"
+          }
+        ],
+        "queue": {
+          "steer": [],
+          "followUp": []
+        },
+        "truncated": {
+          "turns": true,
+          "values": true
+        }
+      },
+      "actor": {
+        "authority": {
+          "session": {
+            "selection": {
+              "agent": "codex",
+              "model": "gpt-6-astra",
+              "effort": "low"
+            },
+            "id": "fixture-warm-host-dead",
+            "title": "Captured Codex failure",
+            "repository": "fixture/disposable",
+            "execution": {
+              "provider": "cloudflare",
+              "runtimeName": "fixture-runtime"
+            },
+            "createdAt": "2026-09-12T14:29:03.604Z"
+          },
+          "hardCap": {
+            "durationSeconds": 14400,
+            "deadlineAt": "2026-09-12T18:29:03.604Z",
+            "generation": "fixture-hard-cap"
+          },
+          "revision": 8,
+          "state": {
+            "_tag": "Stable",
+            "stable": {
+              "_tag": "Warm",
+              "readiness": {
+                "runtime": {
+                  "providerRuntimeId": "fixture-runtime",
+                  "runtimeGeneration": "fixture-generation",
+                  "containerIncarnation": "fixture-container"
+                },
+                "supervisor": {
+                  "processId": "fixture-process",
+                  "supervisorEpoch": "fixture-thread",
+                  "runtimeGeneration": "fixture-generation",
+                  "containerIncarnation": "fixture-container"
+                },
+                "transport": {
+                  "transportId": "fixture-turn",
+                  "supervisorEpoch": "fixture-thread",
+                  "runtimeGeneration": "fixture-generation",
+                  "containerIncarnation": "fixture-container"
+                }
+              },
+              "backups": {
+                "ownedBackupIds": [],
+                "prepared": null,
+                "currentBackupId": null,
+                "confirmed": null
+              },
+              "activity": null
+            }
+          }
+        },
+        "revision": 8,
+        "journalSequence": 8,
+        "tail": {
+          "eventType": "completed",
+          "resultCode": "codex_prompt_admitted"
+        }
+      }
+    },
+    {
+      "kind": "failed-sleep-no-backup",
+      "source": {
+        "snapshotAuthority": "last-observed",
+        "nativeEventCaptured": false,
+        "snapshotFileCapturedAt": "2026-09-12T15:44:50Z",
+        "actorFileCapturedAt": "2026-09-12T15:44:28Z",
+        "nativeObservationAt": null
+      },
+      "canonical": {
+        "version": 1,
+        "runtimeStopped": true,
+        "followUpAvailable": false,
+        "followUpBlocked": false,
+        "transport": {
+          "epoch": "fixture-epoch",
+          "baseSequence": 0,
+          "sequence": 143,
+          "sessionRevision": 8
+        },
+        "turns": [
+          {
+            "id": "turn-1",
+            "state": "completed",
+            "user": "[redacted]",
+            "assistant": "[redacted]",
+            "tools": [
+              {
+                "id": "tool-1-1",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              }
+            ]
+          },
+          {
+            "id": "turn-2",
+            "state": "completed",
+            "user": "[redacted]",
+            "assistant": "[redacted]",
+            "tools": []
+          },
+          {
+            "id": "turn-3",
+            "state": "completed",
+            "user": "[redacted]",
+            "assistant": "[redacted]",
+            "tools": [
+              {
+                "id": "tool-3-1",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              }
+            ]
+          },
+          {
+            "id": "turn-4",
+            "state": "failed",
+            "user": "[redacted]",
+            "assistant": "[redacted]",
+            "tools": [
+              {
+                "id": "tool-4-1",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              },
+              {
+                "id": "tool-4-2",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              },
+              {
+                "id": "tool-4-3",
+                "state": "completed",
+                "label": "[redacted]",
+                "invocation": "[redacted]",
+                "output": "[redacted]"
+              }
+            ],
+            "activitySummary": "Runtime failure: stale_notification"
+          }
+        ],
+        "queue": {
+          "steer": [],
+          "followUp": []
+        },
+        "truncated": {
+          "turns": true,
+          "values": true
+        }
+      },
+      "actor": {
+        "authority": {
+          "session": {
+            "selection": {
+              "agent": "codex",
+              "model": "gpt-6-astra",
+              "effort": "low"
+            },
+            "id": "fixture-failed-sleep-no-backup",
+            "title": "Captured Codex failure",
+            "repository": "fixture/disposable",
+            "execution": {
+              "provider": "cloudflare",
+              "runtimeName": "fixture-runtime"
+            },
+            "createdAt": "2026-09-12T14:28:48.900Z"
+          },
+          "hardCap": {
+            "durationSeconds": 14400,
+            "deadlineAt": "2026-09-12T18:28:48.900Z",
+            "generation": "fixture-hard-cap"
+          },
+          "revision": 11,
+          "state": {
+            "_tag": "Stable",
+            "stable": {
+              "_tag": "Failed",
+              "code": "reconciliation_outcome_unknown",
+              "actionable": false,
+              "origin": "Warm",
+              "lastStable": "Warm",
+              "backup": null,
+              "ownedBackupIds": [],
+              "wakeSource": null
+            }
+          }
+        },
+        "revision": 11,
+        "journalSequence": 11,
+        "tail": {
+          "eventType": "completed",
+          "resultCode": "reconciliation_outcome_unknown"
+        }
+      }
+    }
+  ]
+}

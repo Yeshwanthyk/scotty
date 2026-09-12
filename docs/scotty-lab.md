@@ -110,6 +110,7 @@ npm run lab -- lifecycle sleep-resume --session SESSION_ID
 npm run lab -- lifecycle runtime-loss --session SESSION_ID
 npm run lab -- lifecycle hard-cap --session SESSION_ID
 npm run lab -- lifecycle vaporize --session SESSION_ID
+npm run lab -- lifecycle codex-workflow --repo OWNER/DISPOSABLE_REPO
 npm run lab -- lifecycle full --repo OWNER/DISPOSABLE_REPO
 ```
 
@@ -127,11 +128,33 @@ vaporize before stopping the run.
 
 `checkpoint` invokes the real CLI `snapshot` command. A manual snapshot stops Pi and interactive
 terminals while writing the backup, then restores the warm runtime; it is not the sleep transition.
+Codex checkpoint is unsupported, so `full` remains a Pi lifecycle sequence.
 `sleep-resume` uses the authenticated public `POST /api/sessions/:id/sleep` route through the exact
 loopback lab host and root token, records its sanitized response and HTTP status, then invokes the
 real CLI `resume` command. If the route truthfully reports a reconciling outcome, the lab waits for
 the actor authority to settle `Sleeping`; it does not treat the response as success by itself. It
 never writes Durable Object storage or desired state directly.
+
+`codex-workflow` explicitly selects Codex Sol/medium and requires completed native commands and
+assistant markers from canonical `inspect`. It correlates a terminal follow-up receipt, admits an
+active turn, observes its running command, steers that same turn, queues a follow-up, interrupts the
+active turn, and requires the queued command to complete. It then sleeps and resumes the owned
+session, requiring a new runtime generation, the same native thread, preserved prior command
+output, and a completed post-resume command before vaporizing. The private evidence manifest
+records turn IDs and positive assertions; raw conversation snapshots are omitted from command
+evidence. If the workflow fails after create, the owned ID remains for exact targeted cleanup.
+This scenario does not prove delegation, browser-close queue delivery, fault recovery, or Pi
+conversation continuity.
+
+The redacted captured-state fixtures in `scripts/fixtures/codex-failure-states.json` cover two
+distinct production observations: a Warm actor with a stopped Codex host, and a Failed sleep with
+no backup. They preserve state tags, tool counts, safe failure codes and revisions while replacing
+session IDs, repository, title, prompts, assistant text, command text, output and runtime IDs. File
+capture timestamps are recorded separately from the native observation time, which the original
+payloads did not carry. The Failed case's conversation is explicitly **last-observed**; its actor
+state is the current lifecycle authority. `npm run test:lab` decodes both fixtures and checks their public UI
+projection and recovery actions. These fixtures cannot replay the missing native notification or
+prove that a repaired runtime can continue the old session.
 
 Every run retains private evidence under `.scotty-lab/evidence/RUN_ID/`, outside the ephemeral
 temporary root. Directories are mode `0700`; `run.json`, `commands.jsonl`, and the redacted

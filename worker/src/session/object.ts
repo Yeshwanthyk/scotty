@@ -1433,6 +1433,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             }).pipe(Effect.catch(vaporizeUnknown("evidence_absence_unknown"))),
           releaseGrants: ({ authority }) =>
             Effect.gen({ self: this }, function* () {
+              yield* metadataStore.scrubVaporizingCreate(authority);
               const metadata = yield* metadataStore.read(authority);
               const grants = metadata?.createObservations.credentialGrants?.grants ?? [];
               if (grants.length > 0) {
@@ -5926,12 +5927,23 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(
       Effect.gen({ self: this }, function* () {
         const now = yield* Clock.currentTimeMillis;
+        const store = yield* ActorStore;
         const actor = yield* SessionActor;
         yield* actor.resume({
           timestamp: new Date(now).toISOString(),
           correlationId: currentFence.correlationId,
           fence: currentFence,
         });
+        const after = yield* store.read;
+        if (
+          after.authority !== undefined &&
+          AuthorityStateSchema.guards.Stable(after.authority.state) &&
+          !StableStateSchema.guards.Gone(after.authority.state.stable)
+        ) {
+          // A previous alarm may have committed Create before its metadata scrub failed.
+          const metadataStore = yield* SessionActorMetadataStore;
+          yield* metadataStore.scrubSettledCreate(after.authority);
+        }
         yield* this.publishActorSessionProjectionBestEffortProgram();
         yield* this.cancelSessionSchedulesAfterGoneProgram();
       }),

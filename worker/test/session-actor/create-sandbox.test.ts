@@ -158,6 +158,7 @@ const providerLayer = (
           observation,
         }),
       scrubSettledCreate: () => Effect.die("unused"),
+      scrubVaporizingCreate: () => Effect.die("unused"),
       deleteForVaporize: () => Effect.die("unused"),
     }),
   );

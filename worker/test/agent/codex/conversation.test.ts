@@ -130,6 +130,29 @@ describe("Codex conversation failure projection", () => {
       assert.equal(conversation.turns[0]?.state, "failed");
     }),
   );
+  it.effect("keeps a saved failed turn visible after the native runtime resumes", () =>
+    Effect.gen(function* () {
+      const conversation = yield* codexConversation(
+        makeSnapshot({
+          ready: true,
+          failure: null,
+          turns: [
+            {
+              id: "failed-turn",
+              state: "failed",
+              user: "previous task",
+              assistant: "",
+              tools: [],
+            },
+          ],
+        }),
+        { prompt: "previous task", turnId: "failed-turn", revision: 5 },
+      );
+      assert.isFalse(conversation.runtimeStopped);
+      assert.isTrue(conversation.followUpAvailable);
+      assert.equal(conversation.turns[0]?.state, "failed");
+    }),
+  );
   it.effect("reports a stopped runtime without rewriting a completed turn", () =>
     Effect.gen(function* () {
       const conversation = yield* codexConversation(

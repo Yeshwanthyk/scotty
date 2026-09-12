@@ -105,23 +105,89 @@ export const proxyOpenAIProgram = Effect.fnUntraced(function* (request: Request)
   return yield* forward(request, url, headers);
 });
 
+type ChatGptEgressDiagnostic =
+  | "invalid_destination"
+  | "invalid_sentinel"
+  | "credential_unavailable"
+  | "credential_unusable"
+  | "account_id_missing"
+  | "credential_access_failed"
+  | "upstream_transport_failed"
+  | "upstream_http_status";
+
+type ChatGptEndpointClass = "responses" | "other";
+type ChatGptResponseClass = "cloudflare_challenge" | "json" | "html" | "other";
+
+const chatGptEndpointClass = (url: URL): ChatGptEndpointClass =>
+  url.pathname === "/backend-api/codex/responses" ? "responses" : "other";
+
+const chatGptResponseClass = (response: Response): ChatGptResponseClass => {
+  if (response.headers.get("cf-mitigated") === "challenge") return "cloudflare_challenge";
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType === "application/json") return "json";
+  if (mediaType === "text/html") return "html";
+  return "other";
+};
+
+const reportChatGptEgress = (
+  code: ChatGptEgressDiagnostic,
+  detail?: {
+    readonly endpoint?: ChatGptEndpointClass;
+    readonly status?: number;
+    readonly responseClass?: ChatGptResponseClass;
+  },
+) =>
+  Effect.sync(() =>
+    console.warn("Scotty ChatGPT egress failed", {
+      code,
+      ...detail,
+    }),
+  );
+
 export const proxyChatGptProgram = Effect.fnUntraced(function* (request: Request) {
   const url = exactDestination(request, "chatgpt.com");
-  if (url === undefined) return forbidden();
+  if (url === undefined) {
+    yield* reportChatGptEgress("invalid_destination");
+    return forbidden();
+  }
   const authorization = request.headers.get("authorization");
   const handle = parseManagedPiAccessToken(
     authorization === null ? undefined : bearerValue(authorization),
   );
-  if (Option.isNone(handle)) return forbidden();
+  if (Option.isNone(handle)) {
+    yield* reportChatGptEgress("invalid_sentinel", { endpoint: chatGptEndpointClass(url) });
+    return forbidden();
+  }
   const credential = yield* EgressCredential;
-  const resolved = yield* credential.resolve(formatManagedHandle(handle.value));
-  if (resolved === null) return forbidden();
+  const resolved = yield* credential
+    .resolve(formatManagedHandle(handle.value))
+    .pipe(Effect.tapError(() => reportChatGptEgress("credential_access_failed")));
+  if (resolved === null) {
+    yield* reportChatGptEgress("credential_unavailable");
+    return forbidden();
+  }
   const selected = selectPiCredential(resolved, handle.value);
-  if (selected === null || selected.accountId === undefined) return forbidden();
+  if (selected === null) {
+    yield* reportChatGptEgress("credential_unusable");
+    return forbidden();
+  }
+  if (selected.accountId === undefined) {
+    yield* reportChatGptEgress("account_id_missing");
+    return forbidden();
+  }
   const headers = sanitizedHeaders(request.headers);
   headers.set("authorization", `Bearer ${selected.token}`);
   headers.set("chatgpt-account-id", selected.accountId);
-  return yield* forward(request, url, headers);
+  const response = yield* forward(request, url, headers).pipe(
+    Effect.tapError(() => reportChatGptEgress("upstream_transport_failed")),
+  );
+  if (response.status >= 300)
+    yield* reportChatGptEgress("upstream_http_status", {
+      endpoint: chatGptEndpointClass(url),
+      status: response.status,
+      responseClass: chatGptResponseClass(response),
+    });
+  return response;
 });
 
 export const proxyGitHubProgram = Effect.fnUntraced(function* (request: Request) {

@@ -24,7 +24,12 @@ import {
   Flag,
 } from "effect/unstable/cli";
 import { isRepositoryIdentity } from "../protocol/repository.ts";
+import { CanonicalConversationSnapshotSchema } from "../protocol/conversation.ts";
+import { SessionSteerResponseSchema } from "../protocol/session-steer.ts";
+import { SessionInterruptResponseSchema } from "../protocol/session-interrupt.ts";
 import { SessionActorDiagnosticsSchema } from "../worker/src/session-actor/diagnostics.ts";
+import { AuthorityStateSchema, StableStateSchema } from "../worker/src/session-actor/authority.ts";
+import { UiSessionResponseSchema } from "../worker/src/ui/session-view.ts";
 import {
   acquireLifecycleLock,
   activeRunManifest,
@@ -44,6 +49,7 @@ import {
   preserveWorkerLog,
   PROTECTED_SESSION_ID,
   readActorDiagnostics,
+  readSessionView,
   recoverPendingCreateSessionId,
   recordCleanupResult,
   recordActorDiagnostics,
@@ -88,6 +94,7 @@ type LifecycleScenario =
   | "runtime-loss"
   | "hard-cap"
   | "vaporize"
+  | "codex-workflow"
   | "full";
 
 const SessionOperationOutput = Schema.Struct({
@@ -95,6 +102,10 @@ const SessionOperationOutput = Schema.Struct({
   status: Schema.String,
 });
 const SessionIdentityOutput = Schema.Struct({ id: Schema.String });
+const CodexInspectOutput = Schema.Struct({
+  id: Schema.String,
+  ...CanonicalConversationSnapshotSchema.fields,
+});
 const decodeSessionOperationJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(SessionOperationOutput),
 );
@@ -103,6 +114,53 @@ const decodeSessionIdentityJson = Schema.decodeUnknownEffect(
 );
 const decodeActorDiagnosticsJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(SessionActorDiagnosticsSchema),
+);
+const decodeCodexInspectJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(CodexInspectOutput),
+);
+const decodeSteerJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(SessionSteerResponseSchema),
+);
+const decodeInterruptJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(SessionInterruptResponseSchema),
+);
+
+const acceptedCodexTurnId = (
+  receipt: typeof SessionSteerResponseSchema.Type,
+  sessionId: string,
+  mode: "message" | "steer",
+): string | undefined =>
+  receipt.id === sessionId &&
+  receipt.status === "accepted" &&
+  "mode" in receipt &&
+  receipt.mode === mode &&
+  "turnId" in receipt
+    ? receipt.turnId
+    : undefined;
+
+const acceptedCodexQueueId = (
+  receipt: typeof SessionSteerResponseSchema.Type,
+  sessionId: string,
+): string | undefined =>
+  receipt.id === sessionId &&
+  receipt.status === "accepted" &&
+  "mode" in receipt &&
+  receipt.mode === "followUp" &&
+  "clientUserMessageId" in receipt
+    ? receipt.clientUserMessageId
+    : undefined;
+
+const acceptedCodexInterrupt = (
+  receipt: typeof SessionInterruptResponseSchema.Type,
+  sessionId: string,
+  turnId: string,
+): boolean =>
+  receipt.id === sessionId &&
+  receipt.status === "accepted" &&
+  "turnId" in receipt &&
+  receipt.turnId === turnId;
+const decodeUiSessionJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(UiSessionResponseSchema),
 );
 
 export class LabFailure extends Data.TaggedError("LabFailure")<{
@@ -379,6 +437,21 @@ type ScenarioResult = Readonly<{
   sessionId?: string;
   reason?: string;
   fault?: Fault;
+  proof?: {
+    readonly initialTurnId: string;
+    readonly followUpTurnId: string;
+    readonly interruptedTurnId: string;
+    readonly queuedTurnId: string;
+    readonly queuedMessageId: string;
+    readonly resumedTurnId: string;
+    readonly completedCommands: 4;
+    readonly activeSteer: true;
+    readonly interruptAccepted: true;
+    readonly sleepResumeContinuity: true;
+    readonly runtimeStopped: false;
+    readonly model: "gpt-5.6-sol";
+    readonly effort: "medium";
+  };
 }>;
 
 const persistScenarioResult = (manifest: Manifest, result: ScenarioResult) =>
@@ -451,12 +524,21 @@ const requireOwnedSession = Effect.fnUntraced(function* (
   return validated.success;
 });
 
+const recordedCliOutput = (stdout: string, stderr: string, omitOutput: boolean) =>
+  omitOutput
+    ? {
+        stdout: "<canonical runtime snapshot omitted>",
+        stderr: "<canonical runtime error omitted>",
+      }
+    : { stdout, stderr };
+
 const runRecordedCli = Effect.fnUntraced(function* (
   manifest: Manifest,
   scenario: LifecycleScenario,
   argv: ReadonlyArray<string>,
   sessionId?: string,
   recoverSessionId?: () => Effect.Effect<string, LabFailure>,
+  omitOutput = false,
 ) {
   const startedAt = yield* nowIso;
   const child = yield* attempt("Unable to start the Scotty CLI", () =>
@@ -489,14 +571,19 @@ const runRecordedCli = Effect.fnUntraced(function* (
   const stderr = yield* attempt("Unable to sanitize lifecycle stderr", () =>
     sanitizeEvidenceText(manifest, captured.stderr),
   );
+  const { stdout: evidenceStdout, stderr: evidenceStderr } = recordedCliOutput(
+    stdout,
+    stderr,
+    omitOutput,
+  );
   yield* attempt("Unable to persist lifecycle command evidence", () =>
     appendEvidenceCommand(manifest, {
       scenario,
       argv,
       startedAt,
       finishedAt,
-      stdout,
-      stderr,
+      stdout: evidenceStdout,
+      stderr: evidenceStderr,
       exitCode: captured.code ?? null,
       signal: captured.signal ?? null,
       sessionId: evidenceSessionId ?? null,
@@ -522,7 +609,7 @@ const runRecordedCli = Effect.fnUntraced(function* (
           status: "failed",
           exitCode: captured.code ?? null,
           signal: captured.signal ?? null,
-          stderr,
+          stderr: evidenceStderr,
           ...(evidenceSessionId === undefined ? {} : { sessionId: evidenceSessionId }),
           ...(recoveryFailure === undefined ? {} : { recoveryError: recoveryFailure.message }),
         }),
@@ -610,6 +697,7 @@ const finishScenario = Effect.fnUntraced(function* (
   scenario: LifecycleScenario,
   startedAt: string,
   sessionId?: string,
+  proof?: ScenarioResult["proof"],
 ) {
   const result: ScenarioResult = {
     scenario,
@@ -617,6 +705,7 @@ const finishScenario = Effect.fnUntraced(function* (
     startedAt,
     finishedAt: yield* nowIso,
     ...(sessionId === undefined ? {} : { sessionId }),
+    ...(proof === undefined ? {} : { proof }),
   };
   yield* persistScenarioResult(manifest, result);
   return result;
@@ -626,12 +715,16 @@ const createAndReady = Effect.fnUntraced(function* (
   manifest: Manifest,
   repo: string,
   fault?: Fault,
+  codexWorkflow = false,
 ) {
   const startedAt = yield* nowIso;
   yield* requestedFaultUnavailable(manifest, "create-and-ready", fault, startedAt);
   const request = {
-    title: "Scotty lifecycle lab",
-    prompt: "Reply with exactly SCOTTY_LAB_READY.",
+    ...(codexWorkflow ? { agent: "codex", model: "gpt-5.6-sol", effort: "medium" } : {}),
+    title: codexWorkflow ? "Scotty Codex workflow lab" : "Scotty lifecycle lab",
+    prompt: codexWorkflow
+      ? "Run printf SCOTTY_LAB_CODEX_INITIAL once, then reply SCOTTY_LAB_CODEX_READY. Do not change files."
+      : "Reply with exactly SCOTTY_LAB_READY.",
     provider: "cloudflare",
     repo,
     cap: "30m",
@@ -650,6 +743,9 @@ const createAndReady = Effect.fnUntraced(function* (
         request.repo,
         "--provider",
         request.provider,
+        ...(codexWorkflow
+          ? ["--agent", "codex", "--model", "gpt-5.6-sol", "--effort", "medium"]
+          : []),
         "--cap",
         request.cap,
         "--detach",
@@ -815,6 +911,145 @@ const unavailableScenario = Effect.fnUntraced(function* (
   });
 });
 
+export const codexTerminalProof = (
+  snapshot: typeof CodexInspectOutput.Type,
+  expectedTurnId: string | undefined,
+  commandMarker: string,
+  replyMarker: string,
+  expectedUserMarker?: string,
+):
+  | { readonly status: "pending" }
+  | { readonly status: "failed"; readonly reason: string }
+  | { readonly status: "passed"; readonly turnId: string } => {
+  if (snapshot.runtimeStopped !== false) {
+    const summary = snapshot.turns.find(({ state }) => state === "failed")?.activitySummary;
+    const stale =
+      summary !== undefined &&
+      /^Runtime failure: stale_notification(?: \([A-Za-z/]+ (?:parent|known_child|foreign) (?:active|completed|other|none) (?:subAgentActivity|commandExecution|agentMessage|other|none)\))?$/u.test(
+        summary,
+      );
+    return {
+      status: "failed",
+      reason: stale ? summary : "Codex runtime stopped or health was unavailable",
+    };
+  }
+  const turn = expectedTurnId
+    ? snapshot.turns.find(({ id }) => id === expectedTurnId)
+    : expectedUserMarker
+      ? snapshot.turns.find(({ user }) => user.includes(expectedUserMarker))
+      : snapshot.turns.at(-1);
+  if (turn === undefined) return { status: "pending" };
+  if (turn.state === "failed" || turn.state === "aborted")
+    return { status: "failed", reason: `Codex turn ${turn.state}` };
+  if (turn.state !== "completed") return { status: "pending" };
+  if (
+    snapshot.followUpAvailable !== true ||
+    !turn.assistant.includes(replyMarker) ||
+    !turn.tools.some(
+      (tool) =>
+        tool.state === "completed" &&
+        tool.invocation.includes("printf") &&
+        tool.invocation.includes(commandMarker) &&
+        tool.output?.includes(commandMarker) === true,
+    )
+  )
+    return { status: "failed", reason: "Codex terminal lacks the requested command or reply" };
+  return { status: "passed", turnId: turn.id };
+};
+
+const readCodexSnapshot = Effect.fnUntraced(function* (manifest: Manifest, sessionId: string) {
+  const raw = yield* runRecordedCli(
+    manifest,
+    "codex-workflow",
+    ["inspect", sessionId, "--json"],
+    sessionId,
+    undefined,
+    true,
+  );
+  const snapshot = yield* decodeCodexInspectJson(raw).pipe(
+    Effect.mapError((cause) => failure(cause, "Scotty CLI returned invalid Codex conversation")),
+  );
+  if (snapshot.id !== sessionId)
+    return yield* new LabFailure({ message: "Codex inspect returned a different session" });
+  return snapshot;
+});
+
+const awaitCodexTerminal = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  expectedTurnId: string | undefined,
+  commandMarker: string,
+  replyMarker: string,
+  expectedUserMarker?: string,
+) {
+  const deadline = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + 120_000;
+  while (true) {
+    const snapshot = yield* readCodexSnapshot(manifest, sessionId);
+    const proof = codexTerminalProof(
+      snapshot,
+      expectedTurnId,
+      commandMarker,
+      replyMarker,
+      expectedUserMarker,
+    );
+    if (proof.status === "passed") return proof.turnId;
+    if (proof.status === "failed") return yield* new LabFailure({ message: proof.reason });
+    if ((yield* Effect.clockWith((clock) => clock.currentTimeMillis)) >= deadline)
+      return yield* new LabFailure({ message: "Codex terminal deadline exceeded" });
+    yield* Effect.sleep("1 second");
+  }
+});
+
+const awaitCodexRunningCommand = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  turnId: string,
+  commandMarker: string,
+) {
+  const deadline = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + 120_000;
+  while (true) {
+    const snapshot = yield* readCodexSnapshot(manifest, sessionId);
+    if (snapshot.runtimeStopped !== false)
+      return yield* new LabFailure({ message: "Codex runtime stopped during active command" });
+    const turn = snapshot.turns.find(({ id }) => id === turnId);
+    if (turn?.state === "streaming") {
+      if (
+        turn.tools.some(
+          (tool) =>
+            tool.state === "running" &&
+            tool.invocation.includes("sleep") &&
+            tool.invocation.includes(commandMarker),
+        )
+      )
+        return;
+    } else if (turn?.state === "completed" || turn?.state === "aborted" || turn?.state === "failed")
+      return yield* new LabFailure({ message: "Codex active command ended before controls" });
+    if ((yield* Effect.clockWith((clock) => clock.currentTimeMillis)) >= deadline)
+      return yield* new LabFailure({ message: "Codex active command deadline exceeded" });
+    yield* Effect.sleep("1 second");
+  }
+});
+
+const awaitCodexInterrupted = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  turnId: string,
+) {
+  const deadline = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + 120_000;
+  while (true) {
+    const snapshot = yield* readCodexSnapshot(manifest, sessionId);
+    if (snapshot.runtimeStopped !== false)
+      return yield* new LabFailure({ message: "Codex runtime stopped after interrupt" });
+    const turn = snapshot.turns.find(({ id }) => id === turnId);
+    if (turn?.state === "aborted") return;
+    if (turn?.state === "completed" || turn?.state === "failed")
+      return yield* new LabFailure({ message: "Codex active turn did not abort" });
+    if ((yield* Effect.clockWith((clock) => clock.currentTimeMillis)) >= deadline)
+      return yield* new LabFailure({ message: "Codex interrupted turn deadline exceeded" });
+    yield* Effect.sleep("1 second");
+  }
+});
+
 const vaporize = Effect.fnUntraced(function* (
   manifest: Manifest,
   sessionId: string,
@@ -880,6 +1115,280 @@ const vaporizeLab = (sessionId: string, fault?: Fault) =>
   lifecycleOperation((manifest) => vaporize(manifest, sessionId, fault)).pipe(
     Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)),
   );
+
+const warmCodexReadiness = (diagnostics: typeof SessionActorDiagnosticsSchema.Type) => {
+  const state = diagnostics.authority.state;
+  return AuthorityStateSchema.guards.Stable(state) && StableStateSchema.guards.Warm(state.stable)
+    ? state.stable.readiness
+    : undefined;
+};
+
+const codexResumeContinuity = (
+  before: typeof CodexInspectOutput.Type,
+  after: typeof CodexInspectOutput.Type,
+  beforeAuthority: typeof SessionActorDiagnosticsSchema.Type,
+  afterAuthority: typeof SessionActorDiagnosticsSchema.Type,
+  queuedTurnId: string,
+) => {
+  const prior = warmCodexReadiness(beforeAuthority);
+  const resumed = warmCodexReadiness(afterAuthority);
+  return (
+    prior !== undefined &&
+    resumed !== undefined &&
+    prior.supervisor.supervisorEpoch === resumed.supervisor.supervisorEpoch &&
+    prior.runtime.runtimeGeneration !== resumed.runtime.runtimeGeneration &&
+    before.transport.epoch !== after.transport.epoch &&
+    after.turns.some(
+      ({ id, tools }) =>
+        id === queuedTurnId &&
+        tools.some(
+          ({ output, state }) =>
+            state === "completed" && output?.includes("SCOTTY_LAB_CODEX_QUEUED") === true,
+        ),
+    )
+  );
+};
+
+const proveCodexSleepResume = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  queuedTurnId: string,
+) {
+  const before = yield* readCodexSnapshot(manifest, sessionId);
+  const beforeAuthority = yield* captureActorDiagnostics(manifest, "codex-workflow", sessionId);
+  if (warmCodexReadiness(beforeAuthority) === undefined)
+    return yield* new LabFailure({ message: "Codex was not warm before sleep" });
+  yield* sleepResume(manifest, sessionId);
+  const afterAuthority = yield* captureActorDiagnostics(manifest, "codex-workflow", sessionId);
+  const after = yield* readCodexSnapshot(manifest, sessionId);
+  if (!codexResumeContinuity(before, after, beforeAuthority, afterAuthority, queuedTurnId))
+    return yield* new LabFailure({
+      message: "Codex resume did not preserve the thread and prior command",
+    });
+  const raw = yield* runRecordedCli(
+    manifest,
+    "codex-workflow",
+    [
+      "steer",
+      sessionId,
+      "Run printf SCOTTY_LAB_CODEX_RESUMED once, then reply SCOTTY_LAB_CODEX_RESUME_DONE and mention the earlier SCOTTY_LAB_CODEX_QUEUED marker. Do not change files.",
+      "--json",
+    ],
+    sessionId,
+  );
+  const receipt = yield* decodeSteerJson(raw).pipe(
+    Effect.mapError((cause) => failure(cause, "Codex resumed turn receipt was invalid")),
+  );
+  const resumedTurnId = acceptedCodexTurnId(receipt, sessionId, "message");
+  if (resumedTurnId === undefined || resumedTurnId === queuedTurnId)
+    return yield* new LabFailure({ message: "Codex resumed turn was not admitted" });
+  yield* awaitCodexTerminal(
+    manifest,
+    sessionId,
+    resumedTurnId,
+    "SCOTTY_LAB_CODEX_RESUMED",
+    "SCOTTY_LAB_CODEX_RESUME_DONE",
+  );
+  return resumedTurnId;
+});
+
+const codexWorkflowLab = (repo: string, fault?: Fault) =>
+  lifecycleOperation((manifest) =>
+    Effect.gen(function* () {
+      const startedAt = yield* nowIso;
+      yield* requestedFaultUnavailable(manifest, "codex-workflow", fault, startedAt);
+      const created = yield* Effect.result(createAndReady(manifest, repo, undefined, true));
+      if (Result.isFailure(created))
+        return yield* failScenario(manifest, {
+          scenario: "codex-workflow",
+          status: "failed",
+          startedAt,
+          finishedAt: yield* nowIso,
+          ...(created.failure.sessionId === undefined
+            ? {}
+            : { sessionId: created.failure.sessionId }),
+          reason: created.failure.message,
+        });
+      const sessionId = created.success.sessionId;
+      const driven = yield* Effect.result(
+        Effect.gen(function* () {
+          const viewResponse = yield* attemptPromise(
+            "Unable to read Codex session selection",
+            (signal) => readSessionView(manifest, sessionId, signal),
+          );
+          if (viewResponse.status !== 200)
+            return yield* new LabFailure({ message: "Codex session view was unavailable" });
+          const view = yield* decodeUiSessionJson(viewResponse.body).pipe(
+            Effect.mapError((cause) => failure(cause, "Codex session view was invalid")),
+          );
+          if (
+            view.session.identity.id !== sessionId ||
+            view.session.selection?.agent !== "codex" ||
+            view.session.selection.model !== "gpt-5.6-sol" ||
+            view.session.selection.effort !== "medium"
+          )
+            return yield* new LabFailure({
+              message: "Codex selection did not match the requested profile",
+            });
+          const initialTurnId = yield* awaitCodexTerminal(
+            manifest,
+            sessionId,
+            undefined,
+            "SCOTTY_LAB_CODEX_INITIAL",
+            "SCOTTY_LAB_CODEX_READY",
+          );
+          const receiptJson = yield* runRecordedCli(
+            manifest,
+            "codex-workflow",
+            [
+              "steer",
+              sessionId,
+              "Run printf SCOTTY_LAB_CODEX_FOLLOWUP once, then reply SCOTTY_LAB_CODEX_DONE. Do not change files.",
+              "--json",
+            ],
+            sessionId,
+          );
+          const receipt = yield* decodeSteerJson(receiptJson).pipe(
+            Effect.mapError((cause) =>
+              failure(cause, "Scotty CLI returned invalid Codex steer receipt"),
+            ),
+          );
+          const admittedTurnId = acceptedCodexTurnId(receipt, sessionId, "message");
+          if (admittedTurnId === undefined || admittedTurnId === initialTurnId)
+            return yield* new LabFailure({
+              message: "Codex follow-up was not admitted as a new turn",
+            });
+          const followUpTurnId = yield* awaitCodexTerminal(
+            manifest,
+            sessionId,
+            admittedTurnId,
+            "SCOTTY_LAB_CODEX_FOLLOWUP",
+            "SCOTTY_LAB_CODEX_DONE",
+          );
+          const activeJson = yield* runRecordedCli(
+            manifest,
+            "codex-workflow",
+            [
+              "steer",
+              sessionId,
+              "Run sleep 20; printf SCOTTY_LAB_CODEX_INTERRUPTED as one shell command, then reply SCOTTY_LAB_CODEX_LATE. Do not change files.",
+              "--json",
+            ],
+            sessionId,
+          );
+          const active = yield* decodeSteerJson(activeJson).pipe(
+            Effect.mapError((cause) => failure(cause, "Codex active turn receipt was invalid")),
+          );
+          const activeTurnId = acceptedCodexTurnId(active, sessionId, "message");
+          if (activeTurnId === undefined || activeTurnId === followUpTurnId)
+            return yield* new LabFailure({ message: "Codex active turn was not admitted" });
+          const interruptedTurnId = activeTurnId;
+          yield* awaitCodexRunningCommand(
+            manifest,
+            sessionId,
+            interruptedTurnId,
+            "SCOTTY_LAB_CODEX_INTERRUPTED",
+          );
+          const steerJson = yield* runRecordedCli(
+            manifest,
+            "codex-workflow",
+            ["steer", sessionId, "After the command, reply SCOTTY_LAB_CODEX_STEER_SEEN.", "--json"],
+            sessionId,
+          );
+          const steered = yield* decodeSteerJson(steerJson).pipe(
+            Effect.mapError((cause) => failure(cause, "Codex active steer receipt was invalid")),
+          );
+          if (acceptedCodexTurnId(steered, sessionId, "steer") !== interruptedTurnId)
+            return yield* new LabFailure({ message: "Codex active steer missed the running turn" });
+          const queuedMessageId = `scotty-lab-${manifest.runId}`;
+          const queuedJson = yield* runRecordedCli(
+            manifest,
+            "codex-workflow",
+            [
+              "steer",
+              sessionId,
+              "Run printf SCOTTY_LAB_CODEX_QUEUED once, then reply SCOTTY_LAB_CODEX_QUEUE_DONE. Do not change files.",
+              "--follow-up",
+              "--idempotency-key",
+              queuedMessageId,
+              "--json",
+            ],
+            sessionId,
+          );
+          const queued = yield* decodeSteerJson(queuedJson).pipe(
+            Effect.mapError((cause) =>
+              failure(cause, "Codex queued follow-up receipt was invalid"),
+            ),
+          );
+          if (acceptedCodexQueueId(queued, sessionId) !== queuedMessageId)
+            return yield* new LabFailure({ message: "Codex queued follow-up was not admitted" });
+          const pending = yield* readCodexSnapshot(manifest, sessionId);
+          if (!pending.queue.followUp.some(({ id }) => id === queuedMessageId))
+            return yield* new LabFailure({ message: "Codex queued follow-up was not observable" });
+          const interruptJson = yield* runRecordedCli(
+            manifest,
+            "codex-workflow",
+            ["interrupt", sessionId, "--json"],
+            sessionId,
+          );
+          const interrupted = yield* decodeInterruptJson(interruptJson).pipe(
+            Effect.mapError((cause) => failure(cause, "Codex interrupt receipt was invalid")),
+          );
+          if (!acceptedCodexInterrupt(interrupted, sessionId, interruptedTurnId))
+            return yield* new LabFailure({ message: "Codex interrupt missed the running turn" });
+          yield* awaitCodexInterrupted(manifest, sessionId, interruptedTurnId);
+          const queuedTurnId = yield* awaitCodexTerminal(
+            manifest,
+            sessionId,
+            undefined,
+            "SCOTTY_LAB_CODEX_QUEUED",
+            "SCOTTY_LAB_CODEX_QUEUE_DONE",
+            "SCOTTY_LAB_CODEX_QUEUED",
+          );
+          if (queuedTurnId === interruptedTurnId)
+            return yield* new LabFailure({ message: "Codex queued work reused interrupted turn" });
+          const resumedTurnId = yield* proveCodexSleepResume(manifest, sessionId, queuedTurnId);
+          return {
+            initialTurnId,
+            followUpTurnId,
+            interruptedTurnId,
+            queuedTurnId,
+            queuedMessageId,
+            resumedTurnId,
+          };
+        }),
+      );
+      if (Result.isFailure(driven))
+        return yield* failScenario(manifest, {
+          scenario: "codex-workflow",
+          status: "failed",
+          startedAt,
+          finishedAt: yield* nowIso,
+          sessionId,
+          reason: driven.failure.message,
+        });
+      const cleanup = yield* Effect.result(vaporize(manifest, sessionId));
+      if (Result.isFailure(cleanup))
+        return yield* failScenario(manifest, {
+          scenario: "codex-workflow",
+          status: "failed",
+          startedAt,
+          finishedAt: yield* nowIso,
+          sessionId,
+          reason: `Owned cleanup failed: ${cleanup.failure.message}`,
+        });
+      return yield* finishScenario(manifest, "codex-workflow", startedAt, sessionId, {
+        ...driven.success,
+        completedCommands: 4,
+        activeSteer: true,
+        interruptAccepted: true,
+        sleepResumeContinuity: true,
+        runtimeStopped: false,
+        model: "gpt-5.6-sol",
+        effort: "medium",
+      });
+    }),
+  ).pipe(Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)));
 
 const fullLifecycleLab = (repo: string, fault?: Fault) =>
   lifecycleOperation((manifest) =>
@@ -967,6 +1476,7 @@ export interface LabOperationsShape {
   readonly runtimeLoss: (sessionId: string, fault?: Fault) => Effect.Effect<unknown, LabFailure>;
   readonly hardCap: (sessionId: string, fault?: Fault) => Effect.Effect<unknown, LabFailure>;
   readonly vaporize: (sessionId: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
+  readonly codexWorkflow: (repo: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
   readonly full: (repo: string, fault?: Fault) => Effect.Effect<unknown, LabFailure>;
 }
 
@@ -985,6 +1495,7 @@ const productionOperations = Layer.succeed(LabOperations, {
   runtimeLoss: runtimeLossLab,
   hardCap: hardCapLab,
   vaporize: vaporizeLab,
+  codexWorkflow: codexWorkflowLab,
   full: fullLifecycleLab,
 });
 
@@ -1120,6 +1631,19 @@ const fullCommand = Command.make(
     }),
 );
 
+const codexWorkflowCommand = Command.make(
+  "codex-workflow",
+  { repo: Flag.string("repo"), fault: faultFlag, extras: extrasArgument },
+  ({ extras, fault, repo }) =>
+    Effect.gen(function* () {
+      yield* rejectExtras(extras);
+      if (!isRepositoryIdentity(repo))
+        return yield* Effect.fail(new LabUsageError({ message: USAGE }));
+      const operations = yield* LabOperations;
+      yield* operations.codexWorkflow(repo, optionalFault(fault));
+    }),
+);
+
 const lifecycleCommand = Command.make("lifecycle").pipe(
   Command.withSubcommands([
     createAndReadyCommand,
@@ -1128,6 +1652,7 @@ const lifecycleCommand = Command.make("lifecycle").pipe(
     runtimeLossCommand,
     hardCapCommand,
     vaporizeCommand,
+    codexWorkflowCommand,
     fullCommand,
   ]),
 );

@@ -98,7 +98,12 @@ const fixture = Effect.fnUntraced(function* (
         });
       if (message.method === "turn/start") {
         prompts++;
-        activeTurnId = prompts === 1 ? "turn" : `turn-${prompts}`;
+        activeTurnId =
+          prompts === 1
+            ? persistence?.history === undefined
+              ? "turn"
+              : "turn-2"
+            : `turn-${prompts}`;
         yield* Deferred.succeed(prompted, undefined);
         if (accept) {
           yield* emit({
@@ -688,13 +693,65 @@ describe("Codex automatic saved history", () => {
         assert.equal(f.stops(), 1);
         assert.equal((yield* f.runtime.snapshot).ready, false);
         const archive = yield* readCodexSavedState(homes.cwd, saved);
-        assert.equal(archive.history.prompt.outcome, "interrupted");
+        assert.deepStrictEqual(archive.history.prompt, {
+          status: "terminal",
+          turnId: "turn",
+          outcome: "interrupted",
+          text: "synthetic answer",
+        });
         assert.equal(archive.history.turns[0]?.state, "aborted");
         const blocked = yield* Effect.result(f.runtime.message({ ...command, text: "after save" }));
         assert.ok(Result.isFailure(blocked));
         assert.equal(blocked.failure.code, "busy");
         assert.equal(f.prompts(), 1);
       }),
+  );
+  it.live("saves an admitted failed turn and admits a follow-up on a restored adapter", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => fs.mkdtemp(`${tmpdir()}/scotty-failed-save-`)),
+        (root) => Effect.promise(() => fs.rm(root, { recursive: true, force: true })),
+      );
+      const homes = {
+        home: `${root}/home`,
+        codexHome: `${root}/codex`,
+        cwd: `${root}/workspace`,
+      };
+      yield* Effect.promise(async () => {
+        await fs.mkdir(homes.cwd);
+        await fs.mkdir(`${homes.codexHome}/sessions/2026/09/08`, { recursive: true });
+        await fs.writeFile(
+          `${homes.codexHome}/sessions/2026/09/08/rollout-fixture.jsonl`,
+          `${JSON.stringify({ type: "session_meta", payload: { id: "thread" } })}\n`,
+        );
+      });
+      const f = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "interrupted", {
+        homes,
+      });
+      yield* f.runtime.admit({ ...command, clientUserMessageId: "first-message" });
+      yield* f.complete("foreign-thread");
+      yield* f.host.closed;
+      const saved = yield* f.runtime.save;
+      assert.deepStrictEqual(saved, { threadId: "thread", initialTurnId: "turn" });
+      assert.equal(f.interrupts(), 0);
+      assert.equal(f.stops(), 1);
+      const state = yield* readCodexSavedState(homes.cwd, saved);
+      assert.deepStrictEqual(state.history.prompt, { status: "failed", turnId: "turn" });
+      assert.equal(state.history.turns[0]?.state, "failed");
+      const restored = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "interrupted", {
+        history: state.history,
+      });
+      const before = yield* restored.runtime.snapshot;
+      assert.equal(before.ready, true);
+      assert.deepStrictEqual(before.prompt, { status: "failed", turnId: "turn" });
+      const followUp = yield* restored.runtime.message({
+        ...command,
+        text: "continue after failure",
+        clientUserMessageId: "follow-up",
+      });
+      assert.equal(followUp.turnId, "turn-2");
+      assert.equal(restored.prompts(), 1);
+    }),
   );
   it.effect(
     "hydrates canonical history and prior message receipts without replaying the initial prompt",

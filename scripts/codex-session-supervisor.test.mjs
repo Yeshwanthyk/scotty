@@ -83,6 +83,9 @@ const {
   managedPiAccessToken,
   observeCodexFailure,
   observeCleanup,
+  makeCodexRuntime,
+  readCodexSavedState,
+  startCodexRuntime,
   startCodexSession: acquireSession,
 } = await import(pathToFileURL(join(stage, "native-harness.mjs")).href);
 const credential = {
@@ -696,6 +699,149 @@ for (const [model, effort] of [
       assert.equal(receipt.descendants, "unverified");
     },
   );
+
+test(
+  "pinned native failed turn saves and resumes with a distinct follow-up",
+  { skip: !native, timeout: 60000 },
+  async (t) => {
+    let requests = 0;
+    let held;
+    const server = createServer(async (req, res) => {
+      for await (const _chunk of req) {
+        /* drain synthetic request */
+      }
+      assert.equal(req.url, "/backend-api/codex/responses");
+      requests++;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const send = (type, fields) =>
+        res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`);
+      send("response.created", {
+        response: { id: `resp-recovery-${requests}`, status: "in_progress" },
+      });
+      if (requests === 1) {
+        held = res;
+        return;
+      }
+      const item = {
+        id: "msg-recovery",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "RECOVERED_OK", annotations: [] }],
+      };
+      send("response.output_item.done", { output_index: 0, item });
+      send("response.completed", {
+        response: {
+          id: `resp-recovery-${requests}`,
+          status: "completed",
+          output: [item],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      });
+      res.end();
+    });
+    await new Promise((done) => server.listen(0, "127.0.0.1", done));
+    const scopes = [];
+    t.after(async () => {
+      for (const scope of scopes.reverse()) await Effect.runPromise(Scope.close(scope, Exit.void));
+      held?.destroy();
+      server.closeAllConnections();
+      await new Promise((done) => server.close(done));
+    });
+    const upstream = { port: server.address().port };
+    const scoped = (scope, effect) =>
+      Effect.runPromise(
+        effect.pipe(
+          Effect.provideService(CodexSyntheticUpstream, upstream),
+          Scope.provide(scope),
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+    const workspace = join(stage, "native-recovery-workspace");
+    await mkdir(workspace);
+    const launch = {
+      binary: native,
+      runtimeDir: join(stage, "native-recovery-first"),
+      workspace,
+      model: "gpt-5.4",
+      effort: "high",
+      ephemeral: false,
+      credential,
+      requestTimeoutMs: 2000,
+    };
+    const firstScope = await Effect.runPromise(Scope.make());
+    scopes.push(firstScope);
+    const host = await scoped(firstScope, acquireSession(launch));
+    const first = await scoped(firstScope, makeCodexRuntime(host, "generation-first"));
+    const admitted = await scoped(
+      firstScope,
+      first.admit({
+        threadId: host.inspect().threadId,
+        text: "Wait for the synthetic response.",
+        clientUserMessageId: "failed-message",
+      }),
+    );
+    await wait(() => held);
+    process.kill(host.inspect().pid, "SIGKILL");
+    await wait(async () => (await scoped(firstScope, first.snapshot)).prompt.status === "failed");
+    assert.equal((await scoped(firstScope, first.snapshot)).ready, false);
+    const saved = await scoped(firstScope, first.save);
+    assert.equal(saved.threadId, admitted.threadId);
+    assert.equal(saved.initialTurnId, admitted.turnId);
+    const state = await scoped(firstScope, readCodexSavedState(workspace, saved));
+    assert.deepEqual(state.history.prompt, { status: "failed", turnId: admitted.turnId });
+    assert.equal(state.history.turns[0].state, "failed");
+    await Effect.runPromise(Scope.close(firstScope, Exit.void));
+    held.destroy();
+
+    const nextScope = await Effect.runPromise(Scope.make());
+    scopes.push(nextScope);
+    const resumed = await scoped(
+      nextScope,
+      startCodexRuntime({
+        generation: "generation-next",
+        launch: {
+          ...launch,
+          runtimeDir: join(stage, "native-recovery-next"),
+          resumeThreadId: saved.threadId,
+        },
+        restore: saved,
+      }),
+    );
+    const ready = await scoped(nextScope, resumed.snapshot);
+    assert.equal(ready.ready, true);
+    assert.equal(ready.threadId, saved.threadId);
+    assert.deepEqual(ready.prompt, state.history.prompt);
+    const replay = await scoped(
+      nextScope,
+      resumed.message({
+        threadId: saved.threadId,
+        text: "Wait for the synthetic response.",
+        clientUserMessageId: "failed-message",
+        reconcileOnly: true,
+      }),
+    );
+    assert.equal(replay.turnId, admitted.turnId);
+    assert.equal(requests, 1);
+    const followUp = await scoped(
+      nextScope,
+      resumed.message({
+        threadId: saved.threadId,
+        text: "Return RECOVERED_OK.",
+        clientUserMessageId: "next-message",
+      }),
+    );
+    assert.notEqual(followUp.turnId, admitted.turnId);
+    await wait(
+      async () => (await scoped(nextScope, resumed.snapshot)).prompt.status === "terminal",
+    );
+    const final = await scoped(nextScope, resumed.snapshot);
+    assert.equal(final.prompt.outcome, "completed");
+    assert.equal(final.turns[0].state, "failed");
+    assert.equal(final.turns[1].assistant, "RECOVERED_OK");
+    assert.equal(requests, 2);
+  },
+);
 
 test("live idle child clean stdout EOF revokes readiness and stops without a prompt", async (t) => {
   const host = await (await fixture(t, "clean-stdout-eof")).launch();

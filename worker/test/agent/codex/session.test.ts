@@ -963,6 +963,31 @@ for (const stale of [false, true])
     }),
   );
 
+it.effect("projects only structured upstream category and numeric HTTP status", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    const host = yield* makeSession(f.transport);
+    const turn = yield* host.prompt("hello");
+    yield* f.emit({
+      method: "error",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        willRetry: false,
+        error: {
+          message: "untrusted upstream body and secret",
+          codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } },
+        },
+      },
+    });
+    const result = yield* Effect.result(turn.completed);
+    assert.ok(Result.isFailure(result));
+    assert.equal(result.failure.code, "upstream_failed");
+    assert.equal(host.inspect().failureDiagnostic, "httpConnectionFailed:503");
+    assert.notInclude(JSON.stringify(host.inspect()), "untrusted upstream body");
+  }),
+);
+
 it.effect("rejects a goal-cleared notification for a different thread", () =>
   Effect.gen(function* () {
     const f = yield* fixture();

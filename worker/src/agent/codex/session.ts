@@ -69,11 +69,58 @@ const decodeUpstreamFailure = Schema.decodeUnknownEffect(
         threadId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
         turnId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
         willRetry: Schema.Boolean,
-        error: Schema.Struct({ message: Schema.String.check(Schema.isMaxLength(4096)) }),
+        error: Schema.Struct({
+          message: Schema.String.check(Schema.isMaxLength(4096)),
+          codexErrorInfo: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
+        }),
       }),
     }),
   ),
 );
+// Pinned v0.153.4 CodexErrorInfo variants; do not inspect or publish error.message.
+const UpstreamErrorCategory = Schema.Literals([
+  "contextWindowExceeded",
+  "sessionBudgetExceeded",
+  "usageLimitExceeded",
+  "rateLimitExceeded",
+  "serverOverloaded",
+  "cyberPolicy",
+  "misalignmentPolicyViolation",
+  "internalServerError",
+  "unauthorized",
+  "badRequest",
+  "threadRollbackFailed",
+  "sandboxError",
+  "other",
+]);
+const HttpStatusCode = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 }));
+const decodeUpstreamErrorCategory = Schema.decodeUnknownResult(UpstreamErrorCategory);
+const UpstreamHttpStatus = Schema.Struct({
+  httpStatusCode: Schema.optionalKey(Schema.NullOr(HttpStatusCode)),
+});
+const strict = { onExcessProperty: "error" } as const;
+const decodeUpstreamHttpInfo = Schema.decodeUnknownResult(
+  Schema.Union([
+    Schema.Struct({ httpConnectionFailed: UpstreamHttpStatus }),
+    Schema.Struct({ responseStreamConnectionFailed: UpstreamHttpStatus }),
+    Schema.Struct({ responseStreamDisconnected: UpstreamHttpStatus }),
+    Schema.Struct({ responseTooManyFailedAttempts: UpstreamHttpStatus }),
+  ]),
+  strict,
+);
+const upstreamDiagnostic = (info: unknown): string => {
+  const category = decodeUpstreamErrorCategory(info);
+  if (Result.isSuccess(category)) return category.success;
+  const decoded = decodeUpstreamHttpInfo(info);
+  if (Result.isSuccess(decoded)) {
+    const entry = Object.entries(decoded.success)[0];
+    if (entry === undefined) return "unclassified";
+    const [name, value] = entry;
+    const status = value.httpStatusCode;
+    return status === undefined || status === null ? name : `${name}:${status}`;
+  }
+  return "unclassified";
+};
 const AdvisoryIdentifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 const AdvisoryThread = Schema.Struct({
   threadId: AdvisoryIdentifier,
@@ -398,7 +445,10 @@ export const makeSession = Effect.fnUntraced(function* (
       discarded++;
       return;
     }
-    return yield* new CodexHostError({ code: "upstream_failed" });
+    return yield* new CodexHostError({
+      code: "upstream_failed",
+      upstreamDiagnostic: upstreamDiagnostic(rejection.params.error.codexErrorInfo),
+    });
   });
   const handleAdvisory = Effect.fnUntraced(function* (line: string) {
     const advisory = yield* decodeAdvisory(line).pipe(
@@ -698,7 +748,7 @@ export const makeSession = Effect.fnUntraced(function* (
       threadId,
       activeTurnId: active?.id ?? null,
       failure: failure?.code ?? null,
-      failureDiagnostic: failure?.staleDiagnostic ?? null,
+      failureDiagnostic: failure?.staleDiagnostic ?? failure?.upstreamDiagnostic ?? null,
       pid: transport.pid,
       homes: transport.homes,
       settings,

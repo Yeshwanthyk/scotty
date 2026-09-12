@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { rejects } from "node:assert/strict";
+import { vi } from "vitest";
 import { managedPiAccessToken } from "../../src/credentials/managed";
 import { makeOutboundByHost } from "../../src/egress/worker";
 import type { Bindings } from "../../src/shared/bindings";
@@ -13,7 +14,14 @@ const body = JSON.stringify({ model: "gpt-5.4", reasoning: { effort: "high" }, i
 
 // Session and Registry substitutes control authorization; the real outbound handler,
 // credential RPC adapter, token selection, header rewriting and transport all execute.
-function fixture(status = 200) {
+function fixture(
+  status = 200,
+  options: {
+    readonly url?: string;
+    readonly authorization?: string;
+    readonly responseHeaders?: HeadersInit;
+  } = {},
+) {
   const selected: string[] = [];
   const resolutions: unknown[] = [];
   const forwarded: Request[] = [];
@@ -54,15 +62,18 @@ function fixture(status = 200) {
     assert.ok(input instanceof Request);
     forwarded.push(input);
     return Promise.resolve(
-      new Response(status === 200 ? "data: synthetic\n\n" : "dummy unauthorized", { status }),
+      new Response(status === 200 ? "data: synthetic\n\n" : "dummy unauthorized", {
+        status,
+        headers: options.responseHeaders,
+      }),
     );
   });
   const request = () =>
-    new Request(endpoint, {
+    new Request(options.url ?? endpoint, {
       method: "POST",
       body,
       headers: {
-        authorization: `Bearer ${sentinel}`,
+        authorization: options.authorization ?? `Bearer ${sentinel}`,
         "chatgpt-account-id": "untrusted-account",
         cookie: "dummy-cookie",
         "proxy-authorization": "dummy-proxy",
@@ -83,6 +94,50 @@ function fixture(status = 200) {
 }
 
 describe("Codex managed native request shape through existing egress adapter (separate proof)", () => {
+  it("reports only fixed endpoint and response classes with the upstream status", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const upstream = fixture(401, { responseHeaders: { "content-type": "application/json" } });
+      assert.equal((await upstream.run()).status, 401);
+      const challenged = fixture(403, {
+        responseHeaders: { "content-type": "text/html", "cf-mitigated": "challenge" },
+      });
+      assert.equal((await challenged.run()).status, 403);
+      const invalid = fixture(200, {
+        url: "https://chatgpt.com/backend-api/codex/models",
+        authorization: "Bearer malformed",
+      });
+      assert.equal((await invalid.run()).status, 403);
+      const revoked = fixture();
+      revoked.revoke();
+      assert.equal((await revoked.run()).status, 403);
+      assert.deepEqual(warning.mock.calls, [
+        [
+          "Scotty ChatGPT egress failed",
+          {
+            code: "upstream_http_status",
+            endpoint: "responses",
+            status: 401,
+            responseClass: "json",
+          },
+        ],
+        [
+          "Scotty ChatGPT egress failed",
+          {
+            code: "upstream_http_status",
+            endpoint: "responses",
+            status: 403,
+            responseClass: "cloudflare_challenge",
+          },
+        ],
+        ["Scotty ChatGPT egress failed", { code: "invalid_sentinel", endpoint: "other" }],
+        ["Scotty ChatGPT egress failed", { code: "credential_unavailable" }],
+      ]);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("substitutes dummy Session-pinned token/account, retaining Responses path and body", async () => {
     const f = fixture();
     const response = await f.run();

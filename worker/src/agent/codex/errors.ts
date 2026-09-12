@@ -52,4 +52,5 @@ export class CodexHostError extends Data.TaggedError("CodexHostError")<{
     | "stopped";
   readonly cleanup?: Cleanup;
   readonly staleDiagnostic?: string;
+  readonly upstreamDiagnostic?: string;
 }> {}
