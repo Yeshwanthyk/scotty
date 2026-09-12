@@ -1290,8 +1290,10 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
           store.beginCleanup(priorNonce, "sleeping", false, "runtime_start"),
         );
       }).pipe(Effect.provide(layer));
-      assert.isTrue(Result.isFailure(result));
-      if (Result.isFailure(result)) assert.strictEqual(result.failure.reason, "lease_changed");
+      assert.deepStrictEqual(
+        Option.map(Result.getFailure(result), (failure) => failure.reason),
+        Option.some("lease_changed"),
+      );
       assert.deepStrictEqual(stored, pending);
     }),
   );
