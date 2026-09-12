@@ -17,6 +17,7 @@ import {
   rejectCodexServerRequest,
   type CodexClientMessage,
   type CodexDynamicToolResponse,
+  type CodexDynamicToolCall,
   type CodexNotification,
   type CodexThreadReadResult,
   type CodexThreadSettings,
@@ -49,6 +50,7 @@ const activityChildThreadId = (message: CodexNotification) =>
 type Turn = {
   id: string | undefined;
   started: boolean;
+  readonly beforeAdmissionReply: Array<BeforeAdmissionReply>;
   readonly terminal: Deferred.Deferred<Terminal, CodexHostError>;
   interruption?: Effect.Effect<Terminal, CodexHostError>;
 };
@@ -173,6 +175,15 @@ const Advisory = Schema.Union([
 ]);
 type AdvisoryMessage = typeof Advisory.Type;
 type ScopedAdvisory = Extract<AdvisoryMessage, { method: typeof ScopedAdvisoryMethod.Type }>;
+type UpstreamFailure =
+  ReturnType<typeof decodeUpstreamFailure> extends Effect.Effect<infer A, infer _E, infer _R>
+    ? A
+    : never;
+type BeforeAdmissionReply =
+  | { readonly kind: "notification"; readonly message: CodexNotification }
+  | { readonly kind: "dynamic"; readonly request: CodexDynamicToolCall }
+  | { readonly kind: "advisory"; readonly advisory: ScopedAdvisory }
+  | { readonly kind: "upstream"; readonly rejection: UpstreamFailure };
 const isScopedAdvisoryMethod = Schema.is(ScopedAdvisoryMethod);
 const isScopedAdvisory = (advisory: AdvisoryMessage): advisory is ScopedAdvisory =>
   isScopedAdvisoryMethod(advisory.method);
@@ -265,6 +276,7 @@ export const makeSession = Effect.fnUntraced(function* (
       | CodexNotification["method"]
       | typeof ScopedAdvisoryMethod.Type
       | "error"
+      | "item/tool/call"
       | "thread/goal/cleared",
     eventThreadId: string,
     eventTurnId?: string,
@@ -451,14 +463,56 @@ export const makeSession = Effect.fnUntraced(function* (
         startedDynamicTools.delete(item.id);
     }
   };
+  const admissionIdentity = (
+    entry: BeforeAdmissionReply,
+  ): {
+    readonly method:
+      | CodexNotification["method"]
+      | typeof ScopedAdvisoryMethod.Type
+      | "item/tool/call"
+      | "error";
+    readonly threadId: string;
+    readonly turnId: string;
+  } => {
+    if (entry.kind === "notification")
+      return {
+        method: entry.message.method,
+        threadId: entry.message.params.threadId,
+        turnId: Predicate.hasProperty(entry.message.params, "turnId")
+          ? entry.message.params.turnId
+          : entry.message.params.turn.id,
+      };
+    if (entry.kind === "dynamic") return { method: "item/tool/call", ...entry.request.params };
+    if (entry.kind === "advisory")
+      return { method: entry.advisory.method, ...entry.advisory.params };
+    return { method: "error", ...entry.rejection.params };
+  };
+  const bufferBeforeAdmissionReply = Effect.fnUntraced(function* (entry: BeforeAdmissionReply) {
+    if (
+      active === undefined ||
+      active.id !== undefined ||
+      admissionIdentity(entry).threadId !== threadId
+    )
+      return false;
+    if (active.beforeAdmissionReply.length >= 64)
+      return yield* new CodexHostError({ code: "event_budget" });
+    active.beforeAdmissionReply.push(entry);
+    return true;
+  });
+  const consumeBeforeActive = Effect.fnUntraced(function* (message: CodexNotification) {
+    if (isTrailingChildActivity(message)) {
+      discarded++;
+      return true;
+    }
+    return yield* bufferBeforeAdmissionReply({ kind: "notification", message });
+  });
   const notification = Effect.fnUntraced(function* (message: CodexNotification) {
     const id = Predicate.hasProperty(message.params, "turnId")
       ? message.params.turnId
       : message.params.turn.id;
-    if (isTrailingChildActivity(message)) {
-      discarded++;
-      return;
-    }
+    // Native starts the turn before enqueuing the turn/start RPC response. Hold
+    // only this parent's events until that response supplies the exact turn ID.
+    if (yield* consumeBeforeActive(message)) return;
     if (!active || message.params.threadId !== threadId || id !== active.id)
       return yield* stale(
         message.method,
@@ -529,14 +583,7 @@ export const makeSession = Effect.fnUntraced(function* (
     (params.namespace === undefined || params.namespace === null) &&
     tool !== undefined &&
     (startedDynamicTools.get(params.callId) === tool || toolReceipts.has(params.callId));
-  const handleDynamicToolCall = Effect.fnUntraced(function* (line: string) {
-    const decodedCall = decodeCodexDynamicToolCall(line);
-    if (Result.isFailure(decodedCall)) {
-      yield* write(yield* decoded(rejectCodexServerRequest(line)));
-      rejected++;
-      return;
-    }
-    const request = decodedCall.success;
+  const handleDynamicToolCall = Effect.fnUntraced(function* (request: CodexDynamicToolCall) {
     const params = request.params;
     const tool =
       params.tool === "scotty_hatch" || params.tool === "scotty_browser_test"
@@ -606,10 +653,7 @@ export const makeSession = Effect.fnUntraced(function* (
       ),
     );
   });
-  const handleUpstreamFailure = Effect.fnUntraced(function* (line: string) {
-    const rejection = yield* decodeUpstreamFailure(line).pipe(
-      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
-    );
+  const handleUpstreamFailure = Effect.fnUntraced(function* (rejection: UpstreamFailure) {
     if (!active || rejection.params.threadId !== threadId || rejection.params.turnId !== active.id)
       return yield* stale("error", rejection.params.threadId, rejection.params.turnId);
     if (rejection.params.willRetry) {
@@ -621,16 +665,42 @@ export const makeSession = Effect.fnUntraced(function* (
       upstreamDiagnostic: upstreamDiagnostic(rejection.params.error.codexErrorInfo),
     });
   });
-  const handleAdvisory = Effect.fnUntraced(function* (line: string) {
-    const advisory = yield* decodeAdvisory(line).pipe(
-      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
-    );
+  const handleAdvisory = Effect.fnUntraced(function* (advisory: AdvisoryMessage) {
     if (
       isScopedAdvisory(advisory) &&
       (!active || advisory.params.threadId !== threadId || advisory.params.turnId !== active.id)
     )
       return yield* stale(advisory.method, advisory.params.threadId, advisory.params.turnId);
     discarded++;
+  });
+  const receiveDynamicToolCall = Effect.fnUntraced(function* (line: string) {
+    const decodedCall = decodeCodexDynamicToolCall(line);
+    if (Result.isFailure(decodedCall)) {
+      yield* write(yield* decoded(rejectCodexServerRequest(line)));
+      rejected++;
+      return;
+    }
+    const request = decodedCall.success;
+    if (yield* bufferBeforeAdmissionReply({ kind: "dynamic", request })) return;
+    return yield* handleDynamicToolCall(request);
+  });
+  const receiveUpstreamFailure = Effect.fnUntraced(function* (line: string) {
+    const rejection = yield* decodeUpstreamFailure(line).pipe(
+      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
+    );
+    if (yield* bufferBeforeAdmissionReply({ kind: "upstream", rejection })) return;
+    return yield* handleUpstreamFailure(rejection);
+  });
+  const receiveAdvisory = Effect.fnUntraced(function* (line: string) {
+    const advisory = yield* decodeAdvisory(line).pipe(
+      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
+    );
+    if (
+      isScopedAdvisory(advisory) &&
+      (yield* bufferBeforeAdmissionReply({ kind: "advisory", advisory }))
+    )
+      return;
+    return yield* handleAdvisory(advisory);
   });
   const receive = Effect.fnUntraced(function* (line: string) {
     if (closing) return;
@@ -641,7 +711,7 @@ export const makeSession = Effect.fnUntraced(function* (
     if (route.id !== undefined) {
       if (route.method !== undefined) {
         if (route.method === "item/tool/call" && firstPartyTools !== undefined)
-          return yield* handleDynamicToolCall(line);
+          return yield* receiveDynamicToolCall(line);
         yield* write(yield* decoded(rejectCodexServerRequest(line)));
         rejected++;
         return;
@@ -680,8 +750,8 @@ export const makeSession = Effect.fnUntraced(function* (
       discarded++;
       return;
     }
-    if (route.method === "error") return yield* handleUpstreamFailure(line);
-    return yield* handleAdvisory(line);
+    if (route.method === "error") return yield* receiveUpstreamFailure(line);
+    return yield* receiveAdvisory(line);
   });
   const framer = makeFramer(limits.output);
   yield* supervise(transport.writer);
@@ -720,6 +790,13 @@ export const makeSession = Effect.fnUntraced(function* (
 
   yield* Effect.addFinalizer(() => stop);
 
+  const replayBeforeAdmissionReply = Effect.fnUntraced(function* (entry: BeforeAdmissionReply) {
+    if (entry.kind === "notification") return yield* notification(entry.message);
+    if (entry.kind === "dynamic") return yield* handleDynamicToolCall(entry.request);
+    if (entry.kind === "advisory") return yield* handleAdvisory(entry.advisory);
+    return yield* handleUpstreamFailure(entry.rejection);
+  });
+
   const prompt = Effect.fnUntraced(function* (text: string, clientUserMessageId?: string) {
     if (!ready || closing || !threadId) return yield* new CodexHostError({ code: "not_ready" });
     if (active) return yield* new CodexHostError({ code: "turn_busy" });
@@ -740,6 +817,7 @@ export const makeSession = Effect.fnUntraced(function* (
     const turn: Turn = {
       id: undefined,
       started: false,
+      beforeAdmissionReply: [],
       terminal: yield* Deferred.make<Terminal, CodexHostError>(),
     };
     active = turn;
@@ -761,8 +839,15 @@ export const makeSession = Effect.fnUntraced(function* (
       Effect.fnUntraced(function* (result) {
         if (usedTurns.has(result.turn.id))
           return yield* new CodexHostError({ code: "reused_turn_id" });
+        for (const entry of turn.beforeAdmissionReply) {
+          const identity = admissionIdentity(entry);
+          if (identity.threadId !== threadId || identity.turnId !== result.turn.id)
+            return yield* stale(identity.method, identity.threadId, identity.turnId);
+        }
         usedTurns.add(result.turn.id);
         turn.id = result.turn.id;
+        for (const entry of turn.beforeAdmissionReply) yield* replayBeforeAdmissionReply(entry);
+        turn.beforeAdmissionReply.length = 0;
       }),
     );
     return { turnId: result.turn.id, completed: Deferred.await(turn.terminal) };

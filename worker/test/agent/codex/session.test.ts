@@ -27,6 +27,10 @@ type SessionFixtureMode =
   | "approval"
   | "durable-start"
   | "durable-resume"
+  | "early-turn"
+  | "early-wrong-turn"
+  | "early-tool"
+  | "early-over-budget"
   | "tool";
 
 const steerResponse = (mode: SessionFixtureMode, id: string | number, expectedTurnId: string) =>
@@ -115,6 +119,83 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
       },
     });
   });
+  const emitTurnStart = Effect.fnUntraced(function* (
+    message: Extract<CodexClientMessage, { method: "turn/start" }>,
+  ) {
+    turns++;
+    const turnId = mode === "tool" && turns > 1 ? `turn-${turns}` : "turn";
+    const started = {
+      method: "turn/started",
+      params: {
+        threadId: "thread",
+        turn: {
+          id: mode === "early-wrong-turn" ? "other" : turnId,
+          status: "inProgress",
+          items: [],
+        },
+      },
+    };
+    if (
+      mode === "early-turn" ||
+      mode === "early-wrong-turn" ||
+      mode === "early-tool" ||
+      mode === "early-over-budget"
+    )
+      yield* emit(started);
+    if (mode === "early-tool") {
+      yield* emit({
+        method: "item/started",
+        params: {
+          threadId: "thread",
+          turnId,
+          item: {
+            type: "dynamicToolCall",
+            id: "call-early",
+            tool: "scotty_hatch",
+            status: "inProgress",
+          },
+        },
+      });
+      yield* emit({
+        method: "item/reasoning/textDelta",
+        params: { threadId: "thread", turnId, delta: "private advisory" },
+      });
+      yield* emit({
+        id: 71,
+        method: "item/tool/call",
+        params: {
+          threadId: "thread",
+          turnId,
+          callId: "call-early",
+          namespace: null,
+          tool: "scotty_hatch",
+          arguments: { operation: "status" },
+        },
+      });
+    }
+    if (mode === "early-over-budget")
+      for (let i = 0; i < 64; i++)
+        yield* emit({
+          method: "item/reasoning/textDelta",
+          params: { threadId: "thread", turnId, delta: "private advisory" },
+        });
+    if (mode === "early-turn")
+      yield* emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: turnId, status: "completed", items: [] } },
+      });
+    yield* emit({
+      id: message.id,
+      result: { turn: { id: turnId, status: "inProgress", items: [] } },
+    });
+    if (
+      mode !== "early-turn" &&
+      mode !== "early-wrong-turn" &&
+      mode !== "early-tool" &&
+      mode !== "early-over-budget"
+    )
+      yield* emit(started);
+  });
   const transport: CodexProcess = {
     pid: ChildProcessSpawner.ProcessId(100),
     platformOs: "linux",
@@ -185,18 +266,8 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
         yield* emit({ method: "thread/goal/cleared", params: { threadId: "persisted-thread" } });
       }
       if (message.method === "thread/read") yield* emitThreadRead(message);
-      if (message.method === "turn/start" && mode !== "no-turn-response") {
-        turns++;
-        const turnId = mode === "tool" && turns > 1 ? `turn-${turns}` : "turn";
-        yield* emit({
-          id: message.id,
-          result: { turn: { id: turnId, status: "inProgress", items: [] } },
-        });
-        yield* emit({
-          method: "turn/started",
-          params: { threadId: "thread", turn: { id: turnId, status: "inProgress", items: [] } },
-        });
-      }
+      if (message.method === "turn/start" && mode !== "no-turn-response")
+        yield* emitTurnStart(message);
       yield* emitSteerResponse(message);
       if (message.method === "turn/interrupt" && mode !== "no-interrupt-response")
         yield* emit({ id: message.id, result: {} });
@@ -219,6 +290,89 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
 });
 
 describe("scoped Codex session", () => {
+  it.effect("replays exact parent start and completion received before turn/start reply", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("early-turn");
+      const host = yield* makeSession(f.transport);
+      const turn = yield* host.prompt("hello");
+      assert.equal(turn.turnId, "turn");
+      assert.equal((yield* turn.completed).status, "completed");
+      assert.deepEqual(
+        host.drainEvents().map((event) => event.method),
+        ["turn/started", "turn/completed"],
+      );
+      assert.equal(host.inspect().failure, null);
+      yield* host.stop;
+    }),
+  );
+  it.effect("rejects an early notification with a turn ID different from the reply", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("early-wrong-turn");
+      const host = yield* makeSession(f.transport);
+      const outcome = yield* Effect.result(host.prompt("hello"));
+      assert.ok(Result.isFailure(outcome));
+      assert.equal(outcome.failure.code, "stale_notification");
+      assert.deepEqual(host.drainEvents(), []);
+      yield* host.closed;
+    }),
+  );
+  it.effect("replays early tool and scoped advisory only after exact admission", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("early-tool");
+      let executed = 0;
+      const host = yield* makeSession(f.transport, undefined, {
+        restore: async () => {},
+        shutdown: async () => {},
+        execute: async () => {
+          executed++;
+          return { text: "scotty-hatch:early", success: true };
+        },
+      });
+      const turn = yield* host.prompt("hello");
+      assert.equal(turn.turnId, "turn");
+      assert.deepEqual((yield* Queue.take(f.toolResponses)).result, {
+        contentItems: [{ type: "inputText", text: "scotty-hatch:early" }],
+        success: true,
+      });
+      assert.equal(executed, 1);
+      assert.deepEqual(
+        host.drainEvents().map((event) => event.method),
+        ["turn/started", "item/started"],
+      );
+      yield* f.complete;
+      yield* turn.completed;
+      yield* host.stop;
+    }),
+  );
+  it.effect("bounds pre-reply messages without publishing any", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("early-over-budget");
+      const host = yield* makeSession(f.transport);
+      const outcome = yield* Effect.result(host.prompt("hello"));
+      assert.ok(Result.isFailure(outcome));
+      assert.equal(outcome.failure.code, "event_budget");
+      assert.deepEqual(host.drainEvents(), []);
+      yield* host.closed;
+    }),
+  );
+  it.effect("does not publish buffered messages when admission times out", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("no-turn-response");
+      const host = yield* makeSession(f.transport);
+      const pending = yield* host.prompt("hello").pipe(Effect.result, Effect.forkChild);
+      yield* TestClock.adjust(1);
+      yield* f.emit({
+        method: "turn/started",
+        params: { threadId: "thread", turn: { id: "turn", status: "inProgress", items: [] } },
+      });
+      yield* TestClock.adjust(101);
+      const outcome = yield* Fiber.join(pending);
+      assert.ok(Result.isFailure(outcome));
+      assert.equal(outcome.failure.code, "request_timeout");
+      assert.deepEqual(host.drainEvents(), []);
+      yield* host.closed;
+    }),
+  );
   it.effect(
     "registers scoped tools, serves one admitted call once, and skips fresh Hatch restoration",
     () =>
