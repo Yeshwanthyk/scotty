@@ -16,6 +16,7 @@ import {
 import { Cleanup, type CodexHostError } from "./errors";
 import { CodexLaunch } from "./process";
 import { startCodexSession } from "./session";
+import type { CodexFirstPartyTools } from "./first-party-tools";
 
 const bytes = (maximum: number) =>
   Schema.String.check(
@@ -620,7 +621,10 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
   return { generation, snapshot, admit, message, steer, interrupt, stop, save };
 });
 export type CodexRuntime = Effect.Success<ReturnType<typeof makeCodexRuntime>>;
-export const startCodexRuntime = Effect.fnUntraced(function* (input: unknown) {
+export const startCodexRuntime = Effect.fnUntraced(function* (
+  input: unknown,
+  firstPartyTools?: CodexFirstPartyTools,
+) {
   const selection = yield* decodeStart(input).pipe(
     Effect.mapError(() => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" })),
   );
@@ -634,6 +638,6 @@ export const startCodexRuntime = Effect.fnUntraced(function* (input: unknown) {
     selection.restore === undefined
       ? undefined
       : yield* readCodexSavedState(selection.launch.workspace, selection.restore);
-  const host = yield* startCodexSession(selection.launch, undefined, restored);
+  const host = yield* startCodexSession(selection.launch, undefined, restored, firstPartyTools);
   return yield* makeCodexRuntime(host, selection.generation, restored?.history);
 });

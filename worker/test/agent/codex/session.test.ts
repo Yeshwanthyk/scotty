@@ -4,7 +4,9 @@ import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
   decodeCodexClientMessage,
+  decodeCodexDynamicToolResponse,
   type CodexClientMessage,
+  type CodexDynamicToolResponse,
 } from "../../../../protocol/codex-app-server";
 import { makeFramer } from "../../../src/agent/codex/framing";
 import { makeSession } from "../../../src/agent/codex/session";
@@ -24,7 +26,8 @@ type SessionFixtureMode =
   | "sandbox"
   | "approval"
   | "durable-start"
-  | "durable-resume";
+  | "durable-resume"
+  | "tool";
 
 const steerResponse = (mode: SessionFixtureMode, id: string | number, expectedTurnId: string) =>
   mode === "steer-rejected"
@@ -39,12 +42,17 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
   let stopped = 0;
   const sent: Array<string> = [];
   const messages: Array<CodexClientMessage> = [];
+  const toolResponses = yield* Queue.unbounded<CodexDynamicToolResponse>();
+  let turns = 0;
   const emit = (value: unknown) =>
     Queue.offer(stdout, new TextEncoder().encode(`${JSON.stringify(value)}\n`)).pipe(Effect.asVoid);
   const emitSteerResponse = (message: CodexClientMessage) =>
     message.method === "turn/steer"
       ? emit(steerResponse(mode, message.id, message.params.expectedTurnId))
       : Effect.void;
+  const delaysInitialize = (message: CodexClientMessage) =>
+    message.method === "initialize" &&
+    (mode === "delayed" || mode === "no-thread-response" || mode === "no-initialized-write");
   const emitThreadStart = Effect.fnUntraced(function* (
     message: Extract<CodexClientMessage, { method: "thread/start" }>,
   ) {
@@ -145,16 +153,18 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
       };
     }),
     write: Effect.fnUntraced(function* (bytes) {
-      const result = decodeCodexClientMessage(new TextDecoder().decode(bytes));
+      const line = new TextDecoder().decode(bytes);
+      const toolResponse = decodeCodexDynamicToolResponse(line);
+      if (Result.isSuccess(toolResponse)) {
+        yield* Queue.offer(toolResponses, toolResponse.success);
+        return;
+      }
+      const result = decodeCodexClientMessage(line);
       assert.ok(Result.isSuccess(result));
       const message = result.success;
       sent.push(message.method);
       messages.push(message);
-      if (
-        message.method === "initialize" &&
-        (mode === "delayed" || mode === "no-thread-response" || mode === "no-initialized-write")
-      )
-        yield* Effect.sleep(mode === "delayed" ? 140 : 70);
+      if (delaysInitialize(message)) yield* Effect.sleep(mode === "delayed" ? 140 : 70);
       if (message.method === "initialized" && mode === "no-initialized-write")
         return yield* Effect.never;
       if (message.method === "initialize" && mode !== "no-initialize")
@@ -176,13 +186,15 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
       }
       if (message.method === "thread/read") yield* emitThreadRead(message);
       if (message.method === "turn/start" && mode !== "no-turn-response") {
+        turns++;
+        const turnId = mode === "tool" && turns > 1 ? `turn-${turns}` : "turn";
         yield* emit({
           id: message.id,
-          result: { turn: { id: "turn", status: "inProgress", items: [] } },
+          result: { turn: { id: turnId, status: "inProgress", items: [] } },
         });
         yield* emit({
           method: "turn/started",
-          params: { threadId: "thread", turn: { id: "turn", status: "inProgress", items: [] } },
+          params: { threadId: "thread", turn: { id: turnId, status: "inProgress", items: [] } },
         });
       }
       yield* emitSteerResponse(message);
@@ -194,6 +206,7 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
     transport,
     sent,
     messages,
+    toolResponses,
     stopped: () => stopped,
     emit,
     exited,
@@ -206,6 +219,171 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
 });
 
 describe("scoped Codex session", () => {
+  it.effect(
+    "registers scoped tools, serves one admitted call once, and restores Hatch before readiness",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture("tool");
+        let restored = 0;
+        let shutdown = 0;
+        let executed = 0;
+        const host = yield* makeSession(f.transport, undefined, {
+          restore: async () => {
+            restored++;
+          },
+          shutdown: async () => {
+            shutdown++;
+          },
+          execute: async () => {
+            executed++;
+            return { text: "scotty-hatch:proof", success: true };
+          },
+        });
+        assert.equal(restored, 1);
+        assert.equal(f.messages[0]?.method, "initialize");
+        if (f.messages[0]?.method !== "initialize") return;
+        assert.equal(f.messages[0].params.capabilities.experimentalApi, true);
+        assert.equal(f.messages[2]?.method, "thread/start");
+        if (f.messages[2]?.method !== "thread/start") return;
+        assert.deepEqual(
+          f.messages[2].params.dynamicTools?.map((tool) => tool.name),
+          ["scotty_hatch", "scotty_browser_test"],
+        );
+        const turn = yield* host.prompt("hello");
+        yield* f.emit({
+          method: "item/started",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            item: {
+              type: "dynamicToolCall",
+              id: "call-1",
+              tool: "scotty_hatch",
+              status: "inProgress",
+            },
+          },
+        });
+        const call = {
+          id: 71,
+          method: "item/tool/call",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            callId: "call-1",
+            namespace: null,
+            tool: "scotty_hatch",
+            arguments: { operation: "status" },
+          },
+        };
+        yield* f.emit(call);
+        assert.deepEqual((yield* Queue.take(f.toolResponses)).result, {
+          contentItems: [{ type: "inputText", text: "scotty-hatch:proof" }],
+          success: true,
+        });
+        yield* f.emit({ ...call, id: 72 });
+        assert.equal((yield* Queue.take(f.toolResponses)).id, 72);
+        assert.equal(executed, 1);
+        yield* f.emit({
+          method: "item/completed",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            item: {
+              type: "dynamicToolCall",
+              id: "call-1",
+              tool: "scotty_hatch",
+              status: "completed",
+            },
+          },
+        });
+        yield* f.emit({
+          method: "turn/completed",
+          params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+        });
+        assert.equal((yield* turn.completed).status, "completed");
+        yield* host.stop;
+        assert.equal(shutdown, 1);
+      }),
+  );
+  it.effect(
+    "settles an interrupted tool and admits a fresh turn without replaying its receipt",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture("tool");
+        let calls = 0;
+        let markStarted = () => {};
+        const started = new Promise<void>((resolve) => {
+          markStarted = resolve;
+        });
+        const host = yield* makeSession(f.transport, undefined, {
+          restore: async () => {},
+          shutdown: async () => {},
+          execute: async (_tool, _input, signal) => {
+            calls++;
+            if (calls > 1) return { text: "scotty-evidence:fresh", success: true };
+            markStarted();
+            return new Promise((_, reject) => {
+              signal.addEventListener("abort", () => reject(new Error("interrupted")), {
+                once: true,
+              });
+            });
+          },
+        });
+        const turn = yield* host.prompt("first");
+        const item = (turnId: string) => ({
+          method: "item/started",
+          params: {
+            threadId: "thread",
+            turnId,
+            item: {
+              type: "dynamicToolCall",
+              id: "call-1",
+              tool: "scotty_browser_test",
+              status: "inProgress",
+            },
+          },
+        });
+        const call = (id: number, turnId: string) => ({
+          id,
+          method: "item/tool/call",
+          params: {
+            threadId: "thread",
+            turnId,
+            callId: "call-1",
+            namespace: null,
+            tool: "scotty_browser_test",
+            arguments: { port: 4174 },
+          },
+        });
+        yield* f.emit(item("turn"));
+        yield* f.emit(call(81, "foreign-turn"));
+        assert.equal((yield* Queue.take(f.toolResponses)).result.success, false);
+        assert.equal(calls, 0);
+        yield* f.emit(call(82, "turn"));
+        yield* Effect.promise(() => started);
+        yield* f.emit({
+          method: "turn/completed",
+          params: { threadId: "thread", turn: { id: "turn", status: "interrupted", items: [] } },
+        });
+        assert.equal((yield* Queue.take(f.toolResponses)).result.success, false);
+        assert.equal((yield* turn.completed).status, "interrupted");
+        const next = yield* host.prompt("second");
+        assert.equal(next.turnId, "turn-2");
+        yield* f.emit(item("turn-2"));
+        yield* f.emit(call(83, "turn-2"));
+        assert.equal(
+          (yield* Queue.take(f.toolResponses)).result.contentItems[0].text,
+          "scotty-evidence:fresh",
+        );
+        assert.equal(calls, 2);
+        yield* f.emit({
+          method: "turn/completed",
+          params: { threadId: "thread", turn: { id: "turn-2", status: "completed", items: [] } },
+        });
+        yield* next.completed;
+        yield* host.stop;
+      }),
+  );
   for (const shutdown of ["stop", "failure"] as const)
     it.effect(
       `terminal publication reconciles ${shutdown} and receiver exits without defects`,

@@ -23,6 +23,8 @@ COPY skills/scotty-live-observability/SKILL.md skills/scotty-live-observability/
 COPY infra infra
 COPY protocol protocol
 COPY worker/src worker/src
+COPY worker/container/pi-packages/sources/scotty-hatch/index.ts worker/container/pi-packages/sources/scotty-hatch/index.ts
+COPY worker/container/pi-packages/sources/scotty-browser-test/index.ts worker/container/pi-packages/sources/scotty-browser-test/index.ts
 RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs
 RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
   && chmod 0755 /out/scotty \

@@ -23,9 +23,10 @@ export const observeCodexFailure = (error: unknown) =>
 // Native subprocess tests run the same Effect core outside repository dependency resolution.
 export { Effect, Exit, Result, Scope } from "effect";
 export { NodeServices } from "@effect/platform-node";
-export { startCodexSession } from "../../../src/agent/codex/session";
+export { makeSession, startCodexSession } from "../../../src/agent/codex/session";
 export { makeCodexRuntime, startCodexRuntime } from "../../../src/agent/codex/runtime";
 export { readCodexSavedState } from "../../../src/agent/codex/persistence";
 export { CodexSyntheticUpstream } from "../../../src/agent/codex/process";
+export { launchProcess } from "../../../src/agent/codex/process";
 export { managedPiAccessToken } from "../../../src/credentials/managed";
 export { NodeRuntime } from "@effect/platform-node";

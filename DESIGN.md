@@ -269,6 +269,8 @@ Owners: [Conversation](ui/src/components/Conversation.tsx), [LiveConversation](u
 
 Following the Cursor demo's conversation hierarchy, assistant prose sits on the canvas. User messages receive a contained tonal bubble. Tool calls use compact disclosure rows and indented details rather than full-size message cards. Long commands, code, tables, and URLs must remain inspectable without forcing page-wide horizontal scrolling.
 
+Codex Hatch and browser evidence calls use those existing tool disclosures: a stable Hatch or Browser evidence label and running, completed, or failed state. Their bounded result includes the exact `scotty-hatch:` or `scotty-evidence:` reference for the existing session evidence surfaces. Never place authenticated summary URLs, service configuration, process logs, or credentials in the conversation tool result. Repeated native call receipts update the same disclosure and must not create duplicate controls.
+
 The composer is a distinct control surface with composer-radius corners and a shared Send button. Focus deliberately expands the editing area; this supersedes the earlier fixed-height experiment. Preserve a visible focus-within state, multiline input and space for queued-message feedback. An empty/sleeping conversation explains whether content is retained and which action continues it. Keep that message subordinate to the session title and next action.
 
 ### Workbench tabs and panels
