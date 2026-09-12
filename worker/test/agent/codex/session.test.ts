@@ -220,7 +220,7 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
 
 describe("scoped Codex session", () => {
   it.effect(
-    "registers scoped tools, serves one admitted call once, and restores Hatch before readiness",
+    "registers scoped tools, serves one admitted call once, and skips fresh Hatch restoration",
     () =>
       Effect.gen(function* () {
         const f = yield* fixture("tool");
@@ -239,7 +239,7 @@ describe("scoped Codex session", () => {
             return { text: "scotty-hatch:proof", success: true };
           },
         });
-        assert.equal(restored, 1);
+        assert.equal(restored, 0);
         assert.equal(f.messages[0]?.method, "initialize");
         if (f.messages[0]?.method !== "initialize") return;
         assert.equal(f.messages[0].params.capabilities.experimentalApi, true);
@@ -559,6 +559,30 @@ describe("scoped Codex session", () => {
         ephemeral: false,
         historyMode: "paginated",
       });
+      yield* host.stop;
+    }),
+  );
+
+  it.effect("restores Hatch ownership before resumed native readiness", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("durable-resume");
+      let restores = 0;
+      const host = yield* makeSession(
+        {
+          ...f.transport,
+          options: { ...f.transport.options, ephemeral: false, resumeThreadId: "persisted-thread" },
+        },
+        undefined,
+        {
+          restore: async () => {
+            restores++;
+          },
+          shutdown: async () => {},
+          execute: async () => ({ text: "synthetic", success: true }),
+        },
+      );
+      assert.equal(restores, 1);
+      assert.equal(host.inspect().ready, true);
       yield* host.stop;
     }),
   );

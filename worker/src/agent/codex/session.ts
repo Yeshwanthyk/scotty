@@ -898,7 +898,8 @@ export const makeSession = Effect.fnUntraced(function* (
       if (!matchesDurableReadback(readback, settings.thread.id))
         return yield* new CodexHostError({ code: "settings_mismatch" });
     }
-    if (firstPartyTools !== undefined)
+    // A fresh native thread has no retained Hatch authority to restore.
+    if (firstPartyTools !== undefined && resumeThreadId !== undefined)
       yield* timed(
         Effect.tryPromise({
           try: (signal) => firstPartyTools.restore(signal),
