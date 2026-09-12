@@ -39,6 +39,13 @@ const projectFailedTurn = (
   };
 };
 
+const runtimeFailureSummary = (snapshot: typeof CodexSnapshot.Type) =>
+  snapshot.failure === null
+    ? undefined
+    : boundedText(
+        `Runtime failure: ${snapshot.failure}${snapshot.failureDiagnostic === undefined ? "" : ` (${snapshot.failureDiagnostic})`}`,
+      );
+
 export const codexConversation = Effect.fnUntraced(function* (
   snapshot: typeof CodexSnapshot.Type,
   input: {
@@ -61,10 +68,7 @@ export const codexConversation = Effect.fnUntraced(function* (
     : prompt.status === "failed" || snapshot.failure !== null
       ? "failed"
       : "streaming";
-  const activitySummary =
-    state === "failed" && snapshot.failure !== null
-      ? boundedText(`Runtime failure: ${snapshot.failure}`)
-      : undefined;
+  const activitySummary = state === "failed" ? runtimeFailureSummary(snapshot) : undefined;
   const fallbackTurn: CanonicalConversationTurn = {
     id: input.turnId,
     state,

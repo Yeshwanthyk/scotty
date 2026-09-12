@@ -192,6 +192,43 @@ export const makeSession = Effect.fnUntraced(function* (
       childTurnOwners.get(childThreadId)?.has(message.params.turnId) === true
     );
   };
+  const stale = (
+    source:
+      | CodexNotification["method"]
+      | typeof ScopedAdvisoryMethod.Type
+      | "error"
+      | "thread/goal/cleared",
+    eventThreadId: string,
+    eventTurnId?: string,
+    itemType?: string,
+  ) => {
+    const threadRelation =
+      eventThreadId === threadId
+        ? "parent"
+        : childTurnOwners.has(eventThreadId)
+          ? "known_child"
+          : "foreign";
+    const turnRelation =
+      eventTurnId === undefined
+        ? "none"
+        : eventTurnId === active?.id
+          ? "active"
+          : completedTurns.has(eventTurnId)
+            ? "completed"
+            : "other";
+    const itemKind =
+      itemType === undefined
+        ? "none"
+        : itemType === "subAgentActivity" ||
+            itemType === "commandExecution" ||
+            itemType === "agentMessage"
+          ? itemType
+          : "other";
+    return new CodexHostError({
+      code: "stale_notification",
+      staleDiagnostic: `${source} ${threadRelation} ${turnRelation} ${itemKind}`,
+    });
+  };
   let ready = false,
     closing = false,
     threadId: string | undefined,
@@ -324,7 +361,12 @@ export const makeSession = Effect.fnUntraced(function* (
       return;
     }
     if (!active || message.params.threadId !== threadId || id !== active.id)
-      return yield* new CodexHostError({ code: "stale_notification" });
+      return yield* stale(
+        message.method,
+        message.params.threadId,
+        id,
+        Predicate.hasProperty(message.params, "item") ? message.params.item.type : undefined,
+      );
     const turn = active;
     if (message.method === "turn/started") {
       if (turn.started) return yield* new CodexHostError({ code: "duplicate_turn_started" });
@@ -351,7 +393,7 @@ export const makeSession = Effect.fnUntraced(function* (
       Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
     );
     if (!active || rejection.params.threadId !== threadId || rejection.params.turnId !== active.id)
-      return yield* new CodexHostError({ code: "stale_notification" });
+      return yield* stale("error", rejection.params.threadId, rejection.params.turnId);
     if (rejection.params.willRetry) {
       discarded++;
       return;
@@ -366,7 +408,7 @@ export const makeSession = Effect.fnUntraced(function* (
       isScopedAdvisory(advisory) &&
       (!active || advisory.params.threadId !== threadId || advisory.params.turnId !== active.id)
     )
-      return yield* new CodexHostError({ code: "stale_notification" });
+      return yield* stale(advisory.method, advisory.params.threadId, advisory.params.turnId);
     discarded++;
   });
   const receive = Effect.fnUntraced(function* (line: string) {
@@ -411,7 +453,7 @@ export const makeSession = Effect.fnUntraced(function* (
         Effect.mapError(() => new CodexHostError({ code: "invalid_message" })),
       );
       if (event.params.threadId !== (threadId ?? transport.options.resumeThreadId))
-        return yield* new CodexHostError({ code: "stale_notification" });
+        return yield* stale("thread/goal/cleared", event.params.threadId);
       discarded++;
       return;
     }
@@ -656,6 +698,7 @@ export const makeSession = Effect.fnUntraced(function* (
       threadId,
       activeTurnId: active?.id ?? null,
       failure: failure?.code ?? null,
+      failureDiagnostic: failure?.staleDiagnostic ?? null,
       pid: transport.pid,
       homes: transport.homes,
       settings,

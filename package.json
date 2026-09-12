@@ -21,6 +21,7 @@
     "check:cli-clean-room": "node scripts/check-cli-clean-room.mjs",
     "check:cli-standalone-deploy": "node scripts/check-cli-standalone-deploy.mjs",
     "check:container-image": "node scripts/check-container-image.mjs",
+    "check:codex-native-workflows": "node scripts/check-codex-native-workflows.mjs",
     "check:effect-version": "node e2e/scripts/check-effect-version.mjs",
     "check:pi-packages": "node scripts/check-pi-packages.mjs",
     "fmt": "oxfmt --disable-nested-config --write .",

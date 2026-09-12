@@ -647,6 +647,10 @@ it.effect("rejects stale native command evidence at the active turn fence", () =
     });
     yield* TestClock.adjust(1);
     assert.equal((yield* f.runtime.snapshot).failure, "stale_notification");
+    assert.equal(
+      (yield* f.runtime.snapshot).failureDiagnostic,
+      "item/commandExecution/outputDelta foreign active none",
+    );
     assert.deepStrictEqual((yield* f.runtime.snapshot).tools, []);
   }),
 );

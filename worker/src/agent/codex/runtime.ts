@@ -86,6 +86,7 @@ export const CodexSnapshot = Schema.Struct({
   }),
   ready: Schema.Boolean,
   failure: Schema.NullOr(Identifier),
+  failureDiagnostic: Schema.optionalKey(bytes(256)),
   prompt: PromptState,
   tools: Schema.optionalKey(
     Schema.Array(CanonicalConversationToolSchema).check(
@@ -290,6 +291,9 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
       },
       ready: current.ready && bridgeFailure === null && !saving,
       failure: current.failure ?? bridgeFailure,
+      ...(current.failureDiagnostic === null
+        ? {}
+        : { failureDiagnostic: current.failureDiagnostic }),
       prompt,
       tools: current.tools,
       toolsTruncated: current.toolsTruncated,

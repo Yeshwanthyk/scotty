@@ -37,6 +37,23 @@ const runningTool: CanonicalConversationTool = {
 };
 
 describe("Codex conversation failure projection", () => {
+  it.effect("projects only bounded stale notification context", () =>
+    Effect.gen(function* () {
+      const conversation = yield* codexConversation(
+        makeSnapshot({
+          failure: "stale_notification",
+          failureDiagnostic: "item/started parent completed subAgentActivity",
+        }),
+        { prompt: "research", turnId: "failed-turn", revision: 1 },
+      );
+      assert.equal(
+        conversation.turns[0]?.activitySummary,
+        "Runtime failure: stale_notification (item/started parent completed subAgentActivity)",
+      );
+      assert.isFalse(conversation.followUpAvailable);
+    }),
+  );
+
   it.effect("surfaces a bounded runtime failure and closes dangling fallback tools", () =>
     Effect.gen(function* () {
       const conversation = yield* codexConversation(makeSnapshot({ tools: [runningTool] }), {

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { constants } from "node:fs";
 import {
+  access,
   chmod,
   copyFile,
   mkdir,
@@ -16,6 +18,33 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test, { after } from "node:test";
 import { pathToFileURL } from "node:url";
+
+const native = process.env.SCOTTY_TEST_CODEX_BINARY;
+if (process.env.SCOTTY_REQUIRE_CODEX_NATIVE === "1") {
+  assert.ok(native, "SCOTTY_TEST_CODEX_BINARY is required for the native workflow gate");
+  const packageRoot = resolve(await realpath(native), "../..");
+  assert.deepEqual(JSON.parse(await readFile(join(packageRoot, "codex-package.json"), "utf8")), {
+    layoutVersion: 1,
+    version: "0.153.4",
+    target: "x86_64-unknown-linux-musl",
+    variant: "codex",
+    entrypoint: "bin/codex",
+    resourcesDir: "codex-resources",
+    pathDir: "codex-path",
+  });
+  for (const executable of [
+    "bin/codex",
+    "bin/codex-code-mode-host",
+    "codex-path/rg",
+    "codex-resources/bwrap",
+    "codex-resources/zsh/bin/zsh",
+  ])
+    await access(join(packageRoot, executable), constants.X_OK);
+  assert.equal(
+    execFileSync(native, ["--version"], { encoding: "utf8" }).trim(),
+    "codex-cli 0.153.4",
+  );
+}
 
 const stage = await realpath(await mkdtemp(join(tmpdir(), "scotty-codex-host-")));
 execFileSync(
@@ -538,7 +567,6 @@ test("unexpected parent SIGKILL leaves exact owned descendant alive and active t
   assert.equal(alive(pid), true);
 });
 
-const native = process.env.SCOTTY_TEST_CODEX_BINARY;
 for (const [model, effort] of [
   ["gpt-5.4", "high"],
   ["gpt-5.4", "low"],
