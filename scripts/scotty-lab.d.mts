@@ -191,4 +191,9 @@ export function readActorDiagnostics(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<{ readonly status: number; readonly body: string }>;
+export function readSessionView(
+  manifest: LabManifest,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<{ readonly status: number; readonly body: string }>;
 export function stopManifest(runId: string, manifestPath?: string): LabManifest;

@@ -110,6 +110,7 @@ npm run lab -- lifecycle sleep-resume --session SESSION_ID
 npm run lab -- lifecycle runtime-loss --session SESSION_ID
 npm run lab -- lifecycle hard-cap --session SESSION_ID
 npm run lab -- lifecycle vaporize --session SESSION_ID
+npm run lab -- lifecycle codex-workflow --repo OWNER/DISPOSABLE_REPO
 npm run lab -- lifecycle full --repo OWNER/DISPOSABLE_REPO
 ```
 
@@ -127,11 +128,20 @@ vaporize before stopping the run.
 
 `checkpoint` invokes the real CLI `snapshot` command. A manual snapshot stops Pi and interactive
 terminals while writing the backup, then restores the warm runtime; it is not the sleep transition.
+Codex checkpoint is unsupported, so `full` remains a Pi lifecycle sequence.
 `sleep-resume` uses the authenticated public `POST /api/sessions/:id/sleep` route through the exact
 loopback lab host and root token, records its sanitized response and HTTP status, then invokes the
 real CLI `resume` command. If the route truthfully reports a reconciling outcome, the lab waits for
 the actor authority to settle `Sleeping`; it does not treat the response as success by itself. It
 never writes Durable Object storage or desired state directly.
+
+`codex-workflow` explicitly selects Codex Sol/medium, runs a native command, requires its
+completed tool output and terminal marker from canonical `inspect`, sends a `steer` follow-up, and
+requires the admitted turn ID, its completed command and a healthy runtime. It then vaporizes only
+the run-owned session. The evidence manifest records both turn IDs and command assertions; raw
+conversation snapshots are omitted from command evidence. If the workflow fails after create, the
+owned ID remains in the evidence manifest for exact targeted cleanup. This scenario does not prove
+delegation, active steering, queued follow-up, interrupt, sleep/resume continuity or fault recovery.
 
 Every run retains private evidence under `.scotty-lab/evidence/RUN_ID/`, outside the ephemeral
 temporary root. Directories are mode `0700`; `run.json`, `commands.jsonl`, and the redacted

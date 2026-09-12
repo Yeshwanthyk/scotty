@@ -7,6 +7,7 @@ import {
   LAB_VERSION,
   LabOperations,
   LabUsageError,
+  codexTerminalProof,
   runLab,
   waitForCapturedChild,
 } from "./scotty-lab.ts";
@@ -46,6 +47,10 @@ const run = (args: ReadonlyArray<string>, calls: string[]): Effect.Effect<void, 
           Effect.sync(() => calls.push(`vaporize:${sessionId}:${fault ?? "none"}`)).pipe(
             Effect.asVoid,
           ),
+        codexWorkflow: (repo, fault) =>
+          Effect.sync(() => calls.push(`codex-workflow:${repo}:${fault ?? "none"}`)).pipe(
+            Effect.asVoid,
+          ),
         full: (repo, fault) => Effect.sync(() => calls.push(`full:${repo}:${fault ?? "none"}`)),
       }),
     ),
@@ -64,6 +69,104 @@ const assertUsageFailure = (result: Result.Result<void, unknown>): void => {
 };
 
 describe("Effect Scotty lab command grammar", () => {
+  it("requires a healthy matching Codex command and reply", () => {
+    const snapshot = {
+      id: "a0b1c2d3e4f5",
+      version: 1 as const,
+      runtimeStopped: false,
+      followUpAvailable: true,
+      transport: { epoch: "epoch", baseSequence: 0, sequence: 1, sessionRevision: 1 },
+      turns: [
+        {
+          id: "turn-1",
+          state: "completed" as const,
+          user: "Run the command",
+          assistant: "SCOTTY_LAB_CODEX_READY",
+          tools: [
+            {
+              id: "tool-1",
+              state: "completed" as const,
+              label: "Command",
+              invocation: "printf SCOTTY_LAB_CODEX_INITIAL",
+              output: "SCOTTY_LAB_CODEX_INITIAL",
+            },
+          ],
+        },
+      ],
+      queue: { steer: [], followUp: [] },
+      truncated: { turns: false, values: false },
+    };
+    assert.deepEqual(
+      codexTerminalProof(snapshot, undefined, "SCOTTY_LAB_CODEX_INITIAL", "SCOTTY_LAB_CODEX_READY"),
+      { status: "passed", turnId: "turn-1" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
+        snapshot,
+        "other-turn",
+        "SCOTTY_LAB_CODEX_INITIAL",
+        "SCOTTY_LAB_CODEX_READY",
+      ),
+      { status: "pending" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(snapshot, "turn-1", "UNRUN_COMMAND", "SCOTTY_LAB_CODEX_READY"),
+      { status: "failed", reason: "Codex terminal lacks the requested command or reply" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
+        {
+          ...snapshot,
+          turns: [
+            {
+              ...snapshot.turns[0],
+              tools: [
+                { ...snapshot.turns[0].tools[0], invocation: "echo SCOTTY_LAB_CODEX_INITIAL" },
+              ],
+            },
+          ],
+        },
+        "turn-1",
+        "SCOTTY_LAB_CODEX_INITIAL",
+        "SCOTTY_LAB_CODEX_READY",
+      ),
+      { status: "failed", reason: "Codex terminal lacks the requested command or reply" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
+        { ...snapshot, runtimeStopped: true },
+        "turn-1",
+        "SCOTTY_LAB_CODEX_INITIAL",
+        "SCOTTY_LAB_CODEX_READY",
+      ),
+      { status: "failed", reason: "Codex runtime stopped or health was unavailable" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
+        {
+          ...snapshot,
+          runtimeStopped: true,
+          turns: [
+            {
+              ...snapshot.turns[0],
+              state: "failed",
+              activitySummary:
+                "Runtime failure: stale_notification (item/started parent completed subAgentActivity)",
+            },
+          ],
+        },
+        "turn-1",
+        "SCOTTY_LAB_CODEX_INITIAL",
+        "SCOTTY_LAB_CODEX_READY",
+      ),
+      {
+        status: "failed",
+        reason:
+          "Runtime failure: stale_notification (item/started parent completed subAgentActivity)",
+      },
+    );
+  });
+
   it("uses the package version", () => {
     assert.strictEqual(LAB_VERSION, packageMetadata.version);
   });
@@ -81,6 +184,14 @@ describe("Effect Scotty lab command grammar", () => {
         `exec:${RUN_ID}:["doctor","--json"]`,
         `stop:${RUN_ID}`,
       ]);
+    }),
+  );
+
+  it.effect("dispatches the explicit Codex workflow scenario", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      yield* run(["lifecycle", "codex-workflow", "--repo", "owner/repo"], calls);
+      assert.deepEqual(calls, ["codex-workflow:owner/repo:none"]);
     }),
   );
 
