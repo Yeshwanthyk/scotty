@@ -105,23 +105,63 @@ export const proxyOpenAIProgram = Effect.fnUntraced(function* (request: Request)
   return yield* forward(request, url, headers);
 });
 
+type ChatGptEgressDiagnostic =
+  | "invalid_destination"
+  | "invalid_sentinel"
+  | "credential_unavailable"
+  | "credential_unusable"
+  | "account_id_missing"
+  | "credential_access_failed"
+  | "upstream_transport_failed"
+  | "upstream_http_status";
+
+const reportChatGptEgress = (code: ChatGptEgressDiagnostic, status?: number) =>
+  Effect.sync(() =>
+    console.warn("Scotty ChatGPT egress failed", {
+      code,
+      ...(status === undefined ? {} : { status }),
+    }),
+  );
+
 export const proxyChatGptProgram = Effect.fnUntraced(function* (request: Request) {
   const url = exactDestination(request, "chatgpt.com");
-  if (url === undefined) return forbidden();
+  if (url === undefined) {
+    yield* reportChatGptEgress("invalid_destination");
+    return forbidden();
+  }
   const authorization = request.headers.get("authorization");
   const handle = parseManagedPiAccessToken(
     authorization === null ? undefined : bearerValue(authorization),
   );
-  if (Option.isNone(handle)) return forbidden();
+  if (Option.isNone(handle)) {
+    yield* reportChatGptEgress("invalid_sentinel");
+    return forbidden();
+  }
   const credential = yield* EgressCredential;
-  const resolved = yield* credential.resolve(formatManagedHandle(handle.value));
-  if (resolved === null) return forbidden();
+  const resolved = yield* credential
+    .resolve(formatManagedHandle(handle.value))
+    .pipe(Effect.tapError(() => reportChatGptEgress("credential_access_failed")));
+  if (resolved === null) {
+    yield* reportChatGptEgress("credential_unavailable");
+    return forbidden();
+  }
   const selected = selectPiCredential(resolved, handle.value);
-  if (selected === null || selected.accountId === undefined) return forbidden();
+  if (selected === null) {
+    yield* reportChatGptEgress("credential_unusable");
+    return forbidden();
+  }
+  if (selected.accountId === undefined) {
+    yield* reportChatGptEgress("account_id_missing");
+    return forbidden();
+  }
   const headers = sanitizedHeaders(request.headers);
   headers.set("authorization", `Bearer ${selected.token}`);
   headers.set("chatgpt-account-id", selected.accountId);
-  return yield* forward(request, url, headers);
+  const response = yield* forward(request, url, headers).pipe(
+    Effect.tapError(() => reportChatGptEgress("upstream_transport_failed")),
+  );
+  if (response.status >= 300) yield* reportChatGptEgress("upstream_http_status", response.status);
+  return response;
 });
 
 export const proxyGitHubProgram = Effect.fnUntraced(function* (request: Request) {

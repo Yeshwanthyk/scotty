@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { rejects } from "node:assert/strict";
+import { vi } from "vitest";
 import { managedPiAccessToken } from "../../src/credentials/managed";
 import { makeOutboundByHost } from "../../src/egress/worker";
 import type { Bindings } from "../../src/shared/bindings";
@@ -83,6 +84,23 @@ function fixture(status = 200) {
 }
 
 describe("Codex managed native request shape through existing egress adapter (separate proof)", () => {
+  it("reports only bounded ChatGPT egress outcome codes and HTTP status", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const upstream = fixture(401);
+      assert.equal((await upstream.run()).status, 401);
+      const revoked = fixture();
+      revoked.revoke();
+      assert.equal((await revoked.run()).status, 403);
+      assert.deepEqual(warning.mock.calls, [
+        ["Scotty ChatGPT egress failed", { code: "upstream_http_status", status: 401 }],
+        ["Scotty ChatGPT egress failed", { code: "credential_unavailable" }],
+      ]);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("substitutes dummy Session-pinned token/account, retaining Responses path and body", async () => {
     const f = fixture();
     const response = await f.run();
