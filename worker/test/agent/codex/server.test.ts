@@ -200,20 +200,27 @@ createInterface({input:process.stdin}).on('line', (line) => {
 `,
         { mode: 0o700 },
       );
-      const runtime = yield* startCodexRuntime({
-        generation: "generation-1",
-        launch: {
-          binary,
-          runtimeDir: `${root}/runtime`,
-          workspace,
-          model: "gpt-5.4",
-          effort: "high",
-          credential: {
-            sentinel: managedPiAccessToken("scotty-managed://openai/openai-codex/access"),
-            expiresAt: Number.MAX_SAFE_INTEGER,
+      const runtime = yield* startCodexRuntime(
+        {
+          generation: "generation-1",
+          launch: {
+            binary,
+            runtimeDir: `${root}/runtime`,
+            workspace,
+            model: "gpt-5.4",
+            effort: "high",
+            credential: {
+              sentinel: managedPiAccessToken("scotty-managed://openai/openai-codex/access"),
+              expiresAt: Number.MAX_SAFE_INTEGER,
+            },
           },
         },
-      });
+        {
+          restore: async () => {},
+          shutdown: async () => {},
+          execute: async () => ({ text: "synthetic tool result", success: true }),
+        },
+      );
       const address = yield* serveCodexControl(runtime, token, 0);
       assert.ok(Predicate.isTagged(address, "TcpAddress"));
       assert.equal((yield* exchange(address.port, "GET", "/health")).status, 200);

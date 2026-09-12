@@ -270,7 +270,13 @@ describe("Codex 0.153.4 bounded protocol subset", () => {
   it("rejects speculative capabilities, ambient defaults, extra fields and non-text input", () => {
     for (const message of [
       { ...initialize, jsonrpc: "2.0" },
-      { ...initialize, params: { ...initialize.params, capabilities: { experimentalApi: true } } },
+      {
+        ...initialize,
+        params: {
+          ...initialize.params,
+          capabilities: { experimentalApi: true, speculative: true },
+        },
+      },
       { method: "initialized", id: 1 },
       { ...start, params: {} },
       ...["read-only", "workspace-write", "external-sandbox", "unknown", null].map((sandbox) => ({
