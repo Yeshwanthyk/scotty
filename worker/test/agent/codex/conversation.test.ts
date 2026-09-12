@@ -45,6 +45,7 @@ describe("Codex conversation failure projection", () => {
         revision: 4,
       });
 
+      assert.isFalse(conversation.followUpAvailable);
       assert.deepStrictEqual(conversation.turns, [
         {
           id: "failed-turn",
@@ -94,6 +95,20 @@ describe("Codex conversation failure projection", () => {
         activitySummary: "Runtime failure: request_timeout",
         tools: [{ ...runningTool, state: "failed" }],
       });
+    }),
+  );
+  it.effect("allows follow-ups after a terminal failed turn when the runtime is healthy", () =>
+    Effect.gen(function* () {
+      const conversation = yield* codexConversation(
+        makeSnapshot({
+          ready: true,
+          failure: null,
+          prompt: { status: "terminal", turnId: "turn-1", outcome: "failed", text: "Task failed" },
+        }),
+        { prompt: "try the task", turnId: "turn-1", revision: 4 },
+      );
+      assert.isTrue(conversation.followUpAvailable);
+      assert.equal(conversation.turns[0]?.state, "failed");
     }),
   );
 });
