@@ -146,6 +146,16 @@ evidence. If the workflow fails after create, the owned ID remains for exact tar
 This scenario does not prove delegation, browser-close queue delivery, fault recovery, or Pi
 conversation continuity.
 
+The redacted captured-state fixtures in `scripts/fixtures/codex-failure-states.json` cover two
+distinct production observations: a Warm actor with a stopped Codex host, and a Failed sleep with
+no backup. They preserve state tags, tool counts, safe failure codes and revisions while replacing
+session IDs, repository, title, prompts, assistant text, command text, output and runtime IDs. File
+capture timestamps are recorded separately from the native observation time, which the original
+payloads did not carry. The Failed case's conversation is explicitly **last-observed**; its actor
+state is the current lifecycle authority. `npm run test:lab` decodes both fixtures and checks their public UI
+projection and recovery actions. These fixtures cannot replay the missing native notification or
+prove that a repaired runtime can continue the old session.
+
 Every run retains private evidence under `.scotty-lab/evidence/RUN_ID/`, outside the ephemeral
 temporary root. Directories are mode `0700`; `run.json`, `commands.jsonl`, and the redacted
 `worker.log` snapshot are mode `0600`. Stop preserves the Worker log before deleting the temporary
