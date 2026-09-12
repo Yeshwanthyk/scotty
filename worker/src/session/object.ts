@@ -8,10 +8,13 @@ import {
   confirmCodexFollowUp,
 } from "./codex-follow-ups";
 import {
+  codexSandboxHome,
   interruptCodexSandbox,
   readCodexSandbox,
   sendCodexSandboxMessage,
 } from "../agent/codex/sandbox";
+import { parseCodexRolloutListing } from "../agent/codex/rollout-export";
+import { CODEX_SAVED_STATE_MAX_BYTES } from "../agent/codex/persistence-format";
 import type { CodexSnapshot } from "../agent/codex/runtime";
 import { codexConversation } from "../agent/codex/conversation";
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
@@ -267,6 +270,7 @@ import {
   shellQuote,
   type SandboxWriteContent,
 } from "../sandbox/runtime";
+import { parseSandboxTar } from "../sandbox/archive";
 import {
   sandboxBundleMaterializerLayer,
   SandboxBundleMaterializer,
@@ -391,6 +395,10 @@ const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
 const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
 const SANDBOX_PREVIEW_SANDBOX_ID_HEADER = "x-sandbox-preview-sandbox-id";
 const PREVIEW_PORT_PATTERN = /^(?:[1-9][0-9]{3,4})$/u;
+const decodeRunningExportRuntime = Schema.decodeUnknownResult(
+  Schema.Struct({ status: Schema.Literals(["running", "healthy"]) }),
+  { onExcessProperty: "ignore" },
+);
 
 const authorizesHatchReadiness = (
   hatch: HatchRecord | undefined,
@@ -3903,6 +3911,91 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return state.view;
   });
 
+  private readonly prepareCodexRolloutArchiveProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const before = yield* this.readActorSessionStateProgram();
+    const authority = before.authority;
+    if (
+      authority.session.selection?.agent !== "codex" ||
+      !AuthorityStateSchema.guards.Stable(authority.state) ||
+      !StableStateSchema.guards.Warm(authority.state.stable)
+    )
+      return yield* conflict("Codex rollouts require a warm Codex session");
+    const readiness = authority.state.stable.readiness;
+    const runtime = yield* SandboxRuntime;
+    const observed = yield* runtime
+      .getState()
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Codex rollout runtime is unavailable", undefined),
+        ),
+      );
+    if (Result.isFailure(decodeRunningExportRuntime(observed)))
+      return yield* conflict("Codex rollout container is not running");
+    const incarnation = yield* runtime
+      .getContainerIncarnationId()
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Codex rollout runtime is unavailable", undefined),
+        ),
+      );
+    if (incarnation !== readiness.runtime.containerIncarnation)
+      return yield* conflict("Codex rollout container generation changed");
+
+    const home = codexSandboxHome(readiness.runtime.runtimeGeneration);
+    const listing = yield* runtime
+      .execChecked(
+        `find ${shellQuote(`${home}/sessions`)} -type f -name 'rollout-*.jsonl' -printf 'sessions/%P\\t%s\\t%n\\n'`,
+        { timeout: 15_000 },
+      )
+      .pipe(Effect.mapError(() => this.upstreamError("Codex rollouts are unavailable", undefined)));
+    const files = parseCodexRolloutListing(listing.stdout);
+    if (files === null)
+      return yield* this.upstreamError("Codex rollouts are unavailable", undefined);
+    const path = `/tmp/scotty-${authority.session.id}-codex-rollouts-${crypto.randomUUID()}.tar`;
+    yield* runtime
+      .execChecked(
+        `umask 077 && tar --format=ustar -cf ${shellQuote(path)} -C ${shellQuote(home)} ${files.map((file) => shellQuote(file.path)).join(" ")}`,
+        { timeout: 30_000 },
+      )
+      .pipe(Effect.mapError(() => this.upstreamError("Codex rollout archive failed", undefined)));
+    const archive = yield* runtime
+      .readFile(path, 20 * 1024 * 1024)
+      .pipe(Effect.mapError(() => this.upstreamError("Codex rollout archive failed", undefined)));
+    const members = parseSandboxTar(archive, CODEX_SAVED_STATE_MAX_BYTES);
+    const expected = new Set(files.map((file) => file.path));
+    if (
+      Result.isFailure(members) ||
+      members.success.length !== files.length ||
+      members.success.some(
+        (member) =>
+          member.type !== "file" || member.modeClass !== "regular" || !expected.has(member.path),
+      ) ||
+      members.success.reduce((total, member) => total + member.bytes.byteLength, 0) >
+        CODEX_SAVED_STATE_MAX_BYTES
+    )
+      return yield* this.upstreamError("Codex rollout archive failed validation", undefined);
+
+    const currentIncarnation = yield* runtime
+      .getContainerIncarnationId()
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Codex rollout runtime is unavailable", undefined),
+        ),
+      );
+    const after = yield* this.readActorSessionStateProgram();
+    const current = after.authority;
+    if (
+      current.revision !== authority.revision ||
+      !AuthorityStateSchema.guards.Stable(current.state) ||
+      !StableStateSchema.guards.Warm(current.state.stable) ||
+      current.state.stable.readiness.runtime.runtimeGeneration !==
+        readiness.runtime.runtimeGeneration ||
+      currentIncarnation !== incarnation
+    )
+      return yield* conflict("Codex rollout session changed during export");
+    return { bytes: archive, filename: `scotty-${authority.session.id}-codex-rollouts.tar` };
+  });
+
   private readonly prepareDownArchiveProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const authoritative = yield* this.requireRecordProgram();
     if (authoritative.execution.provider === "runner")
@@ -5899,6 +5992,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async prepareDownArchive(): Promise<DownArchive> {
     return this.#run(this.prepareDownArchiveProgram());
+  }
+
+  async prepareCodexRolloutArchive() {
+    return this.#run(this.prepareCodexRolloutArchiveProgram());
   }
 
   async readScottyArchiveStream(path: string) {
