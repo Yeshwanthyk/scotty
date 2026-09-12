@@ -334,6 +334,10 @@ describe("final container image gate", () => {
     const ci = read(".github/workflows/ci.yml");
 
     assert.equal(pkg.scripts["check:container-image"], "node scripts/check-container-image.mjs");
+    assert.equal(
+      pkg.scripts["check:codex-native-workflows"],
+      "node scripts/check-codex-native-workflows.mjs",
+    );
     assert.equal(pkg.scripts["check:cli-clean-room"], "node scripts/check-cli-clean-room.mjs");
     assert.doesNotMatch(pkg.scripts.check, /check:container-image/u);
     assert.doesNotMatch(pkg.scripts.check, /check:cli-clean-room/u);
@@ -341,6 +345,7 @@ describe("final container image gate", () => {
     assert.match(ci, /cli-clean-room:/u);
     assert.match(ci, /container-image:/u);
     assert.match(ci, /npm run check:container-image/u);
+    assert.match(ci, /npm run check:codex-native-workflows/u);
   });
 
   it("records probes for supported native, media, browser, and Scotty tools", () => {
