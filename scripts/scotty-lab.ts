@@ -26,7 +26,9 @@ import {
 import { isRepositoryIdentity } from "../protocol/repository.ts";
 import { CanonicalConversationSnapshotSchema } from "../protocol/conversation.ts";
 import { SessionSteerResponseSchema } from "../protocol/session-steer.ts";
+import { SessionInterruptResponseSchema } from "../protocol/session-interrupt.ts";
 import { SessionActorDiagnosticsSchema } from "../worker/src/session-actor/diagnostics.ts";
+import { AuthorityStateSchema, StableStateSchema } from "../worker/src/session-actor/authority.ts";
 import { UiSessionResponseSchema } from "../worker/src/ui/session-view.ts";
 import {
   acquireLifecycleLock,
@@ -119,6 +121,44 @@ const decodeCodexInspectJson = Schema.decodeUnknownEffect(
 const decodeSteerJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(SessionSteerResponseSchema),
 );
+const decodeInterruptJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(SessionInterruptResponseSchema),
+);
+
+const acceptedCodexTurnId = (
+  receipt: typeof SessionSteerResponseSchema.Type,
+  sessionId: string,
+  mode: "message" | "steer",
+): string | undefined =>
+  receipt.id === sessionId &&
+  receipt.status === "accepted" &&
+  "mode" in receipt &&
+  receipt.mode === mode &&
+  "turnId" in receipt
+    ? receipt.turnId
+    : undefined;
+
+const acceptedCodexQueueId = (
+  receipt: typeof SessionSteerResponseSchema.Type,
+  sessionId: string,
+): string | undefined =>
+  receipt.id === sessionId &&
+  receipt.status === "accepted" &&
+  "mode" in receipt &&
+  receipt.mode === "followUp" &&
+  "clientUserMessageId" in receipt
+    ? receipt.clientUserMessageId
+    : undefined;
+
+const acceptedCodexInterrupt = (
+  receipt: typeof SessionInterruptResponseSchema.Type,
+  sessionId: string,
+  turnId: string,
+): boolean =>
+  receipt.id === sessionId &&
+  receipt.status === "accepted" &&
+  "turnId" in receipt &&
+  receipt.turnId === turnId;
 const decodeUiSessionJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(UiSessionResponseSchema),
 );
@@ -400,7 +440,14 @@ type ScenarioResult = Readonly<{
   proof?: {
     readonly initialTurnId: string;
     readonly followUpTurnId: string;
-    readonly completedCommands: 2;
+    readonly interruptedTurnId: string;
+    readonly queuedTurnId: string;
+    readonly queuedMessageId: string;
+    readonly resumedTurnId: string;
+    readonly completedCommands: 4;
+    readonly activeSteer: true;
+    readonly interruptAccepted: true;
+    readonly sleepResumeContinuity: true;
     readonly runtimeStopped: false;
     readonly model: "gpt-5.6-sol";
     readonly effort: "medium";
@@ -869,6 +916,7 @@ export const codexTerminalProof = (
   expectedTurnId: string | undefined,
   commandMarker: string,
   replyMarker: string,
+  expectedUserMarker?: string,
 ):
   | { readonly status: "pending" }
   | { readonly status: "failed"; readonly reason: string }
@@ -885,10 +933,11 @@ export const codexTerminalProof = (
       reason: stale ? summary : "Codex runtime stopped or health was unavailable",
     };
   }
-  const turn =
-    expectedTurnId === undefined
-      ? snapshot.turns.at(-1)
-      : snapshot.turns.find(({ id }) => id === expectedTurnId);
+  const turn = expectedTurnId
+    ? snapshot.turns.find(({ id }) => id === expectedTurnId)
+    : expectedUserMarker
+      ? snapshot.turns.find(({ user }) => user.includes(expectedUserMarker))
+      : snapshot.turns.at(-1);
   if (turn === undefined) return { status: "pending" };
   if (turn.state === "failed" || turn.state === "aborted")
     return { status: "failed", reason: `Codex turn ${turn.state}` };
@@ -908,33 +957,95 @@ export const codexTerminalProof = (
   return { status: "passed", turnId: turn.id };
 };
 
+const readCodexSnapshot = Effect.fnUntraced(function* (manifest: Manifest, sessionId: string) {
+  const raw = yield* runRecordedCli(
+    manifest,
+    "codex-workflow",
+    ["inspect", sessionId, "--json"],
+    sessionId,
+    undefined,
+    true,
+  );
+  const snapshot = yield* decodeCodexInspectJson(raw).pipe(
+    Effect.mapError((cause) => failure(cause, "Scotty CLI returned invalid Codex conversation")),
+  );
+  if (snapshot.id !== sessionId)
+    return yield* new LabFailure({ message: "Codex inspect returned a different session" });
+  return snapshot;
+});
+
 const awaitCodexTerminal = Effect.fnUntraced(function* (
   manifest: Manifest,
   sessionId: string,
   expectedTurnId: string | undefined,
   commandMarker: string,
   replyMarker: string,
+  expectedUserMarker?: string,
 ) {
   const deadline = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + 120_000;
   while (true) {
-    const raw = yield* runRecordedCli(
-      manifest,
-      "codex-workflow",
-      ["inspect", sessionId, "--json"],
-      sessionId,
-      undefined,
-      true,
+    const snapshot = yield* readCodexSnapshot(manifest, sessionId);
+    const proof = codexTerminalProof(
+      snapshot,
+      expectedTurnId,
+      commandMarker,
+      replyMarker,
+      expectedUserMarker,
     );
-    const snapshot = yield* decodeCodexInspectJson(raw).pipe(
-      Effect.mapError((cause) => failure(cause, "Scotty CLI returned invalid Codex conversation")),
-    );
-    if (snapshot.id !== sessionId)
-      return yield* new LabFailure({ message: "Codex inspect returned a different session" });
-    const proof = codexTerminalProof(snapshot, expectedTurnId, commandMarker, replyMarker);
     if (proof.status === "passed") return proof.turnId;
     if (proof.status === "failed") return yield* new LabFailure({ message: proof.reason });
     if ((yield* Effect.clockWith((clock) => clock.currentTimeMillis)) >= deadline)
       return yield* new LabFailure({ message: "Codex terminal deadline exceeded" });
+    yield* Effect.sleep("1 second");
+  }
+});
+
+const awaitCodexRunningCommand = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  turnId: string,
+  commandMarker: string,
+) {
+  const deadline = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + 120_000;
+  while (true) {
+    const snapshot = yield* readCodexSnapshot(manifest, sessionId);
+    if (snapshot.runtimeStopped !== false)
+      return yield* new LabFailure({ message: "Codex runtime stopped during active command" });
+    const turn = snapshot.turns.find(({ id }) => id === turnId);
+    if (turn?.state === "streaming") {
+      if (
+        turn.tools.some(
+          (tool) =>
+            tool.state === "running" &&
+            tool.invocation.includes("sleep") &&
+            tool.invocation.includes(commandMarker),
+        )
+      )
+        return;
+    } else if (turn?.state === "completed" || turn?.state === "aborted" || turn?.state === "failed")
+      return yield* new LabFailure({ message: "Codex active command ended before controls" });
+    if ((yield* Effect.clockWith((clock) => clock.currentTimeMillis)) >= deadline)
+      return yield* new LabFailure({ message: "Codex active command deadline exceeded" });
+    yield* Effect.sleep("1 second");
+  }
+});
+
+const awaitCodexInterrupted = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  turnId: string,
+) {
+  const deadline = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + 120_000;
+  while (true) {
+    const snapshot = yield* readCodexSnapshot(manifest, sessionId);
+    if (snapshot.runtimeStopped !== false)
+      return yield* new LabFailure({ message: "Codex runtime stopped after interrupt" });
+    const turn = snapshot.turns.find(({ id }) => id === turnId);
+    if (turn?.state === "aborted") return;
+    if (turn?.state === "completed" || turn?.state === "failed")
+      return yield* new LabFailure({ message: "Codex active turn did not abort" });
+    if ((yield* Effect.clockWith((clock) => clock.currentTimeMillis)) >= deadline)
+      return yield* new LabFailure({ message: "Codex interrupted turn deadline exceeded" });
     yield* Effect.sleep("1 second");
   }
 });
@@ -1005,6 +1116,82 @@ const vaporizeLab = (sessionId: string, fault?: Fault) =>
     Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)),
   );
 
+const warmCodexReadiness = (diagnostics: typeof SessionActorDiagnosticsSchema.Type) => {
+  const state = diagnostics.authority.state;
+  return AuthorityStateSchema.guards.Stable(state) && StableStateSchema.guards.Warm(state.stable)
+    ? state.stable.readiness
+    : undefined;
+};
+
+const codexResumeContinuity = (
+  before: typeof CodexInspectOutput.Type,
+  after: typeof CodexInspectOutput.Type,
+  beforeAuthority: typeof SessionActorDiagnosticsSchema.Type,
+  afterAuthority: typeof SessionActorDiagnosticsSchema.Type,
+  queuedTurnId: string,
+) => {
+  const prior = warmCodexReadiness(beforeAuthority);
+  const resumed = warmCodexReadiness(afterAuthority);
+  return (
+    prior !== undefined &&
+    resumed !== undefined &&
+    prior.supervisor.supervisorEpoch === resumed.supervisor.supervisorEpoch &&
+    prior.runtime.runtimeGeneration !== resumed.runtime.runtimeGeneration &&
+    before.transport.epoch !== after.transport.epoch &&
+    after.turns.some(
+      ({ id, tools }) =>
+        id === queuedTurnId &&
+        tools.some(
+          ({ output, state }) =>
+            state === "completed" && output?.includes("SCOTTY_LAB_CODEX_QUEUED") === true,
+        ),
+    )
+  );
+};
+
+const proveCodexSleepResume = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  queuedTurnId: string,
+) {
+  const before = yield* readCodexSnapshot(manifest, sessionId);
+  const beforeAuthority = yield* captureActorDiagnostics(manifest, "codex-workflow", sessionId);
+  if (warmCodexReadiness(beforeAuthority) === undefined)
+    return yield* new LabFailure({ message: "Codex was not warm before sleep" });
+  yield* sleepResume(manifest, sessionId);
+  const afterAuthority = yield* captureActorDiagnostics(manifest, "codex-workflow", sessionId);
+  const after = yield* readCodexSnapshot(manifest, sessionId);
+  if (!codexResumeContinuity(before, after, beforeAuthority, afterAuthority, queuedTurnId))
+    return yield* new LabFailure({
+      message: "Codex resume did not preserve the thread and prior command",
+    });
+  const raw = yield* runRecordedCli(
+    manifest,
+    "codex-workflow",
+    [
+      "steer",
+      sessionId,
+      "Run printf SCOTTY_LAB_CODEX_RESUMED once, then reply SCOTTY_LAB_CODEX_RESUME_DONE and mention the earlier SCOTTY_LAB_CODEX_QUEUED marker. Do not change files.",
+      "--json",
+    ],
+    sessionId,
+  );
+  const receipt = yield* decodeSteerJson(raw).pipe(
+    Effect.mapError((cause) => failure(cause, "Codex resumed turn receipt was invalid")),
+  );
+  const resumedTurnId = acceptedCodexTurnId(receipt, sessionId, "message");
+  if (resumedTurnId === undefined || resumedTurnId === queuedTurnId)
+    return yield* new LabFailure({ message: "Codex resumed turn was not admitted" });
+  yield* awaitCodexTerminal(
+    manifest,
+    sessionId,
+    resumedTurnId,
+    "SCOTTY_LAB_CODEX_RESUMED",
+    "SCOTTY_LAB_CODEX_RESUME_DONE",
+  );
+  return resumedTurnId;
+});
+
 const codexWorkflowLab = (repo: string, fault?: Fault) =>
   lifecycleOperation((manifest) =>
     Effect.gen(function* () {
@@ -1066,25 +1253,109 @@ const codexWorkflowLab = (repo: string, fault?: Fault) =>
               failure(cause, "Scotty CLI returned invalid Codex steer receipt"),
             ),
           );
-          if (
-            receipt.id !== sessionId ||
-            receipt.status !== "accepted" ||
-            !("mode" in receipt) ||
-            receipt.mode !== "message" ||
-            !("turnId" in receipt) ||
-            receipt.turnId === initialTurnId
-          )
+          const admittedTurnId = acceptedCodexTurnId(receipt, sessionId, "message");
+          if (admittedTurnId === undefined || admittedTurnId === initialTurnId)
             return yield* new LabFailure({
               message: "Codex follow-up was not admitted as a new turn",
             });
           const followUpTurnId = yield* awaitCodexTerminal(
             manifest,
             sessionId,
-            receipt.turnId,
+            admittedTurnId,
             "SCOTTY_LAB_CODEX_FOLLOWUP",
             "SCOTTY_LAB_CODEX_DONE",
           );
-          return { initialTurnId, followUpTurnId };
+          const activeJson = yield* runRecordedCli(
+            manifest,
+            "codex-workflow",
+            [
+              "steer",
+              sessionId,
+              "Run sleep 20; printf SCOTTY_LAB_CODEX_INTERRUPTED as one shell command, then reply SCOTTY_LAB_CODEX_LATE. Do not change files.",
+              "--json",
+            ],
+            sessionId,
+          );
+          const active = yield* decodeSteerJson(activeJson).pipe(
+            Effect.mapError((cause) => failure(cause, "Codex active turn receipt was invalid")),
+          );
+          const activeTurnId = acceptedCodexTurnId(active, sessionId, "message");
+          if (activeTurnId === undefined || activeTurnId === followUpTurnId)
+            return yield* new LabFailure({ message: "Codex active turn was not admitted" });
+          const interruptedTurnId = activeTurnId;
+          yield* awaitCodexRunningCommand(
+            manifest,
+            sessionId,
+            interruptedTurnId,
+            "SCOTTY_LAB_CODEX_INTERRUPTED",
+          );
+          const steerJson = yield* runRecordedCli(
+            manifest,
+            "codex-workflow",
+            ["steer", sessionId, "After the command, reply SCOTTY_LAB_CODEX_STEER_SEEN.", "--json"],
+            sessionId,
+          );
+          const steered = yield* decodeSteerJson(steerJson).pipe(
+            Effect.mapError((cause) => failure(cause, "Codex active steer receipt was invalid")),
+          );
+          if (acceptedCodexTurnId(steered, sessionId, "steer") !== interruptedTurnId)
+            return yield* new LabFailure({ message: "Codex active steer missed the running turn" });
+          const queuedMessageId = `scotty-lab-${manifest.runId}`;
+          const queuedJson = yield* runRecordedCli(
+            manifest,
+            "codex-workflow",
+            [
+              "steer",
+              sessionId,
+              "Run printf SCOTTY_LAB_CODEX_QUEUED once, then reply SCOTTY_LAB_CODEX_QUEUE_DONE. Do not change files.",
+              "--follow-up",
+              "--idempotency-key",
+              queuedMessageId,
+              "--json",
+            ],
+            sessionId,
+          );
+          const queued = yield* decodeSteerJson(queuedJson).pipe(
+            Effect.mapError((cause) =>
+              failure(cause, "Codex queued follow-up receipt was invalid"),
+            ),
+          );
+          if (acceptedCodexQueueId(queued, sessionId) !== queuedMessageId)
+            return yield* new LabFailure({ message: "Codex queued follow-up was not admitted" });
+          const pending = yield* readCodexSnapshot(manifest, sessionId);
+          if (!pending.queue.followUp.some(({ id }) => id === queuedMessageId))
+            return yield* new LabFailure({ message: "Codex queued follow-up was not observable" });
+          const interruptJson = yield* runRecordedCli(
+            manifest,
+            "codex-workflow",
+            ["interrupt", sessionId, "--json"],
+            sessionId,
+          );
+          const interrupted = yield* decodeInterruptJson(interruptJson).pipe(
+            Effect.mapError((cause) => failure(cause, "Codex interrupt receipt was invalid")),
+          );
+          if (!acceptedCodexInterrupt(interrupted, sessionId, interruptedTurnId))
+            return yield* new LabFailure({ message: "Codex interrupt missed the running turn" });
+          yield* awaitCodexInterrupted(manifest, sessionId, interruptedTurnId);
+          const queuedTurnId = yield* awaitCodexTerminal(
+            manifest,
+            sessionId,
+            undefined,
+            "SCOTTY_LAB_CODEX_QUEUED",
+            "SCOTTY_LAB_CODEX_QUEUE_DONE",
+            "SCOTTY_LAB_CODEX_QUEUED",
+          );
+          if (queuedTurnId === interruptedTurnId)
+            return yield* new LabFailure({ message: "Codex queued work reused interrupted turn" });
+          const resumedTurnId = yield* proveCodexSleepResume(manifest, sessionId, queuedTurnId);
+          return {
+            initialTurnId,
+            followUpTurnId,
+            interruptedTurnId,
+            queuedTurnId,
+            queuedMessageId,
+            resumedTurnId,
+          };
         }),
       );
       if (Result.isFailure(driven))
@@ -1108,7 +1379,10 @@ const codexWorkflowLab = (repo: string, fault?: Fault) =>
         });
       return yield* finishScenario(manifest, "codex-workflow", startedAt, sessionId, {
         ...driven.success,
-        completedCommands: 2,
+        completedCommands: 4,
+        activeSteer: true,
+        interruptAccepted: true,
+        sleepResumeContinuity: true,
         runtimeStopped: false,
         model: "gpt-5.6-sol",
         effort: "medium",

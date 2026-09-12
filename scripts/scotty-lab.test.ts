@@ -134,6 +134,34 @@ describe("Effect Scotty lab command grammar", () => {
     );
     assert.deepEqual(
       codexTerminalProof(
+        {
+          ...snapshot,
+          turns: [
+            { ...snapshot.turns[0], state: "aborted", assistant: "", tools: [] },
+            {
+              ...snapshot.turns[0],
+              id: "queued-turn",
+              user: "Run printf SCOTTY_LAB_CODEX_QUEUED once",
+              assistant: "SCOTTY_LAB_CODEX_QUEUE_DONE",
+              tools: [
+                {
+                  ...snapshot.turns[0].tools[0],
+                  invocation: "printf SCOTTY_LAB_CODEX_QUEUED",
+                  output: "SCOTTY_LAB_CODEX_QUEUED",
+                },
+              ],
+            },
+          ],
+        },
+        undefined,
+        "SCOTTY_LAB_CODEX_QUEUED",
+        "SCOTTY_LAB_CODEX_QUEUE_DONE",
+        "SCOTTY_LAB_CODEX_QUEUED",
+      ),
+      { status: "passed", turnId: "queued-turn" },
+    );
+    assert.deepEqual(
+      codexTerminalProof(
         { ...snapshot, runtimeStopped: true },
         "turn-1",
         "SCOTTY_LAB_CODEX_INITIAL",

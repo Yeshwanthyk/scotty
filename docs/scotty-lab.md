@@ -135,13 +135,16 @@ real CLI `resume` command. If the route truthfully reports a reconciling outcome
 the actor authority to settle `Sleeping`; it does not treat the response as success by itself. It
 never writes Durable Object storage or desired state directly.
 
-`codex-workflow` explicitly selects Codex Sol/medium, runs a native command, requires its
-completed tool output and terminal marker from canonical `inspect`, sends a `steer` follow-up, and
-requires the admitted turn ID, its completed command and a healthy runtime. It then vaporizes only
-the run-owned session. The evidence manifest records both turn IDs and command assertions; raw
-conversation snapshots are omitted from command evidence. If the workflow fails after create, the
-owned ID remains in the evidence manifest for exact targeted cleanup. This scenario does not prove
-delegation, active steering, queued follow-up, interrupt, sleep/resume continuity or fault recovery.
+`codex-workflow` explicitly selects Codex Sol/medium and requires completed native commands and
+assistant markers from canonical `inspect`. It correlates a terminal follow-up receipt, admits an
+active turn, observes its running command, steers that same turn, queues a follow-up, interrupts the
+active turn, and requires the queued command to complete. It then sleeps and resumes the owned
+session, requiring a new runtime generation, the same native thread, preserved prior command
+output, and a completed post-resume command before vaporizing. The private evidence manifest
+records turn IDs and positive assertions; raw conversation snapshots are omitted from command
+evidence. If the workflow fails after create, the owned ID remains for exact targeted cleanup.
+This scenario does not prove delegation, browser-close queue delivery, fault recovery, or Pi
+conversation continuity.
 
 Every run retains private evidence under `.scotty-lab/evidence/RUN_ID/`, outside the ephemeral
 temporary root. Directories are mode `0700`; `run.json`, `commands.jsonl`, and the redacted
