@@ -1121,7 +1121,9 @@ app.get("/api/sessions/:id/codex/rollouts", async (c) => {
   const id = parseSessionId(c.req.param("id"));
   const sandbox = sessionSandbox(c.env, id);
   const archive = await sandbox.prepareCodexRolloutArchive();
-  return new Response(new Blob([archive.bytes]), {
+  const bytes = new Uint8Array(archive.bytes.byteLength);
+  bytes.set(archive.bytes);
+  return new Response(new Blob([bytes]), {
     headers: {
       "content-type": "application/x-tar",
       "content-disposition": `attachment; filename="${archive.filename}"`,
