@@ -26,8 +26,8 @@ sources and Registry sync. Set `SCOTTY_PI_AUTH_FILE` to a mode-0600 Pi auth file
 a healthy Docker daemon and `gh auth login`. It uses temporary Wrangler state and a temporary
 control-token file, opens a one-time browser pairing page after the lifecycle check, and keeps
 Wrangler alive until `Ctrl-C`.
-The harness writes a complete TOML declaration, runs `scotty sync` before Session creation, and
-uses Registry-backed Pi/GitHub grants. Provider values are read only from the local source boundary
+The harness refreshes explicit Pi/GitHub credentials and registers its repository before
+Session creation, then uses Registry-backed grants. Provider values are read only from the local source boundary
 and are never placed in Worker environment configuration.
 It does not read or change any deployed Scotty resources. The local SDK host uses its documented
 HTTP control transport; deployed Scotty remains on RPC.
