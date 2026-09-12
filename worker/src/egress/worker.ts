@@ -115,11 +115,32 @@ type ChatGptEgressDiagnostic =
   | "upstream_transport_failed"
   | "upstream_http_status";
 
-const reportChatGptEgress = (code: ChatGptEgressDiagnostic, status?: number) =>
+type ChatGptEndpointClass = "responses" | "other";
+type ChatGptResponseClass = "cloudflare_challenge" | "json" | "html" | "other";
+
+const chatGptEndpointClass = (url: URL): ChatGptEndpointClass =>
+  url.pathname === "/backend-api/codex/responses" ? "responses" : "other";
+
+const chatGptResponseClass = (response: Response): ChatGptResponseClass => {
+  if (response.headers.get("cf-mitigated") === "challenge") return "cloudflare_challenge";
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType === "application/json") return "json";
+  if (mediaType === "text/html") return "html";
+  return "other";
+};
+
+const reportChatGptEgress = (
+  code: ChatGptEgressDiagnostic,
+  detail?: {
+    readonly endpoint?: ChatGptEndpointClass;
+    readonly status?: number;
+    readonly responseClass?: ChatGptResponseClass;
+  },
+) =>
   Effect.sync(() =>
     console.warn("Scotty ChatGPT egress failed", {
       code,
-      ...(status === undefined ? {} : { status }),
+      ...detail,
     }),
   );
 
@@ -134,7 +155,7 @@ export const proxyChatGptProgram = Effect.fnUntraced(function* (request: Request
     authorization === null ? undefined : bearerValue(authorization),
   );
   if (Option.isNone(handle)) {
-    yield* reportChatGptEgress("invalid_sentinel");
+    yield* reportChatGptEgress("invalid_sentinel", { endpoint: chatGptEndpointClass(url) });
     return forbidden();
   }
   const credential = yield* EgressCredential;
@@ -160,7 +181,12 @@ export const proxyChatGptProgram = Effect.fnUntraced(function* (request: Request
   const response = yield* forward(request, url, headers).pipe(
     Effect.tapError(() => reportChatGptEgress("upstream_transport_failed")),
   );
-  if (response.status >= 300) yield* reportChatGptEgress("upstream_http_status", response.status);
+  if (response.status >= 300)
+    yield* reportChatGptEgress("upstream_http_status", {
+      endpoint: chatGptEndpointClass(url),
+      status: response.status,
+      responseClass: chatGptResponseClass(response),
+    });
   return response;
 });
 
