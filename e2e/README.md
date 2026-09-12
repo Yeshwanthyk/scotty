@@ -68,37 +68,15 @@ export SCOTTY_E2E_APPROVE_CLEANUP="destroy:$stage:disposable"
 npx alchemy deploy e2e/canary/full-stack-canary.run.ts --stage "$stage" --yes
 ```
 
-Use the `workerName` and `workerUrl` printed by Alchemy. Publish disposable credentials through the
-TOML sync path rather than Worker environment secrets:
+Use the `workerName` and `workerUrl` printed by Alchemy. Publish disposable credentials from
+private local sources through the CLI:
 
 ```sh
-mkdir -p ~/.config/scotty
-chmod 700 ~/.config/scotty
-cat > ~/.config/scotty/scotty.toml <<'EOF'
-version = 1
-
-[sync]
-skills = []
-packages = []
-tools = []
-extensions = []
-
-[repos]
-allowed = ["owner/disposable-repo"]
-
-[credentials.codex]
-kind = "pi-auth"
-source = "/absolute/path/to/disposable-pi-auth.json"
-scope = "global"
-
-[credentials.github]
-kind = "github-cli"
-scope = "repository"
-repositories = ["owner/disposable-repo"]
-EOF
-SCOTTY_HOST='https://scotty-e2e-<stage-suffix>-worker.<account>.workers.dev' \
-SCOTTY_TOKEN='<root-token-from-the-disposable-stage>' \
-GH_CONFIG_DIR='/absolute/path/to/disposable-gh-config' scotty sync
+export SCOTTY_HOST='https://scotty-e2e-<stage-suffix>-worker.<account>.workers.dev'
+export SCOTTY_TOKEN='<root-token-from-the-disposable-stage>'
+export GH_CONFIG_DIR='/absolute/path/to/disposable-gh-config'
+scotty sync --pi-auth /absolute/path/to/disposable-pi-auth.json --github
+scotty repo add owner/disposable-repo
 ```
 
 The Registry owns encrypted credential versions. Containers receive only fixed managed handles;

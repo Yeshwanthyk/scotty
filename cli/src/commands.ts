@@ -50,8 +50,6 @@ import { configureInitCloud, initCloudFailure, parseInitCloudChoices } from "./i
 import { PI_AUTH_MAX_MATERIAL_BYTES, serializePiAuthProviders } from "../../protocol/pi-auth";
 import {
   decodeCloudSettingsSnapshot,
-  defaultCloudSettings,
-  type CloudSettings,
   type CloudSettingsSnapshot,
 } from "../../protocol/cloud-settings";
 import { isRepositoryIdentity } from "../../protocol/repository";
@@ -73,18 +71,13 @@ import {
   usage,
   type ReadMessage,
 } from "./pure";
-import {
-  formatScottyConfigCheck,
-  loadScottyTomlConfig,
-  resolveSandboxBundleRoots,
-  scottyConfigCheckOutput,
-} from "./scotty-config";
+import { resolveSandboxBundleRoots } from "./sandbox-roots";
 import {
   synchronizeCredentialRegistry,
   synchronizeSandboxBundle,
   type ScottyCredentialSyncMaterial,
 } from "./sandbox-sync";
-import { buildSandboxBundle, buildScottyTomlBundle, bundleItemSummaries } from "./scotty-bundle";
+import { buildSandboxBundle, bundleItemSummaries } from "./sandbox-bundle-builder";
 import {
   BrowserLauncher,
   CliRuntime,
@@ -350,19 +343,6 @@ const localCredentialMaterials = Effect.fnUntraced(function* (input: {
       "Pass --pi-auth, --codex-auth, --github-token-file, or --github.",
     );
   return credentials;
-});
-
-const prepareScottyTomlBundle = Effect.fnUntraced(function* (
-  home: string,
-  cwd: string,
-  path?: string,
-) {
-  const loaded = yield* loadScottyTomlConfig({
-    home,
-    cwd,
-    ...(path === undefined ? {} : { path }),
-  });
-  return yield* buildScottyTomlBundle(loaded);
 });
 
 const consumeAuthorizedDeploymentPlan = Effect.fnUntraced(function* (
@@ -2024,107 +2004,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Stop the active turn in a warm session or sandbox peer"));
 
-  const configCheck = Command.make("check", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, options, runtime } = yield* commandContext();
-      if (options.host !== undefined || options.tokenFile !== undefined)
-        return yield* usage(
-          "config check does not accept --host or --token-file",
-          "This command only reads the local TOML configuration.",
-        );
-      const loaded = yield* loadScottyTomlConfig({ home: runtime.home, cwd: runtime.cwd });
-      const result = scottyConfigCheckOutput(loaded);
-      if (autoJson) outputJson(runtime.stdout, result);
-      else runtime.stdout(formatScottyConfigCheck(loaded));
-    }),
-  ).pipe(Command.withDescription("Validate an explicit legacy TOML configuration"));
-
-  const configImport = Command.make(
-    "import",
-    {
-      configPath: Flag.string("config").pipe(
-        Flag.withDescription("Path to the legacy TOML configuration to import"),
-      ),
-      bundle: Flag.boolean("bundle").pipe(
-        Flag.withDefault(false),
-        Flag.withDescription("Also publish its skills, packages, tools and extensions"),
-      ),
-    },
-    ({ bundle, configPath }) =>
-      // oxlint-disable-next-line complexity -- explicit import composes settings, repository, and optional bundle migrations
-      Effect.gen(function* () {
-        const { autoJson, options, runtime } = yield* commandContext();
-        const auth = yield* credentials(options);
-        const loaded = yield* loadScottyTomlConfig({
-          home: runtime.home,
-          cwd: runtime.cwd,
-          path: isAbsolute(configPath) ? configPath : join(runtime.cwd, configPath),
-        });
-        const currentValue = yield* requestJson(auth, "/api/settings");
-        const current = decodeCloudSettingsSnapshot(currentValue);
-        if (Result.isFailure(current))
-          return yield* invalidResponse("Server returned invalid settings");
-        const pi = loaded.config.agents?.pi;
-        const codex = loaded.config.agents?.codex;
-        const settings: CloudSettings = {
-          agent: loaded.config.agent?.default ?? defaultCloudSettings.agent,
-          pi: {
-            agent: "pi",
-            ...(pi?.provider === undefined ? {} : { modelProvider: pi.provider }),
-            ...(pi?.model === undefined ? {} : { model: pi.model }),
-            ...(pi?.effort === undefined ? {} : { effort: pi.effort }),
-          },
-          codex: {
-            agent: "codex",
-            model: codex?.model ?? defaultCloudSettings.codex.model,
-            effort: codex?.effort ?? defaultCloudSettings.codex.effort,
-          },
-          environment: {},
-        };
-        const updated = yield* requestJson(auth, "/api/settings", {
-          method: "PUT",
-          body: JSON.stringify({
-            expectedRevision: current.success.revision,
-            idempotencyKey: crypto.randomUUID(),
-            settings,
-          }),
-        });
-        const decoded = decodeCloudSettingsSnapshot(updated);
-        if (Result.isFailure(decoded))
-          return yield* invalidResponse("Server returned invalid settings");
-        for (const repo of loaded.config.repos.allowed)
-          yield* requestJson(auth, "/api/repos", {
-            method: "POST",
-            body: JSON.stringify({ repo }),
-          });
-        let bundleResult: unknown = undefined;
-        if (bundle) {
-          const built = yield* prepareScottyTomlBundle(runtime.home, runtime.cwd, loaded.path);
-          const status = yield* synchronizeSandboxBundle({ target: auth, built });
-          bundleResult = {
-            digest: built.digest,
-            items: bundleItemSummaries(built.manifest),
-            status,
-          };
-        }
-        const result = {
-          settings: decoded.success,
-          repositories: loaded.config.repos.allowed,
-          ...(bundleResult === undefined ? {} : { bundle: bundleResult }),
-        };
-        if (autoJson) outputJson(runtime.stdout, result);
-        else
-          runtime.stdout(
-            `Imported ${result.repositories.length} repositories and cloud agent settings.\n`,
-          );
-      }),
-  ).pipe(Command.withDescription("Import legacy TOML settings into cloud configuration"));
-
-  const config = Command.make("config").pipe(
-    Command.withDescription("Inspect or import explicit legacy configuration"),
-    Command.withSubcommands([configCheck, configImport]),
-  );
-
   const sync = Command.make(
     "sync",
     {
@@ -2168,10 +2047,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const sandboxPush = Command.make(
     "push",
     {
-      configPath: Flag.string("config").pipe(
-        Flag.optional,
-        Flag.withDescription("Path to the legacy TOML bundle configuration"),
-      ),
       skills: Flag.string("skills-root").pipe(
         Flag.atMost(100),
         Flag.withDescription("Directory containing skills; repeat for multiple roots"),
@@ -2189,32 +2064,25 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Directory containing extensions; repeat for multiple roots"),
       ),
     },
-    ({ configPath, extensions, packages, skills, tools }) =>
+    ({ extensions, packages, skills, tools }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         const target = yield* credentials(options);
         const hasRoots = [skills, packages, tools, extensions].some((roots) => roots.length > 0);
-        if (Option.isSome(configPath) && hasRoots)
-          return yield* usage("--config cannot be combined with resource directory flags");
-        if (Option.isNone(configPath) && !hasRoots)
+        if (!hasRoots)
           return yield* usage(
             "sandbox push requires at least one resource directory",
-            "Pass --skills-root, --package, --tools-root, or --extensions-root; use --config only for legacy import.",
+            "Pass --skills-root, --package, --tools-root, or --extensions-root.",
           );
-        const built = yield* Option.isSome(configPath)
-          ? prepareScottyTomlBundle(
-              runtime.home,
-              runtime.cwd,
-              isAbsolute(configPath.value) ? configPath.value : join(runtime.cwd, configPath.value),
-            )
-          : resolveSandboxBundleRoots({
-              home: runtime.home,
-              cwd: runtime.cwd,
-              skills,
-              packages,
-              tools,
-              extensions,
-            }).pipe(Effect.flatMap((roots) => buildSandboxBundle(roots)));
+        const roots = yield* resolveSandboxBundleRoots({
+          home: runtime.home,
+          cwd: runtime.cwd,
+          skills,
+          packages,
+          tools,
+          extensions,
+        });
+        const built = yield* buildSandboxBundle(roots);
         const synced = yield* synchronizeSandboxBundle({ target, built });
         const result = {
           digest: built.digest,
@@ -2750,7 +2618,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       upgrade,
       uninstall,
       repo,
-      config,
       sync,
       sandbox,
       skill,

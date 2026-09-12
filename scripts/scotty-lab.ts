@@ -346,18 +346,29 @@ const executeLab = Effect.fnUntraced(function* (runId: string, argv: ReadonlyArr
 const setupLab = Effect.fnUntraced(function* (runId: string, repo: string) {
   const manifest = yield* attempt("Unable to read the running lab", () => execManifest(runId));
   const setup = yield* attempt("Unable to prepare the lab credential sources", () =>
-    prepareCredentialSetup(manifest, repo),
+    prepareCredentialSetup(manifest),
   );
-  const child = yield* attempt("Unable to start Scotty credential sync", () =>
-    spawnCli(manifest, ["sync", "--json"], {
-      PATH: `${setup.credentialBin}:${process.env.PATH ?? ""}`,
-    }),
-  );
-  const result = yield* waitForChild(child);
-  yield* Effect.sync(() => {
-    if (result.signal) process.kill(process.pid, result.signal);
-    else process.exitCode = result.code ?? 1;
-  });
+  for (const argv of [
+    ["sync", "--pi-auth", setup.piAuthPath, "--github", "--json"],
+    ["repo", "add", repo, "--json"],
+  ]) {
+    const child = yield* attempt("Unable to start Scotty credential setup", () =>
+      spawnCli(manifest, argv, {
+        PATH: `${setup.credentialBin}:${process.env.PATH ?? ""}`,
+      }),
+    );
+    const result = yield* waitForChild(child);
+    if (result.signal) {
+      yield* Effect.sync(() => process.kill(process.pid, result.signal));
+      return;
+    }
+    if (result.code !== 0) {
+      yield* Effect.sync(() => {
+        process.exitCode = result.code ?? 1;
+      });
+      return;
+    }
+  }
 });
 
 type ScenarioResult = Readonly<{

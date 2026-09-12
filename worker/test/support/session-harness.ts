@@ -1421,7 +1421,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     CREDENTIALS: credentialRegistry,
     SANDBOX_CONFIG: {
       getByName: () => ({
-        settingsManaged: async () => ({ ok: true as const, value: false }),
         settings: async () => {
           sandboxConfigStatusCalls += 1;
           if (options.sandboxConfigStatusFailure !== undefined)

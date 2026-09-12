@@ -13,7 +13,6 @@ import {
   CredentialRegistryGrantResultSchema,
   CredentialRegistryResolveInputSchema,
   CredentialRegistryResolvedCredentialSchema,
-  CredentialRegistrySyncInputSchema,
   EncryptedCredentialEnvelopeSchema,
   decodeEncryptedCredentialEnvelopeResult,
 } from "../../src/credentials/contracts";
@@ -46,9 +45,6 @@ const fixedCryptoLayer = credentialCryptoLayer.pipe(
   Layer.provide(installationWrappingKeyLayer(() => Effect.succeed(Uint8Array.from(KEY)))),
 );
 
-const decodeSyncInputOption = Schema.decodeUnknownOption(CredentialRegistrySyncInputSchema, {
-  onExcessProperty: "error",
-});
 const decodeGrantResultOption = Schema.decodeUnknownOption(CredentialRegistryGrantResultSchema, {
   onExcessProperty: "error",
 });
@@ -135,21 +131,6 @@ describe("credential protocol contracts", () => {
     } as const;
     assert.ok(Option.isSome(decodeCredentialGrantOption(grant)));
     assert.ok(Option.isSome(decodeCredentialGrantOption({ ...grant, expires: 1_777_777_777_123 })));
-    assert.ok(
-      Option.isSome(
-        decodeSyncInputOption({
-          credentials: [
-            {
-              name: NAME,
-              kind: "pi-auth",
-              scope: "global",
-              versionRef: VERSION,
-              envelope,
-            },
-          ],
-        }),
-      ),
-    );
     assert.ok(
       Option.isSome(decodeGrantResultOption({ sessionId: "a0b1c2d3e4f5", grants: [grant] })),
     );

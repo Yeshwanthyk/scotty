@@ -25,7 +25,7 @@ import {
   usePreparedPiPackage,
 } from "./pi-package-prepare";
 import { createDeterministicTarGz, type TarMember } from "./sandbox-archive";
-import type { LoadedScottyTomlConfig, ResolvedScottyTomlRoots } from "./scotty-config";
+import type { SandboxBundleRoots } from "./sandbox-roots";
 import { walkSandboxItem, type SandboxWalkOptions, type WalkedSandboxFile } from "./sandbox-walk";
 const PiPackageMetadataSchema = Schema.Struct({
   extensions: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
@@ -72,7 +72,7 @@ const preparedPackageWalkOptions = {
   skipNodeModulesBin: true,
 } as const;
 
-export interface BuildScottyTomlBundleOptions {
+export interface BuildSandboxBundleOptions {
   readonly installPackageDependencies?: PiPackageDependencyInstaller;
 }
 
@@ -162,7 +162,7 @@ const preparePackageItem = Effect.fnUntraced(function* (
 });
 
 const rootsByKind = (
-  roots: ResolvedScottyTomlRoots,
+  roots: SandboxBundleRoots,
 ): ReadonlyArray<readonly [SandboxBundleItemKind, ReadonlyArray<string>]> => [
   ["skill", roots.skills],
   ["tool", roots.tools],
@@ -170,7 +170,7 @@ const rootsByKind = (
 ];
 
 const discoverItems = Effect.fnUntraced(function* (
-  roots: ResolvedScottyTomlRoots,
+  roots: SandboxBundleRoots,
   install: PiPackageDependencyInstaller,
 ) {
   const items: PreparedBundleItem[] = [];
@@ -275,8 +275,8 @@ const archiveMembers = (
 };
 
 export const buildSandboxBundle = Effect.fnUntraced(function* (
-  roots: ResolvedScottyTomlRoots,
-  options: BuildScottyTomlBundleOptions = {},
+  roots: SandboxBundleRoots,
+  options: BuildSandboxBundleOptions = {},
 ) {
   const items = yield* discoverItems(
     roots,
@@ -300,11 +300,6 @@ export const buildSandboxBundle = Effect.fnUntraced(function* (
     archive: built.archive,
   } satisfies BuiltSandboxBundle;
 });
-
-export const buildScottyTomlBundle = (
-  loaded: LoadedScottyTomlConfig,
-  options: BuildScottyTomlBundleOptions = {},
-) => buildSandboxBundle(loaded.resolvedRoots, options);
 
 export const bundleItemSummaries = (
   manifest: SandboxBundleManifest,

@@ -270,13 +270,11 @@ For a clean first run:
 6. Use `scotty beam` to start a session and open its authenticated worklog in your browser.
 
 `sync` refreshes only the selected credential in the cloud vault. Application defaults and allowed
-repositories live in cloud settings; legacy TOML can be imported explicitly with `scotty config
-import --config PATH`.
+repositories live in cloud settings.
 
 Publish local sandbox resources separately with `scotty sandbox push --skills-root ./skills
 --package ./packages/my-pi-package --tools-root ./tools --extensions-root ./extensions`.
-Repeat a directory flag to include multiple roots; omit categories you do not use. `--config PATH`
-remains available for a one-time legacy TOML bundle upload.
+Repeat a directory flag to include multiple roots; omit categories you do not use.
 
 On a replacement machine, run `scotty recover --name NAME`. Cloudflare profile ownership is the
 recovery authority. The CLI discovers the conventionally named resources and rotates only the root

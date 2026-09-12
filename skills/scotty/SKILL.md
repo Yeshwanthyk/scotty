@@ -40,8 +40,7 @@ Upgrade does not deploy the Worker: review `deploy --plan --json` before an auth
 `deploy --yes --json`. The executable deploys its bundled release code, not current Git main.
 Keep the managed installation/profile, Cloudflare auth, and Docker available.
 Use `scotty sandbox push` with explicit `--skills-root`, `--package`, `--tools-root`, or
-`--extensions-root` paths when publishing local resources. Legacy TOML is accepted only through
-explicit `scotty config import --config PATH` or `scotty sandbox push --config PATH`.
+`--extensions-root` paths when publishing local resources.
 
 Host-agent loaders are separate from the bundled guides. `init` and `upgrade` do not write them.
 For automatic discovery, use the host agent's configured filesystem skill directory and a small

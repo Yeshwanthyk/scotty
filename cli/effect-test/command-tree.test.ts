@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, FileSystem, Result } from "effect";
@@ -43,6 +46,48 @@ const run = (
 };
 
 describe("Effect command tree", () => {
+  it.effect("publishes explicit skill roots and rejects the removed TOML flag", () =>
+    Effect.scoped(
+      Effect.acquireUseRelease(
+        Effect.promise(() => mkdtemp(join(tmpdir(), "scotty-push-test-"))),
+        (home) =>
+          Effect.gen(function* () {
+            const skills = join(home, "skills");
+            yield* Effect.promise(() => mkdir(join(skills, "example"), { recursive: true }));
+            yield* Effect.promise(() =>
+              writeFile(join(skills, "example", "SKILL.md"), "# Example\n"),
+            );
+            const paths: string[] = [];
+            const overrides: Partial<CliDependencies> = {
+              home,
+              cwd: home,
+              env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "root-secret" },
+              fetch: async (input, init) => {
+                const pathname = new URL(new Request(input, init).url).pathname;
+                paths.push(pathname);
+                return Response.json({
+                  revision: pathname === "/api/sandbox/configuration" ? 0 : 1,
+                  activeDigest: null,
+                });
+              },
+            };
+            const push = run(["sandbox", "push", "--skills-root", skills, "--json"], overrides);
+            assert.strictEqual(yield* push.effect, EXIT.OK);
+            const result = JSON.parse(push.stdout.join(""));
+            assert.deepStrictEqual(result.items, [{ kind: "skill", name: "example" }]);
+            assert.deepStrictEqual(paths, [
+              "/api/sandbox/configuration",
+              `/api/sandbox/bundles/${result.digest}`,
+            ]);
+            const removed = run(["sandbox", "push", "--config", "old.toml"], overrides);
+            assert.ok(Result.isFailure(yield* Effect.result(removed.effect)));
+            assert.deepStrictEqual(paths.length, 2);
+          }),
+        (home) => Effect.promise(() => rm(home, { recursive: true, force: true })),
+      ),
+    ),
+  );
+
   it.effect("queues a follow-up with explicit intent and a reusable client ID", () =>
     Effect.gen(function* () {
       const bodies: string[] = [];
@@ -121,7 +166,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "deploy");
         assert.include(rootHelp, "upgrade");
         assert.include(rootHelp, "uninstall");
-        assert.include(rootHelp, "config");
+        assert.notInclude(rootHelp, "\n  config");
         assert.include(rootHelp, "sync");
         assert.include(rootHelp, "skill");
         assert.include(rootHelp, "beam");
@@ -140,17 +185,6 @@ describe("Effect command tree", () => {
         assert.notInclude(rootHelp, "--wizard");
         assert.notInclude(rootHelp, "--completions");
         assert.notInclude(rootHelp, "--log-level");
-        const config = run(["config", "--help"]);
-        assert.strictEqual(yield* config.effect, EXIT.OK);
-        assert.include(config.stdout.join(""), "scotty config <subcommand> [flags]");
-        assert.include(config.stdout.join(""), "check");
-        assert.strictEqual(config.stderr.join(""), "");
-
-        const configCheck = run(["config", "check", "--help"]);
-        assert.strictEqual(yield* configCheck.effect, EXIT.OK);
-        assert.include(configCheck.stdout.join(""), "scotty config check [flags]");
-        assert.strictEqual(configCheck.stderr.join(""), "");
-
         const skill = run(["skill", "--help"]);
         assert.strictEqual(yield* skill.effect, EXIT.OK);
         assert.include(skill.stdout.join(""), "list");
@@ -231,7 +265,7 @@ describe("Effect command tree", () => {
         assert.include(sandbox.stdout.join(""), "push");
         const sandboxPush = run(["sandbox", "push", "--help"]);
         assert.strictEqual(yield* sandboxPush.effect, EXIT.OK);
-        assert.include(sandboxPush.stdout.join(""), "--config");
+        assert.notInclude(sandboxPush.stdout.join(""), "--config");
         assert.include(sandboxPush.stdout.join(""), "--skills-root");
         assert.include(sandboxPush.stdout.join(""), "--package");
         assert.include(sandboxPush.stdout.join(""), "--tools-root");

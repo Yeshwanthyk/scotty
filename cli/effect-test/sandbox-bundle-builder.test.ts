@@ -9,17 +9,17 @@ import {
   parseSandboxTar,
   validateSandboxArchive,
 } from "../src/sandbox-archive";
-import { buildScottyTomlBundle, bundleItemSummaries } from "../src/scotty-bundle";
+import { buildSandboxBundle, bundleItemSummaries } from "../src/sandbox-bundle-builder";
 import { isSensitiveBundlePath } from "../src/sandbox-bundle";
 import { PI_PACKAGE_NPM_CI_ARGS } from "../src/pi-package-prepare";
-import type { LoadedScottyTomlConfig } from "../src/scotty-config";
+import type { SandboxBundleRoots } from "../src/sandbox-roots";
 
 const withTempDirectory = <A, E, R>(
   use: (path: string) => Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E, R> =>
   Effect.scoped(
     Effect.acquireUseRelease(
-      Effect.promise(() => mkdtemp(join(tmpdir(), "scotty-toml-bundle-test-"))),
+      Effect.promise(() => mkdtemp(join(tmpdir(), "sandbox-bundle-test-"))),
       use,
       (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
     ),
@@ -94,25 +94,12 @@ const fixture = Effect.fnUntraced(function* (root: string) {
     ),
   );
   return {
-    loaded: {
-      path: join(root, "scotty.toml"),
-      config: {
-        version: 1,
-        sync: {
-          skills: [skills],
-          packages: [localPackage],
-          tools: [tools],
-          extensions: [extensions],
-        },
-        repos: { allowed: [] },
-      },
-      resolvedRoots: {
-        skills: [skills],
-        packages: [localPackage],
-        tools: [tools],
-        extensions: [extensions],
-      },
-    } satisfies LoadedScottyTomlConfig,
+    roots: {
+      skills: [skills],
+      packages: [localPackage],
+      tools: [tools],
+      extensions: [extensions],
+    } satisfies SandboxBundleRoots,
     localPackage,
     extension: join(extensions, "review", "index.ts"),
   };
@@ -124,12 +111,12 @@ const installFixturePackageDependencies = Effect.fnUntraced(function* (root: str
   yield* Effect.promise(() => writeFile(join(dependency, "index.js"), "export {};\n"));
 });
 
-const buildFixtureBundle = (loaded: LoadedScottyTomlConfig) =>
-  buildScottyTomlBundle(loaded, {
+const buildFixtureBundle = (roots: SandboxBundleRoots) =>
+  buildSandboxBundle(roots, {
     installPackageDependencies: installFixturePackageDependencies,
   });
 
-describe("TOML bundle preparation", () => {
+describe("sandbox bundle preparation", () => {
   it("uses the locked Linux production npm command without hooks", () => {
     assert.deepStrictEqual(PI_PACKAGE_NPM_CI_ARGS, [
       "npm",
@@ -147,7 +134,7 @@ describe("TOML bundle preparation", () => {
   it.effect("copies packages into a prepared tree and keeps the archive deterministic", () =>
     withTempDirectory((root) =>
       Effect.gen(function* () {
-        const { loaded, localPackage, extension } = yield* fixture(root);
+        const { roots, localPackage, extension } = yield* fixture(root);
         const sourcePackageJson = yield* Effect.promise(() =>
           readFile(join(localPackage, "package.json"), "utf8"),
         );
@@ -160,8 +147,8 @@ describe("TOML bundle preparation", () => {
         const sourceNodeModuleContent = yield* Effect.promise(() =>
           readFile(sourceNodeModule, "utf8"),
         );
-        const first = yield* buildFixtureBundle(loaded);
-        const second = yield* buildFixtureBundle(loaded);
+        const first = yield* buildFixtureBundle(roots);
+        const second = yield* buildFixtureBundle(roots);
         assert.strictEqual(first.digest, second.digest);
         assert.deepStrictEqual(bundleItemSummaries(first.manifest), [
           { kind: "extension", name: "review" },
@@ -201,7 +188,7 @@ describe("TOML bundle preparation", () => {
         assert.strictEqual(new TextDecoder().decode(packageJson.bytes), sourcePackageJson);
 
         yield* Effect.promise(() => writeFile(extension, "export default () => { }\n"));
-        const changed = yield* buildFixtureBundle(loaded);
+        const changed = yield* buildFixtureBundle(roots);
         assert.notStrictEqual(changed.digest, first.digest);
       }),
     ),
@@ -210,7 +197,7 @@ describe("TOML bundle preparation", () => {
   it.effect("does not require a lockfile or install when runtime dependencies are absent", () =>
     withTempDirectory((root) =>
       Effect.gen(function* () {
-        const { loaded, localPackage } = yield* fixture(root);
+        const { roots, localPackage } = yield* fixture(root);
         const packageJson = `${JSON.stringify({
           name: "@ogulcancelik/pi-codex-compaction",
           scripts: { install: "touch install-hook-ran" },
@@ -219,7 +206,7 @@ describe("TOML bundle preparation", () => {
         yield* Effect.promise(() => writeFile(join(localPackage, "package.json"), packageJson));
         yield* Effect.promise(() => rm(join(localPackage, "package-lock.json")));
         let installs = 0;
-        const built = yield* buildScottyTomlBundle(loaded, {
+        const built = yield* buildSandboxBundle(roots, {
           installPackageDependencies: () =>
             Effect.sync(() => {
               installs += 1;
@@ -245,10 +232,10 @@ describe("TOML bundle preparation", () => {
   it.effect("reports a typed useful dependency install failure", () =>
     withTempDirectory((root) =>
       Effect.gen(function* () {
-        const { loaded } = yield* fixture(root);
+        const { roots } = yield* fixture(root);
         let preparedRoot: string | undefined;
         const result = yield* Effect.result(
-          buildScottyTomlBundle(loaded, {
+          buildSandboxBundle(roots, {
             installPackageDependencies: (directory) => {
               preparedRoot = directory;
               return Effect.fail(
@@ -281,14 +268,14 @@ describe("TOML bundle preparation", () => {
   it.effect("requires package.json Pi metadata before preparing a package", () =>
     withTempDirectory((root) =>
       Effect.gen(function* () {
-        const { loaded, localPackage } = yield* fixture(root);
+        const { roots, localPackage } = yield* fixture(root);
         yield* Effect.promise(() =>
           writeFile(
             join(localPackage, "package.json"),
             `${JSON.stringify({ name: "pi-subagents", scripts: { install: "touch install-hook-ran" } })}\n`,
           ),
         );
-        const result = yield* Effect.result(buildScottyTomlBundle(loaded));
+        const result = yield* Effect.result(buildSandboxBundle(roots));
         assert.ok(Result.isFailure(result));
         assert.include(result.failure.message, "Pi package metadata");
         const hookMarker = yield* Effect.result(
@@ -321,15 +308,13 @@ describe("TOML bundle preparation", () => {
           assert.strictEqual(isSensitiveBundlePath(`nested/${name}`), true);
         assert.strictEqual(isSensitiveBundlePath("nested/ordinary.ts"), false);
 
-        const { loaded } = yield* fixture(root);
-        const ordinary = join(loaded.resolvedRoots.tools[0]!, "ordinary.ts");
+        const { roots } = yield* fixture(root);
+        const ordinary = join(roots.tools[0]!, "ordinary.ts");
         yield* Effect.promise(() => writeFile(ordinary, "token = 'not a path rule'\n"));
-        yield* buildFixtureBundle(loaded);
+        yield* buildFixtureBundle(roots);
         yield* Effect.promise(() => rm(ordinary));
-        yield* Effect.promise(() =>
-          writeFile(join(loaded.resolvedRoots.tools[0]!, ".env.local"), "not a secret"),
-        );
-        const result = yield* Effect.result(buildFixtureBundle(loaded));
+        yield* Effect.promise(() => writeFile(join(roots.tools[0]!, ".env.local"), "not a secret"));
+        const result = yield* Effect.result(buildFixtureBundle(roots));
         assert.ok(Result.isFailure(result));
         assert.instanceOf(result.failure, CliError);
         assert.strictEqual(result.failure.code, "sandbox_source_invalid");

@@ -100,7 +100,14 @@ const fromBase64 = (value: string): string | undefined => {
     return undefined;
   }
 };
-const selectedLabel = (kind: CloudResourceKind, name: string): string => `${kind} · ${name}`;
+const resourceLabels = {
+  skill: "Skill",
+  package: "Pi package",
+  tool: "Pi tool",
+  extension: "Pi extension",
+} satisfies Record<CloudResourceKind, string>;
+const selectedLabel = (kind: CloudResourceKind, name: string): string =>
+  `${resourceLabels[kind]} · ${name}`;
 
 // oxlint-disable-next-line eslint/complexity -- this compact editor owns the browse, upload, edit, and remove states
 export function ResourcesSection({
@@ -123,6 +130,7 @@ export function ResourcesSection({
   const [selectedPath, setSelectedPath] = useState("SKILL.md");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
   const currentFile = files.find((file) => file.path === selectedPath);
   const text = currentFile === undefined ? undefined : fromBase64(currentFile.contentBase64);
 
@@ -198,21 +206,23 @@ export function ResourcesSection({
           return;
         }
         onChange(result.value);
+        setRemoving(null);
         setEditing(false);
       })
       .finally(() => setBusy(false));
   };
-  const remove = (): void => {
-    if (!owner || busy || snapshot === null || name === "") return;
+  const remove = (resourceKind: CloudResourceKind, resourceName: string): void => {
+    if (!owner || busy || snapshot === null || resourceName === "") return;
     setBusy(true);
     onError(null);
-    void removeResource(kind, name, snapshot.revision)
+    void removeResource(resourceKind, resourceName, snapshot.revision)
       .then((result) => {
         if (!result.ok) {
           onError(result.failure.message);
           return;
         }
         onChange(result.value);
+        setRemoving(null);
         setEditing(false);
       })
       .finally(() => setBusy(false));
@@ -221,8 +231,9 @@ export function ResourcesSection({
   return (
     <section id="resources" {...stylex.props(styles.section)}>
       <p {...stylex.props(styles.help)}>
-        Skills work with Pi and Codex. Packages, tools, and extensions are for Pi. Changes apply to
-        new sessions.
+        Skills work with Pi and Codex. Pi packages bundle Pi resources and dependencies; Pi tools
+        and extensions customize Pi. Installed CLI commands are managed with the sandbox image.
+        Changes apply to new sessions.
       </p>
       {!editing && (
         <div {...stylex.props(styles.form)}>
@@ -240,13 +251,39 @@ export function ResourcesSection({
                     <span {...stylex.props(styles.label)}>
                       {selectedLabel(item.kind, item.name)}
                     </span>
-                    <Button
-                      variant="quiet"
-                      disabled={busy}
-                      onClick={() => select(item.kind, item.name)}
-                    >
-                      Open
-                    </Button>
+                    <div {...stylex.props(styles.row)}>
+                      {removing === `${item.kind}:${item.name}` ? (
+                        <>
+                          <span {...stylex.props(styles.help)}>Remove from new sessions?</span>
+                          <Button disabled={busy} onClick={() => remove(item.kind, item.name)}>
+                            Confirm remove
+                          </Button>
+                          <Button variant="quiet" disabled={busy} onClick={() => setRemoving(null)}>
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            variant="quiet"
+                            disabled={busy}
+                            onClick={() => select(item.kind, item.name)}
+                          >
+                            Open
+                          </Button>
+                          {owner && (
+                            <Button
+                              variant="quiet"
+                              disabled={busy}
+                              aria-label={`Remove ${item.name}`}
+                              onClick={() => setRemoving(`${item.kind}:${item.name}`)}
+                            >
+                              Remove
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 ))
               )}
@@ -406,7 +443,7 @@ export function ResourcesSection({
           )}
           <div {...stylex.props(styles.footer)}>
             {snapshot?.items.some((item) => item.kind === kind && item.name === name) && (
-              <Button variant="quiet" disabled={!owner || busy} onClick={remove}>
+              <Button variant="quiet" disabled={!owner || busy} onClick={() => remove(kind, name)}>
                 Remove
               </Button>
             )}

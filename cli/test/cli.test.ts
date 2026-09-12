@@ -9,7 +9,6 @@ import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import { AuthError } from "alchemy/Auth";
 import { EXIT, main, VERSION, type CliDependencies } from "../scotty";
 import { BeamUpRequestSchema } from "../src/schemas";
-import { scottyTomlConfigPath } from "../src/scotty-config";
 import { managedInstallationPath } from "../src/managed-installation-path.mjs";
 import { deploymentPlanPath } from "../src/deployment-plan";
 import { Schema } from "effect";
@@ -28,34 +27,6 @@ async function temporaryDirectory(): Promise<string> {
   await mkdir(join(path, ".config", "scotty"), { recursive: true });
   temporaryDirectories.push(path);
   return path;
-}
-
-async function writeScottyToml(
-  home: string,
-  roots: Partial<
-    Record<"skills" | "packages" | "tools" | "extensions", ReadonlyArray<string>>
-  > = {},
-): Promise<void> {
-  await mkdir(join(home, ".config", "scotty"), { recursive: true });
-  const array = (name: "skills" | "packages" | "tools" | "extensions"): string =>
-    JSON.stringify(roots[name] ?? []);
-  await writeFile(
-    scottyTomlConfigPath(home),
-    [
-      "version = 1",
-      "",
-      "[sync]",
-      `skills = ${array("skills")}`,
-      `packages = ${array("packages")}`,
-      `tools = ${array("tools")}`,
-      `extensions = ${array("extensions")}`,
-      "",
-      "[repos]",
-      "allowed = []",
-      "",
-    ].join("\n"),
-    { mode: 0o600 },
-  );
 }
 
 function harness(
@@ -387,24 +358,6 @@ describe("configuration and transport", () => {
 
   test("beam selects independent cloud profiles and applies only selected-agent overrides", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home, { skills: ["/nonexistent/unused-sync-root"] });
-    const path = scottyTomlConfigPath(home);
-    await writeFile(
-      path,
-      (await readFile(path, "utf8")) +
-        `
-[agent]
-default = "codex"
-[agents.pi]
-provider = "openai-codex"
-model = "gpt-5.6-sol"
-effort = "high"
-[agents.codex]
-model = "gpt-6-astra"
-effort = "low"
-`,
-      { mode: 0o600 },
-    );
     let body: unknown;
     const h = harness(
       {
@@ -465,42 +418,6 @@ effort = "low"
       model: "gpt-5.4",
       effort: "high",
     });
-  });
-
-  test("beam ignores malformed legacy TOML and uses cloud defaults", async () => {
-    const home = await temporaryDirectory();
-    await writeScottyToml(home);
-    const path = scottyTomlConfigPath(home);
-    const base = await readFile(path, "utf8");
-    let requests = 0;
-    const h = harness({
-      home,
-      fetch: async () => {
-        requests++;
-        return Response.json({
-          id: "s1",
-          title: "Fix build",
-          url: "https://worker.example/s/s1",
-          branch: "scotty/s1",
-          provider: "cloudflare",
-          status: "warm",
-        });
-      },
-    });
-    for (const extra of [
-      '[agent]\ndefault = "codex-app-server"',
-      '[agents.pi]\neffort = "ultra"',
-      '[agents.codex]\nprovider = "openai"',
-      '[agent]\ndefault = "codex"\n[agents.pi]\nmodel = "gpt-5.4"\neffort = "high"',
-      "[agent",
-    ]) {
-      await writeFile(path, base + extra);
-      expect(await main(beamArgs(), h.deps)).toBe(EXIT.OK);
-    }
-    await writeFile(path, base);
-    await chmod(path, 0o644);
-    expect(await main(beamArgs(), h.deps)).toBe(EXIT.OK);
-    expect(requests).toBe(6);
   });
 
   test("read consumes a canonical Codex snapshot with the existing CLI output shape", async () => {
@@ -1008,7 +925,6 @@ effort = "low"
 
   test("init creates a required named installation and stores a portable pointer", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
     let settingsPutCount = 0;
     const commands: string[][] = [];
@@ -1159,7 +1075,6 @@ effort = "low"
 
   test("init presents a bounded interactive review and progress receipt", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     let promptLabel = "";
     let createCalls = 0;
     let releaseCreate!: () => void;
@@ -1254,16 +1169,8 @@ effort = "low"
     expect(createCalls).toBe(0);
   });
 
-  test("init ignores legacy TOML bundles and directs browser activation", async () => {
+  test("init directs browser activation without publishing resources", async () => {
     const home = await temporaryDirectory();
-    const skillRoot = await temporaryDirectory();
-    const skillPath = join(skillRoot, "release-notes");
-    await mkdir(skillPath);
-    await writeFile(
-      join(skillPath, "SKILL.md"),
-      "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Release notes\n",
-    );
-    await writeScottyToml(home, { skills: [skillRoot] });
     let uploadedDigest: string | undefined;
     const h = harness({
       home,
@@ -1464,7 +1371,6 @@ effort = "low"
 
   test("init persists explicit preview topology without changing its public JSON contract", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
     const h = harness({
       home,
@@ -1557,7 +1463,6 @@ effort = "low"
     expect(missingPreview.error().error.message).toContain("requires --preview-base");
 
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     const deploymentRequests: Array<
       Parameters<NonNullable<CliDependencies["deployInstallation"]>>[0]
     > = [];
@@ -1671,7 +1576,6 @@ effort = "low"
 
   test("init preserves an apply-started journal and refuses an automatic retry", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     const requests: Array<Parameters<NonNullable<CliDependencies["createInstallation"]>>[0]> = [];
     let plans = 0;
     const accountId = "0123456789abcdef0123456789abcdef";
@@ -1794,7 +1698,6 @@ effort = "low"
 
   test("deploy updates code without passing or changing the root token", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
@@ -1879,7 +1782,6 @@ effort = "low"
 
   test("deploy plan is read-only and saves the exact provider identity", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
     });
@@ -1926,7 +1828,6 @@ effort = "low"
 
   test("deploy TTY plan presents stable phases and exact unambiguous change counts", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
     });
@@ -1965,7 +1866,6 @@ effort = "low"
 
   test("deploy TTY no-op distinguishes zero planned changes and zero provider operations", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
     });
@@ -2004,7 +1904,6 @@ effort = "low"
 
   test("deploy TTY no-op completes without publishing a bundle", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({ ...managedConfig(), host: "not-a-valid-origin" }),
@@ -2034,7 +1933,6 @@ effort = "low"
   test("deploy fails closed without a provider receipt in TTY and non-TTY modes", async () => {
     for (const interactive of [false, true]) {
       const home = await temporaryDirectory();
-      await writeScottyToml(home);
       await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
         mode: 0o600,
       });
@@ -2081,7 +1979,6 @@ effort = "low"
 
   test("deploy does not infer readiness from a successful provider return", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
     });
@@ -2126,7 +2023,6 @@ effort = "low"
 
   test("deploy --yes with TTY stdout and non-TTY stdin keeps human apply output", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
     });
@@ -2182,7 +2078,6 @@ effort = "low"
 
   test("deploy TTY provider failure fails the apply phase and keeps a private redacted diagnostic", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     const secret = "synthetic-tty-provider-secret";
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
@@ -2223,7 +2118,6 @@ effort = "low"
 
   test("deploy TTY ambiguous rollout preserves provider success without claiming readiness", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     const secret = "synthetic-ambiguous-rollout-secret";
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
@@ -2263,7 +2157,6 @@ effort = "low"
 
   test("deploy plan keeps identical JSON bytes for non-TTY auto mode and explicit TTY JSON", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
     });
@@ -2295,7 +2188,6 @@ effort = "low"
     const skillDirectory = join(skillRoot, "example");
     await mkdir(skillDirectory, { recursive: true });
     await writeFile(join(skillDirectory, "SKILL.md"), "# Before\n");
-    await writeScottyToml(home, { skills: [skillRoot] });
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
     });
@@ -2327,7 +2219,6 @@ effort = "low"
 
   test("deploy yes requires an explicit saved plan", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
     });
@@ -2348,7 +2239,6 @@ effort = "low"
 
   test("deploy plan can be consumed by only one concurrent apply", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
       mode: 0o600,
     });
@@ -2399,7 +2289,6 @@ effort = "low"
 
   test("deploy keeps the rewritten pointer without implicit TOML synchronization", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
@@ -2458,11 +2347,9 @@ effort = "low"
     expect(config.token).toBe("root-secret");
   });
 
-  test("deploy ignores invalid legacy TOML when planning provider changes", async () => {
+  test("deploy plans provider changes without publishing resources", async () => {
     const home = await temporaryDirectory();
     const pointerPath = managedInstallationPath(home);
-    await writeScottyToml(home);
-    await writeFile(scottyTomlConfigPath(home), "version =\n", { mode: 0o600 });
     await writeFile(
       pointerPath,
       JSON.stringify({
@@ -2531,7 +2418,6 @@ effort = "low"
 
   test("deploy skips confirmation and apply when the plan has no changes", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
@@ -2644,7 +2530,6 @@ effort = "low"
 
   test("deploy requires an explicit plan or apply mode", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
@@ -2741,7 +2626,6 @@ effort = "low"
 
   test("deployment without the Registry wrapping key requires a fresh installation", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
@@ -2787,7 +2671,6 @@ effort = "low"
 
   test("no-op deploy refuses to synchronize before the wrapping-key preflight", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
@@ -2845,7 +2728,6 @@ effort = "low"
 
   test("deploy apply failures keep the public envelope and persist a redacted diagnostic", async () => {
     const home = await temporaryDirectory();
-    await writeScottyToml(home);
     const secret = "synthetic-deploy-environment-secret";
     await writeFile(
       managedInstallationPath(home),

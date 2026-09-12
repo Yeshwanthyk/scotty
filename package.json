@@ -65,8 +65,7 @@
     "@effect/platform-node": "4.0.0-rc.112",
     "alchemy": "2.0.0-beta.76",
     "effect": "4.0.0-rc.112",
-    "proper-lockfile": "^4.1.2",
-    "smol-toml": "1.8.0"
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@cloudflare/sandbox": "0.12.9",

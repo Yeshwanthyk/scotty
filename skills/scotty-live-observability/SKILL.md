@@ -45,7 +45,7 @@ canonical `aborted` projection. A delivery-unknown result requires inspection, n
 resubmission. For sleep/resume, require authoritative Sleeping after backup confirmation, then
 Warm with a new runtime generation and the same native thread. Compare earlier canonical turns
 and tool output, then require a completed new turn using prior conversation context. Standalone
-checkpoint and shared skill discovery remain unavailable for Codex.
+checkpoint remains unavailable for Codex; verify shared skill discovery through the native session.
 
 For an authorized queue canary, use `steer --follow-up --idempotency-key ID` during
 an active turn. Default `steer` still targets that turn. Require the public `mode: "followUp"`

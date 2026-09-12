@@ -111,7 +111,6 @@ const runnerRegistry = vi.hoisted(() => ({
 
 const sandboxConfig = vi.hoisted(() => ({
   status: vi.fn(),
-  settingsManaged: vi.fn(),
   settings: vi.fn(),
   updateSettings: vi.fn(),
   activate: vi.fn(),
@@ -127,7 +126,6 @@ vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
 }));
 
 const credentialRegistry = vi.hoisted(() => ({
-  sync: vi.fn(),
   issueGrants: vi.fn(),
   list: vi.fn(),
   resolve: vi.fn(),
@@ -624,7 +622,6 @@ describe("real Hono boundary", () => {
       ok: true,
       value: { revision: 0, activeDigest: null },
     });
-    sandboxConfig.settingsManaged.mockResolvedValue({ ok: true, value: false });
     sandboxConfig.settings.mockResolvedValue({
       ok: true,
       value: {
@@ -663,7 +660,6 @@ describe("real Hono boundary", () => {
         value: { sessionId: input.sessionId, grants: DEFAULT_CREDENTIAL_GRANTS },
       }),
     );
-    credentialRegistry.sync.mockResolvedValue({ ok: true, value: { credentials: [] } });
     credentialRegistry.statuses.mockResolvedValue({ ok: true, value: [] });
   });
 
@@ -972,56 +968,6 @@ describe("real Hono boundary", () => {
     expect(sandbox.getScottyDeploymentReadiness).toHaveBeenCalledTimes(1);
   });
 
-  it("syncs a complete redacted credential desired set through the Registry", async () => {
-    credentialRegistry.sync.mockResolvedValue({
-      ok: true,
-      value: {
-        credentials: [
-          {
-            name: "github",
-            kind: "github-cli",
-            scope: "repository",
-            repositories: ["owner/repo"],
-            configured: true,
-          },
-        ],
-      },
-    });
-    const request = {
-      credentials: [
-        {
-          name: "github",
-          kind: "github-cli",
-          scope: "repository",
-          repositories: ["owner/repo"],
-          token: "github-token-must-not-be-returned",
-        },
-      ],
-    };
-    const response = await app.request(
-      "/api/credentials/sync",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify(request),
-      },
-      env(),
-    );
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      credentials: [
-        {
-          name: "github",
-          kind: "github-cli",
-          scope: "repository",
-          repositories: ["owner/repo"],
-          configured: true,
-        },
-      ],
-    });
-    expect(credentialRegistry.sync).toHaveBeenCalledWith(request);
-  });
-
   it("reads and updates cloud settings through the authenticated API", async () => {
     const read = await app.request(
       "/api/settings",
@@ -1113,8 +1059,7 @@ describe("real Hono boundary", () => {
     expect(credentialRegistry.upsert).toHaveBeenCalledWith(input);
   });
 
-  it("fails closed for legacy full credential sync after cloud settings activation", async () => {
-    sandboxConfig.settingsManaged.mockResolvedValueOnce({ ok: true, value: true });
+  it("does not expose full credential replacement", async () => {
     const response = await app.request(
       "/api/credentials/sync",
       {
@@ -1124,8 +1069,8 @@ describe("real Hono boundary", () => {
       },
       env(),
     );
-    expect(response.status).toBe(409);
-    expect(credentialRegistry.sync).not.toHaveBeenCalled();
+    expect(response.status).toBe(404);
+    expect(credentialRegistry.upsert).not.toHaveBeenCalled();
   });
 
   it("reports providers separately from dynamically named runners", async () => {

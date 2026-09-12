@@ -17,8 +17,6 @@ import {
   type CredentialRegistryResolvedCredential,
   type CredentialRegistryResolveInput,
   type CredentialRegistryGithubCliResolveInput,
-  type CredentialRegistrySyncInput,
-  type CredentialRegistrySyncResult,
   type CredentialRegistryStatus,
   type CredentialRegistryUpsertInput,
 } from "./contracts";
@@ -63,12 +61,6 @@ export class ScottyCredentialRegistry extends DurableObject<Bindings> {
       durableObjectCredentialRegistryStorage(ctx.storage),
       env.SCOTTY_INSTALLATION_NAME ?? "",
     ).pipe(Layer.provide(cryptoLayer));
-  }
-
-  sync(
-    input: CredentialRegistrySyncInput | unknown,
-  ): Promise<CredentialRegistryRpcResult<CredentialRegistrySyncResult>> {
-    return this.#run(Effect.flatMap(CredentialStore, (store) => store.sync(input)));
   }
 
   upsert(
@@ -143,7 +135,6 @@ export type ScottyCredentialRegistryStub = Pick<
   | "resolve"
   | "resolveGithubCliCredential"
   | "statuses"
-  | "sync"
   | "upsert"
 >;
 

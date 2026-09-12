@@ -24,10 +24,10 @@ tests as evidence. A slice is done only after findings are resolved.
 | 3. Repositories             | Cloud repository registry editing                                         | Implemented; browser registration and reload with GitHub verification; route tests                                     |
 | 4. Skills and resources     | Cloud browse/upload/edit/remove for skills and prepared runtime resources | Implemented; browser skill create/edit/reopen and executable tool upload/reopen/remove; archive tests and Astra review |
 | 5. Guided init              | Terminal setup without required TOML; retry from saved pointer            | Implemented; 120 Effect CLI and 97 Bun CLI tests; compiled CLI; Astra review                                           |
-| 6. Migration and UI polish  | Explicit legacy import and sandbox publication; focused settings panes    | Implemented; obsolete CLI expectations/docs updated; local Browser journeys; repository gates passed                   |
+| 6. Migration and UI polish  | Direct sandbox publication without TOML; focused settings panes           | Implemented; obsolete CLI expectations/docs updated; local Browser journeys; repository gates passed                   |
 
-These statuses cover code and local verification. Actual installed-image resource
-execution and deployed create/resume are not proven by these checks.
+These statuses cover code, local browser verification, and focused native-image
+checks. Deployment verification remains pending.
 
 ## Product boundaries
 
@@ -58,13 +58,17 @@ execution and deployed create/resume are not proven by these checks.
 - [x] Normal init/deploy/beam/sync no longer read TOML implicitly or replace cloud settings.
 - [x] Named credential refresh preserves unrelated entries and reuses the existing
       agent credential when switching between Pi and native Codex sources.
-- [x] Explicit legacy import retained; CLI help, receipts, docs, and tests updated.
+- [x] Remove legacy TOML parsing/import commands and obsolete whole-vault credential sync.
+- [ ] Preserve baseline setup through supported cloud APIs and direct resource publication: verify repositories and resource inventory before removing local TOML.
 - [x] Session create/retry/resume pins covered by production-adapter tests with fake hosts.
 - [x] Actual React UI exercised against persistent local Worker storage.
 - [x] Formatting, skills lint, root lint/typecheck, full test suite, E2E scan, UI build,
       and standalone CLI compilation passed.
-- [ ] Actual installed-image Pi/Codex resource discovery and deployed create/resume:
-      not run; requires separate live runtime proof.
+- [x] Actual installed-image Pi package startup and Codex skill discovery, environment
+      projection, prompt/terminal response, interruption, and cleanup passed.
+- [ ] Full image gate: local Chromium crashes on arm64 Colima emulating amd64; native
+      Linux CI must pass before release.
+- [ ] Deployed create/resume and browser verification on the released build.
 
 ## Final local evidence
 
@@ -99,5 +103,27 @@ confirmed it. No remaining confirmed core findings in the reviewed scope.
 
 Limits: init credential setup is verified compositionally rather than by a fresh
 real cloud deployment. A narrow viewport override did not change the in-app browser
-viewport; only the actual desktop viewport was visually verified. No production
-resources were deployed or changed. Changes remain uncommitted on the feature branch.
+viewport; only the actual desktop viewport was visually verified. PR #223 is open. The three old baseline playground sessions were vaporized with
+explicit user authorization; the list is now empty. Deployment remains pending.
+
+## Baseline preservation
+
+No legacy compatibility layer will ship. Before removing local TOML, publish and
+verify the existing setup using the supported cloud APIs and direct resource flags:
+
+- Repositories: `Yeshwanthyk/scotty`, `Yeshwanthyk/ziggy`, `Yeshwanthyk/barn`.
+- Resources: 42 skills, 2 packages (`pi-subagents`, `pi-codex-compaction`),
+  2 extensions; the configured tools directory is empty.
+- Agent defaults: Codex, `gpt-6-astra`, low reasoning.
+- Preserve credential source files and the local installation pointer.
+
+The transfer inventory is recorded locally at
+`/tmp/scotty-cloud-settings-proof/baseline-source-inventory.json`.
+The full bundle was published to the local Worker: all 46 catalog entries match
+the built manifest, and the scoped Pi package opens successfully. Production
+publication and catalog comparison remain release gates.
+
+Final cleanup passed `npm run check`. The resource list now exposes Remove with
+inline confirmation and labels Pi packages explicitly. Earlier Astra reviews
+passed; an additional cleanup review could not start because the agent service
+reported its thread limit. Sol focused checks and parent root checks passed.

@@ -103,42 +103,13 @@ const CredentialRepositoryPolicyShape = {
   repositories: Schema.optionalKey(CredentialRepositoriesSchema),
 } as const;
 
-export const CredentialRegistrySyncEntrySchema = Schema.Struct({
-  name: CredentialNameSchema,
-  kind: CredentialKindSchema,
-  scope: CredentialScopeSchema,
-  ...CredentialRepositoryPolicyShape,
-  versionRef: CredentialVersionRefSchema,
-  envelope: EncryptedCredentialEnvelopeSchema,
-  expires: Schema.optionalKey(Schema.Finite),
-})
-  .check(
-    Schema.makeFilter((entry) => entry.kind === "pi-auth" || entry.expires === undefined, {
-      expected: "expiry metadata on Pi credentials only",
-    }),
-  )
-  .check(
-    Schema.makeFilter((entry) => entry.kind === entry.envelope.kind, {
-      expected: "credential kind matching its encrypted envelope",
-    }),
-  )
-  .check(
-    Schema.makeFilter(
-      (entry) =>
-        entry.scope === "global"
-          ? entry.repositories === undefined
-          : entry.repositories !== undefined,
-      { expected: "repository policy matching the credential scope" },
-    ),
-  );
-export type CredentialRegistrySyncEntry = typeof CredentialRegistrySyncEntrySchema.Type;
 const CredentialRegistryGithubTokenSchema = Schema.String.check(
   Schema.makeFilter((value) => boundedText(value, PI_AUTH_MAX_MATERIAL_BYTES), {
     expected: "a bounded GitHub credential",
   }),
 );
 
-export const CredentialRegistrySyncMaterialSchema = Schema.Union([
+export const CredentialRegistryMaterialSchema = Schema.Union([
   Schema.Struct({
     name: CredentialNameSchema,
     kind: Schema.Literal("pi-auth"),
@@ -166,44 +137,15 @@ export const CredentialRegistrySyncMaterialSchema = Schema.Union([
     ),
   ),
 ]);
-export type CredentialRegistrySyncMaterial = typeof CredentialRegistrySyncMaterialSchema.Type;
-
-export const CredentialRegistryDesiredSyncInputSchema = Schema.Struct({
-  credentials: Schema.Array(CredentialRegistrySyncMaterialSchema).check(
-    Schema.makeFilter(
-      (credentials) => new Set(credentials.map(({ name }) => name)).size === credentials.length,
-      { expected: "unique credential names" },
-    ),
-  ),
-});
-export type CredentialRegistryDesiredSyncInput =
-  typeof CredentialRegistryDesiredSyncInputSchema.Type;
+export type CredentialRegistryMaterial = typeof CredentialRegistryMaterialSchema.Type;
 
 export const CredentialRegistryUpsertInputSchema = Schema.Struct({
-  credential: CredentialRegistrySyncMaterialSchema,
+  credential: CredentialRegistryMaterialSchema,
   expectedVersionRef: Schema.optionalKey(CredentialVersionRefSchema),
 });
 export type CredentialRegistryUpsertInput = typeof CredentialRegistryUpsertInputSchema.Type;
 
-export const CredentialRegistrySyncEntriesSchema = Schema.Array(
-  CredentialRegistrySyncEntrySchema,
-).check(
-  Schema.makeFilter((entries) => new Set(entries.map(({ name }) => name)).size === entries.length, {
-    expected: "unique credential names",
-  }),
-);
-
-export const CredentialRegistrySyncInputSchema = Schema.Struct({
-  credentials: CredentialRegistrySyncEntriesSchema,
-});
-export type CredentialRegistrySyncInput = typeof CredentialRegistrySyncInputSchema.Type;
-
-export const CREDENTIAL_REGISTRY_SYNC_MAX_BODY_BYTES = 1_048_576;
-
-export const CredentialRegistrySyncResultSchema = Schema.Struct({
-  credentials: Schema.Array(CredentialRedactedMetadataSchema),
-});
-export type CredentialRegistrySyncResult = typeof CredentialRegistrySyncResultSchema.Type;
+export const CREDENTIAL_REGISTRY_UPSERT_MAX_BODY_BYTES = 1_048_576;
 
 export const CredentialRegistryStatusSchema = Schema.Struct({
   name: CredentialNameSchema,
@@ -354,23 +296,11 @@ export const decodeCredentialVersionEnvelopeResult = Schema.decodeUnknownResult(
   CredentialVersionEnvelopeSchema,
   { onExcessProperty: "error" },
 );
-export const decodeCredentialRegistrySyncInputResult = Schema.decodeUnknownResult(
-  CredentialRegistrySyncInputSchema,
-  { onExcessProperty: "error" },
-);
-export const decodeCredentialRegistryDesiredSyncInputResult = Schema.decodeUnknownResult(
-  CredentialRegistryDesiredSyncInputSchema,
-  { onExcessProperty: "error" },
-);
 export const decodeCredentialRegistryUpsertInputResult = Schema.decodeUnknownResult(
   CredentialRegistryUpsertInputSchema,
   { onExcessProperty: "error" },
 );
 
-export const decodeCredentialRegistrySyncResult = Schema.decodeUnknownResult(
-  CredentialRegistrySyncResultSchema,
-  { onExcessProperty: "error" },
-);
 export const decodeCredentialRegistryGrantInputResult = Schema.decodeUnknownResult(
   CredentialRegistryGrantInputSchema,
   { onExcessProperty: "error" },

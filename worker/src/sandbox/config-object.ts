@@ -56,10 +56,6 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
     return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.status()));
   }
 
-  settingsManaged(): Promise<SandboxConfigRpcResult<boolean>> {
-    return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.settingsManaged()));
-  }
-
   settings(): Promise<SandboxConfigRpcResult<CloudSettingsSnapshot>> {
     return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.settings()));
   }
@@ -117,7 +113,6 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
 
 export type ScottySandboxConfigStub = {
   readonly status: () => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;
-  readonly settingsManaged: () => Promise<SandboxConfigRpcResult<boolean>>;
   readonly activate: (
     input: SandboxActivateInput,
   ) => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;

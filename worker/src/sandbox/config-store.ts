@@ -35,7 +35,6 @@ export interface SandboxConfigAuthorityStorage {
 
 interface SandboxConfigStoreShape {
   readonly status: () => Effect.Effect<SandboxConfigStatus, SandboxConfigFailure>;
-  readonly settingsManaged: () => Effect.Effect<boolean, SandboxConfigFailure>;
   readonly settings: () => Effect.Effect<CloudSettingsSnapshot, SandboxConfigFailure>;
   readonly updateSettings: (
     input: unknown,
@@ -82,7 +81,6 @@ const emptyAuthority = (): SandboxConfigAuthority => ({
   activeDigest: null,
   lastSync: null,
   settings: defaultCloudSettings,
-  settingsManaged: false,
 });
 
 const makeSandboxConfigStore = (
@@ -110,7 +108,6 @@ const makeSandboxConfigStore = (
       ? Result.succeed({
           ...decoded.success,
           settings: decoded.success.settings ?? defaultCloudSettings,
-          settingsManaged: decoded.success.settingsManaged ?? false,
         })
       : Result.fail(invalidAuthority());
   };
@@ -156,11 +153,6 @@ const makeSandboxConfigStore = (
     status: () =>
       transact(async (authority) => Result.succeed({ value: toStatus(authority), authority })),
 
-    settingsManaged: () =>
-      transact(async (authority) =>
-        Result.succeed({ value: authority.settingsManaged ?? false, authority }),
-      ),
-
     settings: () =>
       transact(async (authority) => Result.succeed({ value: toSettings(authority), authority })),
 
@@ -184,7 +176,6 @@ const makeSandboxConfigStore = (
             ...authority,
             revision: authority.revision + 1,
             settings: input.settings,
-            settingsManaged: true,
             lastSettingsUpdate: {
               idempotencyKey: input.idempotencyKey,
               expectedRevision: input.expectedRevision,

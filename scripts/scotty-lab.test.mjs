@@ -481,25 +481,20 @@ test("lab child environments keep only benign system values and explicit lab val
   assert.equal(environment.GH_CONFIG_DIR, undefined);
 });
 
-test("lab credential setup writes only private source pointers", () => {
+test("lab credential setup keeps private source path and isolated GitHub launcher", () => {
   const tempRoot = mkdtempSync(path.join(tmpdir(), `scotty-lab-${RUN_ID}-`));
   try {
     const manifest = fixtureManifest(tempRoot);
     mkdirSync(manifest.cliHome, { mode: 0o700 });
-    const setup = prepareCredentialSetup(manifest, "owner/repo", {
+    const setup = prepareCredentialSetup(manifest, {
       piAuthPath: "/private/pi-auth.json",
       githubConfigDir: "/private/gh-config",
       githubHome: "/private/home",
       githubExecutable: "/opt/bin/gh",
     });
-    const configPath = path.join(manifest.cliHome, ".config", "scotty", "scotty.toml");
     const githubLauncher = path.join(setup.credentialBin, "gh");
-    const config = readFileSync(configPath, "utf8");
-    assert.equal(statSync(configPath).mode & 0o777, 0o600);
+    assert.equal(setup.piAuthPath, "/private/pi-auth.json");
     assert.equal(statSync(githubLauncher).mode & 0o777, 0o700);
-    assert.match(config, /^allowed = \["owner\/repo"\]$/mu);
-    assert.match(config, /^source = "\/private\/pi-auth\.json"$/mu);
-    assert.doesNotMatch(config, /token|credential value/iu);
     assert.equal(
       readFileSync(githubLauncher, "utf8"),
       "#!/bin/sh\nexec env HOME='/private/home' GH_CONFIG_DIR='/private/gh-config' '/opt/bin/gh' \"$@\"\n",

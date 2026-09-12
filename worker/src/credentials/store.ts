@@ -3,19 +3,14 @@ import {
   decodeCredentialRegistryAuthorityResult,
   decodeCredentialRegistryGithubCliResolveInputResult,
   decodeCredentialRegistryGrantInputResult,
-  decodeCredentialRegistryDesiredSyncInputResult,
   decodeCredentialRegistryReleaseInputResult,
   decodeCredentialRegistryResolveInputResult,
-  decodeCredentialRegistrySyncInputResult,
   decodeCredentialRegistryUpsertInputResult,
   type CredentialRegistryAuthority,
   type CredentialRegistryCredential,
   type CredentialRegistryGrantResult,
   type CredentialRegistryReleaseResult,
   type CredentialRegistryResolveInput,
-  type CredentialRegistrySyncEntry,
-  type CredentialRegistrySyncInput,
-  type CredentialRegistrySyncResult,
   type CredentialRegistryStatus,
   type CredentialRegistryVersionRecord,
   type EncryptedCredentialEnvelope,
@@ -67,9 +62,6 @@ export interface CredentialRegistryStorage {
 }
 
 export interface CredentialStoreShape {
-  readonly sync: (
-    input: unknown,
-  ) => Effect.Effect<CredentialRegistrySyncResult, CredentialRegistryFailure>;
   readonly upsert: (
     input: unknown,
   ) => Effect.Effect<CredentialRegistryStatus, CredentialRegistryFailure>;
@@ -283,18 +275,6 @@ const makeCredentialStore = (
       ? Result.fail(invalidAuthority())
       : Result.succeed(values as ReadonlyArray<CredentialRegistryStatus>);
   });
-
-  const validateIncoming = (
-    input: CredentialRegistrySyncInput,
-  ): Effect.Effect<void, CredentialRegistryFailure> =>
-    Effect.gen(function* () {
-      for (const entry of input.credentials) {
-        const plaintext = yield* credentialCrypto
-          .decrypt(installation, entry.name, entry.versionRef, entry.kind, entry.envelope)
-          .pipe(Effect.mapError(cryptoFailure));
-        Redacted.wipeUnsafe(plaintext);
-      }
-    });
 
   const handleSlots = (kind: CredentialKind): CredentialGrant["handleSlots"] =>
     kind === "pi-auth"
@@ -638,142 +618,7 @@ const makeCredentialStore = (
     });
   };
 
-  const syncEncrypted = (
-    input: unknown,
-  ): Effect.Effect<CredentialRegistrySyncResult, CredentialRegistryFailure> => {
-    const decoded = decode(decodeCredentialRegistrySyncInputResult(input));
-    if (Result.isFailure(decoded)) return Effect.fail(decoded.failure);
-
-    return Effect.gen(function* () {
-      yield* validateIncoming(decoded.success);
-      return yield* transact(async (authority, now) => {
-        const versions = [...authority.versions];
-        const credentials: CredentialRegistryCredential[] = [];
-        const entries = [...decoded.success.credentials].toSorted((left, right) =>
-          left.name.localeCompare(right.name),
-        );
-
-        for (const entry of entries) {
-          const conflictingKind =
-            authority.versions.some(
-              (version) => version.name === entry.name && version.kind !== entry.kind,
-            ) ||
-            authority.grants.some(
-              (grant) => grant.name === entry.name && grant.kind !== entry.kind,
-            );
-          if (conflictingKind)
-            return Result.fail(
-              failure("credential_conflict", "Credential kind conflicts with authority"),
-            );
-
-          const existing = versions.find(
-            (version) =>
-              version.name === entry.name &&
-              version.kind === entry.kind &&
-              version.versionRef === entry.versionRef,
-          );
-          if (existing !== undefined) {
-            if (
-              !sameCredential(existing.envelope, entry.envelope) ||
-              existing.expires !== entry.expires
-            )
-              return Result.fail(
-                failure("credential_conflict", "Credential version conflicts with authority"),
-              );
-          } else {
-            const sameNameAndRef = versions.some(
-              (version) => version.name === entry.name && version.versionRef === entry.versionRef,
-            );
-            if (sameNameAndRef)
-              return Result.fail(
-                failure("credential_conflict", "Credential version conflicts with authority"),
-              );
-            versions.push({
-              name: entry.name,
-              kind: entry.kind,
-              versionRef: entry.versionRef,
-              envelope: entry.envelope,
-              createdAt: new Date(now).toISOString(),
-              ...(entry.expires === undefined ? {} : { expires: entry.expires }),
-            });
-          }
-
-          credentials.push({
-            name: entry.name,
-            kind: entry.kind,
-            scope: entry.scope,
-            ...(entry.repositories === undefined ? {} : { repositories: [...entry.repositories] }),
-            currentVersionRef: entry.versionRef,
-          });
-        }
-
-        const next = garbageCollect({
-          credentials,
-          versions,
-          grants: authority.grants,
-          issuedSessions: authority.issuedSessions ?? [],
-        });
-        return Result.succeed({
-          value: {
-            credentials: next.credentials.map(metadata),
-          },
-          authority: next,
-        });
-      });
-    });
-  };
-
-  const sync = (
-    input: unknown,
-  ): Effect.Effect<CredentialRegistrySyncResult, CredentialRegistryFailure> => {
-    const desired = decode(decodeCredentialRegistryDesiredSyncInputResult(input));
-    if (Result.isFailure(desired)) return Effect.fail(invalidInput());
-
-    return Effect.gen(function* () {
-      const entries: CredentialRegistrySyncEntry[] = [];
-      for (const entry of desired.success.credentials) {
-        const plaintextValue =
-          entry.kind === "pi-auth" ? serializePiAuthProviders(entry.providers) : entry.token;
-        const codexCredential =
-          entry.kind === "pi-auth" ? entry.providers["openai-codex"] : undefined;
-        const expires = codexCredential?.type === "oauth" ? codexCredential.expires : undefined;
-        const versionRef = yield* Effect.tryPromise({
-          try: async () => {
-            const digest = await crypto.subtle.digest(
-              "SHA-256",
-              new TextEncoder().encode(plaintextValue),
-            );
-            return Array.from(new Uint8Array(digest), (byte) =>
-              byte.toString(16).padStart(2, "0"),
-            ).join("");
-          },
-          catch: () => invalidInput(),
-        });
-        const plaintext = Redacted.make(plaintextValue);
-        const envelope = yield* credentialCrypto
-          .encrypt(installation, entry.name, versionRef, entry.kind, plaintext)
-          .pipe(
-            Effect.mapError(cryptoFailure),
-            Effect.ensuring(Effect.sync(() => void Redacted.wipeUnsafe(plaintext))),
-          );
-        entries.push({
-          name: entry.name,
-          kind: entry.kind,
-          scope: entry.scope,
-          ...(entry.kind === "github-cli" && entry.repositories !== undefined
-            ? { repositories: [...entry.repositories] }
-            : {}),
-          versionRef,
-          envelope,
-          ...(expires === undefined ? {} : { expires }),
-        });
-      }
-      return yield* syncEncrypted({ credentials: entries });
-    });
-  };
-
   return CredentialStore.of({
-    sync,
     upsert,
     list,
     statuses,
@@ -826,7 +671,7 @@ const garbageCollect = (authority: CredentialRegistryAuthority): CredentialRegis
 };
 
 // Encryption uses a fresh IV for every write. The keyed digest identifies the
-// plaintext version, so a repeated sync may safely retain the existing ciphertext.
+// plaintext version, so a repeated upsert may safely retain the existing ciphertext.
 const sameCredential = (
   left: EncryptedCredentialEnvelope,
   right: EncryptedCredentialEnvelope,

@@ -145,8 +145,7 @@ import {
   type ScottyCredentialRegistryStub,
 } from "./credentials/object";
 import {
-  CREDENTIAL_REGISTRY_SYNC_MAX_BODY_BYTES,
-  decodeCredentialRegistryDesiredSyncInputResult,
+  CREDENTIAL_REGISTRY_UPSERT_MAX_BODY_BYTES,
   decodeCredentialRegistryResolvedCredentialResult,
   decodeCredentialRegistryUpsertInputResult,
 } from "./credentials/contracts";
@@ -487,30 +486,6 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
   return c.json({ client: issued.client });
 });
 
-app.post("/api/credentials/sync", async (c) => {
-  requireRootPrincipal(c.get("auth"));
-  const settingsManaged = unwrapSandboxConfigRpc(await sandboxConfig(c.env).settingsManaged());
-  if (settingsManaged)
-    throw new ScottyError(
-      "conflict",
-      "Legacy credential synchronization is disabled after cloud settings activation",
-      {
-        httpStatus: 409,
-        exitCode: 5,
-        hint: "Use the named credential endpoint so unrelated credentials remain intact.",
-      },
-    );
-  requireJsonContentType(c.req.raw);
-  const bodyText = await readBoundedUtf8Body(c.req.raw, CREDENTIAL_REGISTRY_SYNC_MAX_BODY_BYTES);
-  if (bodyText === undefined)
-    throw badRequest("Credential registry request body exceeds the size limit");
-  const body = decodeJsonValue(bodyText);
-  if (Option.isNone(body)) throw badRequest("Credential registry request must be valid JSON");
-  const decoded = decodeCredentialRegistryDesiredSyncInputResult(body.value);
-  if (Result.isFailure(decoded)) throw badRequest("Credential registry request is invalid");
-  return c.json(unwrapCredentialRegistryRpc(await credentialRegistry(c.env).sync(decoded.success)));
-});
-
 app.get("/api/credentials", async (c) => {
   requireAuthScope(c.get("auth"), "access:read");
   return c.json(unwrapCredentialRegistryRpc(await credentialRegistry(c.env).statuses()));
@@ -519,7 +494,7 @@ app.get("/api/credentials", async (c) => {
 app.put("/api/credentials/:name", async (c) => {
   requireAuthScope(c.get("auth"), "access:write");
   requireJsonContentType(c.req.raw);
-  const bodyText = await readBoundedUtf8Body(c.req.raw, CREDENTIAL_REGISTRY_SYNC_MAX_BODY_BYTES);
+  const bodyText = await readBoundedUtf8Body(c.req.raw, CREDENTIAL_REGISTRY_UPSERT_MAX_BODY_BYTES);
   if (bodyText === undefined) throw badRequest("Credential request body exceeds the size limit");
   const body = decodeJsonValue(bodyText);
   if (Option.isNone(body)) throw badRequest("Credential request must be valid JSON");

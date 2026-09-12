@@ -5,10 +5,8 @@ import path from "node:path";
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parse as parseToml } from "smol-toml";
 import {
   formatLocalDevVars,
-  formatLocalCredentialToml,
   localHarnessContainerIds,
   localLiveCanaryValues,
   messageText,
@@ -114,34 +112,6 @@ test("local-live helper writes isolated Worker inputs", () => {
   assert.match(value, /^SCOTTY_INSTALLATION_NAME="local"$/mu);
   assert.match(value, /^SANDBOX_TRANSPORT="http"$/mu);
   assert.match(value, /^SCOTTY_LOCAL_E2E="1"$/mu);
-});
-
-test("local-live helper writes complete Registry-backed TOML declarations", () => {
-  const value = formatLocalCredentialToml({
-    repo: "owner/repo",
-    piAuthPath: "/home/operator/.pi/agent/auth.json",
-  });
-  assert.match(value, /^version = 1$/mu);
-  assert.match(value, /^\[sync\]$/mu);
-  assert.match(value, /^\[repos\]$/mu);
-  assert.match(value, /^\[credentials\.codex\]$/mu);
-  assert.match(value, /^\[credentials\.github\]$/mu);
-  assert.match(value, /^repositories = \["owner\/repo"\]$/mu);
-  assert.doesNotMatch(value, /GH_TOKEN|PI_AUTH_JSON|CREDENTIAL_WRAPPING_KEY/u);
-  assert.doesNotMatch(value, /GH_TOKEN|PI_AUTH_JSON|CREDENTIAL_WRAPPING_KEY/u);
-  assert.deepEqual(parseToml(value), {
-    version: 1,
-    sync: { skills: [], packages: [], tools: [], extensions: [] },
-    repos: { allowed: ["owner/repo"] },
-    credentials: {
-      codex: {
-        kind: "pi-auth",
-        source: "/home/operator/.pi/agent/auth.json",
-        scope: "global",
-      },
-      github: { kind: "github-cli", scope: "repository", repositories: ["owner/repo"] },
-    },
-  });
 });
 
 test("credential canary helpers scrub ambient secrets and compare exact values", () => {

@@ -17,7 +17,7 @@ import {
 import {
   decodeCredentialRegistryAuthorityResult,
   type CredentialRegistryCredential,
-  type CredentialRegistrySyncMaterial,
+  type CredentialRegistryMaterial,
 } from "../../src/credentials/contracts";
 import { formatManagedHandle } from "../../../protocol/credentials";
 
@@ -55,15 +55,24 @@ const useStore = <A>(
   use: (store: CredentialStore["Service"]) => Effect.Effect<A, CredentialRegistryFailure>,
 ) => Effect.provide(Effect.flatMap(CredentialStore, use), storeLayer(storage));
 
-const desiredPiInput = (provider: unknown) => ({
-  credentials: [
-    {
-      name: "openai",
-      kind: "pi-auth" as const,
-      scope: "global" as const,
-      providers: provider,
-    },
-  ],
+const upsertCredentials = (
+  storage: CredentialRegistryStorage,
+  credentials: ReadonlyArray<CredentialRegistryMaterial>,
+): Effect.Effect<void, CredentialRegistryFailure> =>
+  Effect.gen(function* () {
+    for (const credential of credentials) {
+      yield* useStore(storage, (store) => store.upsert({ credential }));
+    }
+  });
+
+const desiredPiInput = (provider: unknown, expectedVersionRef?: string) => ({
+  credential: {
+    name: "openai",
+    kind: "pi-auth" as const,
+    scope: "global" as const,
+    providers: provider,
+  },
+  ...(expectedVersionRef === undefined ? {} : { expectedVersionRef }),
 });
 
 const grantInput = { sessionId: SESSION };
@@ -154,101 +163,95 @@ describe("CredentialStore", () => {
     );
   });
 
-  it.effect(
-    "pins encrypted versions, removes the desired value for new Sessions, and garbage-collects after release",
-    () =>
-      Effect.gen(function* () {
-        yield* TestClock.setTime(Date.parse("2026-04-05T06:07:08.000Z"));
-        const storage = memoryStorage();
-        yield* useStore(storage, (store) =>
-          store.sync(desiredPiInput({ openai: { type: "api_key", key: `${BASE}-a` } })),
-        );
-        const firstAuthority = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
-        const firstVersionRef = firstAuthority.credentials[0]?.currentVersionRef;
-        assert.isString(firstVersionRef);
-        const issued = yield* useStore(storage, (store) => store.issueGrants(grantInput));
-        assert.strictEqual(issued.grants[0]?.versionRef, firstVersionRef);
+  it.effect("pins encrypted versions and garbage-collects old versions after release", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-04-05T06:07:08.000Z"));
+      const storage = memoryStorage();
+      yield* useStore(storage, (store) =>
+        store.upsert(desiredPiInput({ openai: { type: "api_key", key: `${BASE}-a` } })),
+      );
+      const firstAuthority = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
+      const firstVersionRef = firstAuthority.credentials[0]?.currentVersionRef;
+      assert.isString(firstVersionRef);
+      const issued = yield* useStore(storage, (store) => store.issueGrants(grantInput));
+      assert.strictEqual(issued.grants[0]?.versionRef, firstVersionRef);
 
-        const synced = yield* useStore(storage, (store) =>
-          store.sync(desiredPiInput({ openai: { type: "api_key", key: `${BASE}-b` } })),
-        );
-        assert.deepStrictEqual(synced.credentials, [
-          { name: "openai", kind: "pi-auth", scope: "global", configured: true },
-        ]);
-        const secondVersionRef = success(
-          decodeCredentialRegistryAuthorityResult(storage.snapshot()),
-        ).credentials[0]?.currentVersionRef;
-        assert.isString(secondVersionRef);
-        const repeatedSync = yield* useStore(storage, (store) =>
-          store.sync(desiredPiInput({ openai: { type: "api_key", key: `${BASE}-b` } })),
-        );
-        assert.deepStrictEqual(repeatedSync.credentials, synced.credentials);
-        const old = yield* useStore(storage, (store) =>
-          store.resolve({
-            ...grantInput,
-            name: "openai",
-            kind: "pi-auth",
-            versionRef: firstVersionRef,
-            handle: PI_HANDLE,
-          }),
-        );
-        assert.strictEqual(
-          Redacted.value(old),
-          JSON.stringify({ openai: { key: `${BASE}-a`, type: "api_key" } }),
-        );
-        const nextSession = yield* useStore(storage, (store) =>
-          store.issueGrants({ sessionId: "b0c1d2e3f4a5" }),
-        );
-        assert.strictEqual(nextSession.grants[0]?.versionRef, secondVersionRef);
+      const updated = yield* useStore(storage, (store) =>
+        store.upsert(
+          desiredPiInput({ openai: { type: "api_key", key: `${BASE}-b` } }, firstVersionRef),
+        ),
+      );
+      assert.deepInclude(updated, {
+        name: "openai",
+        kind: "pi-auth",
+        scope: "global",
+        configured: true,
+      });
+      const secondVersionRef = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()))
+        .credentials[0]?.currentVersionRef;
+      assert.isString(secondVersionRef);
+      const repeatedUpsert = yield* useStore(storage, (store) =>
+        store.upsert(
+          desiredPiInput({ openai: { type: "api_key", key: `${BASE}-b` } }, secondVersionRef),
+        ),
+      );
+      assert.deepStrictEqual(repeatedUpsert, updated);
+      const old = yield* useStore(storage, (store) =>
+        store.resolve({
+          ...grantInput,
+          name: "openai",
+          kind: "pi-auth",
+          versionRef: firstVersionRef,
+          handle: PI_HANDLE,
+        }),
+      );
+      assert.strictEqual(
+        Redacted.value(old),
+        JSON.stringify({ openai: { key: `${BASE}-a`, type: "api_key" } }),
+      );
+      const nextSession = yield* useStore(storage, (store) =>
+        store.issueGrants({ sessionId: "b0c1d2e3f4a5" }),
+      );
+      assert.strictEqual(nextSession.grants[0]?.versionRef, secondVersionRef);
 
-        yield* useStore(storage, (store) => store.sync({ credentials: [] }));
-        const noGrant = yield* useStore(storage, (store) =>
-          store.issueGrants({ sessionId: "c0d1e2f3a4b5" }),
-        );
-        assert.deepStrictEqual(noGrant.grants, []);
-        const beforeRelease = decodeCredentialRegistryAuthorityResult(storage.snapshot());
-        const before = success(beforeRelease);
-        assert.deepStrictEqual(before.credentials, []);
-        assert.strictEqual(before.versions.length, 2);
+      const beforeRelease = decodeCredentialRegistryAuthorityResult(storage.snapshot());
+      const before = success(beforeRelease);
+      assert.strictEqual(before.credentials.length, 1);
+      assert.strictEqual(before.versions.length, 2);
 
-        const released = yield* useStore(storage, (store) => store.release({ sessionId: SESSION }));
-        assert.deepStrictEqual(released, {
-          sessionId: SESSION,
-          released: true,
-        });
-        const releaseRetry = yield* useStore(storage, (store) =>
-          store.release({ sessionId: SESSION }),
-        );
-        assert.deepStrictEqual(releaseRetry, released);
-        yield* useStore(storage, (store) => store.release({ sessionId: "b0c1d2e3f4a5" }));
-        const afterRelease = decodeCredentialRegistryAuthorityResult(storage.snapshot());
-        const after = success(afterRelease);
-        assert.deepStrictEqual(after.versions, []);
-        assert.ok(!JSON.stringify(storage.snapshot()).includes(BASE));
-      }),
+      const released = yield* useStore(storage, (store) => store.release({ sessionId: SESSION }));
+      assert.deepStrictEqual(released, {
+        sessionId: SESSION,
+        released: true,
+      });
+      const releaseRetry = yield* useStore(storage, (store) =>
+        store.release({ sessionId: SESSION }),
+      );
+      assert.deepStrictEqual(releaseRetry, released);
+      yield* useStore(storage, (store) => store.release({ sessionId: "b0c1d2e3f4a5" }));
+      const afterRelease = decodeCredentialRegistryAuthorityResult(storage.snapshot());
+      const after = success(afterRelease);
+      assert.strictEqual(after.versions.length, 1);
+      assert.strictEqual(after.versions[0]?.versionRef, secondVersionRef);
+      assert.ok(!JSON.stringify(storage.snapshot()).includes(BASE));
+    }),
   );
 
   it.effect("proves Pi provider material is encrypted at rest and converges on retry", () =>
     Effect.gen(function* () {
       const storage = memoryStorage();
       const providerSecret = `${BASE}-pi`;
-      const input = {
-        credentials: [
-          {
-            name: "openai",
-            kind: "pi-auth" as const,
-            scope: "global" as const,
-            providers: {
-              openai: { type: "api_key" as const, key: providerSecret },
-            },
-          },
-        ],
-      };
-      const first = yield* useStore(storage, (store) => store.sync(input));
-      const second = yield* useStore(storage, (store) => store.sync(input));
-      assert.deepStrictEqual(first.credentials, [
-        { name: "openai", kind: "pi-auth", scope: "global", configured: true },
-      ]);
+      const input = desiredPiInput({ openai: { type: "api_key", key: providerSecret } });
+      const first = yield* useStore(storage, (store) => store.upsert(input));
+      const second = yield* useStore(storage, (store) =>
+        store.upsert({ ...input, expectedVersionRef: first.versionRef }),
+      );
+      assert.deepInclude(first, {
+        name: "openai",
+        kind: "pi-auth",
+        scope: "global",
+        configured: true,
+      });
       assert.deepStrictEqual(second, first);
       const authority = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
       assert.strictEqual(authority.versions.length, 1);
@@ -259,19 +262,15 @@ describe("CredentialStore", () => {
   it.effect("upserts one credential without replacing unrelated records", () =>
     Effect.gen(function* () {
       const storage = memoryStorage();
-      yield* useStore(storage, (store) =>
-        store.sync({
-          credentials: [
-            {
-              name: "openai",
-              kind: "pi-auth",
-              scope: "global",
-              providers: { openai: { type: "api_key", key: `${BASE}-a` } },
-            },
-            { name: "github", kind: "github-cli", scope: "global", token: `${BASE}-github` },
-          ],
-        }),
-      );
+      yield* upsertCredentials(storage, [
+        {
+          name: "openai",
+          kind: "pi-auth",
+          scope: "global",
+          providers: { openai: { type: "api_key", key: `${BASE}-a` } },
+        },
+        { name: "github", kind: "github-cli", scope: "global", token: `${BASE}-github` },
+      ]);
       const first = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
       const firstVersionRef = first.credentials.find(
         ({ name }) => name === "openai",
@@ -327,20 +326,16 @@ describe("CredentialStore", () => {
   it.effect("resolves the selected GitHub version transiently for repository verification", () =>
     Effect.gen(function* () {
       const storage = memoryStorage();
-      yield* useStore(storage, (store) =>
-        store.sync({
-          credentials: [
-            { name: "global", kind: "github-cli", scope: "global", token: "global-token" },
-            {
-              name: "exact",
-              kind: "github-cli",
-              scope: "repository",
-              repositories: ["owner/repo"],
-              token: "exact-token",
-            },
-          ],
-        }),
-      );
+      yield* upsertCredentials(storage, [
+        { name: "global", kind: "github-cli", scope: "global", token: "global-token" },
+        {
+          name: "exact",
+          kind: "github-cli",
+          scope: "repository",
+          repositories: ["owner/repo"],
+          token: "exact-token",
+        },
+      ]);
       const resolved = yield* useStore(storage, (store) =>
         store.resolveGithubCliCredential({ repository: "owner/repo" }),
       );
@@ -353,20 +348,16 @@ describe("CredentialStore", () => {
   it.effect("issues exactly one deterministic GitHub grant from the desired set", () =>
     Effect.gen(function* () {
       const storage = memoryStorage();
-      yield* useStore(storage, (store) =>
-        store.sync({
-          credentials: [
-            { name: "github", kind: "github-cli", scope: "global", token: "global-token" },
-            {
-              name: "repo-github",
-              kind: "github-cli",
-              scope: "repository",
-              repositories: ["owner/repo"],
-              token: "repo-token",
-            },
-          ],
-        }),
-      );
+      yield* upsertCredentials(storage, [
+        { name: "github", kind: "github-cli", scope: "global", token: "global-token" },
+        {
+          name: "repo-github",
+          kind: "github-cli",
+          scope: "repository",
+          repositories: ["owner/repo"],
+          token: "repo-token",
+        },
+      ]);
       const global = yield* useStore(storage, (store) =>
         store.issueGrants({ sessionId: "d0e1f2a3b4c5" }),
       );
@@ -387,24 +378,20 @@ describe("CredentialStore", () => {
   it.effect("fails closed when multiple Pi credentials are applicable", () =>
     Effect.gen(function* () {
       const storage = memoryStorage();
-      yield* useStore(storage, (store) =>
-        store.sync({
-          credentials: [
-            {
-              name: "openai",
-              kind: "pi-auth" as const,
-              scope: "global" as const,
-              providers: { openai: { type: "api_key" as const, key: `${BASE}-one` } },
-            },
-            {
-              name: "alternate",
-              kind: "pi-auth" as const,
-              scope: "global" as const,
-              providers: { openai: { type: "api_key" as const, key: `${BASE}-two` } },
-            },
-          ],
-        }),
-      );
+      yield* upsertCredentials(storage, [
+        {
+          name: "openai",
+          kind: "pi-auth" as const,
+          scope: "global" as const,
+          providers: { openai: { type: "api_key" as const, key: `${BASE}-one` } },
+        },
+        {
+          name: "alternate",
+          kind: "pi-auth" as const,
+          scope: "global" as const,
+          providers: { openai: { type: "api_key" as const, key: `${BASE}-two` } },
+        },
+      ]);
       const issued = yield* Effect.result(
         useStore(storage, (store) => store.issueGrants({ sessionId: SESSION })),
       );
@@ -419,11 +406,11 @@ describe("CredentialStore", () => {
     Effect.gen(function* () {
       const issue = (storage: CredentialRegistryStorage, sessionId: string) =>
         useStore(storage, (store) => store.issueGrants({ sessionId, repository: "owner/repo" }));
-      const sync = (
+      const seed = (
         storage: CredentialRegistryStorage,
-        credentials: ReadonlyArray<CredentialRegistrySyncMaterial>,
-      ) => useStore(storage, (store) => store.sync({ credentials }));
-      const exact: CredentialRegistrySyncMaterial = {
+        credentials: ReadonlyArray<CredentialRegistryMaterial>,
+      ) => upsertCredentials(storage, credentials);
+      const exact: CredentialRegistryMaterial = {
         name: "exact",
         kind: "github-cli" as const,
         scope: "repository" as const,
@@ -438,31 +425,30 @@ describe("CredentialStore", () => {
       });
 
       const multipleExact = memoryStorage();
-      yield* sync(multipleExact, [exact, { ...exact, name: "exact-two" }]);
+      yield* seed(multipleExact, [exact, { ...exact, name: "exact-two" }]);
       const exactFailure = yield* Effect.result(issue(multipleExact, "f0e1d2a3b4c5"));
       assert.deepInclude(failure(exactFailure), { reason: "credential_ambiguous" });
 
       const multipleGlobal = memoryStorage();
-      yield* sync(multipleGlobal, [global("global-one"), global("global-two")]);
+      yield* seed(multipleGlobal, [global("global-one"), global("global-two")]);
       const globalFailure = yield* Effect.result(issue(multipleGlobal, "g0e1d2a3b4c5"));
       assert.deepInclude(failure(globalFailure), { reason: "credential_ambiguous" });
 
       const missing = memoryStorage();
-      yield* sync(missing, [{ ...exact, repositories: ["other/repo"] as const }]);
+      yield* seed(missing, [{ ...exact, repositories: ["other/repo"] as const }]);
       const missingFailure = yield* Effect.result(issue(missing, "h0e1d2a3b4c5"));
       assert.deepInclude(failure(missingFailure), { reason: "credential_missing" });
     }),
   );
 
-  it.effect("pins an empty grant selection across later syncs", () =>
+  it.effect("pins an empty grant selection across later upserts", () =>
     Effect.gen(function* () {
       const storage = memoryStorage();
-      const empty = yield* useStore(storage, (store) => store.sync({ credentials: [] }));
-      assert.deepStrictEqual(empty.credentials, []);
+      assert.deepStrictEqual(yield* useStore(storage, (store) => store.statuses), []);
       const first = yield* useStore(storage, (store) => store.issueGrants(grantInput));
       assert.deepStrictEqual(first.grants, []);
       yield* useStore(storage, (store) =>
-        store.sync(desiredPiInput({ openai: { type: "api_key", key: `${BASE}-a` } })),
+        store.upsert(desiredPiInput({ openai: { type: "api_key", key: `${BASE}-a` } })),
       );
       const replay = yield* useStore(storage, (store) => store.issueGrants(grantInput));
       assert.deepStrictEqual(replay.grants, []);
@@ -478,7 +464,7 @@ describe("CredentialStore", () => {
       const firstRefresh = `${BASE}-oauth-refresh-a`;
 
       yield* useStore(storage, (store) =>
-        store.sync(
+        store.upsert(
           desiredPiInput({
             "openai-codex": {
               type: "oauth",
@@ -503,15 +489,18 @@ describe("CredentialStore", () => {
       ]);
 
       yield* useStore(storage, (store) =>
-        store.sync(
-          desiredPiInput({
-            "openai-codex": {
-              type: "oauth",
-              access: `${BASE}-oauth-access-b`,
-              refresh: `${BASE}-oauth-refresh-b`,
-              expires: secondExpires,
+        store.upsert(
+          desiredPiInput(
+            {
+              "openai-codex": {
+                type: "oauth",
+                access: `${BASE}-oauth-access-b`,
+                refresh: `${BASE}-oauth-refresh-b`,
+                expires: secondExpires,
+              },
             },
-          }),
+            firstVersionRef,
+          ),
         ),
       );
       const replay = yield* useStore(storage, (store) => store.issueGrants(grantInput));
@@ -557,24 +546,20 @@ describe("CredentialStore", () => {
   it.effect("omits expiry from API-key and GitHub grants and persisted versions", () =>
     Effect.gen(function* () {
       const storage = memoryStorage();
-      yield* useStore(storage, (store) =>
-        store.sync({
-          credentials: [
-            {
-              name: "openai",
-              kind: "pi-auth",
-              scope: "global",
-              providers: { openai: { type: "api_key", key: `${BASE}-api-key` } },
-            },
-            {
-              name: "github",
-              kind: "github-cli",
-              scope: "global",
-              token: `${BASE}-github-token`,
-            },
-          ],
-        }),
-      );
+      yield* upsertCredentials(storage, [
+        {
+          name: "openai",
+          kind: "pi-auth",
+          scope: "global",
+          providers: { openai: { type: "api_key", key: `${BASE}-api-key` } },
+        },
+        {
+          name: "github",
+          kind: "github-cli",
+          scope: "global",
+          token: `${BASE}-github-token`,
+        },
+      ]);
 
       const issued = yield* useStore(storage, (store) =>
         store.issueGrants({ ...grantInput, repository: "owner/repo" }),
