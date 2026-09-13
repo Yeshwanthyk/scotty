@@ -367,7 +367,18 @@ async function handleHatchStartupEgress(
     )
     .then(Result.succeed, Result.fail);
   if (Result.isFailure(executed)) return hatchFailureResponse(executed.failure);
-  const ticket = decodeHatchStartupTicket(executed.success);
+  // Durable Object RPC may return a transport wrapper. Decode its bounded JSON projection,
+  // as with Hatch status, before sending the receipt back to the container.
+  const encoded = Result.try(() => JSON.stringify(executed.success));
+  const ticketJson =
+    Result.isSuccess(encoded) &&
+    typeof encoded.success === "string" &&
+    new TextEncoder().encode(encoded.success).byteLength <= SCOTTY_HATCH_MAX_PROTOCOL_BYTES
+      ? decodeJsonValue(encoded.success)
+      : Option.none();
+  const ticket = Option.isSome(ticketJson)
+    ? decodeHatchStartupTicket(ticketJson.value)
+    : Option.none();
   return Option.isNone(ticket)
     ? rejectedRequest("Hatch startup receipt is invalid")
     : Response.json(ticket.value, { headers: { "cache-control": "no-store" } });

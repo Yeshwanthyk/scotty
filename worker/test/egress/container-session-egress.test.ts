@@ -413,6 +413,7 @@ describe("container-only session egress", () => {
 
   it("routes bounded Hatch startup receipts through the source Sandbox", async () => {
     const reports: unknown[] = [];
+    let receipt: unknown = { attemptId: "attempt-1", runtimeEpoch: "epoch-1" };
     const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
       SCOTTY_INTERNAL_HOST
     ];
@@ -422,7 +423,8 @@ describe("container-only session egress", () => {
         fromString: () => ({
           updateScottyHatchStartup: async (report: unknown) => {
             reports.push(report);
-            return { attemptId: "attempt-1", runtimeEpoch: "epoch-1" };
+            // Durable Object RPC can retain a wrapper around an otherwise valid ticket.
+            return { toJSON: () => receipt };
           },
         }),
       }),
@@ -457,6 +459,11 @@ describe("container-only session egress", () => {
         failureCode: "preparation_failed",
       },
     ]);
+    receipt = { attemptId: "attempt-1", runtimeEpoch: "epoch-1", secret: "forbidden" };
+    assert.strictEqual(
+      (await handler(request({ operation: "begin" }), env, context())).status,
+      400,
+    );
     assert.strictEqual(
       (
         await handler(
@@ -476,7 +483,7 @@ describe("container-only session egress", () => {
       (await handler(request({ operation: "begin" }), env, context(""))).status,
       400,
     );
-    assert.lengthOf(reports, 2);
+    assert.lengthOf(reports, 3);
   });
 
   it("returns only the source-derived strict Hatch restore descriptor", async () => {
