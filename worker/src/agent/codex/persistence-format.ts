@@ -63,7 +63,9 @@ export const CODEX_ROLLOUT_RELATIVE_PATH =
   /^sessions\/[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/rollout-[A-Za-z0-9_.-]+\.jsonl$/u;
 export const CodexSavedState = Schema.Struct({
   version: Schema.Literal(1),
-  nativeVersion: Schema.Literal(CODEX_VERSION),
+  // Existing 0.153.4 rollout archives remain readable by the pinned 0.154.0
+  // native app-server; new writes always record CODEX_VERSION.
+  nativeVersion: Schema.Literals(["0.153.4", CODEX_VERSION]),
   history: CodexSavedHistory,
   files: Schema.Array(
     Schema.Struct({

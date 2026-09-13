@@ -6,7 +6,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, Queue, Result, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { decodeCodexClientMessage } from "../../../../protocol/codex-app-server";
+import { CODEX_VERSION, decodeCodexClientMessage } from "../../../../protocol/codex-app-server";
 import { codexConversation } from "../../../src/agent/codex/conversation";
 import { makeSession } from "../../../src/agent/codex/session";
 import type { CodexProcess } from "../../../src/agent/codex/process";
@@ -76,7 +76,7 @@ const fixture = Effect.fnUntraced(function* (
         yield* emit({
           id: message.id,
           result: {
-            userAgent: "scotty-component/0.153.4 fixture",
+            userAgent: `scotty-component/${CODEX_VERSION} fixture`,
             codexHome: transport.homes.codexHome,
             platformFamily: "unix",
             platformOs: "linux",
@@ -270,6 +270,140 @@ describe("Codex generation bridge over production session adapter", () => {
       });
       assert.equal(snapshot.turns?.length, 2);
       assert.equal(f.prompts(), 2);
+    }),
+  );
+
+  it.effect("updates the original command after terminal without polluting a following turn", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.runtime.admit(command);
+      yield* f.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "cmd",
+            command: "printf safe",
+            status: "inProgress",
+          },
+        },
+      });
+      yield* f.complete();
+      yield* TestClock.adjust(1);
+      assert.equal((yield* f.runtime.snapshot).turns?.[0]?.tools[0]?.state, "failed");
+      yield* f.emit({
+        method: "item/commandExecution/outputDelta",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          itemId: "cmd",
+          delta: "safe",
+        },
+      });
+      yield* TestClock.adjust(1);
+      assert.equal((yield* f.runtime.snapshot).turns?.[0]?.tools[0]?.output, "safe");
+      yield* f.runtime.message({ ...command, text: "next" });
+      yield* f.emit({
+        method: "item/completed",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "cmd",
+            command: "printf safe",
+            status: "completed",
+            aggregatedOutput: "safe",
+          },
+        },
+      });
+      yield* TestClock.adjust(1);
+      const snapshot = yield* f.runtime.snapshot;
+      assert.equal(snapshot.ready, true);
+      assert.deepEqual(snapshot.turns?.[0]?.tools[0], {
+        id: "cmd",
+        label: "Command",
+        invocation: "printf safe",
+        output: "safe",
+        state: "completed",
+      });
+      assert.deepEqual(snapshot.turns?.[1]?.tools, []);
+      yield* f.complete();
+      yield* TestClock.adjust(1);
+      assert.equal((yield* f.runtime.snapshot).turns?.[0]?.tools[0]?.state, "completed");
+    }),
+  );
+  it.effect("does not duplicate preterminal output when later output arrives", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.runtime.admit(command);
+      yield* f.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: { type: "commandExecution", id: "cmd", command: "printf ab", status: "inProgress" },
+        },
+      });
+      yield* f.emit({
+        method: "item/commandExecution/outputDelta",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          itemId: "cmd",
+          delta: "a",
+        },
+      });
+      yield* f.complete();
+      yield* TestClock.adjust(1);
+      assert.equal((yield* f.runtime.snapshot).turns?.[0]?.tools[0]?.output, "a");
+      yield* f.emit({
+        method: "item/commandExecution/outputDelta",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          itemId: "cmd",
+          delta: "b",
+        },
+      });
+      yield* TestClock.adjust(1);
+      assert.equal((yield* f.runtime.snapshot).turns?.[0]?.tools[0]?.output, "ab");
+    }),
+  );
+
+  it.effect("keeps a failed model turn terminal and admits the next prompt", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.runtime.admit(command);
+      yield* f.emit({
+        method: "error",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          willRetry: false,
+          error: {
+            message: "private upstream detail",
+            codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } },
+          },
+        },
+      });
+      yield* f.emit({
+        method: "turn/completed",
+        params: {
+          threadId: "thread",
+          turn: { id: "turn", status: "failed", items: [], error: { message: "hidden" } },
+        },
+      });
+      yield* TestClock.adjust(1);
+      const snapshot = yield* f.runtime.snapshot;
+      assert.equal(snapshot.ready, true);
+      assert.equal(snapshot.failure, null);
+      assert.equal(snapshot.prompt.status, "terminal");
+      assert.equal(snapshot.turns?.[0]?.activitySummary, "Turn failed: httpConnectionFailed:503");
+      assert.notInclude(JSON.stringify(snapshot), "private upstream detail");
+      assert.equal((yield* f.runtime.message({ ...command, text: "try next" })).turnId, "turn-2");
     }),
   );
 
@@ -661,6 +795,65 @@ it.effect("rejects stale native command evidence at the active turn fence", () =
 );
 
 describe("Codex automatic saved history", () => {
+  it.live("saves a late command completion without an intervening snapshot read", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => fs.mkdtemp(`${tmpdir()}/scotty-late-save-`)),
+        (root) => Effect.promise(() => fs.rm(root, { recursive: true, force: true })),
+      );
+      const homes = { home: `${root}/home`, codexHome: `${root}/codex`, cwd: `${root}/workspace` };
+      yield* Effect.promise(async () => {
+        await fs.mkdir(homes.cwd);
+        await fs.mkdir(`${homes.codexHome}/sessions/2026/09/08`, { recursive: true });
+        await fs.writeFile(
+          `${homes.codexHome}/sessions/2026/09/08/rollout-fixture.jsonl`,
+          `${JSON.stringify({ type: "session_meta", payload: { id: "thread" } })}\n`,
+        );
+      });
+      const f = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "interrupted", { homes });
+      yield* f.runtime.admit(command);
+      yield* f.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "cmd",
+            command: "printf DONE",
+            status: "inProgress",
+          },
+        },
+      });
+      yield* f.complete();
+      while (f.host.inspect().activeTurnId !== null) yield* Effect.sleep("10 millis");
+      const before = f.host.inspect().eventCount;
+      yield* f.emit({
+        method: "item/completed",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "cmd",
+            command: "printf DONE",
+            status: "completed",
+            aggregatedOutput: "DONE",
+          },
+        },
+      });
+      while (f.host.inspect().eventCount <= before) yield* Effect.sleep("10 millis");
+      const saved = yield* f.runtime.save;
+      const archive = yield* readCodexSavedState(homes.cwd, saved);
+      assert.deepEqual(archive.history.turns[0]?.tools[0], {
+        id: "cmd",
+        label: "Command",
+        invocation: "printf DONE",
+        state: "completed",
+        output: "DONE",
+      });
+    }),
+  );
   it.live(
     "save interrupts and settles active work, survives repeat calls and permanently closes admission",
     () =>

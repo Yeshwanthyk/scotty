@@ -25,7 +25,7 @@ if (process.env.SCOTTY_REQUIRE_CODEX_NATIVE === "1") {
   const packageRoot = resolve(await realpath(native), "../..");
   assert.deepEqual(JSON.parse(await readFile(join(packageRoot, "codex-package.json"), "utf8")), {
     layoutVersion: 1,
-    version: "0.153.4",
+    version: "0.154.0",
     target: "x86_64-unknown-linux-musl",
     variant: "codex",
     entrypoint: "bin/codex",
@@ -42,7 +42,7 @@ if (process.env.SCOTTY_REQUIRE_CODEX_NATIVE === "1") {
     await access(join(packageRoot, executable), constants.X_OK);
   assert.equal(
     execFileSync(native, ["--version"], { encoding: "utf8" }).trim(),
-    "codex-cli 0.153.4",
+    "codex-cli 0.154.0",
   );
 }
 
@@ -233,7 +233,7 @@ input.on('line', line=>{
   if(mode==='bad-advisory') {output({method:'thread/status/changed',params:{},emittedAtMs:null});return;}
   if(mode==='events') {for(let i=0;i<4097;i++)output({method:'thread/status/changed',params:{}});return;}
   if(mode==='aggregate') {for(let i=0;i<40;i++)output({method:'thread/status/changed',params:{x:'x'.repeat(250000)}});return;}
-  output({id:mode==='wrong-id'?String(m.id):m.id,result:{userAgent:'scotty-component/0.153.4 test',codexHome:mode==='home'?'/wrong':process.env.CODEX_HOME,platformFamily:'unix',platformOs:${JSON.stringify(process.platform === "darwin" ? "macos" : "linux")}}});
+  output({id:mode==='wrong-id'?String(m.id):m.id,result:{userAgent:'scotty-component/0.154.0 test',codexHome:mode==='home'?'/wrong':process.env.CODEX_HOME,platformFamily:'unix',platformOs:${JSON.stringify(process.platform === "darwin" ? "macos" : "linux")}}});
  } else if(m.method==='thread/start') {
   if(mode==='rpc-error') {output({id:m.id,error:{code:-1,message:'do not expose me'}});return;}
   if(m.params.approvalPolicy!=='never' || m.params.sandbox!=='danger-full-access') process.exit(2);
@@ -1676,6 +1676,107 @@ test(
     );
     assert.equal(host.inspect().rejected, 0);
     assert.equal((await host.stop()).parent, "exited");
+  },
+);
+
+test(
+  "pinned native late command completion retains original turn while a follow-up runs",
+  { skip: !native, timeout: 60000 },
+  async (t) => {
+    let calls = 0;
+    let held;
+    const server = createServer(async (req, res) => {
+      let text = "";
+      for await (const chunk of req) {
+        if (Buffer.byteLength(text) + chunk.length > 1024 * 1024) {
+          req.destroy();
+          return;
+        }
+        text += chunk.toString("utf8");
+      }
+      assert.equal(req.url, "/backend-api/codex/responses");
+      assert.equal(req.headers.authorization, `Bearer ${credential.sentinel}`);
+      calls++;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const send = (type, fields) =>
+        res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`);
+      send("response.created", { response: { id: `resp-late-${calls}`, status: "in_progress" } });
+      if (calls === 3) {
+        held = res;
+        return;
+      }
+      const item =
+        calls === 1
+          ? {
+              type: "function_call",
+              id: "fc-late",
+              call_id: "call-late",
+              name: "exec_command",
+              arguments: JSON.stringify({
+                cmd: "echo SCOTTY_LATE_STARTED; /bin/sleep 3; echo SCOTTY_LATE_DONE",
+                shell: "/bin/sh",
+                login: false,
+                yield_time_ms: 1000,
+              }),
+            }
+          : {
+              type: "message",
+              id: "msg-late",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "FIRST_DONE", annotations: [] }],
+            };
+      send("response.output_item.done", { output_index: 0, item });
+      send("response.completed", {
+        response: {
+          id: `resp-late-${calls}`,
+          status: "completed",
+          output: [item],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      });
+      res.end();
+    });
+    await new Promise((done) => server.listen(0, "127.0.0.1", done));
+    let host;
+    t.after(async () => {
+      if (host) await host.stop();
+      held?.destroy();
+      server.closeAllConnections();
+      await new Promise((done) => server.close(done));
+    });
+    host = await startCodexSession({
+      binary: native,
+      runtimeDir: join(stage, "native-late-command"),
+      workspace: join(stage, "native-late-command-workspace"),
+      model: "gpt-5.4",
+      effort: "high",
+      credential,
+      upstreamPort: server.address().port,
+      turnTimeoutMs: 15000,
+    });
+    const first = await host.prompt("Start a bounded synthetic command.");
+    assert.equal((await first.completed).status, "completed");
+    assert.ok(host.inspect().tools.some((tool) => tool.invocation.includes("SCOTTY_LATE_STARTED")));
+    const next = await host.prompt("Wait for the next synthetic response.");
+    assert.notEqual(next.turnId, first.turnId);
+    await wait(() => held);
+    await wait(() =>
+      host
+        .drainEvents()
+        .some(
+          (event) =>
+            event.method === "item/completed" &&
+            event.params.turnId === first.turnId &&
+            event.params.item.type === "commandExecution" &&
+            event.params.item.aggregatedOutput?.includes("SCOTTY_LATE_DONE"),
+        ),
+    );
+    assert.equal(host.inspect().ready, true);
+    assert.equal(host.inspect().activeTurnId, next.turnId);
+    assert.deepEqual(host.inspect().tools, []);
+    assert.equal(host.inspect().rejected, 0);
+    assert.equal((await host.interrupt()).status, "interrupted");
   },
 );
 

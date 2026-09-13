@@ -18,8 +18,8 @@ export const CodexModelCapability = Schema.Struct({
   toolMode: Schema.NullOr(Schema.Literal("code_mode_only")),
 });
 
-// Exact minimal projection of rust-v0.153.4 models-manager/models.json at commit
-// 3d2ee51ca2d5db578f328aa75e20aa22c0197c9a. Regenerate by projecting each model's
+// Exact minimal projection of rust-v0.154.0 models-manager/models.json at commit
+// 6b9826e3aa83b1a5947db50f4332cb9c65f1b340. Regenerate by projecting each model's
 // slug, supported_reasoning_levels[].effort, and tool_type ("code_mode" maps to
 // "code_mode_only"), then compare the result with this catalog. The complete Linux
 // package installed by worker/container/Dockerfile is independently SHA-256 pinned.

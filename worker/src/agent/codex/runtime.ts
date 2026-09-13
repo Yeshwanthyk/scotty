@@ -5,13 +5,18 @@ import {
 } from "./persistence-format";
 import { readCodexSavedState, writeCodexSavedState } from "./persistence";
 import { Cause, Data, Deferred, Effect, Option, Predicate, Result, Schema, Scope } from "effect";
-import { CODEX_MAX_TEXT_BYTES, CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import {
+  CODEX_MAX_TEXT_BYTES,
+  CODEX_VERSION,
+  type CodexNotification,
+} from "../../../../protocol/codex-app-server";
 import {
   CanonicalConversationTurnSchema,
   CanonicalConversationToolSchema,
   CONVERSATION_MAX_TEXT_BYTES,
   CONVERSATION_MAX_TURNS,
   CONVERSATION_MAX_TOOLS_PER_TURN,
+  CONVERSATION_MAX_TOOL_VALUE_BYTES,
 } from "../../../../protocol/conversation";
 import { Cleanup, type CodexHostError } from "./errors";
 import { CodexLaunch } from "./process";
@@ -179,6 +184,17 @@ const boundedConversationText = (
   }
   return { text: value, truncated: false };
 };
+const boundedToolText = (text: string) => {
+  let bytes = 0;
+  let value = "";
+  for (const character of text) {
+    const size = new TextEncoder().encode(character).byteLength;
+    if (bytes + size > CONVERSATION_MAX_TOOL_VALUE_BYTES) return { text: value, truncated: true };
+    value += character;
+    bytes += size;
+  }
+  return { text: value, truncated: false };
+};
 const MAX_HISTORY_BYTES = 256 * 1024;
 
 export const makeCodexRuntime = Effect.fnUntraced(function* (
@@ -274,7 +290,60 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
     }
     if (updatedUser.truncated) turnsTruncated = true;
   };
+  const projectLateCommand = (old: ConversationTurn["tools"][number], event: CodexNotification) => {
+    if (event.method === "item/commandExecution/outputDelta") {
+      const bounded = boundedToolText(`${old.output ?? ""}${event.params.delta}`);
+      if (bounded.truncated) turnsTruncated = true;
+      return { ...old, output: bounded.text };
+    }
+    if (event.method !== "item/completed" || !Predicate.hasProperty(event.params.item, "command"))
+      return old;
+    const aggregated = event.params.item.aggregatedOutput;
+    const bounded = aggregated == null ? undefined : boundedToolText(aggregated);
+    if (bounded?.truncated) turnsTruncated = true;
+    return {
+      ...old,
+      state:
+        event.params.item.status === "declined"
+          ? ("cancelled" as const)
+          : event.params.item.status === "inProgress"
+            ? ("running" as const)
+            : event.params.item.status,
+      ...(bounded === undefined ? {} : { output: bounded.text }),
+    };
+  };
+  const reconcileLateCommands = (): void => {
+    for (const event of host.drainLateCommands()) {
+      if (
+        (event.method !== "item/completed" &&
+          event.method !== "item/commandExecution/outputDelta") ||
+        (event.method === "item/completed" && event.params.item.type !== "commandExecution")
+      )
+        continue;
+      const turn = history.find((entry) => entry.id === event.params.turnId);
+      if (turn === undefined || event.params.threadId !== initial.threadId) continue;
+      const itemId =
+        event.method === "item/completed"
+          ? Predicate.hasProperty(event.params.item, "id")
+            ? event.params.item.id
+            : undefined
+          : Predicate.hasProperty(event.params, "itemId")
+            ? event.params.itemId
+            : undefined;
+      if (itemId === undefined) continue;
+      const index = turn.tools.findIndex((entry) => entry.id === itemId);
+      if (index < 0) continue;
+      const old = turn.tools[index];
+      if (old === undefined) continue;
+      const updated = projectLateCommand(old, event);
+      history[history.indexOf(turn)] = {
+        ...turn,
+        tools: turn.tools.map((entry, i) => (i === index ? updated : entry)),
+      };
+    }
+  };
   const snapshot = Effect.suspend(() => {
+    reconcileLateCommands();
     const current = host.inspect();
     const active =
       activeTurn === undefined ? [] : [{ ...activeTurn, tools: current.tools ?? activeTurn.tools }];
@@ -355,8 +424,6 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
           return yield* new CodexBridgeError({ code: "already_admitted", outcome: "rejected" });
         if (!initialOnly && prompt.status === "idle")
           return yield* new CodexBridgeError({ code: "not_admitted", outcome: "rejected" });
-        if (!initialOnly && prompt.status === "failed" && restored === undefined)
-          return yield* new CodexBridgeError({ code: "host_failed", outcome: "ambiguous" });
         if (!host.inspect().ready || bridgeFailure !== null)
           return yield* new CodexBridgeError({ code: "host_failed", outcome: "rejected" });
         const operation: OperationRecord = {
@@ -405,6 +472,14 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
                   : "failed",
             user: activeTurn?.user ?? boundedUser.text,
             assistant: assistant.text,
+            ...(terminal.status !== "failed"
+              ? {}
+              : {
+                  activitySummary:
+                    current.turnFailureDiagnostic === null
+                      ? "Turn failed."
+                      : `Turn failed: ${current.turnFailureDiagnostic}`,
+                }),
             tools: toolValues,
           };
           if (assistant.truncated || current.toolsTruncated === true) turnsTruncated = true;
@@ -584,6 +659,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
       const receipt = yield* stop;
       if (receipt.parent !== "exited")
         return yield* new CodexBridgeError({ code: "host_failed", outcome: "ambiguous" });
+      reconcileLateCommands();
       const saved = yield* decodeSavedHistory({
         threadId: initial.threadId,
         initialTurnId: first.id,

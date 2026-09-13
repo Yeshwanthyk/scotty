@@ -24,6 +24,7 @@ import {
 import { makeCodexControl, serveCodexControl } from "../../../src/agent/codex/server";
 import { consumeControlToken } from "../../../src/agent/codex/token-file";
 import { managedPiAccessToken } from "../../../src/credentials/managed";
+import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
 
 const token = "a".repeat(64);
 const headers = {
@@ -81,12 +82,14 @@ const fixture = Effect.fnUntraced(function* () {
     stop,
     closed: Deferred.await(closed),
     drainEvents: () => [],
+    drainLateCommands: () => [],
     inspect: () => ({
       ready,
       threadId: "thread",
       activeTurnId: null,
       failure,
       failureDiagnostic: null,
+      turnFailureDiagnostic: null,
       pid: ChildProcessSpawner.ProcessId(1),
       homes: { home: "/runtime/home", codexHome: "/runtime/codex-home", cwd: "/workspace" },
       settings: {
@@ -189,7 +192,7 @@ import { createInterface } from 'node:readline';
 const send = (value) => process.stdout.write(JSON.stringify(value)+'\\n');
 createInterface({input:process.stdin}).on('line', (line) => {
   const m = JSON.parse(line);
-  if (m.method === 'initialize') send({id:m.id,result:{userAgent:'scotty-component/0.153.4 fixture',codexHome:process.env.CODEX_HOME,platformFamily:'unix',platformOs:process.platform === 'darwin' ? 'macos' : 'linux'}});
+  if (m.method === 'initialize') send({id:m.id,result:{userAgent:'scotty-component/${CODEX_VERSION} fixture',codexHome:process.env.CODEX_HOME,platformFamily:'unix',platformOs:process.platform === 'darwin' ? 'macos' : 'linux'}});
   if (m.method === 'thread/start') send({id:m.id,result:{thread:{id:'thread'},model:'gpt-5.4',modelProvider:'scotty-managed',cwd:process.cwd(),approvalPolicy:'never',approvalsReviewer:'user',sandbox:{type:'dangerFullAccess'},reasoningEffort:'high'}});
   if (m.method === 'turn/start') {
     send({id:m.id,result:{turn:{id:'turn',status:'inProgress',items:[]}}});

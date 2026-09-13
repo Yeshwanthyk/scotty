@@ -82,6 +82,12 @@ export type CanonicalConversationTruncation = typeof CanonicalConversationTrunca
 
 export const CanonicalConversationSnapshotSchema = Schema.Struct({
   runtimeStopped: Schema.optionalKey(Schema.Boolean),
+  runtimeFailure: Schema.optionalKey(
+    Schema.Struct({
+      code: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+      diagnostic: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
+    }),
+  ),
   followUpAvailable: Schema.optionalKey(Schema.Boolean),
   followUpBlocked: Schema.optionalKey(Schema.Boolean),
   // Actor admission may pause while a warm runtime remains readable.

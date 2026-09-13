@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { BackupOptions, ExecResult, ProcessStatus } from "@cloudflare/sandbox";
 import { Effect, Layer, Result } from "effect";
+import { CODEX_VERSION } from "../../../protocol/codex-app-server";
 import { backupStoreLayer, type BackupCapabilities } from "../../src/backups/store";
 import { sessionRuntimeCredentials } from "../../src/credentials/managed";
 import { ContainerAuth } from "../../src/sandbox/auth";
@@ -401,7 +402,7 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
   const snapshot = {
     generation: codex.runtimeGeneration,
     threadId: "native-thread",
-    version: "0.153.4",
+    version: CODEX_VERSION,
     settings: {
       model: "gpt-5.4",
       effort: "high",

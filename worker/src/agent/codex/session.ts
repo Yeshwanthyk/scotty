@@ -1,3 +1,4 @@
+import { HatchFailure, renderHatchFailure } from "./first-party-tools";
 import type { CodexSavedState } from "./persistence-format";
 import { createHash } from "node:crypto";
 import { Clock, Deferred, Effect, Fiber, Predicate, Result, Schema, Scope, Stream } from "effect";
@@ -88,7 +89,7 @@ const decodeUpstreamFailure = Schema.decodeUnknownEffect(
     }),
   ),
 );
-// Pinned v0.153.4 CodexErrorInfo variants; do not inspect or publish error.message.
+// Pinned CodexErrorInfo variants; do not inspect or publish error.message.
 const UpstreamErrorCategory = Schema.Literals([
   "contextWindowExceeded",
   "sessionBudgetExceeded",
@@ -240,6 +241,7 @@ export const makeSession = Effect.fnUntraced(function* (
   const pending = new Map<number, Pending>();
   const usedTurns = new Set<string>();
   const events: Array<CodexNotification> = [];
+  const lateCommandEvents: Array<CodexNotification> = [];
   const tools = makeCodexTools();
   const startedDynamicTools = new Map<string, string>();
   const toolReceipts = new Map<
@@ -256,6 +258,11 @@ export const makeSession = Effect.fnUntraced(function* (
   // Only parent-fenced subAgentActivity can authorize a child thread here.
   const childTurnOwners = new Map<string, Set<string>>();
   const completedTurns = new Set<string>();
+  let turnFailureDiagnostic: string | null = null;
+  let awaitingFailureTerminal: string | undefined;
+  // Native command watchers can outlive their turn. Retain only bounded, exact
+  // command ownership so their late output cannot be mistaken for a new turn.
+  const commandOwners = new Map<string, Map<string, "running" | "completed">>();
   const isKnownChildNotification = (line: string) => {
     const routed = decodeNotificationThread(line);
     return Result.isSuccess(routed) && childTurnOwners.has(routed.success.params.threadId);
@@ -500,11 +507,83 @@ export const makeSession = Effect.fnUntraced(function* (
     return true;
   });
   const consumeBeforeActive = Effect.fnUntraced(function* (message: CodexNotification) {
+    if (yield* acceptLateCommand(message)) return true;
     if (isTrailingChildActivity(message)) {
       discarded++;
       return true;
     }
     return yield* bufferBeforeAdmissionReply({ kind: "notification", message });
+  });
+  const acceptLateCommand = Effect.fnUntraced(function* (message: CodexNotification) {
+    if (
+      message.params.threadId !== threadId ||
+      !Predicate.hasProperty(message.params, "turnId") ||
+      !completedTurns.has(message.params.turnId) ||
+      (message.method !== "item/completed" &&
+        message.method !== "item/commandExecution/outputDelta")
+    )
+      return false;
+    if (message.method === "item/completed" && message.params.item.type !== "commandExecution")
+      return false;
+    const itemId =
+      message.method === "item/completed"
+        ? Predicate.hasProperty(message.params.item, "id")
+          ? message.params.item.id
+          : undefined
+        : Predicate.hasProperty(message.params, "itemId")
+          ? message.params.itemId
+          : undefined;
+    if (itemId === undefined) return false;
+    const owned = commandOwners.get(message.params.turnId);
+    if (owned?.get(itemId) !== "running") return false;
+    if (message.method === "item/completed") owned.set(itemId, "completed");
+    events.push(message);
+    lateCommandEvents.push(message);
+    yield* publish(message);
+    return true;
+  });
+  const recordCommandOwnership = Effect.fnUntraced(function* (
+    message: CodexNotification,
+    id: string,
+  ) {
+    if (message.method !== "item/started" && message.method !== "item/completed") return;
+    if (!Predicate.hasProperty(message.params.item, "command")) return;
+    const itemId = message.params.item.id;
+    const owned = commandOwners.get(id) ?? new Map<string, "running" | "completed">();
+    if (message.method === "item/started") {
+      if (!owned.has(itemId) && owned.size >= 64)
+        return yield* new CodexHostError({ code: "event_budget" });
+      if (owned.has(itemId))
+        return yield* stale(message.method, message.params.threadId, id, message.params.item.type);
+      owned.set(itemId, "running");
+      commandOwners.set(id, owned);
+    } else {
+      if (owned.get(itemId) === "completed")
+        return yield* stale(message.method, message.params.threadId, id, message.params.item.type);
+      commandOwners.get(id)?.set(itemId, "completed");
+    }
+  });
+  const completeTurn = Effect.fnUntraced(function* (
+    turn: Turn,
+    message: Extract<CodexNotification, { method: "turn/completed" }>,
+  ) {
+    completedTurns.add(message.params.turn.id);
+    awaitingFailureTerminal = undefined;
+    while (commandOwners.size > 64) {
+      const oldest = commandOwners.keys().next().value;
+      if (oldest === undefined) break;
+      commandOwners.delete(oldest);
+    }
+    startedDynamicTools.clear();
+    for (const [callId, fiber] of toolFibers) {
+      const receipt = toolReceipts.get(callId);
+      if (receipt !== undefined)
+        yield* Deferred.succeed(receipt.result, toolResult("Tool call interrupted.", false));
+      yield* Fiber.interrupt(fiber).pipe(Effect.forkIn(scope));
+    }
+    toolFibers.clear();
+    if (active === turn) active = undefined;
+    yield* Deferred.succeed(turn.terminal, message.params.turn);
   });
   const notification = Effect.fnUntraced(function* (message: CodexNotification) {
     const id = Predicate.hasProperty(message.params, "turnId")
@@ -524,10 +603,13 @@ export const makeSession = Effect.fnUntraced(function* (
     if (message.method === "turn/started") {
       if (turn.started) return yield* new CodexHostError({ code: "duplicate_turn_started" });
       turn.started = true;
+      turnFailureDiagnostic = null;
+      awaitingFailureTerminal = undefined;
       startedDynamicTools.clear();
       toolReceipts.clear();
     } else if (!turn.started) return yield* new CodexHostError({ code: "turn_not_started" });
     recordDynamicItem(message);
+    yield* recordCommandOwnership(message, id);
     const childThreadId = activityChildThreadId(message);
     if (childThreadId !== undefined && childThreadId !== threadId) {
       const owners = childTurnOwners.get(childThreadId) ?? new Set<string>();
@@ -538,19 +620,7 @@ export const makeSession = Effect.fnUntraced(function* (
     events.push(message);
     yield* publish(message);
     if (closing || failure || active !== turn) return;
-    if (message.method === "turn/completed") {
-      completedTurns.add(id);
-      startedDynamicTools.clear();
-      for (const [callId, fiber] of toolFibers) {
-        const receipt = toolReceipts.get(callId);
-        if (receipt !== undefined)
-          yield* Deferred.succeed(receipt.result, toolResult("Tool call interrupted.", false));
-        yield* Fiber.interrupt(fiber).pipe(Effect.forkIn(scope));
-      }
-      toolFibers.clear();
-      if (active === turn) active = undefined;
-      yield* Deferred.succeed(turn.terminal, message.params.turn);
-    }
+    if (message.method === "turn/completed") yield* completeTurn(turn, message);
   });
   const toolResult = (text: string, success: boolean): CodexDynamicToolResponse["result"] => ({
     contentItems: [
@@ -564,6 +634,28 @@ export const makeSession = Effect.fnUntraced(function* (
     ],
     success,
   });
+  const boundedHatchFailure = (error: HatchFailure): string => {
+    const text = renderHatchFailure(error);
+    const encoder = new TextEncoder();
+    if (encoder.encode(text).byteLength <= 1200) return text;
+    let head = "",
+      headBytes = 0;
+    for (const character of text) {
+      const size = encoder.encode(character).byteLength;
+      if (headBytes + size > 650) break;
+      head += character;
+      headBytes += size;
+    }
+    let tail = "",
+      tailBytes = 0;
+    for (const character of Array.from(text).reverse()) {
+      const size = encoder.encode(character).byteLength;
+      if (tailBytes + size > 540) break;
+      tail = character + tail;
+      tailBytes += size;
+    }
+    return `${head}\n...\n${tail}`;
+  };
   const canAdmitDynamicCall = (
     params: {
       readonly threadId: string;
@@ -620,12 +712,22 @@ export const makeSession = Effect.fnUntraced(function* (
       tools.acceptDynamicCall(params.callId, params.arguments);
       const execution = Effect.tryPromise({
         try: (signal) => firstPartyTools.execute(tool, params.arguments, signal),
-        catch: () => new CodexHostError({ code: "tool_execution_failed" }),
+        catch: (cause) =>
+          cause instanceof HatchFailure
+            ? cause
+            : new CodexHostError({ code: "tool_execution_failed" }),
       }).pipe(
         Effect.map((value) => toolResult(value.text, value.success)),
-        Effect.catch(() =>
-          Effect.succeed(toolResult("Tool outcome unknown; do not repeat this call.", false)),
-        ),
+        Effect.catchTags({
+          HatchFailure: (error) => Effect.succeed(toolResult(boundedHatchFailure(error), false)),
+          CodexHostError: () =>
+            Effect.succeed(
+              toolResult(
+                "Tool execution failed without a classified result. Inspect tool status and diagnostics before retrying.",
+                false,
+              ),
+            ),
+        }),
         Effect.tap((value) =>
           Effect.sync(() => {
             tools.acceptDynamicResult(params.callId, value.contentItems[0].text);
@@ -661,10 +763,27 @@ export const makeSession = Effect.fnUntraced(function* (
       discarded++;
       return;
     }
-    return yield* new CodexHostError({
-      code: "upstream_failed",
-      upstreamDiagnostic: upstreamDiagnostic(rejection.params.error.codexErrorInfo),
-    });
+    // Native reports a non-retryable model error before turn/completed(status=failed).
+    // Keep the process available for its terminal, but bound missing settlement.
+    turnFailureDiagnostic = upstreamDiagnostic(rejection.params.error.codexErrorInfo);
+    discarded++;
+    if (awaitingFailureTerminal === rejection.params.turnId) return;
+    awaitingFailureTerminal = rejection.params.turnId;
+    const pendingTurnId = rejection.params.turnId;
+    const diagnostic = turnFailureDiagnostic;
+    yield* supervise(
+      Effect.sleep("5 seconds").pipe(
+        Effect.andThen(
+          Effect.suspend(() =>
+            active?.id === pendingTurnId && awaitingFailureTerminal === pendingTurnId
+              ? Effect.fail(
+                  new CodexHostError({ code: "upstream_failed", upstreamDiagnostic: diagnostic }),
+                )
+              : Effect.void,
+          ),
+        ),
+      ),
+    );
   });
   const handleAdvisory = Effect.fnUntraced(function* (advisory: AdvisoryMessage) {
     if (
@@ -1020,6 +1139,7 @@ export const makeSession = Effect.fnUntraced(function* (
       activeTurnId: active?.id ?? null,
       failure: failure?.code ?? null,
       failureDiagnostic: failure?.staleDiagnostic ?? failure?.upstreamDiagnostic ?? null,
+      turnFailureDiagnostic,
       pid: transport.pid,
       homes: transport.homes,
       settings,
@@ -1030,6 +1150,7 @@ export const makeSession = Effect.fnUntraced(function* (
       ...tools.snapshot(),
     }),
     drainEvents: () => events.splice(0),
+    drainLateCommands: () => lateCommandEvents.splice(0),
   };
 });
 

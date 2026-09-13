@@ -16,6 +16,7 @@ import {
   isConversationLifecycleMismatch,
   interruptConversation,
   readConversation,
+  runtimeFailureMessage,
   steerConversation,
 } from "../data/conversation-client";
 import { activeConversationTurn, type ConversationTurn } from "../domain/conversation";
@@ -733,7 +734,7 @@ export function LiveConversation({
       status={<ConnectionStatus active={active} connection={connection} />}
       warning={
         runtimeStopped(connection)
-          ? "The agent runtime stopped after an error and cannot accept messages. Start a new session after the runtime issue is resolved."
+          ? runtimeFailureMessage(snapshot)
           : snapshot?.followUpBlocked === true
             ? "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue."
             : snapshot?.messageAdmissionAvailable === false

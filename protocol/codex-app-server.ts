@@ -1,6 +1,6 @@
 import { Result, Schema } from "effect";
 
-export const CODEX_VERSION = "0.153.4";
+export const CODEX_VERSION = "0.154.0";
 export const CODEX_MAX_MESSAGE_BYTES = 256 * 1024;
 export const CODEX_MAX_TEXT_BYTES = 64 * 1024;
 

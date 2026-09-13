@@ -51,6 +51,10 @@ describe("Codex conversation failure projection", () => {
         "Runtime failure: stale_notification (item/started parent completed subAgentActivity)",
       );
       assert.isFalse(conversation.followUpAvailable);
+      assert.deepEqual(conversation.runtimeFailure, {
+        code: "stale_notification",
+        diagnostic: "item/started parent completed subAgentActivity",
+      });
     }),
   );
 

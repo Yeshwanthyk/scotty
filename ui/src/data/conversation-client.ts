@@ -31,6 +31,7 @@ export interface ConversationTransport {
 
 export interface ConversationSnapshot {
   readonly runtimeStopped?: boolean;
+  readonly runtimeFailure?: { readonly code: string; readonly diagnostic?: string };
   readonly followUpAvailable?: boolean;
   readonly followUpBlocked?: boolean;
   readonly messageAdmissionAvailable?: boolean;
@@ -226,6 +227,29 @@ const decodeQueueItem = (value: JsonValue): ConversationQueueItem | undefined =>
   return { id: value.id, text: value.text };
 };
 
+const decodeRuntimeFailure = (value: JsonValue): ConversationSnapshot["runtimeFailure"] => {
+  if (
+    !isJsonObject(value) ||
+    !hasExactKeys(value, ["code", ...(value.diagnostic === undefined ? [] : ["diagnostic"])]) ||
+    !isBoundedText(value.code, 64) ||
+    value.code.length === 0 ||
+    (value.diagnostic !== undefined && !isBoundedText(value.diagnostic, 256))
+  )
+    return undefined;
+  return {
+    code: value.code,
+    ...(typeof value.diagnostic === "string" ? { diagnostic: value.diagnostic } : {}),
+  };
+};
+
+export const runtimeFailureMessage = (snapshot: ConversationSnapshot | undefined): string => {
+  const failure = snapshot?.runtimeFailure;
+  const reason = failure
+    ? `Agent runtime stopped (${failure.code.replaceAll("_", " ")}).${failure.diagnostic ? ` ${failure.diagnostic}.` : ""}`
+    : "Agent runtime stopped.";
+  return `${reason} Review the last tool result and session diagnostics before starting a new session; pending commands may have run.`;
+};
+
 const hasConversationSnapshotKeys = (value: JsonObject): boolean =>
   hasExactKeys(value, [
     "version",
@@ -234,17 +258,23 @@ const hasConversationSnapshotKeys = (value: JsonObject): boolean =>
     "queue",
     "truncated",
     ...(value.runtimeStopped === undefined ? [] : ["runtimeStopped"]),
+    ...(value.runtimeFailure === undefined ? [] : ["runtimeFailure"]),
     ...(value.followUpAvailable === undefined ? [] : ["followUpAvailable"]),
     ...(value.followUpBlocked === undefined ? [] : ["followUpBlocked"]),
     ...(value.messageAdmissionAvailable === undefined ? [] : ["messageAdmissionAvailable"]),
   ]) &&
   (value.runtimeStopped === undefined || typeof value.runtimeStopped === "boolean") &&
+  (value.runtimeFailure === undefined ||
+    decodeRuntimeFailure(value.runtimeFailure) !== undefined) &&
   (value.followUpAvailable === undefined || typeof value.followUpAvailable === "boolean") &&
   (value.followUpBlocked === undefined || typeof value.followUpBlocked === "boolean") &&
   (value.messageAdmissionAvailable === undefined ||
     typeof value.messageAdmissionAvailable === "boolean");
 
 const decodeFollowUpCapabilities = (value: JsonObject) => ({
+  ...(value.runtimeFailure === undefined
+    ? {}
+    : { runtimeFailure: decodeRuntimeFailure(value.runtimeFailure) }),
   ...(typeof value.runtimeStopped === "boolean" ? { runtimeStopped: value.runtimeStopped } : {}),
   ...(typeof value.followUpAvailable === "boolean"
     ? { followUpAvailable: value.followUpAvailable }

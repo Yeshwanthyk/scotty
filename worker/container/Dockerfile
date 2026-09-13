@@ -33,6 +33,8 @@ RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
 
 FROM docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe AS scotty-package-image
 
+ARG NODE_VERSION=24.21.0
+ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 ARG AST_GREP_VERSION=0.45.0
 ARG COREPACK_VERSION=0.35.0
 ARG FD_VERSION=10.4.2
@@ -57,12 +59,12 @@ USER root
 RUN set -eu; \
   mkdir -p /tmp/scotty-codex-install/home /tmp/scotty-codex-install/codex-home \
   && curl --fail --location --silent --show-error \
-    "https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-package-x86_64-unknown-linux-musl.tar.gz" \
+    "https://github.com/openai/codex/releases/download/rust-v0.154.0/codex-package-x86_64-unknown-linux-musl.tar.gz" \
     --output /tmp/scotty-codex-install/codex.tar.gz \
-  && echo "a822187e1a2420c61c5926721bfbd878701ed95547c9bb0d4de4498a16ba1821  /tmp/scotty-codex-install/codex.tar.gz" | sha256sum --check --strict \
+  && echo "fc6e3e3b85f2cf7d664520ee5c66a7fe4aa12bae7d46834f47e2f165fd0d6f78  /tmp/scotty-codex-install/codex.tar.gz" | sha256sum --check --strict \
   && mkdir /opt/codex \
   && tar -xzf /tmp/scotty-codex-install/codex.tar.gz -C /opt/codex \
-  && node -e 'const a = require("node:assert/strict"); a.deepEqual(require("/opt/codex/codex-package.json"), {layoutVersion:1, version:"0.153.4", target:"x86_64-unknown-linux-musl", variant:"codex", entrypoint:"bin/codex", resourcesDir:"codex-resources", pathDir:"codex-path"})' \
+  && node -e 'const a = require("node:assert/strict"); a.deepEqual(require("/opt/codex/codex-package.json"), {layoutVersion:1, version:"0.154.0", target:"x86_64-unknown-linux-musl", variant:"codex", entrypoint:"bin/codex", resourcesDir:"codex-resources", pathDir:"codex-path"})' \
   && test -x /opt/codex/bin/codex-code-mode-host \
   && test -x /opt/codex/codex-path/rg \
   && test -x /opt/codex/codex-resources/bwrap \
@@ -70,9 +72,11 @@ RUN set -eu; \
   && test -z "$(find /opt/codex -perm /6000 -print -quit)" \
   && ln -s /opt/codex/bin/codex /usr/local/bin/codex \
   && test "$(stat -Lc '%a' /usr/local/bin/codex)" = "755" \
-  && test "$(env -i HOME=/tmp/scotty-codex-install/home CODEX_HOME=/tmp/scotty-codex-install/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.153.4" \
+  && test "$(env -i HOME=/tmp/scotty-codex-install/home CODEX_HOME=/tmp/scotty-codex-install/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.154.0" \
   && rm -rf /tmp/scotty-codex-install
 
+# Replace the base image's bundled package-manager trees before extracting Node 24.
+# Overlay extraction leaves stale dependencies that break the first global install.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     build-essential \
@@ -116,6 +120,13 @@ RUN apt-get update \
   && tar -xzf /tmp/uv.tar.gz -C /tmp \
   && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv \
   && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/uvx \
+  && curl --fail --location --silent --show-error \
+    "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+    --output /tmp/node.tar.xz \
+  && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum --check --strict \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+  && test "$(node --version)" = "v${NODE_VERSION}" \
   && npm install --global --ignore-scripts --no-audit --no-fund \
     "@ast-grep/cli@${AST_GREP_VERSION}" \
     "@earendil-works/pi-coding-agent@${PI_VERSION}" \
