@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer as createHttpsServer } from "node:https";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -568,6 +570,129 @@ createServer((request, response) => {
     await rm(root, { recursive: true, force: true });
   }
   await assert.rejects(fetch(`http://127.0.0.1:${port}/health`));
+});
+
+test("Hatch preparation inherits a readable CA for strict Node TLS without exposing ambient secrets", async () => {
+  const { root } = await workspace();
+  const certificate = join(root, "ca.pem");
+  const key = join(root, "key.pem");
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=localhost",
+      "-addext",
+      "subjectAltName=IP:127.0.0.1",
+      "-keyout",
+      key,
+      "-out",
+      certificate,
+    ],
+    { stdio: "ignore" },
+  );
+  const secure = createHttpsServer(
+    { key: await readFile(key), cert: await readFile(certificate) },
+    (_request, response) => response.end("TRUSTED_CA"),
+  );
+  await new Promise<void>((resolve) => secure.listen(0, "127.0.0.1", resolve));
+  const secureAddress = secure.address();
+  assert.ok(secureAddress && typeof secureAddress !== "string");
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const serviceAddress = reservation.address();
+  assert.ok(serviceAddress && typeof serviceAddress !== "string");
+  await new Promise<void>((resolve) => reservation.close(resolve));
+  const port = serviceAddress.port;
+  await writeFile(
+    join(root, "prepare.mjs"),
+    `
+if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") throw new Error("TLS verification disabled");
+const response = await fetch("https://127.0.0.1:${secureAddress.port}/");
+if (!response.ok || await response.text() !== "TRUSTED_CA") throw new Error("CA was not trusted");
+`,
+  );
+  await writeFile(
+    join(root, "server.mjs"),
+    `
+import { createServer } from "node:http";
+createServer((_request, response) => response.end("READY")).listen(${port}, "127.0.0.1");
+`,
+  );
+  const withoutCa = await new Promise<{ error: Error | null; stderr: string }>((resolve) =>
+    execFile(
+      "node",
+      ["prepare.mjs"],
+      {
+        cwd: root,
+        env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin" },
+        timeout: 10_000,
+      },
+      (error, _stdout, stderr) => resolve({ error, stderr }),
+    ),
+  );
+  assert.ok(withoutCa.error);
+  assert.match(withoutCa.stderr, /SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT/);
+  const priorCa = process.env.NODE_EXTRA_CA_CERTS;
+  const priorCorepack = process.env.COREPACK_HOME;
+  const priorSecret = process.env.TEST_HATCH_CREDENTIAL;
+  process.env.NODE_EXTRA_CA_CERTS = certificate;
+  process.env.COREPACK_HOME = "/opt/corepack";
+  process.env.TEST_HATCH_CREDENTIAL = "must-not-cross";
+  const environments: NodeJS.ProcessEnv[] = [];
+  const manager = new ProductionHatchManager({
+    workspaceRoot: root,
+    spawnProcess: (argv, cwd, environment) => {
+      environments.push(environment);
+      return spawn(argv[0], argv.slice(1), {
+        cwd,
+        env: environment,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    },
+    authorityTransport: async (input) =>
+      String(input) === SCOTTY_HATCH_STARTUP_ROUTE
+        ? Response.json({ attemptId: "attempt-ca", runtimeEpoch: "epoch-ca" })
+        : Response.json(configured({ service: { name: "web", port } })),
+  });
+  try {
+    const result = await manager.run({
+      operation: "ensure",
+      service: "web",
+      argv: ["node", "server.mjs"],
+      cwd: ".",
+      port,
+      healthPath: "/health",
+      prepare: { argv: ["node", "prepare.mjs"], timeout_seconds: 10 },
+    });
+    assert.equal(result.process.status, "running");
+    assert.equal(environments.length, 2);
+    for (const environment of environments) {
+      assert.equal(environment.NODE_EXTRA_CA_CERTS, certificate);
+      assert.equal(environment.COREPACK_HOME, "/opt/corepack");
+      assert.equal(environment.TEST_HATCH_CREDENTIAL, undefined);
+      assert.notEqual(environment.NODE_TLS_REJECT_UNAUTHORIZED, "0");
+    }
+  } finally {
+    await manager.shutdown();
+    await new Promise<void>((resolve, reject) =>
+      secure.close((error) => (error ? reject(error) : resolve())),
+    );
+    if (priorCa === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+    else process.env.NODE_EXTRA_CA_CERTS = priorCa;
+    if (priorCorepack === undefined) delete process.env.COREPACK_HOME;
+    else process.env.COREPACK_HOME = priorCorepack;
+    if (priorSecret === undefined) delete process.env.TEST_HATCH_CREDENTIAL;
+    else process.env.TEST_HATCH_CREDENTIAL = priorSecret;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("failed preparation is cleaned up and reported without starting the service", async () => {

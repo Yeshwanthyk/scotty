@@ -42,6 +42,8 @@ const ThreadId = Schema.String.check(
   ),
 );
 const Deadline = Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 120000 }));
+const CLOUDFLARE_CA_FILE = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
+const PACKAGED_COREPACK_HOME = "/opt/corepack";
 export const CodexLaunch = Schema.Struct({
   environment: Schema.optionalKey(CloudSettingsEnvironmentSchema),
   sandboxBundleDigest: Schema.optionalKey(SandboxDigestSchema),
@@ -217,6 +219,16 @@ export const launchProcess = Effect.fnUntraced(function* (
     yield* verifyCodeModeHost(options.binary, homes.home, options.requestTimeoutMs).pipe(
       Effect.mapError(() => new CodexHostError({ code: "spawn_failed" })),
     );
+  const caFile = yield* Effect.result(fs.stat(CLOUDFLARE_CA_FILE));
+  const trustedCaReadable =
+    Result.isSuccess(caFile) &&
+    caFile.success.type === "File" &&
+    Result.isSuccess(yield* Effect.result(fs.access(CLOUDFLARE_CA_FILE, { readable: true })));
+  const corepackHome = yield* Effect.result(fs.stat(PACKAGED_COREPACK_HOME));
+  const packagedCorepackReadable =
+    Result.isSuccess(corepackHome) &&
+    corepackHome.success.type === "Directory" &&
+    Result.isSuccess(yield* Effect.result(fs.access(PACKAGED_COREPACK_HOME, { readable: true })));
   const resourceScope = yield* Scope.make();
   yield* Effect.addFinalizer(() => Scope.close(resourceScope, Exit.void));
   const child = yield* ChildProcess.make(options.binary, ["app-server", "--listen", "stdio://"], {
@@ -232,6 +244,8 @@ export const launchProcess = Effect.fnUntraced(function* (
       TMPDIR: homes.home,
       // Match the image tool directories without inheriting ambient credentials.
       PATH: "/usr/local/bin:/usr/bin:/bin",
+      ...(trustedCaReadable ? { NODE_EXTRA_CA_CERTS: CLOUDFLARE_CA_FILE } : {}),
+      ...(packagedCorepackReadable ? { COREPACK_HOME: PACKAGED_COREPACK_HOME } : {}),
       ...(options.sessionId === undefined ? {} : { SCOTTY_SESSION_ID: options.sessionId }),
       SCOTTY_CODEX_SENTINEL: options.credential.sentinel,
       ...(port === undefined

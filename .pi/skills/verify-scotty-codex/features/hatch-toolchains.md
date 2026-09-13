@@ -10,6 +10,9 @@ Run `bun test worker/container/pi-packages/sources/scotty-hatch/index.test.ts`. 
 fixture reads a temporary repository config, builds a TypeScript service with Bun, starts it with
 Node, checks `/health` on loopback, repeats ensure without preparing again, and stops its owned
 process group. Its Session authority is an in-memory transport; this is not a deployed actor test.
+The strict TLS fixture first confirms the same Node preparation fetch rejects an untrusted
+certificate, then confirms the Hatch child succeeds with a readable CA and without disabling
+certificate verification. It also checks the child receives only the image's Corepack cache path.
 
 Run `npm run check:container-image` on a supported Linux image builder. The gate verifies pinned
 Go and Rust archive digests and runs offline Node, Bun, npm, pnpm, Python, C, C++, Go and Rust
@@ -31,7 +34,12 @@ Worker assertions, not deployed evidence. The post-resume turn must be new; a pr
 snapshot cannot prove restoration.
 
 On an explicitly selected deployed installation, create an owned session for a repository with reviewed
-`hatch.toml`. Call the native `scotty_hatch` ensure tool through a model turn. Match its canonical
+`hatch.toml`. For a package bootstrap regression, select a repository whose `packageManager` pins
+a pnpm version that the image does not prewarm. Confirm the Hatch preparation turn installs with
+the pinned version through Corepack under normal TLS verification and reaches a healthy service;
+record the pinned version, preparation receipt, and health result. A prewarmed package-manager
+version or a version probe alone does not prove the download and certificate path. Call the native
+`scotty_hatch` ensure tool through a model turn. Match its canonical
 tool receipt to that turn and read the public Hatch status for the same service, port, and running
 state. Request the health route through the supported public URL, then sleep and resume the exact
 session. Call Hatch status again and require a fresh native receipt plus a healthy restored
