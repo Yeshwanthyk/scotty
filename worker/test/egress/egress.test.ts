@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Redacted } from "effect";
 import { managedPiAccessToken } from "../../src/credentials/managed";
-import { SCOTTY_INTERNAL_HOST } from "../../src/egress/session";
+import { ContainerProxy, SCOTTY_INTERNAL_HOST } from "../../src/egress/session";
 import {
   ALLOWED_HOSTS,
   denyOutbound,
@@ -90,8 +90,28 @@ describe("native egress transport", () => {
     assert.deepEqual(Object.keys(handlers), [...ALLOWED_HOSTS]);
     assert.strictEqual(handlers["github.com"], handlers["api.github.com"]);
     assert.strictEqual(handlers["codeload.github.com"], handlers["registry.npmjs.org"]);
+    assert.strictEqual(handlers["nodejs.org"], handlers["registry.npmjs.org"]);
     assert.notStrictEqual(handlers["api.openai.com"], handlers["chatgpt.com"]);
     assert.notProperty(handlers, "auth.openai.com");
+    assert.notProperty(handlers, "downloads.nodejs.org");
+    assert.notProperty(handlers, "example.org");
+  });
+
+  it("keeps unlisted destinations denied by the installed container proxy", async () => {
+    const proxy: ContainerProxy = Object.create(ContainerProxy.prototype);
+    Reflect.set(proxy, "ctx", {
+      props: {
+        className: "Sandbox",
+        containerId: "a".repeat(64),
+        allowedHosts: [...ALLOWED_HOSTS],
+        enableInternet: false,
+        interceptAll: false,
+      },
+    });
+    for (const host of ["downloads.nodejs.org", "example.org"]) {
+      const response = await proxy.fetch(new Request(`https://${host}/dist/header.tar.gz`));
+      assert.equal(response.status, 520);
+    }
   });
 });
 
@@ -338,6 +358,7 @@ describe("pass-through policy", () => {
         "raw.githubusercontent.com",
         "*.oaiusercontent.com",
         "registry.npmjs.org",
+        "nodejs.org",
         "pypi.org",
         "files.pythonhosted.org",
         "proxy.golang.org",
@@ -381,6 +402,44 @@ describe("pass-through policy", () => {
         )).status,
         403,
       );
+      assert.equal(denyOutbound().status, 403);
+    }),
+  );
+
+  it.effect("forwards anonymous Node headers from the exact official host only", () =>
+    Effect.gen(function* () {
+      const requests: Array<Request> = [];
+      const path = "/download/release/v24.21.0/node-v24.21.0-headers.tar.gz";
+      const response = yield* run(
+        passThroughProgram(
+          new Request(`https://nodejs.org${path}`, {
+            headers: { accept: "application/gzip", "user-agent": "node-gyp" },
+          }),
+        ),
+        { nativeRequests: requests },
+      );
+      assert.equal(response.status, 200);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].url, `https://nodejs.org${path}`);
+      assert.equal(requests[0].method, "GET");
+      assert.equal(requests[0].headers.get("accept"), "application/gzip");
+      assert.equal(requests[0].headers.get("user-agent"), "node-gyp");
+      for (const [name, value] of [
+        ["authorization", HONEYPOT],
+        ["cookie", HONEYPOT],
+        ["x-api-key", HONEYPOT],
+      ]) {
+        assert.equal(
+          (yield* run(
+            passThroughProgram(
+              new Request(`https://nodejs.org${path}`, { headers: { [name]: value } }),
+            ),
+          )).status,
+          403,
+        );
+      }
+      assert.notInclude(ALLOWED_HOSTS, "downloads.nodejs.org");
+      assert.notInclude(ALLOWED_HOSTS, "example.org");
       assert.equal(denyOutbound().status, 403);
     }),
   );
