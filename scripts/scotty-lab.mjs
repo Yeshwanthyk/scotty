@@ -903,6 +903,20 @@ export async function readSessionView(manifest, sessionId, signal) {
   return { status: response.status, body };
 }
 
+export async function readHatchStatus(manifest, sessionId, signal) {
+  assertLifecycleSessionId(sessionId);
+  const rootToken = readPrivateToken(manifest.tokenFile);
+  const response = await fetch(
+    new URL(`/api/sessions/${encodeURIComponent(sessionId)}/hatch`, manifest.host),
+    {
+      headers: { authorization: `Bearer ${rootToken}` },
+      signal,
+    },
+  );
+  const body = redact(await response.text(), [rootToken]);
+  return { status: response.status, body };
+}
+
 export function stopManifest(runId, manifestPath = MANIFEST_PATH) {
   const manifest = readLabManifest(manifestPath);
   if (manifest.runId !== runId) throw new Error(`Unknown Scotty lab run: ${runId}`);

@@ -25,6 +25,7 @@ import {
 } from "effect/unstable/cli";
 import { isRepositoryIdentity } from "../protocol/repository.ts";
 import { CanonicalConversationSnapshotSchema } from "../protocol/conversation.ts";
+import { PublicHatchStatusSchema } from "../worker/src/hatch/contracts.ts";
 import { SessionSteerResponseSchema } from "../protocol/session-steer.ts";
 import { SessionInterruptResponseSchema } from "../protocol/session-interrupt.ts";
 import { SessionActorDiagnosticsSchema } from "../worker/src/session-actor/diagnostics.ts";
@@ -49,6 +50,7 @@ import {
   preserveWorkerLog,
   PROTECTED_SESSION_ID,
   readActorDiagnostics,
+  readHatchStatus,
   readSessionView,
   recoverPendingCreateSessionId,
   recordCleanupResult,
@@ -95,6 +97,7 @@ type LifecycleScenario =
   | "hard-cap"
   | "vaporize"
   | "codex-workflow"
+  | "hatch-observe"
   | "full";
 
 const SessionOperationOutput = Schema.Struct({
@@ -117,6 +120,9 @@ const decodeActorDiagnosticsJson = Schema.decodeUnknownEffect(
 );
 const decodeCodexInspectJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(CodexInspectOutput),
+);
+const decodeHatchStatusJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PublicHatchStatusSchema),
 );
 const decodeSteerJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(SessionSteerResponseSchema),
@@ -451,6 +457,12 @@ type ScenarioResult = Readonly<{
     readonly runtimeStopped: false;
     readonly model: "gpt-5.6-sol";
     readonly effort: "medium";
+  };
+  hatchProof?: {
+    readonly turnId: string;
+    readonly expectation: "startup-failed" | "ready";
+    readonly hatchId?: string;
+    readonly startupFailure?: string;
   };
 }>;
 
@@ -957,10 +969,58 @@ export const codexTerminalProof = (
   return { status: "passed", turnId: turn.id };
 };
 
-const readCodexSnapshot = Effect.fnUntraced(function* (manifest: Manifest, sessionId: string) {
+type HatchExpectation = "startup-failed" | "ready";
+
+export const hatchObservationProof = (
+  snapshot: typeof CodexInspectOutput.Type,
+  status: typeof PublicHatchStatusSchema.Type,
+  turnId: string,
+  expectation: HatchExpectation,
+):
+  | { readonly status: "failed"; readonly reason: string }
+  | { readonly status: "passed"; readonly hatchId?: string; readonly startupFailure?: string } => {
+  const turn = snapshot.turns.find(({ id }) => id === turnId);
+  if (turn === undefined || turn.state !== "completed")
+    return { status: "failed", reason: "Hatch turn is missing or incomplete" };
+  const tools = turn.tools.filter(({ invocation }) => invocation === "Hatch");
+  if (tools.length !== 1)
+    return { status: "failed", reason: "Expected one native Hatch tool receipt in the turn" };
+  const tool = tools[0];
+  if (expectation === "startup-failed") {
+    const code = status.startupFailure;
+    if (
+      code === undefined ||
+      tool.state !== "failed" ||
+      !tool.output?.startsWith(`Hatch failed (${code}):`)
+    )
+      return { status: "failed", reason: "Hatch failure receipt and durable status disagree" };
+    return { status: "passed", startupFailure: code };
+  }
+  if (
+    snapshot.runtimeStopped !== false ||
+    tool.state !== "completed" ||
+    status.status !== "configured" ||
+    status.startupFailure !== undefined ||
+    status.desiredStatus !== "open" ||
+    status.observedStatus !== "running" ||
+    status.exposure !== "active" ||
+    status.lastHealthyAt === undefined ||
+    !tool.output?.startsWith(
+      `scotty-hatch:${status.hatchId}\nHatch status: running\nLocal process: running`,
+    )
+  )
+    return { status: "failed", reason: "Hatch receipt does not match a healthy public status" };
+  return { status: "passed", hatchId: status.hatchId };
+};
+
+const readCodexSnapshot = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  scenario: LifecycleScenario = "codex-workflow",
+) {
   const raw = yield* runRecordedCli(
     manifest,
-    "codex-workflow",
+    scenario,
     ["inspect", sessionId, "--json"],
     sessionId,
     undefined,
@@ -1102,6 +1162,78 @@ const checkpointLab = (sessionId: string, fault?: Fault) =>
 
 const sleepResumeLab = (sessionId: string, fault?: Fault) =>
   lifecycleOperation((manifest) => sleepResume(manifest, sessionId, fault)).pipe(
+    Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)),
+  );
+
+const hatchObserve = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sessionId: string,
+  turnId: string,
+  expectation: HatchExpectation,
+) {
+  const startedAt = yield* nowIso;
+  const ownedId = yield* requireOwnedSession(manifest, "hatch-observe", sessionId, startedAt);
+  const snapshot = yield* readCodexSnapshot(manifest, ownedId, "hatch-observe");
+  const requestStartedAt = yield* nowIso;
+  const response = yield* attemptPromise("Unable to read public Hatch status", (signal) =>
+    readHatchStatus(manifest, ownedId, signal),
+  );
+  const requestFinishedAt = yield* nowIso;
+  yield* attempt("Unable to persist Hatch status evidence", () =>
+    appendEvidenceCommand(manifest, {
+      scenario: "hatch-observe",
+      argv: ["GET", `/api/sessions/${ownedId}/hatch`],
+      startedAt: requestStartedAt,
+      finishedAt: requestFinishedAt,
+      stdout: response.body,
+      stderr: "",
+      exitCode: response.status === 200 ? 0 : 1,
+      signal: null,
+      sessionId: ownedId,
+      sessionOwned: true,
+    }),
+  );
+  if (response.status !== 200)
+    return yield* failScenario(manifest, {
+      scenario: "hatch-observe",
+      status: "failed",
+      startedAt,
+      finishedAt: yield* nowIso,
+      sessionId: ownedId,
+      reason: `Public Hatch status returned HTTP ${response.status}`,
+    });
+  const status = yield* decodeHatchStatusJson(response.body).pipe(
+    Effect.mapError((cause) => failure(cause, "Public Hatch status was invalid")),
+  );
+  const proof = hatchObservationProof(snapshot, status, turnId, expectation);
+  if (proof.status === "failed")
+    return yield* failScenario(manifest, {
+      scenario: "hatch-observe",
+      status: "failed",
+      startedAt,
+      finishedAt: yield* nowIso,
+      sessionId: ownedId,
+      reason: proof.reason,
+    });
+  const result: ScenarioResult = {
+    scenario: "hatch-observe",
+    status: "succeeded",
+    startedAt,
+    finishedAt: yield* nowIso,
+    sessionId: ownedId,
+    hatchProof: {
+      turnId,
+      expectation,
+      ...(proof.hatchId === undefined ? {} : { hatchId: proof.hatchId }),
+      ...(proof.startupFailure === undefined ? {} : { startupFailure: proof.startupFailure }),
+    },
+  };
+  yield* persistScenarioResult(manifest, result);
+  return result;
+});
+
+const hatchObserveLab = (sessionId: string, turnId: string, expectation: HatchExpectation) =>
+  lifecycleOperation((manifest) => hatchObserve(manifest, sessionId, turnId, expectation)).pipe(
     Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)),
   );
 
@@ -1473,6 +1605,11 @@ export interface LabOperationsShape {
   readonly createAndReady: (repo: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
   readonly checkpoint: (sessionId: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
   readonly sleepResume: (sessionId: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
+  readonly hatchObserve: (
+    sessionId: string,
+    turnId: string,
+    expectation: HatchExpectation,
+  ) => Effect.Effect<void, LabFailure>;
   readonly runtimeLoss: (sessionId: string, fault?: Fault) => Effect.Effect<unknown, LabFailure>;
   readonly hardCap: (sessionId: string, fault?: Fault) => Effect.Effect<unknown, LabFailure>;
   readonly vaporize: (sessionId: string, fault?: Fault) => Effect.Effect<void, LabFailure>;
@@ -1492,6 +1629,7 @@ const productionOperations = Layer.succeed(LabOperations, {
   createAndReady: createAndReadyLab,
   checkpoint: checkpointLab,
   sleepResume: sleepResumeLab,
+  hatchObserve: hatchObserveLab,
   runtimeLoss: runtimeLossLab,
   hardCap: hardCapLab,
   vaporize: vaporizeLab,
@@ -1611,6 +1749,22 @@ const sleepResumeCommand = lifecycleSessionCommand(
   "sleep-resume",
   (operations) => operations.sleepResume,
 );
+const hatchObserveCommand = Command.make(
+  "hatch-observe",
+  {
+    sessionId: sessionIdFlag,
+    turnId: Flag.string("turn"),
+    expectation: Flag.choice("expect", ["startup-failed", "ready"]),
+    extras: extrasArgument,
+  },
+  ({ extras, expectation, sessionId, turnId }) =>
+    Effect.gen(function* () {
+      yield* rejectExtras(extras);
+      yield* rejectProtectedSession([sessionId]);
+      const operations = yield* LabOperations;
+      yield* operations.hatchObserve(sessionId, turnId, expectation);
+    }),
+);
 const runtimeLossCommand = lifecycleSessionCommand(
   "runtime-loss",
   (operations) => operations.runtimeLoss,
@@ -1649,6 +1803,7 @@ const lifecycleCommand = Command.make("lifecycle").pipe(
     createAndReadyCommand,
     checkpointCommand,
     sleepResumeCommand,
+    hatchObserveCommand,
     runtimeLossCommand,
     hardCapCommand,
     vaporizeCommand,

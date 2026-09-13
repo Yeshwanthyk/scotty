@@ -12,6 +12,7 @@ import {
   LabOperations,
   LabUsageError,
   codexTerminalProof,
+  hatchObservationProof,
   runLab,
   waitForCapturedChild,
 } from "./scotty-lab.ts";
@@ -66,6 +67,10 @@ const run = (args: ReadonlyArray<string>, calls: string[]): Effect.Effect<void, 
           ),
         sleepResume: (sessionId, fault) =>
           Effect.sync(() => calls.push(`sleep-resume:${sessionId}:${fault ?? "none"}`)).pipe(
+            Effect.asVoid,
+          ),
+        hatchObserve: (sessionId, turnId, expectation) =>
+          Effect.sync(() => calls.push(`hatch-observe:${sessionId}:${turnId}:${expectation}`)).pipe(
             Effect.asVoid,
           ),
         runtimeLoss: (sessionId, fault) =>
@@ -280,6 +285,122 @@ describe("Effect Scotty lab command grammar", () => {
     );
   });
 
+  it("requires an exact native Hatch receipt and matching public status", () => {
+    const snapshot = {
+      id: "a0b1c2d3e4f5",
+      version: 1 as const,
+      runtimeStopped: false,
+      followUpAvailable: true,
+      transport: { epoch: "epoch", baseSequence: 0, sequence: 1, sessionRevision: 1 },
+      turns: [
+        {
+          id: "hatch-turn",
+          state: "completed" as const,
+          user: "Please check Hatch",
+          assistant: "It is ready",
+          tools: [
+            {
+              id: "hatch-tool",
+              state: "completed" as const,
+              label: "Hatch",
+              invocation: "Hatch",
+              output: "scotty-hatch:hatch-1\nHatch status: running\nLocal process: running",
+            },
+          ],
+        },
+      ],
+      queue: { steer: [], followUp: [] },
+      truncated: { turns: false, values: false },
+    };
+    const ready = {
+      status: "configured" as const,
+      hatchId: "hatch-1",
+      generation: 1,
+      service: { name: "fixture", port: 4_321 },
+      desiredStatus: "open" as const,
+      observedStatus: "running" as const,
+      exposure: "active" as const,
+      createdAt: "2026-09-13T00:00:00.000Z",
+      updatedAt: "2026-09-13T00:00:01.000Z",
+      lastHealthyAt: "2026-09-13T00:00:01.000Z",
+    };
+    assert.deepEqual(hatchObservationProof(snapshot, ready, "hatch-turn", "ready"), {
+      status: "passed",
+      hatchId: "hatch-1",
+    });
+    assert.deepEqual(hatchObservationProof(snapshot, ready, "other-turn", "ready"), {
+      status: "failed",
+      reason: "Hatch turn is missing or incomplete",
+    });
+    assert.equal(
+      hatchObservationProof(snapshot, { ...ready, lastHealthyAt: undefined }, "hatch-turn", "ready")
+        .status,
+      "failed",
+    );
+    assert.equal(
+      hatchObservationProof(
+        { ...snapshot, turns: [{ ...snapshot.turns[0], tools: [] }] },
+        ready,
+        "hatch-turn",
+        "ready",
+      ).status,
+      "failed",
+    );
+    assert.equal(
+      hatchObservationProof(
+        {
+          ...snapshot,
+          turns: [
+            {
+              ...snapshot.turns[0],
+              tools: [{ ...snapshot.turns[0].tools[0], state: "failed" as const }],
+            },
+          ],
+        },
+        ready,
+        "hatch-turn",
+        "ready",
+      ).status,
+      "failed",
+    );
+    const failed = {
+      ...snapshot,
+      turns: [
+        {
+          ...snapshot.turns[0],
+          tools: [
+            {
+              ...snapshot.turns[0].tools[0],
+              state: "failed" as const,
+              output: "Hatch failed (registration_unconfirmed): registration was not confirmed",
+            },
+          ],
+        },
+      ],
+    };
+    assert.deepEqual(
+      hatchObservationProof(
+        failed,
+        { status: "not_configured", startupFailure: "registration_unconfirmed" },
+        "hatch-turn",
+        "startup-failed",
+      ),
+      {
+        status: "passed",
+        startupFailure: "registration_unconfirmed",
+      },
+    );
+    assert.equal(
+      hatchObservationProof(
+        failed,
+        { status: "not_configured", startupFailure: "invalid_config" },
+        "hatch-turn",
+        "startup-failed",
+      ).status,
+      "failed",
+    );
+  });
+
   it("uses the package version", () => {
     assert.strictEqual(LAB_VERSION, packageMetadata.version);
   });
@@ -350,6 +471,16 @@ describe("Effect Scotty lab command grammar", () => {
       for (const args of [
         ["exec", RUN_ID, "--", "resume", "6ffa0a512819", "--json"],
         ["lifecycle", "checkpoint", "--session", "6ffa0a512819"],
+        [
+          "lifecycle",
+          "hatch-observe",
+          "--session",
+          "6ffa0a512819",
+          "--turn",
+          "turn-1",
+          "--expect",
+          "ready",
+        ],
         ["lifecycle", "vaporize", "--session", "6ffa0a512819"],
       ]) {
         const result = yield* Effect.result(run(args, calls));
@@ -373,6 +504,19 @@ describe("Effect Scotty lab command grammar", () => {
       yield* run(["lifecycle", "runtime-loss", "--session", "a0b1c2d3e4f5"], calls);
       yield* run(["lifecycle", "hard-cap", "--session", "a0b1c2d3e4f5"], calls);
       yield* run(["lifecycle", "vaporize", "--session", "a0b1c2d3e4f5"], calls);
+      yield* run(
+        [
+          "lifecycle",
+          "hatch-observe",
+          "--session",
+          "a0b1c2d3e4f5",
+          "--turn",
+          "turn-1",
+          "--expect",
+          "ready",
+        ],
+        calls,
+      );
       yield* run(["lifecycle", "full", "--repo", "owner/repo"], calls);
       assert.deepEqual(calls, [
         "create-and-ready:owner/repo:none",
@@ -381,12 +525,30 @@ describe("Effect Scotty lab command grammar", () => {
         "runtime-loss:a0b1c2d3e4f5:none",
         "hard-cap:a0b1c2d3e4f5:none",
         "vaporize:a0b1c2d3e4f5:none",
+        "hatch-observe:a0b1c2d3e4f5:turn-1:ready",
         "full:owner/repo:none",
       ]);
       assertUsageFailure(
         yield* Effect.result(
           run(
             ["lifecycle", "checkpoint", "--session", "a0b1c2d3e4f5", "--fault", "invented"],
+            calls,
+          ),
+        ),
+      );
+      assertUsageFailure(
+        yield* Effect.result(
+          run(
+            [
+              "lifecycle",
+              "hatch-observe",
+              "--session",
+              "a0b1c2d3e4f5",
+              "--turn",
+              "turn-1",
+              "--expect",
+              "restored-ready",
+            ],
             calls,
           ),
         ),

@@ -196,4 +196,9 @@ export function readSessionView(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<{ readonly status: number; readonly body: string }>;
+export function readHatchStatus(
+  manifest: LabManifest,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<{ readonly status: number; readonly body: string }>;
 export function stopManifest(runId: string, manifestPath?: string): LabManifest;
