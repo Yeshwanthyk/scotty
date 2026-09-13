@@ -20,7 +20,9 @@ programs. Node, Bun, Go and Rust each build or launch a local HTTP service and r
 health body. A local emulated browser failure is separate from the language workflow result; use
 the CI native-amd64 image gate for the full image outcome. The separate Corepack transport
 check exercises a paused response offline; its bootstrap check downloads into an empty cache
-under strict TLS and verifies ordinary child Node processes receive no injected options.
+under strict TLS and verifies ordinary child Node processes receive no injected options. It then
+runs a native addon build through the pinned pnpm lifecycle with a fresh header cache, requires
+a download from the official Node host, loads the compiled addon, and checks its return value.
 
 ## Deployed proof
 
