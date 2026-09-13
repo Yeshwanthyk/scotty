@@ -304,7 +304,7 @@ describe("Effect Scotty lab command grammar", () => {
               state: "completed" as const,
               label: "Hatch",
               invocation: "Hatch",
-              output: "scotty-hatch:hatch-1\nHatch status: running\nLocal process: running",
+              output: "Hatch ensure: running.\nLocal process: running.\nscotty-hatch:hatch-1",
             },
           ],
         },
@@ -328,6 +328,49 @@ describe("Effect Scotty lab command grammar", () => {
       status: "passed",
       hatchId: "hatch-1",
     });
+    const ensureThenStatus = {
+      ...snapshot,
+      turns: [
+        {
+          ...snapshot.turns[0],
+          tools: [
+            snapshot.turns[0].tools[0],
+            {
+              ...snapshot.turns[0].tools[0],
+              id: "hatch-status-tool",
+              output: "Hatch status: running.\nLocal process: running.\nscotty-hatch:hatch-1",
+            },
+          ],
+        },
+      ],
+    };
+    assert.deepEqual(hatchObservationProof(ensureThenStatus, ready, "hatch-turn", "ready"), {
+      status: "passed",
+      hatchId: "hatch-1",
+    });
+    assert.equal(
+      hatchObservationProof(
+        {
+          ...ensureThenStatus,
+          turns: [
+            {
+              ...ensureThenStatus.turns[0],
+              tools: [
+                ensureThenStatus.turns[0].tools[0],
+                {
+                  ...ensureThenStatus.turns[0].tools[1],
+                  output: "Hatch status: running.\nLocal process: running.\nscotty-hatch:stale",
+                },
+              ],
+            },
+          ],
+        },
+        ready,
+        "hatch-turn",
+        "ready",
+      ).status,
+      "failed",
+    );
     assert.deepEqual(hatchObservationProof(snapshot, ready, "other-turn", "ready"), {
       status: "failed",
       reason: "Hatch turn is missing or incomplete",

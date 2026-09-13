@@ -982,10 +982,9 @@ export const hatchObservationProof = (
   const turn = snapshot.turns.find(({ id }) => id === turnId);
   if (turn === undefined || turn.state !== "completed")
     return { status: "failed", reason: "Hatch turn is missing or incomplete" };
-  const tools = turn.tools.filter(({ invocation }) => invocation === "Hatch");
-  if (tools.length !== 1)
-    return { status: "failed", reason: "Expected one native Hatch tool receipt in the turn" };
-  const tool = tools[0];
+  const tool = turn.tools.filter(({ invocation }) => invocation === "Hatch").at(-1);
+  if (tool === undefined)
+    return { status: "failed", reason: "Expected a native Hatch tool receipt in the turn" };
   if (expectation === "startup-failed") {
     const code = status.startupFailure;
     if (
@@ -1005,8 +1004,10 @@ export const hatchObservationProof = (
     status.observedStatus !== "running" ||
     status.exposure !== "active" ||
     status.lastHealthyAt === undefined ||
-    !tool.output?.startsWith(
-      `scotty-hatch:${status.hatchId}\nHatch status: running\nLocal process: running`,
+    !["ensure", "status"].some(
+      (operation) =>
+        tool.output ===
+        `Hatch ${operation}: running.\nLocal process: running.\nscotty-hatch:${status.hatchId}`,
     )
   )
     return { status: "failed", reason: "Hatch receipt does not match a healthy public status" };
