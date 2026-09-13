@@ -150,6 +150,55 @@ describe("installation container rollout settlement", () => {
     },
   );
 
+  it.effect("classifies a Container no-op only from its exact provider note", () => {
+    const receipt = {
+      succeeded: new Set<string>(),
+      containerName: "scotty-test-sandbox",
+      containerAction: "updated" as "updated" | "noop",
+    };
+    return Effect.gen(function* () {
+      const cli = yield* AlchemyCli;
+      const session = yield* cli.startApplySession(
+        makeSyntheticPlan({ SandboxContainer: "update" }),
+      );
+      yield* session.emit({
+        kind: "annotate",
+        id: "Worker",
+        message: "Container application scotty-test-sandbox is unchanged.",
+      });
+      yield* session.emit({
+        kind: "annotate",
+        id: "SandboxContainer",
+        message: "Container application different-sandbox is unchanged.",
+      });
+      assert.strictEqual(receipt.containerAction, "updated");
+      yield* session.emit({
+        kind: "annotate",
+        id: "SandboxContainer",
+        message: "Container application scotty-test-sandbox is unchanged.",
+      });
+      yield* session.emit({
+        kind: "status-change",
+        id: "SandboxContainer",
+        type: "Cloudflare.Container",
+        status: "updated",
+      });
+      yield* session.done();
+      assert.strictEqual(receipt.containerAction, "noop");
+      assert.strictEqual(receipt.succeeded.size, 1);
+      const baseline = makeSnapshot();
+      const settled = yield* waitForContainerRollout(
+        baseline,
+        { accountId: "acc-1", applicationId: "app-test-123" },
+        {
+          containerAction: receipt.containerAction,
+          readControlPlane: () => Effect.succeed(baseline),
+        },
+      );
+      assert.strictEqual(settled.application.version, baseline.application.version);
+    }).pipe(Effect.provide(makeQuietAlchemyCli(receipt)));
+  });
+
   it.effect("reads authoritative session readiness with the bearer token", () =>
     Effect.gen(function* () {
       let request: Request | undefined;
@@ -436,6 +485,26 @@ describe("installation container rollout settlement", () => {
       yield* TestClock.adjust(60_000);
       const settled = yield* Fiber.join(fiber);
       assert.strictEqual(settled.application.version, 1);
+    }),
+  );
+
+  it.effect("does not call an unchanged application settled without a provider no-op note", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1_000_000);
+      const before = makeSnapshot();
+      const fiber = yield* waitForContainerRollout(
+        before,
+        { accountId: "acc-1", applicationId: "app-test-123" },
+        {
+          containerAction: "updated",
+          readControlPlane: () => Effect.succeed(before),
+          pollMs: 5_000,
+          timeoutMs: 10_000,
+        },
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* TestClock.adjust(10_000);
+      const result = yield* Effect.result(Fiber.join(fiber));
+      assert.include(failed(result).message, "Waiting for the Container application update");
     }),
   );
 

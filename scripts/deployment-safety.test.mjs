@@ -965,6 +965,14 @@ describe("production deployment ownership", () => {
     assert.equal(
       assessContainerSettlement(
         before,
+        snapshot({ application: { configurationDigest: "unexpected-configuration" } }),
+        "noop",
+      ).status,
+      "waiting",
+    );
+    assert.equal(
+      assessContainerSettlement(
+        before,
         snapshot({ application: { updatedAt: "2026-07-23T11:47:50.102Z" } }),
         "updated",
       ).status,
