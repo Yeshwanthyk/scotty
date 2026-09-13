@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -682,6 +683,14 @@ NAPI_MODULE(NODE_GYP_MODULE_NAME, init)
 export const containerImageCorepackBootstrapArgs = (plan) =>
   containerImageRunArgs(plan, "node", ["--input-type=commonjs", "-e", COREPACK_BOOTSTRAP_PROOF]);
 
+const LANGUAGE_PACKAGE_DOWNLOAD_PROOF = readFileSync(
+  new URL("./check-language-package-downloads.sh", import.meta.url),
+  "utf8",
+);
+
+export const containerImageLanguagePackageDownloadArgs = (plan) =>
+  containerImageRunArgs(plan, "sh", ["-c", LANGUAGE_PACKAGE_DOWNLOAD_PROOF]);
+
 const syncedSkillCommandCases = [0, 1].map((count) => {
   const session = `/tmp/scotty-synced-skills/session-${count}`;
   const paths = {
@@ -826,6 +835,7 @@ export const checkContainerImage = async ({
   docker("docker", containerImageToolchainWorkflowArgs(plan));
   docker("docker", containerImageCorepackTransportArgs(plan));
   docker("docker", containerImageCorepackBootstrapArgs(plan));
+  docker("docker", containerImageLanguagePackageDownloadArgs(plan));
   docker("docker", containerImageToolInventoryArgs(plan));
   docker("docker", containerImageSyncedSkillSetupArgs(plan));
   const sizeBytes = await inspect(plan.image, {
