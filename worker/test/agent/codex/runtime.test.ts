@@ -292,7 +292,7 @@ describe("Codex generation bridge over production session adapter", () => {
       });
       yield* f.complete();
       yield* TestClock.adjust(1);
-      assert.equal((yield* f.runtime.snapshot).turns?.[0]?.tools[0]?.state, "failed");
+      assert.equal((yield* f.runtime.snapshot).turns?.[0]?.tools[0]?.state, "running");
       yield* f.emit({
         method: "item/commandExecution/outputDelta",
         params: {
@@ -795,6 +795,49 @@ it.effect("rejects stale native command evidence at the active turn fence", () =
 );
 
 describe("Codex automatic saved history", () => {
+  it.live("settles an unfinished command before saving and restoring a stopped generation", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => fs.mkdtemp(`${tmpdir()}/scotty-unfinished-save-`)),
+        (root) => Effect.promise(() => fs.rm(root, { recursive: true, force: true })),
+      );
+      const homes = { home: `${root}/home`, codexHome: `${root}/codex`, cwd: `${root}/workspace` };
+      yield* Effect.promise(async () => {
+        await fs.mkdir(homes.cwd);
+        await fs.mkdir(`${homes.codexHome}/sessions/2026/09/08`, { recursive: true });
+        await fs.writeFile(
+          `${homes.codexHome}/sessions/2026/09/08/rollout-fixture.jsonl`,
+          `${JSON.stringify({ type: "session_meta", payload: { id: "thread" } })}\n`,
+        );
+      });
+      const f = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "interrupted", { homes });
+      yield* f.runtime.admit(command);
+      yield* f.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "cmd",
+            command: "printf UNKNOWN",
+            status: "inProgress",
+          },
+        },
+      });
+      yield* f.complete();
+      while (f.host.inspect().activeTurnId !== null) yield* Effect.sleep("10 millis");
+      assert.equal((yield* f.runtime.snapshot).turns?.[0]?.tools[0]?.state, "running");
+      const saved = yield* f.runtime.save;
+      const archive = yield* readCodexSavedState(homes.cwd, saved);
+      assert.equal(archive.history.turns[0]?.tools[0]?.state, "failed");
+      const restored = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "interrupted", {
+        history: archive.history,
+      });
+      assert.equal((yield* restored.runtime.snapshot).turns?.[0]?.tools[0]?.state, "failed");
+      assert.equal((yield* restored.runtime.snapshot).turns?.[0]?.state, "completed");
+    }),
+  );
   it.live("saves a late command completion without an intervening snapshot read", () =>
     Effect.gen(function* () {
       const root = yield* Effect.acquireRelease(
