@@ -575,6 +575,7 @@ export interface HarnessOptions {
   readonly actorRequestRecoveryBeforeResume?: SandboxEffectOptions["actorRequestRecoveryBeforeResume"];
   readonly clock?: SandboxEffectOptions["clock"];
   readonly commandGate?: (command: string) => Promise<void> | undefined;
+  readonly restoreBackupGate?: () => Promise<void> | undefined;
   readonly commandStdout?: (command: string) => string | undefined;
   readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
   readonly containerPlacementId?: string | null;
@@ -1745,6 +1746,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     restoreBackup: {
       value: async (backup: DirectoryBackup): Promise<RestoreBackupResult> => {
         events.push("host:restoreBackup");
+        await options.restoreBackupGate?.();
         if (options.failureStage === "restoreBackup")
           throw injectedHarnessFailure("injected restore failure");
         runtimeStatus = "running";

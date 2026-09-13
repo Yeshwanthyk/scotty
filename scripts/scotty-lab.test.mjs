@@ -35,6 +35,7 @@ import {
   recordCleanupResult,
   recordOwnedSession,
   recordScenarioResult,
+  sleepSession,
   validateOrphanedLabProcessGroup,
   stopManifest,
   validateLabExecManifest,
@@ -46,6 +47,43 @@ import {
 import { labSystemEnvironment, wranglerInvocation } from "../e2e/support/local-worker.mjs";
 
 const RUN_ID = "lab-12345678-1234-4123-8123-123456789abc";
+
+test("sleep helper bounds one request while preserving caller cancellation", async (context) => {
+  const root = mkdtempSync(path.join(tmpdir(), "scotty-lab-sleep-"));
+  const token = "private-sleep-test-token";
+  const tokenFile = path.join(root, "token");
+  writeFileSync(tokenFile, token, { mode: 0o600 });
+  const caller = new AbortController();
+  let timeoutCalls = 0;
+  let requestCalls = 0;
+  context.mock.method(AbortSignal, "timeout", (milliseconds) => {
+    timeoutCalls += 1;
+    assert.equal(milliseconds, 11 * 60_000);
+    return new AbortController().signal;
+  });
+  context.mock.method(globalThis, "fetch", (url, options) => {
+    requestCalls += 1;
+    assert.equal(url.href, "http://127.0.0.1:8791/api/sessions/a0b1c2d3e4f5/sleep");
+    assert.equal(options.method, "POST");
+    assert.equal(options.headers.authorization, `Bearer ${token}`);
+    assert.equal(options.timeout, false);
+    assert.notEqual(options.signal, caller.signal);
+    assert.equal(options.signal.aborted, false);
+    return new Promise((_, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    });
+  });
+  try {
+    const manifest = fixtureManifest(root, { tokenFile });
+    const pending = sleepSession(manifest, "a0b1c2d3e4f5", caller.signal);
+    caller.abort(new Error("caller cancelled"));
+    await assert.rejects(pending, /caller cancelled/u);
+    assert.equal(timeoutCalls, 1);
+    assert.equal(requestCalls, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Hatch status helper reads the public owned-session route and redacts its token", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "scotty-lab-hatch-"));

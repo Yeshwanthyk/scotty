@@ -49,6 +49,10 @@ the actual pinned package-manager bootstrap to finish. Call the native
 tool receipt to that turn and read the public Hatch status for the same service, port, and running
 state. Request the health route through the supported public URL, then sleep and resume the exact
 session. Call Hatch status again and require a fresh native receipt plus a healthy restored
-service. Capture startup failures and restore failures as separate states. Vaporize only that
+service. Capture startup failures and restore failures as separate states. Include a prepared dependency-heavy workspace in this
+check: record backup size and actor phase timestamps, and verify backup work can exceed five
+minutes without exhausting the ten-minute Sleep/Resume deadline. A client timeout is ambiguous;
+read the actor before retrying, and never repeat a mutation while its transition is active.
+Verify the restored Codex thread is unchanged and its runtime generation is new. Then vaporize that
 owned session and retain the evidence. This deployed path is unproven until a passing run records
 each assertion; neither the local fixture nor the image gate establishes public exposure.

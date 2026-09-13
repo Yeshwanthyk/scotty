@@ -18,11 +18,14 @@ const networkError = (): CliError =>
     EXIT.GENERIC,
   );
 
-const timeoutError = (): CliError =>
+const MUTATION_OUTCOME_HINT =
+  "Inspect the authoritative session state before retrying; the mutation may have completed.";
+
+const timeoutError = (method: string): CliError =>
   new CliError(
     "timeout",
     "Request timed out",
-    "Check --host and your network, then retry.",
+    method === "GET" ? "Check --host and your network, then retry." : MUTATION_OUTCOME_HINT,
     EXIT.GENERIC,
   );
 
@@ -57,6 +60,7 @@ export type ApiRequestTarget =
 
 export interface ApiRequestOptions {
   readonly acceptedStatuses?: ReadonlyArray<number>;
+  readonly timeoutMs?: number;
 }
 
 const requestHeaders = (target: ApiRequestTarget, init: RequestInit, method: string): Headers => {
@@ -107,14 +111,34 @@ export const apiRequest = Effect.fnUntraced(function* (
 ) {
   const transport = yield* HttpTransport;
   const method = init.method || "GET";
-  const timeout = method === "GET" ? DEFAULT_REQUEST_TIMEOUT_MS : MUTATION_REQUEST_TIMEOUT_MS;
+  const timeout =
+    options.timeoutMs ??
+    (method === "GET" ? DEFAULT_REQUEST_TIMEOUT_MS : MUTATION_REQUEST_TIMEOUT_MS);
   const headers = requestHeaders(target, init, method);
-  const responseOption = yield* transport
-    .fetch(`${target.host}${path}`, { ...init, headers })
-    .pipe(Effect.timeoutOption(timeout));
-  if (Option.isNone(responseOption)) return yield* timeoutError();
-  const response = responseOption.value;
-  const bytes = yield* readLimited(response);
+  const controller = new AbortController();
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, controller.signal])
+    : controller.signal;
+  const responseOption = yield* Effect.gen(function* () {
+    const response = yield* transport.fetch(`${target.host}${path}`, { ...init, headers, signal });
+    const bytes = yield* readLimited(response);
+    return { response, bytes };
+  }).pipe(
+    Effect.ensuring(Effect.sync(() => controller.abort())),
+    Effect.mapError((error) =>
+      method !== "GET" && error.code === "network_error"
+        ? new CliError(
+            "network_error",
+            "Could not reach the Scotty Worker",
+            MUTATION_OUTCOME_HINT,
+            EXIT.GENERIC,
+          )
+        : error,
+    ),
+    Effect.timeoutOption(timeout),
+  );
+  if (Option.isNone(responseOption)) return yield* timeoutError(method);
+  const { response, bytes } = responseOption.value;
   if (!response.ok && !options.acceptedStatuses?.includes(response.status))
     return yield* responseError(target, response, bytes);
   return { response, bytes };

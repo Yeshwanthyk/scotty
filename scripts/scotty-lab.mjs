@@ -868,7 +868,13 @@ export async function sleepSession(manifest, sessionId, signal) {
     {
       method: "POST",
       headers: { authorization: `Bearer ${rootToken}` },
-      signal,
+      // The actor permits ten minutes for backup work. Keep this request bounded
+      // while disabling Bun's independent five-minute socket idle timeout.
+      signal: AbortSignal.any([
+        AbortSignal.timeout(11 * 60_000),
+        ...(signal === undefined ? [] : [signal]),
+      ]),
+      timeout: false,
     },
   );
   const body = redact(await response.text(), [rootToken]);

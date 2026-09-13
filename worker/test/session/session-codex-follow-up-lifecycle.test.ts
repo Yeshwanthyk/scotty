@@ -12,6 +12,8 @@ import {
 } from "../support/session-harness";
 import { makeSessionRecord } from "../support";
 import { assert, describe, it } from "@effect/vitest";
+import { Effect } from "effect";
+import { TestClock } from "effect/testing";
 
 const CODEX_SELECTION = {
   agent: "codex",
@@ -57,9 +59,11 @@ const interruptedSnapshot = (): typeof CodexSnapshot.Type =>
 const makeCodexHarness = async (
   containerFetch: HarnessOptions["containerFetch"],
   containerPlacementId = CODEX_INCARNATION,
+  clock?: HarnessOptions["clock"],
 ): Promise<SessionHarness> => {
   const harness = await createSessionHarness({
     containerPlacementId,
+    clock,
     initialEntries: {
       [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({ id: SESSION_ID }),
     },
@@ -67,8 +71,8 @@ const makeCodexHarness = async (
   });
   const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
   const metadata = harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata);
-  if (authority === undefined || metadata === undefined)
-    throw new Error("Codex fixture did not seed actor state");
+  assert.isDefined(authority, "Codex fixture did not seed actor authority");
+  assert.isDefined(metadata, "Codex fixture did not seed actor metadata");
   harness.memory.values.set(sessionHarnessKeys.actorAuthority, {
     ...authority,
     session: { ...authority.session, selection: CODEX_SELECTION },
@@ -158,46 +162,60 @@ describe("Codex follow-up lifecycle ownership", () => {
     assert.isUndefined(harness.read(queueKey));
   });
 
-  it("preserves pending work while sleep stops the native runtime", async () => {
-    let posts = 0;
-    let saves = 0;
-    const harness = await makeCodexHarness(async (request) => {
-      const path = new URL(request.url).pathname;
-      if (path === "/save") {
-        saves++;
-        return Response.json({
-          generation: CODEX_GENERATION,
-          threadId: CODEX_THREAD,
-          initialTurnId: CODEX_TURN,
-        });
-      }
-      const generation = request.headers.get("x-scotty-codex-generation") ?? CODEX_GENERATION;
-      if (path === "/message") {
-        posts++;
-        return Response.json(
-          { generation, threadId: CODEX_THREAD, turnId: "after-resume-turn" },
-          { status: 202 },
-        );
-      }
-      return Response.json({
-        ...(saves === 0 ? runningSnapshot() : interruptedSnapshot()),
-        generation,
-        turns: [{ id: CODEX_TURN, state: "aborted", user: "initial", assistant: "", tools: [] }],
-      });
-    });
-    await harness.sandbox.steerScottyCodexSession("After resume", "sleep-item", "followUp");
-    const result = await harness.sandbox.sleepScottySession();
-    assert.equal(result.status, "sleeping");
-    assert.equal(saves, 1);
-    assert.deepStrictEqual(harness.read<CodexFollowUps>(queueKey)?.pending, [
-      { id: "sleep-item", text: "After resume" },
-    ]);
-    await harness.sandbox.drainCodexFollowUps();
-    assert.equal(posts, 0);
-    assert.deepStrictEqual(harness.read<CodexFollowUps>(queueKey)?.pending, [
-      { id: "sleep-item", text: "After resume" },
-    ]);
-  });
+  it.effect("preserves pending work while sleep stops the native runtime", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-01-01T00:01:00.000Z"));
+      let posts = 0;
+      let saves = 0;
+      const harness = yield* Effect.promise(() =>
+        makeCodexHarness(
+          async (request) => {
+            const path = new URL(request.url).pathname;
+            if (path === "/save") {
+              saves++;
+              return Response.json({
+                generation: CODEX_GENERATION,
+                threadId: CODEX_THREAD,
+                initialTurnId: CODEX_TURN,
+              });
+            }
+            const generation = request.headers.get("x-scotty-codex-generation") ?? CODEX_GENERATION;
+            if (path === "/message") {
+              posts++;
+              return Response.json(
+                { generation, threadId: CODEX_THREAD, turnId: "after-resume-turn" },
+                { status: 202 },
+              );
+            }
+            return Response.json({
+              ...(saves === 0 ? runningSnapshot() : interruptedSnapshot()),
+              generation,
+              turns: [
+                { id: CODEX_TURN, state: "aborted", user: "initial", assistant: "", tools: [] },
+              ],
+            });
+          },
+          CODEX_INCARNATION,
+          clock,
+        ),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.steerScottyCodexSession("After resume", "sleep-item", "followUp"),
+      );
+      const result = yield* Effect.promise(() => harness.sandbox.sleepScottySession());
+      assert.equal(result.status, "sleeping");
+      assert.equal(saves, 1);
+      assert.deepStrictEqual(harness.read<CodexFollowUps>(queueKey)?.pending, [
+        { id: "sleep-item", text: "After resume" },
+      ]);
+      yield* Effect.promise(() => harness.sandbox.drainCodexFollowUps());
+      assert.equal(posts, 0);
+      assert.deepStrictEqual(harness.read<CodexFollowUps>(queueKey)?.pending, [
+        { id: "sleep-item", text: "After resume" },
+      ]);
+    }),
+  );
   it.each([
     { receiptFound: true, expectedOutcome: "confirmed" },
     { receiptFound: false, expectedOutcome: "unknown" },
