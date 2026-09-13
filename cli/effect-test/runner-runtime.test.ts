@@ -497,11 +497,18 @@ describe("RunnerRuntime", () => {
         const interruptFiber = yield* Fiber.interrupt(stubbornFiber).pipe(Effect.forkChild);
         yield* TestClock.adjust("2 seconds");
         yield* Fiber.join(interruptFiber);
-        const processProbe = Result.try({
-          try: () => process.kill(pid, 0),
-          catch: () => false,
-        });
-        const processAlive = Result.isSuccess(processProbe) ? processProbe.success : false;
+        let processAlive = true;
+        // The virtual kill timeout has elapsed, but Linux can expose the PID until the OS reaps it.
+        for (let attempt = 0; attempt < 200 && processAlive; attempt++) {
+          const processProbe = Result.try({
+            try: () => process.kill(pid, 0),
+            catch: () => false,
+          });
+          processAlive = Result.isSuccess(processProbe) ? processProbe.success : false;
+          if (processAlive) {
+            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+          }
+        }
         assert.isFalse(processAlive);
         assertFailure(
           yield* runtime.handle(remove("remove-stubborn-blocked", stubbornSession)),

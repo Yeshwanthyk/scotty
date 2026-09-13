@@ -13,7 +13,15 @@ import {
   Flag,
   GlobalFlag,
 } from "effect/unstable/cli";
-import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
+import {
+  CliError,
+  EXIT,
+  MUTATION_REQUEST_TIMEOUT_MS,
+  VERSION,
+  type ExitCode,
+  type GlobalOptions,
+  type Writer,
+} from "./core";
 import { managedInstallationPath } from "./managed-installation-path.mjs";
 import {
   deploymentPlanPath,
@@ -2547,7 +2555,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       `/api/sessions/${encodeURIComponent(sessionId)}` +
       (command === "vaporize" ? "" : command === "checkpoint" ? "/checkpoint" : `/${command}`);
     const method = command === "vaporize" ? "DELETE" : "POST";
-    const raw = yield* requestJson(auth, path, { method });
+    const timeoutMs = {
+      checkpoint: MUTATION_REQUEST_TIMEOUT_MS,
+      resume: 11 * 60_000,
+      vaporize: MUTATION_REQUEST_TIMEOUT_MS,
+    }[command];
+    const raw = yield* requestJson(auth, path, { method }, { timeoutMs });
     if (command === "vaporize") {
       const decoded = decodeVaporizeResponse(raw);
       if (Option.isNone(decoded) || decoded.value.id !== sessionId)

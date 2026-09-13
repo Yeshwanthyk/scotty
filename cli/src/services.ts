@@ -594,7 +594,17 @@ export const cliLayer = (
     Layer.succeed(HttpTransport)({
       fetch: (input, init) =>
         Effect.tryPromise({
-          try: (signal) => dependencies.fetch(input, { ...init, signal }),
+          try: (signal) => {
+            // Bun's five-minute socket idle timer can precede the lifecycle deadline.
+            // apiRequest owns the bounded deadline and interrupts this signal.
+            // Bun 1.3.13 fetch.zig supports timeout:false; its types omit this option.
+            const request = {
+              ...init,
+              signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+              timeout: false,
+            };
+            return dependencies.fetch(input, request);
+          },
           catch: networkFailure,
         }),
     }),

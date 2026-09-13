@@ -417,6 +417,7 @@ const provesRecoveredTransition = (
 };
 
 const ABANDONED_OPERATION_MS = 5 * 60_000;
+const BACKUP_LIFECYCLE_OPERATION_MS = 10 * 60_000;
 const ACTIVITY_OBSERVATION_TTL_MS = 90_000;
 const PASSIVE_PI_CONSOLE_MAX_HEADER_BYTES = 8 * 1024;
 const PASSIVE_PI_CONSOLE_REQUEST_HEADERS = ["accept", "content-type", "last-event-id"] as const;
@@ -3607,7 +3608,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
       nonce: crypto.randomUUID(),
       attempt: crypto.randomUUID(),
       timestamp: new Date(now).toISOString(),
-      deadlineAt: new Date(now + ABANDONED_OPERATION_MS).toISOString(),
+      deadlineAt: new Date(
+        kind === "Checkpoint"
+          ? now + ABANDONED_OPERATION_MS
+          : Math.min(
+              now + BACKUP_LIFECYCLE_OPERATION_MS,
+              kind === "Sleep" ? Date.parse(current.authority.hardCap.deadlineAt) : Infinity,
+            ),
+      ).toISOString(),
     };
     const request =
       kind === "Resume"
@@ -3622,6 +3630,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
             return {
               ...baseRequest,
               kind,
+              deadlineAt: new Date(
+                Math.min(
+                  now + BACKUP_LIFECYCLE_OPERATION_MS,
+                  now + snapshot.authority.hardCap.durationSeconds * 1_000,
+                ),
+              ).toISOString(),
               nextHardCap: {
                 durationSeconds: snapshot.authority.hardCap.durationSeconds,
                 deadlineAt: new Date(

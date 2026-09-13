@@ -503,6 +503,106 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.ok(harness.events.includes("host:restoreBackup"));
   });
 
+  it.effect("allows bounded backup work for Sleep and Resume without extending Checkpoint", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      const startedAt = Date.parse("2026-09-03T00:00:00.000Z");
+      yield* clock.setTime(startedAt);
+      const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      const deadline = () => {
+        const when = harness.schedules
+          .filter((schedule) => schedule.callback === "sessionActorDeadline")
+          .at(-1)?.when;
+        assert.instanceOf(when, Date);
+        return when.toISOString();
+      };
+
+      yield* Effect.promise(() => harness.sandbox.checkpointScottySession());
+      assert.strictEqual(deadline(), new Date(startedAt + 5 * 60_000).toISOString());
+
+      yield* Effect.promise(() => harness.sandbox.sleepScottySession());
+      assert.strictEqual(deadline(), new Date(startedAt + 10 * 60_000).toISOString());
+
+      yield* Effect.promise(() => harness.sandbox.resumeScottySession());
+      assert.strictEqual(deadline(), new Date(startedAt + 10 * 60_000).toISOString());
+
+      const shortCap = yield* Effect.promise(() => createSessionHarness({ clock }));
+      yield* Effect.promise(() =>
+        shortCap.sandbox.createScottySession(
+          { ...CREATE_INPUT, hardCapSeconds: 360 },
+          SESSION_ID,
+          CREATE_IDEMPOTENCY,
+        ),
+      );
+      yield* Effect.promise(() => shortCap.sandbox.sleepScottySession());
+      const shortSleepDeadline = shortCap.schedules
+        .filter((schedule) => schedule.callback === "sessionActorDeadline")
+        .at(-1)?.when;
+      assert.instanceOf(shortSleepDeadline, Date);
+      assert.strictEqual(
+        shortSleepDeadline.toISOString(),
+        new Date(startedAt + 360_000).toISOString(),
+      );
+      yield* Effect.promise(() => shortCap.sandbox.resumeScottySession());
+      const shortResumeDeadline = shortCap.schedules
+        .filter((schedule) => schedule.callback === "sessionActorDeadline")
+        .at(-1)?.when;
+      assert.instanceOf(shortResumeDeadline, Date);
+      assert.strictEqual(
+        shortResumeDeadline.toISOString(),
+        new Date(startedAt + 360_000).toISOString(),
+      );
+    }),
+  );
+
+  it.effect("keeps a confirmed backup owned while a restore exceeds five minutes", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
+      const releaseRestore = deferred<void>();
+      let blockRestore = false;
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          restoreBackupGate: () => (blockRestore ? releaseRestore.promise : undefined),
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      yield* Effect.promise(() => harness.sandbox.sleepScottySession());
+      blockRestore = true;
+      const resume = harness.sandbox.resumeScottySession();
+      while (harness.events.filter((event) => event === "host:restoreBackup").length < 2)
+        yield* Effect.yieldNow;
+
+      yield* clock.adjust(5 * 60_000 + 1_000);
+      const inProgress = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        inProgress !== undefined &&
+          Predicate.isTagged(inProgress.state, "Transitioning") &&
+          Predicate.isTagged(inProgress.state.transition, "Resume"),
+      );
+      assert.strictEqual(inProgress.state.transition.phase, "WatchdogArmed");
+      assert.strictEqual(inProgress.state.transition.proof.backup.backupId, "backup-1");
+      const alarm = harness.schedules
+        .filter((schedule) => schedule.callback === "sessionActorDeadline")
+        .at(-1);
+      assert.isDefined(alarm);
+      yield* Effect.promise(() => harness.sandbox.sessionActorDeadline(alarm.payload));
+      releaseRestore.resolve();
+      const resumed = yield* Effect.promise(() => resume);
+      assert.strictEqual(resumed.status, "warm");
+      assert.strictEqual(
+        harness.events.filter((event) => event === "host:restoreBackup").length,
+        2,
+      );
+    }),
+  );
+
   it("restores the session's pinned environment after cloud settings change", async () => {
     let cloudSettings: CloudSettingsSnapshot = {
       revision: 3,
