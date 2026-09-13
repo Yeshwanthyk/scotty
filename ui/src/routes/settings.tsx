@@ -10,6 +10,8 @@ import { ResourcesSection } from "../components/ResourcesSection";
 import {
   addRepository,
   readCredentials,
+  useGithubTokenPermissions,
+  type CredentialStatus,
   readCloudSettings,
   readRepositories,
   readResources,
@@ -440,7 +442,7 @@ function SettingsRoute() {
           <ConnectionsSection
             principal={principal}
             credentials={credentials}
-            onRefresh={() => void router.invalidate()}
+            onRefresh={() => router.invalidate()}
           />
         </div>
         {(pane === "agents" || pane === "environment") && (
@@ -821,16 +823,28 @@ function ConnectionsSection({
   onRefresh,
 }: {
   readonly principal: SettingsResult<CurrentPrincipal>;
-  readonly credentials: SettingsResult<
-    ReadonlyArray<{
-      name: string;
-      kind: "pi-auth" | "github-cli";
-      configured: boolean;
-      expires?: number;
-    }>
-  >;
-  readonly onRefresh: () => void;
+  readonly credentials: SettingsResult<ReadonlyArray<CredentialStatus>>;
+  readonly onRefresh: () => Promise<void>;
 }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const owner = principal.ok && principal.value.role === "owner";
+  const widenAccess = async (credential: CredentialStatus) => {
+    if (busy !== null) return;
+    setBusy(credential.name);
+    setError(null);
+    try {
+      const result = await useGithubTokenPermissions(credential);
+      if (!result.ok) setError(result.failure.message);
+      await onRefresh();
+    } catch {
+      setError(
+        "Connections could not be refreshed. Refresh access to check the current repository coverage.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
   return (
     <section id="connections" {...stylex.props(styles.section)}>
       <div {...stylex.props(styles.form)}>
@@ -843,7 +857,7 @@ function ConnectionsSection({
           </span>
         </div>
         <div {...stylex.props(styles.controls)}>
-          <Button variant="quiet" onClick={onRefresh}>
+          <Button variant="quiet" disabled={busy !== null} onClick={() => void onRefresh()}>
             <RefreshCw aria-hidden {...stylex.props(styles.icon)} />
             Refresh access
           </Button>
@@ -852,11 +866,32 @@ function ConnectionsSection({
             <code>scotty sync --help</code> for options.
           </span>
         </div>
+        {error !== null ? <ErrorMessage message={error} /> : null}
         <div {...stylex.props(styles.table)}>
           {credentials.ok && credentials.value.length > 0 ? (
             credentials.value.map((credential) => (
               <div key={credential.name} {...stylex.props(styles.repoRow)}>
-                <span {...stylex.props(styles.repoName)}>{credential.name}</span>
+                <div {...stylex.props(styles.repoName)}>
+                  <span>{credential.name}</span>
+                  {credential.kind === "github-cli" ? (
+                    <p {...stylex.props(styles.muted)}>
+                      {credential.scope === "global"
+                        ? "All repositories this token can access"
+                        : `Selected repositories: ${credential.repositories?.join(", ") ?? "none"}`}
+                    </p>
+                  ) : null}
+                  {owner &&
+                  credential.kind === "github-cli" &&
+                  credential.scope === "repository" ? (
+                    <Button
+                      variant="quiet"
+                      disabled={busy !== null}
+                      onClick={() => void widenAccess(credential)}
+                    >
+                      {busy === credential.name ? "Updating…" : "Use all accessible repos"}
+                    </Button>
+                  ) : null}
+                </div>
                 <span {...stylex.props(styles.muted)}>
                   {!credential.configured
                     ? "needs refresh"

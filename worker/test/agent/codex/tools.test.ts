@@ -87,6 +87,13 @@ it("projects Hatch and evidence calls with safe labels and bounded result refere
       },
     }),
   );
+  const beforeDescription = tools.snapshot().sequence;
+  tools.acceptDynamicCall("hatch-1", {
+    displayText: "Starting the invoice preview",
+    argv: ["private"],
+  });
+  assert.equal(tools.snapshot().sequence, beforeDescription + 1);
+  assert.equal(tools.snapshot().tools[0]?.label, "Starting the invoice preview");
   tools.acceptDynamicResult("hatch-1", "scotty-hatch:proof");
   tools.accept(
     decode({
@@ -134,7 +141,12 @@ it("projects Hatch and evidence calls with safe labels and bounded result refere
       .snapshot()
       .tools.map(({ label, invocation, state, output }) => ({ label, invocation, state, output })),
     [
-      { label: "Hatch", invocation: "Hatch", state: "completed", output: "scotty-hatch:proof" },
+      {
+        label: "Starting the invoice preview",
+        invocation: "Hatch",
+        state: "completed",
+        output: "scotty-hatch:proof",
+      },
       {
         label: "Browser evidence",
         invocation: "Browser evidence",

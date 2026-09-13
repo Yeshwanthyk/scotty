@@ -134,6 +134,7 @@ const credentialRegistry = vi.hoisted(() => ({
   release: vi.fn(),
   statuses: vi.fn(),
   upsert: vi.fn(),
+  useTokenPermissions: vi.fn(),
 }));
 
 import { createDeterministicTarGz } from "../../../cli/src/sandbox-archive";
@@ -1058,6 +1059,45 @@ describe("real Hono boundary", () => {
     expect(updated.status).toBe(200);
     await expect(updated.json()).resolves.toEqual(status);
     expect(credentialRegistry.upsert).toHaveBeenCalledWith(input);
+  });
+
+  it("widens GitHub repository coverage through the owner metadata action", async () => {
+    const input = {
+      name: "github",
+      scope: "repository",
+      repositories: ["owner/old"],
+      expectedVersionRef: "a".repeat(64),
+    };
+    const value = {
+      name: "github",
+      kind: "github-cli",
+      scope: "global",
+      configured: true,
+      versionRef: input.expectedVersionRef,
+    };
+    credentialRegistry.useTokenPermissions.mockResolvedValueOnce({ ok: true, value });
+    const response = await app.request(
+      "/api/credentials/github/use-token-permissions",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(input),
+      },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(value);
+    expect(credentialRegistry.useTokenPermissions).toHaveBeenCalledWith(input);
+    const invalid = await app.request(
+      "/api/credentials/other/use-token-permissions",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(input),
+      },
+      env(),
+    );
+    expect(invalid.status).toBe(400);
   });
 
   it("does not expose full credential replacement", async () => {
@@ -4049,6 +4089,14 @@ describe("real Hono boundary", () => {
       },
     });
     const requests: ReadonlyArray<readonly [string, RequestInit]> = [
+      [
+        "/api/credentials/github/use-token-permissions",
+        {
+          method: "POST",
+          headers: { origin: "http://localhost", "content-type": "application/json" },
+          body: "{}",
+        },
+      ],
       ["/api/auth/clients", {}],
       ["/api/auth/owner-transfers/current", {}],
       [

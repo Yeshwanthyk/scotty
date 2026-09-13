@@ -14,6 +14,7 @@ import scottyHatch, {
   loadRepositoryHatchConfig,
   ScottyHatchManager,
   ScottyHatchParameters,
+  ScottyHatchToolParameters,
   SCOTTY_HATCH_MAX_BYTES,
   SCOTTY_HATCH_RESTORE_ROUTE,
   SCOTTY_HATCH_ROUTE,
@@ -130,6 +131,31 @@ test("loads and normalizes strict repository-root hatch.toml", async () => {
   });
 });
 
+test("accepts bounded display metadata for each Hatch operation", () => {
+  for (const input of [
+    ensureInput(),
+    { operation: "ensure" },
+    { operation: "status" },
+    { operation: "close" },
+  ]) {
+    assert.equal(
+      Check(ScottyHatchToolParameters, { ...input, displayText: "Starting the invoice preview" }),
+      true,
+    );
+    for (const displayText of [
+      42,
+      "",
+      "x".repeat(181),
+      "Trailing newline\n",
+      "Unicode\u2028separator",
+      "Unicode\u2029separator",
+      "Starting\npreview",
+    ]) {
+      assert.equal(Check(ScottyHatchToolParameters, { ...input, displayText }), false);
+    }
+  }
+});
+
 test("rejects malformed TOML, unknown fields, unsafe cwd, and an absent config", async () => {
   const malformed = await workspace();
   await writeFile(join(malformed.root, "hatch.toml"), '[hatch\nservice = "web"\n');
@@ -222,7 +248,10 @@ test("starts one process group with an allow-listed environment and registers so
   process.env.SCOTTY_SESSION_ID = "abcdef123456";
   process.env.TEST_HATCH_CREDENTIAL = "real-secret";
   try {
-    const result = await manager.run(ensureInput());
+    const result = await manager.run({
+      ...ensureInput(),
+      displayText: "Starting the invoice preview",
+    });
     assert.equal(result.reference, "scotty-hatch:hatch-abcd1234");
     assert.equal(result.process.status, "running");
     assert.match(result.process.stdoutTail, /\[url redacted\]/u);

@@ -148,6 +148,7 @@ import {
   CREDENTIAL_REGISTRY_UPSERT_MAX_BODY_BYTES,
   decodeCredentialRegistryResolvedCredentialResult,
   decodeCredentialRegistryUpsertInputResult,
+  decodeCredentialRegistryUseTokenPermissionsInputResult,
 } from "./credentials/contracts";
 import {
   CLOUD_SETTINGS_MAX_BODY_BYTES,
@@ -505,6 +506,25 @@ app.put("/api/credentials/:name", async (c) => {
   return c.json(
     unwrapCredentialRegistryRpc(await credentialRegistry(c.env).upsert(decoded.success)),
   );
+});
+
+app.post("/api/credentials/:name/use-token-permissions", async (c) => {
+  requireAuthScope(c.get("auth"), "access:write");
+  requireJsonContentType(c.req.raw);
+  const bodyText = await readBoundedUtf8Body(c.req.raw, CREDENTIAL_REGISTRY_UPSERT_MAX_BODY_BYTES);
+  if (bodyText === undefined) throw badRequest("Credential request body exceeds the size limit");
+  const body = decodeJsonValue(bodyText);
+  if (Option.isNone(body)) throw badRequest("Credential request must be valid JSON");
+  const decoded = decodeCredentialRegistryUseTokenPermissionsInputResult(body.value);
+  if (Result.isFailure(decoded)) throw badRequest("Credential request is invalid");
+  if (decoded.success.name !== c.req.param("name"))
+    throw badRequest("Credential name does not match the request path");
+  const result = await credentialRegistry(c.env).useTokenPermissions(decoded.success);
+  if (!result.ok && result.error.reason === "credential_conflict")
+    throw conflict(
+      "Repository access changed or another connection already covers all repositories. Refresh Connections and review the current coverage.",
+    );
+  return c.json(unwrapCredentialRegistryRpc(result));
 });
 
 app.get("/api/settings", async (c) => {
@@ -1845,7 +1865,13 @@ async function verifyRepository(
   const resolved = await registry.resolveGithubCliCredential({ repository: repo });
   if (!resolved.ok) {
     console.error("GitHub credential resolution failed", { reason: resolved.error.reason });
-    throw new ScottyError("upstream", "Repository verification failed", {
+    const message =
+      resolved.error.reason === "credential_missing"
+        ? "No GitHub connection covers this repository. Review Settings → Connections."
+        : resolved.error.reason === "credential_ambiguous"
+          ? "More than one GitHub connection matches this repository. Review Settings → Connections."
+          : "Repository verification failed";
+    throw new ScottyError("upstream", message, {
       httpStatus: 502,
       exitCode: 1,
       hint: "GitHub repository verification did not complete; retry the request",

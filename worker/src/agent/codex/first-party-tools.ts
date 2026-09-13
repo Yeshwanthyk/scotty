@@ -1,10 +1,10 @@
 import {
   ScottyHatchManager,
-  ScottyHatchParameters,
+  ScottyHatchToolParameters,
 } from "../../../container/pi-packages/sources/scotty-hatch/index";
 import { Schema } from "effect";
 import {
-  BrowserEvidenceJobParameters,
+  BrowserEvidenceToolParameters,
   runScottyBrowserTest,
 } from "../../../container/pi-packages/sources/scotty-browser-test/index";
 
@@ -15,18 +15,18 @@ export const codexFirstPartyToolSpecs = [
     type: "function" as const,
     name: "scotty_hatch",
     description:
-      "Ensure, inspect, or close the current session's application Hatch. Ensure without service fields reads reviewed repository-root hatch.toml; if absent, do not retry. Use complete inline configuration only as a manual override. Include the exact returned scotty-hatch reference once in the next meaningful update; never publish ports, paths, argv, authority values, or URLs.",
+      "Ensure, inspect, or close the current session's application Hatch. Ensure without service fields reads reviewed repository-root hatch.toml; if absent, do not retry. Use complete inline configuration only as a manual override. Include the exact returned scotty-hatch reference once in the next meaningful update; never publish ports, paths, argv, authority values, or URLs. Include displayText on every call: a short phrase describing the intended task, not the tool name or a claim of success; omit credentials, URLs, and internal identifiers.",
     inputSchema: Schema.decodeUnknownSync(Schema.fromJsonString(Schema.JsonObject))(
-      JSON.stringify(ScottyHatchParameters),
+      JSON.stringify(ScottyHatchToolParameters),
     ),
   },
   {
     type: "function" as const,
     name: "scotty_browser_test",
     description:
-      "Run one bounded browser evidence job against an app port in this warm Scotty session. Use relative paths and declarative assertions. For user-visible changes, use the same flow before and after; enable video for the after run. Include the exact returned scotty-evidence reference once in the next meaningful update; never publish the authenticated summary URL.",
+      "Run one bounded browser evidence job against an app port in this warm Scotty session. Use relative paths and declarative assertions. For user-visible changes, use the same flow before and after; enable video for the after run. Include the exact returned scotty-evidence reference once in the next meaningful update; never publish the authenticated summary URL. Include displayText on every call: a short phrase describing the intended task, not the tool name or a claim of success; omit credentials, URLs, and internal identifiers.",
     inputSchema: Schema.decodeUnknownSync(Schema.fromJsonString(Schema.JsonObject))(
-      JSON.stringify(BrowserEvidenceJobParameters),
+      JSON.stringify(BrowserEvidenceToolParameters),
     ),
   },
 ] as const;

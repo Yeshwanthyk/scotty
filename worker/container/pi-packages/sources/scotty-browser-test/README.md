@@ -7,6 +7,11 @@ and submits it to Scotty's reserved internal container route. Every job captures
 step. A job with `capture.video: true` also returns one real browser-recorded WebM after the context
 closes. Browser, preview, storage, and session authority remain outside the container.
 
+Tool calls should include `displayText`, a plain, single-line phrase of at most 180 characters
+describing the intended task, such as `Checking the invoice checkout flow`. Pi and Codex show it
+as the conversation tool label. It is optional for compatibility and removed before the job is
+submitted to the evidence API; older calls retain their default labels.
+
 For a Showcase, run the same viewport, steps, and assertions before a change with video disabled,
 then after the change with video enabled. Publish both exact `scotty-evidence:<jobId>` references in
 the same final update.

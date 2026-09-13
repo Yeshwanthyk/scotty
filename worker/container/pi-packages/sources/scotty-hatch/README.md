@@ -6,6 +6,11 @@ It registers only `scotty_hatch`, with explicit `ensure`, `status`, and `close` 
 extension owns only its scoped child process group. Authoritative Hatch state and exposure remain
 in the source Sandbox Durable Object behind Scotty's credential-free internal container route.
 
+Tool calls should include `displayText`, a plain, single-line phrase of at most 180 characters
+describing the intended task, such as `Starting the invoice preview`. Pi and Codex show it as the
+conversation tool label. It is optional for compatibility and removed before execution requests;
+older calls retain their default labels. Native shell/edit tools do not expose this parameter.
+
 ## Repository configuration
 
 Set up Hatch by committing `hatch.toml` at the repository root:

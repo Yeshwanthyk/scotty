@@ -17,6 +17,7 @@ import {
   type PiConsoleSnapshot,
 } from "../../../protocol/pi-console";
 import { Effect, Option, Predicate, Result, Schema } from "effect";
+import { toolDisplayText } from "../../../protocol/tool-display-text";
 import { readBoundedJson } from "../shared/bounded-http";
 
 const decodePiConsoleSnapshot = Schema.decodeUnknownOption(PiConsoleSnapshotSchema, {
@@ -488,7 +489,7 @@ const toolDisplay = (
   return {
     id: stableIdentifier(tool.id, "tool", budget),
     state: active && tool.status === "running" ? "running" : tool.status,
-    label: semanticToolLabel(name),
+    label: toolDisplayText(tool.arguments) ?? semanticToolLabel(name),
     invocation,
     ...(output === undefined ? {} : { output }),
   };

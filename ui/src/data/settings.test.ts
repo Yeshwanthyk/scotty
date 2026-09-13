@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   addRepository,
+  useGithubTokenPermissions,
   decodeCloudSettings,
   decodeCloudSettingsSnapshot,
   readCloudSettings,
@@ -70,4 +71,46 @@ describe("cloud settings response boundaries", () => {
     );
     expect(fetchMock.mock.calls[3]?.[0]).toBe("/api/repos/acme/project");
   });
+});
+
+it("changes coverage with metadata only and surfaces conflicts", async () => {
+  const credential = {
+    name: "github",
+    kind: "github-cli",
+    scope: "repository",
+    repositories: ["owner/old"],
+    configured: true,
+    versionRef: "a".repeat(64),
+  } as const;
+  const updated = {
+    name: credential.name,
+    kind: credential.kind,
+    scope: "global",
+    configured: true,
+    versionRef: credential.versionRef,
+  };
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    Response.json(updated),
+  );
+  await expect(useGithubTokenPermissions(credential, { fetch: fetchMock })).resolves.toEqual({
+    ok: true,
+    value: updated,
+  });
+  const [path, init] = fetchMock.mock.calls[0] ?? [];
+  expect(path).toBe("/api/credentials/github/use-token-permissions");
+  expect(init?.method).toBe("POST");
+  expect(JSON.parse(String(init?.body))).toEqual({
+    name: "github",
+    scope: "repository",
+    repositories: ["owner/old"],
+    expectedVersionRef: credential.versionRef,
+  });
+  const conflict = await useGithubTokenPermissions(credential, {
+    fetch: async () =>
+      Response.json(
+        { error: { code: "conflict", message: "Repository access changed" } },
+        { status: 409 },
+      ),
+  });
+  expect(conflict).toMatchObject({ ok: false, failure: { message: "Repository access changed" } });
 });

@@ -145,6 +145,23 @@ export const CredentialRegistryUpsertInputSchema = Schema.Struct({
 });
 export type CredentialRegistryUpsertInput = typeof CredentialRegistryUpsertInputSchema.Type;
 
+export const CredentialRegistryUseTokenPermissionsInputSchema = Schema.Struct({
+  name: CredentialNameSchema,
+  expectedVersionRef: CredentialVersionRefSchema,
+  scope: CredentialScopeSchema,
+  ...CredentialRepositoryPolicyShape,
+}).check(
+  Schema.makeFilter(
+    ({ scope, repositories }) =>
+      scope === "global" ? repositories === undefined : repositories !== undefined,
+    { expected: "repository policy matching the credential scope" },
+  ),
+);
+export const decodeCredentialRegistryUseTokenPermissionsInputResult = Schema.decodeUnknownResult(
+  CredentialRegistryUseTokenPermissionsInputSchema,
+  { onExcessProperty: "error" },
+);
+
 export const CREDENTIAL_REGISTRY_UPSERT_MAX_BODY_BYTES = 1_048_576;
 
 export const CredentialRegistryStatusSchema = Schema.Struct({

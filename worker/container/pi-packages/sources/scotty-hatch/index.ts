@@ -109,6 +109,28 @@ export const ScottyHatchParameters = Type.Union([
 export type ScottyHatchInput = Static<typeof ScottyHatchParameters>;
 type EnsureInput = Static<typeof ExplicitEnsureParameters>;
 
+const displayText = Type.Optional(
+  Type.String({
+    minLength: 1,
+    maxLength: 180,
+    pattern: "^[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]*(?![\\s\\S])",
+    description:
+      "A short, plain-language phrase describing what this call is trying to achieve, for example 'Starting the invoice preview'. Use present tense; omit credentials, URLs, and internal identifiers.",
+  }),
+);
+export const ScottyHatchToolParameters = Type.Union([
+  Type.Object(
+    { ...ExplicitEnsureParameters.properties, displayText },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { ...RepositoryEnsureParameters.properties, displayText },
+    { additionalProperties: false },
+  ),
+  Type.Object({ ...StatusParameters.properties, displayText }, { additionalProperties: false }),
+  Type.Object({ ...CloseParameters.properties, displayText }, { additionalProperties: false }),
+]);
+
 const TimestampSchema = Type.String({ minLength: 20, maxLength: 64 });
 const ConfiguredStatusSchema = Type.Object(
   {
@@ -588,11 +610,12 @@ async function resolveRestoreWorkingDirectory(
 }
 
 function checkedInput(value: unknown): ScottyHatchInput {
-  if (!Check(ScottyHatchParameters, value))
+  if (!Check(ScottyHatchToolParameters, value))
     throw new Error("scotty_hatch input does not match the bounded operation schema");
   if (value.operation === "ensure" && "argv" in value && value.argv[0]?.length === 0)
     throw new Error("scotty_hatch argv[0] must not be empty");
-  return value;
+  const { displayText: _displayText, ...input } = value;
+  return input;
 }
 
 function configReadError(error: unknown): Error {
@@ -969,10 +992,11 @@ export default function scottyHatch(pi: ExtensionAPI): void {
       "Ensure, inspect, or close the one bounded application Hatch for the current warm Scotty session. Ensure loads strict repository-root hatch.toml configuration when service fields are omitted; complete inline configuration remains a manual override. If hatch.toml is absent, ensure is a no-op and must not be retried.",
     promptSnippet: "Manage the current session's bounded authenticated application Hatch",
     promptGuidelines: [
+      "Include displayText on every call: a short phrase describing the intended task, not the tool name or a claim of success. Omit credentials, URLs, and internal identifiers.",
       "Use scotty_hatch ensure without inline service fields only when the repository has a reviewed root hatch.toml; if it is absent, do not call or retry ensure. Use a complete explicit argv array and workspace-relative cwd only as a manual override. Never pass shell commands, environment variables, credentials, URLs, or inferred service identity.",
       "In the next meaningful progress or final update, include the returned exact scotty-hatch:<hatchId> reference once. Never invent or repeat a reference, and do not publish ports, paths, argv, authority values, or URLs.",
     ],
-    parameters: ScottyHatchParameters,
+    parameters: ScottyHatchToolParameters,
     async execute(_toolCallId, params, signal) {
       const result = await manager.run(params, signal);
       return {

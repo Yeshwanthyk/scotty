@@ -69,6 +69,12 @@ export class ScottyCredentialRegistry extends DurableObject<Bindings> {
     return this.#run(Effect.flatMap(CredentialStore, (store) => store.upsert(input)));
   }
 
+  useTokenPermissions(
+    input: unknown,
+  ): Promise<CredentialRegistryRpcResult<CredentialRegistryStatus>> {
+    return this.#run(Effect.flatMap(CredentialStore, (store) => store.useTokenPermissions(input)));
+  }
+
   statuses(): Promise<CredentialRegistryRpcResult<ReadonlyArray<CredentialRegistryStatus>>> {
     return this.#run(Effect.flatMap(CredentialStore, (store) => store.statuses));
   }
@@ -136,6 +142,7 @@ export type ScottyCredentialRegistryStub = Pick<
   | "resolveGithubCliCredential"
   | "statuses"
   | "upsert"
+  | "useTokenPermissions"
 >;
 
 export interface ScottyCredentialRegistryNamespace {

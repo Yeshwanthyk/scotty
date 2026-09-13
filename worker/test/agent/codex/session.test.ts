@@ -403,6 +403,10 @@ describe("scoped Codex session", () => {
           f.messages[2].params.dynamicTools?.map((tool) => tool.name),
           ["scotty_hatch", "scotty_browser_test"],
         );
+        for (const tool of f.messages[2].params.dynamicTools ?? []) {
+          assert.include(JSON.stringify(tool.inputSchema), '"displayText"');
+          assert.include(tool.description, "Include displayText on every call");
+        }
         const turn = yield* host.prompt("hello");
         yield* f.emit({
           method: "item/started",
@@ -426,7 +430,7 @@ describe("scoped Codex session", () => {
             callId: "call-1",
             namespace: null,
             tool: "scotty_hatch",
-            arguments: { operation: "status" },
+            arguments: { operation: "status", displayText: "Checking the invoice preview" },
           },
         };
         yield* f.emit(call);
@@ -455,6 +459,7 @@ describe("scoped Codex session", () => {
           params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
         });
         assert.equal((yield* turn.completed).status, "completed");
+        assert.equal(host.inspect().tools[0]?.label, "Checking the invoice preview");
         yield* host.stop;
         assert.equal(shutdown, 1);
       }),
