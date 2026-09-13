@@ -150,8 +150,8 @@ const ScopedAdvisoryMethod = Schema.Literals([
   "item/reasoning/summaryTextDelta",
   "item/reasoning/summaryPartAdded",
   "item/reasoning/textDelta",
-  "item/commandExecution/terminalInteraction",
 ]);
+const CommandInteractionAdvisory = Schema.Literal("item/commandExecution/terminalInteraction");
 const Advisory = Schema.Union([
   Schema.Struct({
     method: Schema.Literals([
@@ -173,9 +173,21 @@ const Advisory = Schema.Union([
     params: AdvisoryThread,
     emittedAtMs: AdvisoryTimestamp,
   }),
+  Schema.Struct({
+    method: CommandInteractionAdvisory,
+    params: Schema.Struct({
+      threadId: AdvisoryIdentifier,
+      turnId: AdvisoryIdentifier,
+      itemId: AdvisoryIdentifier,
+    }).annotate({ parseOptions: { onExcessProperty: "ignore" } }),
+    emittedAtMs: AdvisoryTimestamp,
+  }),
 ]);
 type AdvisoryMessage = typeof Advisory.Type;
-type ScopedAdvisory = Extract<AdvisoryMessage, { method: typeof ScopedAdvisoryMethod.Type }>;
+type ScopedAdvisory = Extract<
+  AdvisoryMessage,
+  { method: typeof ScopedAdvisoryMethod.Type | typeof CommandInteractionAdvisory.Type }
+>;
 type UpstreamFailure =
   ReturnType<typeof decodeUpstreamFailure> extends Effect.Effect<infer A, infer _E, infer _R>
     ? A
@@ -187,7 +199,8 @@ type BeforeAdmissionReply =
   | { readonly kind: "upstream"; readonly rejection: UpstreamFailure };
 const isScopedAdvisoryMethod = Schema.is(ScopedAdvisoryMethod);
 const isScopedAdvisory = (advisory: AdvisoryMessage): advisory is ScopedAdvisory =>
-  isScopedAdvisoryMethod(advisory.method);
+  isScopedAdvisoryMethod(advisory.method) ||
+  advisory.method === "item/commandExecution/terminalInteraction";
 const decodeGoalCleared = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
@@ -282,6 +295,7 @@ export const makeSession = Effect.fnUntraced(function* (
     source:
       | CodexNotification["method"]
       | typeof ScopedAdvisoryMethod.Type
+      | typeof CommandInteractionAdvisory.Type
       | "error"
       | "item/tool/call"
       | "thread/goal/cleared",
@@ -476,6 +490,7 @@ export const makeSession = Effect.fnUntraced(function* (
     readonly method:
       | CodexNotification["method"]
       | typeof ScopedAdvisoryMethod.Type
+      | typeof CommandInteractionAdvisory.Type
       | "item/tool/call"
       | "error";
     readonly threadId: string;
@@ -785,7 +800,16 @@ export const makeSession = Effect.fnUntraced(function* (
       ),
     );
   });
+  const isKnownLateTerminalInteraction = (advisory: AdvisoryMessage) =>
+    advisory.method === "item/commandExecution/terminalInteraction" &&
+    advisory.params.threadId === threadId &&
+    completedTurns.has(advisory.params.turnId) &&
+    commandOwners.get(advisory.params.turnId)?.has(advisory.params.itemId) === true;
   const handleAdvisory = Effect.fnUntraced(function* (advisory: AdvisoryMessage) {
+    if (isKnownLateTerminalInteraction(advisory)) {
+      discarded++;
+      return;
+    }
     if (
       isScopedAdvisory(advisory) &&
       (!active || advisory.params.threadId !== threadId || advisory.params.turnId !== active.id)
@@ -815,6 +839,8 @@ export const makeSession = Effect.fnUntraced(function* (
     const advisory = yield* decodeAdvisory(line).pipe(
       Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
     );
+    // Old owned command traffic must not be buffered as the pending new turn.
+    if (isKnownLateTerminalInteraction(advisory)) return yield* handleAdvisory(advisory);
     if (
       isScopedAdvisory(advisory) &&
       (yield* bufferBeforeAdmissionReply({ kind: "advisory", advisory }))

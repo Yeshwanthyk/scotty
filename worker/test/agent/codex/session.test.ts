@@ -33,6 +33,7 @@ type SessionFixtureMode =
   | "early-wrong-turn"
   | "early-tool"
   | "early-over-budget"
+  | "hold-second-reply"
   | "tool";
 
 const steerResponse = (mode: SessionFixtureMode, id: string | number, expectedTurnId: string) =>
@@ -49,6 +50,8 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
   const sent: Array<string> = [];
   const messages: Array<CodexClientMessage> = [];
   const toolResponses = yield* Queue.unbounded<CodexDynamicToolResponse>();
+  const secondTurnStarted = yield* Deferred.make<void>();
+  const releaseSecondTurn = yield* Deferred.make<void>();
   let turns = 0;
   const emit = (value: unknown) =>
     Queue.offer(stdout, new TextEncoder().encode(`${JSON.stringify(value)}\n`)).pipe(Effect.asVoid);
@@ -125,7 +128,8 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
     message: Extract<CodexClientMessage, { method: "turn/start" }>,
   ) {
     turns++;
-    const turnId = mode === "tool" && turns > 1 ? `turn-${turns}` : "turn";
+    const turnId =
+      (mode === "tool" || mode === "hold-second-reply") && turns > 1 ? `turn-${turns}` : "turn";
     const started = {
       method: "turn/started",
       params: {
@@ -186,6 +190,10 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
         method: "turn/completed",
         params: { threadId: "thread", turn: { id: turnId, status: "completed", items: [] } },
       });
+    if (mode === "hold-second-reply" && turns === 2) {
+      yield* Deferred.succeed(secondTurnStarted, undefined);
+      yield* Deferred.await(releaseSecondTurn);
+    }
     yield* emit({
       id: message.id,
       result: { turn: { id: turnId, status: "inProgress", items: [] } },
@@ -280,6 +288,8 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
     sent,
     messages,
     toolResponses,
+    secondTurnStarted,
+    releaseSecondTurn,
     stopped: () => stopped,
     emit,
     exited,
@@ -1045,6 +1055,136 @@ describe("scoped Codex session", () => {
       assert.equal(host.inspect().ready, true);
       yield* f.emit(completion);
       assert.equal((yield* host.closed).failure, "stale_notification");
+    }),
+  );
+
+  it.effect(
+    "discards a late terminal interaction for the original command while idle and during a new turn",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture("tool");
+        const host = yield* makeSession(f.transport);
+        const first = yield* host.prompt("first");
+        yield* f.emit({
+          method: "item/started",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            item: {
+              type: "commandExecution",
+              id: "command",
+              command: "sleep 90",
+              status: "inProgress",
+            },
+          },
+        });
+        yield* f.emit({
+          method: "turn/completed",
+          params: { threadId: "thread", turn: { id: "turn", status: "interrupted", items: [] } },
+        });
+        assert.equal((yield* first.completed).status, "interrupted");
+        const interaction = {
+          method: "item/commandExecution/terminalInteraction",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            itemId: "command",
+            processId: "private-process",
+            stdin: "private-input",
+          },
+        } as const;
+        yield* f.emit(interaction);
+        yield* TestClock.adjust(1);
+        assert.equal(host.inspect().ready, true);
+        const second = yield* host.prompt("queued follow-up");
+        assert.equal(second.turnId, "turn-2");
+        yield* f.emit(interaction);
+        yield* TestClock.adjust(1);
+        assert.equal(host.inspect().ready, true);
+        assert.equal(host.inspect().failure, null);
+        assert.notInclude(JSON.stringify(host.inspect()), "private-input");
+        yield* f.emit({
+          method: "turn/completed",
+          params: { threadId: "thread", turn: { id: "turn-2", status: "completed", items: [] } },
+        });
+        assert.equal((yield* second.completed).status, "completed");
+        yield* host.stop;
+      }),
+  );
+
+  it.effect("rejects a late terminal interaction without command ownership", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("tool");
+      const host = yield* makeSession(f.transport);
+      const first = yield* host.prompt("first");
+      yield* f.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "command",
+            command: "sleep 90",
+            status: "inProgress",
+          },
+        },
+      });
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: "turn", status: "interrupted", items: [] } },
+      });
+      yield* first.completed;
+      yield* host.prompt("queued follow-up");
+      yield* f.emit({
+        method: "item/commandExecution/terminalInteraction",
+        params: { threadId: "thread", turnId: "turn", itemId: "unknown-command" },
+      });
+      assert.equal((yield* host.closed).failure, "stale_notification");
+    }),
+  );
+
+  it.effect("does not buffer an old command interaction behind a pending new turn reply", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("hold-second-reply");
+      const host = yield* makeSession(f.transport);
+      const first = yield* host.prompt("first");
+      yield* f.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "command",
+            command: "sleep 90",
+            status: "inProgress",
+          },
+        },
+      });
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: "turn", status: "interrupted", items: [] } },
+      });
+      yield* first.completed;
+      const secondFiber = yield* host.prompt("queued follow-up").pipe(Effect.forkChild);
+      yield* Deferred.await(f.secondTurnStarted);
+      yield* f.emit({
+        method: "item/commandExecution/terminalInteraction",
+        params: { threadId: "thread", turnId: "turn", itemId: "command" },
+      });
+      yield* TestClock.adjust(1);
+      assert.equal(host.inspect().ready, true);
+      assert.equal(host.inspect().failure, null);
+      yield* Deferred.succeed(f.releaseSecondTurn, undefined);
+      const second = yield* Fiber.join(secondFiber);
+      assert.equal(second.turnId, "turn-2");
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: "turn-2", status: "completed", items: [] } },
+      });
+      assert.equal((yield* second.completed).status, "completed");
+      yield* host.stop;
     }),
   );
 
