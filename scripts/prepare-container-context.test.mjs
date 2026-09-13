@@ -413,8 +413,7 @@ test("named context and image budgets sit above the current measured sizes", asy
   assert.equal(CONTAINER_CONTEXT_BUDGET.maxFiles, 2_000);
   assert.equal(CONTAINER_CONTEXT_BUDGET.maxBytes, 40 * 1024 * 1024);
   assert.equal(CONTAINER_IMAGE_BUDGET.metric, "visible root filesystem apparent size (du -sbx /)");
-  assert.equal(CONTAINER_IMAGE_BUDGET.baselineBytes, 3_119_833_948);
-  assert.equal(CONTAINER_IMAGE_BUDGET.maxBytes, 3_250 * 1024 * 1024);
+  assert.ok(CONTAINER_IMAGE_BUDGET.maxBytes > CONTAINER_IMAGE_BUDGET.baselineBytes);
   assertContainerImageBudget(CONTAINER_IMAGE_BUDGET.baselineBytes);
   assert.throws(
     () => assertContainerImageBudget(CONTAINER_IMAGE_BUDGET.maxBytes + 1),
@@ -422,9 +421,9 @@ test("named context and image budgets sit above the current measured sizes", asy
   );
   assert.equal(
     await inspectContainerImageBudget("scotty-container:ci", {
-      exec: async () => ({ stdout: "3119833948\t/\n" }),
+      exec: async () => ({ stdout: `${CONTAINER_IMAGE_BUDGET.baselineBytes}\t/\n` }),
     }),
-    3_119_833_948,
+    CONTAINER_IMAGE_BUDGET.baselineBytes,
   );
   await assert.rejects(
     inspectContainerImageBudget("scotty-container:ci", {

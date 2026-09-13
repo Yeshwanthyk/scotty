@@ -660,6 +660,15 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
       if (receipt.parent !== "exited")
         return yield* new CodexBridgeError({ code: "host_failed", outcome: "ambiguous" });
       reconcileLateCommands();
+      // No more terminal events can arrive through this generation. A tool still
+      // running here has no confirmed result and must not be restored as live.
+      for (const [index, turn] of history.entries())
+        history[index] = {
+          ...turn,
+          tools: turn.tools.map((tool) =>
+            tool.state === "running" ? { ...tool, state: "failed" as const } : tool,
+          ),
+        };
       const saved = yield* decodeSavedHistory({
         threadId: initial.threadId,
         initialTurnId: first.id,

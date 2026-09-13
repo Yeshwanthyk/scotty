@@ -1680,6 +1680,91 @@ test(
 );
 
 test(
+  "packaged native command reaches Go and Rust through the fixed execution environment",
+  { skip: process.env.SCOTTY_REQUIRE_CODEX_NATIVE !== "1", timeout: 60000 },
+  async (t) => {
+    const requests = [];
+    const server = createServer(async (req, res) => {
+      let text = "";
+      for await (const chunk of req) {
+        if (Buffer.byteLength(text) + chunk.length > 1024 * 1024) {
+          req.destroy();
+          return;
+        }
+        text += chunk.toString("utf8");
+      }
+      assert.equal(req.url, "/backend-api/codex/responses");
+      assert.equal(req.headers.authorization, `Bearer ${credential.sentinel}`);
+      const body = JSON.parse(text);
+      requests.push(body);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const send = (type, fields) =>
+        res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`);
+      send("response.created", {
+        response: { id: `resp-toolchain-${requests.length}`, status: "in_progress" },
+      });
+      const item =
+        requests.length === 1
+          ? {
+              type: "custom_tool_call",
+              id: "cm-toolchain",
+              call_id: "call-toolchain",
+              name: "exec",
+              input:
+                'text(await tools.exec_command({cmd: "go version && rustc --version && cargo --version", shell: "/bin/sh", login: false, yield_time_ms: 1000}));',
+            }
+          : {
+              type: "message",
+              id: "msg-toolchain",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "TOOLCHAIN_COMPLETE", annotations: [] }],
+            };
+      send("response.output_item.done", { output_index: 0, item });
+      send("response.completed", {
+        response: {
+          id: `resp-toolchain-${requests.length}`,
+          status: "completed",
+          output: [item],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      });
+      res.end();
+    });
+    await new Promise((done) => server.listen(0, "127.0.0.1", done));
+    let host;
+    t.after(async () => {
+      if (host) await host.stop();
+      server.closeAllConnections();
+      await new Promise((done) => server.close(done));
+    });
+    host = await startCodexSession({
+      binary: native,
+      runtimeDir: join(stage, "toolchain-runtime"),
+      workspace: join(stage, "toolchain-workspace"),
+      model: "gpt-6-astra",
+      effort: "ultra",
+      credential,
+      upstreamPort: server.address().port,
+    });
+    const turn = await host.prompt("Run the synthetic packaged toolchain command.");
+    const terminal = await turn.completed;
+    assert.equal(terminal.status, "completed");
+    assert.equal(requests.length, 2);
+    const result = requests[1].input.find(
+      (input) => input.type === "custom_tool_call_output" && input.call_id === "call-toolchain",
+    );
+    assert.ok(result);
+    const output = JSON.stringify(result.output);
+    assert.match(output, /go version go\d/u);
+    assert.match(output, /rustc \d/u);
+    assert.match(output, /cargo \d/u);
+    assert.equal(host.inspect().failure, null);
+    assert.equal((await host.stop()).parent, "exited");
+  },
+);
+
+test(
   "pinned native late command completion retains original turn while a follow-up runs",
   { skip: !native, timeout: 60000 },
   async (t) => {

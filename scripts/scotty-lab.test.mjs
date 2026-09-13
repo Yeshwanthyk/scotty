@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -26,6 +27,7 @@ import {
   preserveWorkerLog,
   readLabManifest,
   readEvidenceManifest,
+  readHatchStatus,
   readPrivateToken,
   recoverPendingCreateSessionId,
   readManagedPendingCreateSessionId,
@@ -44,6 +46,35 @@ import {
 import { labSystemEnvironment, wranglerInvocation } from "../e2e/support/local-worker.mjs";
 
 const RUN_ID = "lab-12345678-1234-4123-8123-123456789abc";
+
+test("Hatch status helper reads the public owned-session route and redacts its token", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "scotty-lab-hatch-"));
+  const token = "private-hatch-test-token";
+  const tokenFile = path.join(root, "token");
+  writeFileSync(tokenFile, token, { mode: 0o600 });
+  const server = createServer((request, response) => {
+    assert.equal(request.url, "/api/sessions/a0b1c2d3e4f5/hatch");
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ status: "not_configured", diagnostic: token }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const manifest = fixtureManifest(root, {
+      tokenFile,
+      host: `http://127.0.0.1:${address.port}`,
+    });
+    const result = await readHatchStatus(manifest, "a0b1c2d3e4f5");
+    assert.equal(result.status, 200);
+    assert.doesNotMatch(result.body, /private-hatch-test-token/u);
+    await assert.rejects(readHatchStatus(manifest, "../other"), /Session ID/u);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function fixtureManifest(tempRoot, overrides = {}) {
   return {

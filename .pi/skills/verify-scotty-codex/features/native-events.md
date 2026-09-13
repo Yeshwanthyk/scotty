@@ -15,7 +15,7 @@ specific calls. Model prose alone does not establish those calls happened.
 ## Drive
 
 Run `node --test scripts/codex-session-supervisor.test.mjs` with `SCOTTY_TEST_CODEX_BINARY` set to
-the verified complete pinned 0.153.4 package executable. An unset variable skips native tests.
+the verified complete pinned 0.154.0 package executable. An unset variable skips native tests.
 Use the generated schema and coverage matrix to select emitted methods. Require real native
 upstream tool calls for N2-N5, child activity, terminal child evidence, and post-terminal drain.
 For the deployed path, create an owned research session, request parallel read-only code review,
@@ -32,6 +32,8 @@ completed command tools, healthy follow-up and owned cleanup. Keep synthetic and
 
 ## Gotchas
 
-Single-child happy paths do not cover every advisory or auxiliary notification. The deployed
-research sessions from September 12 failed stale_notification after short tests passed; their
-public snapshots retain the error code but not the offending event metadata. Exact trigger is unresolved.
+Single-child happy paths do not cover every advisory or auxiliary notification. The September 12
+deployed research sessions failed `stale_notification` before the runtime correction. The current
+native synthetic harness exercises late completion without a host failure; a deployed command
+follow-up after late completion has also passed. Neither result proves every nested child path in
+a deployed session. Keep child failure distinct from supervisor loss when recording a failure.

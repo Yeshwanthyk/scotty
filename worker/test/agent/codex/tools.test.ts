@@ -174,6 +174,48 @@ it("uses the completion aggregate when no output deltas arrive", () => {
   assert.equal(tools.snapshot().tools[0]?.output, "PROOF");
 });
 
+it("keeps a known command running after a completed turn until its own terminal event", () => {
+  const tools = makeCodexTools();
+  tools.accept(decode(item("inProgress")));
+  tools.accept(
+    decode({
+      method: "item/started",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          type: "dynamicToolCall",
+          id: "dynamic-1",
+          tool: "scotty_hatch",
+          status: "inProgress",
+        },
+      },
+    }),
+  );
+  tools.accept(
+    decode({
+      method: "turn/completed",
+      params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+    }),
+  );
+  assert.deepEqual(
+    tools.snapshot().tools.map(({ id, state }) => ({ id, state })),
+    [
+      { id: "command-1", state: "running" },
+      { id: "dynamic-1", state: "failed" },
+    ],
+  );
+  tools.accept(outputDelta("PROOF"));
+  tools.accept(decode(item("completed", "PROOF")));
+  assert.deepEqual(tools.snapshot().tools[0], {
+    id: "command-1",
+    label: "Command",
+    invocation: "printf PROOF",
+    state: "completed",
+    output: "PROOF",
+  });
+});
+
 it("bounds UTF-8 output and records truncation, cancellation and a fresh turn", () => {
   const tools = makeCodexTools();
   tools.accept(decode(item("inProgress", "😀".repeat(1000))));

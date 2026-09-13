@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { CONTAINER_IMAGE, CONTAINER_IMAGE_PLATFORM } from "./check-container-image.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const requiredPasses = 14; // Nine model/effort cases, code-mode, late command, first-party tools, delegation, recovery.
+const requiredPasses = 15; // Nine model/effort cases, code-mode, toolchain, late command, first-party tools, delegation, recovery.
 const result = spawnSync(
   "docker",
   [
@@ -26,7 +26,7 @@ const result = spawnSync(
     CONTAINER_IMAGE,
     "--test",
     "--test-reporter=tap",
-    "--test-name-pattern=real pinned binary / synthetic upstream:|packaged gpt-6-astra executes code-mode|pinned native late command completion retains original turn|packaged Codex calls both Scotty first-party tools|packaged Codex delegation preserves parent turn identity|pinned native failed turn saves and resumes with a distinct follow-up",
+    "--test-name-pattern=real pinned binary / synthetic upstream:|packaged gpt-6-astra executes code-mode|packaged native command reaches Go and Rust|pinned native late command completion retains original turn|packaged Codex calls both Scotty first-party tools|packaged Codex delegation preserves parent turn identity|pinned native failed turn saves and resumes with a distinct follow-up",
     "scripts/codex-session-supervisor.test.mjs",
   ],
   { cwd: root, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 },

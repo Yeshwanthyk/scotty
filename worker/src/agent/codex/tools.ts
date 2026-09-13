@@ -20,6 +20,7 @@ type DynamicToolItemEvent = Extract<
 
 export const makeCodexTools = () => {
   const tools = new Map<string, CanonicalConversationTool>();
+  const commandItems = new Set<string>();
   // Completion aggregates are a fallback. Once a stream delta is accepted,
   // preserve its order instead of guessing how it overlaps the aggregate.
   const outputDeltas = new Set<string>();
@@ -45,6 +46,7 @@ export const makeCodexTools = () => {
       truncated = true;
       return;
     }
+    commandItems.add(item.id);
     const previous = tools.get(item.id);
     const hasOutputDeltas = outputDeltas.has(item.id);
     tools.set(item.id, {
@@ -119,7 +121,10 @@ export const makeCodexTools = () => {
   };
   const acceptTurnCompleted = (event: TurnCompletedEvent) => {
     for (const [id, tool] of tools) {
-      if (tool.state === "running")
+      if (
+        tool.state === "running" &&
+        !(event.params.turn.status === "completed" && commandItems.has(id))
+      )
         tools.set(id, {
           ...tool,
           state: event.params.turn.status === "interrupted" ? "cancelled" : "failed",
@@ -130,6 +135,7 @@ export const makeCodexTools = () => {
     sequence++;
     if (event.method === "turn/started") {
       tools.clear();
+      commandItems.clear();
       outputDeltas.clear();
       truncated = false;
     } else if (event.method === "item/started" || event.method === "item/completed") {

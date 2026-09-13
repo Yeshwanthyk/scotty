@@ -29,7 +29,9 @@ turns, fresh completed tool and cleanup receipt. Redact credentials and content.
 
 ## Gotchas
 
-The current failed-host save requires healthy terminal state. Failed Codex research sessions could
-not save or resume without a backup. Report this as a product defect, not a successful recovery.
+Healthy sleep and same-native-thread resume have passed a deployed owned-session check after the
+runtime correction. A prior failed Codex research session lacked a backup and could not resume;
+that historical result does not prove current failed-host recovery. Drive a new owned failure and
+confirm its backup before marking that path passed.
 `Warm` tracks infrastructure lifecycle and does not prove host health. A UI error banner is useful
 failure evidence, but does not prove preservation or recoverability.
