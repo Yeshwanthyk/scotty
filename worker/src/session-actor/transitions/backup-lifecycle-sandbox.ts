@@ -2,6 +2,7 @@ import {
   startCodexSandbox,
   saveCodexSandbox,
   waitForCodexSandbox,
+  CODEX_RESUME_READINESS_TIMEOUT_MILLIS,
   readCodexSandbox,
   codexSandboxProcessId,
 } from "../../agent/codex/sandbox";
@@ -157,7 +158,10 @@ interface BackupLifecycleSandboxShape {
     input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
   ) => Effect.Effect<string, BackupLifecycleSandboxFailure>;
   readonly confirmSupervisorReady: (
-    input: BackupLifecycleAttempt & { readonly runtime: RuntimeProof },
+    input: BackupLifecycleAttempt & {
+      readonly runtime: RuntimeProof;
+      readonly readinessTimeoutMillis?: number;
+    },
   ) => Effect.Effect<SupervisorProof, BackupLifecycleSandboxFailure>;
   readonly verifyTransport: (
     input: BackupLifecycleAttempt & {
@@ -500,7 +504,10 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     });
 
     const confirmSupervisorReady = Effect.fnUntraced(function* (
-      input: BackupLifecycleAttempt & { readonly runtime: RuntimeProof },
+      input: BackupLifecycleAttempt & {
+        readonly runtime: RuntimeProof;
+        readonly readinessTimeoutMillis?: number;
+      },
     ) {
       if (input.runtime.runtimeGeneration !== input.runtimeGeneration)
         return yield* boundaryFailure("rejected_before_admission", "runtime_generation_mismatch");
@@ -510,14 +517,24 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
             "rejected_before_admission",
             "codex_restore_identity_missing",
           );
-        const snapshot = yield* waitForCodexSandbox({
-          sessionId: input.sessionId,
-          generation: input.runtimeGeneration,
-          selection: input.selection,
-          token: input.codex.token,
-        }).pipe(
+        const snapshot = yield* waitForCodexSandbox(
+          {
+            sessionId: input.sessionId,
+            generation: input.runtimeGeneration,
+            selection: input.selection,
+            token: input.codex.token,
+          },
+          input.readinessTimeoutMillis ?? CODEX_RESUME_READINESS_TIMEOUT_MILLIS,
+        ).pipe(
           Effect.provideService(SandboxRuntime, runtime),
-          Effect.mapError((error) => mapRuntimeFailure(error, "codex_resume_readiness_unknown")),
+          Effect.mapError((error) =>
+            mapRuntimeFailure(
+              error,
+              error.reason === "nonzero_exit"
+                ? "codex_resume_supervisor_exited"
+                : "codex_resume_readiness_unknown",
+            ),
+          ),
         );
         if (snapshot.threadId !== input.codex.threadId)
           return yield* boundaryFailure(
@@ -1176,10 +1193,16 @@ export const resumeSandboxTransitionProviderLayer: Layer.Layer<
         return yield* resumeFailure(
           boundaryFailure("rejected_before_admission", "resume_runtime_proof_missing"),
         );
+      const remaining =
+        Date.parse(context.transition.deadlineAt) - (yield* Clock.currentTimeMillis);
       const supervisor = yield* sandbox
         .confirmSupervisorReady({
           ...(yield* resumeAttempt(context, runtime.runtimeGeneration, metadataStore)),
           runtime,
+          readinessTimeoutMillis: Math.max(
+            0,
+            Math.min(remaining, CODEX_RESUME_READINESS_TIMEOUT_MILLIS),
+          ),
         })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", resumeFailure));
       return {

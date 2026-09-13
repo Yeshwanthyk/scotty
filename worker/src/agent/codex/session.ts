@@ -1054,6 +1054,7 @@ export const makeSession = Effect.fnUntraced(function* (
     const startupDeadline =
       Number(yield* Clock.monotonicTimeNanos) / 1_000_000 +
       (transport.options.startupTimeoutMs ?? 15000);
+    let readinessDeadline = startupDeadline;
     const init = yield* rpc(
       {
         method: "initialize",
@@ -1130,16 +1131,20 @@ export const makeSession = Effect.fnUntraced(function* (
         return yield* new CodexHostError({ code: "settings_mismatch" });
     }
     // A fresh native thread has no retained Hatch authority to restore.
-    if (firstPartyTools !== undefined && resumeThreadId !== undefined)
+    if (firstPartyTools !== undefined && resumeThreadId !== undefined) {
+      // Hatch restore includes a 30s authority request, up to 300s of configured
+      // service readiness, and bounded cleanup. Keep the native RPC handshake at 15s.
+      readinessDeadline = Number(yield* Clock.monotonicTimeNanos) / 1_000_000 + 340_000;
       yield* timed(
         Effect.tryPromise({
           try: (signal) => firstPartyTools.restore(signal),
           catch: () => new CodexHostError({ code: "hatch_restore_failed" }),
         }),
-        startupDeadline,
+        readinessDeadline,
       );
+    }
     if (closing || failure) return yield* failure ?? new CodexHostError({ code: "stopped" });
-    if (Number(yield* Clock.monotonicTimeNanos) / 1_000_000 >= startupDeadline)
+    if (Number(yield* Clock.monotonicTimeNanos) / 1_000_000 >= readinessDeadline)
       return yield* new CodexHostError({ code: "startup_timeout" });
     threadId = settings.thread.id;
     ready = true;

@@ -55,6 +55,10 @@ Session grant and substitutes the pinned credential. Do not add native OAuth imp
   A lost admission reply requires readback reconciliation, not another prompt or process launch.
 - Use one bounded monotonic startup handshake budget. Keep post-ready request deadlines separate;
   native child cleanup belongs to scopes/finalizers.
+- Budget resumed Hatch restoration separately from the native handshake. Its authority request
+  and configured service readiness must fit the restore wait, which remains bounded by the
+  Session lease. Verify a delayed healthy restore and a definitively exited supervisor; report
+  the latter as a startup failure while retaining ambiguity for unobserved process outcomes.
 
 The public vertical supports create, canonical read, terminal follow-up messages, active-turn
 steering, interruption, sleep/resume, and vaporize. Correlate message receipts with native turn IDs

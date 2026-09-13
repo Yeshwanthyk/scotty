@@ -69,8 +69,8 @@ export const CodexLaunch = Schema.Struct({
     ),
     expiresAt: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
   }),
-  // Handshake only, after process creation/helper preflight. The 15s default/cap
-  // retains the existing default RPC allowance with headroom under Session's 30s readiness.
+  // Native handshake only. Restored Hatch ownership has a separate bounded phase;
+  // the 15s cap leaves headroom under fresh Session readiness.
   startupTimeoutMs: Schema.optionalKey(
     Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 15000 })),
   ),

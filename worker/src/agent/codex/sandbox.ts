@@ -18,6 +18,7 @@ import {
 } from "./runtime";
 
 export const CODEX_SANDBOX_PORT = 43_118;
+export const CODEX_RESUME_READINESS_TIMEOUT_MILLIS = 370_000;
 const CodexSandboxIdentitySchema = Schema.Struct({
   configuration: Schema.optionalKey(SessionConfigurationSchema),
   sessionId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u)),
@@ -86,11 +87,38 @@ export const readCodexSandbox = Effect.fnUntraced(function* (
   return snapshot;
 });
 
-export const waitForCodexSandbox = Effect.fnUntraced(function* (identity: CodexSandboxIdentity) {
-  const snapshot = yield* readCodexSandbox(identity).pipe(
-    Effect.retry({ times: 29, schedule: Schedule.spaced("1 second") }),
+export const waitForCodexSandbox = Effect.fnUntraced(function* (
+  identity: CodexSandboxIdentity,
+  timeoutMillis = 30_000,
+) {
+  const runtime = yield* SandboxRuntime;
+  const read = readCodexSandbox(identity).pipe(
+    Effect.catch(
+      Effect.fnUntraced(function* (error) {
+        const process = yield* Effect.result(
+          runtime.getProcess(codexSandboxProcessId(identity.generation)),
+        );
+        if (
+          Result.isSuccess(process) &&
+          process.success !== null &&
+          ["completed", "failed", "killed", "error"].includes(process.success.status)
+        )
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Codex process exited before readiness",
+          });
+        return yield* error;
+      }),
+    ),
+  );
+  const snapshot = yield* read.pipe(
+    Effect.retry({
+      while: (error) => error.reason !== "nonzero_exit",
+      times: Math.max(0, Math.ceil(timeoutMillis / 1_000) - 1),
+      schedule: Schedule.spaced("1 second"),
+    }),
     Effect.timeoutOrElse({
-      duration: "30 seconds",
+      duration: timeoutMillis,
       orElse: () => Effect.fail(failure("Codex readiness deadline exceeded")),
     }),
   );

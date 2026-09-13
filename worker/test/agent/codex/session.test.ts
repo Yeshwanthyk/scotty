@@ -758,6 +758,37 @@ describe("scoped Codex session", () => {
     }),
   );
 
+  it.effect("keeps the native handshake bounded while allowing a longer Hatch restore", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("durable-resume");
+      const restoreStarted = yield* Deferred.make<void>();
+      let finishRestore = () => {};
+      const hostFiber = yield* makeSession(
+        {
+          ...f.transport,
+          options: { ...f.transport.options, ephemeral: false, resumeThreadId: "persisted-thread" },
+        },
+        undefined,
+        {
+          restore: () => {
+            Deferred.doneUnsafe(restoreStarted, Effect.void);
+            return new Promise<void>((resolve) => {
+              finishRestore = resolve;
+            });
+          },
+          shutdown: async () => {},
+          execute: async () => ({ text: "synthetic", success: true }),
+        },
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(restoreStarted);
+      yield* TestClock.adjust("16 seconds");
+      finishRestore();
+      const host = yield* Fiber.join(hostFiber);
+      assert.isTrue(host.inspect().ready);
+      yield* host.stop;
+    }),
+  );
+
   it.effect("keeps the native host ready after a rejected nonfatal steer", () =>
     Effect.gen(function* () {
       const f = yield* fixture("steer-rejected");
