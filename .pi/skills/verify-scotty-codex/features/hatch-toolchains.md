@@ -18,7 +18,9 @@ Run `npm run check:container-image` on a supported Linux image builder. The gate
 Go and Rust archive digests and runs offline Node, Bun, npm, pnpm, Python, C, C++, Go and Rust
 programs. Node, Bun, Go and Rust each build or launch a local HTTP service and return the expected
 health body. A local emulated browser failure is separate from the language workflow result; use
-the CI native-amd64 image gate for the full image outcome.
+the CI native-amd64 image gate for the full image outcome. The separate Corepack transport
+check exercises a paused response offline; its bootstrap check downloads into an empty cache
+under strict TLS and verifies ordinary child Node processes receive no injected options.
 
 ## Deployed proof
 
@@ -26,7 +28,7 @@ For a lab-owned session, run
 `npm run lab -- lifecycle hatch-observe --session ID --turn TURN_ID --expect ready` after
 the native ensure turn. It correlates one completed native Hatch receipt to the exact turn and
 checks public Hatch state, reference, running process and health timestamp. Use `startup-failed`
-for a failed native turn and matching public startup failure. After the existing lab sleep-resume
+for a failed Hatch tool receipt within a completed native turn and matching public startup failure. After the existing lab sleep-resume
 step, call native Hatch status in a new turn and run `hatch-observe` with that turn ID and `ready`.
 The lab return must say `succeeded` and
 include the expected `hatchProof`; a pending or failed action is not proof. These are local
@@ -38,7 +40,9 @@ On an explicitly selected deployed installation, create an owned session for a r
 a pnpm version that the image does not prewarm. Confirm the Hatch preparation turn installs with
 the pinned version through Corepack under normal TLS verification and reaches a healthy service;
 record the pinned version, preparation receipt, and health result. A prewarmed package-manager
-version or a version probe alone does not prove the download and certificate path. Call the native
+version or a version probe alone does not prove the download and certificate path. An eager
+`fetch().arrayBuffer()` download also does not prove Corepack streaming under backpressure; require
+the actual pinned package-manager bootstrap to finish. Call the native
 `scotty_hatch` ensure tool through a model turn. Match its canonical
 tool receipt to that turn and read the public Hatch status for the same service, port, and running
 state. Request the health route through the supported public URL, then sleep and resume the exact

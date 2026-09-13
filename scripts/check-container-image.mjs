@@ -594,6 +594,67 @@ export const containerImageToolchainWorkflowArgs = (plan) =>
     ["--network=none"],
   );
 
+const COREPACK_TRANSPORT_PROOF = `
+const { createServer } = require("node:net");
+const { Agent, setGlobalDispatcher } = require("/usr/local/lib/node_modules/undici");
+setGlobalDispatcher(new Agent());
+const body = Buffer.alloc(64 * 1024, 0x61);
+const server = createServer(socket => socket.once("data", () => {
+  socket.write("HTTP/1.1 200 OK\\r\\nContent-Length: " + body.length + "\\r\\nConnection: close\\r\\n\\r\\n");
+  socket.write(body);
+  socket.end();
+}));
+server.listen(0, "127.0.0.1", async () => {
+  const response = await fetch("http://127.0.0.1:" + server.address().port + "/");
+  if (response.status !== 200) throw new Error("unexpected paused-parser response");
+  setTimeout(() => { console.log("corepack paused-parser transport passed"); process.exit(0); }, 1000);
+});
+`;
+
+export const containerImageCorepackTransportArgs = (plan) =>
+  containerImageRunArgs(
+    plan,
+    "node",
+    ["--input-type=commonjs", "-e", COREPACK_TRANSPORT_PROOF],
+    ["--network=none"],
+  );
+
+const COREPACK_BOOTSTRAP_PROOF = `
+const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-corepack-bootstrap-"));
+const environment = { ...process.env, COREPACK_HOME: path.join(root, "corepack"), COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" };
+delete environment.NODE_OPTIONS;
+delete environment.NODE_TLS_REJECT_UNAUTHORIZED;
+const run = (command, args) => {
+  const result = spawnSync(command, args, { cwd: root, env: environment, encoding: "utf8", timeout: 120000 });
+  assert.equal(result.status, 0, command + " failed: " + result.stderr);
+  return result.stdout.trim();
+};
+try {
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({
+    name: "scotty-corepack-proof", private: true, packageManager: "pnpm@11.0.6",
+    scripts: { verify: "node app.mjs" },
+  }));
+  fs.writeFileSync(path.join(root, "app.mjs"),
+    "import fs from 'node:fs'; fs.writeFileSync('child-proof.json', JSON.stringify({ undici: process.versions.undici, injectedOptions: Boolean(process.env.NODE_OPTIONS) }));\\n");
+  assert.equal(fs.existsSync(environment.COREPACK_HOME), false);
+  assert.equal(run("pnpm", ["--version"]), "11.0.6");
+  assert.equal(fs.existsSync(environment.COREPACK_HOME), true);
+  run("pnpm", ["run", "--silent", "verify"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "child-proof.json"), "utf8")), {
+    undici: process.versions.undici, injectedOptions: false,
+  });
+  console.log("uncached Corepack bootstrap passed with strict TLS");
+} finally { fs.rmSync(root, { recursive: true, force: true }); }
+`;
+
+export const containerImageCorepackBootstrapArgs = (plan) =>
+  containerImageRunArgs(plan, "node", ["--input-type=commonjs", "-e", COREPACK_BOOTSTRAP_PROOF]);
+
 const syncedSkillCommandCases = [0, 1].map((count) => {
   const session = `/tmp/scotty-synced-skills/session-${count}`;
   const paths = {
@@ -736,6 +797,8 @@ export const checkContainerImage = async ({
   docker("docker", containerImageNativeCodexAdapterArgs(plan));
   docker("docker", containerImageCodexPackagingArgs(plan));
   docker("docker", containerImageToolchainWorkflowArgs(plan));
+  docker("docker", containerImageCorepackTransportArgs(plan));
+  docker("docker", containerImageCorepackBootstrapArgs(plan));
   docker("docker", containerImageToolInventoryArgs(plan));
   docker("docker", containerImageSyncedSkillSetupArgs(plan));
   const sizeBytes = await inspect(plan.image, {

@@ -52,6 +52,7 @@ ARG RUST_VERSION=1.98.1
 ARG RUST_SHA256=5326b36c53de11d148c8f8dab6553a3d1006c2cfd32123683073fad3c302605b
 ARG UV_VERSION=0.11.32
 ARG UV_SHA256=aab924fd522efd06f1c5f3b93a243864fc453132c94b2dc49f1371b528a4b967
+ARG UNDICI_VERSION=8.10.2
 ARG YQ_VERSION=4.53.3
 ARG YQ_SHA256=fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4
 
@@ -170,6 +171,22 @@ RUN set -eu; \
   && env -i PATH=/usr/local/bin:/usr/bin:/bin go version | grep -F "go${GO_VERSION}" \
   && env -i PATH=/usr/local/bin:/usr/bin:/bin rustc --version | grep -F "rustc ${RUST_VERSION} (" \
   && rm -rf /tmp/*
+
+# Scope Undici's paused-parser fix to Corepack's network fetches. Node 24's
+# bundled Undici 7 remains the default for all application processes.
+COPY worker/container/corepack-dispatcher.cjs /opt/scotty/corepack-dispatcher.cjs
+RUN set -eu; \
+  npm install --global --ignore-scripts --no-audit --no-fund "undici@${UNDICI_VERSION}" \
+  && test "$(node -p 'require("/usr/local/lib/node_modules/undici/package.json").version')" = "${UNDICI_VERSION}" \
+  && chmod 0755 /opt/scotty/corepack-dispatcher.cjs \
+  && for command_name in corepack pnpm pnpx yarn yarnpkg; do \
+    test "$(readlink -f "/usr/local/bin/${command_name}")" = "/usr/local/lib/node_modules/corepack/dist/${command_name}.js"; \
+    rm "/usr/local/bin/${command_name}"; \
+    ln -s /opt/scotty/corepack-dispatcher.cjs "/usr/local/bin/${command_name}"; \
+  done \
+  && test "$(corepack --version)" = "${COREPACK_VERSION}" \
+  && test "$(pnpm --version)" = "${PNPM_VERSION}" \
+  && npm cache clean --force
 
 ENV LANG=en_US.UTF-8 \
   LC_ALL=en_US.UTF-8 \
