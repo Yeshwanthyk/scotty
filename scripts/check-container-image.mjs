@@ -481,6 +481,119 @@ export const containerImageToolInventoryArgs = (plan) =>
     ["--network=none"],
   );
 
+const HTTP_NODE_SOURCE = `import { createServer } from "node:http";
+createServer((request, response) => { response.writeHead(request.url === "/health" ? 200 : 404); response.end("VALUE=42"); }).listen(Number(process.argv[2]), "127.0.0.1");
+`;
+const HTTP_BUN_SOURCE = `Bun.serve({ hostname: "127.0.0.1", port: Number(process.argv[2]), fetch(request) { return new Response("VALUE=42", { status: new URL(request.url).pathname === "/health" ? 200 : 404 }); } });
+`;
+const HTTP_GO_SOURCE = `package main
+import ("fmt"; "net/http"; "os")
+func main() { http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "VALUE=42") }); if err := http.ListenAndServe("127.0.0.1:"+os.Args[1], nil); err != nil { panic(err) } }
+`;
+const HTTP_RUST_SOURCE = `use std::{env, io::{Read, Write}, net::TcpListener};
+fn main() { let listener = TcpListener::bind(format!("127.0.0.1:{}", env::args().nth(1).unwrap())).unwrap(); for stream in listener.incoming() { let mut stream = stream.unwrap(); let mut request = [0u8; 1024]; let n = stream.read(&mut request).unwrap(); let ok = String::from_utf8_lossy(&request[..n]).starts_with("GET /health "); let status = if ok { "200 OK" } else { "404 Not Found" }; let body = "VALUE=42"; write!(stream, "HTTP/1.1 {}\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}", status, body.len(), body).unwrap(); } }
+`;
+const C_SOURCE = `#include <stdio.h>
+int main(void){printf("VALUE=%d\\n",20+22);return 0;}
+`;
+const CPP_SOURCE = `#include <iostream>
+int main(){std::cout << "VALUE=" << 20+22 << '\\n';}
+`;
+const GO_SOURCE = `package main
+import "fmt"
+func main(){fmt.Println("VALUE=",20+22)}
+`;
+const RUST_SOURCE = `fn main() { println!("VALUE={}", 20 + 22); }
+`;
+const CARGO_SOURCE = `[package]
+name="scotty-probe"
+version="0.1.0"
+edition="2024"
+`;
+
+const TOOLCHAIN_WORKFLOW_PROOF = `
+const assert = require("node:assert/strict");
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-toolchain-"));
+const run = (command, args) => {
+  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", timeout: 120000,
+    env: { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin", GOTOOLCHAIN: "local", GOPROXY: "off", CARGO_NET_OFFLINE: "true" } });
+  assert.equal(result.status, 0, command + " failed: " + result.stderr);
+  return result.stdout.trim();
+};
+const healthyServer = (command, args) => {
+  const port = Number(run("python", ["-c", "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"]));
+  const child = spawn(command, [...args, String(port)], { cwd: root, stdio: "ignore", detached: true,
+    env: { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin", GOTOOLCHAIN: "local", GOPROXY: "off", CARGO_NET_OFFLINE: "true" } });
+  let healthy = false;
+  try {
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const response = spawnSync("curl", ["--fail", "--silent", "--show-error", "--max-time", "1", "http://127.0.0.1:" + port + "/health"], { encoding: "utf8" });
+      if (response.status === 0) { assert.equal(response.stdout, "VALUE=42", command + " health body"); healthy = true; break; }
+      if (child.exitCode !== null) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+    assert.ok(healthy, command + " did not reach loopback health");
+  } finally {
+    if (child.pid !== undefined) { try { process.kill(-child.pid, "SIGTERM"); } catch {} }
+  }
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const response = spawnSync("curl", ["--silent", "--max-time", "1", "http://127.0.0.1:" + port + "/health"], { encoding: "utf8" });
+    if (response.status !== 0) return;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  throw new Error(command + " still served health after stop");
+};
+try {
+  fs.writeFileSync(path.join(root, "app.ts"), "const value: number = 20 + 22; console.log('VALUE=' + value);\\n");
+  assert.equal(run("bun", ["run", "app.ts"]), "VALUE=42");
+  fs.writeFileSync(path.join(root, "app.mjs"), "console.log('VALUE=' + (20 + 22));\\n");
+  assert.equal(run("node", ["app.mjs"]), "VALUE=42");
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ private: true, scripts: { verify: "node app.mjs" } }));
+  assert.equal(run("npm", ["run", "--silent", "verify"]), "VALUE=42");
+  assert.equal(run("pnpm", ["run", "--silent", "verify"]), "VALUE=42");
+  fs.writeFileSync(path.join(root, "app.py"), "print('VALUE=' + str(sum([20, 22])))\\n");
+  assert.equal(run("python", ["app.py"]), "VALUE=42");
+  fs.writeFileSync(path.join(root, "app.c"), ${JSON.stringify(C_SOURCE)});
+  run("cc", ["app.c", "-o", "app-c"]);
+  assert.equal(run("./app-c", []), "VALUE=42");
+  fs.writeFileSync(path.join(root, "app.cpp"), ${JSON.stringify(CPP_SOURCE)});
+  run("c++", ["app.cpp", "-o", "app-cpp"]);
+  assert.equal(run("./app-cpp", []), "VALUE=42");
+  fs.writeFileSync(path.join(root, "app.go"), ${JSON.stringify(GO_SOURCE)});
+  assert.equal(run("go", ["run", "app.go"]), "VALUE= 42");
+  fs.writeFileSync(path.join(root, "app.rs"), ${JSON.stringify(RUST_SOURCE)});
+  run("rustc", ["app.rs", "-o", "app-rust"]);
+  assert.equal(run("./app-rust", []), "VALUE=42");
+  fs.mkdirSync(path.join(root, "src"));
+  fs.writeFileSync(path.join(root, "Cargo.toml"), ${JSON.stringify(CARGO_SOURCE)});
+  fs.copyFileSync(path.join(root, "app.rs"), path.join(root, "src", "main.rs"));
+  assert.equal(run("cargo", ["run", "--quiet", "--offline"]), "VALUE=42");
+  fs.writeFileSync(path.join(root, "http-node.mjs"), ${JSON.stringify(HTTP_NODE_SOURCE)});
+  fs.writeFileSync(path.join(root, "http-bun.ts"), ${JSON.stringify(HTTP_BUN_SOURCE)});
+  fs.writeFileSync(path.join(root, "http-go.go"), ${JSON.stringify(HTTP_GO_SOURCE)});
+  fs.writeFileSync(path.join(root, "http-rust.rs"), ${JSON.stringify(HTTP_RUST_SOURCE)});
+  run("go", ["build", "-o", "http-go", "http-go.go"]);
+  run("rustc", ["http-rust.rs", "-o", "http-rust"]);
+  for (const [command, args] of [
+    ["node", ["http-node.mjs"]], ["bun", ["run", "http-bun.ts"]],
+    ["./http-go", []], ["./http-rust", []],
+  ]) healthyServer(command, args);
+  console.log("toolchain workflows passed");
+} finally { fs.rmSync(root, { recursive: true, force: true }); }
+`;
+
+export const containerImageToolchainWorkflowArgs = (plan) =>
+  containerImageRunArgs(
+    plan,
+    "node",
+    ["--input-type=commonjs", "-e", TOOLCHAIN_WORKFLOW_PROOF],
+    ["--network=none"],
+  );
+
 const syncedSkillCommandCases = [0, 1].map((count) => {
   const session = `/tmp/scotty-synced-skills/session-${count}`;
   const paths = {
@@ -622,6 +735,7 @@ export const checkContainerImage = async ({
   docker("docker", containerImageCodexVersionArgs(plan));
   docker("docker", containerImageNativeCodexAdapterArgs(plan));
   docker("docker", containerImageCodexPackagingArgs(plan));
+  docker("docker", containerImageToolchainWorkflowArgs(plan));
   docker("docker", containerImageToolInventoryArgs(plan));
   docker("docker", containerImageSyncedSkillSetupArgs(plan));
   const sizeBytes = await inspect(plan.image, {

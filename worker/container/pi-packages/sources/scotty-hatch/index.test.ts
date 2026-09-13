@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -518,6 +519,55 @@ test("prepares once before initial start, reports fenced startup, and skips prep
     { operation: "begin" },
     { operation: "finish", attemptId: "attempt-1", runtimeEpoch: "epoch-1" },
   ]);
+});
+
+test("repository Hatch config builds a service, reaches real loopback health, and stops it", async () => {
+  const { root } = await workspace();
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const address = reservation.address();
+  assert.ok(address && typeof address !== "string");
+  const port = address.port;
+  await new Promise<void>((resolve, reject) =>
+    reservation.close((error) => (error ? reject(error) : resolve())),
+  );
+  const source = `import { createServer } from "node:http";
+createServer((request, response) => {
+  response.writeHead(request.url === "/health" ? 200 : 404);
+  response.end(request.url === "/health" ? "SCOTTY_HATCH_READY" : "missing");
+}).listen(Number(process.argv[2]), "127.0.0.1");\n`;
+  await writeFile(join(root, "server.ts"), source);
+  await writeFile(
+    join(root, "hatch.toml"),
+    `[hatch]\nservice = "web"\nargv = ["node", "server.mjs", "${port}"]\ncwd = "."\nport = ${port}\nhealth_path = "/health"\nready_timeout_seconds = 5\n\n[hatch.prepare]\nargv = ["bun", "build", "server.ts", "--target=node", "--outfile=server.mjs"]\ntimeout_seconds = 30\n`,
+  );
+  const reports: unknown[] = [];
+  const manager = new ProductionHatchManager({
+    workspaceRoot: root,
+    authorityTransport: async (input, init) => {
+      if (String(input) === SCOTTY_HATCH_STARTUP_ROUTE) {
+        reports.push(JSON.parse(String(init?.body)));
+        return Response.json({ attemptId: "attempt-live", runtimeEpoch: "epoch-live" });
+      }
+      return Response.json(configured({ service: { name: "web", port } }));
+    },
+  });
+  try {
+    const first = await manager.run({ operation: "ensure" });
+    assert.equal(first.process.status, "running");
+    assert.equal(
+      await (await fetch(`http://127.0.0.1:${port}/health`)).text(),
+      "SCOTTY_HATCH_READY",
+    );
+    await writeFile(join(root, "server.ts"), "this is deliberately invalid TypeScript");
+    const second = await manager.run({ operation: "ensure" });
+    assert.equal(second.process.status, "running");
+    assert.equal(reports.length, 4);
+  } finally {
+    await manager.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/health`));
 });
 
 test("failed preparation is cleaned up and reported without starting the service", async () => {

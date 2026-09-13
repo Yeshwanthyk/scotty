@@ -341,12 +341,8 @@ describe("standalone deployment archive", () => {
     expect(cliBuildIndex).toBeLessThan(
       dockerfile.indexOf("COPY --from=scotty-cli-build /out/scotty"),
     );
-    expect(dockerfile).not.toContain("ARG GO_VERSION=");
-    expect(dockerfile).not.toContain("ARG GO_SHA256=");
     expect(dockerfile).not.toContain("ARG CODEX_VERSION=");
     expect(dockerfile).not.toContain("@openai/codex");
-    expect(dockerfile).not.toContain("go.dev/dl/");
-    expect(dockerfile).not.toContain("/usr/local/go/bin");
     expect(dockerfile).not.toContain("GOTOOLCHAIN=");
     expect(dockerfile).not.toContain("GOPROXY=");
     expect(dockerfile).not.toContain("GOSUMDB=");

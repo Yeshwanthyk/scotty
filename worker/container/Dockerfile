@@ -39,6 +39,8 @@ ARG AST_GREP_VERSION=0.45.0
 ARG COREPACK_VERSION=0.35.0
 ARG FD_VERSION=10.4.2
 ARG FD_SHA256=0e44eb5fca93f09bc6f5430b90acdf44c8e069d0a903700aeb4820629337b67b
+ARG GO_VERSION=1.27.1
+ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
 ARG PI_VERSION=0.84.0
 ARG PLAYWRIGHT_VERSION=1.62.1
 ARG PNPM_VERSION=11.11.0
@@ -46,6 +48,8 @@ ARG QSV_VERSION=21.1.0
 ARG QSV_SHA256=6e1e322c2ac0d2e862e961f0bb5b30c8ceccb12ace37067bc8d911c77cf101f3
 ARG RIPGREP_VERSION=15.2.0
 ARG RIPGREP_SHA256=5af93eebe4c352474632cf1d28523b0e98bcd4e2f115a249a713b8d8c7d1d01c
+ARG RUST_VERSION=1.98.1
+ARG RUST_SHA256=5326b36c53de11d148c8f8dab6553a3d1006c2cfd32123683073fad3c302605b
 ARG UV_VERSION=0.11.32
 ARG UV_SHA256=aab924fd522efd06f1c5f3b93a243864fc453132c94b2dc49f1371b528a4b967
 ARG YQ_VERSION=4.53.3
@@ -140,6 +144,32 @@ RUN apt-get update \
   && rm -rf /root/.cache /tmp/* \
   && apt-get clean \
   && find /var/lib/apt/lists -mindepth 1 -delete
+
+# Verified official release archives; leave only compiler/runtime files in the image.
+RUN set -eu; \
+  curl --fail --location --silent --show-error \
+    "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+    --output /tmp/go.tar.gz \
+  && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum --check --strict \
+  && tar -xzf /tmp/go.tar.gz -C /usr/local \
+  && test "$(/usr/local/go/bin/go version)" = "go version go${GO_VERSION} linux/amd64" \
+  && curl --fail --location --silent --show-error \
+    "https://static.rust-lang.org/dist/rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.xz" \
+    --output /tmp/rust.tar.xz \
+  && echo "${RUST_SHA256}  /tmp/rust.tar.xz" | sha256sum --check --strict \
+  && mkdir /tmp/scotty-rust-install \
+  && tar -xJf /tmp/rust.tar.xz -C /tmp/scotty-rust-install --strip-components=1 \
+  && /tmp/scotty-rust-install/install.sh --components=rustc,cargo,rust-std-x86_64-unknown-linux-gnu \
+    --prefix=/opt/rust --disable-ldconfig \
+  && /opt/rust/bin/rustc --version | grep -F "rustc ${RUST_VERSION} (" \
+  && /opt/rust/bin/cargo --version | grep -F "cargo ${RUST_VERSION} (" \
+  && ln -s /usr/local/go/bin/go /usr/local/bin/go \
+  && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt \
+  && ln -s /opt/rust/bin/rustc /usr/local/bin/rustc \
+  && ln -s /opt/rust/bin/cargo /usr/local/bin/cargo \
+  && env -i PATH=/usr/local/bin:/usr/bin:/bin go version | grep -F "go${GO_VERSION}" \
+  && env -i PATH=/usr/local/bin:/usr/bin:/bin rustc --version | grep -F "rustc ${RUST_VERSION} (" \
+  && rm -rf /tmp/*
 
 ENV LANG=en_US.UTF-8 \
   LC_ALL=en_US.UTF-8 \

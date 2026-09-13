@@ -21,6 +21,7 @@ import {
   containerImageSizeArgs,
   containerImageSyncedSkillSetupArgs,
   containerImageToolInventoryArgs,
+  containerImageToolchainWorkflowArgs,
 } from "./check-container-image.mjs";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -149,6 +150,7 @@ describe("final container image gate", () => {
       { command: "docker", args: containerImageCodexVersionArgs(plan) },
       { command: "docker", args: containerImageNativeCodexAdapterArgs(plan) },
       { command: "docker", args: containerImageCodexPackagingArgs(plan) },
+      { command: "docker", args: containerImageToolchainWorkflowArgs(plan) },
       { command: "docker", args: containerImageToolInventoryArgs(plan) },
       { command: "docker", args: containerImageSyncedSkillSetupArgs(plan) },
     ]);
@@ -356,7 +358,24 @@ describe("final container image gate", () => {
       assert.ok(tools.get(name).probe.length > 0, `missing ${name} probe`);
     }
     assert.equal(tools.get("git").source, "Debian");
-    assert.equal(tools.has("Go"), false);
+    assert.equal(tools.get("Go").expectedVersion, "go1.27.1");
+    assert.equal(tools.get("Rust").expectedVersion, "1.98.1");
+    const workflows = containerImageToolchainWorkflowArgs(containerImagePlan()).join(" ");
+    for (const command of [
+      "bun",
+      "node",
+      "npm",
+      "pnpm",
+      "python",
+      "cc",
+      "c++",
+      "go",
+      "rustc",
+      "cargo",
+    ])
+      assert.ok(workflows.includes(`run("${command}"`), `missing ${command} workflow`);
+    assert.match(workflows, /--network=none/u);
+    assert.ok(workflows.includes('PATH: "/usr/local/bin:/usr/bin:/bin"'));
     assert.match(tools.get("Playwright Chromium").probe.join(" "), /channel: 'chromium'/u);
     for (const name of CONTAINER_IMAGE_PI_PACKAGES) {
       const probe = tools.get(name).probe.join(" ");

@@ -114,15 +114,16 @@
       "name": "Node",
       "category": "javascript",
       "commands": ["node"],
-      "source": "base image",
-      "versionPolicy": "image",
+      "source": "Node.js verified archive",
+      "versionPolicy": "pinned",
+      "expectedVersion": "v24.21.0",
       "probe": ["node", "--version"]
     },
     {
       "name": "npm",
       "category": "javascript",
       "commands": ["npm"],
-      "source": "base image",
+      "source": "Node.js verified archive",
       "versionPolicy": "image",
       "probe": ["npm", "--version"]
     },
@@ -167,6 +168,24 @@
       "source": "Debian",
       "versionPolicy": "image",
       "probe": ["pkg-config", "--version"]
+    },
+    {
+      "name": "Go",
+      "category": "build",
+      "commands": ["go", "gofmt"],
+      "source": "go.dev verified archive",
+      "versionPolicy": "pinned",
+      "expectedVersion": "go1.27.1",
+      "probe": ["go", "version"]
+    },
+    {
+      "name": "Rust",
+      "category": "build",
+      "commands": ["rustc", "cargo"],
+      "source": "Rust official release archive",
+      "versionPolicy": "pinned",
+      "expectedVersion": "1.98.1",
+      "probe": ["rustc", "--version"]
     },
     {
       "name": "Pi",
