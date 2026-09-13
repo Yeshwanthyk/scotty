@@ -25,6 +25,7 @@ const result = spawnSync(
     "node",
     CONTAINER_IMAGE,
     "--test",
+    "--test-reporter=tap",
     "--test-name-pattern=real pinned binary / synthetic upstream:|packaged gpt-6-astra executes code-mode|pinned native late command completion retains original turn|packaged Codex calls both Scotty first-party tools|packaged Codex delegation preserves parent turn identity|pinned native failed turn saves and resumes with a distinct follow-up",
     "scripts/codex-session-supervisor.test.mjs",
   ],
