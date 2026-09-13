@@ -10,6 +10,8 @@ import {
   CONTAINER_IMAGE_PI_PACKAGES,
   CONTAINER_IMAGE_PLATFORM,
   checkContainerImage,
+  containerImageCorepackBootstrapArgs,
+  containerImageCorepackTransportArgs,
   containerImageCodexPackagingArgs,
   containerImageCodexVersionArgs,
   containerImageBuildArgs,
@@ -151,6 +153,8 @@ describe("final container image gate", () => {
       { command: "docker", args: containerImageNativeCodexAdapterArgs(plan) },
       { command: "docker", args: containerImageCodexPackagingArgs(plan) },
       { command: "docker", args: containerImageToolchainWorkflowArgs(plan) },
+      { command: "docker", args: containerImageCorepackTransportArgs(plan) },
+      { command: "docker", args: containerImageCorepackBootstrapArgs(plan) },
       { command: "docker", args: containerImageToolInventoryArgs(plan) },
       { command: "docker", args: containerImageSyncedSkillSetupArgs(plan) },
     ]);
@@ -249,6 +253,8 @@ describe("final container image gate", () => {
     assert.match(nativeCodex, /\/stop/u);
     assert.match(nativeCodex, /--network=none/u);
     const inventory = containerImageToolInventoryArgs(plan).join(" ");
+    assert.match(containerImageCorepackTransportArgs(plan).join(" "), /--network=none/u);
+    assert.match(containerImageCorepackBootstrapArgs(plan).join(" "), /pnpm@11\.0\.6/u);
     assert.match(inventory, /standard\.json/u);
     assert.match(inventory, /expectedVersion/u);
     const syncedSkill = containerImageSyncedSkillSetupArgs(plan).join(" ");
