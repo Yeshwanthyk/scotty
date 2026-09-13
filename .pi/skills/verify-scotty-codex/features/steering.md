@@ -29,4 +29,6 @@ Retain evidence before vaporizing only the owned session.
 ## Gotchas
 
 Queue acceptance does not prove execution. A terminal follow-up test never exercises active steering.
-This recipe is unproven until driven; local reducer assertions do not establish alarm dispatch.
+The prior local `codex-workflow` failure did not reach its queue and interrupt steps. Treat those
+steps as unproven until a complete owned canary records admission, terminal state, and the queued
+turn. Local reducer assertions do not establish alarm dispatch.

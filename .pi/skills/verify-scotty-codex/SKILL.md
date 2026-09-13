@@ -58,6 +58,8 @@ Canonical tool output is capped at 1,200 bytes; this smoke proves that the reque
 ran and projected its bounded output, not the full native aggregate byte count. The protocol
 decoder test separately accepts a synthetic 211,769-byte aggregate; it is not live native proof.
 See [Coverage audit](features/coverage-audit.md) for unsupported and unproven paths.
+For Hatch or language support changes, also run the [Hatch and toolchains](features/hatch-toolchains.md)
+recipe and keep local image proof separate from deployed session proof.
 
 ## Cleanup
 
