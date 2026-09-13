@@ -9,6 +9,7 @@ import {
   readCodexSandbox,
   sendCodexSandboxMessage,
   startCodexSandbox,
+  waitForCodexSandbox,
   type CodexSandboxIdentity,
 } from "../../../src/agent/codex/sandbox";
 import { sandboxRuntimeLayer } from "../../../src/sandbox/runtime";
@@ -46,6 +47,56 @@ const snapshot = {
 };
 
 describe("Codex Sandbox adapter", () => {
+  it.effect("accepts resumed readiness after the fresh-start deadline", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const layer = sandboxRuntimeLayer({
+        ...sandboxRuntimeCapabilitiesFake(),
+        getProcess: async () => null,
+        fetchPort: () => {
+          reads += 1;
+          return reads > 31
+            ? Promise.resolve(Response.json(snapshot))
+            : Promise.reject(new Error("still starting"));
+        },
+      });
+      const waiter = yield* waitForCodexSandbox(identity, 35_000).pipe(
+        Effect.provide(layer),
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* TestClock.adjust("32 seconds");
+      assert.equal((yield* Fiber.join(waiter)).threadId, "thread-1");
+      assert.isAbove(reads, 30);
+    }),
+  );
+
+  it.effect("stops waiting when the owned supervisor has definitively exited", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const layer = sandboxRuntimeLayer({
+        ...sandboxRuntimeCapabilitiesFake(),
+        getProcess: async () => ({
+          id: "scotty-codex-generation-1",
+          status: "failed",
+          kill: async () => {},
+          waitForExit: async () => ({ exitCode: 1 }),
+          waitForPort: async () => {},
+        }),
+        fetchPort: () => {
+          reads += 1;
+          return Promise.reject(new Error("process exited"));
+        },
+      });
+      const result = yield* waitForCodexSandbox(identity, 35_000).pipe(
+        Effect.provide(layer),
+        Effect.result,
+      );
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure.reason, "nonzero_exit");
+      assert.equal(reads, 1);
+    }),
+  );
+
   for (const stalled of ["fetch", "body"] as const) {
     it.effect(`snapshot deadline cancels stalled ${stalled} I/O`, () =>
       Effect.gen(function* () {

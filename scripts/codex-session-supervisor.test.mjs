@@ -2133,6 +2133,14 @@ test(
     });
     const turn = await host.prompt("Spawn one child and wait for its answer.");
     assert.equal((await turn.completed).status, "completed");
+    // Parent completion can precede the child's request and discarded events.
+    for (
+      let attempt = 0;
+      attempt < 200 && (requests < 3 || host.inspect().discarded < 1);
+      attempt++
+    ) {
+      await delay(10);
+    }
     assert.equal(requests, 3);
     assert.ok(host.inspect().discarded >= 1);
     assert.ok(

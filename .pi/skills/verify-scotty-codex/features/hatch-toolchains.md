@@ -23,6 +23,10 @@ check exercises a paused response offline; its bootstrap check downloads into an
 under strict TLS and verifies ordinary child Node processes receive no injected options. It then
 runs a native addon build through the pinned pnpm lifecycle with a fresh header cache, requires
 a download from the official Node host, loads the compiled addon, and checks its return value.
+The image gate also executes `scripts/check-language-package-downloads.sh` with fresh caches and
+strict TLS. It downloads the pinned Go module `github.com/google/uuid@v1.6.0` and Cargo crate
+`itoa=1.0.15`, then verifies their archive files. This is package transport proof; the offline
+language workflows above prove builds and loopback health separately.
 
 ## Deployed proof
 
@@ -56,3 +60,12 @@ read the actor before retrying, and never repeat a mutation while its transition
 Verify the restored Codex thread is unchanged and its runtime generation is new. Then vaporize that
 owned session and retain the evidence. This deployed path is unproven until a passing run records
 each assertion; neither the local fixture nor the image gate establishes public exposure.
+
+For deployed Go and Cargo package transport, run the exact contents of
+`scripts/check-language-package-downloads.sh` as one native shell command in an owned session.
+Require both `GO_DOWNLOAD=ok` and `CARGO_DOWNLOAD=ok` with the named artifact/version markers;
+the script uses isolated homes, fresh caches, normal certificate verification, and removes its
+temporary files. The earlier deployed `openssl verify` of the Cloudflare interception CA against
+`/etc/ssl/certs/ca-certificates.crt` proves OS trust configuration only. Record the download
+receipts separately; an image-builder fetch or local offline compile cannot establish deployed
+egress and TLS behavior.

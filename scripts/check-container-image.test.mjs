@@ -12,6 +12,7 @@ import {
   checkContainerImage,
   containerImageCorepackBootstrapArgs,
   containerImageCorepackTransportArgs,
+  containerImageLanguagePackageDownloadArgs,
   containerImageCodexPackagingArgs,
   containerImageCodexVersionArgs,
   containerImageBuildArgs,
@@ -155,6 +156,7 @@ describe("final container image gate", () => {
       { command: "docker", args: containerImageToolchainWorkflowArgs(plan) },
       { command: "docker", args: containerImageCorepackTransportArgs(plan) },
       { command: "docker", args: containerImageCorepackBootstrapArgs(plan) },
+      { command: "docker", args: containerImageLanguagePackageDownloadArgs(plan) },
       { command: "docker", args: containerImageToolInventoryArgs(plan) },
       { command: "docker", args: containerImageSyncedSkillSetupArgs(plan) },
     ]);
@@ -258,6 +260,14 @@ describe("final container image gate", () => {
     assert.match(corepackBootstrap, /pnpm@11\.0\.6/u);
     assert.match(corepackBootstrap, /node-gyp rebuild/u);
     assert.match(corepackBootstrap, /scotty_native_probe\.node/u);
+    const packageDownload = containerImageLanguagePackageDownloadArgs(plan);
+    assert.equal(packageDownload.at(-1), read("scripts/check-language-package-downloads.sh"));
+    assert.match(
+      packageDownload.join(" "),
+      /go mod download -json github\.com\/google\/uuid@v1\.6\.0/u,
+    );
+    assert.match(packageDownload.join(" "), /cargo fetch --manifest-path/u);
+    assert.match(packageDownload.join(" "), /env -i/u);
     assert.match(inventory, /standard\.json/u);
     assert.match(inventory, /expectedVersion/u);
     const syncedSkill = containerImageSyncedSkillSetupArgs(plan).join(" ");

@@ -120,6 +120,41 @@ const failure = <A>(
 };
 
 describe("BackupLifecycleSandbox", () => {
+  it.effect("classifies a decisively exited restored Codex supervisor", () =>
+    Effect.gen(function* () {
+      const result = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          provider.confirmSupervisorReady({
+            ...attempt,
+            sessionId: "a0b1c2d3e4f5",
+            selection: { agent: "codex", model: "gpt-5.4", effort: "high" },
+            codex: { token: "a".repeat(64), threadId: "thread-1", initialTurnId: "turn-1" },
+            runtime: {
+              providerRuntimeId: "a0b1c2d3e4f5",
+              runtimeGeneration: attempt.runtimeGeneration,
+              containerIncarnation: "incarnation-1",
+            },
+          }),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            fetchPort: () => Promise.reject(new Error("control port closed")),
+            getProcess: async () => ({
+              id: `scotty-codex-${attempt.runtimeGeneration}`,
+              status: "failed",
+              kill: async () => {},
+              waitForExit: async () => ({ exitCode: 1 }),
+              waitForPort: async () => {},
+            }),
+          }),
+        },
+      ).pipe(Effect.result);
+      assert.ok(Result.isFailure(result));
+      assert.equal(result.failure.outcome, "rejected_before_admission");
+      assert.equal(result.failure.safeResultCode, "codex_resume_supervisor_exited");
+    }),
+  );
+
   it.effect("stops a leftover Pi supervisor before starting its replacement", () =>
     Effect.gen(function* () {
       const calls: string[] = [];
