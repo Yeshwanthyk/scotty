@@ -500,6 +500,8 @@ const prepareInstallationContainerContext = async (root: string): Promise<void> 
 
 export interface DeploymentProviderReceipt {
   readonly succeeded: Set<string>;
+  readonly containerName?: string;
+  containerAction?: "updated" | "noop";
 }
 
 const succeededProviderOperation = (event: StatusChangeEvent): boolean =>
@@ -519,8 +521,19 @@ export const makeQuietAlchemyCli = (receipt?: DeploymentProviderReceipt) =>
         Effect.succeed({
           emit: (event) =>
             Effect.sync(() => {
-              if (!receipt || event.kind !== "status-change" || !succeededProviderOperation(event))
+              if (!receipt) return;
+              if (event.kind === "annotate") {
+                // Pinned Alchemy emits this note after its configuration hash matches and it skips the Cloudflare update.
+                // An unknown note retains "updated", so rollout verification fails closed.
+                if (
+                  event.id === "SandboxContainer" &&
+                  receipt.containerName !== undefined &&
+                  event.message === `Container application ${receipt.containerName} is unchanged.`
+                )
+                  receipt.containerAction = "noop";
                 return;
+              }
+              if (!succeededProviderOperation(event)) return;
               receipt.succeeded.add(
                 `${event.id}\u0000${event.bindingId ?? ""}\u0000${event.status}`,
               );
@@ -854,7 +867,11 @@ const deployWithProfile = async (
   progress?: InstallationDeploymentProgress,
 ): Promise<InstallationResult> => {
   const { assetConfig, installation, stack } = makeStack(request, root, prebuiltWorkers);
-  const providerReceipt: DeploymentProviderReceipt = { succeeded: new Set() };
+  const providerReceipt: DeploymentProviderReceipt = {
+    succeeded: new Set(),
+    containerName: installation.containerName,
+    containerAction: "updated",
+  };
   return runWithProfile(
     request.profile,
     root,
@@ -938,10 +955,16 @@ const deployWithProfile = async (
                         "Container application was not observable after provider application.",
                     });
                 }
-                yield* waitForContainerRollout(beforeSnapshot, {
-                  accountId,
-                  applicationId: containerAppId,
-                });
+                yield* waitForContainerRollout(
+                  beforeSnapshot,
+                  {
+                    accountId,
+                    applicationId: containerAppId,
+                  },
+                  {
+                    containerAction: providerReceipt.containerAction,
+                  },
+                );
               }
 
               progress?.readinessVerified();
