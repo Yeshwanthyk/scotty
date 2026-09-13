@@ -640,11 +640,14 @@ try {
     scripts: { verify: "node app.mjs" },
   }));
   fs.writeFileSync(path.join(root, "app.mjs"),
-    "if (process.env.NODE_OPTIONS) throw new Error('Corepack options leaked'); console.log('APP_NODE=' + process.versions.undici);\\n");
+    "import fs from 'node:fs'; fs.writeFileSync('child-proof.json', JSON.stringify({ undici: process.versions.undici, injectedOptions: Boolean(process.env.NODE_OPTIONS) }));\\n");
   assert.equal(fs.existsSync(environment.COREPACK_HOME), false);
   assert.equal(run("pnpm", ["--version"]), "11.0.6");
   assert.equal(fs.existsSync(environment.COREPACK_HOME), true);
-  assert.equal(run("pnpm", ["run", "--silent", "verify"]), "APP_NODE=" + process.versions.undici);
+  run("pnpm", ["run", "--silent", "verify"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "child-proof.json"), "utf8")), {
+    undici: process.versions.undici, injectedOptions: false,
+  });
   console.log("uncached Corepack bootstrap passed with strict TLS");
 } finally { fs.rmSync(root, { recursive: true, force: true }); }
 `;
