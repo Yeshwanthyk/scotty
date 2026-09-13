@@ -32,6 +32,48 @@ const snapshot = (overrides: Partial<PiConsoleSnapshot> = {}): PiConsoleSnapshot
 });
 
 describe("canonical conversation snapshot mapper", () => {
+  it("uses bounded model intent while retaining fallbacks for old and malformed calls", () => {
+    for (const [displayText, label] of [
+      ["  Checking the invoice checkout flow  ", "Checking the invoice checkout flow"],
+      [undefined, "Testing in browser"],
+      [42, "Testing in browser"],
+      ["   ", "Testing in browser"],
+      ["x".repeat(181), "Testing in browser"],
+      ["Checking\ncheckout", "Testing in browser"],
+      ["Checking\u2028checkout", "Testing in browser"],
+      ["Checking\u2029checkout", "Testing in browser"],
+      ["ghp_x ".repeat(30).trim(), "Testing in browser"],
+      ["Checking ghp_secret", "Checking [credential]"],
+    ] as const) {
+      const result = canonicalConversationSnapshotFromPi(
+        snapshot({
+          messages: [
+            { id: "user-1", role: "user", content: "Check checkout" },
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "tool-1",
+                  name: "scotty_browser_test",
+                  arguments: displayText === undefined ? {} : { displayText },
+                },
+              ],
+            },
+            {
+              role: "toolResult",
+              toolCallId: "tool-1",
+              toolName: "scotty_browser_test",
+              content: "Done",
+            },
+          ],
+        }),
+      );
+      assert.equal(result?.turns[0]?.tools[0]?.label, label);
+      assert.equal(result?.turns[0]?.tools[0]?.state, "completed");
+    }
+  });
+
   it("projects queued messages without exposing unsafe control text", () => {
     const result = canonicalConversationSnapshotFromPi(
       snapshot({

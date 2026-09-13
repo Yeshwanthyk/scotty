@@ -244,6 +244,27 @@ export const readRepositories = (options?: SettingsRequestOptions) =>
 export const readCredentials = (options?: SettingsRequestOptions) =>
   request("/api/credentials", decodeCredentials, "Connections could not be loaded.", options);
 
+export const useGithubTokenPermissions = (
+  credential: CredentialStatus,
+  options?: SettingsRequestOptions,
+) =>
+  request(
+    `/api/credentials/${encodeURIComponent(credential.name)}/use-token-permissions`,
+    (value) => decodeCredentials([value])?.[0],
+    "Repository access could not be updated.",
+    options,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: credential.name,
+        expectedVersionRef: credential.versionRef,
+        scope: credential.scope,
+        ...(credential.repositories === undefined ? {} : { repositories: credential.repositories }),
+      }),
+    },
+  );
+
 export const addRepository = (repo: string, options?: SettingsRequestOptions) =>
   request("/api/repos", decodeRepository, "Repository could not be added.", options, {
     method: "POST",

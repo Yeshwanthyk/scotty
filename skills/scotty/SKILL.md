@@ -67,6 +67,20 @@ Complete only when cloud setup, doctor, registration, browser ownership, and one
 warm session agree. Stop on multiple matching Pi grants, missing GitHub identity, or binding
 overwrite ambiguity; never select, fabricate, or replace authority implicitly.
 
+## Add repositories and recover GitHub access
+
+Repository registration and GitHub credential coverage are separate. New GitHub connections use
+all repositories their token can access. Existing connections retain their saved coverage when
+`scotty sync --github` refreshes the token; syncing does not widen repository access.
+
+When adding a repository fails because no connection covers it, inspect Settings → Connections
+as the owner. For an existing connection restricted to selected repositories, use **Use all
+accessible repos** when the task authorizes wider access, then retry repository registration.
+This changes registry policy without replacing the token or existing session grants. GitHub token
+permissions still apply; repository ownership alone does not prove token access. Resolve a
+conflicting global connection explicitly rather than choosing or replacing one implicitly.
+Confirm the updated coverage, successful registration, and access from a fresh session separately.
+
 ## Select an agent
 
 Inspect `scotty beam --help` and cloud Settings. Precedence is explicit

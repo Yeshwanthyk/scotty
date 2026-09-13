@@ -6,6 +6,7 @@ import {
   decodeCredentialRegistryReleaseInputResult,
   decodeCredentialRegistryResolveInputResult,
   decodeCredentialRegistryUpsertInputResult,
+  decodeCredentialRegistryUseTokenPermissionsInputResult,
   type CredentialRegistryAuthority,
   type CredentialRegistryCredential,
   type CredentialRegistryGrantResult,
@@ -61,7 +62,22 @@ export interface CredentialRegistryStorage {
   ) => Promise<A>;
 }
 
+const sameRepositoryPolicy = (
+  left: { readonly scope: string; readonly repositories?: ReadonlyArray<string> },
+  right: { readonly scope: string; readonly repositories?: ReadonlyArray<string> },
+): boolean =>
+  left.scope === right.scope &&
+  (left.repositories?.length ?? 0) === (right.repositories?.length ?? 0) &&
+  (left.repositories ?? []).every((repo) =>
+    (right.repositories ?? []).some(
+      (other) => repositoryIdentityKey(repo) === repositoryIdentityKey(other),
+    ),
+  );
+
 export interface CredentialStoreShape {
+  readonly useTokenPermissions: (
+    input: unknown,
+  ) => Effect.Effect<CredentialRegistryStatus, CredentialRegistryFailure>;
   readonly upsert: (
     input: unknown,
   ) => Effect.Effect<CredentialRegistryStatus, CredentialRegistryFailure>;
@@ -524,6 +540,68 @@ const makeCredentialStore = (
     });
   };
 
+  const useTokenPermissions = (
+    input: unknown,
+  ): Effect.Effect<CredentialRegistryStatus, CredentialRegistryFailure> => {
+    const decoded = decode(decodeCredentialRegistryUseTokenPermissionsInputResult(input));
+    if (Result.isFailure(decoded)) return Effect.fail(decoded.failure);
+    const expected = decoded.success;
+    return transact(async (authority) => {
+      const existing = authority.credentials.find(({ name }) => name === expected.name);
+      if (existing === undefined)
+        return Result.fail(failure("credential_missing", "GitHub connection does not exist"));
+      if (existing.kind !== "github-cli") return Result.fail(invalidInput());
+      if (
+        authority.credentials.some(
+          (entry) =>
+            entry.name !== existing.name && entry.kind === "github-cli" && entry.scope === "global",
+        )
+      )
+        return Result.fail(
+          failure(
+            "credential_conflict",
+            "Another GitHub connection already covers all accessible repositories",
+          ),
+        );
+      if (existing.currentVersionRef !== expected.expectedVersionRef)
+        return Result.fail(
+          failure(
+            "credential_conflict",
+            "Credential version is stale; refresh Connections and retry",
+          ),
+        );
+      if (existing.scope === "global") {
+        const value = status(existing, authority);
+        return value === undefined
+          ? Result.fail(invalidAuthority())
+          : Result.succeed({ value, authority, write: false });
+      }
+      if (!sameRepositoryPolicy(existing, expected))
+        return Result.fail(
+          failure(
+            "credential_conflict",
+            "Repository access changed; refresh Connections and retry",
+          ),
+        );
+      const updated: CredentialRegistryCredential = {
+        name: existing.name,
+        kind: existing.kind,
+        scope: "global",
+        currentVersionRef: existing.currentVersionRef,
+      };
+      const next = {
+        ...authority,
+        credentials: authority.credentials.map((entry) =>
+          entry.name === existing.name ? updated : entry,
+        ),
+      };
+      const value = status(updated, next);
+      return value === undefined
+        ? Result.fail(invalidAuthority())
+        : Result.succeed({ value, authority: next });
+    });
+  };
+
   const upsert = (
     input: unknown,
   ): Effect.Effect<CredentialRegistryStatus, CredentialRegistryFailure> => {
@@ -573,6 +651,17 @@ const makeCredentialStore = (
           existing?.currentVersionRef !== decoded.success.expectedVersionRef
         )
           return Result.fail(failure("credential_conflict", "Credential version is stale"));
+        if (
+          existing !== undefined &&
+          existing.kind === "github-cli" &&
+          !sameRepositoryPolicy(existing, entry)
+        )
+          return Result.fail(
+            failure(
+              "credential_conflict",
+              "Repository access changed; refresh Connections before syncing",
+            ),
+          );
         const versions = [...authority.versions];
         const current = versions.find(
           (version) =>
@@ -619,6 +708,7 @@ const makeCredentialStore = (
   };
 
   return CredentialStore.of({
+    useTokenPermissions,
     upsert,
     list,
     statuses,

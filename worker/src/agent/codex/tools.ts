@@ -1,4 +1,5 @@
 import { Predicate } from "effect";
+import { toolDisplayText } from "../../../../protocol/tool-display-text";
 import type { CodexNotification } from "../../../../protocol/codex-app-server";
 import {
   CONVERSATION_MAX_TOOLS_PER_TURN,
@@ -85,7 +86,7 @@ export const makeCodexTools = () => {
           : "Tool";
     tools.set(item.id, {
       id: item.id,
-      label,
+      label: previous?.label ?? label,
       invocation: label,
       state: item.status === "inProgress" ? "running" : item.status,
       ...(previous?.output === undefined ? {} : { output: previous.output }),
@@ -95,6 +96,13 @@ export const makeCodexTools = () => {
     const previous = tools.get(callId);
     if (previous === undefined) return;
     tools.set(callId, { ...previous, output: bound(text) });
+  };
+  const acceptDynamicCall = (callId: string, input: unknown) => {
+    const previous = tools.get(callId);
+    const label = toolDisplayText(input);
+    if (previous?.state !== "running" || label === undefined || label === previous.label) return;
+    tools.set(callId, { ...previous, label });
+    sequence++;
   };
   const acceptOutputDelta = (event: CommandOutputEvent) => {
     const previous = tools.get(event.params.itemId);
@@ -135,6 +143,7 @@ export const makeCodexTools = () => {
   };
   return {
     accept,
+    acceptDynamicCall,
     acceptDynamicResult,
     snapshot: () => ({ tools: [...tools.values()], toolsTruncated: truncated, sequence }),
   };

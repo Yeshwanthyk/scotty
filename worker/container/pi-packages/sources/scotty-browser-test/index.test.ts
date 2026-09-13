@@ -60,6 +60,16 @@ test("exposes only the bounded BrowserEvidenceJob input", () => {
   }
 });
 
+test("accepts display metadata without forwarding it to the evidence API", () => {
+  assert.equal(
+    serializeBrowserEvidenceJob({ ...job(), displayText: "Checking the invoice checkout flow" }),
+    serializeBrowserEvidenceJob(job()),
+  );
+  for (const displayText of [42, "", "x".repeat(181), "Trailing newline\n", "Unicode\u2028separator", "Unicode\u2029separator", "Checking\ncheckout"]) {
+    assert.throws(() => serializeBrowserEvidenceJob({ ...job(), displayText }), /does not match/u);
+  }
+});
+
 test("enforces every string and array bound plus the 64 KiB request cap", () => {
   const tooManySteps = {
     ...job(),

@@ -617,6 +617,7 @@ export const makeSession = Effect.fnUntraced(function* (
     const result = previous?.result ?? (yield* Deferred.make<CodexDynamicToolResponse["result"]>());
     if (previous === undefined) {
       toolReceipts.set(params.callId, { turnId: params.turnId, tool, argumentsHash, result });
+      tools.acceptDynamicCall(params.callId, params.arguments);
       const execution = Effect.tryPromise({
         try: (signal) => firstPartyTools.execute(tool, params.arguments, signal),
         catch: () => new CodexHostError({ code: "tool_execution_failed" }),
