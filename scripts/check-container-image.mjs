@@ -251,7 +251,7 @@ export const containerImageCodexVersionArgs = (plan) =>
       "mkdir -p /tmp/scotty-codex-smoke/home /tmp/scotty-codex-smoke/codex-home",
       'test "$(readlink -f /usr/local/bin/codex)" = "/opt/codex/bin/codex"',
       `test "$(stat -Lc '%a' /usr/local/bin/codex)" = "755"`,
-      `node -e 'require("node:assert/strict").equal(require("/opt/codex/codex-package.json").version, "0.153.4")'`,
+      `node -e 'require("node:assert/strict").equal(require("/opt/codex/codex-package.json").version, "0.154.0")'`,
       "test -x /opt/codex/bin/codex-code-mode-host",
       "test -x /opt/codex/codex-path/rg",
       "test -x /opt/codex/codex-resources/bwrap",
@@ -259,7 +259,7 @@ export const containerImageCodexVersionArgs = (plan) =>
       'test -z "$(find /opt/codex -perm /6000 -print -quit)"',
       "! command -v bwrap",
       "! dpkg-query -W -f='${Status}' bubblewrap 2>/dev/null | grep -q 'install ok installed'",
-      'test "$(env -i HOME=/tmp/scotty-codex-smoke/home CODEX_HOME=/tmp/scotty-codex-smoke/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.153.4"',
+      'test "$(env -i HOME=/tmp/scotty-codex-smoke/home CODEX_HOME=/tmp/scotty-codex-smoke/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.154.0"',
     ].join(" && "),
   ]);
 
@@ -666,7 +666,7 @@ writeFileSync(new URL('./fixture-child.pid', import.meta.url), String(process.pi
 const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
 createInterface({input:process.stdin}).on('line', line => {
   const m = JSON.parse(line);
-  if(m.method==='initialize') send({id:m.id,result:{userAgent:'scotty-component/0.153.4 fixture',codexHome:process.env.CODEX_HOME,platformFamily:'unix',platformOs:process.platform==='darwin'?'macos':'linux'}});
+  if(m.method==='initialize') send({id:m.id,result:{userAgent:'scotty-component/0.154.0 fixture',codexHome:process.env.CODEX_HOME,platformFamily:'unix',platformOs:process.platform==='darwin'?'macos':'linux'}});
   if(m.method==='thread/start') {
     if(m.params.approvalPolicy!=='never' || m.params.sandbox!=='danger-full-access') process.exit(2);
     send({id:m.id,result:{thread:{id:'prepared'},model:'gpt-5.2',modelProvider:'scotty-managed',cwd:process.cwd(),approvalPolicy:'never',approvalsReviewer:'user',sandbox:{type:'dangerFullAccess'},reasoningEffort:'high'}});

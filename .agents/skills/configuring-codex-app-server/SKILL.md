@@ -14,8 +14,8 @@ persisted selection. Native Codex thread and turn IDs are adapter state, not a s
    the current Session and Credential Registry contracts.
 2. Inspect the pinned package URL, digest, and layout assertions in
    `worker/container/Dockerfile`, plus the model projection provenance in
-   `protocol/codex-model-capabilities.ts`. The current pin is `rust-v0.153.4`, commit
-   `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`. Regenerate app-server JSON schemas
+   `protocol/codex-model-capabilities.ts`. The current pin is `rust-v0.154.0`, commit
+   `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`. Regenerate app-server JSON schemas
    with the pinned binary in isolated `HOME` and `CODEX_HOME`, and compare them with
    that commit's `codex-rs/app-server-protocol/schema/json` sources.
 3. Trace `worker/src/agent/codex/` through the private runtime server and public Session adapter.

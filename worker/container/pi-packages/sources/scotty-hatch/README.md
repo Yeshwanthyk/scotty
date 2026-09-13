@@ -1,9 +1,9 @@
 # scotty-hatch
 
-First-party Pi extension for one bounded application Hatch inside a warm Scotty session.
+First-party Pi and Codex tool for one bounded application Hatch inside a warm Scotty session.
 
 It registers only `scotty_hatch`, with explicit `ensure`, `status`, and `close` operations. The
-extension owns only its scoped child process group. Authoritative Hatch state and exposure remain
+tool owns only its scoped child process group. Authoritative Hatch state and exposure remain
 in the source Sandbox Durable Object behind Scotty's credential-free internal container route.
 
 Tool calls should include `displayText`, a plain, single-line phrase of at most 180 characters
@@ -22,6 +22,12 @@ argv = ["pnpm", "exec", "vite", "dev", "--host", "0.0.0.0", "--port", "4173"]
 cwd = "."
 port = 4173
 health_path = "/"
+ready_timeout_seconds = 60
+
+# Optional: installation, build, and local migrations run before server startup.
+[hatch.prepare]
+argv = ["bash", "scripts/hatch-prepare.sh"]
+timeout_seconds = 600
 ```
 
 Review the file from the repository root, then call `scotty_hatch` with only
@@ -30,7 +36,19 @@ missing file, malformed TOML, unknown fields, or unsafe values before starting a
 the normalized existing ensure request. A complete inline ensure input remains the manual override.
 The Session Durable Object remains authoritative for active Hatch state.
 
-This focused package change does not add `scotty hatch init` or `scotty hatch check`; those CLI
+Preparation has a separate deadline (1–1800 seconds) from server readiness (1–300 seconds,
+30 by default). Its process group is cleaned up on success, failure, timeout, or cancellation.
+It runs before starting a new service, not when ensuring an already owned matching service or
+restoring the prepared workspace on resume. Keep the server command in the foreground and use
+`exec` in shell wrappers. Check repository runtime and package-manager requirements against the
+sandbox image; installation and build failures are not readiness failures.
+
+Failed starts return a classified error with bounded sanitized output where available. Session
+status retains the startup failure code under the current runtime/attempt fence, so a failed start
+can be distinguished from no configured service. Inspect status after an unconfirmed registration
+before deciding to retry.
+
+This package does not add `scotty hatch init` or `scotty hatch check`; those CLI
 helpers are deferred to a later PR.
 
 `hatch.toml` is non-secret repository configuration and does not require mode 0600.

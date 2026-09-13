@@ -120,6 +120,7 @@ import {
   decodeHatchWebSocketId,
   hatchOrigin,
   publicHatchStatusProjection,
+  decodeHatchStartupRequest,
   sameHatchAuthorization,
   type HatchCleanupRetry,
   type HatchCleanupTarget,
@@ -4433,6 +4434,20 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ).pipe(Effect.ignore);
     return false;
   });
+
+  async updateScottyHatchStartup(value: unknown) {
+    const attemptId = crypto.randomUUID();
+    return this.#run(
+      Effect.gen({ self: this }, function* () {
+        const decoded = decodeHatchStartupRequest(value);
+        if (Option.isNone(decoded)) return yield* badRequest("Hatch startup report is invalid");
+        const record = yield* this.requireRecordProgram();
+        return yield* Effect.flatMap(HatchStore, (store) =>
+          store.updateStartup(record.id, attemptId, decoded.value),
+        );
+      }),
+    );
+  }
 
   async getScottyHatchStatus(): Promise<PublicHatchStatus> {
     return this.#run(

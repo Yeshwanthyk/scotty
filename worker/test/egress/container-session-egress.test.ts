@@ -411,6 +411,74 @@ describe("container-only session egress", () => {
     assert.deepStrictEqual(await response.json(), { status: "not_configured" });
   });
 
+  it("routes bounded Hatch startup receipts through the source Sandbox", async () => {
+    const reports: unknown[] = [];
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(
+      sandboxNamespace({
+        fromString: () => ({
+          updateScottyHatchStartup: async (report: unknown) => {
+            reports.push(report);
+            return { attemptId: "attempt-1", runtimeEpoch: "epoch-1" };
+          },
+        }),
+      }),
+    );
+    const request = (body: unknown) =>
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/hatch/startup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const begin = await handler(request({ operation: "begin" }), env, context());
+    assert.strictEqual(begin.status, 200);
+    assert.deepStrictEqual(await begin.json(), { attemptId: "attempt-1", runtimeEpoch: "epoch-1" });
+    const finish = await handler(
+      request({
+        operation: "finish",
+        attemptId: "attempt-1",
+        runtimeEpoch: "epoch-1",
+        failureCode: "preparation_failed",
+      }),
+      env,
+      context(),
+    );
+    assert.strictEqual(finish.status, 200);
+    assert.deepStrictEqual(reports, [
+      { operation: "begin" },
+      {
+        operation: "finish",
+        attemptId: "attempt-1",
+        runtimeEpoch: "epoch-1",
+        failureCode: "preparation_failed",
+      },
+    ]);
+    assert.strictEqual(
+      (
+        await handler(
+          request({
+            operation: "finish",
+            attemptId: "attempt-1",
+            runtimeEpoch: "epoch-1",
+            secret: "x",
+          }),
+          env,
+          context(),
+        )
+      ).status,
+      400,
+    );
+    assert.strictEqual(
+      (await handler(request({ operation: "begin" }), env, context(""))).status,
+      400,
+    );
+    assert.lengthOf(reports, 2);
+  });
+
   it("returns only the source-derived strict Hatch restore descriptor", async () => {
     let descriptor: unknown = hatchRestoreDescriptor();
     const source = {

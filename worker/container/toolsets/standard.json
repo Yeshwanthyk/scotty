@@ -183,7 +183,7 @@
       "commands": ["codex"],
       "source": "OpenAI GitHub release",
       "versionPolicy": "pinned",
-      "expectedVersion": "0.153.4",
+      "expectedVersion": "0.154.0",
       "probe": ["codex", "--version"]
     },
     {

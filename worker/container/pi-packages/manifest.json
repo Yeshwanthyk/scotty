@@ -12,7 +12,7 @@
     {
       "name": "scotty-hatch",
       "order": 1,
-      "sourceSha256": "b59d5cab50078f394d15dd4b9614b1683f71909b03f9927ba5241e34d1813348",
+      "sourceSha256": "75e0977de66115ed8e69b6bae6a76e8afb66dfca78d5a41a30b6e17668de3aa0",
       "sourcePath": "worker/container/pi-packages/sources/scotty-hatch",
       "imagePath": "/opt/scotty/pi-packages/sources/scotty-hatch"
     }

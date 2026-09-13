@@ -95,7 +95,7 @@ const nativeNotifications = [
   '{"method":"turn/completed","params":{"threadId":"01a0751b-178e-7a11-8df3-17abc4c9c02e","turn":{"id":"01a0751b-17c8-7f90-af91-6c0c1149a099","items":[],"itemsView":"notLoaded","status":"interrupted","error":null,"startedAt":1788671104,"completedAt":1788671104,"durationMs":11}},"emittedAtMs":1788671104980}',
 ];
 
-describe("Codex 0.153.4 bounded protocol subset", () => {
+describe("Codex 0.154.0 bounded protocol subset", () => {
   it("carries astra and all six efforts without changing the exact YOLO contract", () => {
     assert.ok(
       Result.isSuccess(

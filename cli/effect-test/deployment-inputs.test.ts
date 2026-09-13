@@ -300,11 +300,11 @@ describe("standalone deployment archive", () => {
       .find((block) => block.includes("mkdir /opt/codex"));
     expect(codexInstall).toBeDefined();
     const pinnedCommands = [
-      '"https://github.com/openai/codex/releases/download/rust-v0.153.4/codex-package-x86_64-unknown-linux-musl.tar.gz"',
-      'echo "a822187e1a2420c61c5926721bfbd878701ed95547c9bb0d4de4498a16ba1821  /tmp/scotty-codex-install/codex.tar.gz" | sha256sum --check --strict',
+      '"https://github.com/openai/codex/releases/download/rust-v0.154.0/codex-package-x86_64-unknown-linux-musl.tar.gz"',
+      'echo "fc6e3e3b85f2cf7d664520ee5c66a7fe4aa12bae7d46834f47e2f165fd0d6f78  /tmp/scotty-codex-install/codex.tar.gz" | sha256sum --check --strict',
       "mkdir /opt/codex",
       "tar -xzf /tmp/scotty-codex-install/codex.tar.gz -C /opt/codex",
-      'a.deepEqual(require("/opt/codex/codex-package.json"), {layoutVersion:1, version:"0.153.4", target:"x86_64-unknown-linux-musl", variant:"codex", entrypoint:"bin/codex", resourcesDir:"codex-resources", pathDir:"codex-path"})',
+      'a.deepEqual(require("/opt/codex/codex-package.json"), {layoutVersion:1, version:"0.154.0", target:"x86_64-unknown-linux-musl", variant:"codex", entrypoint:"bin/codex", resourcesDir:"codex-resources", pathDir:"codex-path"})',
       "test -x /opt/codex/bin/codex-code-mode-host",
       "test -x /opt/codex/codex-path/rg",
       "test -x /opt/codex/codex-resources/bwrap",
@@ -312,7 +312,7 @@ describe("standalone deployment archive", () => {
       'test -z "$(find /opt/codex -perm /6000 -print -quit)"',
       "ln -s /opt/codex/bin/codex /usr/local/bin/codex",
       'test "$(stat -Lc \'%a\' /usr/local/bin/codex)" = "755"',
-      'test "$(env -i HOME=/tmp/scotty-codex-install/home CODEX_HOME=/tmp/scotty-codex-install/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.153.4"',
+      'test "$(env -i HOME=/tmp/scotty-codex-install/home CODEX_HOME=/tmp/scotty-codex-install/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.154.0"',
       "rm -rf /tmp/scotty-codex-install",
     ];
     let previous = -1;

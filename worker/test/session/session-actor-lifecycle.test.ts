@@ -1317,6 +1317,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
       workingDirectory: `/workspace/${SESSION_ID}`,
       port: 4_173,
       healthPath: "/health",
+      readyTimeoutSeconds: 60,
     } as const;
     const ensured = await harness.sandbox.ensureScottyHatch({ service });
     assert.strictEqual(ensured.status, "configured");
@@ -1325,6 +1326,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     const resumed = await harness.sandbox.resumeScottySession();
     assert.strictEqual(resumed.status, "warm");
     assert.strictEqual(healthCalls, 3);
+    assert.strictEqual(harness.piHatchRestoreDescriptors.at(-1)?.service.readyTimeoutSeconds, 60);
     assert.include(harness.exposedPreviewPorts(), service.port);
     const hatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
     assert.strictEqual(hatch?.observedStatus, "running");

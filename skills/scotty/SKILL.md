@@ -61,7 +61,7 @@ Use this order, adapting command arguments from current help:
    repositories after deployment. If cloud setup fails after the local pointer is saved, retry init
    with the same name and setup flags; the CLI resumes setup without reprovisioning.
 4. Confirm cloud settings, repository registration, any refreshed credential, and browser ownership.
-5. Create a fresh session and prove repository access, Pi work, and any intended Hatch service.
+5. Create a fresh session and prove repository access, work with the selected agent, and any intended Hatch service.
 
 Complete only when cloud setup, doctor, registration, browser ownership, and one fresh
 warm session agree. Stop on multiple matching Pi grants, missing GitHub identity, or binding
@@ -114,14 +114,33 @@ Hatch is a service inside a warm session, not a Cloudflare resource. The Session
 configuration and exposure; the extension owns its process group. `hatch.toml` is desired config,
 not runtime proof.
 
-Verify Hatch as a ladder:
+Prepare the repository before creating the verification session:
 
-1. Root config loads with argv, workspace-contained cwd, declared port, no secrets, and health path.
-2. `scotty_hatch ensure` was actually invoked; a config file alone starts nothing.
-3. The owned local process is running and loopback health succeeds on the declared endpoint.
-4. Authoritative desired, observed, exposure, and generation agree.
-5. Public DNS, TLS, and Worker routing are ready.
-6. Authenticated Open Hatch handoff works. Never publish its URL.
+1. Read package engines, package-manager pins, build scripts, and local service bindings. Verify
+   the sandbox runtime satisfies them; a host build does not prove sandbox compatibility.
+2. Put dependency installation, builds, and local migrations in optional `[hatch.prepare]` with
+   `argv` and `timeout_seconds` (1–1800). Preparation must exit successfully. Use only local
+   development bindings and make the script safe to run again after a deliberate repair.
+3. Keep `[hatch].argv` as the foreground server command, with workspace-contained `cwd`, declared
+   `port`, and `health_path`. Set `ready_timeout_seconds` (1–300) for server readiness separately
+   from preparation. Bind the server to `0.0.0.0` and use `exec` in shell wrappers.
+4. Commit `hatch.toml` and its scripts together. Existing configs without preparation retain their
+   server-only startup behavior. A file alone starts nothing: invoke `scotty_hatch` with
+   `{ "operation": "ensure" }` through the selected Pi or Codex agent.
+
+Verify each boundary before claiming Hatch works:
+
+1. Repository config parses and preparation finishes within its own deadline.
+2. The owned server remains running and its declared loopback health endpoint succeeds.
+3. Authoritative desired, observed, exposure, and generation agree.
+4. Public DNS, TLS, and Worker routing are ready.
+5. Authenticated Open Hatch handoff works. Never publish its URL.
+6. Sleep/resume restores the prepared workspace and starts the service without repeating preparation.
+
+An ensure of an already owned matching service does not reinstall dependencies. Preparation failures,
+process exits, readiness timeouts, and registration failures are distinct tool results; retain the
+code and bounded sanitized log tail. A failed startup must not be diagnosed as an absent config.
+After an ambiguous registration result, inspect status before deciding whether to retry.
 
 For repair, read authoritative status once, inspect sanitized bounded logs, and correct the first
 divergence. Prefer a repository fix over an inline override. Do not start a competing server,
@@ -132,6 +151,16 @@ a newer generation.
 If local config is absent while authoritative state may exist, do not conclude `not_configured` or
 recreate it. Report the disagreement and diagnose the Session boundary. Finish only when local
 health, owner state, public readiness, and secure handoff pass; name any unproved rung.
+
+Codex turn completion does not imply every background command has exited. Associate later command
+updates with their original turn/item; they must not reopen a completed turn or authorize new tool
+execution. A failed command or model turn is distinct from a stopped runtime. Check the canonical
+runtime failure code and diagnostics before choosing recovery; preserve unknown admission receipts
+and never replay a possibly executed command automatically. A native terminal failed turn can accept
+a new follow-up in the same runtime. For a stopped process, use the existing Session-owned sleep
+and resume flow only after the backup succeeds; resume preserves the native thread and admission
+receipts. An unknown receipt stays unconfirmed. Do not start a replacement warm runtime outside
+that lifecycle or treat a failed save as permission to discard the conversation.
 
 ## Diagnose lifecycle and clean up
 

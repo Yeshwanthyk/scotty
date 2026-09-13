@@ -28,6 +28,8 @@ import {
   decodeHatchToolEnsureRequest,
   HatchRestoreDescriptorSchema,
   PublicHatchStatusSchema,
+  decodeHatchStartupRequest,
+  decodeHatchStartupTicket,
   type EnsureHatchInput,
 } from "../hatch/contracts";
 import { scottyErrorResponse } from "../session/passive";
@@ -336,6 +338,41 @@ async function handleHatchRestoreEgress(
   });
 }
 
+async function handleHatchStartupEgress(
+  request: Request,
+  env: Bindings,
+  context: EgressContext,
+): Promise<Response> {
+  if (
+    typeof context.containerId !== "string" ||
+    !context.containerId ||
+    context.className !== SOURCE_SANDBOX_CLASS
+  )
+    return rejectedRequest("Hatch startup source is unavailable");
+  if (
+    request.method !== "POST" ||
+    mediaType(request.headers.get("content-type")) !== "application/json"
+  )
+    return rejectedRequest("Hatch startup requires JSON POST");
+  const text = await readBoundedUtf8Body(request, SCOTTY_HATCH_MAX_PROTOCOL_BYTES);
+  if (text === undefined) return rejectedRequest("Hatch startup report exceeds the size limit");
+  const json = decodeJsonValue(text);
+  const decoded = Option.isNone(json) ? Option.none() : decodeHatchStartupRequest(json.value);
+  if (Option.isNone(decoded)) return rejectedRequest("Hatch startup report is invalid");
+  const executed = await Promise.resolve()
+    .then(() =>
+      env.SANDBOX.get(env.SANDBOX.idFromString(context.containerId)).updateScottyHatchStartup(
+        decoded.value,
+      ),
+    )
+    .then(Result.succeed, Result.fail);
+  if (Result.isFailure(executed)) return hatchFailureResponse(executed.failure);
+  const ticket = decodeHatchStartupTicket(executed.success);
+  return Option.isNone(ticket)
+    ? rejectedRequest("Hatch startup receipt is invalid")
+    : Response.json(ticket.value, { headers: { "cache-control": "no-store" } });
+}
+
 async function handleHatchEgress(
   request: Request,
   env: Bindings,
@@ -398,6 +435,12 @@ async function handleHatchEgress(
     ? hatchFailureResponse(executed.failure)
     : sanitizeHatchStatus(executed.success);
 }
+
+const hatchHandlers = new Map<string, typeof handleHatchEgress>([
+  [SCOTTY_HATCH_ROUTE, handleHatchEgress],
+  [SCOTTY_HATCH_RESTORE_ROUTE, handleHatchRestoreEgress],
+  ["/api/hatch/startup", handleHatchStartupEgress],
+]);
 
 async function handleEvidenceJobEgress(
   request: Request,
@@ -464,9 +507,8 @@ export async function handleContainerSessionEgress(
 
   if (url.pathname === SCOTTY_EVIDENCE_JOB_ROUTE)
     return handleEvidenceJobEgress(request, env, context);
-  if (url.pathname === SCOTTY_HATCH_RESTORE_ROUTE)
-    return handleHatchRestoreEgress(request, env, context);
-  if (url.pathname === SCOTTY_HATCH_ROUTE) return handleHatchEgress(request, env, context);
+  const hatchHandler = hatchHandlers.get(url.pathname);
+  if (hatchHandler !== undefined) return hatchHandler(request, env, context);
 
   const matched = CONTAINER_SESSION_ROUTE.exec(url.pathname);
   if (matched === null) return rejectedRequest("Invalid container session route");

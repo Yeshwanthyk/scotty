@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   decodeConversationSnapshot,
+  runtimeFailureMessage,
   interruptConversation,
   isConversationLifecycleMismatch,
   readConversation,
@@ -347,6 +348,33 @@ describe("conversation client boundary", () => {
 });
 
 describe("queued follow-up public intent", () => {
+  it("decodes bounded runtime diagnostics and explains uncertain pending work", () => {
+    const value = {
+      ...snapshot,
+      runtimeStopped: true,
+      runtimeFailure: { code: "unexpected_exit", diagnostic: "process exited" },
+    };
+    const decoded = decodeConversationSnapshot(value);
+    expect(decoded?.runtimeFailure).toEqual(value.runtimeFailure);
+    expect(runtimeFailureMessage(decoded)).toContain("unexpected exit");
+    expect(runtimeFailureMessage(decoded)).toContain("pending commands may have run");
+    expect(
+      decodeConversationSnapshot({ ...value, runtimeFailure: { code: "x".repeat(65) } }),
+    ).toBeUndefined();
+    expect(
+      decodeConversationSnapshot({
+        ...value,
+        runtimeFailure: { code: "unexpected_exit", diagnostic: "x".repeat(257) },
+      }),
+    ).toBeUndefined();
+    expect(
+      decodeConversationSnapshot({
+        ...value,
+        runtimeFailure: { code: "unexpected_exit", raw: "private" },
+      }),
+    ).toBeUndefined();
+  });
+
   it("preserves the explicit runtime stopped signal and rejects malformed values", () => {
     expect(decodeConversationSnapshot({ ...snapshot, runtimeStopped: true })).toMatchObject({
       runtimeStopped: true,

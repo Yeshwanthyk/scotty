@@ -104,6 +104,33 @@ describe("Codex allowlisted saved-state production filesystem adapter", () => {
       assert.ok(Result.isFailure(yield* Effect.result(readCodexSavedState(f.workspace, history))));
     }),
   );
+  it.effect("reads the previous pinned native archive and rejects unknown versions", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* writeCodexSavedState(f.workspace, f.home, history);
+      const saved = yield* readCodexSavedState(f.workspace, history);
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          codexSavedStatePath(f.workspace),
+          JSON.stringify({
+            ...saved,
+            nativeVersion: "0.153.4",
+          }),
+        ),
+      );
+      assert.equal((yield* readCodexSavedState(f.workspace, history)).nativeVersion, "0.153.4");
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          codexSavedStatePath(f.workspace),
+          JSON.stringify({
+            ...saved,
+            nativeVersion: "0.999.0",
+          }),
+        ),
+      );
+      assert.ok(Result.isFailure(yield* Effect.result(readCodexSavedState(f.workspace, history))));
+    }),
+  );
   it.effect(
     "rejects symlinked native rollouts and archive files without copying their contents",
     () =>

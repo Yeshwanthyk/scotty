@@ -4,11 +4,13 @@ import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
   decodeCodexClientMessage,
+  CODEX_VERSION,
   decodeCodexDynamicToolResponse,
   type CodexClientMessage,
   type CodexDynamicToolResponse,
 } from "../../../../protocol/codex-app-server";
 import { makeFramer } from "../../../src/agent/codex/framing";
+import { HatchFailure } from "../../../src/agent/codex/first-party-tools";
 import { makeSession } from "../../../src/agent/codex/session";
 import type { CodexProcess } from "../../../src/agent/codex/process";
 
@@ -252,7 +254,7 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
         yield* emit({
           id: mode === "wrong-id" ? String(message.id) : message.id,
           result: {
-            userAgent: "scotty-component/0.153.4 test",
+            userAgent: `scotty-component/${CODEX_VERSION} test`,
             codexHome: "/isolated/codex-home",
             platformFamily: "unix",
             platformOs: "linux",
@@ -759,6 +761,58 @@ describe("scoped Codex session", () => {
       yield* host.stop;
     }),
   );
+  it.effect(
+    "keeps a classified Hatch failure and bounded stderr tail in the native tool reply",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const host = yield* makeSession(f.transport, undefined, {
+          restore: async () => {},
+          shutdown: async () => {},
+          execute: async () => {
+            throw new HatchFailure(
+              "preparation_failed",
+              "stdout".repeat(400),
+              "SCOTTY_HATCH_SAFE_TAIL",
+              23,
+            );
+          },
+        });
+        yield* host.prompt("hatch");
+        yield* f.emit({
+          method: "item/started",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            item: {
+              type: "dynamicToolCall",
+              id: "hatch-call",
+              tool: "scotty_hatch",
+              status: "inProgress",
+            },
+          },
+        });
+        yield* f.emit({
+          id: 113,
+          method: "item/tool/call",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            callId: "hatch-call",
+            namespace: null,
+            tool: "scotty_hatch",
+            arguments: { operation: "ensure" },
+          },
+        });
+        const reply = (yield* Queue.take(f.toolResponses)).result;
+        assert.equal(reply.success, false);
+        assert.match(reply.contentItems[0].text, /^Hatch failed \(preparation_failed\)/u);
+        assert.include(reply.contentItems[0].text, "SCOTTY_HATCH_SAFE_TAIL");
+        assert.isAtMost(new TextEncoder().encode(reply.contentItems[0].text).byteLength, 1200);
+        assert.equal(host.inspect().ready, true);
+        yield* host.stop;
+      }),
+  );
 
   it.effect("keeps malformed nonfatal steer responses fatal", () =>
     Effect.gen(function* () {
@@ -869,6 +923,128 @@ describe("scoped Codex session", () => {
       assert.equal(host.inspect().failure, null);
       assert.ok(host.inspect().discarded >= 7);
       yield* host.stop;
+    }),
+  );
+
+  it.effect(
+    "routes a known late command to its original turn while idle and during a new turn",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture("tool");
+        let toolExecutions = 0;
+        const host = yield* makeSession(f.transport, undefined, {
+          restore: async () => {},
+          shutdown: async () => {},
+          execute: async () => {
+            toolExecutions++;
+            return { text: "unexpected", success: true };
+          },
+        });
+        const first = yield* host.prompt("first");
+        yield* f.emit({
+          method: "item/started",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            item: {
+              type: "commandExecution",
+              id: "command",
+              command: "printf safe",
+              status: "inProgress",
+            },
+          },
+        });
+        yield* f.emit({
+          method: "turn/completed",
+          params: {
+            threadId: "thread",
+            turn: { id: "turn", status: "completed", items: [] },
+          },
+        });
+        yield* first.completed;
+        yield* f.emit({
+          method: "item/commandExecution/outputDelta",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            itemId: "command",
+            delta: "safe",
+          },
+        });
+        const second = yield* host.prompt("second");
+        assert.equal(second.turnId, "turn-2");
+        yield* f.emit({
+          method: "item/completed",
+          params: {
+            threadId: "thread",
+            turnId: "turn",
+            item: {
+              type: "commandExecution",
+              id: "command",
+              command: "printf safe",
+              status: "completed",
+              aggregatedOutput: "safe",
+            },
+          },
+        });
+        yield* TestClock.adjust(1);
+        assert.equal(host.inspect().ready, true);
+        assert.deepEqual(host.inspect().tools, []);
+        assert.equal(toolExecutions, 0);
+        assert.deepEqual(
+          host
+            .drainEvents()
+            .flatMap((event) => (event.method === "item/completed" ? [event.params.turnId] : [])),
+          ["turn"],
+        );
+        yield* host.stop;
+      }),
+  );
+
+  it.effect("rejects a duplicate completion for a known old command", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      const turn = yield* host.prompt("first");
+      yield* f.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "command",
+            command: "printf safe",
+            status: "inProgress",
+          },
+        },
+      });
+      yield* f.emit({
+        method: "turn/completed",
+        params: {
+          threadId: "thread",
+          turn: { id: "turn", status: "completed", items: [] },
+        },
+      });
+      yield* turn.completed;
+      const completion = {
+        method: "item/completed",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: {
+            type: "commandExecution",
+            id: "command",
+            command: "printf safe",
+            status: "completed",
+          },
+        },
+      };
+      yield* f.emit(completion);
+      yield* TestClock.adjust(1);
+      assert.equal(host.inspect().ready, true);
+      yield* f.emit(completion);
+      assert.equal((yield* host.closed).failure, "stale_notification");
     }),
   );
 
@@ -1301,28 +1477,91 @@ it.effect("expired credential blocks a new prompt without writing a turn", () =>
   }),
 );
 
-for (const stale of [false, true])
-  it.effect(`native upstream failure is bounded and turn-fenced: stale=${stale}`, () =>
+it.effect("native upstream failure remains a failed turn with ready host", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    const host = yield* makeSession(f.transport);
+    const turn = yield* host.prompt("hello");
+    yield* f.emit({
+      method: "error",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        willRetry: false,
+        error: { message: "untrusted credential detail", codexErrorInfo: "other" },
+      },
+    });
+    yield* f.emit({
+      method: "turn/completed",
+      params: {
+        threadId: "thread",
+        turn: { id: "turn", status: "failed", items: [], error: { message: "hidden" } },
+      },
+    });
+    assert.equal((yield* turn.completed).status, "failed");
+    assert.equal(host.inspect().ready, true);
+    assert.notInclude(JSON.stringify(host.inspect()), "untrusted credential detail");
+    yield* host.stop;
+  }),
+);
+
+it.effect("native upstream error from a foreign thread remains fatal", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    const host = yield* makeSession(f.transport);
+    const turn = yield* host.prompt("hello");
+    yield* f.emit({
+      method: "error",
+      params: {
+        threadId: "old-thread",
+        turnId: "turn",
+        willRetry: false,
+        error: { message: "untrusted credential detail", codexErrorInfo: "other" },
+      },
+    });
+    const result = yield* Effect.result(turn.completed);
+    assert.ok(Result.isFailure(result));
+    assert.equal(result.failure.code, "stale_notification");
+    assert.equal((yield* host.closed).failure, "stale_notification");
+    assert.notInclude(JSON.stringify(result), "untrusted credential detail");
+  }),
+);
+
+it.effect(
+  "nonretryable model error without native terminal settles within a bounded deadline",
+  () =>
     Effect.gen(function* () {
       const f = yield* fixture();
-      const host = yield* makeSession(f.transport);
+      const host = yield* makeSession({
+        ...f.transport,
+        options: {
+          ...f.transport.options,
+          turnTimeoutMs: undefined,
+        },
+      });
       const turn = yield* host.prompt("hello");
       yield* f.emit({
         method: "error",
         params: {
-          threadId: stale ? "old-thread" : "thread",
+          threadId: "thread",
           turnId: "turn",
           willRetry: false,
-          error: { message: "untrusted credential detail", codexErrorInfo: "other" },
+          error: { message: "private upstream body", codexErrorInfo: "other" },
         },
       });
+      yield* TestClock.adjust(1);
+      assert.equal(host.inspect().discarded, 1);
+      yield* TestClock.adjust(4998);
+      assert.equal(host.inspect().ready, true);
+      yield* TestClock.adjust(1);
       const result = yield* Effect.result(turn.completed);
       assert.ok(Result.isFailure(result));
-      assert.equal(result.failure.code, stale ? "stale_notification" : "upstream_failed");
-      assert.notInclude(JSON.stringify(result.failure), "untrusted credential detail");
-      assert.equal((yield* host.closed).failure, stale ? "stale_notification" : "upstream_failed");
+      assert.equal(result.failure.code, "upstream_failed");
+      assert.equal(host.inspect().failureDiagnostic, "other");
+      assert.equal((yield* host.closed).failure, "upstream_failed");
+      assert.notInclude(JSON.stringify(host.inspect()), "private upstream body");
     }),
-  );
+);
 
 it.effect("projects only structured upstream category and numeric HTTP status", () =>
   Effect.gen(function* () {
@@ -1341,11 +1580,17 @@ it.effect("projects only structured upstream category and numeric HTTP status", 
         },
       },
     });
-    const result = yield* Effect.result(turn.completed);
-    assert.ok(Result.isFailure(result));
-    assert.equal(result.failure.code, "upstream_failed");
-    assert.equal(host.inspect().failureDiagnostic, "httpConnectionFailed:503");
+    yield* f.emit({
+      method: "turn/completed",
+      params: {
+        threadId: "thread",
+        turn: { id: "turn", status: "failed", items: [], error: { message: "hidden" } },
+      },
+    });
+    assert.equal((yield* turn.completed).status, "failed");
+    assert.equal(host.inspect().ready, true);
     assert.notInclude(JSON.stringify(host.inspect()), "untrusted upstream body");
+    yield* host.stop;
   }),
 );
 

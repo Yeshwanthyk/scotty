@@ -25,6 +25,8 @@ import {
   type HatchRouteAuthorization,
   type HatchService,
   type HatchState,
+  type HatchStartupRequest,
+  type HatchStartupTicket,
   type PublicHatchStatus,
 } from "./contracts";
 import {
@@ -143,6 +145,11 @@ export interface HatchRequestClaim {
 }
 
 interface HatchStoreShape {
+  readonly updateStartup: (
+    sessionId: string,
+    attemptId: string,
+    input: HatchStartupRequest,
+  ) => Effect.Effect<HatchStartupTicket, HatchStateError>;
   readonly read: Effect.Effect<HatchState, HatchStateError>;
   readonly publicStatus: Effect.Effect<PublicHatchStatus, HatchStateError>;
   readonly beginEnsure: (
@@ -354,14 +361,14 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
 
   const requireRestoreLease = async (
     transaction: HatchStateTransaction,
-    sessionId: string,
+    sessionId: string | undefined,
     operationNonce: string,
     expectedFence?: HatchRestoreFence,
   ): Promise<Result.Result<SessionRecord, HatchStateError>> => {
     const record = decodeRecord(await transaction.getRecord());
     if (Result.isFailure(record)) return Result.fail(record.failure);
     if (
-      record.success.id !== sessionId ||
+      (sessionId !== undefined && record.success.id !== sessionId) ||
       record.success.execution.provider !== "cloudflare" ||
       record.success.operation?.nonce !== operationNonce ||
       (record.success.operation.kind !== "snapshot" &&
@@ -587,6 +594,43 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
   return HatchStore.of({
     read: read(),
     publicStatus: read().pipe(Effect.map(publicHatchStatusProjection)),
+    updateStartup: (sessionId, attemptId, input) =>
+      transact(async (transaction, state, nowMillis) => {
+        const record = await requireWarmSession(transaction, sessionId);
+        if (Result.isFailure(record)) return Result.fail(record.failure);
+        if (record.success.operation !== null) return Result.fail(changed());
+        const epoch = await currentRuntime(transaction);
+        if (Result.isFailure(epoch)) return Result.fail(epoch.failure);
+        if (input.operation === "begin") {
+          const ticket = { attemptId, runtimeEpoch: epoch.success };
+          await transaction.putHatch({
+            ...state,
+            startup: { ...ticket, updatedAt: new Date(nowMillis).toISOString() },
+          });
+          return Result.succeed(ticket);
+        }
+        if (
+          input.runtimeEpoch !== epoch.success ||
+          state.startup?.attemptId !== input.attemptId ||
+          state.startup.runtimeEpoch !== input.runtimeEpoch
+        )
+          return Result.fail(changed());
+        const { startup: _startup, ...rest } = state;
+        await transaction.putHatch(
+          input.failureCode === undefined
+            ? rest
+            : {
+                ...rest,
+                startup: {
+                  attemptId: input.attemptId,
+                  runtimeEpoch: input.runtimeEpoch,
+                  failureCode: input.failureCode,
+                  updatedAt: new Date(nowMillis).toISOString(),
+                },
+              },
+        );
+        return Result.succeed({ attemptId: input.attemptId, runtimeEpoch: input.runtimeEpoch });
+      }),
     beginEnsure: (input) =>
       transact<BeginHatchEnsureResult>(async (transaction, state, nowMillis) => {
         const lease = await requireWarmLease(transaction, input.sessionId, input.operationNonce);
@@ -630,17 +674,15 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
             ? {}
             : { lastHealthyAt: existing.lastHealthyAt }),
         };
-        await transaction.putHatch({ primary: hatch });
+        await transaction.putHatch({ ...state, primary: hatch });
         return Result.succeed({ hatch, needsExposure: true });
       }),
     beginRestore: (input) =>
       transact(async (transaction, state, nowMillis) => {
         const existing = state.primary;
-        if (existing === undefined || existing.desiredStatus !== "open")
-          return Result.succeed(undefined);
         const lease = await requireRestoreLease(
           transaction,
-          existing.sessionId,
+          existing?.sessionId,
           input.operationNonce,
         );
         if (Result.isFailure(lease)) return Result.fail(lease.failure);
@@ -649,6 +691,13 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           return Result.fail(
             new HatchStateError({ reason: "runtime_changed", message: "Hatch runtime changed" }),
           );
+        if (existing === undefined || existing.desiredStatus !== "open") {
+          if (state.startup !== undefined) {
+            const { startup: _startup, ...rest } = state;
+            await transaction.putHatch(rest);
+          }
+          return Result.succeed(undefined);
+        }
         if (
           existing.cleanup !== undefined ||
           existing.transitionNonce !== undefined ||
@@ -675,7 +724,8 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           transitionNonce: input.operationNonce,
           updatedAt: now,
         };
-        await transaction.putHatch({ primary: hatch });
+        const { startup: _startup, ...rest } = state;
+        await transaction.putHatch({ ...rest, primary: hatch });
         return Result.succeed(hatch);
       }),
     restoreDescriptor: transact(async (transaction, state) => {
@@ -738,7 +788,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           lastHealthyAt: now,
           publicReadyAt: now,
         };
-        await transaction.putHatch({ primary: next });
+        await transaction.putHatch({ ...state, primary: next });
         return Result.succeed(next);
       }),
     confirmPublicReady: (hatchId, generation, runtimeEpoch) =>
@@ -762,7 +812,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         if (hatch.publicReadyAt !== undefined) return Result.succeed(hatch);
         const now = new Date(nowMillis).toISOString();
         const next = { ...hatch, publicReadyAt: now, updatedAt: now };
-        await transaction.putHatch({ primary: next });
+        await transaction.putHatch({ ...state, primary: next });
         return Result.succeed(next);
       }),
     clearPublicReady: (hatchId, generation, runtimeEpoch) =>
@@ -786,7 +836,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         if (hatch.publicReadyAt === undefined) return Result.succeed(hatch);
         const now = new Date(nowMillis).toISOString();
         const next = { ...withoutPublicReadiness(hatch), updatedAt: now };
-        await transaction.putHatch({ primary: next });
+        await transaction.putHatch({ ...state, primary: next });
         return Result.succeed(next);
       }),
     exposedRoute: route(false),
@@ -838,6 +888,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         );
         const retainedPermitIds = new Set(retainedPermits.map((candidate) => candidate.permitId));
         await transaction.putHatch({
+          ...state,
           primary: {
             ...hatch,
             permits: [...retainedPermits, permit],
@@ -947,6 +998,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           expiresAt,
         };
         await transaction.putHatch({
+          ...state,
           primary: { ...hatch, permits, requests: [...requests, request], updatedAt: admittedAt },
         });
         return Result.succeed({ requestId: request.requestId, expiresAt });
@@ -964,6 +1016,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         )
           return Result.succeed(false);
         await transaction.putHatch({
+          ...state,
           primary: {
             ...hatch,
             requests: hatch.requests.map((candidate) =>
@@ -1003,6 +1056,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           return Result.succeed(undefined);
         const claimed: HatchHttpRequest = { ...request, status: "claimed" };
         await transaction.putHatch({
+          ...state,
           primary: {
             ...hatch,
             requests: hatch.requests.map((candidate) =>
@@ -1019,6 +1073,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         if (hatch === undefined || request === undefined) return Result.succeed(undefined);
         const ingressBytes = request.ingressBytes ?? request.reservedIngressBytes;
         await transaction.putHatch({
+          ...state,
           primary: settleHatchRequest(hatch, request, ingressBytes, responseBytes),
         });
         return Result.succeed(undefined);
@@ -1034,6 +1089,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         const request = hatch.requests.find((candidate) => candidate.requestId === requestId);
         if (request === undefined) return Result.succeed(undefined);
         await transaction.putHatch({
+          ...state,
           primary: settleHatchRequest(
             hatch,
             request,
@@ -1082,7 +1138,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           generation,
           new Date(nowMillis).toISOString(),
         );
-        await transaction.putHatch({ primary: next });
+        await transaction.putHatch({ ...state, primary: next });
         return Result.succeed(next);
       }),
     completeCleanup: (operationNonce, target) =>
@@ -1097,6 +1153,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           return Result.fail(changed());
         const settled = withoutTransitionNonce(hatch);
         await transaction.putHatch({
+          ...state,
           primary: {
             ...(target === "gone" ? settled : withoutCleanup(settled)),
             exposure: "closed",

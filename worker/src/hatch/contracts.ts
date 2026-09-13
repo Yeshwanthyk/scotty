@@ -104,6 +104,9 @@ export const HatchServiceSchema = Schema.Struct({
   workingDirectory: AbsoluteWorkspacePathSchema,
   port: PortSchema,
   healthPath: HealthPathSchema,
+  readyTimeoutSeconds: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 300 })),
+  ),
 });
 export type HatchService = typeof HatchServiceSchema.Type;
 
@@ -302,8 +305,46 @@ export const HatchRecordSchema = HatchRecordBaseSchema.check(
 );
 export type HatchRecord = typeof HatchRecordSchema.Type;
 
+export const HatchStartupFailureCodeSchema = Schema.Literals([
+  "invalid_config",
+  "preparation_failed",
+  "preparation_timeout",
+  "process_start_failed",
+  "process_exited",
+  "readiness_timeout",
+  "registration_rejected",
+  "registration_unconfirmed",
+  "cleanup_failed",
+  "interrupted",
+]);
+export const HatchStartupTicketSchema = Schema.Struct({
+  attemptId: IdentifierSchema,
+  runtimeEpoch: IdentifierSchema,
+});
+export const HatchStartupUpdateSchema = Schema.Struct({
+  ...HatchStartupTicketSchema.fields,
+  failureCode: Schema.optionalKey(HatchStartupFailureCodeSchema),
+});
+export const HatchStartupRequestSchema = Schema.Union([
+  Schema.Struct({ operation: Schema.Literal("begin") }),
+  Schema.Struct({ operation: Schema.Literal("finish"), ...HatchStartupUpdateSchema.fields }),
+]);
+export const decodeHatchStartupRequest = Schema.decodeUnknownOption(HatchStartupRequestSchema, {
+  onExcessProperty: "error",
+});
+export const decodeHatchStartupTicket = Schema.decodeUnknownOption(HatchStartupTicketSchema, {
+  onExcessProperty: "error",
+});
+export type HatchStartupRequest = typeof HatchStartupRequestSchema.Type;
+export type HatchStartupTicket = typeof HatchStartupTicketSchema.Type;
+const HatchStartupStateSchema = Schema.Struct({
+  ...HatchStartupUpdateSchema.fields,
+  updatedAt: IsoTimestampSchema,
+});
+
 export const HatchStateSchema = Schema.Struct({
   primary: Schema.optionalKey(HatchRecordSchema),
+  startup: Schema.optionalKey(HatchStartupStateSchema),
 });
 export type HatchState = typeof HatchStateSchema.Type;
 export const emptyHatchState = (): HatchState => ({});
@@ -313,6 +354,7 @@ export const decodeHatchStateResult = Schema.decodeUnknownResult(HatchStateSchem
 
 const PublicHatchConfiguredSchema = Schema.Struct({
   status: Schema.Literal("configured"),
+  startupFailure: Schema.optionalKey(HatchStartupFailureCodeSchema),
   hatchId: IdentifierSchema,
   generation: PositiveIntSchema,
   service: Schema.Struct({
@@ -327,16 +369,22 @@ const PublicHatchConfiguredSchema = Schema.Struct({
   lastHealthyAt: Schema.optionalKey(IsoTimestampSchema),
 });
 export const PublicHatchStatusSchema = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("not_configured") }),
+  Schema.Struct({
+    status: Schema.Literal("not_configured"),
+    startupFailure: Schema.optionalKey(HatchStartupFailureCodeSchema),
+  }),
   PublicHatchConfiguredSchema,
 ]);
 export type PublicHatchStatus = typeof PublicHatchStatusSchema.Type;
 
 export const publicHatchStatusProjection = (state: HatchState): PublicHatchStatus => {
   const hatch = state.primary;
-  if (hatch === undefined) return { status: "not_configured" };
+  const failure =
+    state.startup?.failureCode === undefined ? {} : { startupFailure: state.startup.failureCode };
+  if (hatch === undefined) return { status: "not_configured", ...failure };
   return {
     status: "configured",
+    ...failure,
     hatchId: hatch.hatchId,
     generation: hatch.generation,
     service: { name: hatch.service.name, port: hatch.service.port },
@@ -467,6 +515,7 @@ export const sameHatchService = (left: HatchService, right: HatchService): boole
   left.workingDirectory === right.workingDirectory &&
   left.port === right.port &&
   left.healthPath === right.healthPath &&
+  left.readyTimeoutSeconds === right.readyTimeoutSeconds &&
   left.argv.length === right.argv.length &&
   left.argv.every((arg, index) => arg === right.argv[index]);
 

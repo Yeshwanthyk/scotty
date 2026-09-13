@@ -12,7 +12,10 @@ import scottyHatch, {
   type HatchChildProcess,
   type HatchServiceProcess,
   loadRepositoryHatchConfig,
-  ScottyHatchManager,
+  ScottyHatchManager as ProductionHatchManager,
+  HatchFailure,
+  SCOTTY_HATCH_STARTUP_ROUTE,
+  type ScottyHatchManagerOptions,
   ScottyHatchParameters,
   ScottyHatchToolParameters,
   SCOTTY_HATCH_MAX_BYTES,
@@ -20,6 +23,20 @@ import scottyHatch, {
   SCOTTY_HATCH_ROUTE,
   waitForLoopbackReadiness,
 } from "./index.ts";
+
+// Startup receipts are owned by the Session; service tests use an in-memory receipt transport.
+class ScottyHatchManager extends ProductionHatchManager {
+  constructor(options: ScottyHatchManagerOptions = {}) {
+    const authority = options.authorityTransport ?? fetch;
+    super({
+      ...options,
+      authorityTransport: async (input, init) =>
+        String(input) === SCOTTY_HATCH_STARTUP_ROUTE
+          ? Response.json({ attemptId: "attempt-1", runtimeEpoch: "epoch-1" })
+          : authority(input, init),
+    });
+  }
+}
 
 const configured = (overrides: Partial<ConfiguredStatus> = {}): ConfiguredStatus => ({
   status: "configured" as const,
@@ -62,6 +79,11 @@ class FakeChild extends EventEmitter implements HatchChildProcess {
 
   get signalCode(): NodeJS.Signals | null {
     return this.#signalCode;
+  }
+
+  succeed(): void {
+    this.#exitCode = 0;
+    this.emit("exit", 0, null);
   }
 
   exit(signal: NodeJS.Signals = "SIGTERM"): void {
@@ -193,6 +215,46 @@ test("rejects malformed TOML, unknown fields, unsafe cwd, and an absent config",
   assert.equal(result.process.status, "not_owned");
   assert.equal(spawns, 0);
   assert.equal(authorityCalls, 0);
+});
+
+test("invalid explicit and repository config publish fenced startup failures", async () => {
+  const { root } = await workspace();
+  const reports: unknown[] = [];
+  const manager = new ProductionHatchManager({
+    workspaceRoot: root,
+    authorityTransport: async (input, init) => {
+      assert.equal(String(input), SCOTTY_HATCH_STARTUP_ROUTE);
+      reports.push(JSON.parse(String(init?.body)));
+      return Response.json({ attemptId: `attempt-${reports.length}`, runtimeEpoch: "epoch-one" });
+    },
+  });
+  await assert.rejects(manager.run({ ...ensureInput(), port: 3_000 }), {
+    code: "invalid_config",
+  });
+  assert.deepEqual(reports, [
+    { operation: "begin" },
+    {
+      operation: "finish",
+      attemptId: "attempt-1",
+      runtimeEpoch: "epoch-one",
+      failureCode: "invalid_config",
+    },
+  ]);
+  assert.deepEqual((await manager.run({ operation: "ensure" })).hatch, {
+    status: "not_configured",
+  });
+  assert.equal(reports.length, 2);
+  await writeFile(join(root, "hatch.toml"), '[hatch\nservice = "web"\n');
+  await assert.rejects(manager.run({ operation: "ensure" }), { code: "invalid_config" });
+  assert.deepEqual(reports.slice(2), [
+    { operation: "begin" },
+    {
+      operation: "finish",
+      attemptId: "attempt-3",
+      runtimeEpoch: "epoch-one",
+      failureCode: "invalid_config",
+    },
+  ]);
 });
 
 test("complete explicit ensure input overrides repository config", async () => {
@@ -345,7 +407,7 @@ test("is idempotent for the exact fingerprint and conflicts without replacing ch
   assert.equal(authorityCalls, 2);
 });
 
-test("stops the child when authoritative ensure fails and rejects invalid or oversized results", async () => {
+test("stops rejected registration but retains local ownership when registration is unconfirmed", async () => {
   const { root } = await workspace();
   const signals: string[] = [];
   const children: FakeChild[] = [];
@@ -372,20 +434,29 @@ test("stops the child when authoritative ensure fails and rejects invalid or ove
   assert.deepEqual(signals, ["SIGTERM"]);
 
   reply = Response.json({ ...configured(), directUrl: "https://forbidden.example" });
-  await assert.rejects(manager.run(ensureInput()), /invalid result/u);
-  assert.deepEqual(signals, ["SIGTERM", "SIGTERM"]);
+  await assert.rejects(
+    manager.run(ensureInput()),
+    (error) => error instanceof HatchFailure && error.code === "registration_unconfirmed",
+  );
+  assert.deepEqual(signals, ["SIGTERM"]);
 
   reply = Response.json(configured({ hatchId: "hatch-abcd1234\n" }));
-  await assert.rejects(manager.run(ensureInput()), /invalid result/u);
-  assert.deepEqual(signals, ["SIGTERM", "SIGTERM", "SIGTERM"]);
+  await assert.rejects(
+    manager.run(ensureInput()),
+    (error) => error instanceof HatchFailure && error.code === "registration_unconfirmed",
+  );
+  assert.deepEqual(signals, ["SIGTERM"]);
 
   reply = Response.json(configured({ service: { name: "other", port: 4_173 } }));
   await assert.rejects(manager.run(ensureInput()), /did not confirm/u);
-  assert.deepEqual(signals, ["SIGTERM", "SIGTERM", "SIGTERM", "SIGTERM"]);
+  assert.deepEqual(signals, ["SIGTERM", "SIGTERM"]);
 
   reply = new Response("x".repeat(SCOTTY_HATCH_MAX_BYTES + 1));
-  await assert.rejects(manager.run(ensureInput()), /64 KiB/u);
-  assert.deepEqual(signals, ["SIGTERM", "SIGTERM", "SIGTERM", "SIGTERM", "SIGTERM"]);
+  await assert.rejects(
+    manager.run(ensureInput()),
+    (error) => error instanceof HatchFailure && error.code === "registration_unconfirmed",
+  );
+  assert.deepEqual(signals, ["SIGTERM", "SIGTERM"]);
 });
 
 test("rejects a symlink escape and an oversized request before spawning", async () => {
@@ -414,6 +485,73 @@ test("rejects a symlink escape and an oversized request before spawning", async 
   assert.equal(Check(ScottyHatchParameters, oversized), true);
   await assert.rejects(manager.run(oversized), /request exceeds the 64 KiB/u);
   assert.equal(spawns, 0);
+});
+
+test("prepares once before initial start, reports fenced startup, and skips preparation on idempotent ensure", async () => {
+  const { root } = await workspace();
+  const spawned: string[] = [];
+  const reports: unknown[] = [];
+  const manager = new ProductionHatchManager({
+    workspaceRoot: root,
+    spawnProcess: (argv) => {
+      spawned.push(argv[0]);
+      const child = new FakeChild(600 + spawned.length);
+      if (argv[0] === "prepare") queueMicrotask(() => child.succeed());
+      return child;
+    },
+    localTransport: async () => new Response(),
+    authorityTransport: async (input, init) => {
+      if (String(input) === SCOTTY_HATCH_STARTUP_ROUTE) {
+        reports.push(JSON.parse(String(init?.body)));
+        return Response.json({ attemptId: "attempt-1", runtimeEpoch: "epoch-1" });
+      }
+      return Response.json(configured());
+    },
+  });
+  const input = { ...ensureInput(), prepare: { argv: ["prepare"], timeout_seconds: 1 } };
+  await manager.run(input);
+  await manager.run(input);
+  assert.deepEqual(spawned, ["prepare", "node"]);
+  assert.deepEqual(reports, [
+    { operation: "begin" },
+    { operation: "finish", attemptId: "attempt-1", runtimeEpoch: "epoch-1" },
+    { operation: "begin" },
+    { operation: "finish", attemptId: "attempt-1", runtimeEpoch: "epoch-1" },
+  ]);
+});
+
+test("failed preparation is cleaned up and reported without starting the service", async () => {
+  const { root } = await workspace();
+  const child = new FakeChild(620);
+  const reports: unknown[] = [];
+  const spawned: string[] = [];
+  const manager = new ProductionHatchManager({
+    workspaceRoot: root,
+    spawnProcess: (argv) => {
+      spawned.push(argv[0]);
+      queueMicrotask(() => child.exit());
+      return child;
+    },
+    authorityTransport: async (input, init) => {
+      if (String(input) !== SCOTTY_HATCH_STARTUP_ROUTE) throw new Error("service was registered");
+      reports.push(JSON.parse(String(init?.body)));
+      return Response.json({ attemptId: "attempt-2", runtimeEpoch: "epoch-2" });
+    },
+  });
+  await assert.rejects(
+    manager.run({ ...ensureInput(), prepare: { argv: ["prepare"], timeout_seconds: 1 } }),
+    (error) => error instanceof HatchFailure && error.code === "preparation_failed",
+  );
+  assert.deepEqual(spawned, ["prepare"]);
+  assert.deepEqual(reports, [
+    { operation: "begin" },
+    {
+      operation: "finish",
+      attemptId: "attempt-2",
+      runtimeEpoch: "epoch-2",
+      failureCode: "preparation_failed",
+    },
+  ]);
 });
 
 test("status is read-only and close revokes authority before TERM-then-KILL cleanup", async () => {
@@ -542,6 +680,44 @@ test("session_start restores the exact fenced service without calling normal ens
   assert.deepEqual(spawns[0]?.argv, ["npm", "run", "dev", "--", "--host", "0.0.0.0"]);
   assert.equal(spawns[0]?.workingDirectory, app);
   assert.notEqual(requests[0]?.input, SCOTTY_HATCH_ROUTE);
+});
+
+test("restore uses persisted readiness and legacy descriptors use the default", async () => {
+  const { root, app } = await workspace();
+  let configuredTimeout = true;
+  let attempts = 0;
+  let child = new FakeChild(402);
+  const manager = new ScottyHatchManager({
+    workspaceRoot: root,
+    readyTimeoutMillis: 0,
+    spawnProcess: () => child,
+    signalProcessGroup: (_pid, signal) => child.exit(signal),
+    processGroupExists: () => child.signalCode === null,
+    localTransport: async () => new Response(null, { status: ++attempts % 2 === 0 ? 204 : 503 }),
+    authorityTransport: async () =>
+      Response.json({
+        hatchId: "hatch-abcd1234",
+        generation: 7,
+        operationNonce: "resume-abcd1234",
+        runtimeEpoch: "runtime-epoch-7",
+        service: {
+          name: "web",
+          argv: ["npm", "run", "dev"],
+          workingDirectory: app,
+          port: 4_173,
+          healthPath: "/health",
+          ...(configuredTimeout ? { readyTimeoutSeconds: 60 } : {}),
+        },
+      }),
+  });
+  await manager.restore();
+  assert.equal(attempts, 2);
+  await manager.shutdown();
+  configuredTimeout = false;
+  attempts = 0;
+  child = new FakeChild(403);
+  await assert.rejects(manager.restore(), /did not become ready in time/u);
+  assert.equal(attempts, 1);
 });
 
 test("session shutdown stops the owned group without mutating authoritative intent", async () => {
