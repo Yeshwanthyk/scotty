@@ -40,6 +40,7 @@ export interface EvidenceSummary {
 }
 
 export interface HatchSummary {
+  readonly startupFailure?: string;
   readonly configured: boolean;
   readonly hatchId?: string;
   readonly serviceName?: string;
@@ -206,7 +207,11 @@ export const readEvidence = async (
 export const readHatch = async (sessionId: string, signal?: AbortSignal): Promise<HatchSummary> => {
   const value = await readJson(`/api/sessions/${encodeURIComponent(sessionId)}/hatch`, signal);
   if (isObject(value) && value.status === "not_configured")
-    return { configured: false, available: false };
+    return {
+      configured: false,
+      available: false,
+      ...(isString(value.startupFailure) ? { startupFailure: value.startupFailure } : {}),
+    };
   if (
     !isObject(value) ||
     value.status !== "configured" ||
@@ -220,6 +225,7 @@ export const readHatch = async (sessionId: string, signal?: AbortSignal): Promis
     throw new Error("Unreadable Hatch status");
   return {
     configured: true,
+    ...(isString(value.startupFailure) ? { startupFailure: value.startupFailure } : {}),
     hatchId: value.hatchId,
     serviceName: value.service.name,
     status: value.observedStatus,

@@ -654,12 +654,18 @@ function HatchSection({
         <div {...stylex.props(styles.hatchLine)}>
           <div>
             <h3 {...stylex.props(styles.sectionTitle)}>
-              {hatch?.configured ? (hatch.serviceName ?? "Application service") : "Not configured"}
+              {hatch?.startupFailure
+                ? "Startup failed"
+                : hatch?.configured
+                  ? (hatch.serviceName ?? "Application service")
+                  : "Not configured"}
             </h3>
             <p {...stylex.props(styles.muted)}>
-              {hatch?.configured
-                ? (hatch.status ?? "Unknown")
-                : "No application service is attached to this session."}
+              {hatch?.startupFailure
+                ? `Hatch failed: ${hatch.startupFailure.replaceAll("_", " ")}. Review the Hatch tool result for diagnostics.`
+                : hatch?.configured
+                  ? (hatch.status ?? "Unknown")
+                  : "No application service is attached to this session."}
             </p>
           </div>
           {hatch?.available ? (

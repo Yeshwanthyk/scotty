@@ -8,6 +8,7 @@ import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 
 export const SCOTTY_HATCH_ROUTE = "https://scotty.internal/api/hatch";
+export const SCOTTY_HATCH_STARTUP_ROUTE = "https://scotty.internal/api/hatch/startup";
 export const SCOTTY_HATCH_RESTORE_ROUTE = "https://scotty.internal/api/hatch/restore";
 export const SCOTTY_HATCH_MAX_BYTES = 64 * 1_024;
 export const SCOTTY_HATCH_LOG_TAIL_BYTES = 4 * 1_024;
@@ -61,6 +62,76 @@ const PortSchema = Type.Integer({
   not: { enum: RESERVED_PORTS },
 });
 
+const PrepareSchema = Type.Object(
+  {
+    argv: Type.Array(ArgSchema, { minItems: 1, maxItems: MAX_ARGV_LENGTH }),
+    timeout_seconds: Type.Integer({ minimum: 1, maximum: 1800 }),
+  },
+  { additionalProperties: false },
+);
+const ReadyTimeoutSchema = Type.Integer({ minimum: 1, maximum: 300 });
+
+export type HatchFailureCode =
+  | "invalid_config"
+  | "preparation_failed"
+  | "preparation_timeout"
+  | "process_start_failed"
+  | "process_exited"
+  | "readiness_timeout"
+  | "registration_rejected"
+  | "registration_unconfirmed"
+  | "cleanup_failed"
+  | "interrupted";
+const failureMessages: Record<HatchFailureCode, string> = {
+  invalid_config:
+    "Hatch configuration is invalid or cannot be read. Check hatch.toml and workspace paths.",
+  preparation_failed:
+    "Hatch preparation failed. Correct the preparation command or its prerequisites before retrying ensure.",
+  preparation_timeout:
+    "Hatch preparation exceeded its time limit. Check preparation logs before retrying ensure.",
+  process_start_failed:
+    "Hatch service process could not be started. Check the executable and working directory.",
+  process_exited:
+    "Hatch service exited before becoming ready. Correct the startup failure before retrying ensure.",
+  readiness_timeout:
+    "Hatch service did not become ready in time. Check the port, health path and startup logs.",
+  registration_rejected:
+    "Hatch registration was rejected. Resolve the reported conflict or access failure before retrying.",
+  registration_unconfirmed:
+    "Hatch registration was not confirmed. Inspect Hatch status before another ensure call.",
+  cleanup_failed:
+    "Hatch process cleanup was not confirmed. Inspect the existing process before retrying.",
+  interrupted: "Hatch startup was interrupted.",
+};
+export class HatchFailure extends Error {
+  readonly _tag = "HatchFailure";
+  readonly code: HatchFailureCode;
+  readonly stdoutTail: string;
+  readonly stderrTail: string;
+  readonly exitCode: number | null;
+  constructor(
+    code: HatchFailureCode,
+    stdoutTail = "",
+    stderrTail = "",
+    exitCode: number | null = null,
+    detail?: string,
+  ) {
+    super(detail ?? failureMessages[code]);
+    this.code = code;
+    this.stdoutTail = stdoutTail;
+    this.stderrTail = stderrTail;
+    this.exitCode = exitCode;
+  }
+}
+export function renderHatchFailure(error: HatchFailure): string {
+  return [
+    `Hatch failed (${error.code}): ${error.message}`,
+    ...(error.exitCode === null ? [] : [`Exit code: ${error.exitCode}`]),
+    ...(error.stdoutTail ? [`stdout tail:\n${error.stdoutTail}`] : []),
+    ...(error.stderrTail ? [`stderr tail:\n${error.stderrTail}`] : []),
+  ].join("\n");
+}
+
 const ExplicitEnsureParameters = Type.Object(
   {
     operation: Type.Literal("ensure"),
@@ -69,6 +140,8 @@ const ExplicitEnsureParameters = Type.Object(
     cwd: RelativeCwdSchema,
     port: PortSchema,
     healthPath: HealthPathSchema,
+    prepare: Type.Optional(PrepareSchema),
+    readyTimeoutSeconds: Type.Optional(ReadyTimeoutSchema),
   },
   { additionalProperties: false },
 );
@@ -85,6 +158,8 @@ const HatchTomlSchema = Type.Object(
         cwd: RelativeCwdSchema,
         port: PortSchema,
         health_path: HealthPathSchema,
+        prepare: Type.Optional(PrepareSchema),
+        ready_timeout_seconds: Type.Optional(ReadyTimeoutSchema),
       },
       { additionalProperties: false },
     ),
@@ -135,6 +210,7 @@ const TimestampSchema = Type.String({ minLength: 20, maxLength: 64 });
 const ConfiguredStatusSchema = Type.Object(
   {
     status: Type.Literal("configured"),
+    startupFailure: Type.Optional(Type.String({ maxLength: 64 })),
     hatchId: Type.String({
       pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?![\\s\\S])",
     }),
@@ -165,7 +241,13 @@ const ConfiguredStatusSchema = Type.Object(
   { additionalProperties: false },
 );
 const HatchStatusSchema = Type.Union([
-  Type.Object({ status: Type.Literal("not_configured") }, { additionalProperties: false }),
+  Type.Object(
+    {
+      status: Type.Literal("not_configured"),
+      startupFailure: Type.Optional(Type.String({ maxLength: 64 })),
+    },
+    { additionalProperties: false },
+  ),
   ConfiguredStatusSchema,
 ]);
 const RestoreDescriptorSchema = Type.Object(
@@ -191,6 +273,7 @@ const RestoreDescriptorSchema = Type.Object(
         }),
         port: PortSchema,
         healthPath: HealthPathSchema,
+        readyTimeoutSeconds: Type.Optional(ReadyTimeoutSchema),
       },
       { additionalProperties: false },
     ),
@@ -271,6 +354,17 @@ interface OwnedProcess {
   readonly stderr: LogTail;
 }
 
+function startupFailureCode(
+  stage: "readiness" | "registration",
+  signal: AbortSignal | undefined,
+  owned: OwnedProcess,
+): HatchFailureCode {
+  if (stage === "registration") return "registration_unconfirmed";
+  if (signal?.aborted) return "interrupted";
+  if (owned.spawnFailed.value) return "process_start_failed";
+  return processExited(owned.child) ? "process_exited" : "readiness_timeout";
+}
+
 const byteLength = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 function parseJson(text: string): unknown {
@@ -335,6 +429,7 @@ function validateStatus(value: unknown): HatchStatus | undefined {
 function sanitizeText(value: string): string {
   return value
     .replace(ANSI_ESCAPE_SEQUENCE, "")
+    .replace(/(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]+/gu, "[credential redacted]")
     .replace(/\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"']+/giu, "[url redacted]")
     .replace(/\bscotty-hatch:[A-Za-z0-9_-]+\b/gu, "[reference redacted]")
     .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/giu, "$1 [credential redacted]")
@@ -514,6 +609,16 @@ async function requestAuthority(
     throw new Error("Scotty Hatch response exceeds the 64 KiB limit or is invalid UTF-8");
   const value = parseJson(text);
   if (!response.ok) {
+    if (operation === "ensure" && response.status >= 400 && response.status < 500)
+      throw new HatchFailure(
+        "registration_rejected",
+        "",
+        "",
+        null,
+        Check(ErrorEnvelopeSchema, value)
+          ? `Hatch registration rejected (${value.error.code}). Review existing Hatch status and configuration.`
+          : `Hatch registration rejected (HTTP ${response.status}).`,
+      );
     if (Check(ErrorEnvelopeSchema, value))
       throw new Error(
         sanitizeText(`Scotty Hatch request failed (${value.error.code}): ${value.error.message}`),
@@ -573,16 +678,34 @@ async function resolveWorkingDirectory(
     relativeCwd.includes("\0") ||
     relativeCwd.split("/").includes("..")
   )
-    throw new Error("Hatch cwd must be a workspace-relative path without parent traversal");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "Hatch cwd must be a workspace-relative path without parent traversal",
+    );
   const normalized = normalize(relativeCwd);
   if (normalized === ".." || normalized.startsWith(`..${sep}`))
-    throw new Error("Hatch cwd must stay inside the workspace");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "Hatch cwd must stay inside the workspace",
+    );
   const candidate = await realpath(resolve(workspaceRoot, normalized));
   const rootPrefix = workspaceRoot.endsWith(sep) ? workspaceRoot : `${workspaceRoot}${sep}`;
   if (candidate !== workspaceRoot && !candidate.startsWith(rootPrefix))
-    throw new Error("Hatch cwd resolves outside the workspace");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "Hatch cwd resolves outside the workspace",
+    );
   if (!(await stat(candidate)).isDirectory())
-    throw new Error("Hatch cwd must resolve to a directory");
+    throw new HatchFailure("invalid_config", "", "", null, "Hatch cwd must resolve to a directory");
   return candidate;
 }
 
@@ -598,22 +721,46 @@ async function resolveRestoreWorkingDirectory(
     absoluteCwd.split("/").includes("..") ||
     (absoluteCwd !== workspaceRoot && !absoluteCwd.startsWith(rootPrefix))
   )
-    throw new Error("Hatch restore cwd must stay inside the workspace");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "Hatch restore cwd must stay inside the workspace",
+    );
   const candidate = await realpath(absoluteCwd);
   if (
     candidate !== absoluteCwd ||
     (candidate !== workspaceRoot && !candidate.startsWith(rootPrefix)) ||
     !(await stat(candidate)).isDirectory()
   )
-    throw new Error("Hatch restore cwd must resolve exactly inside the workspace");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "Hatch restore cwd must resolve exactly inside the workspace",
+    );
   return candidate;
 }
 
 function checkedInput(value: unknown): ScottyHatchInput {
   if (!Check(ScottyHatchToolParameters, value))
-    throw new Error("scotty_hatch input does not match the bounded operation schema");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "scotty_hatch input does not match the bounded operation schema",
+    );
   if (value.operation === "ensure" && "argv" in value && value.argv[0]?.length === 0)
-    throw new Error("scotty_hatch argv[0] must not be empty");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "scotty_hatch argv[0] must not be empty",
+    );
   const { displayText: _displayText, ...input } = value;
   return input;
 }
@@ -621,7 +768,13 @@ function checkedInput(value: unknown): ScottyHatchInput {
 function configReadError(error: unknown): Error {
   if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")
     return new RepositoryHatchMissingError("Repository hatch.toml is missing");
-  return new Error("Repository hatch.toml could not be read");
+  return new HatchFailure(
+    "invalid_config",
+    "",
+    "",
+    null,
+    "Repository hatch.toml could not be read",
+  );
 }
 
 export async function loadRepositoryHatchConfig(workspaceRoot: string): Promise<EnsureInput> {
@@ -632,23 +785,47 @@ export async function loadRepositoryHatchConfig(workspaceRoot: string): Promise<
     throw configReadError(error);
   }
   if (bytes.byteLength > SCOTTY_HATCH_MAX_BYTES)
-    throw new Error("Repository hatch.toml exceeds the 64 KiB limit");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "Repository hatch.toml exceeds the 64 KiB limit",
+    );
 
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
   } catch {
-    throw new Error("Repository hatch.toml is not valid UTF-8");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "Repository hatch.toml is not valid UTF-8",
+    );
   }
 
   let parsed: unknown;
   try {
     parsed = parseToml(text);
   } catch {
-    throw new Error("Repository hatch.toml contains malformed TOML");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "Repository hatch.toml contains malformed TOML",
+    );
   }
   if (!Check(HatchTomlSchema, parsed) || parsed.hatch.argv[0]?.length === 0)
-    throw new Error("Repository hatch.toml contains unsupported or malformed fields");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "Repository hatch.toml contains unsupported or malformed fields",
+    );
 
   return {
     operation: "ensure",
@@ -657,11 +834,26 @@ export async function loadRepositoryHatchConfig(workspaceRoot: string): Promise<
     cwd: parsed.hatch.cwd,
     port: parsed.hatch.port,
     healthPath: parsed.hatch.health_path,
+    ...(parsed.hatch.prepare === undefined ? {} : { prepare: parsed.hatch.prepare }),
+    ...(parsed.hatch.ready_timeout_seconds === undefined
+      ? {}
+      : { readyTimeoutSeconds: parsed.hatch.ready_timeout_seconds }),
   };
 }
 
 function statusReference(status: HatchStatus): string | undefined {
   return status.status === "configured" ? `scotty-hatch:${status.hatchId}` : undefined;
+}
+
+function confirmsRunningService(status: HatchStatus, input: EnsureInput): boolean {
+  return (
+    status.status === "configured" &&
+    status.service.name === input.service &&
+    status.service.port === input.port &&
+    status.desiredStatus === "open" &&
+    status.observedStatus === "running" &&
+    status.exposure === "active"
+  );
 }
 
 function safeStatus(status: HatchStatus): HatchStatus {
@@ -681,10 +873,19 @@ function ensureAuthorityBody(input: EnsureInput, workingDirectory: string): stri
       workingDirectory,
       port: input.port,
       healthPath: input.healthPath,
+      ...(input.readyTimeoutSeconds === undefined
+        ? {}
+        : { readyTimeoutSeconds: input.readyTimeoutSeconds }),
     },
   });
   if (byteLength(body) > SCOTTY_HATCH_MAX_BYTES)
-    throw new Error("scotty_hatch ensure request exceeds the 64 KiB limit");
+    throw new HatchFailure(
+      "invalid_config",
+      "",
+      "",
+      null,
+      "scotty_hatch ensure request exceeds the 64 KiB limit",
+    );
   return body;
 }
 
@@ -724,19 +925,24 @@ export class ScottyHatchManager {
 
   run(value: unknown, signal?: AbortSignal): Promise<ScottyHatchResult> {
     return this.#exclusive(async () => {
-      const input = checkedInput(value);
+      let input: ScottyHatchInput;
+      try {
+        input = checkedInput(value);
+      } catch (error) {
+        return this.#reportInvalidConfig(error);
+      }
       if (input.operation === "status") return this.#status(signal);
       if (input.operation === "close") return this.#close(signal);
-      if ("service" in input) return this.#ensure(input, signal);
+      if ("service" in input) return this.#ensureReported(input, signal);
       let ensureInput: EnsureInput;
       try {
         ensureInput = await loadRepositoryHatchConfig(await this.#workspaceRoot);
       } catch (error) {
         if (error instanceof RepositoryHatchMissingError)
           return this.#result("ensure", { status: "not_configured" }, this.#owned);
-        throw error;
+        return this.#reportInvalidConfig(error);
       }
-      return this.#ensure(ensureInput, signal);
+      return this.#ensureReported(ensureInput, signal);
     });
   }
 
@@ -767,12 +973,79 @@ export class ScottyHatchManager {
     }
   }
 
+  async #startupReport(input: unknown): Promise<{ attemptId: string; runtimeEpoch: string }> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SCOTTY_HATCH_AUTHORITY_TIMEOUT_MILLIS);
+    try {
+      const response = await this.#authorityTransport(SCOTTY_HATCH_STARTUP_ROUTE, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        signal: controller.signal,
+      });
+      const text = await readBoundedResponse(response);
+      const value = text === undefined ? undefined : parseJson(text);
+      const ticket = Type.Object(
+        {
+          attemptId: Type.String({ minLength: 1, maxLength: 128 }),
+          runtimeEpoch: Type.String({ minLength: 1, maxLength: 128 }),
+        },
+        { additionalProperties: false },
+      );
+      if (!response.ok || !Check(ticket, value)) throw new HatchFailure("registration_unconfirmed");
+      return value;
+    } catch {
+      throw new HatchFailure("registration_unconfirmed");
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async #reportInvalidConfig(error: unknown): Promise<never> {
+    const failure = error instanceof HatchFailure ? error : new HatchFailure("invalid_config");
+    const ticket = await this.#startupReport({ operation: "begin" });
+    try {
+      await this.#startupReport({ operation: "finish", ...ticket, failureCode: failure.code });
+    } catch {
+      /* Keep the original configuration error in the tool receipt. */
+    }
+    throw failure;
+  }
+
+  async #ensureReported(input: EnsureInput, signal?: AbortSignal): Promise<ScottyHatchResult> {
+    const ticket = await this.#startupReport({ operation: "begin" });
+    let result: ScottyHatchResult;
+    try {
+      result = await this.#ensure(input, signal);
+    } catch (error) {
+      const failure = error instanceof HatchFailure ? error : new HatchFailure("invalid_config");
+      try {
+        await this.#startupReport({ operation: "finish", ...ticket, failureCode: failure.code });
+      } catch {
+        /* The tool receipt still carries the original failure if status publication fails. */
+      }
+      throw failure;
+    }
+    try {
+      await this.#startupReport({ operation: "finish", ...ticket });
+    } catch {
+      throw new HatchFailure("registration_unconfirmed");
+    }
+    return result;
+  }
+
   async #ensure(input: EnsureInput, signal?: AbortSignal): Promise<ScottyHatchResult> {
     const workspaceRoot = await this.#workspaceRoot;
     const workingDirectory = await resolveWorkingDirectory(workspaceRoot, input.cwd);
     const [command, ...args] = input.argv;
     if (command === undefined || command.length === 0)
-      throw new Error("scotty_hatch argv[0] must not be empty");
+      throw new HatchFailure(
+        "invalid_config",
+        "",
+        "",
+        null,
+        "scotty_hatch argv[0] must not be empty",
+      );
     const argv: [string, ...string[]] = [command, ...args];
     const service: HatchServiceProcess = {
       argv,
@@ -783,46 +1056,123 @@ export class ScottyHatchManager {
     const authorityBody = ensureAuthorityBody(input, workingDirectory);
     const requestedFingerprint = fingerprint(service, input.service);
     if (this.#owned !== undefined && this.#owned.fingerprint !== requestedFingerprint)
-      throw new Error("A different primary Hatch service is already owned by this Pi session");
+      throw new HatchFailure(
+        "invalid_config",
+        "",
+        "",
+        null,
+        "A different primary Hatch service is already owned by this session",
+      );
 
     let owned = this.#owned;
-    if (owned === undefined || processExited(owned.child))
+    if (owned === undefined || processExited(owned.child)) {
+      if (input.prepare !== undefined) await this.#prepare(input.prepare, service, signal);
       owned = this.#startOwned(service, input.service);
+    }
 
+    let stage: "readiness" | "registration" = "readiness";
     try {
       await waitForLoopbackReadiness(
         service,
         owned.child,
         signal,
         this.#localTransport,
-        this.#readyTimeoutMillis,
+        input.readyTimeoutSeconds === undefined
+          ? this.#readyTimeoutMillis
+          : input.readyTimeoutSeconds * 1000,
       );
       if (owned.spawnFailed.value) throw new Error("Hatch service process failed to start");
+      stage = "registration";
       const status = await requestAuthority(
         "ensure",
         authorityBody,
         signal,
         this.#authorityTransport,
       );
-      if (
-        status.status !== "configured" ||
-        status.service.name !== input.service ||
-        status.service.port !== input.port ||
-        status.desiredStatus !== "open" ||
-        status.observedStatus !== "running" ||
-        status.exposure !== "active"
-      )
-        throw new Error("Scotty Hatch did not confirm the requested running service");
+      if (!confirmsRunningService(status, input))
+        throw new HatchFailure(
+          "registration_rejected",
+          "",
+          "",
+          null,
+          "Scotty Hatch did not confirm the requested running service",
+        );
       return this.#result("ensure", status, owned);
     } catch (error) {
+      const code =
+        error instanceof HatchFailure ? error.code : startupFailureCode(stage, signal, owned);
+      const failure = new HatchFailure(
+        code,
+        owned.stdout.value(),
+        owned.stderr.value(),
+        owned.child.exitCode,
+        error instanceof HatchFailure ? error.message : undefined,
+      );
+      // A committed registration can lose its response. Keep the process owned while the
+      // operator inspects authority; stopping it would leave a falsely running Hatch record.
+      if (failure.code === "registration_unconfirmed") throw failure;
       try {
         await this.#stopOwned(owned);
       } catch {
-        throw new Error("Scotty Hatch ensure failed and its child process could not be stopped");
+        throw new HatchFailure(
+          "cleanup_failed",
+          failure.stdoutTail,
+          failure.stderrTail,
+          failure.exitCode,
+        );
       }
       if (this.#owned === owned) this.#owned = undefined;
-      throw error;
+      throw failure;
     }
+  }
+
+  async #prepare(
+    input: Static<typeof PrepareSchema>,
+    service: HatchServiceProcess,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const [command, ...args] = input.argv;
+    if (!command) throw new HatchFailure("invalid_config");
+    let owned: OwnedProcess;
+    try {
+      owned = this.#startOwned({ ...service, argv: [command, ...args] }, "preparation");
+    } catch {
+      throw new HatchFailure("preparation_failed");
+    }
+    const deadline = Date.now() + input.timeout_seconds * 1000;
+    let failure: HatchFailure | undefined;
+    try {
+      while (!processExited(owned.child) && !owned.spawnFailed.value) {
+        if (signal?.aborted) throw new HatchFailure("interrupted");
+        if (Date.now() >= deadline) throw new HatchFailure("preparation_timeout");
+        await wait(Math.min(100, Math.max(1, deadline - Date.now())), signal);
+      }
+      if (owned.spawnFailed.value || owned.child.exitCode !== 0)
+        throw new HatchFailure("preparation_failed");
+    } catch (error) {
+      failure = new HatchFailure(
+        signal?.aborted
+          ? "interrupted"
+          : error instanceof HatchFailure
+            ? error.code
+            : "preparation_failed",
+        owned.stdout.value(),
+        owned.stderr.value(),
+        owned.child.exitCode,
+      );
+    }
+    try {
+      await this.#stopOwned(owned);
+    } catch {
+      throw new HatchFailure(
+        "cleanup_failed",
+        owned.stdout.value(),
+        owned.stderr.value(),
+        owned.child.exitCode,
+      );
+    }
+    if (this.#owned === owned) this.#owned = undefined;
+    if (failure !== undefined) throw failure;
   }
 
   async #restore(signal?: AbortSignal): Promise<void> {
@@ -844,7 +1194,13 @@ export class ScottyHatchManager {
     };
     const requestedFingerprint = fingerprint(service, descriptor.service.name);
     if (this.#owned !== undefined && this.#owned.fingerprint !== requestedFingerprint)
-      throw new Error("A different primary Hatch service is already owned by this Pi session");
+      throw new HatchFailure(
+        "invalid_config",
+        "",
+        "",
+        null,
+        "A different primary Hatch service is already owned by this session",
+      );
     let owned = this.#owned;
     if (owned === undefined || processExited(owned.child))
       owned = this.#startOwned(service, descriptor.service.name);
@@ -854,7 +1210,9 @@ export class ScottyHatchManager {
         owned.child,
         signal,
         this.#localTransport,
-        this.#readyTimeoutMillis,
+        descriptor.service.readyTimeoutSeconds === undefined
+          ? this.#readyTimeoutMillis
+          : descriptor.service.readyTimeoutSeconds * 1000,
       );
       if (owned.spawnFailed.value) throw new Error("Hatch service process failed to start");
     } catch (error) {
@@ -877,7 +1235,7 @@ export class ScottyHatchManager {
         safeEnvironment(process.env),
       );
     } catch {
-      throw new Error("Hatch service process could not be started");
+      throw new HatchFailure("process_start_failed");
     }
     const stdout = new LogTail();
     const stderr = new LogTail();
@@ -885,8 +1243,7 @@ export class ScottyHatchManager {
     child.once("error", () => {
       spawnFailed.value = true;
     });
-    if (child.pid === undefined || child.pid <= 0)
-      throw new Error("Hatch service process did not provide a process-group identifier");
+    if (child.pid === undefined || child.pid <= 0) throw new HatchFailure("process_start_failed");
     child.stdout?.on("data", (chunk: string | Buffer) => stdout.append(chunk));
     child.stderr?.on("data", (chunk: string | Buffer) => stderr.append(chunk));
     const owned = {
@@ -998,11 +1355,16 @@ export default function scottyHatch(pi: ExtensionAPI): void {
     ],
     parameters: ScottyHatchToolParameters,
     async execute(_toolCallId, params, signal) {
-      const result = await manager.run(params, signal);
-      return {
-        content: [{ type: "text" as const, text: renderResult(result) }],
-        details: result,
-      };
+      try {
+        const result = await manager.run(params, signal);
+        return {
+          content: [{ type: "text" as const, text: renderResult(result) }],
+          details: result,
+        };
+      } catch (error) {
+        if (!(error instanceof HatchFailure)) throw error;
+        throw new Error(renderHatchFailure(error));
+      }
     },
   });
 }

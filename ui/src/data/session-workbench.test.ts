@@ -47,6 +47,22 @@ describe("session workbench boundaries", () => {
     await expect(readChangedFiles("session-1")).rejects.toThrow("Unreadable changed file");
   });
 
+  it("preserves failed startup separately from absent Hatch configuration", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ status: "not_configured", startupFailure: "preparation_failed" }),
+        ),
+    );
+    await expect(readHatch("session-1")).resolves.toEqual({
+      configured: false,
+      available: false,
+      startupFailure: "preparation_failed",
+    });
+  });
+
   it("projects evidence and Hatch availability from authenticated responses", async () => {
     vi.stubGlobal(
       "fetch",

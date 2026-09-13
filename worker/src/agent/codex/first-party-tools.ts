@@ -1,5 +1,7 @@
 import {
   ScottyHatchManager,
+  HatchFailure,
+  renderHatchFailure,
   ScottyHatchToolParameters,
 } from "../../../container/pi-packages/sources/scotty-hatch/index";
 import { Schema } from "effect";
@@ -8,7 +10,7 @@ import {
   runScottyBrowserTest,
 } from "../../../container/pi-packages/sources/scotty-browser-test/index";
 
-// Native app-server 0.153.4 accepts these only at thread/start. The source
+// Native app-server accepts these only at thread/start. The source
 // schemas are the same ones used by the Pi extensions and execution boundary.
 export const codexFirstPartyToolSpecs = [
   {
@@ -83,3 +85,5 @@ export function makeCodexFirstPartyTools(workspaceRoot: string): CodexFirstParty
     },
   };
 }
+
+export { HatchFailure, renderHatchFailure };
