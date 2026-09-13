@@ -626,13 +626,14 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-corepack-bootstrap-"));
-const environment = { ...process.env, COREPACK_HOME: path.join(root, "corepack"), COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" };
+const environment = { ...process.env, COREPACK_HOME: path.join(root, "corepack"),
+  XDG_CACHE_HOME: path.join(root, "cache"), COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" };
 delete environment.NODE_OPTIONS;
 delete environment.NODE_TLS_REJECT_UNAUTHORIZED;
 const run = (command, args) => {
   const result = spawnSync(command, args, { cwd: root, env: environment, encoding: "utf8", timeout: 120000 });
   assert.equal(result.status, 0, command + " failed: " + result.stderr);
-  return result.stdout.trim();
+  return { stdout: result.stdout.trim(), stderr: result.stderr.trim() };
 };
 try {
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({
@@ -642,12 +643,38 @@ try {
   fs.writeFileSync(path.join(root, "app.mjs"),
     "import fs from 'node:fs'; fs.writeFileSync('child-proof.json', JSON.stringify({ undici: process.versions.undici, injectedOptions: Boolean(process.env.NODE_OPTIONS) }));\\n");
   assert.equal(fs.existsSync(environment.COREPACK_HOME), false);
-  assert.equal(run("pnpm", ["--version"]), "11.0.6");
+  assert.equal(run("pnpm", ["--version"]).stdout, "11.0.6");
   assert.equal(fs.existsSync(environment.COREPACK_HOME), true);
   run("pnpm", ["run", "--silent", "verify"]);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "child-proof.json"), "utf8")), {
     undici: process.versions.undici, injectedOptions: false,
   });
+  fs.writeFileSync(path.join(root, "addon.cc"), ${JSON.stringify(`
+#include <node_api.h>
+napi_value value(napi_env env, napi_callback_info info) {
+  napi_value result;
+  napi_create_int32(env, 42, &result);
+  return result;
+}
+napi_value init(napi_env env, napi_value exports) {
+  napi_value function;
+  napi_create_function(env, "value", NAPI_AUTO_LENGTH, value, nullptr, &function);
+  napi_set_named_property(env, exports, "value", function);
+  return exports;
+}
+NAPI_MODULE(NODE_GYP_MODULE_NAME, init)
+`)});
+  fs.writeFileSync(path.join(root, "binding.gyp"), JSON.stringify({ targets: [
+    { target_name: "scotty_native_probe", sources: ["addon.cc"] },
+  ] }));
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({
+    name: "scotty-native-addon-proof", version: "1.0.0", private: true,
+    packageManager: "pnpm@11.0.6", scripts: { install: "node-gyp rebuild" },
+  }));
+  const build = run("pnpm", ["run", "install"]);
+  assert.match(build.stdout + build.stderr, /nodejs\\.org\\/.*headers/u);
+  const addon = require(path.join(root, "build/Release/scotty_native_probe.node"));
+  assert.equal(addon.value(), 42);
   console.log("uncached Corepack bootstrap passed with strict TLS");
 } finally { fs.rmSync(root, { recursive: true, force: true }); }
 `;

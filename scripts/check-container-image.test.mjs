@@ -254,7 +254,10 @@ describe("final container image gate", () => {
     assert.match(nativeCodex, /--network=none/u);
     const inventory = containerImageToolInventoryArgs(plan).join(" ");
     assert.match(containerImageCorepackTransportArgs(plan).join(" "), /--network=none/u);
-    assert.match(containerImageCorepackBootstrapArgs(plan).join(" "), /pnpm@11\.0\.6/u);
+    const corepackBootstrap = containerImageCorepackBootstrapArgs(plan).join(" ");
+    assert.match(corepackBootstrap, /pnpm@11\.0\.6/u);
+    assert.match(corepackBootstrap, /node-gyp rebuild/u);
+    assert.match(corepackBootstrap, /scotty_native_probe\.node/u);
     assert.match(inventory, /standard\.json/u);
     assert.match(inventory, /expectedVersion/u);
     const syncedSkill = containerImageSyncedSkillSetupArgs(plan).join(" ");
