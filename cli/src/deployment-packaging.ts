@@ -85,13 +85,17 @@ export const CONTAINER_CONTEXT_BUDGET = Object.freeze({
 } as const);
 
 export const CONTAINER_IMAGE_BUDGET = Object.freeze({
-  // Baseline 2026-09-11: 3,119,833,948 bytes for the final local linux/amd64 rootfs.
+  // Baseline 2026-09-13: 3,543,997,058 bytes with verified Go and Rust toolchains.
+  // The 3,660 MiB cap retains about 294 MB of headroom. It is an internal image
+  // growth gate, below standard-2's 12 GB disk limit:
+  // https://developers.cloudflare.com/containers/platform/limits/
+  // Previous 2026-09-11 baseline: 3,119,833,948 bytes.
   // Equivalent-source CI classic-store and local containerd-store builds reported
   // 3,114,170,001 and 1,159,166,713 bytes through inspect; identical digests were not
   // established, so the gate measures visible content in-container.
   // Store distinction: https://docs.docker.com/engine/storage/containerd/
-  baselineBytes: 3_119_833_948,
-  maxBytes: 3_250 * 1024 * 1024,
+  baselineBytes: 3_543_997_058,
+  maxBytes: 3_660 * 1024 * 1024,
   metric: "visible root filesystem apparent size (du -sbx /)",
 } as const);
 
