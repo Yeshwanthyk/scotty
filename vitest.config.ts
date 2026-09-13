@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   assetsInclude: ["**/*.md"],
   test: {
-    exclude: ["**/node_modules/**", "**/.lane/**", "vendor/**", "work/**"],
+    exclude: ["**/node_modules/**", "**/.lane/**", "**/.alchemy/**", "vendor/**", "work/**"],
     reporters: ["default"],
   },
   resolve: {

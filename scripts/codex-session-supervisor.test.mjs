@@ -10,6 +10,7 @@ import {
   readFile,
   realpath,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -348,6 +349,49 @@ test("passes explicit Session identity without inheriting the parent environment
   assert.equal((await host.stop()).parent, "exited");
 });
 
+test("native app-server receives only readable packaged CA and Corepack paths", async (t) => {
+  const caFile = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
+  const corepackHome = "/opt/corepack";
+  const originalExtraCa = process.env.NODE_EXTRA_CA_CERTS;
+  const originalSslCertFile = process.env.SSL_CERT_FILE;
+  process.env.NODE_EXTRA_CA_CERTS = "/tmp/ambient-untrusted-ca.pem";
+  process.env.SSL_CERT_FILE = "/tmp/ambient-untrusted-bundle.pem";
+  try {
+    const f = await fixture(t, "normal");
+    const host = await f.launch();
+    const [row] = await f.rows();
+    const isFile = await stat(caFile).then(
+      (info) => info.isFile(),
+      () => false,
+    );
+    const isReadable =
+      isFile &&
+      (await access(caFile, constants.R_OK).then(
+        () => true,
+        () => false,
+      ));
+    const isDirectory = await stat(corepackHome).then(
+      (info) => info.isDirectory(),
+      () => false,
+    );
+    const corepackReadable =
+      isDirectory &&
+      (await access(corepackHome, constants.R_OK).then(
+        () => true,
+        () => false,
+      ));
+    assert.equal(row.env.NODE_EXTRA_CA_CERTS, isReadable ? caFile : undefined);
+    assert.equal(row.env.COREPACK_HOME, corepackReadable ? corepackHome : undefined);
+    assert.equal(row.env.SSL_CERT_FILE, undefined);
+    assert.equal((await host.stop()).parent, "exited");
+  } finally {
+    if (originalExtraCa === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+    else process.env.NODE_EXTRA_CA_CERTS = originalExtraCa;
+    if (originalSslCertFile === undefined) delete process.env.SSL_CERT_FILE;
+    else process.env.SSL_CERT_FILE = originalSslCertFile;
+  }
+});
+
 test("staged native bundle: readiness, isolation, Unicode, follow-up and repeated graceful stop", async (t) => {
   const f = await fixture(t);
   const host = await f.launch();
@@ -371,6 +415,10 @@ test("staged native bundle: readiness, isolation, Unicode, follow-up and repeate
       "ALL_PROXY",
       "NO_PROXY",
       "SCOTTY_CODEX_SENTINEL",
+      ...(rows[0].env.NODE_EXTRA_CA_CERTS === "/etc/cloudflare/certs/cloudflare-containers-ca.crt"
+        ? ["NODE_EXTRA_CA_CERTS"]
+        : []),
+      ...(rows[0].env.COREPACK_HOME === "/opt/corepack" ? ["COREPACK_HOME"] : []),
     ].sort(),
   );
   assert.equal(rows[0].env.PATH, "/usr/local/bin:/usr/bin:/bin");

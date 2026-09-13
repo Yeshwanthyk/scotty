@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
@@ -24,6 +25,8 @@ const MAX_ARGV_LENGTH = 64;
 const MAX_CWD_LENGTH = 1_024;
 const MAX_HEALTH_PATH_LENGTH = 2_048;
 const RESERVED_PORTS = [3_000, 43_117] as const;
+const CLOUDFLARE_CA_CERTIFICATE = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
+const IMAGE_COREPACK_HOME = "/opt/corepack";
 const ANSI_ESCAPE_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "gu");
 const SAFE_ENVIRONMENT_NAMES = [
   "HOME",
@@ -467,12 +470,31 @@ class LogTail {
   }
 }
 
+function readableCertificate(path: string | undefined): path is string {
+  if (path === undefined || !isAbsolute(path)) return false;
+  try {
+    accessSync(path, fsConstants.R_OK);
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function safeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const name of SAFE_ENVIRONMENT_NAMES) {
     const value = source[name];
     if (value !== undefined) environment[name] = value;
   }
+  // Node reads this additive trust bundle at child startup. The Cloudflare CA is
+  // ephemeral and is not present when the image is built or run without interception.
+  const certificate = readableCertificate(CLOUDFLARE_CA_CERTIFICATE)
+    ? CLOUDFLARE_CA_CERTIFICATE
+    : readableCertificate(source.NODE_EXTRA_CA_CERTS)
+      ? source.NODE_EXTRA_CA_CERTS
+      : undefined;
+  if (certificate !== undefined) environment.NODE_EXTRA_CA_CERTS = certificate;
+  if (source.COREPACK_HOME === IMAGE_COREPACK_HOME) environment.COREPACK_HOME = IMAGE_COREPACK_HOME;
   return environment;
 }
 
