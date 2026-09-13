@@ -18,6 +18,8 @@ Read the active turn ID. Send active steer and require the receipt to reference 
 Queue a distinct message with a recorded idempotency key; require mode followUp and one queue item.
 Interrupt the active turn; require canonical aborted/native interrupted and preservation of the queue.
 Close the browser and observe CLI inspect until queued work is admitted once and completes.
+Require the runtime to remain healthy after late terminal-interaction events from the interrupted
+command; an accepted queue receipt followed by `stale_notification` is a failed run.
 Retry the same queue request with the same key/text; verify no second native turn.
 An unknown delivery requires inspection of the saved receipt, not a new key.
 
