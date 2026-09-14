@@ -28,6 +28,11 @@ Correlate evidence by session ID, transition nonce, attempt, authority revision,
 result code, and event time. Worker tails and provider observations explain transitions but cannot
 override the actor journal.
 
+For Codex startup failures, find `Codex supervisor exited before readiness` in Worker logs.
+Correlate `sessionId` and `generation`; inspect `processStatus`, `exitCode`, and optional
+`startupStage` / `startupCode`. Missing startup fields mean no classified record was retrieved;
+a null exit code means the provider did not supply one. Capture this evidence before vaporizing.
+
 Interpret boundaries precisely:
 
 - No actor authority after failed Create means failure occurred before admission.

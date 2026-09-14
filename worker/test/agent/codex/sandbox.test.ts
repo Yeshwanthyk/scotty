@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
+import { vi } from "vitest";
 import type { CredentialGrant } from "../../../../protocol/credentials";
 import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
 import {
@@ -47,6 +48,59 @@ const snapshot = {
 };
 
 describe("Codex Sandbox adapter", () => {
+  for (const valid of [true, false]) {
+    it.effect(
+      `records exit status and ${valid ? "classified" : "rejects untrusted"} startup diagnostics`,
+      () =>
+        Effect.gen(function* () {
+          const log = yield* Effect.acquireRelease(
+            Effect.sync(() => vi.spyOn(console, "error").mockImplementation(() => {})),
+            (spy) => Effect.sync(() => spy.mockRestore()),
+          );
+          const record = {
+            event: "codex_startup_failed",
+            stage: "runtime",
+            code: valid ? "invalid_saved_state" : "private_secret",
+            generation: identity.generation,
+          };
+          const result = yield* waitForCodexSandbox(identity).pipe(
+            Effect.provide(
+              sandboxRuntimeLayer({
+                ...sandboxRuntimeCapabilitiesFake(),
+                getProcess: async () => ({
+                  id: "scotty-codex-generation-1",
+                  status: "failed",
+                  exitCode: 17,
+                  kill: async () => {},
+                  waitForExit: async () => ({ exitCode: 17 }),
+                  waitForPort: async () => {},
+                  getLogs: async () => ({
+                    stdout: "PRIVATE_OUTPUT",
+                    stderr: `PRIVATE_STDERR\n${JSON.stringify(record)}\n`,
+                  }),
+                }),
+                fetchPort: async () => new Response("unavailable", { status: 503 }),
+              }),
+            ),
+            Effect.result,
+          );
+          assert.ok(Result.isFailure(result));
+          assert.equal(result.failure.reason, "nonzero_exit");
+          assert.deepEqual(log.mock.calls, [
+            [
+              "Codex supervisor exited before readiness",
+              {
+                sessionId: identity.sessionId,
+                generation: identity.generation,
+                processStatus: "failed",
+                exitCode: 17,
+                ...(valid ? { startupStage: "runtime", startupCode: "invalid_saved_state" } : {}),
+              },
+            ],
+          ]);
+        }),
+    );
+  }
   it.effect("accepts resumed readiness after the fresh-start deadline", () =>
     Effect.gen(function* () {
       let reads = 0;

@@ -21,7 +21,8 @@ export type SandboxWaitForPortOptions = Pick<
 export type SandboxProcessCapabilities = Pick<
   Process,
   "id" | "kill" | "status" | "waitForExit" | "waitForPort"
->;
+> &
+  Partial<Pick<Process, "exitCode" | "getLogs">>;
 
 type SandboxRuntimeFailureReason = "nonzero_exit" | "transport";
 
@@ -62,6 +63,11 @@ export interface SandboxRuntimeLayerOptions {
 export interface SandboxProcess {
   readonly id: string;
   readonly status: ProcessStatus;
+  readonly exitCode?: number;
+  readonly getLogs?: () => Effect.Effect<
+    { readonly stdout: string; readonly stderr: string },
+    SandboxRuntimeFailure
+  >;
   readonly kill: (signal?: string) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly waitForExit: (timeout?: number) => Effect.Effect<number, SandboxRuntimeFailure>;
   readonly waitForPort: (
@@ -320,30 +326,47 @@ const makeSandboxProcess = <E>(
   beforeOperation: Effect.Effect<void, E>,
   fetchPort: SandboxRuntimeCapabilities["fetchPort"],
   fetchPortReadiness: boolean,
-): SandboxProcess => ({
-  id: process.id,
-  status: process.status,
-  kill: (signal) =>
-    transportVoid(beforeOperation, "Sandbox process termination transport failed", () =>
-      process.kill(signal),
-    ),
-  waitForExit: (timeout) =>
-    guardOperation(beforeOperation, "Sandbox process exit wait transport failed").pipe(
-      Effect.andThen(
-        Effect.tryPromise({
-          try: () => process.waitForExit(timeout),
-          catch: () => transportFailure("Sandbox process exit wait transport failed"),
+): SandboxProcess => {
+  const getLogs = process.getLogs?.bind(process);
+  return {
+    id: process.id,
+    status: process.status,
+    ...(process.exitCode === undefined ? {} : { exitCode: process.exitCode }),
+    ...(getLogs === undefined
+      ? {}
+      : {
+          getLogs: () =>
+            guardOperation(beforeOperation, "Sandbox process logs transport failed").pipe(
+              Effect.andThen(
+                Effect.tryPromise({
+                  try: getLogs,
+                  catch: () => transportFailure("Sandbox process logs transport failed"),
+                }),
+              ),
+            ),
         }),
+    kill: (signal) =>
+      transportVoid(beforeOperation, "Sandbox process termination transport failed", () =>
+        process.kill(signal),
       ),
-      Effect.map((result) => result.exitCode),
-    ),
-  waitForPort: (port, options) =>
-    fetchPortReadiness && fetchPort !== undefined && options?.mode !== "tcp"
-      ? waitForPortViaFetch(beforeOperation, fetchPort, port, options)
-      : transportVoid(beforeOperation, "Sandbox process readiness transport failed", () =>
-          process.waitForPort(port, options),
+    waitForExit: (timeout) =>
+      guardOperation(beforeOperation, "Sandbox process exit wait transport failed").pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () => process.waitForExit(timeout),
+            catch: () => transportFailure("Sandbox process exit wait transport failed"),
+          }),
         ),
-});
+        Effect.map((result) => result.exitCode),
+      ),
+    waitForPort: (port, options) =>
+      fetchPortReadiness && fetchPort !== undefined && options?.mode !== "tcp"
+        ? waitForPortViaFetch(beforeOperation, fetchPort, port, options)
+        : transportVoid(beforeOperation, "Sandbox process readiness transport failed", () =>
+            process.waitForPort(port, options),
+          ),
+  };
+};
 
 const waitForPortViaFetch = <E>(
   beforeOperation: Effect.Effect<void, E>,

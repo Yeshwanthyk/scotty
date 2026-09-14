@@ -1,9 +1,10 @@
 import { NodeHttpServer, NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Effect, Fiber, FileSystem, Schema, Scope } from "effect";
+import { Cause, Effect, Fiber, FileSystem, Option, Schema, Scope } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpIncomingMessage } from "effect/unstable/http";
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
+import { CodexStartupFailure } from "./errors";
 import {
   CODEX_CONTROL_GENERATION_HEADER,
   CODEX_CONTROL_TOKEN_HEADER,
@@ -341,19 +342,59 @@ export const serveCodexControl = Effect.fnUntraced(function* (
   return server.address;
 });
 
+const decodeTypedFailure = Schema.decodeUnknownOption(
+  Schema.Struct({
+    _tag: Schema.Literals(["CodexBridgeError", "CodexHostError"]),
+    code: CodexStartupFailure.fields.code,
+  }),
+);
+const reportStartupFailure = <A, E, R>(
+  operation: Effect.Effect<A, E, R>,
+  stage: typeof CodexStartupFailure.Type.stage,
+  generation?: string,
+) =>
+  operation.pipe(
+    Effect.tapCause((cause) =>
+      Effect.sync(() => {
+        const failure = Cause.findErrorOption(cause);
+        const typed = Option.isSome(failure) ? decodeTypedFailure(failure.value) : Option.none();
+        const code = Option.isSome(typed) ? typed.value.code : "unexpected_failure";
+        console.error(JSON.stringify({ event: "codex_startup_failed", stage, code, generation }));
+      }),
+    ),
+  );
+
 export const serverProgram = Effect.fnUntraced(function* (argv: ReadonlyArray<string>) {
   if (argv.length !== 1 || new TextEncoder().encode(argv[0] ?? "").length > 16384)
-    return yield* new CodexBridgeError({ code: "invalid_request", outcome: "rejected" });
-  const input = yield* decodeStart(argv[0]).pipe(
-    Effect.mapError(() => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" })),
+    return yield* reportStartupFailure(
+      new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
+      "input",
+    );
+  const input = yield* reportStartupFailure(
+    decodeStart(argv[0]).pipe(
+      Effect.mapError(() => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" })),
+    ),
+    "input",
   );
-  const token = yield* consumeControlToken(input.tokenFile, input.launch.workspace);
-  const runtime = yield* startCodexRuntime({
-    generation: input.generation,
-    launch: input.launch,
-    ...(input.restore === undefined ? {} : { restore: input.restore }),
-  });
-  yield* serveCodexControl(runtime, token, input.port);
+  const token = yield* reportStartupFailure(
+    consumeControlToken(input.tokenFile, input.launch.workspace),
+    "token",
+    input.generation,
+  );
+  const runtime = yield* reportStartupFailure(
+    startCodexRuntime({
+      generation: input.generation,
+      launch: input.launch,
+      ...(input.restore === undefined ? {} : { restore: input.restore }),
+    }),
+    "runtime",
+    input.generation,
+  );
+  yield* reportStartupFailure(
+    serveCodexControl(runtime, token, input.port),
+    "control",
+    input.generation,
+  );
   // Keep the failed/stopped proof readable until the Session destroys its runtime.
   yield* Effect.never;
 });
