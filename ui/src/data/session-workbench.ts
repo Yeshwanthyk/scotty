@@ -32,6 +32,7 @@ export interface EvidenceSummary {
   readonly completedSteps: number;
   readonly frameCount: number;
   readonly recordVideo: boolean;
+  readonly videoAvailable: boolean;
   readonly steps: ReadonlyArray<{
     readonly name: string;
     readonly status: string;
@@ -170,6 +171,13 @@ const decodeEvidence = (value: unknown): EvidenceSummary | undefined => {
     !isNumber(value.completedSteps) ||
     !isNumber(value.frameCount) ||
     !isBoolean(value.recordVideo) ||
+    (value.video !== undefined &&
+      (!isObject(value.video) ||
+        value.video.artifactId !== "recording" ||
+        !isString(value.video.sha256) ||
+        !isNumber(value.video.bytes) ||
+        !isString(value.video.capturedAt) ||
+        !isNumber(value.video.offsetMillis))) ||
     !Array.isArray(value.steps)
   )
     return undefined;
@@ -189,6 +197,7 @@ const decodeEvidence = (value: unknown): EvidenceSummary | undefined => {
     completedSteps: value.completedSteps,
     frameCount: value.frameCount,
     recordVideo: value.recordVideo,
+    videoAvailable: value.video !== undefined,
     steps,
   };
 };

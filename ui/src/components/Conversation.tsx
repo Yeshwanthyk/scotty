@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { Check, CircleAlert, LoaderCircle } from "lucide-react";
+import { Check, CircleAlert, ExternalLink, Images, LoaderCircle } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   streamedTextAt,
@@ -8,6 +8,7 @@ import {
   type ConversationTurn,
   type ToolActivity,
 } from "../domain/conversation";
+import type { EvidenceSummary } from "../data/session-workbench";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { Markdown } from "./Markdown";
 
@@ -254,7 +255,173 @@ const styles = stylex.create({
     animationIterationCount: "infinite",
     animationTimingFunction: "steps(1, end)",
   },
+  evidence: {
+    minWidth: 0,
+    display: "grid",
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colors.lineSoft,
+    borderRadius: "10px",
+    backgroundColor: "rgb(255 255 255 / 0.02)",
+  },
+  evidenceHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  evidenceTitle: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: spacing.sm,
+    color: colors.muted,
+    fontSize: "12px",
+    fontWeight: 650,
+  },
+  evidenceIcon: { width: "14px", height: "14px", color: colors.quiet, strokeWidth: 1.8 },
+  evidenceLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    color: colors.muted,
+    fontSize: "11px",
+    textDecoration: "none",
+    ":hover": { color: colors.ink },
+  },
+  evidenceFrames: {
+    minWidth: 0,
+    display: "flex",
+    gap: spacing.sm,
+    overflowX: "auto",
+    scrollSnapType: "x proximity",
+  },
+  evidenceFrameLink: {
+    minWidth: "min(100%, 480px)",
+    overflow: "hidden",
+    borderRadius: "7px",
+    backgroundColor: colors.space,
+    color: colors.muted,
+    textDecoration: "none",
+    scrollSnapAlign: "start",
+  },
+  evidenceFrame: {
+    width: "100%",
+    maxHeight: "420px",
+    display: "block",
+    objectFit: "contain",
+    backgroundColor: colors.space,
+  },
+  evidenceCaption: {
+    display: "block",
+    padding: `${spacing.sm} ${spacing.md}`,
+    overflow: "hidden",
+    fontSize: "11px",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  evidenceVideo: {
+    width: "100%",
+    maxHeight: "460px",
+    display: "block",
+    borderRadius: "7px",
+    backgroundColor: colors.space,
+  },
 });
+
+const evidencePath = (sessionId: string, jobId: string): string =>
+  `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(jobId)}`;
+
+const includesEvidenceMarker = (value: string, marker: string): boolean => {
+  const index = value.indexOf(marker);
+  if (index < 0) return false;
+  const following = value.at(index + marker.length);
+  return following === undefined || !/[A-Za-z0-9_-]/u.test(following);
+};
+
+const turnReferencesEvidence = (
+  turn: ConversationTurn,
+  evidence: EvidenceSummary,
+  sessionId: string,
+): boolean => {
+  const reference = `scotty-evidence:${evidence.jobId}`;
+  const summaryPath = evidencePath(sessionId, evidence.jobId);
+  return [turn.assistant, ...turn.tools.flatMap((tool) => tool.output ?? [])].some(
+    (value) =>
+      includesEvidenceMarker(value, reference) || includesEvidenceMarker(value, summaryPath),
+  );
+};
+
+function TurnEvidence({
+  evidence,
+  sessionId,
+}: {
+  readonly evidence: ReadonlyArray<EvidenceSummary>;
+  readonly sessionId: string;
+}) {
+  return evidence.map((job) => {
+    const summaryPath = evidencePath(sessionId, job.jobId);
+    const frames = job.steps.filter(
+      (step): step is typeof step & { readonly frameId: string } => step.frameId !== undefined,
+    );
+    if (frames.length === 0 && !job.videoAvailable) return null;
+    return (
+      <section aria-label="Browser evidence" key={job.jobId} {...stylex.props(styles.evidence)}>
+        <header {...stylex.props(styles.evidenceHeader)}>
+          <span {...stylex.props(styles.evidenceTitle)}>
+            <Images aria-hidden {...stylex.props(styles.evidenceIcon)} />
+            Browser evidence
+          </span>
+          <a
+            aria-label="Open browser evidence details"
+            href={summaryPath}
+            target="_blank"
+            rel="noreferrer"
+            {...stylex.props(styles.evidenceLink)}
+          >
+            Open details <ExternalLink aria-hidden {...stylex.props(styles.evidenceIcon)} />
+          </a>
+        </header>
+        {frames.length === 0 ? null : (
+          <div aria-label="Evidence screenshots" {...stylex.props(styles.evidenceFrames)}>
+            {frames.map((step) => {
+              const framePath = `${summaryPath}/frames/${encodeURIComponent(step.frameId)}.png`;
+              return (
+                <a
+                  aria-label={`Open ${step.name} screenshot`}
+                  href={framePath}
+                  key={step.frameId}
+                  target="_blank"
+                  rel="noreferrer"
+                  {...stylex.props(styles.evidenceFrameLink)}
+                >
+                  <img
+                    alt={`${step.name} browser evidence`}
+                    loading="lazy"
+                    src={framePath}
+                    {...stylex.props(styles.evidenceFrame)}
+                  />
+                  <span {...stylex.props(styles.evidenceCaption)}>{step.name}</span>
+                </a>
+              );
+            })}
+          </div>
+        )}
+        {job.videoAvailable ? (
+          <video
+            aria-label="Browser evidence recording"
+            controls
+            playsInline
+            preload="metadata"
+            src={`${summaryPath}/video.webm`}
+            {...stylex.props(styles.evidenceVideo)}
+          />
+        ) : null}
+      </section>
+    );
+  });
+}
 
 const toolIcon = (tool: ToolActivity) => {
   if (tool.state === "running")
@@ -333,7 +500,15 @@ function TurnContent({
   );
 }
 
-function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
+function CompletedTurn({
+  evidence,
+  sessionId,
+  turn,
+}: {
+  readonly evidence: ReadonlyArray<EvidenceSummary>;
+  readonly sessionId: string | undefined;
+  readonly turn: ConversationTurn;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <details
@@ -355,6 +530,12 @@ function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
       </summary>
       <div {...stylex.props(styles.turnBody)}>
         <TurnContent assistant={turn.assistant} turn={turn} />
+        {sessionId === undefined ? null : (
+          <TurnEvidence
+            evidence={evidence.filter((job) => turnReferencesEvidence(turn, job, sessionId))}
+            sessionId={sessionId}
+          />
+        )}
       </div>
     </details>
   );
@@ -362,9 +543,13 @@ function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
 
 export function Conversation({
   animateStreaming = true,
+  evidence = [],
+  sessionId,
   turns,
 }: {
   readonly animateStreaming?: boolean;
+  readonly evidence?: ReadonlyArray<EvidenceSummary>;
+  readonly sessionId?: string;
   readonly turns: ReadonlyArray<ConversationTurn>;
 }) {
   const active = turns.findLast((turn) => turn.state === "streaming");
@@ -437,7 +622,7 @@ export function Conversation({
           </button>
         ) : null}
         {foldedCompleted.slice(-visibleCompleted).map((turn) => (
-          <CompletedTurn key={turn.id} turn={turn} />
+          <CompletedTurn evidence={evidence} key={turn.id} sessionId={sessionId} turn={turn} />
         ))}
         {latestCompleted === undefined ? null : (
           <article
@@ -446,6 +631,14 @@ export function Conversation({
             {...stylex.props(styles.latestTurn)}
           >
             <TurnContent assistant={latestCompleted.assistant} turn={latestCompleted} />
+            {sessionId === undefined ? null : (
+              <TurnEvidence
+                evidence={evidence.filter((job) =>
+                  turnReferencesEvidence(latestCompleted, job, sessionId),
+                )}
+                sessionId={sessionId}
+              />
+            )}
           </article>
         )}
         {active === undefined ? null : (
@@ -471,6 +664,12 @@ export function Conversation({
                 <span aria-hidden {...stylex.props(styles.caret)} />
               ) : null}
             </div>
+            {sessionId === undefined ? null : (
+              <TurnEvidence
+                evidence={evidence.filter((job) => turnReferencesEvidence(active, job, sessionId))}
+                sessionId={sessionId}
+              />
+            )}
           </article>
         )}
       </div>
