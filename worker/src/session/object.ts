@@ -92,6 +92,7 @@ import {
 import type { Bindings } from "../shared/bindings";
 import {
   HATCH_MAX_CONCURRENT_SOCKETS,
+  HATCH_MAX_RESPONSE_BYTES,
   HATCH_MAX_WEBSOCKET_AGGREGATE_BYTES,
   HATCH_MAX_WEBSOCKET_MESSAGE_BYTES,
   HATCH_MAX_WEBSOCKET_MESSAGES,
@@ -101,7 +102,6 @@ import {
   HATCH_PRIVATE_REQUEST_HEADER,
   HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
   HATCH_PRIVATE_WEBSOCKET_HEADER,
-  HATCH_RESERVED_RESPONSE_BYTES,
   HATCH_READINESS_PATH,
   HATCH_WEBSOCKET_ABSOLUTE_MILLIS,
   HATCH_WEBSOCKET_ADMISSION_MILLIS,
@@ -4586,7 +4586,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
           routeNonce: decoded.value.routeNonce,
           runtimeEpoch: runtimeEpoch.success,
           cookieDigest,
-          ingressBytes: decoded.value.ingressBytes,
         }),
       ).pipe(Effect.catch(() => Effect.succeed(undefined))),
     );
@@ -5311,17 +5310,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
     abortController: AbortController,
     timeout: ReturnType<typeof setTimeout>,
   ): Promise<Response> {
-    const settle = async (responseBytes: number): Promise<void> => {
+    const settle = async (): Promise<void> => {
       this.hatchRequests.delete(requestId);
       await this.#run(
-        Effect.flatMap(HatchStore, (store) => store.settleRequest(requestId, responseBytes)).pipe(
-          Effect.ignore,
-        ),
+        Effect.flatMap(HatchStore, (store) => store.settleRequest(requestId)).pipe(Effect.ignore),
       );
     };
     if (response.body === null) {
       clearTimeout(timeout);
-      await settle(0);
+      await settle();
       const headers = new Headers(response.headers);
       headers.set(HATCH_PRIVATE_CLAIMED_HEADER, requestId);
       return new Response(null, {
@@ -5339,7 +5336,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       terminal = true;
       clearTimeout(timeout);
       abortController.signal.removeEventListener("abort", abortStream);
-      await settle(bytes);
+      await settle();
     };
     const abortStream = (): void => {
       if (terminal) return;
@@ -5371,9 +5368,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
           return;
         }
         const nextBytes = bytes + next.value.value.byteLength;
-        if (nextBytes > HATCH_RESERVED_RESPONSE_BYTES) {
+        if (nextBytes > HATCH_MAX_RESPONSE_BYTES) {
           await reader.cancel();
-          bytes = HATCH_RESERVED_RESPONSE_BYTES;
+          bytes = HATCH_MAX_RESPONSE_BYTES;
           await finish();
           controller.error(
             new DOMException("Hatch response exceeded its limit", "QuotaExceededError"),

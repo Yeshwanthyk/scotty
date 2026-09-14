@@ -235,7 +235,6 @@ export const prepareHatchWebSocket = (
 export interface PreparedHatchRequest {
   readonly cookieSecret: string;
   readonly declaredIngressBytes: number | undefined;
-  readonly reservedIngressBytes: number;
   readonly headers: Headers;
 }
 
@@ -261,7 +260,6 @@ export const prepareHatchRequest = (
   return {
     cookieSecret: cookie.secret,
     declaredIngressBytes,
-    reservedIngressBytes: declaredIngressBytes ?? HATCH_MAX_INGRESS_BYTES,
     headers: projectHeaders(request.headers, HTTP_PROJECTED_HEADERS, cookie.forwardedCookie),
   };
 };

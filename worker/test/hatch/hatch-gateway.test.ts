@@ -254,7 +254,6 @@ describe("Hatch exact-host gateway", () => {
       port: 4_173,
       routeNonce: ROUTE_NONCE,
       cookieSecret: COOKIE_SECRET,
-      ingressBytes: HATCH_MAX_INGRESS_BYTES,
     });
     expect(adjust).toHaveBeenCalledWith("1".repeat(32), 0);
     expect(response?.headers.get(HATCH_PRIVATE_CLAIMED_HEADER)).toBeNull();
@@ -272,6 +271,53 @@ describe("Hatch exact-host gateway", () => {
     );
     expect(websocket?.status).toBe(404);
     expect(admit).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits concurrent bounded bodies and rejects an oversized body before forwarding", async () => {
+    let sequence = 0;
+    admit.mockImplementation(async () => ({
+      requestId: (sequence++).toString(16).padStart(32, "0"),
+      expiresAt: future(),
+    }));
+    proxy.mockImplementation(async (request: Request) => {
+      const id = request.headers.get(HATCH_PRIVATE_REQUEST_HEADER);
+      expect(id).toMatch(/^[0-9a-f]{32}$/u);
+      expect((await request.arrayBuffer()).byteLength).toBe(1 * 1_024 * 1_024);
+      return new Response("asset", { headers: { [HATCH_PRIVATE_CLAIMED_HEADER]: id ?? "" } });
+    });
+
+    const responses = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        handleHatchRequest(
+          new Request(`https://${HOST}/asset`, {
+            method: "POST",
+            headers: {
+              cookie: `${HATCH_COOKIE}=${COOKIE_SECRET}`,
+              "content-length": String(1 * 1_024 * 1_024),
+            },
+            body: new Uint8Array(1 * 1_024 * 1_024),
+          }),
+          env,
+        ),
+      ),
+    );
+    expect(responses.every((response) => response?.status === 200)).toBe(true);
+    expect(admit).toHaveBeenCalledTimes(12);
+    expect(admit.mock.calls.every(([input]) => !("ingressBytes" in input))).toBe(true);
+    expect(adjust.mock.calls.every(([, bytes]) => bytes === 1 * 1_024 * 1_024)).toBe(true);
+    expect(proxy).toHaveBeenCalledTimes(12);
+
+    const oversized = await handleHatchRequest(
+      new Request(`https://${HOST}/oversized`, {
+        method: "POST",
+        headers: { cookie: `${HATCH_COOKIE}=${COOKIE_SECRET}` },
+        body: new Uint8Array(HATCH_MAX_INGRESS_BYTES + 1),
+      }),
+      env,
+    );
+    expect(oversized?.status).toBe(404);
+    expect(cancel).toHaveBeenCalledWith("0000000000000000000000000000000c");
+    expect(proxy).toHaveBeenCalledTimes(12);
   });
 
   it("admits only same-origin authenticated WebSockets and preserves only the selected protocol", async () => {

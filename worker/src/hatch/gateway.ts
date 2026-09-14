@@ -438,7 +438,6 @@ const proxyHatchHttp = async (
   const admission = {
     ...route,
     cookieSecret: prepared.cookieSecret,
-    ingressBytes: prepared.reservedIngressBytes,
   } satisfies HatchGatewayAdmission;
   const permit = await sandbox.admitScottyHatchRequest(admission).then(
     (value) => value,

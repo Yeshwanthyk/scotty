@@ -4,7 +4,6 @@ export const HATCH_STATE_VERSION = 1 as const;
 export const HATCH_COOKIE = "__Host-scotty-hatch";
 export const HATCH_HANDOFF_PATH = "/_scotty/hatch/handoff";
 export const HATCH_READINESS_PATH = "/_scotty/hatch/readiness";
-export const HATCH_MAX_CONCURRENT_REQUESTS = 8;
 export const HATCH_MAX_CONCURRENT_SOCKETS = 4;
 export const HATCH_MAX_WEBSOCKET_MESSAGE_BYTES = 1 * 1_024 * 1_024;
 export const HATCH_MAX_WEBSOCKET_MESSAGES = 10_000;
@@ -13,8 +12,7 @@ export const HATCH_WEBSOCKET_IDLE_MILLIS = 60_000;
 export const HATCH_WEBSOCKET_ABSOLUTE_MILLIS = 60 * 60 * 1_000;
 export const HATCH_WEBSOCKET_ADMISSION_MILLIS = 10_000;
 export const HATCH_MAX_INGRESS_BYTES = 16 * 1_024 * 1_024;
-export const HATCH_RESERVED_RESPONSE_BYTES = 32 * 1_024 * 1_024;
-export const HATCH_MAX_PERMIT_BYTES = 256 * 1_024 * 1_024;
+export const HATCH_MAX_RESPONSE_BYTES = 32 * 1_024 * 1_024;
 export const HATCH_REQUEST_DURATION_MILLIS = 30_000;
 export const HATCH_PERMIT_DURATION_MILLIS = 60 * 60 * 1_000;
 export const HATCH_PRIVATE_REQUEST_HEADER = "x-scotty-hatch-request";
@@ -144,6 +142,7 @@ export const HatchBrowserPermitSchema = Schema.Struct({
   cookieDigest: Sha256Schema,
   createdAt: IsoTimestampSchema,
   expiresAt: IsoTimestampSchema,
+  // Retained only so persisted v1 accounting remains readable; HTTP admission and finish ignore it.
   ingressBytes: NonNegativeIntSchema,
   responseBytes: NonNegativeIntSchema,
 });
@@ -154,9 +153,10 @@ export const HatchHttpRequestSchema = Schema.Struct({
   permitId: IdentifierSchema,
   generation: PositiveIntSchema,
   runtimeEpoch: IdentifierSchema,
-  reservedIngressBytes: NonNegativeIntSchema,
+  // Older v1 records reserved quota here. New requests omit these compatibility fields.
+  reservedIngressBytes: Schema.optionalKey(NonNegativeIntSchema),
   ingressBytes: Schema.optionalKey(NonNegativeIntSchema),
-  reservedResponseBytes: PositiveIntSchema,
+  reservedResponseBytes: Schema.optionalKey(PositiveIntSchema),
   status: Schema.Literals(["admitted", "claimed"]),
   admittedAt: IsoTimestampSchema,
   expiresAt: IsoTimestampSchema,
@@ -198,9 +198,7 @@ const HatchRecordBaseSchema = Schema.Struct({
   exposure: HatchExposureSchema,
   routeNonce: RouteNonceSchema,
   permits: Schema.Array(HatchBrowserPermitSchema).check(Schema.isMaxLength(64)),
-  requests: Schema.Array(HatchHttpRequestSchema).check(
-    Schema.isMaxLength(HATCH_MAX_CONCURRENT_REQUESTS),
-  ),
+  requests: Schema.Array(HatchHttpRequestSchema),
   transitionNonce: Schema.optionalKey(IdentifierSchema),
   cleanup: Schema.optionalKey(HatchCleanupSchema),
   createdAt: IsoTimestampSchema,
@@ -214,13 +212,7 @@ const hasUniqueValues = (values: ReadonlyArray<string>): boolean =>
   new Set(values).size === values.length;
 
 const isPermitConsistent = (permit: HatchBrowserPermit): boolean =>
-  permit.ingressBytes <= HATCH_MAX_PERMIT_BYTES &&
-  permit.responseBytes <= HATCH_MAX_PERMIT_BYTES &&
-  permit.ingressBytes + permit.responseBytes <= HATCH_MAX_PERMIT_BYTES &&
   Date.parse(permit.createdAt) < Date.parse(permit.expiresAt);
-
-const requestReservationBytes = (request: HatchHttpRequest): number =>
-  request.reservedIngressBytes + request.reservedResponseBytes;
 
 const isRequestConsistent = (
   record: HatchRecordBase,
@@ -232,24 +224,15 @@ const isRequestConsistent = (
     permit !== undefined &&
     request.generation === record.generation &&
     request.runtimeEpoch === record.runtimeEpoch &&
-    request.reservedIngressBytes <= HATCH_MAX_INGRESS_BYTES &&
-    request.reservedResponseBytes === HATCH_RESERVED_RESPONSE_BYTES &&
-    (request.ingressBytes === undefined || request.ingressBytes <= request.reservedIngressBytes) &&
+    (request.reservedIngressBytes === undefined ||
+      request.reservedIngressBytes <= HATCH_MAX_INGRESS_BYTES) &&
+    (request.reservedResponseBytes === undefined ||
+      request.reservedResponseBytes === HATCH_MAX_RESPONSE_BYTES) &&
+    (request.ingressBytes === undefined || request.ingressBytes <= HATCH_MAX_INGRESS_BYTES) &&
     Date.parse(request.admittedAt) < Date.parse(request.expiresAt) &&
     Date.parse(request.expiresAt) <= Date.parse(permit.expiresAt)
   );
 };
-
-const permitsHaveRoomForRequests = (
-  permits: ReadonlyArray<HatchBrowserPermit>,
-  requests: ReadonlyArray<HatchHttpRequest>,
-): boolean =>
-  permits.every((permit) => {
-    const outstanding = requests
-      .filter((request) => request.permitId === permit.permitId)
-      .reduce((total, request) => total + requestReservationBytes(request), 0);
-    return permit.ingressBytes + permit.responseBytes + outstanding <= HATCH_MAX_PERMIT_BYTES;
-  });
 
 const isActiveHatch = (record: HatchRecordBase): boolean =>
   record.desiredStatus === "open" &&
@@ -291,7 +274,6 @@ const isConsistentHatchRecord = (record: HatchRecordBase): boolean => {
     hasUniqueValues(record.permits.map((permit) => permit.browserClientId)) &&
     record.permits.every(isPermitConsistent) &&
     record.requests.every((request) => isRequestConsistent(record, request, permitById)) &&
-    permitsHaveRoomForRequests(record.permits, record.requests) &&
     hasValidRecordTimestamps(record) &&
     hasValidLifecycleState(record) &&
     hasValidCleanupState(record)
@@ -431,7 +413,6 @@ export const HatchGatewayAdmissionSchema = Schema.Struct({
   port: PortSchema,
   routeNonce: RouteNonceSchema,
   cookieSecret: CookieSecretSchema,
-  ingressBytes: NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(HATCH_MAX_INGRESS_BYTES)),
 });
 export type HatchGatewayAdmission = typeof HatchGatewayAdmissionSchema.Type;
 export const decodeHatchRequestAdmission = Schema.decodeUnknownOption(HatchGatewayAdmissionSchema, {
@@ -439,7 +420,7 @@ export const decodeHatchRequestAdmission = Schema.decodeUnknownOption(HatchGatew
 });
 export const decodeHatchRequestId = Schema.decodeUnknownOption(RequestIdSchema);
 export const decodeHatchIngressBytes = Schema.decodeUnknownOption(
-  HatchGatewayAdmissionSchema.fields.ingressBytes,
+  NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(HATCH_MAX_INGRESS_BYTES)),
 );
 
 export const IssuedHatchPermitSchema = Schema.Struct({
