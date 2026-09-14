@@ -1,14 +1,9 @@
 import { Schema } from "effect";
-import { CODEX_MAX_TEXT_BYTES, CODEX_VERSION } from "../../../../protocol/codex-app-server";
-import {
-  CanonicalConversationTurnSchema,
-  CONVERSATION_MAX_TURNS,
-} from "../../../../protocol/conversation";
+import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import { CanonicalConversationTurnSchema } from "../../../../protocol/conversation";
 
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(256));
-const Text = Schema.String.check(
-  Schema.makeFilter((value) => new TextEncoder().encode(value).length <= CODEX_MAX_TEXT_BYTES),
-);
+const Text = Schema.String;
 export const CodexPersistenceIdentity = Schema.Struct({
   threadId: Identifier,
   initialTurnId: Identifier,
@@ -33,10 +28,7 @@ export const CodexSavedOperation = Schema.Struct({
 export const CodexSavedHistory = Schema.Struct({
   ...CodexPersistenceIdentity.fields,
   prompt: Schema.Union([CodexSavedTerminal, CodexSavedFailed]),
-  turns: Schema.Array(CanonicalConversationTurnSchema).check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(CONVERSATION_MAX_TURNS),
-  ),
+  turns: Schema.Array(CanonicalConversationTurnSchema).check(Schema.isMinLength(1)),
   turnsTruncated: Schema.Boolean,
   operations: Schema.Array(CodexSavedOperation),
 }).check(
@@ -56,7 +48,6 @@ export const CodexSavedHistory = Schema.Struct({
       ),
   ),
 );
-export const CODEX_SAVED_STATE_MAX_BYTES = 16 * 1024 * 1024;
 export const CODEX_ROLLOUT_RELATIVE_PATH =
   /^sessions\/[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/rollout-[A-Za-z0-9_.-]+\.jsonl$/u;
 export const CodexSavedState = Schema.Struct({
@@ -70,7 +61,7 @@ export const CodexSavedState = Schema.Struct({
       path: Schema.String.check(Schema.isPattern(CODEX_ROLLOUT_RELATIVE_PATH)),
       content: Schema.NonEmptyString,
     }),
-  ).check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  ).check(Schema.isMinLength(1)),
 }).check(
   Schema.makeFilter(
     (value) => new Set(value.files.map((file) => file.path)).size === value.files.length,

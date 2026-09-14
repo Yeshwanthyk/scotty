@@ -41,11 +41,8 @@ const IdempotencyKeySchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._
 const decodeSessionId = Schema.decodeUnknownOption(SessionIdSchema);
 const ContainerSteerMessageSchema = Schema.String.check(
   Schema.makeFilter(
-    (message) =>
-      message.trim().length > 0 &&
-      !message.trimStart().startsWith("/") &&
-      new TextEncoder().encode(message).byteLength <= PI_CONSOLE_MAX_STRING_BYTES,
-    { expected: "a bounded non-command steering message" },
+    (message) => message.trim().length > 0 && !message.trimStart().startsWith("/"),
+    { expected: "a non-command steering message" },
   ),
 );
 const ContainerInterruptInputSchema = Schema.Struct({
@@ -527,10 +524,10 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
     throw badRequest(
       "Codex requires a supported model and effort and does not accept modelProvider; Pi overrides must be valid model settings",
     );
-  const prompt = readNonEmptyString(decoded.value.prompt, "prompt", 64_000);
-  if (selection.success.agent === "codex" && new TextEncoder().encode(prompt).length > 64 * 1024)
-    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous HTTP parser rejects oversized Codex input before creating resources
-    throw badRequest("Codex prompt exceeds its UTF-8 byte limit");
+  const prompt =
+    decoded.value.agent === undefined || selection.success.agent === "codex"
+      ? readNonEmptyText(decoded.value.prompt, "prompt")
+      : readNonEmptyString(decoded.value.prompt, "prompt", 64_000);
   const provider = parseProvider(decoded.value.provider);
   const runner =
     decoded.value.runner === undefined
@@ -586,7 +583,7 @@ const decodeRawInterruptInput = Schema.decodeUnknownOption(RawInterruptInputSche
   onExcessProperty: "error",
 });
 
-export function parseSteerInput(value: unknown): string {
+export function parseSteerInput(value: unknown, enforcePiLimit = true): string {
   const decoded = decodeRawSteerInput(value);
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
   if (Option.isNone(decoded)) throw badRequest("Request body must contain only message");
@@ -594,7 +591,7 @@ export function parseSteerInput(value: unknown): string {
   if (typeof message !== "string" || message.trim().length === 0)
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest("message must be a non-empty string");
-  if (new TextEncoder().encode(message).byteLength > PI_CONSOLE_MAX_STRING_BYTES)
+  if (enforcePiLimit && new TextEncoder().encode(message).byteLength > PI_CONSOLE_MAX_STRING_BYTES)
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest(`message must be at most ${PI_CONSOLE_MAX_STRING_BYTES} UTF-8 bytes`);
   if (message.trimStart().startsWith("/"))
@@ -713,6 +710,14 @@ function readNonEmptyString(value: unknown, field: string, maxLength: number): s
   if (value.length > maxLength) {
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest(`${field} must be at most ${maxLength} characters`);
+  }
+  return value.trim();
+}
+
+function readNonEmptyText(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves ScottyError envelopes
+    throw badRequest(`${field} must be a non-empty string`);
   }
   return value.trim();
 }

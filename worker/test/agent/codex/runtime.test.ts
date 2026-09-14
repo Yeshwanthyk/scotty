@@ -552,7 +552,7 @@ describe("Codex generation bridge over production session adapter", () => {
     }),
   );
 
-  it.effect("bounds retained turns while preserving the initial admission anchor", () =>
+  it.effect("retains every turn and the initial admission anchor", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
       yield* f.runtime.admit(command);
@@ -565,19 +565,18 @@ describe("Codex generation bridge over production session adapter", () => {
         });
       }
       const snapshot = yield* f.runtime.snapshot;
-      assert.ok((snapshot.turns?.length ?? 0) <= 100);
+      assert.equal(snapshot.turns?.length, 111);
       assert.equal(snapshot.turns?.[0]?.id, "turn");
-      assert.equal(snapshot.turnsTruncated, true);
+      assert.equal(snapshot.turnsTruncated, undefined);
       assert.equal(snapshot.prompt.status, "running");
     }),
   );
 
-  it.effect("rejects wrong thread and malformed/oversized prompt before any native write", () =>
+  it.effect("rejects wrong thread and malformed prompt while accepting a large prompt", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
       for (const input of [
         { ...command, threadId: "wrong" },
-        { ...command, text: "💥".repeat(17000) },
         { ...command, credential: "forbidden" },
       ]) {
         const result = yield* Effect.result(f.runtime.admit(input));
@@ -586,6 +585,8 @@ describe("Codex generation bridge over production session adapter", () => {
       }
       assert.equal(f.prompts(), 0);
       assert.equal((yield* f.runtime.snapshot).prompt.status, "idle");
+      yield* f.runtime.admit({ ...command, text: "💥".repeat(17000) });
+      assert.equal(f.prompts(), 1);
     }),
   );
 

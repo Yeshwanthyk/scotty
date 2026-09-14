@@ -4,11 +4,7 @@ import { constants } from "node:fs";
 import * as fs from "node:fs/promises";
 import { dirname } from "node:path";
 import { CodexHostError } from "./errors";
-import {
-  CODEX_SAVED_STATE_MAX_BYTES,
-  CodexSavedState,
-  codexSavedStatePath,
-} from "./persistence-format";
+import { CodexSavedState, codexSavedStatePath } from "./persistence-format";
 
 const invalid = () => new CodexHostError({ code: "invalid_saved_state" });
 const io = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: invalid });
@@ -29,13 +25,12 @@ const regularDirectory = Effect.fnUntraced(function* (path: string) {
   const stat = yield* io(() => fs.lstat(path));
   if (!stat.isDirectory() || stat.isSymbolicLink()) return yield* invalid();
 });
-const readRegular = Effect.fnUntraced(function* (path: string, maximum: number) {
+const readRegular = Effect.fnUntraced(function* (path: string) {
   return yield* Effect.acquireUseRelease(
     io(() => fs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW)),
     Effect.fnUntraced(function* (handle) {
       const stat = yield* io(() => handle.stat());
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size > maximum || stat.size === 0)
-        return yield* invalid();
+      if (!stat.isFile() || stat.nlink !== 1 || stat.size === 0) return yield* invalid();
       const buffer = new Uint8Array(stat.size + 1);
       const result = yield* io(() => handle.read(buffer, 0, buffer.length, 0));
       if (result.bytesRead !== stat.size) return yield* invalid();
@@ -71,7 +66,7 @@ export const readCodexSavedState = Effect.fnUntraced(function* (
   expected: { readonly threadId: string; readonly initialTurnId: string },
 ) {
   yield* regularDirectory(`${workspace}/.scotty`);
-  const body = yield* readRegular(codexSavedStatePath(workspace), CODEX_SAVED_STATE_MAX_BYTES);
+  const body = yield* readRegular(codexSavedStatePath(workspace));
   const state = yield* decodeStateJson(body).pipe(Effect.mapError(invalid));
   if (
     state.history.threadId !== expected.threadId ||
@@ -99,7 +94,6 @@ export const writeCodexSavedState = Effect.fnUntraced(function* (
   history: (typeof CodexSavedState.Type)["history"],
 ) {
   const files: Array<{ path: string; content: string }> = [];
-  let bytes = 0;
   const walk = Effect.fnUntraced(function* (
     relative: string,
     depth: number,
@@ -108,14 +102,12 @@ export const writeCodexSavedState = Effect.fnUntraced(function* (
     const path = `${home}/${relative}`;
     yield* regularDirectory(path);
     const entries = yield* io(() => fs.readdir(path, { withFileTypes: true }));
-    if (entries.length > 128) return yield* invalid();
     for (const entry of entries) {
       const child = `${relative}/${entry.name}`;
       if (entry.isDirectory()) yield* walk(child, depth + 1);
       else {
-        if (!entry.isFile() || files.length >= 128) return yield* invalid();
-        const content = yield* readRegular(`${home}/${child}`, CODEX_SAVED_STATE_MAX_BYTES - bytes);
-        bytes += new TextEncoder().encode(content).length;
+        if (!entry.isFile()) return yield* invalid();
+        const content = yield* readRegular(`${home}/${child}`);
         files.push({ path: child, content });
       }
     }
@@ -129,7 +121,6 @@ export const writeCodexSavedState = Effect.fnUntraced(function* (
   }).pipe(Effect.mapError(invalid));
   yield* validateNative(state);
   const body = JSON.stringify(state);
-  if (new TextEncoder().encode(body).length > CODEX_SAVED_STATE_MAX_BYTES) return yield* invalid();
   const directory = `${workspace}/.scotty`;
   yield* io(() => fs.mkdir(directory, { recursive: true, mode: 0o700 }));
   yield* regularDirectory(directory);

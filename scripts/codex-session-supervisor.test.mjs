@@ -229,7 +229,7 @@ input.on('line', line=>{
   if(mode==='truncated') {process.stdout.end('{');return;}
   if(mode==='oversized') {process.stdout.write('x'.repeat(2097153)+'\\n');return;}
   if(mode==='stderr') process.stderr.write('x'.repeat(262145));
-  if(mode==='unknown') {output({method:'unknown',params:{}});return;}
+  if(mode==='unknown') output({method:'unknown',params:{}});
   if(mode==='config-warning' || mode==='config-warning-settings') output({method:'configWarning',params:{summary:'Codex will use the bundled bubblewrap in the meantime.',details:null},emittedAtMs:1});
   if(mode==='bad-advisory') {output({method:'thread/status/changed',params:{},emittedAtMs:null});return;}
   if(mode==='events') for(let i=0;i<4097;i++)output({method:'thread/status/changed',params:{}});
@@ -553,8 +553,7 @@ for (const [mode, code] of [
   ["approval-policy", "invalid_message"],
   ["config-warning-settings", "settings_mismatch"],
   ["rpc-error", "rpc_rejected"],
-  ["unknown", "unsupported_notification"],
-  ["bad-advisory", "unsupported_notification"],
+  ["bad-advisory", "invalid_message"],
 ])
   test(`startup fault: ${mode}`, async (t) => {
     const f = await fixture(t, mode, { startupTimeoutMs: 1500, requestTimeoutMs: 1500 });
@@ -578,6 +577,13 @@ for (const mode of ["stderr", "events", "aggregate"])
     assert.equal(host.inspect().ready, true);
     assert.equal((await host.stop()).failure, null);
   });
+
+test("unknown notification is safely discarded during startup", async (t) => {
+  const host = await (await fixture(t, "unknown")).launch();
+  assert.equal(host.inspect().ready, true);
+  assert.ok(host.inspect().discarded >= 1);
+  assert.equal((await host.stop()).failure, null);
+});
 
 for (const [mode, code] of [
   ["bad-notification", "invalid_message"],
@@ -612,11 +618,10 @@ test("failed terminal stays failed", async (t) => {
   assert.equal((await (await host.prompt("test")).completed).status, "failed");
 });
 
-test("interrupt ack is not terminal; concurrent prompts rejected; invalid prompt never written", async (t) => {
+test("interrupt ack is not terminal; concurrent prompts rejected; large prompt is admitted", async (t) => {
   const f = await fixture(t, "hold");
   const host = await f.launch();
-  await assert.rejects(host.prompt("x".repeat(65537)), { code: "invalid_message" });
-  const turn = await host.prompt("hold");
+  const turn = await host.prompt("x".repeat(65537));
   await assert.rejects(host.prompt("busy"), { code: "turn_busy" });
   let settled = false;
   const interrupted = host.interrupt().then((value) => {

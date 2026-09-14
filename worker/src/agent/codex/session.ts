@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { Clock, Deferred, Effect, Fiber, Predicate, Result, Schema, Scope, Stream } from "effect";
 import {
   CODEX_VERSION,
-  CODEX_MAX_TEXT_BYTES,
+  CODEX_NOTIFICATION_POLICY,
   decodeCodexClientMessage,
   decodeCodexInitializeResponse,
   decodeCodexThreadReadResponse,
@@ -14,6 +14,8 @@ import {
   decodeCodexSteerResponse,
   decodeCodexInterruptResponse,
   decodeCodexNotification,
+  decodeCodexNotificationEnvelope,
+  decodeCodexStateNotification,
   decodeCodexDynamicToolCall,
   rejectCodexServerRequest,
   type CodexClientMessage,
@@ -55,9 +57,7 @@ type Turn = {
   readonly terminal: Deferred.Deferred<Terminal, CodexHostError>;
   interruption?: Effect.Effect<Terminal, CodexHostError>;
 };
-const decodePrompt = Schema.decodeUnknownEffect(
-  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(CODEX_MAX_TEXT_BYTES)),
-);
+const decodePrompt = Schema.decodeUnknownEffect(Schema.String.check(Schema.isMinLength(1)));
 const Route = Schema.Struct({
   id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Number])),
   method: Schema.optionalKey(Schema.String),
@@ -82,7 +82,7 @@ const decodeUpstreamFailure = Schema.decodeUnknownEffect(
         turnId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
         willRetry: Schema.Boolean,
         error: Schema.Struct({
-          message: Schema.String.check(Schema.isMaxLength(4096)),
+          message: Schema.String,
           codexErrorInfo: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
         }),
       }),
@@ -120,9 +120,18 @@ const decodeUpstreamHttpInfo = Schema.decodeUnknownResult(
   ]),
   strict,
 );
+const decodeActiveTurnNotSteerable = Schema.decodeUnknownResult(
+  Schema.Struct({
+    activeTurnNotSteerable: Schema.Struct({ turnKind: Schema.Literals(["review", "compact"]) }),
+  }),
+  strict,
+);
 const upstreamDiagnostic = (info: unknown): string => {
   const category = decodeUpstreamErrorCategory(info);
   if (Result.isSuccess(category)) return category.success;
+  const activeTurn = decodeActiveTurnNotSteerable(info);
+  if (Result.isSuccess(activeTurn))
+    return `activeTurnNotSteerable:${activeTurn.success.activeTurnNotSteerable.turnKind}`;
   const decoded = decodeUpstreamHttpInfo(info);
   if (Result.isSuccess(decoded)) {
     const entry = Object.entries(decoded.success)[0];
@@ -133,61 +142,6 @@ const upstreamDiagnostic = (info: unknown): string => {
   }
   return "unclassified";
 };
-const AdvisoryIdentifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
-const AdvisoryThread = Schema.Struct({
-  threadId: AdvisoryIdentifier,
-  turnId: AdvisoryIdentifier,
-}).annotate({ parseOptions: { onExcessProperty: "ignore" } });
-const AdvisoryTimestamp = Schema.optionalKey(
-  Schema.Int.check(
-    Schema.isBetween({ minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER }),
-  ),
-);
-const ScopedAdvisoryMethod = Schema.Literals([
-  "turn/diff/updated",
-  "turn/plan/updated",
-  "item/plan/delta",
-  "item/reasoning/summaryTextDelta",
-  "item/reasoning/summaryPartAdded",
-  "item/reasoning/textDelta",
-]);
-const CommandInteractionAdvisory = Schema.Literal("item/commandExecution/terminalInteraction");
-const Advisory = Schema.Union([
-  Schema.Struct({
-    method: Schema.Literals([
-      "remoteControl/status/changed",
-      "configWarning",
-      "thread/started",
-      "thread/status/changed",
-      "item/started",
-      "item/completed",
-      "thread/tokenUsage/updated",
-      "account/rateLimits/updated",
-      "item/commandExecution/outputDelta",
-    ]),
-    params: Schema.JsonObject,
-    emittedAtMs: AdvisoryTimestamp,
-  }),
-  Schema.Struct({
-    method: ScopedAdvisoryMethod,
-    params: AdvisoryThread,
-    emittedAtMs: AdvisoryTimestamp,
-  }),
-  Schema.Struct({
-    method: CommandInteractionAdvisory,
-    params: Schema.Struct({
-      threadId: AdvisoryIdentifier,
-      turnId: AdvisoryIdentifier,
-      itemId: AdvisoryIdentifier,
-    }).annotate({ parseOptions: { onExcessProperty: "ignore" } }),
-    emittedAtMs: AdvisoryTimestamp,
-  }),
-]);
-type AdvisoryMessage = typeof Advisory.Type;
-type ScopedAdvisory = Extract<
-  AdvisoryMessage,
-  { method: typeof ScopedAdvisoryMethod.Type | typeof CommandInteractionAdvisory.Type }
->;
 type UpstreamFailure =
   ReturnType<typeof decodeUpstreamFailure> extends Effect.Effect<infer A, infer _E, infer _R>
     ? A
@@ -195,29 +149,19 @@ type UpstreamFailure =
 type BeforeAdmissionReply =
   | { readonly kind: "notification"; readonly message: CodexNotification }
   | { readonly kind: "dynamic"; readonly request: CodexDynamicToolCall }
-  | { readonly kind: "advisory"; readonly advisory: ScopedAdvisory }
   | { readonly kind: "upstream"; readonly rejection: UpstreamFailure };
-const isScopedAdvisoryMethod = Schema.is(ScopedAdvisoryMethod);
-const isScopedAdvisory = (advisory: AdvisoryMessage): advisory is ScopedAdvisory =>
-  isScopedAdvisoryMethod(advisory.method) ||
-  advisory.method === "item/commandExecution/terminalInteraction";
-const decodeGoalCleared = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(
-    Schema.Struct({
-      method: Schema.Literal("thread/goal/cleared"),
-      params: Schema.Struct({ threadId: AdvisoryIdentifier }),
-      emittedAtMs: AdvisoryTimestamp,
-    }),
-  ),
-  { onExcessProperty: "error" },
-);
-const decodeAdvisory = Schema.decodeUnknownEffect(Schema.fromJsonString(Advisory), {
-  onExcessProperty: "error",
-});
 const decoded = <A>(result: Result.Result<A, "invalid_message">) =>
   Result.match(result, {
     onSuccess: Effect.succeed,
     onFailure: (code) => Effect.fail(new CodexHostError({ code })),
+  });
+const decodedNotification = <A>(result: Result.Result<A, "invalid_message">, method: string) =>
+  Result.match(result, {
+    onSuccess: Effect.succeed,
+    onFailure: () =>
+      Effect.fail(
+        new CodexHostError({ code: "invalid_message", staleDiagnostic: `decode:${method}` }),
+      ),
   });
 
 const matchesThreadSettings = (
@@ -294,13 +238,7 @@ export const makeSession = Effect.fnUntraced(function* (
     );
   };
   const stale = (
-    source:
-      | CodexNotification["method"]
-      | typeof ScopedAdvisoryMethod.Type
-      | typeof CommandInteractionAdvisory.Type
-      | "error"
-      | "item/tool/call"
-      | "thread/goal/cleared",
+    source: CodexNotification["method"] | "error" | "item/tool/call",
     eventThreadId: string,
     eventTurnId?: string,
     itemType?: string,
@@ -486,12 +424,7 @@ export const makeSession = Effect.fnUntraced(function* (
   const admissionIdentity = (
     entry: BeforeAdmissionReply,
   ): {
-    readonly method:
-      | CodexNotification["method"]
-      | typeof ScopedAdvisoryMethod.Type
-      | typeof CommandInteractionAdvisory.Type
-      | "item/tool/call"
-      | "error";
+    readonly method: CodexNotification["method"] | "item/tool/call" | "error";
     readonly threadId: string;
     readonly turnId: string;
   } => {
@@ -504,8 +437,6 @@ export const makeSession = Effect.fnUntraced(function* (
           : entry.message.params.turn.id,
       };
     if (entry.kind === "dynamic") return { method: "item/tool/call", ...entry.request.params };
-    if (entry.kind === "advisory")
-      return { method: entry.advisory.method, ...entry.advisory.params };
     return { method: "error", ...entry.rejection.params };
   };
   const bufferBeforeAdmissionReply = (entry: BeforeAdmissionReply) =>
@@ -634,39 +565,9 @@ export const makeSession = Effect.fnUntraced(function* (
     if (message.method === "turn/completed") yield* completeTurn(turn, message);
   });
   const toolResult = (text: string, success: boolean): CodexDynamicToolResponse["result"] => ({
-    contentItems: [
-      {
-        type: "inputText",
-        text:
-          new TextEncoder().encode(text).byteLength <= 1200
-            ? text
-            : "Tool result exceeded the safe output limit.",
-      },
-    ],
+    contentItems: [{ type: "inputText", text }],
     success,
   });
-  const boundedHatchFailure = (error: HatchFailure): string => {
-    const text = renderHatchFailure(error);
-    const encoder = new TextEncoder();
-    if (encoder.encode(text).byteLength <= 1200) return text;
-    let head = "",
-      headBytes = 0;
-    for (const character of text) {
-      const size = encoder.encode(character).byteLength;
-      if (headBytes + size > 650) break;
-      head += character;
-      headBytes += size;
-    }
-    let tail = "",
-      tailBytes = 0;
-    for (const character of Array.from(text).reverse()) {
-      const size = encoder.encode(character).byteLength;
-      if (tailBytes + size > 540) break;
-      tail = character + tail;
-      tailBytes += size;
-    }
-    return `${head}\n...\n${tail}`;
-  };
   const canAdmitDynamicCall = (
     params: {
       readonly threadId: string;
@@ -725,7 +626,7 @@ export const makeSession = Effect.fnUntraced(function* (
       }).pipe(
         Effect.map((value) => toolResult(value.text, value.success)),
         Effect.catchTags({
-          HatchFailure: (error) => Effect.succeed(toolResult(boundedHatchFailure(error), false)),
+          HatchFailure: (error) => Effect.succeed(toolResult(renderHatchFailure(error), false)),
           CodexHostError: () =>
             Effect.succeed(
               toolResult(
@@ -791,21 +692,36 @@ export const makeSession = Effect.fnUntraced(function* (
       ),
     );
   });
-  const isKnownLateTerminalInteraction = (advisory: AdvisoryMessage) =>
-    advisory.method === "item/commandExecution/terminalInteraction" &&
-    advisory.params.threadId === threadId &&
-    completedTurns.has(advisory.params.turnId) &&
-    commandOwners.get(advisory.params.turnId)?.has(advisory.params.itemId) === true;
-  const handleAdvisory = Effect.fnUntraced(function* (advisory: AdvisoryMessage) {
-    if (isKnownLateTerminalInteraction(advisory)) {
+  const handleState = Effect.fnUntraced(function* (line: string, method: string) {
+    const event = yield* decodedNotification(decodeCodexStateNotification(line), method);
+    if (event.params.threadId !== (threadId ?? transport.options.resumeThreadId)) {
       discarded++;
       return;
     }
-    if (
-      isScopedAdvisory(advisory) &&
-      (!active || advisory.params.threadId !== threadId || advisory.params.turnId !== active.id)
-    )
-      return yield* stale(advisory.method, advisory.params.threadId, advisory.params.turnId);
+    if (event.method === "thread/closed" || event.method === "thread/deleted")
+      return yield* new CodexHostError({ code: "not_ready", staleDiagnostic: event.method });
+    if (event.method === "model/rerouted") {
+      if (event.params.toModel !== transport.options.model)
+        return yield* new CodexHostError({
+          code: "settings_mismatch",
+          staleDiagnostic: event.method,
+        });
+    } else if (event.method === "thread/settings/updated") {
+      const settings = event.params.threadSettings;
+      if (
+        settings.model !== transport.options.model ||
+        settings.modelProvider !== "scotty-managed" ||
+        settings.cwd !== transport.homes.cwd ||
+        settings.approvalPolicy !== "never" ||
+        settings.approvalsReviewer !== "user" ||
+        settings.sandboxPolicy.type !== "dangerFullAccess" ||
+        settings.effort !== transport.options.effort
+      )
+        return yield* new CodexHostError({
+          code: "settings_mismatch",
+          staleDiagnostic: event.method,
+        });
+    }
     discarded++;
   });
   const receiveDynamicToolCall = Effect.fnUntraced(function* (line: string) {
@@ -821,29 +737,20 @@ export const makeSession = Effect.fnUntraced(function* (
   });
   const receiveUpstreamFailure = Effect.fnUntraced(function* (line: string) {
     const rejection = yield* decodeUpstreamFailure(line).pipe(
-      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
+      Effect.mapError(
+        () => new CodexHostError({ code: "invalid_message", staleDiagnostic: "decode:error" }),
+      ),
     );
     if (yield* bufferBeforeAdmissionReply({ kind: "upstream", rejection })) return;
     return yield* handleUpstreamFailure(rejection);
-  });
-  const receiveAdvisory = Effect.fnUntraced(function* (line: string) {
-    const advisory = yield* decodeAdvisory(line).pipe(
-      Effect.mapError(() => new CodexHostError({ code: "unsupported_notification" })),
-    );
-    // Old owned command traffic must not be buffered as the pending new turn.
-    if (isKnownLateTerminalInteraction(advisory)) return yield* handleAdvisory(advisory);
-    if (
-      isScopedAdvisory(advisory) &&
-      (yield* bufferBeforeAdmissionReply({ kind: "advisory", advisory }))
-    )
-      return;
-    return yield* handleAdvisory(advisory);
   });
   const receive = Effect.fnUntraced(function* (line: string) {
     if (closing) return;
     eventCount++;
     const route = yield* decodeRoute(line).pipe(
-      Effect.mapError(() => new CodexHostError({ code: "invalid_message" })),
+      Effect.mapError(
+        () => new CodexHostError({ code: "invalid_message", staleDiagnostic: "decode:route" }),
+      ),
     );
     if (route.id !== undefined) {
       if (route.method !== undefined) {
@@ -870,25 +777,27 @@ export const makeSession = Effect.fnUntraced(function* (
       return;
     }
     if (
-      route.method === "turn/started" ||
-      route.method === "turn/completed" ||
-      route.method === "item/agentMessage/delta" ||
-      route.method === "item/started" ||
-      route.method === "item/completed" ||
-      route.method === "item/commandExecution/outputDelta"
+      CODEX_NOTIFICATION_POLICY.execution.some((method) => method === route.method) &&
+      route.method !== "error"
     )
-      return yield* notification(yield* decoded(decodeCodexNotification(line)));
-    if (route.method === "thread/goal/cleared") {
-      const event = yield* decodeGoalCleared(line).pipe(
-        Effect.mapError(() => new CodexHostError({ code: "invalid_message" })),
+      return yield* notification(
+        yield* decodedNotification(
+          decodeCodexNotification(line),
+          route.method ?? "unknown_notification",
+        ),
       );
-      if (event.params.threadId !== (threadId ?? transport.options.resumeThreadId))
-        return yield* stale("thread/goal/cleared", event.params.threadId);
-      discarded++;
-      return;
-    }
     if (route.method === "error") return yield* receiveUpstreamFailure(line);
-    return yield* receiveAdvisory(line);
+    if (CODEX_NOTIFICATION_POLICY.state.some((method) => method === route.method))
+      return yield* handleState(line, route.method ?? "state_notification");
+    // Project only the envelope of unused notifications. Their content and
+    // emission timing have no authority over Scotty's turns or credentials.
+    yield* decodedNotification(
+      decodeCodexNotificationEnvelope(line),
+      CODEX_NOTIFICATION_POLICY.discard.some((method) => method === route.method)
+        ? (route.method ?? "unknown_notification")
+        : "unknown_notification",
+    );
+    discarded++;
   });
   const framer = makeFramer();
   yield* supervise(transport.writer);
@@ -927,7 +836,6 @@ export const makeSession = Effect.fnUntraced(function* (
   const replayBeforeAdmissionReply = Effect.fnUntraced(function* (entry: BeforeAdmissionReply) {
     if (entry.kind === "notification") return yield* notification(entry.message);
     if (entry.kind === "dynamic") return yield* handleDynamicToolCall(entry.request);
-    if (entry.kind === "advisory") return yield* handleAdvisory(entry.advisory);
     return yield* handleUpstreamFailure(entry.rejection);
   });
 

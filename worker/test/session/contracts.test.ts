@@ -32,6 +32,16 @@ import {
 } from "../../src/credentials/managed";
 
 describe("request contracts", () => {
+  it("allows large Codex and unresolved-default prompts while retaining the explicit Pi limit", () => {
+    const prompt = "界".repeat(90_000);
+    const input = { title: "Long task", prompt, provider: "cloudflare", repo: "owner/project" };
+    assert.equal(
+      parseCreateInput({ ...input, agent: "codex", model: "gpt-5.2", effort: "high" }).prompt,
+      prompt,
+    );
+    assert.equal(parseCreateInput(input).prompt, prompt);
+    assert.throws(() => parseCreateInput({ ...input, agent: "pi" }), /64000/u);
+  });
   it("retains Pi creation overrides even when the agent field is omitted", () => {
     const selection = parseCreateInput({
       title: "Pi task",

@@ -216,11 +216,11 @@ it("keeps a known command running after a completed turn until its own terminal 
   });
 });
 
-it("bounds UTF-8 output and records truncation, cancellation and a fresh turn", () => {
+it("retains UTF-8 output, cancellation and a fresh turn", () => {
   const tools = makeCodexTools();
   tools.accept(decode(item("inProgress", "😀".repeat(250_000))));
-  assert.equal(new TextEncoder().encode(tools.snapshot().tools[0]?.output).length, 1200);
-  assert.equal(tools.snapshot().toolsTruncated, true);
+  assert.equal(new TextEncoder().encode(tools.snapshot().tools[0]?.output).length, 1_000_000);
+  assert.equal(tools.snapshot().toolsTruncated, false);
   tools.accept(
     decode({
       method: "turn/completed",
@@ -257,15 +257,15 @@ it("rejects malformed command items rather than treating them as unknown item ki
   assert.ok(Result.isFailure(decodeCodexNotification(JSON.stringify(input))));
 });
 
-it("caps retained commands and preserves native failed and declined results", () => {
+it("retains all commands and preserves native failed and declined results", () => {
   const tools = makeCodexTools();
   for (let index = 0; index < 33; index++) {
     const event = item(index === 0 ? "failed" : "declined");
     event.params.item.id = `command-${index}`;
     tools.accept(decode(event));
   }
-  assert.equal(tools.snapshot().tools.length, 32);
-  assert.equal(tools.snapshot().toolsTruncated, true);
+  assert.equal(tools.snapshot().tools.length, 33);
+  assert.equal(tools.snapshot().toolsTruncated, false);
   assert.equal(tools.snapshot().tools[0]?.state, "failed");
   assert.equal(tools.snapshot().tools[1]?.state, "cancelled");
 });

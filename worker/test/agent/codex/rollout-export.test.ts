@@ -6,6 +6,13 @@ const childA = "sessions/2026/09/12/rollout-2026-09-12T14-01-00-child-a.jsonl";
 const childB = "sessions/2026/09/12/rollout-2026-09-12T14-02-00-child-b.jsonl";
 
 describe("Codex rollout export listing", () => {
+  it("retains more than 128 native rollout paths", () => {
+    const listing = Array.from(
+      { length: 130 },
+      (_, index) => `sessions/2026/09/12/rollout-${index}.jsonl\t42\t1\n`,
+    ).join("");
+    assert.equal(parseCodexRolloutListing(listing)?.length, 130);
+  });
   it("retains every parent and child rollout from one private generation", () => {
     const files = parseCodexRolloutListing(
       `${childB}\t90161\t1\n${parent}\t791758\t1\n${childA}\t119635\t1\n`,

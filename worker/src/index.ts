@@ -1055,13 +1055,13 @@ app.post("/api/sessions/:id/steer", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
   const id = parseSessionId(c.req.param("id"));
-  const bodyText = await readBoundedUtf8Body(c.req.raw, PI_CONSOLE_MAX_COMMAND_BYTES);
+  const bodyText = await readBoundedUtf8Body(c.req.raw);
   if (bodyText === undefined) throw badRequest("Steer request body is too large");
   const body = decodeJsonValue(bodyText);
   if (Option.isNone(body)) throw badRequest("Request body must be valid JSON");
   const input = decodeSessionMessageInput(body.value);
   if (Option.isNone(input)) throw badRequest("Invalid message delivery request");
-  const message = parseSteerInput({ message: input.value.message });
+  const message = parseSteerInput({ message: input.value.message }, false);
   const idempotencyKey = c.req.header("idempotency-key");
   if (idempotencyKey !== undefined) parseIdempotencyKey(idempotencyKey);
   const sandbox = sessionSandbox(c.env, id);

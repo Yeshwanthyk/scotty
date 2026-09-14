@@ -19,7 +19,6 @@ import {
   CodexGeneration,
   CODEX_CONTROL_GENERATION_HEADER,
   CODEX_CONTROL_TOKEN_HEADER,
-  CODEX_CONTROL_MAX_RESPONSE,
   readCodexSnapshot,
 } from "./runtime";
 
@@ -67,13 +66,7 @@ export const readCodexSandbox = Effect.fnUntraced(function* (
   );
   const runtime = yield* SandboxRuntime;
   const response = yield* runtime
-    .fetchPortBody(
-      "/snapshot",
-      CODEX_SANDBOX_PORT,
-      "GET",
-      CODEX_CONTROL_MAX_RESPONSE,
-      headers(identity),
-    )
+    .fetchPortBody("/snapshot", CODEX_SANDBOX_PORT, "GET", undefined, headers(identity))
     .pipe(
       Effect.timeoutOrElse({
         duration: "5 seconds",
@@ -252,7 +245,7 @@ export const admitCodexSandbox = Effect.fnUntraced(function* (
         "/prompt",
         CODEX_SANDBOX_PORT,
         "POST",
-        CODEX_CONTROL_MAX_RESPONSE,
+        undefined,
         headers(identity),
         JSON.stringify({ threadId, text }),
       )
@@ -315,7 +308,7 @@ export const sendCodexSandboxMessage = Effect.fnUntraced(function* (
       "/message",
       CODEX_SANDBOX_PORT,
       "POST",
-      CODEX_CONTROL_MAX_RESPONSE,
+      undefined,
       headers(identity),
       JSON.stringify(body),
     )
@@ -369,7 +362,7 @@ export const interruptCodexSandbox = Effect.fnUntraced(function* (
       "/interrupt",
       CODEX_SANDBOX_PORT,
       "POST",
-      CODEX_CONTROL_MAX_RESPONSE,
+      undefined,
       headers(identity),
       JSON.stringify({ threadId, turnId }),
     )
@@ -423,13 +416,7 @@ export const saveCodexSandbox = Effect.fnUntraced(function* (
 ) {
   const runtime = yield* SandboxRuntime;
   const response = yield* runtime
-    .fetchPortBody(
-      "/save",
-      CODEX_SANDBOX_PORT,
-      "POST",
-      CODEX_CONTROL_MAX_RESPONSE,
-      headers(identity),
-    )
+    .fetchPortBody("/save", CODEX_SANDBOX_PORT, "POST", undefined, headers(identity))
     .pipe(
       Effect.timeoutOrElse({
         duration: "20 seconds",

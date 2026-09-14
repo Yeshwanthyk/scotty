@@ -12,7 +12,7 @@ const decodeLaunchJson = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexL
 const Command = Schema.Union([
   Schema.Struct({
     method: Schema.Literal("prompt"),
-    text: Schema.String.check(Schema.isMaxLength(65536)),
+    text: Schema.String,
   }),
   Schema.Struct({ method: Schema.Literal("interrupt") }),
   Schema.Struct({ method: Schema.Literal("stop") }),

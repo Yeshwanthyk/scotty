@@ -16,7 +16,7 @@ describe("public agent and conversation schemas", () => {
       );
     });
   }
-  it("retains strict text bounds and rejects invented terminal states", () => {
+  it("accepts long conversation text and rejects invented terminal states", () => {
     for (const state of ["interrupted", "successful", "unknown"])
       assert.isTrue(
         Result.isFailure(
@@ -24,7 +24,7 @@ describe("public agent and conversation schemas", () => {
         ),
       );
     assert.isTrue(
-      Result.isFailure(
+      Result.isSuccess(
         decodeTurn({
           id: "turn-1",
           state: "failed",

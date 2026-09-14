@@ -10,12 +10,9 @@ export const CONVERSATION_MAX_ELAPSED_SECONDS = 7 * 24 * 60 * 60;
 export const CONVERSATION_MAX_QUEUE_ITEMS = 100;
 
 const utf8Encoder = new TextEncoder();
-const BoundedConversationStringSchema = Schema.String.check(
-  Schema.makeFilter(
-    (value) => utf8Encoder.encode(value).byteLength <= CONVERSATION_MAX_TEXT_BYTES,
-    { expected: `a string of at most ${CONVERSATION_MAX_TEXT_BYTES} UTF-8 bytes` },
-  ),
-);
+// Producers such as Pi may cap their display values. The public snapshot decoder
+// must not reject full Codex content merely because a producer uses a display budget.
+const BoundedConversationStringSchema = Schema.String;
 const ConversationIdSchema = Schema.String.check(
   Schema.isMinLength(1),
   Schema.makeFilter((value) => utf8Encoder.encode(value).byteLength <= CONVERSATION_MAX_ID_BYTES, {
@@ -51,9 +48,7 @@ export const CanonicalConversationTurnSchema = Schema.Struct({
   user: BoundedConversationStringSchema,
   assistant: BoundedConversationStringSchema,
   activitySummary: Schema.optionalKey(BoundedConversationStringSchema),
-  tools: Schema.Array(CanonicalConversationToolSchema).check(
-    Schema.isMaxLength(CONVERSATION_MAX_TOOLS_PER_TURN),
-  ),
+  tools: Schema.Array(CanonicalConversationToolSchema),
   elapsedSeconds: Schema.optionalKey(ElapsedSecondsSchema),
 });
 export type CanonicalConversationTurn = typeof CanonicalConversationTurnSchema.Type;
@@ -94,9 +89,7 @@ export const CanonicalConversationSnapshotSchema = Schema.Struct({
   messageAdmissionAvailable: Schema.optionalKey(Schema.Boolean),
   version: Schema.Literal(CONVERSATION_WIRE_VERSION),
   transport: CanonicalConversationTransportSchema,
-  turns: Schema.Array(CanonicalConversationTurnSchema).check(
-    Schema.isMaxLength(CONVERSATION_MAX_TURNS),
-  ),
+  turns: Schema.Array(CanonicalConversationTurnSchema),
   queue: CanonicalConversationQueueSchema,
   truncated: CanonicalConversationTruncationSchema,
 });
