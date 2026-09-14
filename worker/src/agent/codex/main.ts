@@ -1,7 +1,7 @@
 import { NodeRuntime, NodeServices, NodeSink, NodeStream } from "@effect/platform-node";
 import { Deferred, Effect, Schema, Scope, Stream } from "effect";
 import { CodexHostError } from "./errors";
-import { limits, makeFramer } from "./framing";
+import { makeFramer } from "./framing";
 import { startCodexSession } from "./session";
 import { CodexLaunch } from "./process";
 
@@ -29,7 +29,6 @@ export const program = Effect.fnUntraced(function* (argv: ReadonlyArray<string>)
   );
   const scope = yield* Scope.Scope;
   const fatal = yield* Deferred.make<never, CodexHostError>();
-  let outputBytes = 0;
   const sink = NodeSink.fromWritable({
     evaluate: () => process.stdout,
     endOnDone: false,
@@ -37,8 +36,6 @@ export const program = Effect.fnUntraced(function* (argv: ReadonlyArray<string>)
   });
   const send = Effect.fnUntraced(function* (value: unknown) {
     const bytes = new TextEncoder().encode(`${JSON.stringify(value)}\n`);
-    outputBytes += bytes.length;
-    if (outputBytes > limits.output) return yield* new CodexHostError({ code: "output_budget" });
     yield* Stream.run(Stream.make(bytes), sink).pipe(
       Effect.timeoutOrElse({
         duration: 2000,
@@ -58,10 +55,8 @@ export const program = Effect.fnUntraced(function* (argv: ReadonlyArray<string>)
     ),
   );
   yield* send({ type: "ready", ...host.inspect() });
-  const framer = makeFramer(limits.input);
-  let commands = 0;
+  const framer = makeFramer();
   const receive = Effect.fnUntraced(function* (line: string) {
-    if (++commands > limits.events) return yield* new CodexHostError({ code: "event_budget" });
     const command = yield* decodeCommand(line).pipe(
       Effect.mapError(() => new CodexHostError({ code: "invalid_message" })),
     );

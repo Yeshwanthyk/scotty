@@ -257,6 +257,28 @@ describe("credential egress", () => {
     }),
   );
 
+  it.effect("routes Git push negotiation and pack data through the pinned repository grant", () =>
+    Effect.gen(function* () {
+      const requests: Array<Request> = [];
+      const authorization = `Basic ${btoa(`x-access-token:${GITHUB_HANDLE}`)}`;
+      for (const [url, method] of [
+        ["https://github.com/owner/project.git/info/refs?service=git-receive-pack", "GET"],
+        ["https://github.com/owner/project.git/git-receive-pack", "POST"],
+      ] as const) {
+        const response = yield* run(
+          proxyGitHubProgram(new Request(url, { method, headers: { authorization } })),
+          { nativeRequests: requests },
+        );
+        assert.equal(response.status, 200);
+      }
+      assert.equal(requests.length, 2);
+      for (const request of requests) {
+        const basic = request.headers.get("authorization") ?? "";
+        assert.equal(atob(basic.slice(6)), `x-access-token:${REAL_GITHUB}`);
+      }
+    }),
+  );
+
   it.effect(
     "authorizes REST pull request creation only when the URL identifies the repository",
     () =>

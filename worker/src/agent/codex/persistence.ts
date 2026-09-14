@@ -122,7 +122,7 @@ export const writeCodexSavedState = Effect.fnUntraced(function* (
   });
   yield* walk("sessions", 0);
   const state = yield* decodeState({
-    version: 1,
+    version: 2,
     nativeVersion: CODEX_VERSION,
     history,
     files,

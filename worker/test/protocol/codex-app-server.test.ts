@@ -1,7 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Result } from "effect";
 import {
-  CODEX_MAX_MESSAGE_BYTES,
   CODEX_MAX_TEXT_BYTES,
   decodeCodexClientMessage,
   decodeCodexInitializeResponse,
@@ -216,14 +215,6 @@ describe("Codex 0.154.0 bounded protocol subset", () => {
         assert.isTrue(Result.isFailure(decodeCodexNotification(line)));
       }
     }
-    const line = JSON.stringify({ ...delta("x"), emittedAtMs: 1234 });
-    assert.isTrue(
-      Result.isSuccess(decodeCodexNotification(line.padEnd(CODEX_MAX_MESSAGE_BYTES, " "))),
-    );
-    assert.deepStrictEqual<unknown>(
-      Result.getFailure(decodeCodexNotification(line.padEnd(CODEX_MAX_MESSAGE_BYTES + 1, " "))),
-      Result.getFailure(Result.fail("message_too_large")),
-    );
     assert.isTrue(
       Result.isFailure(decodeCodexInterruptResponse('{"id":1,"result":{},"emittedAtMs":1234}')),
     );
@@ -638,7 +629,7 @@ describe("Codex 0.154.0 bounded protocol subset", () => {
     }
   });
 
-  it("bounds UTF-8 fields and whole records before parsing, including ignored payloads", () => {
+  it("validates notification fields without a whole-record quota", () => {
     const aggregate = (output: string) => ({
       method: "item/completed",
       params: {
@@ -654,13 +645,12 @@ describe("Codex 0.154.0 bounded protocol subset", () => {
       },
     });
     assert.isTrue(
-      Result.isSuccess(decodeCodexNotification(JSON.stringify(aggregate("x".repeat(211_769))))),
-    );
-    assert.deepStrictEqual<unknown>(
-      Result.getFailure(
-        decodeCodexNotification(JSON.stringify(aggregate("x".repeat(CODEX_MAX_MESSAGE_BYTES)))),
+      Result.isSuccess(
+        decodeCodexNotification(JSON.stringify(aggregate("\u0000".repeat(256 * 1024)))),
       ),
-      Result.getFailure(Result.fail("message_too_large")),
+    );
+    assert.isTrue(
+      Result.isSuccess(decodeCodexNotification(JSON.stringify(aggregate("x".repeat(1024 * 1024))))),
     );
     assert.isTrue(
       Result.isSuccess(
@@ -679,16 +669,12 @@ describe("Codex 0.154.0 bounded protocol subset", () => {
         ),
       ),
     );
-    const exact = '{"id":1,"result":{}}'.padEnd(CODEX_MAX_MESSAGE_BYTES, " ");
-    assert.isTrue(Result.isSuccess(decodeCodexInterruptResponse(exact)));
-    assert.deepStrictEqual<unknown>(
-      Result.getFailure(decodeCodexInterruptResponse(`${exact} `)),
-      Result.getFailure(Result.fail("message_too_large")),
-    );
+    const largeResponse = '{"id":1,"result":{}}'.padEnd(2 * 1024 * 1024 + 1, " ");
+    assert.isTrue(Result.isSuccess(decodeCodexInterruptResponse(largeResponse)));
     assert.isTrue(
-      Result.isFailure(
+      Result.isSuccess(
         rejectCodexServerRequest(
-          JSON.stringify({ id: 1, method: "unknown", params: "x".repeat(CODEX_MAX_MESSAGE_BYTES) }),
+          JSON.stringify({ id: 1, method: "unknown", params: "x".repeat(2 * 1024 * 1024) }),
         ),
       ),
     );

@@ -735,7 +735,7 @@ const createAndReady = Effect.fnUntraced(function* (
     ...(codexWorkflow ? { agent: "codex", model: "gpt-5.6-sol", effort: "medium" } : {}),
     title: codexWorkflow ? "Scotty Codex workflow lab" : "Scotty lifecycle lab",
     prompt: codexWorkflow
-      ? "Run printf SCOTTY_LAB_CODEX_INITIAL once, then reply SCOTTY_LAB_CODEX_READY. Do not change files."
+      ? "Run one shell command: printf SCOTTY_LAB_CODEX_INITIAL; head -c 300000 /dev/zero | tr '\\0' x. Then reply SCOTTY_LAB_CODEX_READY. Do not change files."
       : "Reply with exactly SCOTTY_LAB_READY.",
     provider: "cloudflare",
     repo,

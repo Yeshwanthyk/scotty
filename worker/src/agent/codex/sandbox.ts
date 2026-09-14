@@ -4,7 +4,12 @@ import { Clock, Data, Effect, Option, Result, Schedule, Schema } from "effect";
 import { CodexStartupFailure } from "./errors";
 import { CodexAgentSelectionSchema } from "../../../../protocol/agent-selection";
 import type { CredentialGrant } from "../../../../protocol/credentials";
-import { managedPiAccessToken, piAccessHandle, selectPiAuthGrant } from "../../credentials/managed";
+import {
+  githubManagedHandle,
+  managedPiAccessToken,
+  piAccessHandle,
+  selectPiAuthGrant,
+} from "../../credentials/managed";
 import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "../../sandbox/runtime";
 import { sessionRoot } from "../../sandbox/workspace";
 import {
@@ -174,6 +179,7 @@ export const startCodexSandbox = Effect.fnUntraced(function* (
   const runtime = yield* SandboxRuntime;
   const selected = selectPiAuthGrant(grants);
   const handle = piAccessHandle(grants);
+  const githubHandle = githubManagedHandle(grants);
   const now = yield* Clock.currentTimeMillis;
   if (
     Result.isFailure(selected) ||
@@ -210,6 +216,7 @@ export const startCodexSandbox = Effect.fnUntraced(function* (
       runtimeDir: `${root}/runtime`,
       workspace: sessionRoot(identity.sessionId),
       sessionId: identity.sessionId,
+      ...(githubHandle === undefined ? {} : { githubHandle }),
       model: identity.selection.model,
       effort: identity.selection.effort,
       ephemeral: false,

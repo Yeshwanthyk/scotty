@@ -22,6 +22,7 @@ import { Cleanup, type CodexHostError } from "./errors";
 import { CodexLaunch } from "./process";
 import { startCodexSession } from "./session";
 import type { CodexFirstPartyTools } from "./first-party-tools";
+import { sha256Hex } from "../../shared/digest";
 
 const bytes = (maximum: number) =>
   Schema.String.check(
@@ -165,11 +166,20 @@ type ConversationTurn = typeof CanonicalConversationTurnSchema.Type;
 type OperationMode = "message" | "steer";
 type OperationRecord = {
   readonly mode: OperationMode;
-  readonly text: string;
-  readonly expectedTurnId?: string;
+  readonly fingerprint: string;
   status: "pending" | "accepted" | "unknown";
   admission?: typeof CodexAdmission.Type;
 };
+const fingerprintOperation = (
+  threadId: string,
+  mode: OperationMode,
+  text: string,
+  turnId?: string,
+) =>
+  Effect.tryPromise({
+    try: () => sha256Hex(JSON.stringify([threadId, mode, text, turnId ?? null])),
+    catch: () => new CodexBridgeError({ code: "host_failed", outcome: "rejected" }),
+  });
 
 const boundedConversationText = (
   text: string,
@@ -217,8 +227,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
   for (const operation of restored?.operations ?? [])
     operations.set(operation.id, {
       mode: operation.mode,
-      text: operation.text,
-      expectedTurnId: operation.expectedTurnId,
+      fingerprint: operation.fingerprint,
       status: operation.status,
       ...(operation.turnId === undefined
         ? {}
@@ -230,31 +239,20 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
             },
           }),
     });
-  let operationAdmissionCount = operations.size;
   let cleanup: typeof Cleanup.Type | null = null;
   let bridgeFailure: CodexBridgeError["code"] | CodexHostError["code"] | null = null;
-  const recordOperation = (id: string | undefined, record: OperationRecord): boolean => {
-    if (id === undefined) return true;
-    if (operations.has(id)) return true;
-    if (operationAdmissionCount >= CONVERSATION_MAX_TURNS) return false;
-    operationAdmissionCount += 1;
-    operations.set(id, record);
-    return true;
+  const recordOperation = (id: string | undefined, record: OperationRecord): void => {
+    if (id !== undefined) operations.set(id, record);
   };
   const existingOperation = (
     id: string | undefined,
     mode: OperationMode,
-    text: string,
-    expectedTurnId?: string,
+    fingerprint: string,
   ): OperationRecord | CodexBridgeError | undefined => {
     if (id === undefined) return undefined;
     const existing = operations.get(id);
     if (existing === undefined) return undefined;
-    if (
-      existing.mode !== mode ||
-      existing.text !== text ||
-      existing.expectedTurnId !== expectedTurnId
-    )
+    if (existing.mode !== mode || existing.fingerprint !== fingerprint)
       return new CodexBridgeError({ code: "idempotency_conflict", outcome: "rejected" });
     return existing;
   };
@@ -404,7 +402,8 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
     if (command.threadId !== initial.threadId)
       return yield* new CodexBridgeError({ code: "wrong_thread", outcome: "rejected" });
     const boundedUser = boundedConversationText(command.text);
-    const existing = existingOperation(command.clientUserMessageId, "message", command.text);
+    const fingerprint = yield* fingerprintOperation(command.threadId, "message", command.text);
+    const existing = existingOperation(command.clientUserMessageId, "message", fingerprint);
     if (Predicate.isTagged(existing, "CodexBridgeError")) return yield* existing;
     if (existing !== undefined) {
       if (existing.status === "accepted" && existing.admission !== undefined)
@@ -428,11 +427,10 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
           return yield* new CodexBridgeError({ code: "host_failed", outcome: "rejected" });
         const operation: OperationRecord = {
           mode: "message",
-          text: command.text,
+          fingerprint,
           status: "pending",
         };
-        if (!recordOperation(command.clientUserMessageId, operation))
-          return yield* new CodexBridgeError({ code: "idempotency_unknown", outcome: "ambiguous" });
+        recordOperation(command.clientUserMessageId, operation);
         prompt = { status: "admitting" };
         const admitted = yield* Deferred.make<typeof CodexAdmission.Type, CodexBridgeError>();
         let turnId: string | null = null;
@@ -538,12 +536,13 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
     );
     if (command.threadId !== initial.threadId)
       return yield* new CodexBridgeError({ code: "wrong_thread", outcome: "rejected" });
-    const existing = existingOperation(
-      command.clientUserMessageId,
+    const fingerprint = yield* fingerprintOperation(
+      command.threadId,
       "steer",
       command.text,
       command.expectedTurnId,
     );
+    const existing = existingOperation(command.clientUserMessageId, "steer", fingerprint);
     if (Predicate.isTagged(existing, "CodexBridgeError")) return yield* existing;
     if (existing !== undefined) {
       if (existing.status === "accepted" && existing.admission !== undefined)
@@ -562,12 +561,10 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
       return yield* new CodexBridgeError({ code: "host_failed", outcome: "rejected" });
     const operation: OperationRecord = {
       mode: "steer",
-      text: command.text,
-      expectedTurnId: command.expectedTurnId,
+      fingerprint,
       status: "pending",
     };
-    if (!recordOperation(command.clientUserMessageId, operation))
-      return yield* new CodexBridgeError({ code: "idempotency_unknown", outcome: "ambiguous" });
+    recordOperation(command.clientUserMessageId, operation);
     steering = true;
     const admitted = yield* Effect.result(
       host.steer(command.text, command.expectedTurnId, command.clientUserMessageId).pipe(
@@ -678,10 +675,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
         operations: [...operations].map(([id, operation]) => ({
           id,
           mode: operation.mode,
-          text: operation.text,
-          ...(operation.expectedTurnId === undefined
-            ? {}
-            : { expectedTurnId: operation.expectedTurnId }),
+          fingerprint: operation.fingerprint,
           status: operation.status === "pending" ? "unknown" : operation.status,
           ...(operation.admission === undefined ? {} : { turnId: operation.admission.turnId }),
         })),
@@ -723,6 +717,12 @@ export const startCodexRuntime = Effect.fnUntraced(function* (
     selection.restore === undefined
       ? undefined
       : yield* readCodexSavedState(selection.launch.workspace, selection.restore);
-  const host = yield* startCodexSession(selection.launch, undefined, restored, firstPartyTools);
+  const host = yield* startCodexSession(
+    selection.launch,
+    undefined,
+    restored,
+    firstPartyTools,
+    false,
+  );
   return yield* makeCodexRuntime(host, selection.generation, restored?.history);
 });

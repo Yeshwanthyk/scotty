@@ -1,7 +1,6 @@
 import { Result, Schema } from "effect";
 
 export const CODEX_VERSION = "0.154.0";
-export const CODEX_MAX_MESSAGE_BYTES = 256 * 1024;
 export const CODEX_MAX_TEXT_BYTES = 64 * 1024;
 
 const utf8 = new TextEncoder();
@@ -174,8 +173,8 @@ const CommandItem = Schema.Struct({
   command: Text,
   status: Schema.Literals(["inProgress", "completed", "failed", "declined"]),
   // Native sends the complete command aggregate even after bounded output deltas.
-  // The record limit still bounds this field before it reaches conversation storage.
-  aggregatedOutput: Schema.optionalKey(Schema.NullOr(boundedText(CODEX_MAX_MESSAGE_BYTES))),
+  // Conversation projection truncates this field after the native record is decoded.
+  aggregatedOutput: Schema.optionalKey(Schema.NullOr(Schema.String)),
 }).annotate(projection);
 const SubAgentActivityItem = Schema.Struct({
   type: Schema.Literal("subAgentActivity"),
@@ -275,54 +274,46 @@ const UnsupportedResponse = Schema.Struct({
 });
 export type CodexUnsupportedResponse = typeof UnsupportedResponse.Type;
 
-const boundedJsonDecoder = <A>(
-  decode: (input: unknown) => Result.Result<A, Schema.SchemaError>,
-) => {
-  return (line: string) => {
-    if (
-      line.length > CODEX_MAX_MESSAGE_BYTES ||
-      utf8.encode(line).byteLength > CODEX_MAX_MESSAGE_BYTES
-    )
-      return Result.fail("message_too_large" as const);
-    return Result.mapError(decode(line), () => "invalid_message" as const);
-  };
-};
+const jsonDecoder =
+  <A>(decode: (input: unknown) => Result.Result<A, Schema.SchemaError>) =>
+  (line: string) =>
+    Result.mapError(decode(line), () => "invalid_message" as const);
 
 const strict = { onExcessProperty: "error" } as const;
-export const decodeCodexClientMessage = boundedJsonDecoder(
+export const decodeCodexClientMessage = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(CodexClientMessageSchema), strict),
 );
-export const decodeCodexNotification = boundedJsonDecoder(
+export const decodeCodexNotification = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(NotificationSchema), strict),
 );
-export const decodeCodexInitializeResponse = boundedJsonDecoder(
+export const decodeCodexInitializeResponse = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(InitializeResult)), strict),
 );
-export const decodeCodexThreadStartResponse = boundedJsonDecoder(
+export const decodeCodexThreadStartResponse = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(ThreadSettingsResult)), strict),
 );
-export const decodeCodexThreadResumeResponse = boundedJsonDecoder(
+export const decodeCodexThreadResumeResponse = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(ThreadSettingsResult)), strict),
 );
-export const decodeCodexThreadReadResponse = boundedJsonDecoder(
+export const decodeCodexThreadReadResponse = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(ThreadReadResult)), strict),
 );
-export const decodeCodexTurnStartResponse = boundedJsonDecoder(
+export const decodeCodexTurnStartResponse = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(TurnStartResult)), strict),
 );
-export const decodeCodexSteerResponse = boundedJsonDecoder(
+export const decodeCodexSteerResponse = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(TurnSteerResult)), strict),
 );
-export const decodeCodexInterruptResponse = boundedJsonDecoder(
+export const decodeCodexInterruptResponse = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(response(Empty)), strict),
 );
-const decodeServerRequest = boundedJsonDecoder(
+const decodeServerRequest = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(ServerRequest), strict),
 );
-export const decodeCodexDynamicToolCall = boundedJsonDecoder(
+export const decodeCodexDynamicToolCall = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(DynamicToolCall), strict),
 );
-export const decodeCodexDynamicToolResponse = boundedJsonDecoder(
+export const decodeCodexDynamicToolResponse = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(DynamicToolResponse), strict),
 );
 

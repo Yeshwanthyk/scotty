@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { createHash } from "node:crypto";
 import { Effect, Result } from "effect";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -32,7 +33,9 @@ const history: typeof CodexSavedHistory.Type = {
     {
       id: "message-2",
       mode: "message",
-      text: "second prompt",
+      fingerprint: createHash("sha256")
+        .update(JSON.stringify(["thread", "message", "second prompt", null]))
+        .digest("hex"),
       status: "accepted",
       turnId: "second",
     },
@@ -76,6 +79,7 @@ describe("Codex allowlisted saved-state production filesystem adapter", () => {
           initialTurnId: "first",
         });
         const saved = yield* readCodexSavedState(f.workspace, history);
+        assert.equal(saved.version, 2);
         assert.equal(saved.nativeVersion, CODEX_VERSION);
         assert.deepStrictEqual(saved.history, history);
         assert.deepStrictEqual(saved.files, [{ path: rollout, content }]);

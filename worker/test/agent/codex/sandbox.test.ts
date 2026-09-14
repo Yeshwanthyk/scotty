@@ -29,6 +29,12 @@ const grant: CredentialGrant = {
   handleSlots: [{ provider: "openai-codex", slot: "access" }],
   expires: 1000,
 };
+const githubGrant: CredentialGrant = {
+  name: "github",
+  kind: "github-cli",
+  versionRef: "github-version-1",
+  handleSlots: [{ provider: "github", slot: "git-https" }],
+};
 const snapshot = {
   generation: identity.generation,
   threadId: "thread-1",
@@ -263,7 +269,7 @@ describe("Codex Sandbox adapter", () => {
             environment: { APP_MODE: "pinned" },
           },
         },
-        [grant],
+        [grant, githubGrant],
       ).pipe(Effect.provide(layer));
       assert.equal(processId, "scotty-codex-generation-1");
       assert.include(commands[0], "umask 077 && mkdir");
@@ -277,6 +283,7 @@ describe("Codex Sandbox adapter", () => {
       assert.include(launch, '"model":"gpt-5.4","effort":"high"');
       assert.include(launch, '"expiresAt":1000');
       assert.include(launch, '"sessionId":"a0b1c2d3e4f5"');
+      assert.include(launch, '"githubHandle":"scotty-managed://github/github/git-https"');
       assert.include(launch, '"environment":{"APP_MODE":"pinned"}');
       assert.include(launch, `"sandboxBundleDigest":"${"b".repeat(64)}"`);
       assert.notInclude(launch, identity.token);

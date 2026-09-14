@@ -19,7 +19,8 @@ import {
 import { ChildProcess } from "effect/unstable/process";
 import { CodexHostError, type Cleanup } from "./errors";
 import { managedPiAccessToken, parseManagedPiAccessToken } from "../../credentials/managed";
-import { formatManagedHandle } from "../../../../protocol/credentials";
+import { formatManagedHandle, parseManagedHandle } from "../../../../protocol/credentials";
+import { sessionRoot } from "../../sandbox/workspace";
 import {
   CodexModelIdentifier,
   CodexReasoningEffort,
@@ -51,6 +52,18 @@ export const CodexLaunch = Schema.Struct({
   runtimeDir: AbsolutePath,
   workspace: AbsolutePath,
   sessionId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u))),
+  githubHandle: Schema.optionalKey(
+    Schema.String.check(
+      Schema.makeFilter((value) => {
+        const parsed = parseManagedHandle(value);
+        return (
+          Option.isSome(parsed) &&
+          parsed.value.provider === "github" &&
+          parsed.value.slot === "git-https"
+        );
+      }),
+    ),
+  ),
   model: CodexModelIdentifier,
   effort: CodexReasoningEffort,
   // Direct host callers remain ephemeral by default. The Session adapter selects
@@ -82,6 +95,11 @@ export const CodexLaunch = Schema.Struct({
   .check(
     Schema.makeFilter(
       (selection) => selection.resumeThreadId === undefined || selection.ephemeral === false,
+    ),
+  )
+  .check(
+    Schema.makeFilter(
+      (selection) => selection.githubHandle === undefined || selection.sessionId !== undefined,
     ),
   );
 const decodeLaunch = Schema.decodeUnknownEffect(CodexLaunch, { onExcessProperty: "error" });
@@ -247,6 +265,13 @@ export const launchProcess = Effect.fnUntraced(function* (
       ...(trustedCaReadable ? { NODE_EXTRA_CA_CERTS: CLOUDFLARE_CA_FILE } : {}),
       ...(packagedCorepackReadable ? { COREPACK_HOME: PACKAGED_COREPACK_HOME } : {}),
       ...(options.sessionId === undefined ? {} : { SCOTTY_SESSION_ID: options.sessionId }),
+      ...(options.githubHandle === undefined || options.sessionId === undefined
+        ? {}
+        : {
+            GH_TOKEN: options.githubHandle,
+            GIT_CONFIG_GLOBAL: `${sessionRoot(options.sessionId)}/.pi-agent/gitconfig`,
+            GIT_TERMINAL_PROMPT: "0",
+          }),
       SCOTTY_CODEX_SENTINEL: options.credential.sentinel,
       ...(port === undefined
         ? {}
