@@ -1,7 +1,18 @@
 import { NodeServices } from "@effect/platform-node";
-import { assert, describe, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, FileSystem, Predicate, Result, Schema, Stream } from "effect";
+import { assert, describe, it, vi } from "@effect/vitest";
+import {
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Predicate,
+  Result,
+  Schema,
+  Stream,
+} from "effect";
 import { TestClock } from "effect/testing";
+import { spawnSync } from "node:child_process";
 import {
   FetchHttpClient,
   HttpBody,
@@ -11,7 +22,7 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { CodexHostError } from "../../../src/agent/codex/errors";
+import { CodexHostError, CodexStartupFailure } from "../../../src/agent/codex/errors";
 import {
   CODEX_CONTROL_TOKEN_HEADER,
   CODEX_CONTROL_GENERATION_HEADER,
@@ -21,7 +32,11 @@ import {
   startCodexRuntime,
   readCodexSnapshot,
 } from "../../../src/agent/codex/runtime";
-import { makeCodexControl, serveCodexControl } from "../../../src/agent/codex/server";
+import {
+  makeCodexControl,
+  serveCodexControl,
+  serverProgram,
+} from "../../../src/agent/codex/server";
 import { consumeControlToken } from "../../../src/agent/codex/token-file";
 import { managedPiAccessToken } from "../../../src/credentials/managed";
 import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
@@ -35,6 +50,92 @@ const decodeAdmission = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexAd
 const decodeError = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ error: Schema.String, outcome: Schema.String })),
 );
+const decodeStartupFailure = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(CodexStartupFailure),
+  { onExcessProperty: "error" },
+);
+
+describe("Codex supervisor startup diagnostics", () => {
+  it("logs a safe failure record and exits unsuccessfully from the standalone runner", () => {
+    const source = new URL("../../../src/agent/codex/server.ts", import.meta.url).href;
+    const secret = "private_token_do_not_log";
+    const child = spawnSync(
+      "bun",
+      [
+        "-e",
+        `import { runServer } from ${JSON.stringify(source)}; runServer([${JSON.stringify(secret)}]);`,
+      ],
+      { encoding: "utf8", timeout: 5000 },
+    );
+    assert.equal(child.status, 1);
+    assert.equal(child.stderr.includes(secret), false);
+    assert.deepEqual(JSON.parse(child.stderr.trim()), {
+      event: "codex_startup_failed",
+      stage: "input",
+      code: "invalid_request",
+    });
+  });
+
+  it.effect("reports invalid input without logging its contents and preserves failure", () =>
+    Effect.gen(function* () {
+      const log = yield* Effect.acquireRelease(
+        Effect.sync(() => vi.spyOn(console, "error").mockImplementation(() => undefined)),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const secret = "private_token_do_not_log";
+      const exit = yield* serverProgram([secret]).pipe(Effect.exit);
+      assert.ok(Exit.isFailure(exit));
+      assert.equal(log.mock.calls.length, 1);
+      assert.equal(JSON.stringify(log.mock.calls).includes(secret), false);
+      assert.deepEqual(yield* decodeStartupFailure(log.mock.calls[0]?.[0]), {
+        event: "codex_startup_failed",
+        stage: "input",
+        code: "invalid_request",
+      });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("reports token-file failure with only the validated generation", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const workspace = `${root}/workspace`;
+      yield* fs.makeDirectory(workspace);
+      const log = yield* Effect.acquireRelease(
+        Effect.sync(() => vi.spyOn(console, "error").mockImplementation(() => undefined)),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const secret = "private_token_do_not_log";
+      const exit = yield* serverProgram([
+        JSON.stringify({
+          generation: "generation-1",
+          tokenFile: `${root}/${secret}`,
+          port: 18001,
+          launch: {
+            binary: "/missing/codex",
+            runtimeDir: `${root}/runtime`,
+            workspace,
+            model: "gpt-5.4",
+            effort: "high",
+            credential: {
+              sentinel: managedPiAccessToken("scotty-managed://openai/openai-codex/access"),
+              expiresAt: Number.MAX_SAFE_INTEGER,
+            },
+          },
+        }),
+      ]).pipe(Effect.exit);
+      assert.ok(Exit.isFailure(exit));
+      assert.equal(log.mock.calls.length, 1);
+      assert.equal(JSON.stringify(log.mock.calls).includes(secret), false);
+      assert.deepEqual(yield* decodeStartupFailure(log.mock.calls[0]?.[0]), {
+        event: "codex_startup_failed",
+        stage: "token",
+        code: "token_file",
+        generation: "generation-1",
+      });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
 const fixture = Effect.fnUntraced(function* () {
   const terminal = yield* Deferred.make<
     {

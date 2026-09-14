@@ -1,6 +1,7 @@
 import { CodexPersistenceIdentity } from "./persistence-format";
 import { SessionConfigurationSchema } from "../../session-actor/configuration";
-import { Clock, Data, Effect, Result, Schedule, Schema } from "effect";
+import { Clock, Data, Effect, Option, Result, Schedule, Schema } from "effect";
+import { CodexStartupFailure } from "./errors";
 import { CodexAgentSelectionSchema } from "../../../../protocol/agent-selection";
 import type { CredentialGrant } from "../../../../protocol/credentials";
 import { managedPiAccessToken, piAccessHandle, selectPiAuthGrant } from "../../credentials/managed";
@@ -19,6 +20,7 @@ import {
 
 export const CODEX_SANDBOX_PORT = 43_118;
 export const CODEX_RESUME_READINESS_TIMEOUT_MILLIS = 370_000;
+const decodeStartupFailure = Schema.decodeUnknownOption(Schema.fromJsonString(CodexStartupFailure));
 const CodexSandboxIdentitySchema = Schema.Struct({
   configuration: Schema.optionalKey(SessionConfigurationSchema),
   sessionId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u)),
@@ -102,11 +104,44 @@ export const waitForCodexSandbox = Effect.fnUntraced(function* (
           Result.isSuccess(process) &&
           process.success !== null &&
           ["completed", "failed", "killed", "error"].includes(process.success.status)
-        )
+        ) {
+          const exited = process.success;
+          const logs = yield* (exited.getLogs?.() ?? Effect.fail(error)).pipe(
+            Effect.timeout("1 second"),
+            Effect.result,
+          );
+          const startup = Result.isSuccess(logs)
+            ? logs.success.stderr
+                .slice(-8_192)
+                .split("\n")
+                .reverse()
+                .map((line) => decodeStartupFailure(line))
+                .find(
+                  (record) =>
+                    Option.isSome(record) &&
+                    (record.value.generation === undefined ||
+                      record.value.generation === identity.generation),
+                )
+            : undefined;
+          yield* Effect.sync(() =>
+            console.error("Codex supervisor exited before readiness", {
+              sessionId: identity.sessionId,
+              generation: identity.generation,
+              processStatus: exited.status,
+              exitCode: exited.exitCode ?? null,
+              ...(startup !== undefined && Option.isSome(startup)
+                ? {
+                    startupStage: startup.value.stage,
+                    startupCode: startup.value.code,
+                  }
+                : {}),
+            }),
+          );
           return yield* new SandboxRuntimeFailure({
             reason: "nonzero_exit",
             message: "Codex process exited before readiness",
           });
+        }
         return yield* error;
       }),
     ),
@@ -114,7 +149,6 @@ export const waitForCodexSandbox = Effect.fnUntraced(function* (
   const snapshot = yield* read.pipe(
     Effect.retry({
       while: (error) => error.reason !== "nonzero_exit",
-      times: Math.max(0, Math.ceil(timeoutMillis / 1_000) - 1),
       schedule: Schedule.spaced("1 second"),
     }),
     Effect.timeoutOrElse({

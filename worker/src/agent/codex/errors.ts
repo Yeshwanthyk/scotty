@@ -1,5 +1,72 @@
 import { Data, Schema } from "effect";
 
+const CodexHostErrorCode = Schema.Literals([
+  "invalid_saved_state",
+  "invalid_launch_selection",
+  "credential_expired",
+  "upstream_failed",
+  "invalid_deadline",
+  "unsupported_platform",
+  "isolation_setup_failed",
+  "hatch_restore_failed",
+  "hatch_cleanup_failed",
+  "tool_execution_failed",
+  "spawn_failed",
+  "transport_failed",
+  "invalid_message",
+  "message_too_large",
+  "invalid_utf8",
+  "truncated_record",
+  "output_budget",
+  "event_budget",
+  "stderr_budget",
+  "input_budget",
+  "startup_timeout",
+  "request_timeout",
+  "turn_timeout",
+  "unexpected_exit",
+  "interrupted",
+  "runtime_mismatch",
+  "settings_mismatch",
+  "rpc_rejected",
+  "unexpected_response_id",
+  "unsupported_notification",
+  "stale_notification",
+  "duplicate_turn_started",
+  "turn_not_started",
+  "reused_turn_id",
+  "not_ready",
+  "turn_busy",
+  "turn_mismatch",
+  "no_active_turn",
+  "stopped",
+]);
+
+export const CodexStartupFailure = Schema.Struct({
+  event: Schema.Literal("codex_startup_failed"),
+  stage: Schema.Literals(["input", "token", "runtime", "control"]),
+  code: Schema.Union([
+    CodexHostErrorCode,
+    Schema.Literals([
+      "invalid_request",
+      "unauthorized",
+      "stale_generation",
+      "wrong_thread",
+      "wrong_turn",
+      "busy",
+      "already_admitted",
+      "not_admitted",
+      "idempotency_conflict",
+      "idempotency_unknown",
+      "host_failed",
+      "invalid_snapshot",
+      "token_file",
+      "unexpected_failure",
+    ]),
+  ]),
+  generation: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,128}$/u))),
+});
+
 export const Cleanup = Schema.Struct({
   cleanup: Schema.Literal("ambiguous"),
   descendants: Schema.Literal("unverified"),
@@ -13,46 +80,7 @@ export const Cleanup = Schema.Struct({
 export type Cleanup = typeof Cleanup.Type;
 
 export class CodexHostError extends Data.TaggedError("CodexHostError")<{
-  readonly code:
-    | "invalid_saved_state"
-    | "invalid_launch_selection"
-    | "credential_expired"
-    | "upstream_failed"
-    | "invalid_deadline"
-    | "unsupported_platform"
-    | "isolation_setup_failed"
-    | "hatch_restore_failed"
-    | "hatch_cleanup_failed"
-    | "tool_execution_failed"
-    | "spawn_failed"
-    | "transport_failed"
-    | "invalid_message"
-    | "message_too_large"
-    | "invalid_utf8"
-    | "truncated_record"
-    | "output_budget"
-    | "event_budget"
-    | "stderr_budget"
-    | "input_budget"
-    | "startup_timeout"
-    | "request_timeout"
-    | "turn_timeout"
-    | "unexpected_exit"
-    | "interrupted"
-    | "runtime_mismatch"
-    | "settings_mismatch"
-    | "rpc_rejected"
-    | "unexpected_response_id"
-    | "unsupported_notification"
-    | "stale_notification"
-    | "duplicate_turn_started"
-    | "turn_not_started"
-    | "reused_turn_id"
-    | "not_ready"
-    | "turn_busy"
-    | "turn_mismatch"
-    | "no_active_turn"
-    | "stopped";
+  readonly code: typeof CodexHostErrorCode.Type;
   readonly cleanup?: Cleanup;
   readonly staleDiagnostic?: string;
   readonly upstreamDiagnostic?: string;
