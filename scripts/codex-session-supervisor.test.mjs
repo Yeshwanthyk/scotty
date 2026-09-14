@@ -828,7 +828,7 @@ for (const [model, effort] of [
         assert.equal(terminal.items[0].text, "SYNTHETIC_OK");
       }
       assert.equal(host.inspect().rejected, 0);
-      assert.ok(host.drainEvents().some((e) => e.method === "item/agentMessage/delta"));
+      assert.ok(observed.some((e) => e.method === "item/agentMessage/delta"));
       hold = true;
       const turn = await withNativePhase("interrupt_prompt", host.prompt("Wait for interruption."));
       knownTurns.push(turn.turnId);
