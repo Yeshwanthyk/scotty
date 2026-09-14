@@ -448,3 +448,21 @@ export const saveCodexSandbox = Effect.fnUntraced(function* (
     return yield* failure("Codex saved state does not match Session authority");
   return saved;
 });
+
+export const stopSavedCodexSandbox = Effect.fnUntraced(function* (input: CodexSandboxIdentity) {
+  const identity = yield* decodeIdentity(input).pipe(
+    Effect.mapError(() => failure("Codex identity is invalid")),
+  );
+  const runtime = yield* SandboxRuntime;
+  const processId = codexSandboxProcessId(identity.generation);
+  const process = yield* runtime.getProcess(processId);
+  if (process !== null && !["completed", "failed", "killed", "error"].includes(process.status)) {
+    yield* Effect.result(process.kill());
+    yield* Effect.result(process.waitForExit(20_000));
+    const observed = yield* runtime.getProcess(processId);
+    if (observed !== null && !["completed", "failed", "killed", "error"].includes(observed.status))
+      return yield* failure("Codex saved server exit is unconfirmed");
+  }
+  // Only reclaim the generation's private root after the old server has exited.
+  yield* runtime.execChecked(`rm -rf -- ${shellQuote(`/tmp/scotty-codex-${identity.generation}`)}`);
+});

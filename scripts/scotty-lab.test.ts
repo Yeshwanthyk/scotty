@@ -4,13 +4,18 @@ import { spawn } from "node:child_process";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
 import packageMetadata from "../package.json" with { type: "json" };
 import { CanonicalConversationSnapshotSchema } from "../protocol/conversation.ts";
-import { SessionAuthoritySchema } from "../worker/src/session-actor/authority.ts";
+import {
+  AuthorityStateSchema,
+  SessionAuthoritySchema,
+  StableStateSchema,
+} from "../worker/src/session-actor/authority.ts";
 import { uiSessionResponseFromActor } from "../worker/src/ui/session-view.ts";
 import capturedFailureStates from "./fixtures/codex-failure-states.json" with { type: "json" };
 import {
   LAB_VERSION,
   LabOperations,
   LabUsageError,
+  codexCheckpointProof,
   codexTerminalProof,
   hatchObservationProof,
   runLab,
@@ -103,6 +108,86 @@ const assertUsageFailure = (result: Result.Result<void, unknown>): void => {
 };
 
 describe("Effect Scotty lab command grammar", () => {
+  it("requires a fresh confirmed checkpoint backup tied to a completed journal attempt", () => {
+    assert.ok(Result.isSuccess(capturedStates));
+    const captured = capturedStates.success.cases.find(({ kind }) => kind === "warm-host-dead");
+    assert.isDefined(captured);
+    const state = captured.actor.authority.state;
+    assert.ok(AuthorityStateSchema.guards.Stable(state));
+    assert.ok(StableStateSchema.guards.Warm(state.stable));
+    const before = { authority: captured.actor.authority, journalSequence: 100, journal: [] };
+    const backup = {
+      backupId: "checkpoint-attempt",
+      preparedAt: "2026-09-14T00:00:00.000Z",
+      confirmedAt: "2026-09-14T00:00:01.000Z",
+      sourceRuntimeGeneration: state.stable.readiness.runtime.runtimeGeneration,
+      codex: {
+        threadId: state.stable.readiness.supervisor.supervisorEpoch,
+        initialTurnId: state.stable.readiness.transport.transportId,
+      },
+    };
+    const completed = {
+      sequence: 101,
+      revision: captured.actor.authority.revision + 1,
+      timestamp: "2026-09-14T00:00:02.000Z",
+      correlationId: "checkpoint-test",
+      transitionNonce: "checkpoint-nonce",
+      eventType: "completed" as const,
+      transitionKind: "Checkpoint" as const,
+      transitionPhase: "TransportReady" as const,
+      resultCode: "checkpoint_completed",
+      causeSequence: 100,
+      causeAttempt: backup.backupId,
+    };
+    const after = {
+      authority: {
+        ...captured.actor.authority,
+        state: {
+          ...state,
+          stable: {
+            ...state.stable,
+            backups: {
+              ownedBackupIds: [backup.backupId],
+              prepared: backup,
+              currentBackupId: backup.backupId,
+              confirmed: backup,
+            },
+          },
+        },
+      },
+      journalSequence: 101,
+      journal: [completed],
+    };
+    assert.deepEqual(codexCheckpointProof(before, after), {
+      backupId: backup.backupId,
+      threadId: backup.codex.threadId,
+    });
+    assert.isUndefined(codexCheckpointProof(before, before));
+    assert.isUndefined(codexCheckpointProof(after, after));
+    assert.isUndefined(codexCheckpointProof(before, { ...after, journal: [] }));
+    assert.isUndefined(
+      codexCheckpointProof(before, {
+        ...after,
+        authority: {
+          ...after.authority,
+          state: {
+            ...after.authority.state,
+            stable: {
+              ...after.authority.state.stable,
+              readiness: {
+                ...after.authority.state.stable.readiness,
+                supervisor: {
+                  ...after.authority.state.stable.readiness.supervisor,
+                  supervisorEpoch: "wrong-thread",
+                },
+              },
+            },
+          },
+        },
+      }),
+    );
+  });
+
   it("projects captured Warm actor with a stopped Codex host", () => {
     assert.ok(Result.isSuccess(capturedStates));
     assert.equal(capturedStates.success.cases.length, 2);

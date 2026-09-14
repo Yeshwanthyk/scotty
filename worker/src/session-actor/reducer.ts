@@ -254,10 +254,10 @@ const validSleepTransition = (transition: TransitionCase<"Sleep">, index: number
   return (
     transition.origin === "Warm" &&
     validReadiness(transition.proof.readiness) &&
-    validBackup(transition.proof.backup, index >= 3) &&
+    validBackup(transition.proof.backup, index >= 4) &&
     (index < 1 || transition.proof.piStoppedAt !== null) &&
-    (index < 4 || (stopRequestedAt !== undefined && validTimestamp(stopRequestedAt))) &&
-    (index < 5 || transition.proof.stop !== null) &&
+    (index < 5 || (stopRequestedAt !== undefined && validTimestamp(stopRequestedAt))) &&
+    (index < 6 || transition.proof.stop !== null) &&
     (transition.proof.stop === null || stopRequestedAt === transition.proof.stop.requestedAt)
   );
 };

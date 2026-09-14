@@ -1722,7 +1722,8 @@ describe("real Hono boundary", () => {
         { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
         env(),
       );
-      expect(checkpoint.status).toBe(400);
+      expect(checkpoint.status).toBe(200);
+      expect(await checkpoint.json()).toMatchObject({ id: authority.session.id, status: "warm" });
       if (
         !AuthorityStateSchema.guards.Stable(authority.state) ||
         !StableStateSchema.guards.Warm(authority.state.stable)
@@ -1748,7 +1749,7 @@ describe("real Hono boundary", () => {
           },
         },
       });
-      expect(saveRequests).toBe(1);
+      expect(saveRequests).toBe(2);
       expect(harness.events).toContain("host:createBackup");
       const resumed = await app.request(
         `/api/sessions/${authority.session.id}/resume`,
@@ -3091,8 +3092,18 @@ describe("real Hono boundary", () => {
       turnId: "turn-active",
       sessionRevision: 8,
     });
-    expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(1, "continue", undefined);
-    expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(2, "continue", undefined);
+    expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(
+      1,
+      "continue",
+      undefined,
+      undefined,
+    );
+    expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(
+      2,
+      "continue",
+      undefined,
+      undefined,
+    );
   });
 
   it("returns a fenced Codex interrupt result without treating completion as accepted", async () => {

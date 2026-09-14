@@ -128,7 +128,9 @@ vaporize before stopping the run.
 
 `checkpoint` invokes the real CLI `snapshot` command. A manual snapshot stops Pi and interactive
 terminals while writing the backup, then restores the warm runtime; it is not the sleep transition.
-Codex checkpoint is unsupported, so `full` remains a Pi lifecycle sequence.
+The `full` lifecycle sequence remains Pi; `codex-workflow` now checkpoints the native Codex
+thread before sleep/resume and verifies the same thread remains ready. The lab does not simulate
+the midpoint alarm or a stalled Cloudflare backup at cap; those require a guarded live fault run.
 `sleep-resume` uses the authenticated public `POST /api/sessions/:id/sleep` route through the exact
 loopback lab host and root token, records its sanitized response and HTTP status, then invokes the
 real CLI `resume` command. If the route truthfully reports a reconciling outcome, the lab waits for
@@ -136,13 +138,19 @@ the actor authority to settle `Sleeping`; it does not treat the response as succ
 never writes Durable Object storage or desired state directly.
 
 `codex-workflow` explicitly selects Codex Sol/medium and requires completed native commands and
-assistant markers from canonical `inspect`. It correlates a terminal follow-up receipt, admits an
+assistant markers from canonical `inspect`. The source uses its bundled CLI to create a
+same-repository Codex peer, records its owned ID, and controls the peer through internal `inspect`,
+`read`, and `steer` with canonical receipts. Both peer turns must finish with native command and
+assistant evidence. It correlates a terminal follow-up receipt, admits an
 active turn, observes its running command, steers that same turn, queues a follow-up, interrupts the
-active turn, and requires the queued command to complete. It then sleeps and resumes the owned
+active turn, and requires the queued command to complete. Before sleep it confirms a new owned
+checkpoint backup tied to a completed actor attempt, the same native thread and prior turn history,
+and a completed command after checkpoint. It then sleeps and resumes the owned
 session, requiring a new runtime generation, the same native thread, preserved prior command
 output, and a completed post-resume command before vaporizing. The private evidence manifest
 records turn IDs and positive assertions; raw conversation snapshots are omitted from command
 evidence. If the workflow fails after create, the owned ID remains for exact targeted cleanup.
+If the peer probe fails after creation, its recorded owned ID remains for targeted cleanup.
 This scenario does not prove delegation, browser-close queue delivery, fault recovery, or Pi
 conversation continuity.
 

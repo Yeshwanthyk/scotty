@@ -281,6 +281,50 @@ describe("BackupLifecycleSandbox", () => {
     }),
   );
 
+  it.effect(
+    "observes a lost create reply through the same attempt backup and confirms its marker once",
+    () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const providerEffect = Effect.gen(function* () {
+          const provider = yield* BackupLifecycleSandbox;
+          const uncertain = yield* Effect.result(provider.prepareBackup(attempt));
+          assert.ok(Result.isFailure(uncertain));
+          const observed = yield* provider.observePreparedBackup(attempt);
+          return observed;
+        });
+        const observed = yield* withProvider(providerEffect, {
+          backups: backupCapabilities({
+            createBackup: async (options) => {
+              assert.equal(options.backupId, attempt.attempt);
+              calls.push("create-reply-lost");
+              throw new SandboxRuntimeFailure({
+                reason: "transport",
+                message: "backup reply lost",
+              });
+            },
+            restoreBackup: async (handle) => {
+              calls.push(`restore:${handle.id}`);
+              return { success: true, id: handle.id, dir: handle.dir };
+            },
+          }),
+          runtime: runtimeCapabilities({
+            readFileStream: async () => {
+              calls.push("verify-marker");
+              return stream(marker);
+            },
+          }),
+        });
+        assert.equal(observed.backupId, attempt.attempt);
+        assert.notEqual(observed.confirmedAt, null);
+        assert.deepStrictEqual(calls, [
+          "create-reply-lost",
+          `restore:${attempt.attempt}`,
+          "verify-marker",
+        ]);
+      }),
+  );
+
   it.effect("restores an owned source backup into a distinct resume runtime generation", () =>
     Effect.gen(function* () {
       const sourceRuntimeGeneration = "warm-runtime-generation";
@@ -584,6 +628,130 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
         );
         assert.deepStrictEqual(calls, ["launch", "/snapshot", "/snapshot"]);
       }),
+  );
+  it.effect(
+    "exits the saved server and reclaims its private root before a same-container restart",
+    () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        let serverRunning = true;
+        let privateRootExists = true;
+        const credentials = sessionRuntimeCredentials([
+          {
+            name: "codex",
+            kind: "pi-auth",
+            versionRef: "version-1",
+            handleSlots: [{ provider: "openai-codex", slot: "access" }],
+            expires: 10000,
+          },
+        ]);
+        const runtime = runtimeCapabilities({
+          fetchPort: async (path) => {
+            calls.push(path);
+            assert.equal(path, "/save");
+            return Response.json({
+              generation: codex.runtimeGeneration,
+              threadId: codex.codex?.threadId,
+              initialTurnId: codex.codex?.initialTurnId,
+            });
+          },
+          getProcess: async () =>
+            serverRunning
+              ? {
+                  id: `scotty-codex-${codex.runtimeGeneration}`,
+                  status: "running",
+                  kill: async () => {
+                    calls.push("kill");
+                    serverRunning = false;
+                  },
+                  waitForExit: async () => {
+                    calls.push("exit");
+                    return { exitCode: 0 };
+                  },
+                  waitForPort: async () => {},
+                }
+              : null,
+          exec: async (command) => {
+            if (command.startsWith("rm -rf --")) {
+              privateRootExists = false;
+              calls.push("remove");
+            } else if (command.startsWith("umask 077 && mkdir")) {
+              privateRootExists = true;
+              calls.push("mkdir");
+            }
+            return success(command);
+          },
+          startProcess: async (command, options) => {
+            assert.isTrue(privateRootExists);
+            assert.isFalse(serverRunning);
+            assert.equal(options?.processId, `scotty-codex-${codex.runtimeGeneration}`);
+            assert.include(
+              command,
+              '"restore":{"threadId":"native-thread","initialTurnId":"first-turn"}',
+            );
+            assert.include(command, '"resumeThreadId":"native-thread"');
+            calls.push("launch");
+            serverRunning = true;
+            return {
+              id: `scotty-codex-${codex.runtimeGeneration}`,
+              status: "running",
+              kill: async () => {},
+              waitForExit: async () => ({ exitCode: 0 }),
+              waitForPort: async () => {},
+            };
+          },
+        });
+        yield* withProvider(
+          Effect.gen(function* () {
+            const provider = yield* BackupLifecycleSandbox;
+            yield* provider.quiescePi({ ...codex, credentials });
+            yield* provider.startSupervisor({
+              ...codex,
+              transitionFence: { ...codex.transitionFence, phase: "BackupConfirmed" },
+              credentials,
+            });
+          }),
+          { runtime },
+        );
+        assert.deepStrictEqual(calls, ["/save", "kill", "exit", "remove", "mkdir", "launch"]);
+      }),
+  );
+  it.effect("does not restart or reclaim the private root while the saved server is live", () =>
+    Effect.gen(function* () {
+      const commands: string[] = [];
+      const result = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          provider.startSupervisor({
+            ...codex,
+            transitionFence: { ...codex.transitionFence, phase: "BackupConfirmed" },
+            credentials: sessionRuntimeCredentials([]),
+          }),
+        ).pipe(Effect.result),
+        {
+          runtime: runtimeCapabilities({
+            fetchPort: async () =>
+              Response.json({
+                generation: codex.runtimeGeneration,
+                threadId: "native-thread",
+                initialTurnId: "first-turn",
+              }),
+            getProcess: async () => ({
+              id: `scotty-codex-${codex.runtimeGeneration}`,
+              status: "running",
+              kill: async () => {},
+              waitForExit: async () => ({ exitCode: 0 }),
+              waitForPort: async () => {},
+            }),
+            exec: async (command) => {
+              commands.push(command);
+              return success(command);
+            },
+          }),
+        },
+      );
+      assert.equal(failure(result).safeResultCode, "codex_server_stop_unobserved");
+      assert.deepStrictEqual(commands, []);
+    }),
   );
   it.effect("rejects wrong saved identity and missing canonical first-turn proof", () =>
     Effect.gen(function* () {

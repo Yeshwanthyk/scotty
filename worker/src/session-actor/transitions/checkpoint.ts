@@ -243,7 +243,10 @@ const applyResult = (
         : Effect.fail(staleProof(committed, transition, value.observedAt)),
     BackupPrepared: (value) =>
       transition.phase === "Syncing" &&
-      value.backup.confirmedAt === null &&
+      (value.backup.confirmedAt === null ||
+        (transition.mode === "reconciling" &&
+          value.backup.backupId === transition.attempt &&
+          transition.proof.backup.ownedBackupIds.includes(transition.attempt))) &&
       value.backup.sourceRuntimeGeneration === transition.proof.readiness.runtime.runtimeGeneration
         ? Effect.succeed(
             progress(

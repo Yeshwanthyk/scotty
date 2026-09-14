@@ -122,7 +122,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     if (!(finalWhen instanceof Date)) return;
     assert.strictEqual(
       drainPayload.value.drainAt,
-      new Date(finalWhen.getTime() - 5 * 60_000).toISOString(),
+      new Date(finalWhen.getTime() - 10 * 60_000).toISOString(),
     );
     assert.isBelow(
       harness.events.indexOf("schedule:sessionActorHardCap"),
@@ -874,7 +874,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         if (command === "sync" && !injected) {
           injected = true;
           harness.memory.injectFailure("transaction", {
-            countdown: 10,
+            countdown: 11,
             error: new Error("injected sleep observation commit failure"),
             times: 1,
           });
@@ -890,11 +890,6 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     const reconciling = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
     assert.ok(reconciling !== undefined && Predicate.isTagged(reconciling.state, "Transitioning"));
     assert.strictEqual(reconciling.state.transition.phase, "StopRequested");
-    await harness.sandbox.sleepScottySession().then(
-      () => undefined,
-      () => undefined,
-    );
-
     const sleeping = await harness.sandbox.sleepScottySession();
 
     assert.strictEqual(sleeping.status, "sleeping");

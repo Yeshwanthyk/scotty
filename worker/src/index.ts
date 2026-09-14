@@ -35,6 +35,7 @@ import {
   ApiErrorCodeSchema,
   parseAuthClientId,
   parseCreateInput,
+  createSessionIdempotency,
   parseIdempotencyKey,
   parseInterruptInput,
   parseRenameSessionInput,
@@ -45,10 +46,8 @@ import {
   wrongState,
   type CreateSessionInput,
 } from "./session/contracts";
-import type { CreateIdempotencyDigestMetadata } from "./session-actor/metadata";
 import { Effect, Layer, Option, Predicate, Redacted, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
-import { sha256Hex } from "./shared/digest";
 import {
   authenticateRequest,
   authRegistry,
@@ -131,11 +130,11 @@ import {
   type ScottySandboxConfigStub,
 } from "./sandbox/config-object";
 import {
-  inspectPassiveSession,
-  interruptPassiveSession,
-  steerPassiveSession,
+  inspectSessionControl,
+  interruptSessionControl,
+  readSessionControl,
+  steerSessionControl,
 } from "./session/passive";
-import { inspectCanonicalConversation } from "./session/conversation";
 import { Sandbox as ScottySandbox } from "./session/object";
 import { uiSessionListResponseFromProjections } from "./ui/session-view";
 import {
@@ -1042,18 +1041,14 @@ app.get("/api/sessions/:id/inspect", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
   const sandbox = sessionSandbox(c.env, id);
-  const codex = await sandbox.readScottyCodexConversation();
-  if (codex !== null) return c.json(codex, { headers: { "cache-control": "no-store" } });
-  return inspectPassiveSession(sandbox);
+  return inspectSessionControl(sandbox);
 });
 
 app.get("/api/sessions/:id/conversation", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
   const sandbox = sessionSandbox(c.env, id);
-  const codex = await sandbox.readScottyCodexConversation();
-  if (codex !== null) return c.json(codex, { headers: { "cache-control": "no-store" } });
-  return inspectCanonicalConversation(sandbox);
+  return readSessionControl(sandbox);
 });
 
 app.post("/api/sessions/:id/steer", async (c) => {
@@ -1070,13 +1065,7 @@ app.post("/api/sessions/:id/steer", async (c) => {
   const idempotencyKey = c.req.header("idempotency-key");
   if (idempotencyKey !== undefined) parseIdempotencyKey(idempotencyKey);
   const sandbox = sessionSandbox(c.env, id);
-  const codex =
-    input.value.deliverAs === undefined
-      ? await sandbox.steerScottyCodexSession(message, idempotencyKey)
-      : await sandbox.steerScottyCodexSession(message, idempotencyKey, input.value.deliverAs);
-  if (codex !== null) return codex;
-  if (input.value.deliverAs !== undefined) throw badRequest("Queued follow-up requires Codex");
-  return steerPassiveSession(sandbox, id, message);
+  return steerSessionControl(sandbox, id, message, idempotencyKey, input.value.deliverAs);
 });
 
 app.post("/api/sessions/:id/interrupt", async (c) => {
@@ -1089,9 +1078,7 @@ app.post("/api/sessions/:id/interrupt", async (c) => {
   if (Option.isNone(body)) throw badRequest("Request body must be valid JSON");
   const input = parseInterruptInput(body.value);
   const sandbox = sessionSandbox(c.env, id);
-  const codex = await sandbox.interruptScottyCodexSession(input);
-  if (codex !== null) return codex;
-  return interruptPassiveSession(sandbox, id, input.sessionRevision);
+  return interruptSessionControl(sandbox, id, input);
 });
 
 app.patch("/api/sessions/:id", async (c) => {
@@ -1940,45 +1927,6 @@ function createSessionId(): string {
   const bytes = new Uint8Array(6);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
-}
-
-async function createSessionIdempotency(
-  key: string | undefined,
-  input: CreateSessionInput,
-): Promise<CreateIdempotencyDigestMetadata | undefined> {
-  if (key === undefined) return undefined;
-  parseIdempotencyKey(key);
-  const [keyDigest, inputDigest] = await Promise.all([
-    sha256Hex(key),
-    sha256Hex(
-      JSON.stringify([
-        ...(input.provider === "runner"
-          ? input.newRepo
-            ? [
-                input.title,
-                input.prompt,
-                input.provider,
-                input.runner,
-                input.repo,
-                true,
-                input.hardCapSeconds,
-              ]
-            : [
-                input.title,
-                input.prompt,
-                input.provider,
-                input.runner,
-                input.repo,
-                input.hardCapSeconds,
-              ]
-          : input.newRepo
-            ? [input.title, input.prompt, input.provider, input.repo, true, input.hardCapSeconds]
-            : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds]),
-        ...(input.selection === undefined ? [] : [input.selection]),
-      ]),
-    ),
-  ]);
-  return { keyDigest, inputDigest };
 }
 
 function normalizeError(error: unknown): ScottyError {

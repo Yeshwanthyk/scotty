@@ -10,6 +10,8 @@ import {
   isRepositoryIdentity,
 } from "../../../protocol/repository";
 import { SandboxDigestSchema } from "../sandbox/config-contracts";
+import { sha256Hex } from "../shared/digest";
+import type { CreateIdempotencyDigestMetadata } from "../session-actor/metadata";
 
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
 export const MIN_HARD_CAP_SECONDS = 60;
@@ -46,7 +48,17 @@ const ContainerSteerMessageSchema = Schema.String.check(
     { expected: "a bounded non-command steering message" },
   ),
 );
+const ContainerInterruptInputSchema = Schema.Struct({
+  turnId: Schema.optionalKey(Schema.NonEmptyString),
+  sessionRevision: Schema.Int,
+});
 export const ContainerSessionRequestSchema = Schema.Union([
+  Schema.Struct({ action: Schema.Literal("settings") }),
+  Schema.Struct({
+    action: Schema.Literal("create"),
+    input: Schema.suspend(() => CreateSessionInputSchema),
+    idempotencyKey: IdempotencyKeySchema,
+  }),
   Schema.Struct({
     action: Schema.Literal("inspect"),
     targetId: SessionIdSchema,
@@ -55,6 +67,14 @@ export const ContainerSessionRequestSchema = Schema.Union([
     action: Schema.Literal("steer"),
     targetId: SessionIdSchema,
     message: ContainerSteerMessageSchema,
+    deliverAs: Schema.optionalKey(Schema.Literal("followUp")),
+    idempotencyKey: Schema.optionalKey(IdempotencyKeySchema),
+  }),
+  Schema.Struct({ action: Schema.Literal("conversation"), targetId: SessionIdSchema }),
+  Schema.Struct({
+    action: Schema.Literal("interrupt"),
+    targetId: SessionIdSchema,
+    input: ContainerInterruptInputSchema,
   }),
 ]);
 export type ContainerSessionRequest = typeof ContainerSessionRequestSchema.Type;
@@ -292,6 +312,45 @@ export const CreateSessionInputSchema = Schema.Struct({
   hardCapSeconds: Schema.Number,
 });
 export type CreateSessionInput = typeof CreateSessionInputSchema.Type;
+
+export async function createSessionIdempotency(
+  key: string | undefined,
+  input: CreateSessionInput,
+): Promise<CreateIdempotencyDigestMetadata | undefined> {
+  if (key === undefined) return undefined;
+  parseIdempotencyKey(key);
+  const [keyDigest, inputDigest] = await Promise.all([
+    sha256Hex(key),
+    sha256Hex(
+      JSON.stringify([
+        ...(input.provider === "runner"
+          ? input.newRepo
+            ? [
+                input.title,
+                input.prompt,
+                input.provider,
+                input.runner,
+                input.repo,
+                true,
+                input.hardCapSeconds,
+              ]
+            : [
+                input.title,
+                input.prompt,
+                input.provider,
+                input.runner,
+                input.repo,
+                input.hardCapSeconds,
+              ]
+          : input.newRepo
+            ? [input.title, input.prompt, input.provider, input.repo, true, input.hardCapSeconds]
+            : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds]),
+        ...(input.selection === undefined ? [] : [input.selection]),
+      ]),
+    ),
+  ]);
+  return { keyDigest, inputDigest };
+}
 
 export const DownManifestSchema = Schema.Struct({
   id: Schema.String,

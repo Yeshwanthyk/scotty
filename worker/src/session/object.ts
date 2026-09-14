@@ -158,12 +158,24 @@ import { readBoundedUtf8Body } from "../shared/bounded-http";
 import { decodeJsonValue } from "../shared/json";
 import { CREDENTIAL_REGISTRY_OBJECT_NAME } from "../credentials/object";
 import {
+  kvStatsProjectionStorage,
+  recordWorkspaceCreation,
+  statsProjectionLayer,
+} from "../projections/stats";
+import {
+  kvRepoProjectionStorage,
+  projectRepoEntryBestEffort,
+  repoProjectionLayer,
+} from "../repos/projection";
+import {
   decodeCredentialRegistryGrantResult,
   decodeCredentialRegistryResolvedCredentialResult,
 } from "../credentials/contracts";
 import {
   badRequest,
+  ApiErrorCodeSchema,
   conflict,
+  createSessionIdempotency,
   decodeContainerSessionRequest,
   notFound,
   ScottyError,
@@ -183,7 +195,14 @@ import {
 } from "../../../protocol/session-deployment-safety";
 import type { CreateIdempotencyDigestMetadata } from "../session-actor/metadata";
 import { ALLOWED_HOSTS, denyOutbound, makeOutboundByHost } from "../egress/worker";
-import { inspectPassiveSession, scottyErrorResponse, steerPassiveSession } from "./passive";
+import {
+  inspectPassiveSession,
+  inspectSessionControl,
+  interruptSessionControl,
+  readSessionControl,
+  scottyErrorResponse,
+  steerSessionControl,
+} from "./passive";
 import {
   durableObjectSessionAuxiliaryStorage,
   durableObjectSessionActorMetadataStorage,
@@ -261,6 +280,8 @@ import { sessionProjectionFromActor, sessionViewFromActor } from "../session-act
 import { uiSessionResponseFromActor, type UiSessionResponse } from "../ui/session-view";
 import {
   hardCapDrainAt,
+  hardCapMidpointAt,
+  legacyHardCapDrainAt,
   SESSION_SCHEDULE_CALLBACKS,
   sessionAllowsRuntimeAccess,
 } from "./lifecycle";
@@ -559,6 +580,16 @@ const CreateHardCapFenceSchema = Schema.Struct({
 const decodeCreateHardCapFence = Schema.decodeUnknownOption(CreateHardCapFenceSchema, {
   onExcessProperty: "error",
 });
+const decodeContainerCreateError = Schema.decodeUnknownOption(
+  Schema.Struct({
+    _tag: Schema.Literal("ScottyError"),
+    code: ApiErrorCodeSchema,
+    message: Schema.NonEmptyString,
+    httpStatus: Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 })),
+    exitCode: Schema.Literals([1, 2, 3, 4, 5]),
+    hint: Schema.optionalKey(Schema.String),
+  }),
+);
 
 const CreateHardCapDrainFenceSchema = Schema.Struct({
   sessionId: Schema.String,
@@ -570,6 +601,18 @@ const decodeCreateHardCapDrainFence = Schema.decodeUnknownOption(CreateHardCapDr
   onExcessProperty: "error",
 });
 type CreateHardCapDrainFence = typeof CreateHardCapDrainFenceSchema.Type;
+const CreateHardCapMidpointFenceSchema = Schema.Struct({
+  sessionId: Schema.String,
+  generation: Schema.String,
+  deadlineAt: Schema.String,
+  midpointAt: Schema.String,
+});
+const decodeCreateHardCapMidpointFence = Schema.decodeUnknownOption(
+  CreateHardCapMidpointFenceSchema,
+  {
+    onExcessProperty: "error",
+  },
+);
 
 const isMatchingHardCapDrain = (
   authority: SessionAuthority | undefined,
@@ -579,7 +622,10 @@ const isMatchingHardCapDrain = (
   authority.session.id === fence.sessionId &&
   authority.hardCap.generation === fence.generation &&
   authority.hardCap.deadlineAt === fence.deadlineAt &&
-  hardCapDrainAt(authority.hardCap.deadlineAt, authority.hardCap.durationSeconds) === fence.drainAt;
+  (hardCapDrainAt(authority.hardCap.deadlineAt, authority.hardCap.durationSeconds) ===
+    fence.drainAt ||
+    legacyHardCapDrainAt(authority.hardCap.deadlineAt, authority.hardCap.durationSeconds) ===
+      fence.drainAt);
 
 const isWarmAuthority = (authority: SessionAuthority): boolean =>
   AuthorityStateSchema.guards.Stable(authority.state) &&
@@ -1548,6 +1594,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* schedule(fence.deadlineAt, "sessionActorHardCap", finalFence);
         const drainAt = hardCapDrainAt(fence.deadlineAt, fence.durationSeconds);
         yield* schedule(drainAt, "sessionActorHardCapDrain", { ...finalFence, drainAt });
+        const midpointAt = hardCapMidpointAt(fence.deadlineAt, fence.durationSeconds);
+        if (midpointAt < drainAt)
+          yield* schedule(midpointAt, "sessionActorCheckpointMidpoint", {
+            ...finalFence,
+            midpointAt,
+          });
       }),
     );
     const lifecycleController = lifecycleControllerLayer.pipe(
@@ -3553,8 +3605,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     kind: LifecycleCommandKind,
   ) {
     const current = yield* this.readActorSessionStateProgram();
-    if (current.authority.session.selection?.agent === "codex" && kind === "Checkpoint")
-      return yield* badRequest("Codex checkpoint is not supported");
     const controller = yield* LifecycleController;
     const recovered = yield* this.recoverTransitioningActorForRequestProgram(kind).pipe(
       Effect.mapError((failure) =>
@@ -4828,6 +4878,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return read.success;
   };
 
+  // oxlint-disable-next-line eslint/complexity -- the source admission and bounded same-repository control actions share one entrypoint
   async containerSessionRequest(input: unknown): Promise<Response> {
     const decoded = decodeContainerSessionRequest(input);
     if (Option.isNone(decoded))
@@ -4838,7 +4889,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }),
       );
 
-    return this.sessionControlGate.run(async () => {
+    const admission = await this.sessionControlGate.run(async () => {
       const sourceAuthority = await this.readSessionControlAuthority();
       if (Result.isFailure(sourceAuthority))
         return scottyErrorResponse(
@@ -4868,32 +4919,135 @@ export class Sandbox extends BaseSandbox<Bindings> {
         );
       const sourceId = sourceAuthorityValue.authority.session.id;
       const sourceRepository = sourceAuthorityValue.authority.session.repository;
-      if (decoded.value.targetId === sourceId)
-        return scottyErrorResponse(
-          new ScottyError("auth", "Container session access denied", {
-            httpStatus: 401,
-            exitCode: 4,
-          }),
-        );
-
-      const target = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(decoded.value.targetId));
-      const targetSession = await Promise.resolve()
-        .then(() => target.getScottySession())
-        .then(Result.succeed, () => Result.fail(undefined));
-      if (Result.isFailure(targetSession))
-        return scottyErrorResponse(notFound(decoded.value.targetId));
-      if (targetSession.success.session.display.repository !== sourceRepository)
-        return scottyErrorResponse(
-          new ScottyError("auth", "Container session access denied", {
-            httpStatus: 401,
-            exitCode: 4,
-          }),
-        );
-
-      return decoded.value.action === "inspect"
-        ? inspectPassiveSession(target)
-        : steerPassiveSession(target, decoded.value.targetId, decoded.value.message);
+      return { sourceId, sourceRepository };
     });
+    if (admission instanceof Response) return admission;
+    const { sourceId, sourceRepository } = admission;
+    if (decoded.value.action === "settings") {
+      const snapshot = await this.env.SANDBOX_CONFIG.getByName(
+        SANDBOX_CONFIG_OBJECT_NAME,
+      ).settings();
+      if (!snapshot.ok)
+        return scottyErrorResponse(this.upstreamError("Cloud settings are unavailable", undefined));
+      return Response.json(
+        {
+          revision: snapshot.value.revision,
+          activeDigest: snapshot.value.activeDigest,
+          settings: {
+            agent: snapshot.value.settings.agent,
+            pi: snapshot.value.settings.pi,
+            codex: snapshot.value.settings.codex,
+            environment: {},
+          },
+        },
+        { headers: { "cache-control": "no-store" } },
+      );
+    }
+    if (decoded.value.action === "create") {
+      const input = decoded.value.input;
+      if (input.provider !== "cloudflare" || input.repo !== sourceRepository)
+        return scottyErrorResponse(
+          new ScottyError("auth", "Container session access denied", {
+            httpStatus: 401,
+            exitCode: 4,
+          }),
+        );
+      const namespacedKey = await sha256Hex(`${sourceId}:${decoded.value.idempotencyKey}`);
+      const idempotency = await createSessionIdempotency(namespacedKey, input);
+      if (idempotency === undefined)
+        return scottyErrorResponse(badRequest("Create requires an idempotency-key"));
+      const id = idempotency.keyDigest.slice(0, 12);
+      if (id === sourceId) return scottyErrorResponse(badRequest("Cannot create source session"));
+      const target = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(id));
+      const outcome = await Promise.resolve()
+        .then(() => target.createScottySession(input, id, idempotency))
+        .then(Result.succeed, (failure: unknown) => Result.fail(failure));
+      if (Result.isFailure(outcome)) {
+        const failure = decodeContainerCreateError(outcome.failure);
+        return scottyErrorResponse(
+          Option.isSome(failure)
+            ? new ScottyError(failure.value.code, failure.value.message, {
+                httpStatus: failure.value.httpStatus,
+                exitCode: failure.value.exitCode,
+                hint: failure.value.hint,
+              })
+            : this.upstreamError("Session creation outcome is unknown", undefined),
+        );
+      }
+      const session = outcome.success;
+      if (session.status === "warm")
+        await this.#run(
+          recordWorkspaceCreation({
+            sessionId: id,
+            repository: session.repo,
+            provider: session.provider,
+            createdAt: session.createdAt,
+          }).pipe(
+            Effect.provide(statsProjectionLayer(kvStatsProjectionStorage(this.env.SESSIONS))),
+            Effect.scoped,
+          ),
+        );
+      if (session.status !== "failed" && session.status !== "gone") {
+        const entry = await this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).addRepo({
+          repo: session.repo,
+          defaultBranch: session.defaultBranch,
+        });
+        if (!entry.ok)
+          return scottyErrorResponse(
+            this.upstreamError("Repository registry update failed", undefined),
+          );
+        await this.#run(
+          projectRepoEntryBestEffort(entry.value).pipe(
+            Effect.provide(repoProjectionLayer(kvRepoProjectionStorage(this.env.SESSIONS))),
+            Effect.scoped,
+          ),
+        );
+      }
+      return Response.json(
+        {
+          id,
+          title: session.title,
+          url: `https://scotty.internal/s/${id}`,
+          branch: session.branch,
+          provider: session.provider,
+          status: session.status,
+        },
+        { headers: { "cache-control": "no-store" } },
+      );
+    }
+    if (decoded.value.targetId === sourceId)
+      return scottyErrorResponse(
+        new ScottyError("auth", "Container session access denied", {
+          httpStatus: 401,
+          exitCode: 4,
+        }),
+      );
+
+    const target = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(decoded.value.targetId));
+    const targetSession = await Promise.resolve()
+      .then(() => target.getScottySession())
+      .then(Result.succeed, () => Result.fail(undefined));
+    if (Result.isFailure(targetSession))
+      return scottyErrorResponse(notFound(decoded.value.targetId));
+    if (targetSession.success.session.display.repository !== sourceRepository)
+      return scottyErrorResponse(
+        new ScottyError("auth", "Container session access denied", {
+          httpStatus: 401,
+          exitCode: 4,
+        }),
+      );
+
+    if (decoded.value.action === "inspect") return inspectSessionControl(target);
+    if (decoded.value.action === "conversation") return readSessionControl(target);
+    if (decoded.value.action === "interrupt")
+      return interruptSessionControl(target, decoded.value.targetId, decoded.value.input);
+    return steerSessionControl(
+      target,
+      decoded.value.targetId,
+      decoded.value.message,
+      decoded.value.idempotencyKey,
+      decoded.value.deliverAs,
+    );
   }
 
   private readonly validatePassiveConsoleAuthority = (
@@ -6222,6 +6376,61 @@ export class Sandbox extends BaseSandbox<Bindings> {
               code: "schedule_outcome_unknown",
             }),
         });
+      }),
+    );
+  }
+
+  async sessionActorCheckpointMidpoint(payload: unknown): Promise<void> {
+    const fence = decodeCreateHardCapMidpointFence(payload);
+    if (Option.isNone(fence)) return;
+    return this.#run(
+      Effect.gen({ self: this }, function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const store = yield* ActorStore;
+        const { authority } = yield* store.read;
+        if (
+          authority === undefined ||
+          authority.session.id !== fence.value.sessionId ||
+          authority.hardCap.generation !== fence.value.generation ||
+          authority.hardCap.deadlineAt !== fence.value.deadlineAt ||
+          hardCapMidpointAt(authority.hardCap.deadlineAt, authority.hardCap.durationSeconds) !==
+            fence.value.midpointAt ||
+          now < Date.parse(fence.value.midpointAt) ||
+          now >=
+            Date.parse(
+              hardCapDrainAt(authority.hardCap.deadlineAt, authority.hardCap.durationSeconds),
+            ) ||
+          isTerminalDrainAuthority(authority) ||
+          isVaporizingAuthority(authority)
+        )
+          return;
+        if (
+          AuthorityStateSchema.guards.Stable(authority.state) &&
+          StableStateSchema.guards.Warm(authority.state.stable)
+        ) {
+          const backup = authority.state.stable.backups.confirmed;
+          if (
+            backup?.confirmedAt !== null &&
+            backup?.confirmedAt !== undefined &&
+            Date.parse(backup.confirmedAt) >= Date.parse(fence.value.midpointAt)
+          )
+            return;
+        }
+        yield* Effect.tryPromise({
+          try: () =>
+            this.schedule(5, "sessionActorCheckpointMidpoint", fence.value).then(() => undefined),
+          catch: () =>
+            new CreateControllerBoundaryFailure({
+              boundary: "hard_cap",
+              code: "schedule_outcome_unknown",
+            }),
+        });
+        if (
+          isWarmAuthority(authority) ||
+          (AuthorityStateSchema.guards.Transitioning(authority.state) &&
+            TransitionSchema.guards.Checkpoint(authority.state.transition))
+        )
+          yield* Effect.result(this.actorLifecycleProgram("Checkpoint"));
       }),
     );
   }

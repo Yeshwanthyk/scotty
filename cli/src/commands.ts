@@ -119,7 +119,7 @@ import {
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 
 const beamAgentSelection = Effect.fnUntraced(function* (
-  target: { readonly host: string; readonly token: string },
+  target: import("./transport").ApiRequestTarget,
   agent: Option.Option<"pi" | "codex">,
   modelProvider: Option.Option<string>,
   model: Option.Option<string>,
@@ -1668,7 +1668,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (!normalizedTitle || normalizedTitle.length > 120)
           return yield* usage("--title must be between 1 and 120 characters");
         if (!isRepositoryIdentity(repo)) return yield* usage("--repo must be OWNER/NAME");
-        const auth = yield* credentials(options);
+        const auth = yield* peerControlTarget(options);
         const selection = yield* beamAgentSelection(auth, agent, modelProvider, model, effort);
         const hardCapSeconds = Option.isSome(cap)
           ? yield* Effect.fromResult(durationSeconds(cap.value))
@@ -1684,7 +1684,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         };
         const decoded = yield* beamUpSession(auth, body);
         const result = decoded.output;
-        if (!detach)
+        if (!detach && runtime.env.SCOTTY_SESSION_ID === undefined)
           yield* browser.open(
             yield* Effect.fromResult(browserUrl(decoded.sessionUrl, auth.host, result.id)),
           );

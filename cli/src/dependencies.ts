@@ -19,7 +19,7 @@ import {
   type RawConfig,
 } from "./schemas";
 import { CliRuntime, FileSystem } from "./services";
-import { requestJson } from "./transport";
+import { requestJson, type ApiRequestTarget } from "./transport";
 import { conflictSessionId, normalizeHost, stableUp, usage } from "./pure";
 
 export { cliLayer, defaultDependencies, type CliDependencies } from "./services";
@@ -267,11 +267,23 @@ export const sessionAbsent = Effect.fnUntraced(function* (
 });
 
 export const beamUpSession = Effect.fnUntraced(function* (
-  auth: { readonly host: string; readonly token: string },
+  auth: ApiRequestTarget,
   body: BeamUpRequest,
 ) {
+  if (auth.host === "https://scotty.internal") {
+    const pending = yield* pendingUpRequest(auth.host, body);
+    const created = yield* requestJson(auth, "/api/sessions", {
+      method: "POST",
+      headers: { "idempotency-key": pending.key },
+      body: JSON.stringify(body),
+    }).pipe(Effect.flatMap((raw) => Effect.fromResult(stableUp(raw, auth.host))));
+    yield* finalizePendingUp(pending, created.output);
+    return created;
+  }
+  if (auth.token === undefined) return yield* usage("Scotty token is required outside a sandbox");
+  const credential = { host: auth.host, token: auth.token };
   const create = (pending: { readonly key: string; readonly path: string }) =>
-    requestJson(auth, "/api/sessions", {
+    requestJson(credential, "/api/sessions", {
       method: "POST",
       headers: { "idempotency-key": pending.key },
       body: JSON.stringify(body),
@@ -293,7 +305,7 @@ export const beamUpSession = Effect.fnUntraced(function* (
     return yield* failure;
   }
 
-  const absent = yield* Effect.result(sessionAbsent(auth, sessionId));
+  const absent = yield* Effect.result(sessionAbsent(credential, sessionId));
   if (Result.isFailure(absent) || !absent.success) {
     yield* clearPendingUp(pending.path);
     return yield* failure;
