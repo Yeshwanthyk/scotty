@@ -126,7 +126,7 @@ and captures actor diagnostics before returning the CLI failure. It never scans 
 chooses a latest session. Use the recovered ID from the retained scenario result for targeted
 vaporize before stopping the run.
 
-`checkpoint` invokes the real CLI `snapshot` command. A manual snapshot stops Pi and interactive
+`checkpoint` invokes the real CLI `checkpoint` command. A manual checkpoint stops Pi and interactive
 terminals while writing the backup, then restores the warm runtime; it is not the sleep transition.
 The `full` lifecycle sequence remains Pi; `codex-workflow` now checkpoints the native Codex
 thread before sleep/resume and verifies the same thread remains ready. The lab does not simulate
@@ -140,8 +140,9 @@ never writes Durable Object storage or desired state directly.
 `codex-workflow` explicitly selects Codex Sol/medium and requires completed native commands and
 assistant markers from canonical `inspect`. The source uses its bundled CLI to create a
 same-repository Codex peer, records its owned ID, and controls the peer through internal `inspect`,
-`read`, and `steer` with canonical receipts. Both peer turns must finish with native command and
-assistant evidence. It correlates a terminal follow-up receipt, admits an
+`read`, and `steer`. The source invokes inspect/read through its bundled CLI, validates both
+responses in memory, and emits a compact receipt within the native output bound. Both peer turns
+must finish with native command and assistant evidence. It correlates a terminal follow-up receipt, admits an
 active turn, observes its running command, steers that same turn, queues a follow-up, interrupts the
 active turn, and requires the queued command to complete. Before sleep it confirms a new owned
 checkpoint backup tied to a completed actor attempt, the same native thread and prior turn history,

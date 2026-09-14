@@ -109,19 +109,11 @@ const CodexInspectOutput = Schema.Struct({
   id: Schema.String,
   ...CanonicalConversationSnapshotSchema.fields,
 });
-const CodexReadOutput = Schema.Struct({
+const InternalPeerReadReceipt = Schema.Struct({
   id: Schema.String,
   epoch: Schema.String,
-  sequence: Schema.Int,
-  messages: Schema.Array(
-    Schema.Struct({
-      index: Schema.Int,
-      role: Schema.Literals(["assistant", "user"]),
-      content: Schema.String,
-      id: Schema.optionalKey(Schema.String),
-    }),
-  ),
-  truncated: Schema.Boolean,
+  initialTurnId: Schema.String,
+  readSequence: Schema.Int,
 });
 const decodeSessionOperationJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(SessionOperationOutput),
@@ -135,7 +127,9 @@ const decodeActorDiagnosticsJson = Schema.decodeUnknownEffect(
 const decodeCodexInspectJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(CodexInspectOutput),
 );
-const decodeCodexReadJson = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexReadOutput));
+const decodeInternalPeerReadReceipt = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(InternalPeerReadReceipt),
+);
 const decodeHatchStatusJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(PublicHatchStatusSchema),
 );
@@ -1442,6 +1436,16 @@ const proveCodexSleepResume = Effect.fnUntraced(function* (
   return { resumedTurnId, checkpointTurnId, checkpointBackupId: checkpointProof.backupId };
 });
 
+export const internalPeerReadValidator = (peerId: string): string =>
+  [
+    'const cp=require("child_process")',
+    `const i=JSON.parse(cp.execFileSync("scotty",["inspect","${peerId}","--json"],{encoding:"utf8"}))`,
+    `const r=JSON.parse(cp.execFileSync("scotty",["read","${peerId}","--json"],{encoding:"utf8"}))`,
+    'const t=i.turns?.find(x=>x.user?.includes("SCOTTY_LAB_PEER_INITIAL"))',
+    `if(i.id!=="${peerId}"||r.id!==i.id||r.epoch!==i.transport?.epoch||!Number.isInteger(r.sequence)||t?.state!=="completed"||!t.assistant?.includes("SCOTTY_LAB_PEER_READY")||!r.messages?.some(x=>x.role==="assistant"&&x.content?.includes("SCOTTY_LAB_PEER_READY")))process.exit(1)`,
+    "console.log(JSON.stringify({id:i.id,epoch:r.epoch,initialTurnId:t.id,readSequence:r.sequence}))",
+  ].join(";");
+
 // oxlint-disable-next-line eslint/complexity -- lab host correlates source CLI receipts with peer native turn and actor observations
 const proveInternalPeerControl = Effect.fnUntraced(function* (
   manifest: Manifest,
@@ -1507,7 +1511,8 @@ const proveInternalPeerControl = Effect.fnUntraced(function* (
     return yield* new LabFailure({
       message: "Internal peer did not have distinct warm Codex authority",
     });
-  const readPrompt = `Run one shell command exactly: scotty inspect ${peerId} --json && scotty read ${peerId} --json && scotty steer ${peerId} 'Run printf SCOTTY_LAB_PEER_FOLLOWUP once, then reply SCOTTY_LAB_PEER_DONE. Do not change files.' --json && printf SCOTTY_LAB_PEER_READ. Then reply SCOTTY_LAB_PEER_VISIBLE. Do not change files.`;
+  const validateRead = internalPeerReadValidator(peerId);
+  const readPrompt = `Run one shell command exactly: node -e '${validateRead}' && scotty steer ${peerId} 'Run printf SCOTTY_LAB_PEER_FOLLOWUP once, then reply SCOTTY_LAB_PEER_DONE. Do not change files.' --json && printf SCOTTY_LAB_PEER_READ. Then reply SCOTTY_LAB_PEER_VISIBLE. Do not change files.`;
   const readRaw = yield* runRecordedCli(
     manifest,
     "codex-workflow",
@@ -1529,30 +1534,29 @@ const proveInternalPeerControl = Effect.fnUntraced(function* (
   );
   const readSnapshot = yield* readCodexSnapshot(manifest, sourceId);
   const readTurn = readSnapshot.turns.find(({ id }) => id === readTurnId);
-  const readTool = readTurn?.tools.find(({ invocation }) => invocation.includes("scotty inspect"));
+  const readTool = readTurn?.tools.find(({ invocation }) => invocation.includes("node -e"));
   const lines = readTool?.output?.split("\n").filter((line) => line.startsWith('{"id":'));
-  if (lines?.length !== 3 || !readTool?.invocation.includes(`scotty steer ${peerId}`))
+  if (
+    lines?.length !== 2 ||
+    !readTool?.invocation.includes(`scotty steer ${peerId}`) ||
+    !readTool?.invocation.includes(`"inspect","${peerId}"`) ||
+    !readTool?.invocation.includes(`"read","${peerId}"`)
+  )
     return yield* new LabFailure({
       message: "Internal peer inspect/read/steer receipts were not observable",
     });
-  const inspected = yield* decodeCodexInspectJson(lines[0]).pipe(
-    Effect.mapError((cause) => failure(cause, "Internal peer inspect was invalid")),
+  const read = yield* decodeInternalPeerReadReceipt(lines[0]).pipe(
+    Effect.mapError((cause) => failure(cause, "Internal peer inspect/read receipt was invalid")),
   );
-  const read = yield* decodeCodexReadJson(lines[1]).pipe(
-    Effect.mapError((cause) => failure(cause, "Internal peer read was invalid")),
-  );
-  const steered = yield* decodeSteerJson(lines[2]).pipe(
+  const steered = yield* decodeSteerJson(lines[1]).pipe(
     Effect.mapError((cause) => failure(cause, "Internal peer steer was invalid")),
   );
   if (
-    inspected.id !== peerId ||
-    !inspected.turns.some(({ id, state }) => id === peerInitialTurnId && state === "completed") ||
     read.id !== peerId ||
+    read.initialTurnId !== peerInitialTurnId ||
+    read.epoch !== peerReadiness.runtime.runtimeGeneration ||
+    read.readSequence < 1 ||
     steered.id !== peerId ||
-    read.epoch !== inspected.transport.epoch ||
-    !read.messages.some(
-      ({ role, content }) => role === "assistant" && content.includes("SCOTTY_LAB_PEER_READY"),
-    ) ||
     steered.status !== "accepted" ||
     acceptedCodexTurnId(steered, peerId, "message") === undefined
   )
