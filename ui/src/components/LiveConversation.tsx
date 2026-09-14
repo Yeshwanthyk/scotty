@@ -506,16 +506,41 @@ function useConversationEvidence(sessionId: string, evidenceRevision: string | u
       setEvidence([]);
     }
     const controller = new AbortController();
-    void readEvidence(sessionId, controller.signal).then(
-      (next) => {
-        if (!controller.signal.aborted) setEvidence(next);
-      },
-      () => undefined,
-    );
-    return () => controller.abort();
+    let retryTimer: number | undefined;
+    void refreshConversationEvidence(sessionId, controller.signal, setEvidence, (retry) => {
+      retryTimer = window.setTimeout(() => void retry(), RETRY_POLL_MS);
+    });
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
   }, [evidenceRevision, sessionId]);
   return evidence;
 }
+
+type ConversationEvidenceReader = (
+  sessionId: string,
+  signal: AbortSignal,
+) => Promise<ReadonlyArray<EvidenceSummary>>;
+
+export const refreshConversationEvidence = (
+  sessionId: string,
+  signal: AbortSignal,
+  publish: (evidence: ReadonlyArray<EvidenceSummary>) => void,
+  scheduleRetry: (retry: () => Promise<void>) => void,
+  read: ConversationEvidenceReader = readEvidence,
+): Promise<void> =>
+  read(sessionId, signal).then(
+    (evidence) => {
+      if (!signal.aborted) publish(evidence);
+    },
+    () => {
+      if (!signal.aborted)
+        scheduleRetry(() =>
+          refreshConversationEvidence(sessionId, signal, publish, scheduleRetry, read),
+        );
+    },
+  );
 
 const evidenceRevisionFor = (snapshot: ConversationSnapshot | undefined): string | undefined =>
   snapshot?.turns

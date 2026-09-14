@@ -334,23 +334,30 @@ const evidencePath = (sessionId: string, jobId: string): string =>
   `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(jobId)}`;
 
 const includesEvidenceMarker = (value: string, marker: string): boolean => {
-  const index = value.indexOf(marker);
-  if (index < 0) return false;
-  const following = value.at(index + marker.length);
-  return following === undefined || !/[A-Za-z0-9_-]/u.test(following);
+  let from = 0;
+  while (from < value.length) {
+    const index = value.indexOf(marker, from);
+    if (index < 0) return false;
+    const following = value.at(index + marker.length);
+    if (following === undefined || !/[A-Za-z0-9_-]/u.test(following)) return true;
+    from = index + marker.length;
+  }
+  return false;
 };
 
-const turnReferencesEvidence = (
-  turn: ConversationTurn,
+const evidenceOwnerId = (
+  turns: ReadonlyArray<ConversationTurn>,
   evidence: EvidenceSummary,
   sessionId: string,
-): boolean => {
+): string | undefined => {
   const reference = `scotty-evidence:${evidence.jobId}`;
   const summaryPath = evidencePath(sessionId, evidence.jobId);
-  return [turn.assistant, ...turn.tools.flatMap((tool) => tool.output ?? [])].some(
-    (value) =>
-      includesEvidenceMarker(value, reference) || includesEvidenceMarker(value, summaryPath),
+  const referencesEvidence = (value: string) =>
+    includesEvidenceMarker(value, reference) || includesEvidenceMarker(value, summaryPath);
+  const toolOwner = turns.find((turn) =>
+    turn.tools.some((tool) => tool.output !== undefined && referencesEvidence(tool.output)),
   );
+  return toolOwner?.id ?? turns.findLast((turn) => referencesEvidence(turn.assistant))?.id;
 };
 
 function TurnEvidence({
@@ -531,10 +538,7 @@ function CompletedTurn({
       <div {...stylex.props(styles.turnBody)}>
         <TurnContent assistant={turn.assistant} turn={turn} />
         {sessionId === undefined ? null : (
-          <TurnEvidence
-            evidence={evidence.filter((job) => turnReferencesEvidence(turn, job, sessionId))}
-            sessionId={sessionId}
-          />
+          <TurnEvidence evidence={evidence} sessionId={sessionId} />
         )}
       </div>
     </details>
@@ -556,6 +560,10 @@ export function Conversation({
   const completed = turns.filter((turn) => turn.state !== "streaming");
   const latestCompleted = active === undefined ? completed.at(-1) : undefined;
   const foldedCompleted = latestCompleted === undefined ? completed : completed.slice(0, -1);
+  const evidenceForTurn = (turn: ConversationTurn): ReadonlyArray<EvidenceSummary> =>
+    sessionId === undefined
+      ? []
+      : evidence.filter((job) => evidenceOwnerId(turns, job, sessionId) === turn.id);
   const [visibleCompleted, setVisibleCompleted] = useState(3);
   const [visibleCharacters, setVisibleCharacters] = useState(active?.assistant.length ?? 0);
   const activeTurnId = useRef(active?.id);
@@ -622,7 +630,12 @@ export function Conversation({
           </button>
         ) : null}
         {foldedCompleted.slice(-visibleCompleted).map((turn) => (
-          <CompletedTurn evidence={evidence} key={turn.id} sessionId={sessionId} turn={turn} />
+          <CompletedTurn
+            evidence={evidenceForTurn(turn)}
+            key={turn.id}
+            sessionId={sessionId}
+            turn={turn}
+          />
         ))}
         {latestCompleted === undefined ? null : (
           <article
@@ -632,12 +645,7 @@ export function Conversation({
           >
             <TurnContent assistant={latestCompleted.assistant} turn={latestCompleted} />
             {sessionId === undefined ? null : (
-              <TurnEvidence
-                evidence={evidence.filter((job) =>
-                  turnReferencesEvidence(latestCompleted, job, sessionId),
-                )}
-                sessionId={sessionId}
-              />
+              <TurnEvidence evidence={evidenceForTurn(latestCompleted)} sessionId={sessionId} />
             )}
           </article>
         )}
@@ -665,10 +673,7 @@ export function Conversation({
               ) : null}
             </div>
             {sessionId === undefined ? null : (
-              <TurnEvidence
-                evidence={evidence.filter((job) => turnReferencesEvidence(active, job, sessionId))}
-                sessionId={sessionId}
-              />
+              <TurnEvidence evidence={evidenceForTurn(active)} sessionId={sessionId} />
             )}
           </article>
         )}

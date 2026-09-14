@@ -139,4 +139,43 @@ describe("conversation disclosure", () => {
 
     expect(markup).not.toContain('aria-label="Browser evidence"');
   });
+
+  it("finds an exact evidence marker after an identifier that shares its prefix", () => {
+    const turn: ConversationTurn = {
+      ...completed("mixed-evidence"),
+      assistant: "Compared scotty-evidence:job-10 before confirming scotty-evidence:job-1.",
+    };
+    const markup = renderToStaticMarkup(
+      <Conversation evidence={[evidence]} sessionId="a0b1c2d3e4f5" turns={[turn]} />,
+    );
+
+    expect(markup).toContain('aria-label="Browser evidence"');
+  });
+
+  it("keeps evidence with its tool turn when a later turn quotes the same reference", () => {
+    const owner: ConversationTurn = {
+      ...completed("owner"),
+      tools: [
+        {
+          id: "tool-evidence",
+          invocation: "Browser evidence",
+          label: "Browser evidence",
+          state: "completed",
+          output: '{"summaryUrl":"/s/a0b1c2d3e4f5/evidence/job-1"}',
+        },
+      ],
+    };
+    const quote: ConversationTurn = {
+      ...completed("quote"),
+      assistant: "Earlier proof was scotty-evidence:job-1.",
+    };
+    const markup = renderToStaticMarkup(
+      <Conversation evidence={[evidence]} sessionId="a0b1c2d3e4f5" turns={[owner, quote]} />,
+    );
+
+    expect(markup.match(/aria-label="Browser evidence"/gu)).toHaveLength(1);
+    expect(markup.indexOf('aria-label="Browser evidence"')).toBeLessThan(
+      markup.indexOf("Earlier proof was"),
+    );
+  });
 });
