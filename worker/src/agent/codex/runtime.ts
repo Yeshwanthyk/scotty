@@ -5,18 +5,10 @@ import {
 } from "./persistence-format";
 import { readCodexSavedState, writeCodexSavedState } from "./persistence";
 import { Cause, Data, Deferred, Effect, Option, Predicate, Result, Schema, Scope } from "effect";
-import {
-  CODEX_MAX_TEXT_BYTES,
-  CODEX_VERSION,
-  type CodexNotification,
-} from "../../../../protocol/codex-app-server";
+import { CODEX_VERSION, type CodexNotification } from "../../../../protocol/codex-app-server";
 import {
   CanonicalConversationTurnSchema,
   CanonicalConversationToolSchema,
-  CONVERSATION_MAX_TEXT_BYTES,
-  CONVERSATION_MAX_TURNS,
-  CONVERSATION_MAX_TOOLS_PER_TURN,
-  CONVERSATION_MAX_TOOL_VALUE_BYTES,
 } from "../../../../protocol/conversation";
 import { Cleanup, type CodexHostError } from "./errors";
 import { CodexLaunch } from "./process";
@@ -30,8 +22,6 @@ const bytes = (maximum: number) =>
   );
 export const CodexGeneration = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,128}$/u));
 const Identifier = bytes(256).check(Schema.isMinLength(1));
-export const CODEX_CONTROL_MAX_BODY = 256 * 1024;
-export const CODEX_CONTROL_MAX_RESPONSE = 512 * 1024;
 export const CODEX_CONTROL_TOKEN_HEADER = "x-scotty-codex-token";
 export const CODEX_CONTROL_GENERATION_HEADER = "x-scotty-codex-generation";
 export const CodexControlToken = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
@@ -43,12 +33,12 @@ export const CodexRuntimeStart = Schema.Struct({
 export const CodexPrompt = Schema.Struct({
   reconcileOnly: Schema.optionalKey(Schema.Boolean),
   threadId: Identifier,
-  text: bytes(CODEX_MAX_TEXT_BYTES).check(Schema.isMinLength(1)),
+  text: Schema.String.check(Schema.isMinLength(1)),
   clientUserMessageId: Schema.optionalKey(Identifier),
 });
 export const CodexSteer = Schema.Struct({
   threadId: Identifier,
-  text: bytes(CODEX_MAX_TEXT_BYTES).check(Schema.isMinLength(1)),
+  text: Schema.String.check(Schema.isMinLength(1)),
   expectedTurnId: Identifier,
   clientUserMessageId: Schema.optionalKey(Identifier),
 });
@@ -75,7 +65,7 @@ const PromptState = Schema.Union([
     status: Schema.Literal("terminal"),
     turnId: Identifier,
     outcome: Schema.Literals(["completed", "interrupted", "failed"]),
-    text: bytes(CODEX_MAX_TEXT_BYTES),
+    text: Schema.String,
   }),
   Schema.Struct({ status: Schema.Literal("failed"), turnId: Schema.NullOr(Identifier) }),
 ]);
@@ -95,16 +85,10 @@ export const CodexSnapshot = Schema.Struct({
   failure: Schema.NullOr(Identifier),
   failureDiagnostic: Schema.optionalKey(bytes(256)),
   prompt: PromptState,
-  tools: Schema.optionalKey(
-    Schema.Array(CanonicalConversationToolSchema).check(
-      Schema.isMaxLength(CONVERSATION_MAX_TOOLS_PER_TURN),
-    ),
-  ),
+  tools: Schema.optionalKey(Schema.Array(CanonicalConversationToolSchema)),
   toolsTruncated: Schema.optionalKey(Schema.Boolean),
   sequence: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-  turns: Schema.optionalKey(
-    Schema.Array(CanonicalConversationTurnSchema).check(Schema.isMaxLength(CONVERSATION_MAX_TURNS)),
-  ),
+  turns: Schema.optionalKey(Schema.Array(CanonicalConversationTurnSchema)),
   turnsTruncated: Schema.optionalKey(Schema.Boolean),
   cleanup: Schema.NullOr(Cleanup),
 });
@@ -142,8 +126,6 @@ export const readCodexSnapshot = Effect.fnUntraced(function* (
   body: string,
   expected: { readonly generation: string; readonly threadId?: string; readonly turnId?: string },
 ) {
-  if (new TextEncoder().encode(body).length > CODEX_CONTROL_MAX_RESPONSE)
-    return yield* new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" });
   const snapshot = yield* decodeSnapshotJson(body).pipe(
     Effect.mapError(() => new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" })),
   );
@@ -180,32 +162,6 @@ const fingerprintOperation = (
     try: () => sha256Hex(JSON.stringify([threadId, mode, text, turnId ?? null])),
     catch: () => new CodexBridgeError({ code: "host_failed", outcome: "rejected" }),
   });
-
-const boundedConversationText = (
-  text: string,
-): { readonly text: string; readonly truncated: boolean } => {
-  let bytes = 0;
-  let value = "";
-  for (const character of text) {
-    const size = new TextEncoder().encode(character).byteLength;
-    if (bytes + size > CONVERSATION_MAX_TEXT_BYTES) return { text: value, truncated: true };
-    value += character;
-    bytes += size;
-  }
-  return { text: value, truncated: false };
-};
-const boundedToolText = (text: string) => {
-  let bytes = 0;
-  let value = "";
-  for (const character of text) {
-    const size = new TextEncoder().encode(character).byteLength;
-    if (bytes + size > CONVERSATION_MAX_TOOL_VALUE_BYTES) return { text: value, truncated: true };
-    value += character;
-    bytes += size;
-  }
-  return { text: value, truncated: false };
-};
-const MAX_HISTORY_BYTES = 256 * 1024;
 
 export const makeCodexRuntime = Effect.fnUntraced(function* (
   host: Host,
@@ -256,49 +212,27 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
       return new CodexBridgeError({ code: "idempotency_conflict", outcome: "rejected" });
     return existing;
   };
-  const dropOldestHistory = (): boolean => {
-    if (history.length <= 1) return false;
-    history.splice(1, 1);
-    turnsTruncated = true;
-    return true;
-  };
-  const reserveActiveTurn = (): void => {
-    while (history.length > CONVERSATION_MAX_TURNS - 1) {
-      if (!dropOldestHistory()) return;
-    }
-  };
   const appendHistory = (turn: ConversationTurn): void => {
     history.push(turn);
-    while (
-      history.length > CONVERSATION_MAX_TURNS - (activeTurn === undefined ? 0 : 1) ||
-      new TextEncoder().encode(JSON.stringify(history)).byteLength > MAX_HISTORY_BYTES
-    ) {
-      if (!dropOldestHistory()) break;
-    }
   };
   const appendSteeringText = (turnId: string, text: string): void => {
     const current =
       activeTurn?.id === turnId ? activeTurn : history.find((turn) => turn.id === turnId);
     if (current === undefined) return;
-    const updatedUser = boundedConversationText(`${current.user}\n${text}`);
-    if (activeTurn?.id === turnId) activeTurn = { ...current, user: updatedUser.text };
+    const updatedUser = `${current.user}\n${text}`;
+    if (activeTurn?.id === turnId) activeTurn = { ...current, user: updatedUser };
     else {
       const index = history.findIndex((turn) => turn.id === turnId);
-      if (index >= 0) history[index] = { ...current, user: updatedUser.text };
+      if (index >= 0) history[index] = { ...current, user: updatedUser };
     }
-    if (updatedUser.truncated) turnsTruncated = true;
   };
   const projectLateCommand = (old: ConversationTurn["tools"][number], event: CodexNotification) => {
     if (event.method === "item/commandExecution/outputDelta") {
-      const bounded = boundedToolText(`${old.output ?? ""}${event.params.delta}`);
-      if (bounded.truncated) turnsTruncated = true;
-      return { ...old, output: bounded.text };
+      return { ...old, output: `${old.output ?? ""}${event.params.delta}` };
     }
     if (event.method !== "item/completed" || !Predicate.hasProperty(event.params.item, "command"))
       return old;
     const aggregated = event.params.item.aggregatedOutput;
-    const bounded = aggregated == null ? undefined : boundedToolText(aggregated);
-    if (bounded?.truncated) turnsTruncated = true;
     return {
       ...old,
       state:
@@ -307,7 +241,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
           : event.params.item.status === "inProgress"
             ? ("running" as const)
             : event.params.item.status,
-      ...(bounded === undefined ? {} : { output: bounded.text }),
+      ...(aggregated == null ? {} : { output: aggregated }),
     };
   };
   const reconcileLateCommands = (): void => {
@@ -401,7 +335,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
     );
     if (command.threadId !== initial.threadId)
       return yield* new CodexBridgeError({ code: "wrong_thread", outcome: "rejected" });
-    const boundedUser = boundedConversationText(command.text);
+    const userText = command.text;
     const fingerprint = yield* fingerprintOperation(command.threadId, "message", command.text);
     const existing = existingOperation(command.clientUserMessageId, "message", fingerprint);
     if (Predicate.isTagged(existing, "CodexBridgeError")) return yield* existing;
@@ -439,15 +373,13 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
           const turn = yield* host.prompt(command.text, command.clientUserMessageId);
           turnId = turn.turnId;
           prompt = { status: "running", turnId };
-          reserveActiveTurn();
           activeTurn = {
             id: turnId,
             state: "streaming",
-            user: boundedUser.text,
+            user: userText,
             assistant: "",
             tools: [],
           };
-          if (boundedUser.truncated) turnsTruncated = true;
           const admission = { generation, threadId: command.threadId, turnId };
           operation.status = "accepted";
           operation.admission = admission;
@@ -456,9 +388,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
           if (terminal.id !== turnId)
             return yield* new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" });
           const current = host.inspect();
-          const assistant = boundedConversationText(
-            terminal.items.map((item) => item.text).join(""),
-          );
+          const assistant = terminal.items.map((item) => item.text).join("");
           const toolValues = current.tools ?? [];
           const terminalTurn: ConversationTurn = {
             id: turnId,
@@ -468,8 +398,8 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
                 : terminal.status === "interrupted"
                   ? "aborted"
                   : "failed",
-            user: activeTurn?.user ?? boundedUser.text,
-            assistant: assistant.text,
+            user: activeTurn?.user ?? userText,
+            assistant,
             ...(terminal.status !== "failed"
               ? {}
               : {
@@ -480,7 +410,6 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
                 }),
             tools: toolValues,
           };
-          if (assistant.truncated || current.toolsTruncated === true) turnsTruncated = true;
           appendHistory(terminalTurn);
           activeTurn = undefined;
           prompt = {
@@ -500,7 +429,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
                 appendHistory({
                   id: turnId,
                   state: "failed",
-                  user: activeTurn?.user ?? boundedUser.text,
+                  user: activeTurn?.user ?? userText,
                   assistant: "",
                   tools: current.tools ?? [],
                 });

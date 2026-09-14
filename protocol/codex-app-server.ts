@@ -1,8 +1,6 @@
 import { Result, Schema } from "effect";
 
 export const CODEX_VERSION = "0.154.0";
-export const CODEX_MAX_TEXT_BYTES = 64 * 1024;
-
 const utf8 = new TextEncoder();
 const boundedText = (max: number) =>
   Schema.String.check(
@@ -10,7 +8,7 @@ const boundedText = (max: number) =>
     Schema.makeFilter((text) => utf8.encode(text).byteLength <= max),
   );
 const Identifier = boundedText(256).check(Schema.isMinLength(1));
-const Text = boundedText(CODEX_MAX_TEXT_BYTES);
+const Text = Schema.String;
 const Path = boundedText(4096).check(Schema.isPattern(/^\//u));
 const SafeInteger = Schema.Int.check(
   Schema.isBetween({ minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER }),
@@ -103,7 +101,7 @@ const AgentMessage = Schema.Struct({
   text: Text,
   phase: Schema.optionalKey(Schema.NullOr(Schema.Literals(["commentary", "final_answer"]))),
 }).annotate(projection);
-const TurnError = Schema.Struct({ message: boundedText(4096) }).annotate(projection);
+const TurnError = Schema.Struct({ message: Text }).annotate(projection);
 const turnFields = {
   id: Identifier,
   items: Schema.Array(AgentMessage).check(Schema.isMaxLength(1)),
@@ -129,7 +127,7 @@ const TerminalTurn = Schema.Struct({
   .annotate(projection);
 
 const InitializeResult = Schema.Struct({
-  userAgent: boundedText(4096),
+  userAgent: Text,
   codexHome: Path,
   platformFamily: Identifier,
   platformOs: Identifier,
@@ -161,7 +159,7 @@ const RpcError = Schema.Struct({
   id: RequestId,
   error: Schema.Struct({
     code: SafeInteger,
-    message: boundedText(4096),
+    message: Text,
   }).annotate(projection),
 });
 const response = <S extends Schema.Constraint>(result: S) =>
@@ -172,8 +170,7 @@ const CommandItem = Schema.Struct({
   id: Identifier,
   command: Text,
   status: Schema.Literals(["inProgress", "completed", "failed", "declined"]),
-  // Native sends the complete command aggregate even after bounded output deltas.
-  // Conversation projection truncates this field after the native record is decoded.
+  // Native sends the complete command aggregate even after output deltas.
   aggregatedOutput: Schema.optionalKey(Schema.NullOr(Schema.String)),
 }).annotate(projection);
 const SubAgentActivityItem = Schema.Struct({
@@ -238,6 +235,132 @@ const NotificationSchema = Schema.Union([
 ]);
 export type CodexNotification = typeof NotificationSchema.Type;
 
+// Pinned rust-v0.154.0 ServerNotification.json. Every native method has one
+// deliberate disposition; the test compares this inventory to that schema.
+export const CODEX_NOTIFICATION_POLICY = {
+  execution: [
+    "error",
+    "item/agentMessage/delta",
+    "item/commandExecution/outputDelta",
+    "item/completed",
+    "item/started",
+    "turn/completed",
+    "turn/started",
+  ],
+  state: ["model/rerouted", "thread/closed", "thread/deleted", "thread/settings/updated"],
+  discard: [
+    "account/login/completed",
+    "account/rateLimits/updated",
+    "account/updated",
+    "app/list/updated",
+    "autoApprovalReview/strictReviewRequired",
+    "command/exec/outputDelta",
+    "configWarning",
+    "deprecationNotice",
+    "externalAgentConfig/import/completed",
+    "externalAgentConfig/import/progress",
+    "fs/changed",
+    "fuzzyFileSearch/sessionCompleted",
+    "fuzzyFileSearch/sessionUpdated",
+    "guardianWarning",
+    "hook/completed",
+    "hook/started",
+    "item/autoApprovalReview/completed",
+    "item/autoApprovalReview/started",
+    "item/commandExecution/terminalInteraction",
+    "item/fileChange/outputDelta",
+    "item/fileChange/patchUpdated",
+    "item/mcpToolCall/progress",
+    "item/plan/delta",
+    "item/reasoning/summaryPartAdded",
+    "item/reasoning/summaryTextDelta",
+    "item/reasoning/textDelta",
+    "mcpServer/event/stream/notification",
+    "mcpServer/oauthLogin/completed",
+    "mcpServer/startupStatus/updated",
+    "model/safetyBuffering/updated",
+    "model/verification",
+    "modelProvider/authRecoveryCompleted",
+    "modelProvider/authRecoveryStarted",
+    "process/exited",
+    "process/outputDelta",
+    "project/changed",
+    "remoteControl/status/changed",
+    "serverRequest/resolved",
+    "skills/changed",
+    "thread/archived",
+    "thread/compacted",
+    "thread/environment/connected",
+    "thread/environment/disconnected",
+    "thread/goal/cleared",
+    "thread/goal/updated",
+    "thread/name/updated",
+    "thread/project/updated",
+    "thread/queue/changed",
+    "thread/realtime/closed",
+    "thread/realtime/error",
+    "thread/realtime/item/completed",
+    "thread/realtime/item/started",
+    "thread/realtime/item/transcript/delta",
+    "thread/realtime/itemAdded",
+    "thread/realtime/outputAudio/delta",
+    "thread/realtime/sdp",
+    "thread/realtime/started",
+    "thread/realtime/transcript/delta",
+    "thread/realtime/transcript/done",
+    "thread/reverted",
+    "thread/started",
+    "thread/status/changed",
+    "thread/tokenUsage/updated",
+    "thread/unarchived",
+    "turn/diff/updated",
+    "turn/moderationMetadata",
+    "turn/plan/updated",
+    "warning",
+    "windows/worldWritableWarning",
+    "windowsSandbox/setupCompleted",
+  ],
+} as const;
+
+const NotificationEnvelope = Schema.Struct({
+  method: Schema.String.check(Schema.isMinLength(1)),
+  params: Schema.JsonObject,
+  emittedAtMs: Schema.optionalKey(SafeInteger),
+});
+const StateNotification = Schema.Union([
+  Schema.Struct({
+    method: Schema.Literals(["thread/closed", "thread/deleted"]),
+    params: Schema.Struct({ threadId: Identifier }).annotate(projection),
+    emittedAtMs: Schema.optionalKey(SafeInteger),
+  }),
+  Schema.Struct({
+    method: Schema.Literal("thread/settings/updated"),
+    params: Schema.Struct({
+      threadId: Identifier,
+      threadSettings: Schema.Struct({
+        model: Identifier,
+        modelProvider: Identifier,
+        cwd: Path,
+        approvalPolicy: Identifier,
+        approvalsReviewer: Identifier,
+        sandboxPolicy: Schema.Struct({ type: Identifier }).annotate(projection),
+        effort: Schema.optionalKey(Schema.NullOr(Identifier)),
+      }).annotate(projection),
+    }).annotate(projection),
+    emittedAtMs: Schema.optionalKey(SafeInteger),
+  }),
+  Schema.Struct({
+    method: Schema.Literal("model/rerouted"),
+    params: Schema.Struct({
+      threadId: Identifier,
+      turnId: Identifier,
+      fromModel: Identifier,
+      toModel: Identifier,
+    }).annotate(projection),
+    emittedAtMs: Schema.optionalKey(SafeInteger),
+  }),
+]);
+
 const ServerRequest = Schema.Struct({
   id: RequestId,
   method: Identifier,
@@ -280,6 +403,12 @@ const jsonDecoder =
     Result.mapError(decode(line), () => "invalid_message" as const);
 
 const strict = { onExcessProperty: "error" } as const;
+export const decodeCodexNotificationEnvelope = jsonDecoder(
+  Schema.decodeUnknownResult(Schema.fromJsonString(NotificationEnvelope), strict),
+);
+export const decodeCodexStateNotification = jsonDecoder(
+  Schema.decodeUnknownResult(Schema.fromJsonString(StateNotification), strict),
+);
 export const decodeCodexClientMessage = jsonDecoder(
   Schema.decodeUnknownResult(Schema.fromJsonString(CodexClientMessageSchema), strict),
 );

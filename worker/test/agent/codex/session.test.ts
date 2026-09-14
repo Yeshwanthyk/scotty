@@ -864,7 +864,7 @@ describe("scoped Codex session", () => {
         assert.equal(reply.success, false);
         assert.match(reply.contentItems[0].text, /^Hatch failed \(preparation_failed\)/u);
         assert.include(reply.contentItems[0].text, "SCOTTY_HATCH_SAFE_TAIL");
-        assert.isAtMost(new TextEncoder().encode(reply.contentItems[0].text).byteLength, 1200);
+        assert.isAbove(new TextEncoder().encode(reply.contentItems[0].text).byteLength, 1200);
         assert.equal(host.inspect().ready, true);
         yield* host.stop;
       }),
@@ -1189,7 +1189,7 @@ describe("scoped Codex session", () => {
       }),
   );
 
-  it.effect("rejects a late terminal interaction without command ownership", () =>
+  it.effect("discards a late terminal interaction without command ownership", () =>
     Effect.gen(function* () {
       const f = yield* fixture("tool");
       const host = yield* makeSession(f.transport);
@@ -1217,7 +1217,8 @@ describe("scoped Codex session", () => {
         method: "item/commandExecution/terminalInteraction",
         params: { threadId: "thread", turnId: "turn", itemId: "unknown-command" },
       });
-      assert.equal((yield* host.closed).failure, "stale_notification");
+      assert.equal(host.inspect().ready, true);
+      yield* host.stop;
     }),
   );
 
@@ -1314,7 +1315,7 @@ describe("scoped Codex session", () => {
     }),
   );
 
-  it.effect("keeps informational notifications turn-fenced", () =>
+  it.effect("discards informational notifications from an unrelated thread", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
       const host = yield* makeSession(f.transport);
@@ -1329,11 +1330,13 @@ describe("scoped Codex session", () => {
           contentIndex: 0,
         },
       });
-      const result = yield* Effect.result(turn.completed);
-      assert.ok(Result.isFailure(result));
-      assert.equal(result.failure.code, "stale_notification");
-      assert.equal(result.failure.staleDiagnostic, "item/reasoning/textDelta foreign active none");
-      assert.equal((yield* host.closed).failure, "stale_notification");
+      assert.equal(host.inspect().ready, true);
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+      });
+      assert.equal((yield* turn.completed).status, "completed");
+      yield* host.stop;
     }),
   );
 
@@ -1377,14 +1380,10 @@ describe("scoped Codex session", () => {
   );
 
   for (const event of [
-    {
-      method: "item/reasoning/textDelta",
-      params: { threadId: "thread", itemId: "reasoning", delta: "missing turn", contentIndex: 0 },
-    },
-    { method: "future/notification", params: {} },
     { method: "item/started", params: { threadId: "thread", turnId: "turn", item: {} } },
+    { method: "future/notification", params: null },
   ] as const)
-    it.effect(`rejects malformed or unknown notification ${event.method}`, () =>
+    it.effect(`rejects malformed notification envelope or consumed event ${event.method}`, () =>
       Effect.gen(function* () {
         const f = yield* fixture();
         const host = yield* makeSession(f.transport);
@@ -1392,10 +1391,7 @@ describe("scoped Codex session", () => {
         yield* f.emit(event);
         const result = yield* Effect.result(turn.completed);
         assert.ok(Result.isFailure(result));
-        assert.equal(
-          result.failure.code,
-          event.method === "item/started" ? "invalid_message" : "unsupported_notification",
-        );
+        assert.equal(result.failure.code, "invalid_message");
         assert.equal((yield* host.closed).failure, result.failure.code);
       }),
     );
@@ -1728,7 +1724,8 @@ it.effect("delivers an oversized command completion and the next record", () =>
     const tools = makeCodexTools();
     tools.accept(first.success);
     assert.equal(tools.snapshot().tools[0]?.state, "completed");
-    assert.equal(tools.snapshot().toolsTruncated, true);
+    assert.equal(tools.snapshot().toolsTruncated, false);
+    assert.equal(tools.snapshot().tools[0]?.output, aggregate);
     const second = decodeCodexNotification(lines[1]);
     assert.ok(Result.isSuccess(second));
     assert.equal(second.success.method, "turn/completed");
@@ -1870,11 +1867,154 @@ it.effect("projects only structured upstream category and numeric HTTP status", 
   }),
 );
 
-it.effect("rejects a goal-cleared notification for a different thread", () =>
+it.effect(
+  "classifies the pinned activeTurnNotSteerable object without publishing error prose",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      const turn = yield* host.prompt("hello");
+      yield* f.emit({
+        method: "error",
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          willRetry: false,
+          error: {
+            message: "SECRET ERROR PROSE",
+            codexErrorInfo: { activeTurnNotSteerable: { turnKind: "review" } },
+          },
+        },
+      });
+      yield* f.emit({
+        method: "turn/completed",
+        params: {
+          threadId: "thread",
+          turn: {
+            id: "turn",
+            status: "failed",
+            items: [],
+            error: { message: "SECRET ERROR PROSE" },
+          },
+        },
+      });
+      assert.equal((yield* turn.completed).status, "failed");
+      assert.equal(host.inspect().turnFailureDiagnostic, "activeTurnNotSteerable:review");
+      assert.notInclude(JSON.stringify(host.inspect()), "SECRET ERROR PROSE");
+      yield* host.stop;
+    }),
+);
+
+it.effect("discards a goal-cleared notification for a different thread", () =>
   Effect.gen(function* () {
     const f = yield* fixture();
     const host = yield* makeSession(f.transport);
     yield* f.emit({ method: "thread/goal/cleared", params: { threadId: "another-thread" } });
-    assert.equal((yield* host.closed).failure, "stale_notification");
+    assert.equal(host.inspect().ready, true);
+    yield* host.stop;
+  }),
+);
+
+const matchingSettings = {
+  model: "gpt-5.2",
+  modelProvider: "scotty-managed",
+  cwd: "/isolated/workspace",
+  approvalPolicy: "never",
+  approvalsReviewer: "user",
+  sandboxPolicy: { type: "dangerFullAccess" },
+  effort: "high",
+};
+
+for (const method of ["thread/closed", "thread/deleted"] as const) {
+  it.effect(`invalidates readiness for the matching ${method}`, () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      yield* f.emit({ method, params: { threadId: "other-thread" }, emittedAtMs: 42 });
+      assert.equal(host.inspect().ready, true);
+      yield* f.emit({ method, params: { threadId: "thread" }, emittedAtMs: 43 });
+      assert.equal((yield* host.closed).failure, "not_ready");
+    }),
+  );
+}
+
+it.effect("checks matching settings and ignores child settings", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    const host = yield* makeSession(f.transport);
+    yield* f.emit({
+      method: "thread/settings/updated",
+      params: { threadId: "child", threadSettings: { ...matchingSettings, model: "other" } },
+      emittedAtMs: 42,
+    });
+    yield* f.emit({
+      method: "thread/settings/updated",
+      params: { threadId: "thread", threadSettings: matchingSettings },
+      emittedAtMs: 43,
+    });
+    assert.equal(host.inspect().ready, true);
+    yield* f.emit({
+      method: "thread/settings/updated",
+      params: {
+        threadId: "thread",
+        threadSettings: { ...matchingSettings, sandboxPolicy: { type: "readOnly" } },
+      },
+      emittedAtMs: 44,
+    });
+    assert.equal((yield* host.closed).failure, "settings_mismatch");
+  }),
+);
+
+it.effect("rejects a reroute away from the selected model while retaining child isolation", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    const host = yield* makeSession(f.transport);
+    yield* f.emit({
+      method: "model/rerouted",
+      params: {
+        threadId: "child",
+        turnId: "child-turn",
+        fromModel: "gpt-5.2",
+        toModel: "other",
+        reason: "test",
+      },
+      emittedAtMs: 42,
+    });
+    const turn = yield* host.prompt("hello");
+    yield* f.emit({
+      method: "model/rerouted",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        fromModel: "gpt-5.2",
+        toModel: "other",
+        reason: "test",
+      },
+      emittedAtMs: 43,
+    });
+    assert.ok(Result.isFailure(yield* Effect.result(turn.completed)));
+    assert.equal((yield* host.closed).failure, "settings_mismatch");
+  }),
+);
+
+it.effect("discards private advisory content before and after a turn without retaining prose", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    const host = yield* makeSession(f.transport);
+    yield* f.emit({
+      method: "item/reasoning/textDelta",
+      params: { delta: "PRIVATE_ADVISORY" },
+      emittedAtMs: 42,
+    });
+    const turn = yield* host.prompt("hello");
+    yield* f.emit({
+      method: "turn/completed",
+      params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+    });
+    yield* turn.completed;
+    yield* f.emit({ method: "thread/goal/cleared", params: {}, emittedAtMs: 43 });
+    assert.equal(host.inspect().ready, true);
+    assert.notInclude(JSON.stringify(host.inspect()), "PRIVATE_ADVISORY");
+    yield* host.stop;
   }),
 );

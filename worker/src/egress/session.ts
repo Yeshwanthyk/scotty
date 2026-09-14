@@ -598,7 +598,7 @@ export async function handleContainerSessionEgress(
       return rejectedRequest("Create requires a JSON POST request");
     const idempotencyKey = request.headers.get("idempotency-key");
     if (idempotencyKey === null) return rejectedRequest("Create requires an idempotency-key");
-    const bodyText = await readBoundedUtf8Body(request, PI_CONSOLE_MAX_RESPONSE_BYTES);
+    const bodyText = await readBoundedUtf8Body(request);
     if (bodyText === undefined) return rejectedRequest("Create request body is too large");
     const body = decodeJsonValue(bodyText);
     if (Option.isNone(body)) return rejectedRequest("Request body must be valid JSON");
@@ -626,7 +626,10 @@ export async function handleContainerSessionEgress(
       mediaType(request.headers.get("content-type")) !== "application/json"
     )
       return rejectedRequest("Control requires a JSON POST request");
-    const bodyText = await readBoundedUtf8Body(request, PI_CONSOLE_MAX_COMMAND_BYTES);
+    const bodyText =
+      action === "interrupt"
+        ? await readBoundedUtf8Body(request, PI_CONSOLE_MAX_COMMAND_BYTES)
+        : await readBoundedUtf8Body(request);
     if (bodyText === undefined) return rejectedRequest("Control request body is too large");
     const body = decodeJsonValue(bodyText);
     if (Option.isNone(body)) return rejectedRequest("Request body must be valid JSON");
@@ -641,7 +644,7 @@ export async function handleContainerSessionEgress(
       const delivery = decodeSessionMessageInput(body.value);
       if (Option.isNone(delivery)) return rejectedRequest("Invalid message delivery request");
       const message = parseBoundary(
-        () => parseSteerInput({ message: delivery.value.message }),
+        () => parseSteerInput({ message: delivery.value.message }, false),
         "Invalid steer request",
       );
       if (Result.isFailure(message)) return scottyErrorResponse(message.failure);

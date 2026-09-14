@@ -14,7 +14,6 @@ import {
   sendCodexSandboxMessage,
 } from "../agent/codex/sandbox";
 import { parseCodexRolloutListing } from "../agent/codex/rollout-export";
-import { CODEX_SAVED_STATE_MAX_BYTES } from "../agent/codex/persistence-format";
 import type { CodexSnapshot } from "../agent/codex/runtime";
 import { codexConversation } from "../agent/codex/conversation";
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
@@ -3412,11 +3411,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
             ),
           )
         : { selection: reservation.selection, configuration: reservation.configuration };
-    if (
-      pinned.selection?.agent === "codex" &&
-      new TextEncoder().encode(input.prompt).length > 64 * 1024
-    )
-      return yield* new ScottyError("bad_request", "Codex prompt exceeds its UTF-8 byte limit", {
+    if (pinned.selection?.agent !== "codex" && input.prompt.length > 64_000)
+      return yield* new ScottyError("bad_request", "prompt must be at most 64000 characters", {
         httpStatus: 400,
         exitCode: 2,
       });
@@ -4102,9 +4098,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
       )
       .pipe(Effect.mapError(() => this.upstreamError("Codex rollout archive failed", undefined)));
     const archive = yield* runtime
-      .readFile(path, 20 * 1024 * 1024)
+      .readFile(path)
       .pipe(Effect.mapError(() => this.upstreamError("Codex rollout archive failed", undefined)));
-    const members = parseSandboxTar(archive, CODEX_SAVED_STATE_MAX_BYTES);
+    const members = parseSandboxTar(archive, Number.POSITIVE_INFINITY);
     const expected = new Set(files.map((file) => file.path));
     if (
       Result.isFailure(members) ||
@@ -4112,9 +4108,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       members.success.some(
         (member) =>
           member.type !== "file" || member.modeClass !== "regular" || !expected.has(member.path),
-      ) ||
-      members.success.reduce((total, member) => total + member.bytes.byteLength, 0) >
-        CODEX_SAVED_STATE_MAX_BYTES
+      )
     )
       return yield* this.upstreamError("Codex rollout archive failed validation", undefined);
 

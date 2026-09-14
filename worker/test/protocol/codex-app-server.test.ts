@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Result } from "effect";
+import { readFileSync } from "node:fs";
+import { fileURLToPath, URL } from "node:url";
 import {
-  CODEX_MAX_TEXT_BYTES,
+  CODEX_NOTIFICATION_POLICY,
   decodeCodexClientMessage,
   decodeCodexInitializeResponse,
   decodeCodexInterruptResponse,
@@ -13,6 +15,24 @@ import {
   decodeCodexTurnStartResponse,
   rejectCodexServerRequest,
 } from "../../../protocol/codex-app-server";
+
+// Projection of pinned codex-rs/app-server-protocol/schema/json/ServerNotification.json
+// at 6b9826e3; compare against a fresh generated schema when updating the pin.
+const pinnedMethods: string[] = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL("../fixtures/codex-server-notification-methods-0.154.0.json", import.meta.url),
+    ),
+    "utf8",
+  ),
+);
+
+it("accounts for all 81 pinned public native notification methods exactly once", () => {
+  const classifications = Object.values(CODEX_NOTIFICATION_POLICY).flat();
+  assert.equal(pinnedMethods.length, 81);
+  assert.equal(new Set(classifications).size, classifications.length);
+  assert.deepEqual([...classifications].sort(), pinnedMethods);
+});
 
 const initialize = {
   id: 1,
@@ -653,21 +673,10 @@ describe("Codex 0.154.0 bounded protocol subset", () => {
       Result.isSuccess(decodeCodexNotification(JSON.stringify(aggregate("x".repeat(1024 * 1024))))),
     );
     assert.isTrue(
-      Result.isSuccess(
-        decodeCodexNotification(JSON.stringify(delta("x".repeat(CODEX_MAX_TEXT_BYTES)))),
-      ),
+      Result.isSuccess(decodeCodexNotification(JSON.stringify(delta("x".repeat(1024 * 1024))))),
     );
     assert.isTrue(
-      Result.isFailure(
-        decodeCodexNotification(JSON.stringify(delta("x".repeat(CODEX_MAX_TEXT_BYTES + 1)))),
-      ),
-    );
-    assert.isTrue(
-      Result.isFailure(
-        decodeCodexNotification(
-          JSON.stringify(delta("界".repeat(Math.floor(CODEX_MAX_TEXT_BYTES / 3) + 1))),
-        ),
-      ),
+      Result.isSuccess(decodeCodexNotification(JSON.stringify(delta("界".repeat(400_000))))),
     );
     const largeResponse = '{"id":1,"result":{}}'.padEnd(2 * 1024 * 1024 + 1, " ");
     assert.isTrue(Result.isSuccess(decodeCodexInterruptResponse(largeResponse)));

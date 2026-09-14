@@ -256,27 +256,30 @@ const listening = Effect.fnUntraced(function* () {
 });
 
 describe("private Codex production HTTP adapter", () => {
-  it.effect(
-    "bounds chunked bodies before admission even when the native reader closes the socket",
-    () =>
-      Effect.gen(function* () {
-        const f = yield* listening();
-        const client = yield* HttpClient.HttpClient;
-        const response = yield* client
-          .execute(
-            HttpClientRequest.post(`http://127.0.0.1:${f.port}/prompt`, {
-              headers,
-              body: HttpBody.stream(
-                Stream.make(new TextEncoder().encode("x".repeat(300000))),
-                "application/json",
+  it.effect("accepts a large chunked prompt body without a transport cap", () =>
+    Effect.gen(function* () {
+      const f = yield* listening();
+      const client = yield* HttpClient.HttpClient;
+      const response = yield* client
+        .execute(
+          HttpClientRequest.post(`http://127.0.0.1:${f.port}/prompt`, {
+            headers,
+            body: HttpBody.stream(
+              Stream.make(
+                new TextEncoder().encode(
+                  JSON.stringify({ threadId: "thread", text: "x".repeat(300000) }),
+                ),
               ),
-            }),
-          )
-          .pipe(Effect.result);
-        assert.ok(Result.isFailure(response));
-        assert.equal(f.calls(), 0);
-        assert.equal((yield* exchange(f.port, "GET", "/health")).status, 200);
-      }).pipe(Effect.provide(FetchHttpClient.layer)),
+              "application/json",
+            ),
+          }),
+        )
+        .pipe(Effect.result);
+      assert.ok(Result.isSuccess(response));
+      assert.equal(response.success.status, 202);
+      assert.equal(f.calls(), 1);
+      assert.equal((yield* exchange(f.port, "GET", "/health")).status, 200);
+    }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
 
   it.effect("executes launch, native JSONL adapter and HTTP read/stop with a synthetic child", () =>
@@ -454,7 +457,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
   );
 
   it.effect(
-    "rejects missing token on every route, URL credentials, wrong thread and invalid/oversized bodies",
+    "rejects missing token on every route, URL credentials, wrong thread and invalid bodies",
     () =>
       Effect.gen(function* () {
         const f = yield* listening();
@@ -469,13 +472,20 @@ createInterface({input:process.stdin}).on('line', (line) => {
         for (const [body, status] of [
           [JSON.stringify({ threadId: "wrong", text: "hello" }), 409],
           ["not-json", 400],
-          [JSON.stringify({ threadId: "thread", text: "x".repeat(300000) }), 400],
           [JSON.stringify({ threadId: "thread", text: "hello", extra: true }), 400],
         ] as const) {
           const result = yield* exchange(f.port, "POST", "/prompt", body);
           assert.equal(result.status, status);
         }
         assert.equal(f.calls(), 0);
+        const large = yield* exchange(
+          f.port,
+          "POST",
+          "/prompt",
+          JSON.stringify({ threadId: "thread", text: "x".repeat(300000) }),
+        );
+        assert.equal(large.status, 202);
+        assert.equal(f.calls(), 1);
       }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
 
@@ -546,14 +556,22 @@ createInterface({input:process.stdin}).on('line', (line) => {
     }),
   );
 
-  it.effect("bounds serialized responses even if a downstream snapshot exceeds its contract", () =>
+  it.effect("retains serialized snapshot text beyond the former response cap", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
       const control = yield* makeCodexControl(
         {
           ...f.runtime,
           snapshot: f.runtime.snapshot.pipe(
-            Effect.map((proof) => ({ ...proof, failure: "x".repeat(600000) })),
+            Effect.map((proof) => ({
+              ...proof,
+              prompt: {
+                status: "terminal" as const,
+                turnId: "turn",
+                outcome: "completed" as const,
+                text: "x".repeat(600000),
+              },
+            })),
           ),
         },
         token,
@@ -564,13 +582,11 @@ createInterface({input:process.stdin}).on('line', (line) => {
           HttpServerRequest.fromWeb(new Request("http://localhost/snapshot", { headers })),
         ),
       );
-      assert.equal(response.status, 502);
+      assert.equal(response.status, 200);
       const body = yield* Effect.promise(() => HttpServerResponse.toWeb(response).text());
-      assert.deepEqual(yield* decodeError(body), {
-        error: "invalid_snapshot",
-        outcome: "ambiguous",
-      });
-      assert.ok(body.length < 100);
+      const snapshot = yield* readCodexSnapshot(body, { generation: "generation-1" });
+      assert.equal(snapshot.prompt.status, "terminal");
+      assert.ok(body.length > 600000);
     }),
   );
 

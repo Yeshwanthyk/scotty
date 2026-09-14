@@ -11,7 +11,7 @@ import {
 } from "../../../protocol/pi-console";
 import { Option, Result, Schema } from "effect";
 import { readBoundedJson } from "../shared/bounded-http";
-import { ScottyError } from "./contracts";
+import { parseSteerInput, ScottyError } from "./contracts";
 import type { Sandbox } from "./object";
 import { inspectCanonicalConversation } from "./conversation";
 
@@ -96,6 +96,7 @@ export async function steerSessionControl(
         exitCode: 2,
       }),
     );
+  parseSteerInput({ message });
   return steerPassiveSession(target, id, message);
 }
 
