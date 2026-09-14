@@ -382,11 +382,13 @@ const styles = stylex.create({
 
 export function SessionWorkbench({
   previewTurns,
+  defaultBranch,
   children,
   runtimeAvailable,
   sessionId,
 }: {
   readonly previewTurns?: ReadonlyArray<ConversationTurn>;
+  readonly defaultBranch: string | null;
   readonly children: ReactNode;
   readonly runtimeAvailable: boolean;
   readonly sessionId: string;
@@ -413,7 +415,7 @@ export function SessionWorkbench({
     <div data-design="workbench" {...stylex.props(styles.root)}>
       <nav aria-label="Session workbench" {...stylex.props(styles.toolbar)}>
         <span {...stylex.props(styles.toolbarLabel)}>
-          {changesOpen ? "Working changes" : "Conversation"}
+          {changesOpen ? "Branch changes" : "Conversation"}
         </span>
         <div {...stylex.props(styles.toolbarActions)}>
           <ToolButton
@@ -470,7 +472,11 @@ export function SessionWorkbench({
       >
         <div {...stylex.props(styles.main)}>
           {changesOpen ? (
-            <ChangesView sessionId={sessionId} preview={previewTurns !== undefined} />
+            <ChangesView
+              sessionId={sessionId}
+              preview={previewTurns !== undefined}
+              defaultBranch={defaultBranch}
+            />
           ) : (
             children
           )}
@@ -791,33 +797,47 @@ const previewPatch: ChangedFilePatch = {
 function ChangesView({
   sessionId,
   preview,
+  defaultBranch,
 }: {
   readonly sessionId: string;
   readonly preview: boolean;
+  readonly defaultBranch: string | null;
 }) {
+  const comparison = defaultBranch ?? "the default branch";
+  const [refresh, setRefresh] = useState(0);
   const [split, setSplit] = useState(false);
   const [words, setWords] = useState(true);
   const [files, setFiles] = useState<ReadonlyArray<ChangedFile>>();
   const [selected, setSelected] = useState<ChangedFile>();
   const [patch, setPatch] = useState<ChangedFilePatch>();
   const [error, setError] = useState<string>();
-  const load = (): void => {
+  const load = (): void => setRefresh((value) => value + 1);
+  useEffect(() => {
     setError(undefined);
     if (preview) {
       setFiles([previewPatch]);
       setSelected(previewPatch);
       return;
     }
-    void readChangedFiles(sessionId)
+    const controller = new AbortController();
+    setFiles(undefined);
+    void readChangedFiles(sessionId, controller.signal)
       .then((next) => {
+        if (controller.signal.aborted) return;
         setFiles(next);
-        setSelected(next.find((file) => file.patchable) ?? next[0]);
+        setSelected(
+          (current) =>
+            next.find((file) => file.path === current?.path) ??
+            next.find((file) => file.patchable) ??
+            next[0],
+        );
       })
-      .catch((reason: unknown) =>
-        setError(reason instanceof Error ? reason.message : "Changes unavailable"),
-      );
-  };
-  useEffect(load, [sessionId, preview]);
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted)
+          setError(reason instanceof Error ? reason.message : "Changes unavailable");
+      });
+    return () => controller.abort();
+  }, [sessionId, preview, refresh]);
   useEffect(() => {
     if (selected === undefined || !selected.patchable) {
       setPatch(undefined);
@@ -859,8 +879,12 @@ function ChangesView({
     return (
       <div {...stylex.props(styles.loading)}>
         <p {...stylex.props(styles.muted)}>
-          <Check aria-hidden {...stylex.props(styles.icon)} /> The session worktree is clean.
+          <Check aria-hidden {...stylex.props(styles.icon)} /> No changes since branching from{" "}
+          {comparison}.
         </p>
+        <button type="button" onClick={load} {...stylex.props(styles.toolButton)}>
+          Refresh
+        </button>
       </div>
     );
   return (
@@ -887,6 +911,13 @@ function ChangesView({
       </nav>
       <section aria-label="Selected file patch" {...stylex.props(styles.diffPanel)}>
         <div aria-label="Diff options" {...stylex.props(styles.diffControls)}>
+          <span
+            data-testid="diff-comparison"
+            title="Includes committed and uncommitted changes since the branch point"
+            {...stylex.props(styles.fileMeta)}
+          >
+            Changes from {comparison}
+          </span>
           <button
             type="button"
             aria-pressed={!split}
@@ -910,6 +941,10 @@ function ChangesView({
             {...stylex.props(styles.toolButton, words && styles.toolButtonActive)}
           >
             Word highlights
+          </button>
+          <button type="button" onClick={load} {...stylex.props(styles.toolButton)}>
+            <RefreshCw aria-hidden {...stylex.props(styles.icon)} />
+            Refresh
           </button>
         </div>
         <div {...stylex.props(styles.patch)}>

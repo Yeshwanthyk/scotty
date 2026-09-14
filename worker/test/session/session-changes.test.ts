@@ -1,6 +1,8 @@
 import { assert, describe, expect, it } from "vitest";
 import {
   GIT_STATUS_COMMAND,
+  gitChangedNamesCommand,
+  gitReviewBaseCommand,
   gitPatchCommand,
   gitTrackedNumstatCommand,
   gitUntrackedNumstatCommand,
@@ -89,22 +91,26 @@ describe("session changed-files review", () => {
   it("reads one validated patch from a warm Cloudflare worktree without an operation lease", async () => {
     const path = "src/odd '; echo nope.ts";
     const file = changedFile(path);
-    const patchCommand = gitPatchCommand(file);
-    const trackedCommand = gitTrackedNumstatCommand([file]);
+    const patchCommand = gitPatchCommand(file, hash);
+    const trackedCommand = gitTrackedNumstatCommand([file], hash);
     const untrackedCommand = gitUntrackedNumstatCommand([file]);
     const harness = await createSessionHarness({
       rawPiContainerRunning: true,
       initialEntries: { [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord() },
       commandStdout: (command) =>
-        command === GIT_STATUS_COMMAND
-          ? encodeGitTransport(statusFor(path))
-          : command === trackedCommand
-            ? encodeGitTransport(`1\t1\t${path}\0`)
-            : command === untrackedCommand
-              ? ""
-              : command === patchCommand
-                ? "@@ -1 +1 @@\n-old\n+new\n"
-                : undefined,
+        command === gitReviewBaseCommand("dev")
+          ? hash
+          : command === gitChangedNamesCommand(hash)
+            ? encodeGitTransport(`M\0${path}\0`)
+            : command === GIT_STATUS_COMMAND
+              ? encodeGitTransport(statusFor(path))
+              : command === trackedCommand
+                ? encodeGitTransport(`1\t1\t${path}\0`)
+                : command === untrackedCommand
+                  ? ""
+                  : command === patchCommand
+                    ? "@@ -1 +1 @@\n-old\n+new\n"
+                    : undefined,
     });
 
     const list = await harness.sandbox.listScottyChanges();
@@ -122,7 +128,13 @@ describe("session changed-files review", () => {
       rawPiContainerRunning: true,
       initialEntries: { [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord() },
       commandStdout: (command) =>
-        command === GIT_STATUS_COMMAND ? encodeGitTransport(statusFor("src/app.ts")) : "",
+        command === gitReviewBaseCommand("dev")
+          ? hash
+          : command === gitChangedNamesCommand(hash)
+            ? encodeGitTransport("M\0src/app.ts\0")
+            : command === GIT_STATUS_COMMAND
+              ? encodeGitTransport(statusFor("src/app.ts"))
+              : "",
     });
 
     await expect(
@@ -136,7 +148,7 @@ describe("session changed-files review", () => {
 
   it("allows activity-only actor revision changes during a Git read", async () => {
     const file = changedFile("src/app.ts");
-    const trackedCommand = gitTrackedNumstatCommand([file]);
+    const trackedCommand = gitTrackedNumstatCommand([file], hash);
     const untrackedCommand = gitUntrackedNumstatCommand([file]);
     const initial = makeSessionRecord();
     const memory = new InMemoryFaultInjectableFake();
@@ -148,6 +160,9 @@ describe("session changed-files review", () => {
         [sessionHarnessKeys.actorFixtureSession]: initial,
       },
       commandStdout: (command) => {
+        if (command === gitReviewBaseCommand("dev")) return hash;
+        if (command === gitChangedNamesCommand(hash))
+          return encodeGitTransport(`M\0${file.path}\0`);
         if (command === GIT_STATUS_COMMAND) return encodeGitTransport(statusFor(file.path));
         if (command === trackedCommand) return encodeGitTransport(`1\t1\t${file.path}\0`);
         if (command === untrackedCommand && !interleaved) {
@@ -165,7 +180,7 @@ describe("session changed-files review", () => {
 
   it("fails closed when the runtime generation changes during a Git read", async () => {
     const file = changedFile("src/app.ts");
-    const trackedCommand = gitTrackedNumstatCommand([file]);
+    const trackedCommand = gitTrackedNumstatCommand([file], hash);
     const untrackedCommand = gitUntrackedNumstatCommand([file]);
     const memory = new InMemoryFaultInjectableFake();
     let interleaved = false;
@@ -176,6 +191,9 @@ describe("session changed-files review", () => {
         [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord(),
       },
       commandStdout: (command) => {
+        if (command === gitReviewBaseCommand("dev")) return hash;
+        if (command === gitChangedNamesCommand(hash))
+          return encodeGitTransport(`M\0${file.path}\0`);
         if (command === GIT_STATUS_COMMAND) return encodeGitTransport(statusFor(file.path));
         if (command === trackedCommand) return encodeGitTransport(`1\t1\t${file.path}\0`);
         if (command === untrackedCommand && !interleaved) {
@@ -199,6 +217,7 @@ describe("session changed-files review", () => {
         [sessionHarnessKeys.actorFixtureSession]: initial,
       },
       commandStdout: (command) => {
+        if (command === gitReviewBaseCommand("dev")) return hash;
         if (command !== GIT_STATUS_COMMAND) return "";
         advanceActorRevision(memory, 2);
         return encodeGitTransport("");
