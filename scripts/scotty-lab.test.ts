@@ -1,6 +1,9 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
 import packageMetadata from "../package.json" with { type: "json" };
 import { CanonicalConversationSnapshotSchema } from "../protocol/conversation.ts";
@@ -18,6 +21,7 @@ import {
   codexCheckpointProof,
   codexTerminalProof,
   hatchObservationProof,
+  internalPeerReadValidator,
   runLab,
   waitForCapturedChild,
 } from "./scotty-lab.ts";
@@ -108,6 +112,79 @@ const assertUsageFailure = (result: Result.Result<void, unknown>): void => {
 };
 
 describe("Effect Scotty lab command grammar", () => {
+  it("validates full peer CLI responses and emits a bounded receipt", () => {
+    const peerId = "a0b1c2d3e4f5";
+    const directory = mkdtempSync(join(tmpdir(), "scotty-peer-read-"));
+    const cliPath = join(directory, "scotty");
+    const inspectPath = join(directory, "inspect.json");
+    const readPath = join(directory, "read.json");
+    const inspect = {
+      id: peerId,
+      transport: { epoch: "generation-1" },
+      turns: [
+        {
+          id: "turn-1",
+          user: "SCOTTY_LAB_PEER_INITIAL",
+          state: "completed",
+          assistant: "SCOTTY_LAB_PEER_READY",
+        },
+      ],
+    };
+    const read = {
+      id: peerId,
+      epoch: "generation-1",
+      sequence: 3,
+      messages: [{ role: "assistant", content: "SCOTTY_LAB_PEER_READY" }],
+    };
+    const validate = () =>
+      spawnSync(process.execPath, ["-e", internalPeerReadValidator(peerId)], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${directory}:${process.env.PATH ?? ""}`,
+          SCOTTY_TEST_INSPECT: inspectPath,
+          SCOTTY_TEST_READ: readPath,
+        },
+      });
+    try {
+      writeFileSync(
+        cliPath,
+        [
+          `#!${process.execPath}`,
+          'const fs=require("fs")',
+          `const expected="${peerId}"`,
+          "const [command,id,format]=process.argv.slice(2)",
+          'if(id!==expected||format!=="--json"||!(["inspect","read"].includes(command)))process.exit(2)',
+          'process.stdout.write(fs.readFileSync(process.env[command==="inspect"?"SCOTTY_TEST_INSPECT":"SCOTTY_TEST_READ"],"utf8"))',
+        ].join("\n"),
+        { mode: 0o700 },
+      );
+      writeFileSync(inspectPath, JSON.stringify(inspect));
+      writeFileSync(readPath, JSON.stringify(read));
+      const valid = validate();
+      assert.equal(valid.status, 0);
+      assert.deepEqual(JSON.parse(valid.stdout), {
+        id: peerId,
+        epoch: "generation-1",
+        initialTurnId: "turn-1",
+        readSequence: 3,
+      });
+      assert.isBelow(Buffer.byteLength(valid.stdout), 1200);
+
+      writeFileSync(readPath, JSON.stringify({ ...read, epoch: "wrong-generation" }));
+      const invalid = validate();
+      assert.notEqual(invalid.status, 0);
+      assert.equal(invalid.stdout, "");
+
+      writeFileSync(readPath, JSON.stringify({ ...read, messages: [] }));
+      const missingInitialReply = validate();
+      assert.notEqual(missingInitialReply.status, 0);
+      assert.equal(missingInitialReply.stdout, "");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("requires a fresh confirmed checkpoint backup tied to a completed journal attempt", () => {
     assert.ok(Result.isSuccess(capturedStates));
     const captured = capturedStates.success.cases.find(({ kind }) => kind === "warm-host-dead");
