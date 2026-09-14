@@ -227,13 +227,13 @@ input.on('line', line=>{
   if(mode==='malformed') {process.stdout.write('{bad}\\n');return;}
   if(mode==='utf8') {process.stdout.write(Buffer.from([0xff,10]));return;}
   if(mode==='truncated') {process.stdout.end('{');return;}
-  if(mode==='oversized') {process.stdout.write('x'.repeat(262145));return;}
-  if(mode==='stderr') {process.stderr.write('x'.repeat(262145));return;}
+  if(mode==='oversized') {process.stdout.write('x'.repeat(2097153)+'\\n');return;}
+  if(mode==='stderr') process.stderr.write('x'.repeat(262145));
   if(mode==='unknown') {output({method:'unknown',params:{}});return;}
   if(mode==='config-warning' || mode==='config-warning-settings') output({method:'configWarning',params:{summary:'Codex will use the bundled bubblewrap in the meantime.',details:null},emittedAtMs:1});
   if(mode==='bad-advisory') {output({method:'thread/status/changed',params:{},emittedAtMs:null});return;}
-  if(mode==='events') {for(let i=0;i<4097;i++)output({method:'thread/status/changed',params:{}});return;}
-  if(mode==='aggregate') {for(let i=0;i<40;i++)output({method:'thread/status/changed',params:{x:'x'.repeat(250000)}});return;}
+  if(mode==='events') for(let i=0;i<4097;i++)output({method:'thread/status/changed',params:{}});
+  if(mode==='aggregate') for(let i=0;i<40;i++)output({method:'thread/status/changed',params:{x:'x'.repeat(250000)}});
   output({id:mode==='wrong-id'?String(m.id):m.id,result:{userAgent:'scotty-component/0.154.0 test',codexHome:mode==='home'?'/wrong':process.env.CODEX_HOME,platformFamily:'unix',platformOs:${JSON.stringify(process.platform === "darwin" ? "macos" : "linux")}}});
  } else if(m.method==='thread/start') {
   if(mode==='rpc-error') {output({id:m.id,error:{code:-1,message:'do not expose me'}});return;}
@@ -249,6 +249,13 @@ input.on('line', line=>{
   if(mode==='duplicate-response')output({id:m.id,result:{turn:{id:'turn-'+turn,status:'inProgress',items:[],error:null}}});
   if(mode==='bad-notification') {output({method:'turn/started',params:{}});return;}
   output({method:'turn/started',params:{threadId:mode==='stale'?'old':'thread',turn:{id:'turn-'+turn,status:'inProgress',items:[]}},emittedAtMs:1});
+  if(mode==='large-completion') {
+   const item={type:'commandExecution',id:'command-'+turn,command:'printf large',status:'inProgress'};
+   output({method:'item/started',params:{threadId:'thread',turnId:'turn-'+turn,item}});
+   output({method:'item/completed',params:{threadId:'thread',turnId:'turn-'+turn,item:{...item,status:'completed',aggregatedOutput:'x'.repeat(2097153),exitCode:0}}});
+   terminal();
+   return;
+  }
   if(mode==='backpressure') {
    for(let i=0;i<32;i++)output({method:'item/agentMessage/delta',params:{threadId:'thread',turnId:'turn-'+turn,itemId:'answer',delta:'x'.repeat(65536)}});
    return;
@@ -341,12 +348,34 @@ test("native delayed readiness exceeds request timing without changing post-read
 });
 
 test("passes explicit Session identity without inheriting the parent environment", async (t) => {
-  const f = await fixture(t, "normal", { sessionId: "a0b1c2d3e4f5" });
+  const f = await fixture(t, "normal", {
+    sessionId: "a0b1c2d3e4f5",
+    githubHandle: "scotty-managed://github/github/git-https",
+  });
   const host = await f.launch();
   const rows = await f.rows();
   assert.equal(rows[0].env.SCOTTY_SESSION_ID, "a0b1c2d3e4f5");
   assert.equal(rows[0].env.PATH, "/usr/local/bin:/usr/bin:/bin");
+  assert.equal(rows[0].env.GH_TOKEN, "scotty-managed://github/github/git-https");
+  assert.equal(rows[0].env.GIT_CONFIG_GLOBAL, "/workspace/a0b1c2d3e4f5/.pi-agent/gitconfig");
+  assert.equal(rows[0].env.GIT_TERMINAL_PROMPT, "0");
   assert.equal((await host.stop()).parent, "exited");
+});
+
+test("does not inherit ambient GitHub authority without a pinned handle", async (t) => {
+  const previous = process.env.GH_TOKEN;
+  process.env.GH_TOKEN = "ambient-must-not-enter-codex";
+  try {
+    const f = await fixture(t, "normal", { sessionId: "a0b1c2d3e4f5" });
+    const host = await f.launch();
+    const rows = await f.rows();
+    assert.equal(rows[0].env.GH_TOKEN, undefined);
+    assert.equal(rows[0].env.GIT_CONFIG_GLOBAL, undefined);
+    assert.equal((await host.stop()).parent, "exited");
+  } finally {
+    if (previous === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = previous;
+  }
 });
 
 test("native app-server receives only readable packaged CA and Corepack paths", async (t) => {
@@ -512,8 +541,7 @@ for (const [mode, code] of [
   ["malformed", "invalid_message"],
   ["utf8", "invalid_utf8"],
   ["truncated", "truncated_record"],
-  ["oversized", "message_too_large"],
-  ["stderr", "stderr_budget"],
+  ["oversized", "invalid_message"],
   ["wrong-id", "unexpected_response_id"],
   ["timeout", "startup_timeout"],
   ["exit", "unexpected_exit"],
@@ -527,8 +555,6 @@ for (const [mode, code] of [
   ["rpc-error", "rpc_rejected"],
   ["unknown", "unsupported_notification"],
   ["bad-advisory", "unsupported_notification"],
-  ["events", "event_budget"],
-  ["aggregate", "output_budget"],
 ])
   test(`startup fault: ${mode}`, async (t) => {
     const f = await fixture(t, mode, { startupTimeoutMs: 1500, requestTimeoutMs: 1500 });
@@ -544,6 +570,13 @@ for (const [mode, code] of [
       (await f.rows()).some((r) => r.method === "turn/start"),
       false,
     );
+  });
+
+for (const mode of ["stderr", "events", "aggregate"])
+  test(`cumulative ${mode} traffic does not fail startup`, async (t) => {
+    const host = await (await fixture(t, mode, { startupTimeoutMs: 10000 })).launch();
+    assert.equal(host.inspect().ready, true);
+    assert.equal((await host.stop()).failure, null);
   });
 
 for (const [mode, code] of [
@@ -795,7 +828,7 @@ for (const [model, effort] of [
         assert.equal(terminal.items[0].text, "SYNTHETIC_OK");
       }
       assert.equal(host.inspect().rejected, 0);
-      assert.ok(host.drainEvents().some((e) => e.method === "item/agentMessage/delta"));
+      assert.ok(observed.some((e) => e.method === "item/agentMessage/delta"));
       hold = true;
       const turn = await withNativePhase("interrupt_prompt", host.prompt("Wait for interruption."));
       knownTurns.push(turn.turnId);
@@ -1332,12 +1365,26 @@ test("stop rejects an active terminal wait and closed resolves the same receipt"
   assert.equal(await stopped, await host.closed);
 });
 
-test("lifetime outbound byte budget closes instead of buffering unbounded prompts", async (t) => {
+test("cumulative prompt bytes do not close a healthy session", async (t) => {
   const host = await (await fixture(t)).launch();
   const text = "x".repeat(65536);
-  for (let i = 0; i < 15; i++) await (await host.prompt(text)).completed;
-  await assert.rejects(host.prompt(text), { code: "input_budget" });
-  assert.equal((await host.closed).failure, "input_budget");
+  for (let i = 0; i < 17; i++) await (await host.prompt(text)).completed;
+  assert.equal((await host.stop()).failure, null);
+});
+
+test("large command completion preserves terminal and follow-up turn", async (t) => {
+  const host = await (await fixture(t, "large-completion")).launch();
+  for (let i = 1; i <= 2; i++) {
+    const turn = await host.prompt("run");
+    assert.equal(turn.turnId, `turn-${i}`);
+    assert.equal((await turn.completed).status, "completed");
+  }
+  const completions = host.drainEvents().filter((event) => event.method === "item/completed");
+  assert.equal(completions.length, 2);
+  assert.ok(completions.every((event) => event.params.item.aggregatedOutput?.length === 2097153));
+  assert.equal(host.inspect().ready, true);
+  assert.equal(host.inspect().failure, null);
+  assert.equal((await host.stop()).failure, null);
 });
 
 test("native scope disposal sends EOF before releasing the process service", async (t) => {

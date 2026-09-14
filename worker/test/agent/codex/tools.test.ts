@@ -218,7 +218,7 @@ it("keeps a known command running after a completed turn until its own terminal 
 
 it("bounds UTF-8 output and records truncation, cancellation and a fresh turn", () => {
   const tools = makeCodexTools();
-  tools.accept(decode(item("inProgress", "😀".repeat(1000))));
+  tools.accept(decode(item("inProgress", "😀".repeat(250_000))));
   assert.equal(new TextEncoder().encode(tools.snapshot().tools[0]?.output).length, 1200);
   assert.equal(tools.snapshot().toolsTruncated, true);
   tools.accept(

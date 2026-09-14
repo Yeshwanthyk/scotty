@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { readCodexSavedState } from "../../../src/agent/codex/persistence";
 import type { CodexSavedHistory } from "../../../src/agent/codex/persistence-format";
@@ -181,6 +182,10 @@ const fixture = Effect.fnUntraced(function* (
 });
 
 const command = { threadId: "thread", text: "hello" };
+const fingerprint = (mode: "message" | "steer", text: string, turnId?: string) =>
+  createHash("sha256")
+    .update(JSON.stringify(["thread", mode, text, turnId ?? null]))
+    .digest("hex");
 describe("Codex generation bridge over production session adapter", () => {
   it.effect(
     "closing the generation scope stops an outstanding turn through the existing host",
@@ -436,6 +441,11 @@ describe("Codex generation bridge over production session adapter", () => {
           turnId: "turn",
         });
         assert.deepEqual(yield* f.runtime.steer(input), admitted);
+        const changedFence = yield* Effect.result(
+          f.runtime.steer({ ...input, expectedTurnId: "other" }),
+        );
+        assert.ok(Result.isFailure(changedFence));
+        assert.equal(changedFence.failure.code, "idempotency_conflict");
         assert.equal(f.steers(), 1);
         assert.equal((yield* f.runtime.snapshot).turns?.[0]?.user, "hello\nadjust");
       }),
@@ -795,6 +805,99 @@ it.effect("rejects stale native command evidence at the active turn fence", () =
 );
 
 describe("Codex automatic saved history", () => {
+  it.effect("retains more than 100 message receipts across save and restore", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => fs.mkdtemp(`${tmpdir()}/scotty-many-receipts-`)),
+        (root) => Effect.promise(() => fs.rm(root, { recursive: true, force: true })),
+      );
+      const homes = {
+        home: `${root}/home`,
+        codexHome: `${root}/codex`,
+        cwd: `${root}/workspace`,
+      };
+      yield* Effect.promise(async () => {
+        await fs.mkdir(homes.cwd);
+        await fs.mkdir(`${homes.codexHome}/sessions/2026/09/08`, { recursive: true });
+        await fs.writeFile(
+          `${homes.codexHome}/sessions/2026/09/08/rollout-fixture.jsonl`,
+          `${JSON.stringify({ type: "session_meta", payload: { id: "thread" } })}\n`,
+        );
+      });
+      const f = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "interrupted", {
+        homes,
+      });
+      yield* f.runtime.admit({ ...command, clientUserMessageId: "message-0" });
+      for (let index = 1; index <= 110; index++) {
+        yield* f.complete();
+        yield* TestClock.adjust(1);
+        yield* f.runtime.message({
+          threadId: "thread",
+          text: `follow-up-${index}`,
+          clientUserMessageId: `message-${index}`,
+        });
+      }
+      const replay = yield* f.runtime.message({
+        threadId: "thread",
+        text: "follow-up-101",
+        clientUserMessageId: "message-101",
+      });
+      assert.equal(replay.turnId, "turn-102");
+      const conflict = yield* Effect.result(
+        f.runtime.message({
+          threadId: "thread",
+          text: "different text",
+          clientUserMessageId: "message-101",
+        }),
+      );
+      assert.ok(Result.isFailure(conflict));
+      assert.equal(conflict.failure.code, "idempotency_conflict");
+      assert.equal(f.prompts(), 111);
+      yield* f.complete();
+      yield* TestClock.adjust(1);
+      const saved = yield* f.runtime.save;
+      const archive = yield* readCodexSavedState(homes.cwd, saved);
+      assert.equal(archive.history.operations.length, 111);
+      assert.equal(
+        archive.history.operations[101]?.fingerprint,
+        fingerprint("message", "follow-up-101"),
+      );
+      assert.equal(JSON.stringify(archive.history.operations).includes("follow-up-101"), false);
+      const restored = yield* fixture(true, Number.MAX_SAFE_INTEGER, "accepted", "interrupted", {
+        history: archive.history,
+      });
+      assert.equal(
+        (yield* restored.runtime.message({
+          threadId: "thread",
+          text: "follow-up-101",
+          clientUserMessageId: "message-101",
+          reconcileOnly: true,
+        })).turnId,
+        "turn-102",
+      );
+      const restoredConflict = yield* Effect.result(
+        restored.runtime.message({
+          threadId: "thread",
+          text: "different text",
+          clientUserMessageId: "message-101",
+        }),
+      );
+      assert.ok(Result.isFailure(restoredConflict));
+      assert.equal(restoredConflict.failure.code, "idempotency_conflict");
+      const unknown = yield* Effect.result(
+        restored.runtime.message({
+          threadId: "thread",
+          text: "absent",
+          clientUserMessageId: "absent",
+          reconcileOnly: true,
+        }),
+      );
+      assert.ok(Result.isFailure(unknown));
+      assert.equal(unknown.failure.code, "idempotency_unknown");
+      assert.equal(restored.prompts(), 0);
+    }),
+  );
+
   it.live("settles an unfinished command before saving and restoring a stopped generation", () =>
     Effect.gen(function* () {
       const root = yield* Effect.acquireRelease(
@@ -1018,7 +1121,7 @@ describe("Codex automatic saved history", () => {
             {
               id: "message-2",
               mode: "message",
-              text: "second user",
+              fingerprint: fingerprint("message", "second user"),
               status: "accepted",
               turnId: "second",
             },

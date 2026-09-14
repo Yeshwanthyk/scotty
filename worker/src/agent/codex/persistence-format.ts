@@ -26,8 +26,7 @@ export const CodexSavedFailed = Schema.Struct({
 export const CodexSavedOperation = Schema.Struct({
   id: Identifier,
   mode: Schema.Literals(["message", "steer"]),
-  text: Text,
-  expectedTurnId: Schema.optionalKey(Identifier),
+  fingerprint: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
   status: Schema.Literals(["accepted", "unknown"]),
   turnId: Schema.optionalKey(Identifier),
 });
@@ -39,7 +38,7 @@ export const CodexSavedHistory = Schema.Struct({
     Schema.isMaxLength(CONVERSATION_MAX_TURNS),
   ),
   turnsTruncated: Schema.Boolean,
-  operations: Schema.Array(CodexSavedOperation).check(Schema.isMaxLength(CONVERSATION_MAX_TURNS)),
+  operations: Schema.Array(CodexSavedOperation),
 }).check(
   Schema.makeFilter(
     (value) =>
@@ -58,11 +57,10 @@ export const CodexSavedHistory = Schema.Struct({
   ),
 );
 export const CODEX_SAVED_STATE_MAX_BYTES = 16 * 1024 * 1024;
-export const CODEX_SAVED_HISTORY_MAX_BYTES = 512 * 1024;
 export const CODEX_ROLLOUT_RELATIVE_PATH =
   /^sessions\/[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/rollout-[A-Za-z0-9_.-]+\.jsonl$/u;
 export const CodexSavedState = Schema.Struct({
-  version: Schema.Literal(1),
+  version: Schema.Literal(2),
   // Existing 0.153.4 rollout archives remain readable by the pinned 0.154.0
   // native app-server; new writes always record CODEX_VERSION.
   nativeVersion: Schema.Literals(["0.153.4", CODEX_VERSION]),
@@ -75,10 +73,7 @@ export const CodexSavedState = Schema.Struct({
   ).check(Schema.isMinLength(1), Schema.isMaxLength(128)),
 }).check(
   Schema.makeFilter(
-    (value) =>
-      new Set(value.files.map((file) => file.path)).size === value.files.length &&
-      new TextEncoder().encode(JSON.stringify(value.history)).length <=
-        CODEX_SAVED_HISTORY_MAX_BYTES,
+    (value) => new Set(value.files.map((file) => file.path)).size === value.files.length,
   ),
 );
 export const codexSavedStatePath = (workspace: string) => `${workspace}/.scotty/codex-state.json`;

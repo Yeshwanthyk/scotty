@@ -38,6 +38,28 @@ describe("explicit managed launch admission", () => {
   });
   it("accepts only bounded Session-owned identities while preserving standalone launch", () => {
     assert.ok(Result.isSuccess(decode({ ...selection, sessionId: "a0b1c2d3e4f5" })));
+    assert.ok(
+      Result.isSuccess(
+        decode({
+          ...selection,
+          sessionId: "a0b1c2d3e4f5",
+          githubHandle: "scotty-managed://github/github/git-https",
+        }),
+      ),
+    );
+    for (const githubHandle of [
+      "real-gh-token",
+      "scotty-managed://openai/openai/api-key",
+      "scotty-managed://github/github/access",
+    ])
+      assert.ok(
+        Result.isFailure(decode({ ...selection, sessionId: "a0b1c2d3e4f5", githubHandle })),
+      );
+    assert.ok(
+      Result.isFailure(
+        decode({ ...selection, githubHandle: "scotty-managed://github/github/git-https" }),
+      ),
+    );
     for (const sessionId of ["", "../session", "a0b1c2d3e4f5\n", null, 1])
       assert.ok(Result.isFailure(decode({ ...selection, sessionId })));
   });

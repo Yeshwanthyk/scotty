@@ -32,7 +32,7 @@ import {
   type CodexFirstPartyToolName,
   type CodexFirstPartyTools,
 } from "./first-party-tools";
-import { limits, makeFramer } from "./framing";
+import { makeFramer } from "./framing";
 import { launchProcess, type CodexProcess } from "./process";
 
 type Terminal = Extract<CodexNotification, { method: "turn/completed" }>["params"]["turn"];
@@ -214,7 +214,7 @@ const decodeGoalCleared = Schema.decodeUnknownEffect(
 const decodeAdvisory = Schema.decodeUnknownEffect(Schema.fromJsonString(Advisory), {
   onExcessProperty: "error",
 });
-const decoded = <A>(result: Result.Result<A, "invalid_message" | "message_too_large">) =>
+const decoded = <A>(result: Result.Result<A, "invalid_message">) =>
   Result.match(result, {
     onSuccess: Effect.succeed,
     onFailure: (code) => Effect.fail(new CodexHostError({ code })),
@@ -245,9 +245,11 @@ const matchesDurableReadback = (readback: CodexThreadReadResult, threadId: strin
 // Each factory invocation is one process generation. No durable Session state is owned here.
 export const makeSession = Effect.fnUntraced(function* (
   transport: CodexProcess,
-  publish: (event: CodexNotification) => Effect.Effect<void, CodexHostError> = () => Effect.void,
+  publish?: (event: CodexNotification) => Effect.Effect<void, CodexHostError>,
   firstPartyTools?: CodexFirstPartyTools,
+  retainEvents = publish === undefined,
 ) {
+  const emit = publish ?? (() => Effect.void);
   const scope = yield* Scope.Scope;
   const failed = yield* Deferred.make<never, CodexHostError>();
   const closed = yield* Deferred.make<Cleanup>();
@@ -336,7 +338,6 @@ export const makeSession = Effect.fnUntraced(function* (
     active: Turn | undefined;
   let failure: CodexHostError | undefined;
   let sequence = 0,
-    inputBytes = 0,
     eventCount = 0,
     stderrBytes = 0,
     discarded = 0,
@@ -412,8 +413,6 @@ export const makeSession = Effect.fnUntraced(function* (
   ) {
     if (closing || failure) return yield* new CodexHostError({ code: "stopped" });
     const bytes = new TextEncoder().encode(`${JSON.stringify(message)}\n`);
-    inputBytes += bytes.length;
-    if (inputBytes > limits.input) return yield* new CodexHostError({ code: "input_budget" });
     yield* timed(transport.write(bytes), startupDeadline);
   });
   const rpc = Effect.fnUntraced(function* <A>(
@@ -424,7 +423,7 @@ export const makeSession = Effect.fnUntraced(function* (
           readonly id: string | number;
           readonly error: { readonly code: number; readonly message: string };
         },
-      "invalid_message" | "message_too_large"
+      "invalid_message"
     >,
     accept: (value: A) => Effect.Effect<void, CodexHostError> = () => Effect.void,
     startupDeadline?: number,
@@ -509,18 +508,17 @@ export const makeSession = Effect.fnUntraced(function* (
       return { method: entry.advisory.method, ...entry.advisory.params };
     return { method: "error", ...entry.rejection.params };
   };
-  const bufferBeforeAdmissionReply = Effect.fnUntraced(function* (entry: BeforeAdmissionReply) {
-    if (
-      active === undefined ||
-      active.id !== undefined ||
-      admissionIdentity(entry).threadId !== threadId
-    )
-      return false;
-    if (active.beforeAdmissionReply.length >= 64)
-      return yield* new CodexHostError({ code: "event_budget" });
-    active.beforeAdmissionReply.push(entry);
-    return true;
-  });
+  const bufferBeforeAdmissionReply = (entry: BeforeAdmissionReply) =>
+    Effect.sync(() => {
+      if (
+        active === undefined ||
+        active.id !== undefined ||
+        admissionIdentity(entry).threadId !== threadId
+      )
+        return false;
+      active.beforeAdmissionReply.push(entry);
+      return true;
+    });
   const consumeBeforeActive = Effect.fnUntraced(function* (message: CodexNotification) {
     if (yield* acceptLateCommand(message)) return true;
     if (isTrailingChildActivity(message)) {
@@ -552,9 +550,9 @@ export const makeSession = Effect.fnUntraced(function* (
     const owned = commandOwners.get(message.params.turnId);
     if (owned?.get(itemId) !== "running") return false;
     if (message.method === "item/completed") owned.set(itemId, "completed");
-    events.push(message);
-    lateCommandEvents.push(message);
-    yield* publish(message);
+    if (retainEvents) events.push(message);
+    if (publish === undefined) lateCommandEvents.push(message);
+    yield* emit(message);
     return true;
   });
   const recordCommandOwnership = Effect.fnUntraced(function* (
@@ -566,8 +564,6 @@ export const makeSession = Effect.fnUntraced(function* (
     const itemId = message.params.item.id;
     const owned = commandOwners.get(id) ?? new Map<string, "running" | "completed">();
     if (message.method === "item/started") {
-      if (!owned.has(itemId) && owned.size >= 64)
-        return yield* new CodexHostError({ code: "event_budget" });
       if (owned.has(itemId))
         return yield* stale(message.method, message.params.threadId, id, message.params.item.type);
       owned.set(itemId, "running");
@@ -632,8 +628,8 @@ export const makeSession = Effect.fnUntraced(function* (
       childTurnOwners.set(childThreadId, owners);
     }
     tools.accept(message);
-    events.push(message);
-    yield* publish(message);
+    if (retainEvents) events.push(message);
+    yield* emit(message);
     if (closing || failure || active !== turn) return;
     if (message.method === "turn/completed") yield* completeTurn(turn, message);
   });
@@ -713,11 +709,6 @@ export const makeSession = Effect.fnUntraced(function* (
         previous.argumentsHash !== argumentsHash)
     ) {
       yield* write({ id: request.id, result: toolResult("Tool call identity conflict.", false) });
-      rejected++;
-      return;
-    }
-    if (previous === undefined && toolReceipts.size >= 64) {
-      yield* write({ id: request.id, result: toolResult("Tool call budget reached.", false) });
       rejected++;
       return;
     }
@@ -850,7 +841,7 @@ export const makeSession = Effect.fnUntraced(function* (
   });
   const receive = Effect.fnUntraced(function* (line: string) {
     if (closing) return;
-    if (++eventCount > limits.events) return yield* new CodexHostError({ code: "event_budget" });
+    eventCount++;
     const route = yield* decodeRoute(line).pipe(
       Effect.mapError(() => new CodexHostError({ code: "invalid_message" })),
     );
@@ -899,7 +890,7 @@ export const makeSession = Effect.fnUntraced(function* (
     if (route.method === "error") return yield* receiveUpstreamFailure(line);
     return yield* receiveAdvisory(line);
   });
-  const framer = makeFramer(limits.output);
+  const framer = makeFramer();
   yield* supervise(transport.writer);
   yield* supervise(
     transport.stdout.pipe(
@@ -915,11 +906,8 @@ export const makeSession = Effect.fnUntraced(function* (
   yield* supervise(
     transport.stderr.pipe(
       Stream.runForEach((chunk) =>
-        Effect.suspend(() => {
+        Effect.sync(() => {
           stderrBytes += chunk.length;
-          return stderrBytes > limits.stderr
-            ? Effect.fail(new CodexHostError({ code: "stderr_budget" }))
-            : Effect.void;
         }),
       ),
     ),
@@ -1190,6 +1178,7 @@ export const startCodexSession = Effect.fnUntraced(function* (
   publish?: (event: CodexNotification) => Effect.Effect<void, CodexHostError>,
   restored?: typeof CodexSavedState.Type,
   firstPartyTools?: CodexFirstPartyTools,
+  retainEvents = publish === undefined,
 ) {
   const transport = yield* launchProcess(input, restored).pipe(
     Effect.mapError(
@@ -1211,5 +1200,6 @@ export const startCodexSession = Effect.fnUntraced(function* (
     transport,
     publish,
     firstPartyTools ?? makeCodexFirstPartyTools(transport.homes.cwd),
+    retainEvents,
   );
 });

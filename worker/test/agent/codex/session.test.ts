@@ -1,17 +1,31 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Cause, Clock, Deferred, Effect, Exit, Fiber, Queue, Result, Scope, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Predicate,
+  Queue,
+  Result,
+  Scope,
+  Stream,
+} from "effect";
 import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import {
   decodeCodexClientMessage,
   CODEX_VERSION,
   decodeCodexDynamicToolResponse,
+  decodeCodexNotification,
   type CodexClientMessage,
   type CodexDynamicToolResponse,
 } from "../../../../protocol/codex-app-server";
 import { makeFramer } from "../../../src/agent/codex/framing";
 import { HatchFailure } from "../../../src/agent/codex/first-party-tools";
 import { makeSession } from "../../../src/agent/codex/session";
+import { makeCodexTools } from "../../../src/agent/codex/tools";
 import type { CodexProcess } from "../../../src/agent/codex/process";
 
 type SessionFixtureMode =
@@ -32,7 +46,7 @@ type SessionFixtureMode =
   | "early-turn"
   | "early-wrong-turn"
   | "early-tool"
-  | "early-over-budget"
+  | "early-many-advisories"
   | "hold-second-reply"
   | "tool";
 
@@ -145,7 +159,7 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
       mode === "early-turn" ||
       mode === "early-wrong-turn" ||
       mode === "early-tool" ||
-      mode === "early-over-budget"
+      mode === "early-many-advisories"
     )
       yield* emit(started);
     if (mode === "early-tool") {
@@ -179,7 +193,7 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
         },
       });
     }
-    if (mode === "early-over-budget")
+    if (mode === "early-many-advisories")
       for (let i = 0; i < 64; i++)
         yield* emit({
           method: "item/reasoning/textDelta",
@@ -202,7 +216,7 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
       mode !== "early-turn" &&
       mode !== "early-wrong-turn" &&
       mode !== "early-tool" &&
-      mode !== "early-over-budget"
+      mode !== "early-many-advisories"
     )
       yield* emit(started);
   });
@@ -356,15 +370,16 @@ describe("scoped Codex session", () => {
       yield* host.stop;
     }),
   );
-  it.effect("bounds pre-reply messages without publishing any", () =>
+  it.effect("replays more than 64 pre-reply advisories after admission", () =>
     Effect.gen(function* () {
-      const f = yield* fixture("early-over-budget");
+      const f = yield* fixture("early-many-advisories");
       const host = yield* makeSession(f.transport);
-      const outcome = yield* Effect.result(host.prompt("hello"));
-      assert.ok(Result.isFailure(outcome));
-      assert.equal(outcome.failure.code, "event_budget");
-      assert.deepEqual(host.drainEvents(), []);
-      yield* host.closed;
+      const turn = yield* host.prompt("hello");
+      assert.equal(turn.turnId, "turn");
+      assert.equal(host.inspect().failure, null);
+      yield* f.complete;
+      yield* turn.completed;
+      yield* host.stop;
     }),
   );
   it.effect("does not publish buffered messages when admission times out", () =>
@@ -1089,6 +1104,37 @@ describe("scoped Codex session", () => {
     }),
   );
 
+  it.effect("admits more than 64 sequential commands in one turn", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      const turn = yield* host.prompt("run commands");
+      for (let i = 0; i < 65; i++) {
+        const item = {
+          type: "commandExecution" as const,
+          id: `command-${i}`,
+          command: "true",
+          status: "inProgress" as const,
+        };
+        yield* f.emit({
+          method: "item/started",
+          params: { threadId: "thread", turnId: "turn", item },
+        });
+        yield* f.emit({
+          method: "item/completed",
+          params: { threadId: "thread", turnId: "turn", item: { ...item, status: "completed" } },
+        });
+      }
+      yield* f.emit({
+        method: "turn/completed",
+        params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+      });
+      assert.equal((yield* turn.completed).status, "completed");
+      assert.equal(host.inspect().failure, null);
+      yield* host.stop;
+    }),
+  );
+
   it.effect(
     "discards a late terminal interaction for the original command while idle and during a new turn",
     () =>
@@ -1612,9 +1658,9 @@ describe("scoped Codex session", () => {
   );
 });
 
-it.effect("framing bounds bytes before decoding and preserves split UTF-8", () =>
+it.effect("framing preserves split UTF-8 and delivers large records and later lines", () =>
   Effect.gen(function* () {
-    const framer = makeFramer(1024);
+    const framer = makeFramer();
     const lines: Array<string> = [];
     const receive = (line: string) =>
       Effect.sync(() => {
@@ -1624,9 +1670,68 @@ it.effect("framing bounds bytes before decoding and preserves split UTF-8", () =
     yield* framer.push(new Uint8Array([0xa9, 10]), receive);
     assert.deepEqual(lines, ["é"]);
     yield* framer.end;
-    const result = yield* Effect.result(framer.push(new Uint8Array(1025), receive));
-    assert.ok(Result.isFailure(result));
-    assert.equal(result.failure.code, "output_budget");
+    for (let i = 0; i < 4097; i++) yield* framer.push(new Uint8Array([120, 10]), receive);
+    assert.equal(lines.length, 4098);
+    const large = `${"x".repeat(2 * 1024 * 1024 + 1)}\nnext\n`;
+    yield* framer.push(new TextEncoder().encode(large), receive);
+    yield* framer.end;
+    assert.equal(lines.at(-2)?.length, 2 * 1024 * 1024 + 1);
+    assert.equal(lines.at(-1), "next");
+  }),
+);
+
+it.effect("delivers an oversized command completion and the next record", () =>
+  Effect.gen(function* () {
+    const aggregate = '😀"\n'.repeat(500_000);
+    const completion = JSON.stringify({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          type: "commandExecution",
+          id: "command",
+          command: 'printf "aggregatedOutput":',
+          status: "completed",
+          aggregatedOutput: aggregate,
+          exitCode: 0,
+        },
+      },
+    });
+    const terminal = JSON.stringify({
+      method: "turn/completed",
+      params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } },
+    });
+    const bytes = new TextEncoder().encode(`${completion}\n${terminal}\n`);
+    assert.ok(bytes.length > 2 * 1024 * 1024);
+    const split = completion.indexOf("aggregatedOutput", completion.indexOf("item/completed")) + 5;
+    const framer = makeFramer();
+    const lines: Array<string> = [];
+    const receive = (line: string) =>
+      Effect.sync(() => {
+        lines.push(line);
+      });
+    yield* framer.push(bytes.subarray(0, split), receive);
+    yield* framer.push(bytes.subarray(split, split + 8191), receive);
+    yield* framer.push(bytes.subarray(split + 8191), receive);
+    yield* framer.end;
+    assert.equal(lines.length, 2);
+    const first = decodeCodexNotification(lines[0]);
+    assert.ok(Result.isSuccess(first));
+    assert.equal(first.success.method, "item/completed");
+    if (first.success.method !== "item/completed") return;
+    assert.equal(first.success.params.item.type, "commandExecution");
+    if (!Predicate.hasProperty(first.success.params.item, "command")) return;
+    assert.equal(first.success.params.item.id, "command");
+    assert.equal(first.success.params.item.status, "completed");
+    assert.equal(first.success.params.item.aggregatedOutput, aggregate);
+    const tools = makeCodexTools();
+    tools.accept(first.success);
+    assert.equal(tools.snapshot().tools[0]?.state, "completed");
+    assert.equal(tools.snapshot().toolsTruncated, true);
+    const second = decodeCodexNotification(lines[1]);
+    assert.ok(Result.isSuccess(second));
+    assert.equal(second.success.method, "turn/completed");
   }),
 );
 
