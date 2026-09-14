@@ -6,6 +6,7 @@ import type { SessionAuthority } from "../../src/session-actor/authority";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { EvidenceState } from "../../src/evidence/contracts";
 import {
+  HATCH_PRIVATE_CLAIMED_HEADER,
   HATCH_PRIVATE_REQUEST_HEADER,
   hatchOrigin,
   type HatchRouteAuthorization,
@@ -48,7 +49,6 @@ const fetchAuthorizedHatchRequest = async (
     port: route.port,
     routeNonce: route.routeNonce,
     cookieSecret,
-    ingressBytes: 0,
   });
   assert.isDefined(permit);
   assert.isTrue(await harness.sandbox.adjustScottyHatchRequest(permit.requestId, 0));
@@ -1274,6 +1274,114 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     if (publicStatus.status !== "configured") return;
     assert.strictEqual(publicStatus.observedStatus, "running");
     assert.strictEqual(publicStatus.exposure, "active");
+  });
+
+  it("streams repeated 16 MiB and 32 MiB Hatch assets without cumulative denial", async () => {
+    const assetSizes = [16, 32, 16, 32].map((mebibytes) => mebibytes * 1_024 * 1_024);
+    const responseSizes = [...assetSizes, 32 * 1_024 * 1_024 + 1];
+    let responseIndex = 0;
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+      hatchRequestForwarder: async () => {
+        let remaining = responseSizes[responseIndex++] ?? 0;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (remaining === 0) {
+                controller.close();
+                return;
+              }
+              const bytes = Math.min(remaining, 1 * 1_024 * 1_024);
+              remaining -= bytes;
+              controller.enqueue(new Uint8Array(bytes));
+            },
+          }),
+        );
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    const route = await harness.sandbox.getScottyHatchOpenRoute();
+    assert.isDefined(route);
+
+    for (const expectedBytes of assetSizes) {
+      const response = await fetchAuthorizedHatchRequest(harness, route);
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual((await response.arrayBuffer()).byteLength, expectedBytes);
+    }
+    const oversized = await fetchAuthorizedHatchRequest(harness, route);
+    await expect(oversized.arrayBuffer()).rejects.toMatchObject({ name: "QuotaExceededError" });
+
+    const hatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
+    assert.strictEqual(hatch?.requests.length, 0);
+    assert.deepInclude(hatch?.permits[0], { ingressBytes: 0, responseBytes: 0 });
+  });
+
+  it("cancels an active Hatch response stream when sleep revokes its route", async () => {
+    let upstreamCanceled = false;
+    const harness = await createSessionHarness({
+      previewBase: "preview.example.test",
+      rawPiContainerRunning: true,
+      piSessionRunning: true,
+      hatchRequestForwarder: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array([1]));
+            },
+            cancel() {
+              upstreamCanceled = true;
+            },
+          }),
+        ),
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.ensureScottyHatch({
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: `/workspace/${SESSION_ID}`,
+        port: 4_173,
+        healthPath: "/health",
+      },
+    });
+    const route = await harness.sandbox.getScottyHatchOpenRoute();
+    assert.isDefined(route);
+    const response = await fetchAuthorizedHatchRequest(harness, route);
+    assert.match(response.headers.get(HATCH_PRIVATE_CLAIMED_HEADER) ?? "", /^[0-9a-f]{32}$/u);
+    const reader = response.body?.getReader();
+    assert.isDefined(reader);
+    assert.deepStrictEqual(await reader.read(), { done: false, value: new Uint8Array([1]) });
+    const pendingRead = reader.read().then(
+      (value) => value,
+      (error: unknown) => error,
+    );
+
+    await harness.sandbox.sleepScottySession();
+
+    assert.isTrue(upstreamCanceled);
+    assert.instanceOf(await pendingRead, DOMException);
+    assert.strictEqual(
+      harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary?.requests.length,
+      0,
+    );
+    assert.isUndefined(
+      await harness.sandbox.getScottyHatchRoute({
+        sessionId: route.sessionId,
+        port: route.port,
+        routeNonce: route.routeNonce,
+      }),
+    );
   });
 
   it("reclaims a retained prior Hatch restore before retrying Resume", async () => {

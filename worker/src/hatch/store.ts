@@ -9,11 +9,9 @@ import { decodeSessionRecordResult, type SessionRecord } from "../session/contra
 import {
   decodeHatchStateResult,
   emptyHatchState,
-  HATCH_MAX_CONCURRENT_REQUESTS,
-  HATCH_MAX_PERMIT_BYTES,
+  HATCH_MAX_INGRESS_BYTES,
   HATCH_PERMIT_DURATION_MILLIS,
   HATCH_REQUEST_DURATION_MILLIS,
-  HATCH_RESERVED_RESPONSE_BYTES,
   HatchStateError,
   publicHatchStatusProjection,
   sameHatchService,
@@ -109,7 +107,6 @@ export interface HatchRequestAdmission {
   readonly routeNonce: string;
   readonly runtimeEpoch: string;
   readonly cookieDigest: string;
-  readonly ingressBytes: number;
 }
 
 export interface HatchHealthCleanupAuthority {
@@ -197,10 +194,7 @@ interface HatchStoreShape {
   readonly claimRequest: (
     input: HatchRequestClaim,
   ) => Effect.Effect<HatchHttpRequest | undefined, HatchStateError>;
-  readonly settleRequest: (
-    requestId: string,
-    responseBytes: number,
-  ) => Effect.Effect<void, HatchStateError>;
+  readonly settleRequest: (requestId: string) => Effect.Effect<void, HatchStateError>;
   readonly cancelRequest: (requestId: string) => Effect.Effect<void, HatchStateError>;
   readonly beginCleanup: (
     operationNonce: string,
@@ -252,26 +246,9 @@ const withoutCleanup = (hatch: HatchRecord): HatchRecord => {
   return current;
 };
 
-const settleHatchRequest = (
-  hatch: HatchRecord,
-  request: HatchHttpRequest,
-  ingressBytes: number,
-  responseBytes: number,
-): HatchRecord => ({
+const removeHatchRequest = (hatch: HatchRecord, requestId: string): HatchRecord => ({
   ...hatch,
-  permits: hatch.permits.map((permit) =>
-    permit.permitId === request.permitId
-      ? {
-          ...permit,
-          ingressBytes: Math.min(HATCH_MAX_PERMIT_BYTES, permit.ingressBytes + ingressBytes),
-          responseBytes: Math.min(
-            HATCH_MAX_PERMIT_BYTES,
-            permit.responseBytes + Math.min(responseBytes, request.reservedResponseBytes),
-          ),
-        }
-      : permit,
-  ),
-  requests: hatch.requests.filter((candidate) => candidate.requestId !== request.requestId),
+  requests: hatch.requests.filter((candidate) => candidate.requestId !== requestId),
 });
 
 const decodeState = (value: unknown | undefined): Result.Result<HatchState, HatchStateError> => {
@@ -963,25 +940,8 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           (candidate) =>
             permitIds.has(candidate.permitId) && Date.parse(candidate.expiresAt) > nowMillis,
         );
-        if (requests.length >= HATCH_MAX_CONCURRENT_REQUESTS) return Result.succeed(undefined);
         const permit = permits.find((candidate) => candidate.cookieDigest === input.cookieDigest);
-        const reservedBytes = requests
-          .filter((candidate) => candidate.permitId === permit?.permitId)
-          .reduce(
-            (total, candidate) =>
-              total + candidate.reservedIngressBytes + candidate.reservedResponseBytes,
-            0,
-          );
-        if (
-          permit === undefined ||
-          permit.ingressBytes +
-            permit.responseBytes +
-            reservedBytes +
-            input.ingressBytes +
-            HATCH_RESERVED_RESPONSE_BYTES >
-            HATCH_MAX_PERMIT_BYTES
-        )
-          return Result.succeed(undefined);
+        if (permit === undefined) return Result.succeed(undefined);
         const admittedAt = new Date(nowMillis).toISOString();
         const expiresAt = new Date(
           Math.min(nowMillis + HATCH_REQUEST_DURATION_MILLIS, Date.parse(permit.expiresAt)),
@@ -991,8 +951,6 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           permitId: permit.permitId,
           generation: hatch.generation,
           runtimeEpoch: hatch.runtimeEpoch,
-          reservedIngressBytes: input.ingressBytes,
-          reservedResponseBytes: HATCH_RESERVED_RESPONSE_BYTES,
           status: "admitted",
           admittedAt,
           expiresAt,
@@ -1011,7 +969,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           hatch === undefined ||
           request === undefined ||
           request.status !== "admitted" ||
-          ingressBytes > request.reservedIngressBytes ||
+          ingressBytes > HATCH_MAX_INGRESS_BYTES ||
           Date.parse(request.expiresAt) <= nowMillis
         )
           return Result.succeed(false);
@@ -1066,15 +1024,14 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         });
         return Result.succeed(claimed);
       }),
-    settleRequest: (requestId, responseBytes) =>
+    settleRequest: (requestId) =>
       transact(async (transaction, state) => {
         const hatch = state.primary;
         const request = hatch?.requests.find((candidate) => candidate.requestId === requestId);
         if (hatch === undefined || request === undefined) return Result.succeed(undefined);
-        const ingressBytes = request.ingressBytes ?? request.reservedIngressBytes;
         await transaction.putHatch({
           ...state,
-          primary: settleHatchRequest(hatch, request, ingressBytes, responseBytes),
+          primary: removeHatchRequest(hatch, request.requestId),
         });
         return Result.succeed(undefined);
       }),
@@ -1086,16 +1043,9 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           !hatch.requests.some((request) => request.requestId === requestId)
         )
           return Result.succeed(undefined);
-        const request = hatch.requests.find((candidate) => candidate.requestId === requestId);
-        if (request === undefined) return Result.succeed(undefined);
         await transaction.putHatch({
           ...state,
-          primary: settleHatchRequest(
-            hatch,
-            request,
-            request.ingressBytes ?? request.reservedIngressBytes,
-            request.status === "claimed" ? request.reservedResponseBytes : 0,
-          ),
+          primary: removeHatchRequest(hatch, requestId),
         });
         return Result.succeed(undefined);
       }),
