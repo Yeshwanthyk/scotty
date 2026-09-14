@@ -19,6 +19,7 @@ import {
   runtimeFailureMessage,
   steerConversation,
 } from "../data/conversation-client";
+import { readEvidence, type EvidenceSummary } from "../data/session-workbench";
 import { activeConversationTurn, type ConversationTurn } from "../domain/conversation";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { SessionSelectionLabel } from "./SessionSelection";
@@ -468,10 +469,14 @@ function ConversationShell({
 
 function ConversationContent({
   connection,
+  evidence,
   retry,
+  sessionId,
 }: {
   readonly connection: ConnectionState;
+  readonly evidence: ReadonlyArray<EvidenceSummary>;
   readonly retry: () => void;
+  readonly sessionId: string;
 }) {
   if (connection.kind === "loading") return <ConversationSkeleton />;
   if (connection.kind === "paused")
@@ -487,8 +492,67 @@ function ConversationContent({
   if (connection.kind === "unavailable")
     return <UnavailableConversation failure={connection.failure} retry={retry} />;
   if (connection.snapshot.turns.length === 0) return <EmptyConversation />;
-  return <Conversation turns={connection.snapshot.turns} />;
+  return (
+    <Conversation evidence={evidence} sessionId={sessionId} turns={connection.snapshot.turns} />
+  );
 }
+
+function useConversationEvidence(sessionId: string, evidenceRevision: string | undefined) {
+  const [evidence, setEvidence] = useState<ReadonlyArray<EvidenceSummary>>([]);
+  const verifiedSessionId = useRef(sessionId);
+  useEffect(() => {
+    if (verifiedSessionId.current !== sessionId) {
+      verifiedSessionId.current = sessionId;
+      setEvidence([]);
+    }
+    const controller = new AbortController();
+    let retryTimer: number | undefined;
+    void refreshConversationEvidence(sessionId, controller.signal, setEvidence, (retry) => {
+      retryTimer = window.setTimeout(() => void retry(), RETRY_POLL_MS);
+    });
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [evidenceRevision, sessionId]);
+  return evidence;
+}
+
+type ConversationEvidenceReader = (
+  sessionId: string,
+  signal: AbortSignal,
+) => Promise<ReadonlyArray<EvidenceSummary>>;
+
+export const refreshConversationEvidence = (
+  sessionId: string,
+  signal: AbortSignal,
+  publish: (evidence: ReadonlyArray<EvidenceSummary>) => void,
+  scheduleRetry: (retry: () => Promise<void>) => void,
+  read: ConversationEvidenceReader = readEvidence,
+): Promise<void> =>
+  read(sessionId, signal).then(
+    (evidence) => {
+      if (!signal.aborted) publish(evidence);
+    },
+    () => {
+      if (!signal.aborted)
+        scheduleRetry(() =>
+          refreshConversationEvidence(sessionId, signal, publish, scheduleRetry, read),
+        );
+    },
+  );
+
+const evidenceRevisionFor = (snapshot: ConversationSnapshot | undefined): string | undefined =>
+  snapshot?.turns
+    .flatMap((turn) => turn.tools)
+    .filter(
+      (tool) =>
+        tool.invocation === "Browser evidence" ||
+        tool.output?.includes("scotty-evidence:") === true ||
+        tool.output?.includes("/evidence/") === true,
+    )
+    .map((tool) => `${tool.id}:${tool.state}:${tool.output ?? ""}`)
+    .join("\n");
 
 const deliveryMessage = (delivery: DeliveryState, draftTooLong: boolean): string => {
   if (draftTooLong) return "Message is too long";
@@ -720,6 +784,7 @@ export function LiveConversation({
   );
 
   const snapshot = connection.kind === "ready" ? connection.snapshot : undefined;
+  const evidence = useConversationEvidence(sessionId, evidenceRevisionFor(snapshot));
   const activeTurn = activeConversationTurn(snapshot?.turns ?? []);
   const active = activeTurn !== undefined;
   const healthy =
@@ -759,7 +824,12 @@ export function LiveConversation({
         />
       }
     >
-      <ConversationContent connection={connection} retry={refresh} />
+      <ConversationContent
+        connection={connection}
+        evidence={evidence}
+        retry={refresh}
+        sessionId={sessionId}
+      />
     </ConversationShell>
   );
 }
