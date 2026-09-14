@@ -8,6 +8,8 @@ import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect } from "effect";
 import {
   GIT_STATUS_COMMAND,
+  gitChangedNamesCommand,
+  readGitReviewBase,
   findGitWorktreeChange,
   gitPatchCommand,
   gitTrackedNumstatCommand,
@@ -16,7 +18,7 @@ import {
   readGitWorktreePatch,
 } from "../../src/changes/git";
 import { PATCH_MAX_BYTES, type ChangedFile } from "../../src/changes/contracts";
-import type { SandboxRuntime } from "../../src/sandbox/runtime";
+import { SandboxRuntimeFailure, type SandboxRuntime } from "../../src/sandbox/runtime";
 
 const result = (command: string, stdout: string): ExecResult => ({
   command,
@@ -65,17 +67,21 @@ const execFileAsync = promisify(execFileCallback);
 
 const executingRuntime: Pick<SandboxRuntime["Service"], "execChecked"> = {
   execChecked: (command, options) =>
-    Effect.promise(async () => {
-      const output = await execAsync(command, {
-        cwd: options?.cwd,
-        encoding: "utf8",
-        maxBuffer: 2 * 1_024 * 1_024,
-        timeout: options?.timeout,
-      });
-      return {
-        ...result(command, String(output.stdout)),
-        stderr: String(output.stderr),
-      };
+    Effect.tryPromise({
+      try: async () => {
+        const output = await execAsync(command, {
+          cwd: options?.cwd,
+          encoding: "utf8",
+          maxBuffer: 2 * 1_024 * 1_024,
+          timeout: options?.timeout,
+        });
+        return {
+          ...result(command, String(output.stdout)),
+          stderr: String(output.stderr),
+        };
+      },
+      catch: () =>
+        new SandboxRuntimeFailure({ reason: "nonzero_exit", message: "Git command failed" }),
     }),
 };
 
@@ -90,6 +96,7 @@ describe("Git changed-files adapter", () => {
       const fake = fakeRuntime(
         new Map([
           [GIT_STATUS_COMMAND, encodeGitTransport(status)],
+          [gitChangedNamesCommand("HEAD"), encodeGitTransport("M\0src/app.ts\0")],
           [trackedCommand, encodeGitTransport("1\t1\tsrc/app.ts\0")],
           [untrackedCommand, ""],
         ]),
@@ -100,7 +107,7 @@ describe("Git changed-files adapter", () => {
       assert.lengthOf(changes.files, 1);
       assert.deepStrictEqual(
         fake.calls.map(({ command }) => command),
-        [GIT_STATUS_COMMAND, trackedCommand, untrackedCommand],
+        [GIT_STATUS_COMMAND, gitChangedNamesCommand("HEAD"), trackedCommand, untrackedCommand],
       );
       for (const call of fake.calls) {
         assert.strictEqual(call.options?.cwd, "/workspace/session");
@@ -128,6 +135,7 @@ describe("Git changed-files adapter", () => {
       const fake = fakeRuntime(
         new Map([
           [GIT_STATUS_COMMAND, encodeGitTransport(status)],
+          [gitChangedNamesCommand("HEAD"), encodeGitTransport("M\0.scotty/project.json\0")],
           [trackedCommand, encodeGitTransport("1\t1\t.scotty/project.json\0")],
           [untrackedCommand, encodeGitTransport("1\t0\tsrc/new.ts\0")],
         ]),
@@ -150,13 +158,23 @@ describe("Git changed-files adapter", () => {
         { length: 6_000 },
         (_, index) => `1 .M N... 100644 100644 100644 ${hash} ${hash} src/file-${index}.ts\0`,
       ).join("");
-      const fake = fakeRuntime(new Map([[GIT_STATUS_COMMAND, encodeGitTransport(status)]]));
+      const fake = fakeRuntime(
+        new Map([
+          [GIT_STATUS_COMMAND, encodeGitTransport(status)],
+          [
+            gitChangedNamesCommand("HEAD"),
+            encodeGitTransport(
+              Array.from({ length: 6000 }, (_, index) => `M\0src/file-${index}.ts\0`).join(""),
+            ),
+          ],
+        ]),
+      );
 
       const changes = yield* listGitWorktreeChanges(fake.runtime, "/workspace/session");
 
       assert.lengthOf(changes.files, 100);
       assert.isTrue(changes.truncated);
-      assert.lengthOf(fake.calls, 3);
+      assert.lengthOf(fake.calls, 4);
     }),
   );
 
@@ -169,11 +187,87 @@ describe("Git changed-files adapter", () => {
       const patch = yield* readGitWorktreePatch(fake.runtime, "/workspace/session", file);
 
       assert.include(command, "--literal-pathspecs");
-      assert.include(command, "--no-ext-diff --no-textconv --no-color --unified=3 HEAD --");
+      assert.include(command, "--no-ext-diff --no-textconv --no-color --unified=3 --find-renames");
       assert.include(command, "'\\''");
       assert.strictEqual(new TextEncoder().encode(patch.patch ?? "").byteLength, PATCH_MAX_BYTES);
       assert.isTrue(patch.truncated);
       assert.notProperty(fake.calls[0].options ?? {}, "env");
+    }),
+  );
+
+  it.effect("keeps committed branch changes visible in a clean worktree", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(join(tmpdir(), "scotty-branch-changes-"))),
+        (path) => Effect.promise(() => rm(path, { force: true, recursive: true })),
+      );
+      yield* Effect.promise(async () => {
+        await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: root });
+        await execFileAsync("git", ["config", "user.email", "scotty@example.invalid"], {
+          cwd: root,
+        });
+        await execFileAsync("git", ["config", "user.name", "Scotty Test"], { cwd: root });
+        await writeFile(join(root, "app.ts"), "export const value = 'base';\n");
+        await execFileAsync("git", ["add", "."], { cwd: root });
+        await execFileAsync("git", ["commit", "-qm", "base"], { cwd: root });
+        await execFileAsync("git", ["switch", "-qc", "session"], { cwd: root });
+        await writeFile(join(root, "app.ts"), "export const value = 'committed';\n");
+        await execFileAsync("git", ["commit", "-qam", "session work"], { cwd: root });
+      });
+      const base = yield* readGitReviewBase(executingRuntime, root, "main");
+      const changes = yield* listGitWorktreeChanges(executingRuntime, root, base);
+      assert.deepStrictEqual(
+        changes.files.map((file) => file.path),
+        ["app.ts"],
+      );
+      assert.isFalse(changes.truncated);
+      const committed = yield* findGitWorktreeChange(executingRuntime, root, "app.ts", base);
+      assert.isDefined(committed);
+      assert.isFalse(committed.staged);
+      assert.isFalse(committed.unstaged);
+      const patch = yield* readGitWorktreePatch(executingRuntime, root, committed, base);
+      assert.include(patch.patch ?? "", "-export const value = 'base';");
+
+      yield* Effect.promise(async () => {
+        await execFileAsync("git", ["switch", "-q", "main"], { cwd: root });
+        await writeFile(join(root, "main-only.ts"), "upstream\n");
+        await execFileAsync("git", ["add", "."], { cwd: root });
+        await execFileAsync("git", ["commit", "-qm", "upstream"], { cwd: root });
+        await execFileAsync("git", ["switch", "-q", "session"], { cwd: root });
+        await writeFile(join(root, "app.ts"), "export const value = 'staged';\n");
+        await execFileAsync("git", ["add", "."], { cwd: root });
+        await writeFile(join(root, "app.ts"), "export const value = 'working';\n");
+        await writeFile(join(root, "new.ts"), "untracked\n");
+      });
+      const nextBase = yield* readGitReviewBase(executingRuntime, root, "main");
+      assert.strictEqual(nextBase, base);
+      const mixed = yield* listGitWorktreeChanges(executingRuntime, root, nextBase);
+      assert.deepStrictEqual(
+        mixed.files.map((file) => file.path),
+        ["app.ts", "new.ts"],
+      );
+      const working = yield* findGitWorktreeChange(executingRuntime, root, "app.ts", nextBase);
+      assert.isDefined(working);
+      assert.isTrue(working.staged);
+      assert.isTrue(working.unstaged);
+      const workingPatch = yield* readGitWorktreePatch(executingRuntime, root, working, nextBase);
+      assert.include(workingPatch.patch ?? "", "+export const value = 'working';");
+      assert.notInclude(workingPatch.patch ?? "", "committed");
+      yield* Effect.promise(() =>
+        writeFile(join(root, "app.ts"), "export const value = 'base';\n"),
+      );
+      const reverted = yield* listGitWorktreeChanges(executingRuntime, root, nextBase);
+      assert.deepStrictEqual(
+        reverted.files.map((file) => file.path),
+        ["new.ts"],
+      );
+      yield* Effect.promise(async () => {
+        await execFileAsync("git", ["update-ref", "refs/remotes/origin/main", base], { cwd: root });
+        await execFileAsync("git", ["update-ref", "refs/heads/main", "HEAD"], { cwd: root });
+      });
+      assert.strictEqual(yield* readGitReviewBase(executingRuntime, root, "main"), base);
+      const missingBase = yield* Effect.flip(readGitReviewBase(executingRuntime, root, "missing"));
+      assert.strictEqual(missingBase.reason, "nonzero_exit");
     }),
   );
 
@@ -188,7 +282,7 @@ describe("Git changed-files adapter", () => {
       const marker = join(root, "SCOTTY_PWNED");
 
       yield* Effect.promise(async () => {
-        await execFileAsync("git", ["init", "-q"], { cwd: root });
+        await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: root });
         await execFileAsync("git", ["config", "user.email", "scotty@example.invalid"], {
           cwd: root,
         });
@@ -210,6 +304,7 @@ describe("Git changed-files adapter", () => {
         await writeFile(join(root, ".scotty", "project.json"), '{"value":"old"}\n');
         await execFileAsync("git", ["add", "--", "."], { cwd: root });
         await execFileAsync("git", ["commit", "-qm", "initial"], { cwd: root });
+        await execFileAsync("git", ["switch", "-qc", "session"], { cwd: root });
         await writeFile(join(root, ".scotty", "project.json"), '{"value":"new"}\n');
         await rename(join(root, oldPath), join(root, renamedPath));
         await writeFile(
@@ -224,13 +319,15 @@ describe("Git changed-files adapter", () => {
           ].join("\n"),
         );
         await execFileAsync("git", ["add", "-A", "--", "."], { cwd: root });
+        await execFileAsync("git", ["commit", "-qm", "rename"], { cwd: root });
         await mkdir(join(root, ".pi-agent"));
         await writeFile(join(root, ".pi-agent", "settings.json"), "{}\n");
         await writeFile(join(root, "binary.dat"), Uint8Array.from([0, 1, 2, 3]));
       });
 
-      const changes = yield* listGitWorktreeChanges(executingRuntime, root);
-      const renamed = yield* findGitWorktreeChange(executingRuntime, root, renamedPath);
+      const base = yield* readGitReviewBase(executingRuntime, root, "main");
+      const changes = yield* listGitWorktreeChanges(executingRuntime, root, base);
+      const renamed = yield* findGitWorktreeChange(executingRuntime, root, renamedPath, base);
 
       assert.isDefined(renamed);
       assert.strictEqual(renamed.status, "renamed");
@@ -242,7 +339,7 @@ describe("Git changed-files adapter", () => {
       assert.isFalse(binary.patchable);
       assert.isTrue(changes.files.some((file) => file.path === ".scotty/project.json"));
       assert.isFalse(changes.files.some((file) => file.path === ".pi-agent/settings.json"));
-      const patch = yield* readGitWorktreePatch(executingRuntime, root, renamed);
+      const patch = yield* readGitWorktreePatch(executingRuntime, root, renamed, base);
       assert.include(patch.patch ?? "", oldPath);
       assert.include(patch.patch ?? "", renamedPath);
       assert.notInclude(patch.patch ?? "", "\u001b[");
@@ -254,6 +351,39 @@ describe("Git changed-files adapter", () => {
           ),
         ),
       );
+    }),
+  );
+
+  it.effect("reviews an unborn repository against the empty tree", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(join(tmpdir(), "scotty-unborn-changes-"))),
+        (path) => Effect.promise(() => rm(path, { force: true, recursive: true })),
+      );
+      yield* Effect.promise(async () => {
+        await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: root });
+        await writeFile(join(root, "new.ts"), "new file\n");
+      });
+      const base = yield* readGitReviewBase(executingRuntime, root, "main");
+      const changes = yield* listGitWorktreeChanges(executingRuntime, root, base);
+      assert.deepStrictEqual(
+        changes.files.map((file) => file.path),
+        ["new.ts"],
+      );
+      const file = yield* findGitWorktreeChange(executingRuntime, root, "new.ts", base);
+      assert.isDefined(file);
+      const patch = yield* readGitWorktreePatch(executingRuntime, root, file, base);
+      assert.include(patch.patch ?? "", "+new file");
+    }),
+  );
+
+  it.effect("rejects an unreadable comparison base", () =>
+    Effect.gen(function* () {
+      const fake = fakeRuntime(new Map());
+      const failure = yield* Effect.flip(
+        readGitReviewBase(fake.runtime, "/workspace/session", "main"),
+      );
+      assert.strictEqual(failure.reason, "transport");
     }),
   );
 

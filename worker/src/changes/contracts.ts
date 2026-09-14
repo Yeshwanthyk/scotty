@@ -126,6 +126,27 @@ export function parseGitStatus(output: string): ReadonlyArray<ParsedStatus> {
   return files;
 }
 
+export function parseGitNameStatus(output: string): ReadonlyArray<ParsedStatus> {
+  const records = output.split("\0");
+  const files: ParsedStatus[] = [];
+  for (let index = 0; index < records.length; index += 2) {
+    const code = records[index];
+    const firstPath = records[index + 1];
+    if (!code || !firstPath || !/^(?:[ADMTUXB]|[RC][0-9]+)$/u.test(code)) continue;
+    const renamed = code.startsWith("R") || code.startsWith("C");
+    const path = renamed ? records[++index + 1] : firstPath;
+    if (!path) continue;
+    files.push({
+      path,
+      ...(renamed ? { oldPath: firstPath } : {}),
+      status: statusFromCode("", code),
+      staged: false,
+      unstaged: false,
+    });
+  }
+  return files;
+}
+
 export function parseGitNumstat(output: string): ReadonlyMap<string, GitNumstat> {
   const stats = new Map<string, GitNumstat>();
   for (const record of output.split("\0")) {

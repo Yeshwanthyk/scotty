@@ -518,6 +518,7 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
           <section aria-label="Conversation" {...stylex.props(styles.surface)}>
             <SessionSelection.Provider value={configuredSelectionLabel(session.selection)}>
               <SessionWorkbench
+                defaultBranch={session.display.defaultBranch}
                 previewTurns={fixture ? conversationFixture : undefined}
                 runtimeAvailable={eligibility.eligible}
                 sessionId={session.id}

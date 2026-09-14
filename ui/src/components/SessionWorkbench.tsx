@@ -14,7 +14,7 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { readConversation, type ConversationSnapshot } from "../data/conversation-client";
 import {
   type ChangedFile,
@@ -29,6 +29,8 @@ import {
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import type { ConversationTurn } from "../domain/conversation";
 import { Markdown } from "./Markdown";
+
+const PierreDiff = lazy(() => import("./PierreDiff"));
 
 const styles = stylex.create({
   root: {
@@ -309,7 +311,23 @@ const styles = stylex.create({
     whiteSpace: "nowrap",
   },
   fileMeta: { color: colors.quiet, fontSize: "10px" },
+  diffPanel: {
+    minWidth: 0,
+    minHeight: 0,
+    display: "grid",
+    gridTemplateRows: "auto minmax(0, 1fr)",
+  },
+  diffControls: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: spacing.sm,
+    borderBottom: "1px solid",
+    borderBottomColor: colors.lineSoft,
+  },
   patch: {
+    minWidth: 0,
     minHeight: 0,
     overflow: "auto",
     margin: 0,
@@ -319,7 +337,6 @@ const styles = stylex.create({
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: "11px",
     lineHeight: 1.55,
-    whiteSpace: "pre",
   },
   terminalDrawer: {
     position: "absolute",
@@ -365,11 +382,13 @@ const styles = stylex.create({
 
 export function SessionWorkbench({
   previewTurns,
+  defaultBranch,
   children,
   runtimeAvailable,
   sessionId,
 }: {
   readonly previewTurns?: ReadonlyArray<ConversationTurn>;
+  readonly defaultBranch: string | null;
   readonly children: ReactNode;
   readonly runtimeAvailable: boolean;
   readonly sessionId: string;
@@ -396,7 +415,7 @@ export function SessionWorkbench({
     <div data-design="workbench" {...stylex.props(styles.root)}>
       <nav aria-label="Session workbench" {...stylex.props(styles.toolbar)}>
         <span {...stylex.props(styles.toolbarLabel)}>
-          {changesOpen ? "Working changes" : "Conversation"}
+          {changesOpen ? "Branch changes" : "Conversation"}
         </span>
         <div {...stylex.props(styles.toolbarActions)}>
           <ToolButton
@@ -453,14 +472,11 @@ export function SessionWorkbench({
       >
         <div {...stylex.props(styles.main)}>
           {changesOpen ? (
-            previewTurns ? (
-              <div className="tool-empty">
-                <h2>Working changes</h2>
-                <p>This local design preview has no connected worktree.</p>
-              </div>
-            ) : (
-              <ChangesView sessionId={sessionId} />
-            )
+            <ChangesView
+              sessionId={sessionId}
+              preview={previewTurns !== undefined}
+              defaultBranch={defaultBranch}
+            />
           ) : (
             children
           )}
@@ -764,26 +780,71 @@ function EvidenceSection({
   );
 }
 
-function ChangesView({ sessionId }: { readonly sessionId: string }) {
+const previewPatch: ChangedFilePatch = {
+  path: "src/greeting.ts",
+  status: "modified",
+  staged: false,
+  unstaged: true,
+  additions: 2,
+  deletions: 2,
+  binary: false,
+  patchable: true,
+  truncated: false,
+  patch:
+    "diff --git a/src/greeting.ts b/src/greeting.ts\n--- a/src/greeting.ts\n+++ b/src/greeting.ts\n@@ -1,4 +1,4 @@\n export function greeting(name: string) {\n-  const message = `Hello, ${name}`;\n-  return message;\n+  const message = `Welcome, ${name}!`;\n+  return message.trim();\n }\n",
+};
+
+function ChangesView({
+  sessionId,
+  preview,
+  defaultBranch,
+}: {
+  readonly sessionId: string;
+  readonly preview: boolean;
+  readonly defaultBranch: string | null;
+}) {
+  const comparison = defaultBranch ?? "the default branch";
+  const [refresh, setRefresh] = useState(0);
+  const [split, setSplit] = useState(false);
+  const [words, setWords] = useState(true);
   const [files, setFiles] = useState<ReadonlyArray<ChangedFile>>();
   const [selected, setSelected] = useState<ChangedFile>();
   const [patch, setPatch] = useState<ChangedFilePatch>();
   const [error, setError] = useState<string>();
-  const load = (): void => {
+  const load = (): void => setRefresh((value) => value + 1);
+  useEffect(() => {
     setError(undefined);
-    void readChangedFiles(sessionId)
+    if (preview) {
+      setFiles([previewPatch]);
+      setSelected(previewPatch);
+      return;
+    }
+    const controller = new AbortController();
+    setFiles(undefined);
+    void readChangedFiles(sessionId, controller.signal)
       .then((next) => {
+        if (controller.signal.aborted) return;
         setFiles(next);
-        setSelected(next.find((file) => file.patchable) ?? next[0]);
+        setSelected(
+          (current) =>
+            next.find((file) => file.path === current?.path) ??
+            next.find((file) => file.patchable) ??
+            next[0],
+        );
       })
-      .catch((reason: unknown) =>
-        setError(reason instanceof Error ? reason.message : "Changes unavailable"),
-      );
-  };
-  useEffect(load, [sessionId]);
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted)
+          setError(reason instanceof Error ? reason.message : "Changes unavailable");
+      });
+    return () => controller.abort();
+  }, [sessionId, preview, refresh]);
   useEffect(() => {
     if (selected === undefined || !selected.patchable) {
       setPatch(undefined);
+      return;
+    }
+    if (preview) {
+      setPatch(previewPatch);
       return;
     }
     const controller = new AbortController();
@@ -795,7 +856,7 @@ function ChangesView({ sessionId }: { readonly sessionId: string }) {
           setError(reason instanceof Error ? reason.message : "Patch unavailable");
       });
     return () => controller.abort();
-  }, [selected, sessionId]);
+  }, [selected, sessionId, preview]);
   if (error !== undefined)
     return (
       <div {...stylex.props(styles.loading)}>
@@ -818,8 +879,12 @@ function ChangesView({ sessionId }: { readonly sessionId: string }) {
     return (
       <div {...stylex.props(styles.loading)}>
         <p {...stylex.props(styles.muted)}>
-          <Check aria-hidden {...stylex.props(styles.icon)} /> The session worktree is clean.
+          <Check aria-hidden {...stylex.props(styles.icon)} /> No changes since branching from{" "}
+          {comparison}.
         </p>
+        <button type="button" onClick={load} {...stylex.props(styles.toolButton)}>
+          Refresh
+        </button>
       </div>
     );
   return (
@@ -844,11 +909,62 @@ function ChangesView({ sessionId }: { readonly sessionId: string }) {
           </button>
         ))}
       </nav>
-      <pre aria-label="Selected file patch" {...stylex.props(styles.patch)}>
-        {selected?.patchable
-          ? (patch?.patch ?? "Loading patch…")
-          : "No textual patch is available for this file."}
-      </pre>
+      <section aria-label="Selected file patch" {...stylex.props(styles.diffPanel)}>
+        <div aria-label="Diff options" {...stylex.props(styles.diffControls)}>
+          <span
+            data-testid="diff-comparison"
+            title="Includes committed and uncommitted changes since the branch point"
+            {...stylex.props(styles.fileMeta)}
+          >
+            Changes from {comparison}
+          </span>
+          <button
+            type="button"
+            aria-pressed={!split}
+            onClick={() => setSplit(false)}
+            {...stylex.props(styles.toolButton, !split && styles.toolButtonActive)}
+          >
+            Unified
+          </button>
+          <button
+            type="button"
+            aria-pressed={split}
+            onClick={() => setSplit(true)}
+            {...stylex.props(styles.toolButton, split && styles.toolButtonActive)}
+          >
+            Split
+          </button>
+          <button
+            type="button"
+            aria-pressed={words}
+            onClick={() => setWords(!words)}
+            {...stylex.props(styles.toolButton, words && styles.toolButtonActive)}
+          >
+            Word highlights
+          </button>
+          <button type="button" onClick={load} {...stylex.props(styles.toolButton)}>
+            <RefreshCw aria-hidden {...stylex.props(styles.icon)} />
+            Refresh
+          </button>
+        </div>
+        <div {...stylex.props(styles.patch)}>
+          {preview ? <p>Preview changes · sample file</p> : null}
+          {patch?.truncated ? (
+            <p role="status">This patch is truncated. Only part of the changes is shown.</p>
+          ) : null}
+          {!selected?.patchable ? (
+            <p>No textual patch is available for this file.</p>
+          ) : patch === undefined ? (
+            <p role="status">Loading patch…</p>
+          ) : !patch.patch ? (
+            <p>No textual changes in this file.</p>
+          ) : (
+            <Suspense fallback={<p role="status">Loading diff viewer…</p>}>
+              <PierreDiff patch={patch.patch} split={split} words={words} />
+            </Suspense>
+          )}
+        </div>
+      </section>
     </div>
   );
 }

@@ -313,6 +313,7 @@ import {
 } from "../sandbox/runtime-incarnation-store";
 import {
   findGitWorktreeChange,
+  readGitReviewBase,
   listGitWorktreeChanges,
   readGitWorktreePatch,
 } from "../changes/git";
@@ -3849,7 +3850,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly listScottyChangesProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const observed = yield* this.requireChangesAccessProgram();
     const runtime = yield* SandboxRuntime;
-    const changes = yield* listGitWorktreeChanges(runtime, sessionRoot(observed.record.id)).pipe(
+    const base = yield* readGitReviewBase(
+      runtime,
+      sessionRoot(observed.record.id),
+      observed.record.defaultBranch,
+    ).pipe(
+      Effect.mapError((cause) =>
+        this.upstreamError(
+          "Comparison with the default branch is unavailable",
+          cause,
+          observed.record.id,
+        ),
+      ),
+    );
+    const changes = yield* listGitWorktreeChanges(
+      runtime,
+      sessionRoot(observed.record.id),
+      base,
+    ).pipe(
       Effect.mapError((cause) =>
         this.upstreamError("Changed files are unavailable", cause, observed.record.id),
       ),
@@ -3868,7 +3886,25 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (path === undefined) return yield* badRequest("Changed file path is invalid");
     const observed = yield* this.requireChangesAccessProgram();
     const runtime = yield* SandboxRuntime;
-    const file = yield* findGitWorktreeChange(runtime, sessionRoot(observed.record.id), path).pipe(
+    const base = yield* readGitReviewBase(
+      runtime,
+      sessionRoot(observed.record.id),
+      observed.record.defaultBranch,
+    ).pipe(
+      Effect.mapError((cause) =>
+        this.upstreamError(
+          "Comparison with the default branch is unavailable",
+          cause,
+          observed.record.id,
+        ),
+      ),
+    );
+    const file = yield* findGitWorktreeChange(
+      runtime,
+      sessionRoot(observed.record.id),
+      path,
+      base,
+    ).pipe(
       Effect.mapError((cause) =>
         this.upstreamError("Changed files are unavailable", cause, observed.record.id),
       ),
@@ -3881,7 +3917,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
         httpStatus: 404,
         exitCode: 3,
       });
-    const patch = yield* readGitWorktreePatch(runtime, sessionRoot(observed.record.id), file).pipe(
+    const patch = yield* readGitWorktreePatch(
+      runtime,
+      sessionRoot(observed.record.id),
+      file,
+      base,
+    ).pipe(
       Effect.mapError((cause) =>
         this.upstreamError("Changed file patch is unavailable", cause, observed.record.id),
       ),

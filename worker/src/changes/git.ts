@@ -1,10 +1,11 @@
-import { Effect, Predicate } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "../sandbox/runtime";
 import {
   CHANGED_FILE_LIMIT,
   PATCH_MAX_BYTES,
   changedFilesFromStatuses,
   parseGitStatus,
+  parseGitNameStatus,
   type ChangedFile,
   type ChangedFilePatch,
   type ChangedFiles,
@@ -70,14 +71,64 @@ export const GIT_STATUS_COMMAND = boundedGitReadCommand(
   LIST_MAX_BYTES,
 );
 
+export const gitReviewBaseCommand = (defaultBranch: string): string => {
+  const remote = shellQuote(`refs/remotes/origin/${defaultBranch}`);
+  const local = shellQuote(`refs/heads/${defaultBranch}`);
+  return `bash -lc ${shellQuote(
+    [
+      "git rev-parse --git-dir >/dev/null || exit 1",
+      "if ! git rev-parse --verify HEAD >/dev/null 2>&1; then",
+      "  git hash-object -t tree --stdin </dev/null",
+      `elif git show-ref --verify --quiet ${remote}; then`,
+      `  git merge-base HEAD ${remote}`,
+      `elif git show-ref --verify --quiet ${local}; then`,
+      `  git merge-base HEAD ${local}`,
+      "else",
+      "  echo 'Default branch is unavailable for comparison' >&2",
+      "  exit 1",
+      "fi",
+    ].join("\n"),
+  )}`;
+};
+
+const decodeGitObjectId = Schema.decodeUnknownEffect(
+  Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u)),
+);
+
+export const readGitReviewBase = Effect.fnUntraced(function* (
+  runtime: GitRuntime,
+  root: string,
+  defaultBranch: string,
+) {
+  const result = yield* runtime.execChecked(gitReviewBaseCommand(defaultBranch), execOptions(root));
+  return yield* decodeGitObjectId(result.stdout.trim()).pipe(
+    Effect.mapError(
+      () =>
+        new SandboxRuntimeFailure({
+          reason: "transport",
+          message: "Git comparison base was not a valid object identifier",
+        }),
+    ),
+  );
+});
+
+export const gitChangedNamesCommand = (base: string): string =>
+  boundedGitReadCommand(
+    `git diff --no-ext-diff --no-textconv --name-status -z --find-renames ${shellQuote(base)} --`,
+    LIST_MAX_BYTES,
+  );
+
 const uniquePaths = (files: ReadonlyArray<StatusFile>): ReadonlyArray<string> => [
   ...new Set(files.flatMap((file) => [file.oldPath, file.path]).filter(Predicate.isNotUndefined)),
 ];
 
-export const gitTrackedNumstatCommand = (files: ReadonlyArray<StatusFile>): string => {
+export const gitTrackedNumstatCommand = (
+  files: ReadonlyArray<StatusFile>,
+  base = "HEAD",
+): string => {
   const paths = uniquePaths(files.filter((file) => file.status !== "untracked"));
   if (paths.length === 0) return "printf ''";
-  const command = `git --literal-pathspecs diff --no-ext-diff --no-textconv --numstat -z --no-renames HEAD -- ${paths.map(shellQuote).join(" ")}`;
+  const command = `git --literal-pathspecs diff --no-ext-diff --no-textconv --numstat -z --no-renames ${shellQuote(base)} -- ${paths.map(shellQuote).join(" ")}`;
   return boundedGitReadCommand(command, LIST_MAX_BYTES);
 };
 
@@ -122,6 +173,7 @@ const boundedText = (
 const readStatus = Effect.fnUntraced(function* (
   runtime: GitRuntime,
   root: string,
+  base: string,
 ): Effect.fn.Return<
   {
     readonly output: string;
@@ -136,11 +188,34 @@ const readStatus = Effect.fnUntraced(function* (
   const output = bounded.truncated
     ? bounded.text.slice(0, Math.max(0, bounded.text.lastIndexOf("\0") + 1))
     : bounded.text;
-  const parsed = uniqueStatuses(parseGitStatus(output).filter(isVisibleStatus));
+  const worktree = uniqueStatuses(parseGitStatus(output).filter(isVisibleStatus));
+  const namesResult = yield* runtime.execChecked(gitChangedNamesCommand(base), execOptions(root));
+  const names = boundedText(yield* decodeGitTransport(namesResult.stdout), LIST_MAX_BYTES);
+  const namesOutput = names.truncated
+    ? names.text.slice(0, Math.max(0, names.text.lastIndexOf("\0") + 1))
+    : names.text;
+  const worktreeByPath = new Map(worktree.map((file) => [file.path, file]));
+  const files = new Map(
+    parseGitNameStatus(namesOutput).map((file) => {
+      const current = worktreeByPath.get(file.path);
+      return [
+        file.path,
+        {
+          ...file,
+          ...(current?.status === "unmerged" ? { status: current.status } : {}),
+          staged: current?.staged ?? false,
+          unstaged: current?.unstaged ?? false,
+        },
+      ];
+    }),
+  );
+  for (const file of worktree) {
+    if (file.status === "untracked" && !files.has(file.path)) files.set(file.path, file);
+  }
   return {
     output,
-    files: parsed.slice(0, CHANGED_FILE_LIMIT),
-    truncated: bounded.truncated || parsed.length > CHANGED_FILE_LIMIT,
+    files: [...files.values()].slice(0, CHANGED_FILE_LIMIT),
+    truncated: bounded.truncated || names.truncated || files.size > CHANGED_FILE_LIMIT,
   };
 });
 
@@ -148,11 +223,15 @@ const readStats = Effect.fnUntraced(function* (
   runtime: GitRuntime,
   root: string,
   files: ReadonlyArray<StatusFile>,
+  base: string,
 ): Effect.fn.Return<
   { readonly tracked: string; readonly untracked: string },
   SandboxRuntimeFailure
 > {
-  const tracked = yield* runtime.execChecked(gitTrackedNumstatCommand(files), execOptions(root));
+  const tracked = yield* runtime.execChecked(
+    gitTrackedNumstatCommand(files, base),
+    execOptions(root),
+  );
   const untracked = yield* runtime.execChecked(
     gitUntrackedNumstatCommand(files),
     execOptions(root),
@@ -166,9 +245,10 @@ const readStats = Effect.fnUntraced(function* (
 export const listGitWorktreeChanges = Effect.fnUntraced(function* (
   runtime: GitRuntime,
   root: string,
+  base = "HEAD",
 ): Effect.fn.Return<ChangedFiles, SandboxRuntimeFailure> {
-  const status = yield* readStatus(runtime, root);
-  const stats = yield* readStats(runtime, root, status.files);
+  const status = yield* readStatus(runtime, root, base);
+  const stats = yield* readStats(runtime, root, status.files, base);
   return changedFilesFromStatuses(status.files, stats.tracked, stats.untracked, status.truncated);
 });
 
@@ -176,11 +256,12 @@ export const findGitWorktreeChange = Effect.fnUntraced(function* (
   runtime: GitRuntime,
   root: string,
   path: string,
+  base = "HEAD",
 ): Effect.fn.Return<ChangedFile | undefined, SandboxRuntimeFailure> {
-  const status = yield* readStatus(runtime, root);
+  const status = yield* readStatus(runtime, root, base);
   const candidate = status.files.find((file) => file.path === path);
   if (candidate === undefined) return undefined;
-  const stats = yield* readStats(runtime, root, [candidate]);
+  const stats = yield* readStats(runtime, root, [candidate], base);
   return changedFilesFromStatuses(
     [candidate],
     stats.tracked,
@@ -189,7 +270,10 @@ export const findGitWorktreeChange = Effect.fnUntraced(function* (
   ).files.find((file) => file.path === path);
 });
 
-export const gitPatchCommand = (file: Pick<ChangedFile, "oldPath" | "path" | "status">): string => {
+export const gitPatchCommand = (
+  file: Pick<ChangedFile, "oldPath" | "path" | "status">,
+  base = "HEAD",
+): string => {
   const path = shellQuote(file.path);
   const trackedPaths = [file.oldPath, file.path]
     .filter(Predicate.isNotUndefined)
@@ -198,7 +282,7 @@ export const gitPatchCommand = (file: Pick<ChangedFile, "oldPath" | "path" | "st
   const diff =
     file.status === "untracked"
       ? `git --literal-pathspecs diff --no-index --no-ext-diff --no-textconv --no-color --unified=3 -- /dev/null ${path}`
-      : `git --literal-pathspecs diff --no-ext-diff --no-textconv --no-color --unified=3 HEAD -- ${trackedPaths}`;
+      : `git --literal-pathspecs diff --no-ext-diff --no-textconv --no-color --unified=3 --find-renames ${shellQuote(base)} -- ${trackedPaths}`;
   const acceptedStatuses =
     file.status === "untracked" ? "0 || status == 1 || status == 141" : "0 || status == 141";
   const script = [
@@ -213,9 +297,10 @@ export const readGitWorktreePatch = Effect.fnUntraced(function* (
   runtime: GitRuntime,
   root: string,
   file: ChangedFile,
+  base = "HEAD",
 ): Effect.fn.Return<ChangedFilePatch, SandboxRuntimeFailure> {
   if (!file.patchable) return { ...file, patch: null, truncated: false };
-  const result = yield* runtime.execChecked(gitPatchCommand(file), execOptions(root));
+  const result = yield* runtime.execChecked(gitPatchCommand(file, base), execOptions(root));
   const bounded = boundedText(result.stdout, PATCH_MAX_BYTES);
   return { ...file, patch: bounded.text, truncated: bounded.truncated };
 });
