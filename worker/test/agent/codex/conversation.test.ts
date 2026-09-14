@@ -36,7 +36,49 @@ const runningTool: CanonicalConversationTool = {
   invocation: "sleep 10",
 };
 
-describe("Codex conversation failure projection", () => {
+describe("Codex conversation projection", () => {
+  it.effect("projects the current running tool as active-turn context", () =>
+    Effect.gen(function* () {
+      const conversation = yield* codexConversation(
+        makeSnapshot({
+          ready: true,
+          failure: null,
+          prompt: { status: "running", turnId: "active-turn" },
+          tools: [
+            {
+              id: "tool-running",
+              state: "running",
+              label: "Checking the current-activity interface",
+              invocation: "Browser evidence",
+            },
+          ],
+          turns: [
+            {
+              id: "active-turn",
+              state: "streaming",
+              user: "What are you doing now?",
+              assistant: "",
+              tools: [
+                {
+                  id: "tool-running",
+                  state: "running",
+                  label: "Checking the current-activity interface",
+                  invocation: "Browser evidence",
+                },
+              ],
+            },
+          ],
+        }),
+        { prompt: "What are you doing now?", turnId: "active-turn", revision: 4 },
+      );
+
+      assert.equal(
+        conversation.turns[0]?.activitySummary,
+        "Checking the current-activity interface",
+      );
+    }),
+  );
+
   it.effect("projects only bounded stale notification context", () =>
     Effect.gen(function* () {
       const conversation = yield* codexConversation(

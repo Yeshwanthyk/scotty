@@ -20,7 +20,7 @@ const boundedText = (text: string): string => {
 
 type CodexPromptState = (typeof CodexSnapshot.Type)["prompt"];
 
-const projectFailedTurn = (
+const projectTurn = (
   turn: CanonicalConversationTurn,
   state: CanonicalConversationTurn["state"],
   prompt: CodexPromptState,
@@ -29,14 +29,18 @@ const projectFailedTurn = (
 ): CanonicalConversationTurn => {
   const failedId =
     state === "failed" && "turnId" in prompt && prompt.turnId !== null ? prompt.turnId : fallbackId;
-  if (state !== "failed" || turn.id !== failedId || turn.state !== "failed") return turn;
-  return {
-    ...turn,
-    ...(activitySummary === undefined ? {} : { activitySummary }),
-    tools: turn.tools.map((tool) =>
-      tool.state === "running" ? { ...tool, state: "failed" as const } : tool,
-    ),
-  };
+  if (state === "failed" && turn.id === failedId && turn.state === "failed")
+    return {
+      ...turn,
+      ...(activitySummary === undefined ? {} : { activitySummary }),
+      tools: turn.tools.map((tool) =>
+        tool.state === "running" ? { ...tool, state: "failed" as const } : tool,
+      ),
+    };
+  if (state !== "streaming" || turn.id !== fallbackId || turn.activitySummary !== undefined)
+    return turn;
+  const currentTool = turn.tools.findLast((tool) => tool.state === "running");
+  return currentTool === undefined ? turn : { ...turn, activitySummary: currentTool.label };
 };
 
 const runtimeFailureSummary = (snapshot: typeof CodexSnapshot.Type) =>
@@ -79,9 +83,9 @@ export const codexConversation = Effect.fnUntraced(function* (
   };
   const turns =
     snapshot.turns === undefined || snapshot.turns.length === 0
-      ? [projectFailedTurn(fallbackTurn, state, prompt, input.turnId, activitySummary)]
+      ? [projectTurn(fallbackTurn, state, prompt, input.turnId, activitySummary)]
       : snapshot.turns.map((turn) =>
-          projectFailedTurn(turn, state, prompt, input.turnId, activitySummary),
+          projectTurn(turn, state, prompt, input.turnId, activitySummary),
         );
   return yield* decodeCanonicalConversationSnapshot({
     version: 1,

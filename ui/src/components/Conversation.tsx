@@ -139,6 +139,7 @@ const styles = stylex.create({
     display: "flex",
     alignItems: "center",
     gap: spacing.md,
+    minWidth: 0,
   },
   workingLabel: {
     display: "inline-flex",
@@ -147,6 +148,17 @@ const styles = stylex.create({
     color: colors.warning,
     fontSize: "12px",
     fontWeight: 650,
+    whiteSpace: "nowrap",
+  },
+  workingActivity: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    margin: 0,
+    color: colors.muted,
+    fontSize: "12px",
+    lineHeight: 1.45,
+    textWrap: "pretty",
   },
   spin: {
     width: "13px",
@@ -303,10 +315,12 @@ function ToolRow({ tool }: { readonly tool: ToolActivity }) {
 function TurnContent({
   turn,
   assistant,
+  showActivitySummary = true,
   showUser = true,
 }: {
   readonly turn: ConversationTurn;
   readonly assistant: string;
+  readonly showActivitySummary?: boolean;
   readonly showUser?: boolean;
 }) {
   return (
@@ -314,7 +328,7 @@ function TurnContent({
       {!showUser || turn.user.trim().length === 0 ? null : (
         <p {...stylex.props(styles.userMessage)}>{turn.user}</p>
       )}
-      {turn.activitySummary === undefined ? null : (
+      {!showActivitySummary || turn.activitySummary === undefined ? null : (
         <p {...stylex.props(styles.thinking)}>{turn.activitySummary}</p>
       )}
       {turn.tools.length === 0 ? null : (
@@ -458,13 +472,18 @@ export function Conversation({
             {active.user.trim().length === 0 ? null : (
               <p {...stylex.props(styles.userMessage)}>{active.user}</p>
             )}
-            <div {...stylex.props(styles.workingHeader)}>
+            <div role="status" aria-live="polite" {...stylex.props(styles.workingHeader)}>
               <span {...stylex.props(styles.workingLabel)}>
                 <LoaderCircle aria-hidden {...stylex.props(styles.spin)} />
                 Working
               </span>
+              {active.activitySummary === undefined ? null : (
+                <p data-design="current-activity" {...stylex.props(styles.workingActivity)}>
+                  {active.activitySummary}
+                </p>
+              )}
             </div>
-            <TurnContent assistant="" showUser={false} turn={active} />
+            <TurnContent assistant="" showActivitySummary={false} showUser={false} turn={active} />
             <div aria-live="polite" {...stylex.props(styles.assistantMessage)}>
               <Markdown source={streamedTextAt(active.assistant, visibleCharacters)} />
               {visibleCharacters < active.assistant.length ? (
