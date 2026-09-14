@@ -177,6 +177,7 @@ export const SleepPhaseSchema = Schema.Literals([
   "Quiescing",
   "PiStopped",
   "Syncing",
+  "BackupPrepared",
   "BackupConfirmed",
   "StopRequested",
   "RuntimeStopped",

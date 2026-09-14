@@ -14,8 +14,15 @@ import {
 } from "../../src/egress/session";
 import { EVIDENCE_TOOL_MAX_PROTOCOL_BYTES } from "../../src/evidence/contracts";
 import { ScottyError } from "../../src/session/contracts";
+import type { SessionAuthority } from "../../src/session-actor/authority";
+import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import { ALLOWED_HOSTS, makeOutboundByHost } from "../../src/egress/worker";
-import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "../support/session-harness";
+import {
+  CREATE_INPUT,
+  createSessionHarness,
+  SESSION_ID,
+  sessionHarnessKeys,
+} from "../support/session-harness";
 import { makeSessionRecord } from "../support";
 
 const TARGET_ID = "b0b1c2d3e4f5";
@@ -186,6 +193,86 @@ function errorCode(value: unknown): string | undefined {
 }
 
 describe("container-only session egress", () => {
+  it("passes create, read, queued follow-up, and interrupt through the source without ambient credentials", async () => {
+    const operations: unknown[] = [];
+    const source = {
+      containerSessionRequest: async (operation: unknown) => {
+        operations.push(operation);
+        if (
+          typeof operation === "object" &&
+          operation !== null &&
+          "action" in operation &&
+          operation.action === "create"
+        )
+          return Response.json({
+            id: TARGET_ID,
+            title: "Task",
+            url: `https://${SCOTTY_INTERNAL_HOST}/s/${TARGET_ID}`,
+            branch: "work",
+            provider: "cloudflare",
+            status: "warm",
+          });
+        return Response.json(
+          { error: { code: "wrong_state", message: "Unavailable" } },
+          { status: 409 },
+        );
+      },
+    };
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(sandboxNamespace({ fromString: () => source }));
+    const key = "caller-request-1234567890";
+    const create = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": key },
+        body: JSON.stringify(CREATE_INPUT),
+      }),
+      env,
+      context(),
+    );
+    assert.strictEqual(create.status, 200);
+    const read = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/conversation`),
+      env,
+      context(),
+    );
+    assert.strictEqual(read.status, 409);
+    const followUp = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/steer`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": key },
+        body: JSON.stringify({ message: "Continue", deliverAs: "followUp" }),
+      }),
+      env,
+      context(),
+    );
+    assert.strictEqual(followUp.status, 409);
+    const interrupt = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/interrupt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionRevision: 2, turnId: "turn-1" }),
+      }),
+      env,
+      context(),
+    );
+    assert.strictEqual(interrupt.status, 409);
+    assert.deepStrictEqual(operations, [
+      { action: "create", input: CREATE_INPUT, idempotencyKey: key },
+      { action: "conversation", targetId: TARGET_ID },
+      {
+        action: "steer",
+        targetId: TARGET_ID,
+        message: "Continue",
+        deliverAs: "followUp",
+        idempotencyKey: key,
+      },
+      { action: "interrupt", targetId: TARGET_ID, input: { sessionRevision: 2, turnId: "turn-1" } },
+    ]);
+  });
   it("maps the exact reserved host to the source selected only by context.containerId", async () => {
     let nativeFetchCalls = 0;
     const operations: unknown[] = [];
@@ -878,6 +965,101 @@ describe("container-only session egress", () => {
 });
 
 describe("source Sandbox orchestration authority", () => {
+  it("completes reciprocal Codex controls without holding either source gate", async () => {
+    const selection = { agent: "codex", model: "gpt-5.4", effort: "high" } as const;
+    let arrived = 0;
+    let releasePeerLookup = (): void => undefined;
+    const bothPeerLookups = new Promise<void>((resolve) => {
+      releasePeerLookup = resolve;
+    });
+    const peer = (target: Awaited<ReturnType<typeof createSessionHarness>>) => ({
+      getScottySession: async () => {
+        arrived += 1;
+        if (arrived === 2) releasePeerLookup();
+        await bothPeerLookups;
+        return target.sandbox.getScottySession();
+      },
+      steerScottyCodexSession: (message: string, key: string, deliverAs: "followUp") =>
+        target.sandbox.steerScottyCodexSession(message, key, deliverAs),
+    });
+    let first: Awaited<ReturnType<typeof createSessionHarness>>;
+    let second: Awaited<ReturnType<typeof createSessionHarness>>;
+    first = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({ id: SESSION_ID }),
+      },
+      sandboxNamespace: sandboxNamespace({ fromName: () => peer(second) }),
+    });
+    second = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({ id: TARGET_ID }),
+      },
+      sandboxNamespace: sandboxNamespace({ fromName: () => peer(first) }),
+    });
+    for (const harness of [first, second]) {
+      const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      const metadata = harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata);
+      assert.isDefined(authority);
+      assert.isDefined(metadata);
+      harness.memory.values.set(sessionHarnessKeys.actorAuthority, {
+        ...authority,
+        session: { ...authority.session, selection },
+      });
+      harness.memory.values.set(sessionHarnessKeys.actorMetadata, {
+        ...metadata,
+        selection,
+        codexControl: { token: "c".repeat(64), initialPrompt: "Investigate" },
+      });
+    }
+
+    const responses = await Promise.all([
+      first.sandbox.containerSessionRequest({
+        action: "steer",
+        targetId: TARGET_ID,
+        message: "From first",
+        idempotencyKey: "first-to-second-1234567890",
+        deliverAs: "followUp",
+      }),
+      second.sandbox.containerSessionRequest({
+        action: "steer",
+        targetId: SESSION_ID,
+        message: "From second",
+        idempotencyKey: "second-to-first-1234567890",
+        deliverAs: "followUp",
+      }),
+    ]);
+    assert.strictEqual(arrived, 2);
+    assert.deepStrictEqual(
+      responses.map((response) => response.status),
+      [202, 202],
+    );
+  });
+
+  it("denies internal creation outside the source repository before selecting a target", async () => {
+    let targetSelections = 0;
+    const source = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.actorFixtureSession]: makeSessionRecord({
+          id: SESSION_ID,
+          repo: "owner/project",
+        }),
+      },
+      sandboxNamespace: sandboxNamespace({
+        fromName: () => {
+          targetSelections += 1;
+          return {};
+        },
+      }),
+    });
+    const response = await source.sandbox.containerSessionRequest({
+      action: "create",
+      input: { ...CREATE_INPUT, repo: "another/project" },
+      idempotencyKey: "caller-request-1234567890",
+    });
+    assert.strictEqual(response.status, 401);
+    assert.strictEqual(errorCode(await response.json()), "auth");
+    assert.strictEqual(targetSelections, 0);
+  });
   it("requires evidence to originate from a warm running Cloudflare source", async () => {
     const records = [
       {

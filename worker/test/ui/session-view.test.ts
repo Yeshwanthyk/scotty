@@ -334,7 +334,7 @@ describe("UI session authority response", () => {
   });
 });
 
-it("exposes Codex sleep while keeping checkpoint unavailable", () => {
+it("exposes Codex checkpoint and sleep", () => {
   const authority = warmAuthority();
   const response = uiSessionResponseFromActor(
     {
@@ -348,7 +348,7 @@ it("exposes Codex sleep while keeping checkpoint unavailable", () => {
     NOW,
   );
   assert.deepStrictEqual(response.session.capabilities, {
-    checkpoint: false,
+    checkpoint: true,
     sleep: true,
     resume: false,
     work: true,
@@ -362,14 +362,14 @@ it("exposes Codex sleep while keeping checkpoint unavailable", () => {
   assert.deepStrictEqual(decodeResponse(response), response);
 });
 
-it("keeps Codex list sleep/resume capabilities aligned while checkpoint stays unavailable", () => {
+it("keeps Codex list checkpoint/sleep/resume capabilities aligned", () => {
   const result = uiSessionListResponseFromProjections([
     projected({ agent: "codex" }),
     projected({ id: "sleeping-codex", agent: "codex", status: "sleeping" }),
   ]);
   assert.ok(Result.isSuccess(result));
   assert.deepStrictEqual(result.success.sessions[0].capabilities, {
-    checkpoint: false,
+    checkpoint: true,
     sleep: true,
     resume: false,
     work: true,

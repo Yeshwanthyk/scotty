@@ -431,6 +431,45 @@ describe("session actor runtime recovery", () => {
     ]);
   });
 
+  it("keeps the verified checkpoint actionable when final Sleep stalls before backup creation", () => {
+    const sleeping: SessionAuthority = {
+      ...warm(),
+      state: {
+        _tag: "Transitioning",
+        transition: {
+          _tag: "Sleep",
+          nonce: "final-sleep",
+          origin: "Warm",
+          attempt: "final-attempt",
+          startedAt: T1,
+          lastProgressAt: T1,
+          deadlineAt: CAP,
+          mode: "reconciling",
+          phase: "Syncing",
+          proof: {
+            readiness,
+            piStoppedAt: T1,
+            backup: {
+              ownedBackupIds: [backup.backupId, "final-attempt"],
+              prepared: backup,
+              currentBackupId: backup.backupId,
+              confirmed: backup,
+            },
+            stopRequestedAt: null,
+            stop: null,
+          },
+        },
+      },
+    };
+    const elapsed = accepted(decide(sleeping, hardCapInput())).nextAuthority;
+    assert.ok(AuthorityStateSchema.guards.Stable(elapsed.state));
+    assert.ok(StableStateSchema.guards.Failed(elapsed.state.stable));
+    assert.strictEqual(elapsed.state.stable.actionable, true);
+    assert.strictEqual(elapsed.state.stable.backup?.backupId, backup.backupId);
+    assert.strictEqual(elapsed.state.stable.wakeSource?.confirmedAt, T1);
+    assert.deepStrictEqual(elapsed.state.stable.ownedBackupIds, [backup.backupId, "final-attempt"]);
+  });
+
   it("retains cleanup ownership when a first backup is unconfirmed at the hard cap", () => {
     const candidate = {
       backupId: "backup-first",

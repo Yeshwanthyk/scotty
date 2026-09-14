@@ -1,6 +1,7 @@
 import {
   startCodexSandbox,
   saveCodexSandbox,
+  stopSavedCodexSandbox,
   waitForCodexSandbox,
   CODEX_RESUME_READINESS_TIMEOUT_MILLIS,
   readCodexSandbox,
@@ -138,6 +139,9 @@ interface BackupLifecycleSandboxShape {
   ) => Effect.Effect<PreparedSandboxBackup, BackupLifecycleSandboxFailure>;
   readonly confirmBackup: (
     input: BackupLifecycleAttempt & { readonly prepared: BackupIdentity },
+  ) => Effect.Effect<BackupIdentity, BackupLifecycleSandboxFailure>;
+  readonly observePreparedBackup: (
+    input: BackupLifecycleAttempt,
   ) => Effect.Effect<BackupIdentity, BackupLifecycleSandboxFailure>;
   readonly restoreCurrentBackup: (
     input: BackupLifecycleAttempt & {
@@ -399,6 +403,27 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
       return { ...input.prepared, confirmedAt: yield* timestamp } satisfies BackupIdentity;
     });
 
+    const observePreparedBackup = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
+      // The create request uses the attempt as its provider ID. Restore and verify the
+      // marker before accepting a response that may have been lost after admission.
+      yield* confirmHandle(input, {
+        id: input.attempt,
+        dir: sessionRoot(input.sessionId),
+        localBucket: true,
+      });
+      return {
+        ...(input.codex === undefined
+          ? {}
+          : {
+              codex: { threadId: input.codex.threadId, initialTurnId: input.codex.initialTurnId },
+            }),
+        backupId: input.attempt,
+        preparedAt: yield* timestamp,
+        confirmedAt: yield* timestamp,
+        sourceRuntimeGeneration: input.runtimeGeneration,
+      } satisfies BackupIdentity;
+    });
+
     const restoreCurrentBackup = Effect.fnUntraced(function* (
       input: BackupLifecycleAttempt & {
         readonly backup: BackupIdentity;
@@ -471,6 +496,16 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
           return yield* boundaryFailure(
             "rejected_before_admission",
             "codex_restore_identity_missing",
+          );
+        if (input.transitionFence.phase === "BackupConfirmed")
+          yield* stopSavedCodexSandbox({
+            sessionId: input.sessionId,
+            generation: input.runtimeGeneration,
+            selection: input.selection,
+            token: input.codex.token,
+          }).pipe(
+            Effect.provideService(SandboxRuntime, runtime),
+            Effect.mapError((error) => mapRuntimeFailure(error, "codex_server_stop_unobserved")),
           );
         return yield* startCodexSandbox(
           {
@@ -634,6 +669,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
       syncWorkspace,
       prepareBackup,
       confirmBackup,
+      observePreparedBackup,
       restoreCurrentBackup,
       requestRuntimeStop,
       observeRuntimeStopped,
@@ -770,6 +806,22 @@ const sleepAttempt = (context: SleepProviderContext, store: SessionActorMetadata
     threadId: context.transition.proof.readiness.supervisor.supervisorEpoch,
     initialTurnId: context.transition.proof.readiness.transport.transportId,
   }).pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
+const checkpointCodexAttempt = (
+  context: CheckpointProviderContext,
+  store: SessionActorMetadataStore["Service"],
+) =>
+  codexAttempt(
+    store,
+    context.authority,
+    {
+      ...checkpointAttempt(context),
+      configuration: context.authority.session.configuration,
+    },
+    {
+      threadId: context.transition.proof.readiness.supervisor.supervisorEpoch,
+      initialTurnId: context.transition.proof.readiness.transport.transportId,
+    },
+  ).pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
 const resumeAttempt = (
   context: ResumeProviderContext,
   generation: string,
@@ -860,7 +912,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
         Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure),
       );
       yield* sandbox
-        .quiescePi({ ...checkpointAttempt(context), credentials })
+        .quiescePi({ ...(yield* checkpointCodexAttempt(context, metadataStore)), credentials })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
       const observedAt = yield* providerTimestamp();
       return {
@@ -873,7 +925,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
 
     const syncWorkspace = Effect.fnUntraced(function* (context: CheckpointProviderContext) {
       yield* sandbox
-        .syncWorkspace(checkpointAttempt(context))
+        .syncWorkspace(yield* checkpointCodexAttempt(context, metadataStore))
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
       return {
         _tag: "WorkspaceSynced" as const,
@@ -884,7 +936,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
 
     const prepareBackup = Effect.fnUntraced(function* (context: CheckpointProviderContext) {
       const prepared = yield* sandbox
-        .prepareBackup(checkpointAttempt(context))
+        .prepareBackup(yield* checkpointCodexAttempt(context, metadataStore))
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
       return {
         _tag: "BackupPrepared" as const,
@@ -900,9 +952,15 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
         return yield* checkpointFailure(
           boundaryFailure("rejected_before_admission", "checkpoint_prepared_backup_missing"),
         );
-      const backup = yield* sandbox
-        .confirmBackup({ ...checkpointAttempt(context), prepared })
-        .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
+      const backup =
+        prepared.confirmedAt !== null
+          ? prepared
+          : yield* sandbox
+              .confirmBackup({
+                ...(yield* checkpointCodexAttempt(context, metadataStore)),
+                prepared,
+              })
+              .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
       return {
         _tag: "BackupConfirmed" as const,
         backup,
@@ -916,7 +974,10 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
         Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure),
       );
       yield* sandbox
-        .startSupervisor({ ...checkpointAttempt(context), credentials })
+        .startSupervisor({
+          ...(yield* checkpointCodexAttempt(context, metadataStore)),
+          credentials,
+        })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
       return {
         _tag: "SupervisorRestartRequested" as const,
@@ -926,7 +987,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
     });
 
     const confirmTransportReady = Effect.fnUntraced(function* (context: CheckpointProviderContext) {
-      const attemptInput = checkpointAttempt(context);
+      const attemptInput = yield* checkpointCodexAttempt(context, metadataStore);
       const runtime = context.transition.proof.readiness.runtime;
       const supervisor = yield* sandbox
         .confirmSupervisorReady({ ...attemptInput, runtime })
@@ -947,7 +1008,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
       const readiness = context.transition.proof.readiness;
       const transport = yield* sandbox
         .verifyTransport({
-          ...checkpointAttempt(context),
+          ...(yield* checkpointCodexAttempt(context, metadataStore)),
           runtime: readiness.runtime,
           supervisor: readiness.supervisor,
         })
@@ -964,7 +1025,22 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
       context: CheckpointProviderContext,
     ): Effect.fn.Return<CheckpointProviderResult, CheckpointProviderFailure> {
       return yield* Match.value(context.transition.phase).pipe(
-        Match.whenOr("Quiescing", "PiStopped", "Syncing", "BackupPrepared", "BackupConfirmed", () =>
+        Match.when("Syncing", () =>
+          Effect.gen(function* () {
+            const attempt = yield* checkpointCodexAttempt(context, metadataStore);
+            const backup = yield* sandbox
+              .observePreparedBackup(attempt)
+              .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
+            return {
+              _tag: "BackupPrepared" as const,
+              backup,
+              observedAt: backup.preparedAt,
+              resultCode: "checkpoint_backup_observed",
+            };
+          }),
+        ),
+        Match.when("BackupPrepared", () => confirmBackup(context)),
+        Match.whenOr("Quiescing", "PiStopped", "BackupConfirmed", () =>
           checkpointFailure(
             boundaryFailure(
               "unknown_after_admission",
@@ -1028,14 +1104,31 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
       };
     });
 
-    const createConfirmedBackup = Effect.fnUntraced(function* (context: SleepProviderContext) {
+    const prepareBackup = Effect.fnUntraced(function* (context: SleepProviderContext) {
       const attemptInput = yield* sleepAttempt(context, metadataStore);
       const prepared = yield* sandbox
         .prepareBackup(attemptInput)
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
-      const backup = yield* sandbox
-        .confirmBackup({ ...attemptInput, prepared: prepared.identity })
-        .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
+      return {
+        _tag: "BackupPrepared" as const,
+        backup: prepared.identity,
+        observedAt: yield* providerTimestamp(),
+        resultCode: "sleep_backup_prepared",
+      };
+    });
+
+    const confirmBackup = Effect.fnUntraced(function* (context: SleepProviderContext) {
+      const prepared = context.transition.proof.backup.prepared;
+      if (prepared === null)
+        return yield* sleepFailure(
+          boundaryFailure("rejected_before_admission", "sleep_prepared_backup_missing"),
+        );
+      const backup =
+        prepared.confirmedAt !== null
+          ? prepared
+          : yield* sandbox
+              .confirmBackup({ ...(yield* sleepAttempt(context, metadataStore)), prepared })
+              .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
       return {
         _tag: "BackupConfirmed" as const,
         backup,
@@ -1098,7 +1191,21 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
       context: SleepProviderContext,
     ): Effect.fn.Return<SleepProviderResult, SleepProviderFailure> {
       return yield* Match.value(context.transition.phase).pipe(
-        Match.whenOr("Quiescing", "PiStopped", "Syncing", "BackupConfirmed", () =>
+        Match.when("Syncing", () =>
+          Effect.gen(function* () {
+            const attempt = yield* sleepAttempt(context, metadataStore);
+            const backup = yield* sandbox
+              .observePreparedBackup(attempt)
+              .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
+            return {
+              _tag: "BackupPrepared" as const,
+              backup,
+              observedAt: backup.preparedAt,
+              resultCode: "sleep_backup_observed",
+            };
+          }),
+        ),
+        Match.whenOr("Quiescing", "PiStopped", "BackupConfirmed", () =>
           sleepFailure(
             boundaryFailure(
               "unknown_after_admission",
@@ -1106,6 +1213,7 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
             ),
           ),
         ),
+        Match.when("BackupPrepared", () => confirmBackup(context)),
         Match.when("StopRequested", () => observeRuntimeStopped(context)),
         Match.when("RuntimeStopped", () => confirmRuntimeStopped(context)),
         Match.exhaustive,
@@ -1115,7 +1223,8 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
     return SleepTransitionProvider.of({
       quiescePi,
       syncWorkspace,
-      createConfirmedBackup,
+      prepareBackup,
+      confirmBackup,
       requestRuntimeStop,
       observeRuntimeStopped,
       confirmRuntimeStopped,

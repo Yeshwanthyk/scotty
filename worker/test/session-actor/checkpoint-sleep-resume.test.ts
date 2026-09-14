@@ -202,7 +202,14 @@ const sleepProvider = (): SleepTransitionProviderShape => ({
     }),
   syncWorkspace: () =>
     Effect.succeed({ _tag: "WorkspaceSynced", observedAt: T1, resultCode: "workspace_synced" }),
-  createConfirmedBackup: () =>
+  prepareBackup: () =>
+    Effect.succeed({
+      _tag: "BackupPrepared",
+      backup: { ...backup, confirmedAt: null },
+      observedAt: T1,
+      resultCode: "backup_prepared",
+    }),
+  confirmBackup: () =>
     Effect.succeed({
       _tag: "BackupConfirmed",
       backup,
@@ -355,7 +362,7 @@ describe("checkpoint, sleep, and resume transition executors", () => {
   it.effect("sleeps only after the confirmed current backup and stopped runtime", () =>
     Effect.gen(function* () {
       let decision = accepted(decide(warm(), command("SleepCommand", 1)));
-      for (let index = 0; index < 6; index += 1) {
+      for (let index = 0; index < 7; index += 1) {
         const input = yield* executeSleepTransition(sleepProvider(), committed(decision));
         decision = accepted(decide(decision.nextAuthority, input));
       }
@@ -370,7 +377,7 @@ describe("checkpoint, sleep, and resume transition executors", () => {
   it.effect("resumes only the sleeping current backup and rebuilds fenced readiness", () =>
     Effect.gen(function* () {
       let sleeping = accepted(decide(warm(), command("SleepCommand", 1)));
-      for (let index = 0; index < 6; index += 1) {
+      for (let index = 0; index < 7; index += 1) {
         sleeping = accepted(
           decide(
             sleeping.nextAuthority,

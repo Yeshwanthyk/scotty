@@ -94,15 +94,29 @@ directories. The credential kinds are `pi-auth` and `github-cli`; `--codex-auth`
 agent credential with a local Codex OAuth source.
 
 Codex supports creation, passive read, terminal follow-up messages, active-turn steering,
-interruption, sleep/resume, and vaporize. `scotty steer` selects a new message when idle and native
+interruption, checkpoint, sleep/resume, and vaporize. `scotty steer` selects a new message when idle and native
 steering while a turn is active. Correlate its returned turn ID with canonical read; an accepted message is not
 terminal completion. A delivery-unknown response requires inspection before another submission.
 Codex requires a supported model/effort pair and runs with approvals disabled and danger-full-access
 inside the Scotty runtime. Sleep automatically saves conversation history through the Session
 backup; resume continues the same native thread with its earlier messages and tool history.
-Standalone checkpoint and Scotty's public shared skill catalog remain unavailable for Codex. Native
-filesystem skills are separate. Pi keeps its
-current controls.
+Checkpoint saves and restarts the native thread; it can interrupt active work without replaying
+unknown external effects. Scotty's public shared skill catalog remains unavailable for Codex;
+native filesystem skills are separate. Pi keeps its current controls.
+
+Inside a warm Cloudflare sandbox, the bundled CLI can `beam` another sandbox in the same exact
+repository, then inspect, read, steer, queue a Codex follow-up, or interrupt it by session ID.
+The source Session actor authorizes these operations from the container proxy, without a root
+token; no read wakes a target. Pi queued follow-up remains unsupported. An internal beam keeps
+its automatic pending-create key for retries; if its container loses that key before a checkpoint,
+do not assume a new beam repeats the original admission. Inspect known session IDs before retrying.
+An accepted queue receipt proves admission, not completion, and unknown delivery remains unknown.
+
+Newly admitted runs attempt one midpoint checkpoint, then begin final sleep ten minutes before
+their absolute cap. Caps of twenty minutes or less go straight to final sleep at midpoint.
+Checkpointing can interrupt active turns. A failed final backup preserves the latest earlier
+confirmed recovery point when one exists; read its confirmation time before resuming because
+later work may be missing. Without a confirmed point, ordinary resume is unavailable.
 
 Cloud settings changes affect new Sessions. Pi verifies requested settings before its first prompt; native
 saved Session settings remain current on resume. A successful beam proves admission, so read until

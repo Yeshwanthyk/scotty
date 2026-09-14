@@ -109,6 +109,20 @@ const CodexInspectOutput = Schema.Struct({
   id: Schema.String,
   ...CanonicalConversationSnapshotSchema.fields,
 });
+const CodexReadOutput = Schema.Struct({
+  id: Schema.String,
+  epoch: Schema.String,
+  sequence: Schema.Int,
+  messages: Schema.Array(
+    Schema.Struct({
+      index: Schema.Int,
+      role: Schema.Literals(["assistant", "user"]),
+      content: Schema.String,
+      id: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  truncated: Schema.Boolean,
+});
 const decodeSessionOperationJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(SessionOperationOutput),
 );
@@ -121,6 +135,7 @@ const decodeActorDiagnosticsJson = Schema.decodeUnknownEffect(
 const decodeCodexInspectJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(CodexInspectOutput),
 );
+const decodeCodexReadJson = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexReadOutput));
 const decodeHatchStatusJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(PublicHatchStatusSchema),
 );
@@ -450,7 +465,13 @@ type ScenarioResult = Readonly<{
     readonly queuedTurnId: string;
     readonly queuedMessageId: string;
     readonly resumedTurnId: string;
-    readonly completedCommands: 4;
+    readonly checkpointTurnId: string;
+    readonly checkpointBackupId: string;
+    readonly peerId: string;
+    readonly peerInitialTurnId: string;
+    readonly peerFollowUpTurnId: string;
+    readonly completedCommands: 9;
+    readonly internalPeerControl: true;
     readonly activeSteer: true;
     readonly interruptAccepted: true;
     readonly sleepResumeContinuity: true;
@@ -1249,11 +1270,63 @@ const vaporizeLab = (sessionId: string, fault?: Fault) =>
     Effect.flatMap(({ manifest, value }) => printLifecycleResult(manifest, value)),
   );
 
-const warmCodexReadiness = (diagnostics: typeof SessionActorDiagnosticsSchema.Type) => {
+type CodexCheckpointDiagnostics = Pick<
+  typeof SessionActorDiagnosticsSchema.Type,
+  "authority" | "journalSequence" | "journal"
+>;
+
+const warmCodexReadiness = (diagnostics: Pick<CodexCheckpointDiagnostics, "authority">) => {
   const state = diagnostics.authority.state;
   return AuthorityStateSchema.guards.Stable(state) && StableStateSchema.guards.Warm(state.stable)
     ? state.stable.readiness
     : undefined;
+};
+
+// oxlint-disable-next-line eslint/complexity -- checkpoint proof must jointly fence backup identity, native thread, and matching journal completion
+export const codexCheckpointProof = (
+  before: CodexCheckpointDiagnostics,
+  after: CodexCheckpointDiagnostics,
+) => {
+  const prior = warmCodexReadiness(before);
+  const restored = warmCodexReadiness(after);
+  const state = after.authority.state;
+  if (
+    prior === undefined ||
+    restored === undefined ||
+    !AuthorityStateSchema.guards.Stable(state) ||
+    !StableStateSchema.guards.Warm(state.stable)
+  )
+    return undefined;
+  const backup = state.stable.backups.confirmed;
+  const priorState = before.authority.state;
+  const previousBackup =
+    AuthorityStateSchema.guards.Stable(priorState) &&
+    StableStateSchema.guards.Warm(priorState.stable)
+      ? priorState.stable.backups.confirmed
+      : null;
+  if (
+    backup === null ||
+    backup === undefined ||
+    backup.confirmedAt === null ||
+    backup.backupId === previousBackup?.backupId ||
+    backup.sourceRuntimeGeneration !== prior.runtime.runtimeGeneration ||
+    backup.codex?.threadId !== prior.supervisor.supervisorEpoch ||
+    backup.codex?.initialTurnId !== prior.transport.transportId ||
+    restored.supervisor.supervisorEpoch !== prior.supervisor.supervisorEpoch ||
+    restored.runtime.runtimeGeneration !== prior.runtime.runtimeGeneration ||
+    state.stable.backups.currentBackupId !== backup.backupId ||
+    !state.stable.backups.ownedBackupIds.includes(backup.backupId) ||
+    after.journalSequence <= before.journalSequence ||
+    !after.journal.some(
+      (event) =>
+        event.sequence > before.journalSequence &&
+        event.eventType === "completed" &&
+        event.transitionKind === "Checkpoint" &&
+        event.causeAttempt === backup.backupId,
+    )
+  )
+    return undefined;
+  return { backupId: backup.backupId, threadId: restored.supervisor.supervisorEpoch };
 };
 
 const codexResumeContinuity = (
@@ -1287,6 +1360,50 @@ const proveCodexSleepResume = Effect.fnUntraced(function* (
   sessionId: string,
   queuedTurnId: string,
 ) {
+  const beforeCheckpoint = yield* captureActorDiagnostics(manifest, "codex-workflow", sessionId);
+  const beforeCheckpointSnapshot = yield* readCodexSnapshot(manifest, sessionId);
+  yield* checkpoint(manifest, sessionId);
+  const afterCheckpoint = yield* captureActorDiagnostics(manifest, "codex-workflow", sessionId);
+  const afterCheckpointSnapshot = yield* readCodexSnapshot(manifest, sessionId);
+  const checkpointProof = codexCheckpointProof(beforeCheckpoint, afterCheckpoint);
+  const queuedBefore = beforeCheckpointSnapshot.turns.find(({ id }) => id === queuedTurnId);
+  const queuedAfter = afterCheckpointSnapshot.turns.find(({ id }) => id === queuedTurnId);
+  if (
+    checkpointProof === undefined ||
+    queuedBefore?.state !== "completed" ||
+    queuedAfter?.state !== "completed" ||
+    !queuedAfter.tools.some(
+      ({ state, output }) =>
+        state === "completed" && output?.includes("SCOTTY_LAB_CODEX_QUEUED") === true,
+    )
+  )
+    return yield* new LabFailure({
+      message: "Codex checkpoint lacked a fresh confirmed backup or prior native turn",
+    });
+  const checkpointRaw = yield* runRecordedCli(
+    manifest,
+    "codex-workflow",
+    [
+      "steer",
+      sessionId,
+      "Run printf SCOTTY_LAB_CODEX_CHECKPOINTED once, then reply SCOTTY_LAB_CODEX_CHECKPOINT_DONE. Do not change files.",
+      "--json",
+    ],
+    sessionId,
+  );
+  const checkpointReceipt = yield* decodeSteerJson(checkpointRaw).pipe(
+    Effect.mapError((cause) => failure(cause, "Codex post-checkpoint admission was invalid")),
+  );
+  const checkpointTurnId = acceptedCodexTurnId(checkpointReceipt, sessionId, "message");
+  if (checkpointTurnId === undefined || checkpointTurnId === queuedTurnId)
+    return yield* new LabFailure({ message: "Codex post-checkpoint turn was not admitted" });
+  yield* awaitCodexTerminal(
+    manifest,
+    sessionId,
+    checkpointTurnId,
+    "SCOTTY_LAB_CODEX_CHECKPOINTED",
+    "SCOTTY_LAB_CODEX_CHECKPOINT_DONE",
+  );
   const before = yield* readCodexSnapshot(manifest, sessionId);
   const beforeAuthority = yield* captureActorDiagnostics(manifest, "codex-workflow", sessionId);
   if (warmCodexReadiness(beforeAuthority) === undefined)
@@ -1322,7 +1439,143 @@ const proveCodexSleepResume = Effect.fnUntraced(function* (
     "SCOTTY_LAB_CODEX_RESUMED",
     "SCOTTY_LAB_CODEX_RESUME_DONE",
   );
-  return resumedTurnId;
+  return { resumedTurnId, checkpointTurnId, checkpointBackupId: checkpointProof.backupId };
+});
+
+// oxlint-disable-next-line eslint/complexity -- lab host correlates source CLI receipts with peer native turn and actor observations
+const proveInternalPeerControl = Effect.fnUntraced(function* (
+  manifest: Manifest,
+  sourceId: string,
+  repo: string,
+) {
+  const createPrompt = `Run one shell command exactly: scotty beam 'Run printf SCOTTY_LAB_PEER_INITIAL once, then reply SCOTTY_LAB_PEER_READY. Do not change files.' --title 'Scotty peer lab' --repo ${repo} --provider cloudflare --agent codex --model gpt-5.6-sol --effort medium --cap 30m --detach --json && printf SCOTTY_LAB_PEER_CREATE. Then reply SCOTTY_LAB_PEER_CREATED. Do not change files.`;
+  const raw = yield* runRecordedCli(
+    manifest,
+    "codex-workflow",
+    ["steer", sourceId, createPrompt, "--json"],
+    sourceId,
+  );
+  const admitted = yield* decodeSteerJson(raw).pipe(
+    Effect.mapError((cause) => failure(cause, "Internal peer command admission was invalid")),
+  );
+  const turnId = acceptedCodexTurnId(admitted, sourceId, "message");
+  if (turnId === undefined)
+    return yield* new LabFailure({ message: "Internal peer command was not admitted" });
+  yield* awaitCodexTerminal(
+    manifest,
+    sourceId,
+    turnId,
+    "SCOTTY_LAB_PEER_CREATE",
+    "SCOTTY_LAB_PEER_CREATED",
+  );
+  const snapshot = yield* readCodexSnapshot(manifest, sourceId);
+  const turn = snapshot.turns.find(({ id }) => id === turnId);
+  const output = turn?.tools.find(({ invocation }) => invocation.includes("scotty beam"))?.output;
+  const identityLine = output?.split("\n").find((line) => line.startsWith('{"id":'));
+  if (identityLine === undefined)
+    return yield* new LabFailure({ message: "Internal peer creation receipt was not observable" });
+  const peer = yield* decodeSessionIdentityJson(identityLine).pipe(
+    Effect.mapError((cause) => failure(cause, "Internal peer creation receipt was invalid")),
+  );
+  const peerId = yield* attempt("Internal peer ID was invalid", () =>
+    assertLifecycleSessionId(peer.id),
+  );
+  if (peerId === sourceId)
+    return yield* new LabFailure({ message: "Internal peer creation returned the source ID" });
+  const ownershipRecordedAt = yield* nowIso;
+  yield* attempt("Unable to record peer ownership", () =>
+    recordOwnedSession(manifest, peerId, ownershipRecordedAt),
+  );
+  const peerInitialTurnId = yield* awaitCodexTerminal(
+    manifest,
+    peerId,
+    undefined,
+    "SCOTTY_LAB_PEER_INITIAL",
+    "SCOTTY_LAB_PEER_READY",
+    "SCOTTY_LAB_PEER_INITIAL",
+  );
+  const peerDiagnostics = yield* captureActorDiagnostics(manifest, "codex-workflow", peerId);
+  const peerReadiness = warmCodexReadiness(peerDiagnostics);
+  const sourceDiagnostics = yield* captureActorDiagnostics(manifest, "codex-workflow", sourceId);
+  const sourceReadiness = warmCodexReadiness(sourceDiagnostics);
+  if (
+    peerReadiness === undefined ||
+    sourceReadiness === undefined ||
+    peerDiagnostics.authority.session.selection?.agent !== "codex" ||
+    peerReadiness.runtime.providerRuntimeId === sourceReadiness.runtime.providerRuntimeId
+  )
+    return yield* new LabFailure({
+      message: "Internal peer did not have distinct warm Codex authority",
+    });
+  const readPrompt = `Run one shell command exactly: scotty inspect ${peerId} --json && scotty read ${peerId} --json && scotty steer ${peerId} 'Run printf SCOTTY_LAB_PEER_FOLLOWUP once, then reply SCOTTY_LAB_PEER_DONE. Do not change files.' --json && printf SCOTTY_LAB_PEER_READ. Then reply SCOTTY_LAB_PEER_VISIBLE. Do not change files.`;
+  const readRaw = yield* runRecordedCli(
+    manifest,
+    "codex-workflow",
+    ["steer", sourceId, readPrompt, "--json"],
+    sourceId,
+  );
+  const readReceipt = yield* decodeSteerJson(readRaw).pipe(
+    Effect.mapError((cause) => failure(cause, "Internal peer read admission was invalid")),
+  );
+  const readTurnId = acceptedCodexTurnId(readReceipt, sourceId, "message");
+  if (readTurnId === undefined)
+    return yield* new LabFailure({ message: "Internal peer read was not admitted" });
+  yield* awaitCodexTerminal(
+    manifest,
+    sourceId,
+    readTurnId,
+    "SCOTTY_LAB_PEER_READ",
+    "SCOTTY_LAB_PEER_VISIBLE",
+  );
+  const readSnapshot = yield* readCodexSnapshot(manifest, sourceId);
+  const readTurn = readSnapshot.turns.find(({ id }) => id === readTurnId);
+  const readTool = readTurn?.tools.find(({ invocation }) => invocation.includes("scotty inspect"));
+  const lines = readTool?.output?.split("\n").filter((line) => line.startsWith('{"id":'));
+  if (lines?.length !== 3 || !readTool?.invocation.includes(`scotty steer ${peerId}`))
+    return yield* new LabFailure({
+      message: "Internal peer inspect/read/steer receipts were not observable",
+    });
+  const inspected = yield* decodeCodexInspectJson(lines[0]).pipe(
+    Effect.mapError((cause) => failure(cause, "Internal peer inspect was invalid")),
+  );
+  const read = yield* decodeCodexReadJson(lines[1]).pipe(
+    Effect.mapError((cause) => failure(cause, "Internal peer read was invalid")),
+  );
+  const steered = yield* decodeSteerJson(lines[2]).pipe(
+    Effect.mapError((cause) => failure(cause, "Internal peer steer was invalid")),
+  );
+  if (
+    inspected.id !== peerId ||
+    !inspected.turns.some(({ id, state }) => id === peerInitialTurnId && state === "completed") ||
+    read.id !== peerId ||
+    steered.id !== peerId ||
+    read.epoch !== inspected.transport.epoch ||
+    !read.messages.some(
+      ({ role, content }) => role === "assistant" && content.includes("SCOTTY_LAB_PEER_READY"),
+    ) ||
+    steered.status !== "accepted" ||
+    acceptedCodexTurnId(steered, peerId, "message") === undefined
+  )
+    return yield* new LabFailure({ message: "Internal peer control receipts missed the peer" });
+  const peerFollowUpTurnId = acceptedCodexTurnId(steered, peerId, "message");
+  if (peerFollowUpTurnId === undefined || peerFollowUpTurnId === peerInitialTurnId)
+    return yield* new LabFailure({ message: "Internal peer follow-up was not a new native turn" });
+  yield* awaitCodexTerminal(
+    manifest,
+    peerId,
+    peerFollowUpTurnId,
+    "SCOTTY_LAB_PEER_FOLLOWUP",
+    "SCOTTY_LAB_PEER_DONE",
+  );
+  const peerAfter = yield* captureActorDiagnostics(manifest, "codex-workflow", peerId);
+  if (
+    warmCodexReadiness(peerAfter)?.supervisor.supervisorEpoch !==
+    peerReadiness.supervisor.supervisorEpoch
+  )
+    return yield* new LabFailure({
+      message: "Internal peer native thread changed after follow-up",
+    });
+  return { peerId, peerInitialTurnId, peerFollowUpTurnId };
 });
 
 const codexWorkflowLab = (repo: string, fault?: Fault) =>
@@ -1370,6 +1623,7 @@ const codexWorkflowLab = (repo: string, fault?: Fault) =>
             "SCOTTY_LAB_CODEX_INITIAL",
             "SCOTTY_LAB_CODEX_READY",
           );
+          const peer = yield* proveInternalPeerControl(manifest, sessionId, repo);
           const receiptJson = yield* runRecordedCli(
             manifest,
             "codex-workflow",
@@ -1480,14 +1734,15 @@ const codexWorkflowLab = (repo: string, fault?: Fault) =>
           );
           if (queuedTurnId === interruptedTurnId)
             return yield* new LabFailure({ message: "Codex queued work reused interrupted turn" });
-          const resumedTurnId = yield* proveCodexSleepResume(manifest, sessionId, queuedTurnId);
+          const resumed = yield* proveCodexSleepResume(manifest, sessionId, queuedTurnId);
           return {
+            ...peer,
             initialTurnId,
             followUpTurnId,
             interruptedTurnId,
             queuedTurnId,
             queuedMessageId,
-            resumedTurnId,
+            ...resumed,
           };
         }),
       );
@@ -1499,6 +1754,16 @@ const codexWorkflowLab = (repo: string, fault?: Fault) =>
           finishedAt: yield* nowIso,
           sessionId,
           reason: driven.failure.message,
+        });
+      const peerCleanup = yield* Effect.result(vaporize(manifest, driven.success.peerId));
+      if (Result.isFailure(peerCleanup))
+        return yield* failScenario(manifest, {
+          scenario: "codex-workflow",
+          status: "failed",
+          startedAt,
+          finishedAt: yield* nowIso,
+          sessionId,
+          reason: `Owned peer cleanup failed: ${peerCleanup.failure.message}`,
         });
       const cleanup = yield* Effect.result(vaporize(manifest, sessionId));
       if (Result.isFailure(cleanup))
@@ -1512,7 +1777,8 @@ const codexWorkflowLab = (repo: string, fault?: Fault) =>
         });
       return yield* finishScenario(manifest, "codex-workflow", startedAt, sessionId, {
         ...driven.success,
-        completedCommands: 4,
+        completedCommands: 9,
+        internalPeerControl: true,
         activeSteer: true,
         interruptAccepted: true,
         sleepResumeContinuity: true,

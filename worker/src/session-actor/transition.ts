@@ -24,6 +24,7 @@ export const phases = {
     "Quiescing",
     "PiStopped",
     "Syncing",
+    "BackupPrepared",
     "BackupConfirmed",
     "StopRequested",
     "RuntimeStopped",

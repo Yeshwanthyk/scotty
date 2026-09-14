@@ -50,7 +50,14 @@ canonical `aborted` projection. A delivery-unknown result requires inspection, n
 resubmission. For sleep/resume, require authoritative Sleeping after backup confirmation, then
 Warm with a new runtime generation and the same native thread. Compare earlier canonical turns
 and tool output, then require a completed new turn using prior conversation context. Standalone
-checkpoint remains unavailable for Codex; verify shared skill discovery through the native session.
+checkpoint should save and restart the same Codex thread and retain earlier turns; verify shared
+skill discovery through the native session. A scheduled midpoint may interrupt active work and
+must not replay an uncertain external effect. The final sleep starts ten minutes before cap (or
+at midpoint for caps of twenty minutes or less), and the cap remains absolute. If final backup
+stalls, distinguish the owned attempt from an earlier confirmed recovery point. Verify the
+confirmed timestamp and actionable wake source before claiming recoverability; an owned ID
+alone is not a backup. An unknown create/restore response requires reconciliation of the same
+attempt and its workspace marker, never a fresh backup attempt.
 
 For an authorized queue canary, use `steer --follow-up --idempotency-key ID` during
 an active turn. Default `steer` still targets that turn. Require the public `mode: "followUp"`

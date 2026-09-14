@@ -12,6 +12,8 @@ import {
 import { Option, Result, Schema } from "effect";
 import { readBoundedJson } from "../shared/bounded-http";
 import { ScottyError } from "./contracts";
+import type { Sandbox } from "./object";
+import { inspectCanonicalConversation } from "./conversation";
 
 const strictProtocolDecoderOptions = { onExcessProperty: "error" } as const;
 const decodeSnapshot = Schema.decodeUnknownOption(
@@ -54,6 +56,56 @@ export function scottyErrorResponse(failure: ScottyError): Response {
       headers: { "cache-control": "no-store" },
     },
   );
+}
+
+type SessionControlTarget = Pick<
+  Sandbox,
+  | "fetch"
+  | "readScottyCodexConversation"
+  | "steerScottyCodexSession"
+  | "interruptScottyCodexSession"
+>;
+
+export async function inspectSessionControl(target: SessionControlTarget): Promise<Response> {
+  const codex = await target.readScottyCodexConversation();
+  return codex === null
+    ? inspectPassiveSession(target)
+    : Response.json(codex, { headers: { "cache-control": "no-store" } });
+}
+
+export async function readSessionControl(target: SessionControlTarget): Promise<Response> {
+  const codex = await target.readScottyCodexConversation();
+  return codex === null
+    ? inspectCanonicalConversation(target)
+    : Response.json(codex, { headers: { "cache-control": "no-store" } });
+}
+
+export async function steerSessionControl(
+  target: SessionControlTarget,
+  id: string,
+  message: string,
+  idempotencyKey?: string,
+  deliverAs?: "followUp",
+): Promise<Response> {
+  const codex = await target.steerScottyCodexSession(message, idempotencyKey, deliverAs);
+  if (codex !== null) return codex;
+  if (deliverAs !== undefined)
+    return scottyErrorResponse(
+      new ScottyError("bad_request", "Queued follow-up requires Codex", {
+        httpStatus: 400,
+        exitCode: 2,
+      }),
+    );
+  return steerPassiveSession(target, id, message);
+}
+
+export async function interruptSessionControl(
+  target: SessionControlTarget,
+  id: string,
+  input: { readonly turnId?: string; readonly sessionRevision: number },
+): Promise<Response> {
+  const codex = await target.interruptScottyCodexSession(input);
+  return codex === null ? interruptPassiveSession(target, id, input.sessionRevision) : codex;
 }
 
 const unavailableSteer = (id: string, reason = "provider_passive_relay_unavailable") =>

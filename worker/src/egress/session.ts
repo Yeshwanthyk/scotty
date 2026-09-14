@@ -7,6 +7,10 @@ import {
   PiConsoleSnapshotSchema,
 } from "../../../protocol/pi-console";
 import { SessionSteerResponseSchema } from "../../../protocol/session-steer";
+import { SessionInterruptResponseSchema } from "../../../protocol/session-interrupt";
+import { CanonicalConversationSnapshotSchema } from "../../../protocol/conversation";
+import { decodeSessionMessageInput } from "../../../protocol/session-steer";
+import { CloudSettingsSnapshotSchema } from "../../../protocol/cloud-settings";
 import type { Bindings } from "../shared/bindings";
 import { readBoundedJson, readBoundedUtf8Body } from "../shared/bounded-http";
 import { decodeJsonValue } from "../shared/json";
@@ -14,6 +18,9 @@ import {
   ApiErrorCodeSchema,
   badRequest,
   parseSessionId,
+  parseIdempotencyKey,
+  parseInterruptInput,
+  parseCreateInput,
   parseSteerInput,
   ScottyError,
   type ContainerSessionRequest,
@@ -73,7 +80,8 @@ const PROXY_IDENTITY_HEADERS = new Set([
   "x-forwarded-proto",
   "x-real-ip",
 ]);
-const CONTAINER_SESSION_ROUTE = /^\/api\/sessions\/([^/]+)\/(inspect|steer)$/u;
+const CONTAINER_SESSION_ROUTE =
+  /^\/api\/sessions\/([^/]+)\/(inspect|conversation|steer|interrupt)$/u;
 const ErrorEnvelopeSchema = Schema.Struct({
   error: Schema.Struct({
     code: Schema.NonEmptyString,
@@ -82,11 +90,37 @@ const ErrorEnvelopeSchema = Schema.Struct({
   }),
 });
 const decodeInspectResponse = Schema.decodeUnknownOption(
-  Schema.Union([PiConsoleSnapshotSchema, ErrorEnvelopeSchema]),
+  Schema.Union([PiConsoleSnapshotSchema, CanonicalConversationSnapshotSchema, ErrorEnvelopeSchema]),
   { onExcessProperty: "error" },
 );
 const decodeSteerResponse = Schema.decodeUnknownOption(
   Schema.Union([SessionSteerResponseSchema, ErrorEnvelopeSchema]),
+  { onExcessProperty: "error" },
+);
+const decodeConversationResponse = Schema.decodeUnknownOption(
+  Schema.Union([CanonicalConversationSnapshotSchema, ErrorEnvelopeSchema]),
+  { onExcessProperty: "error" },
+);
+const decodeInterruptResponse = Schema.decodeUnknownOption(
+  Schema.Union([SessionInterruptResponseSchema, ErrorEnvelopeSchema]),
+  { onExcessProperty: "error" },
+);
+const decodeCreateResponse = Schema.decodeUnknownOption(
+  Schema.Union([
+    Schema.Struct({
+      id: Schema.NonEmptyString,
+      title: Schema.NonEmptyString,
+      url: Schema.NonEmptyString,
+      branch: Schema.NonEmptyString,
+      provider: Schema.Literal("cloudflare"),
+      status: Schema.NonEmptyString,
+    }),
+    ErrorEnvelopeSchema,
+  ]),
+  { onExcessProperty: "error" },
+);
+const decodeSettingsResponse = Schema.decodeUnknownOption(
+  Schema.Union([CloudSettingsSnapshotSchema, ErrorEnvelopeSchema]),
   { onExcessProperty: "error" },
 );
 const decodeScottyError = Schema.decodeUnknownOption(
@@ -132,6 +166,9 @@ export class ContainerProxy extends SandboxContainerProxy {
 
 const rejectedRequest = (message: string): Response => scottyErrorResponse(badRequest(message));
 
+const parseBoundary = <A>(parse: () => A, message: string): Result.Result<A, ScottyError> =>
+  Result.try({ try: parse, catch: () => badRequest(message) });
+
 const rejectsAmbientAuthority = (headers: Headers): boolean => {
   for (const name of headers.keys()) {
     if (
@@ -164,11 +201,19 @@ async function sanitizeResponse(
   action: ContainerSessionRequest["action"],
 ): Promise<Response> {
   const body = await readBoundedJson(response, PI_CONSOLE_MAX_RESPONSE_BYTES);
-  const decoded: Option.Option<unknown> = Option.isSome(body)
-    ? action === "inspect"
-      ? decodeInspectResponse(body.value)
-      : decodeSteerResponse(body.value)
-    : Option.none();
+  const decoded: Option.Option<unknown> = Option.isNone(body)
+    ? Option.none()
+    : action === "settings"
+      ? decodeSettingsResponse(body.value)
+      : action === "create"
+        ? decodeCreateResponse(body.value)
+        : action === "inspect"
+          ? decodeInspectResponse(body.value)
+          : action === "conversation"
+            ? decodeConversationResponse(body.value)
+            : action === "interrupt"
+              ? decodeInterruptResponse(body.value)
+              : decodeSteerResponse(body.value);
   if (Option.isNone(decoded))
     return scottyErrorResponse(
       new ScottyError("upstream", "Container session response is unavailable", {
@@ -501,6 +546,7 @@ async function handleEvidenceJobEgress(
     : sanitizeEvidenceResult(executed.success);
 }
 
+// oxlint-disable-next-line eslint/complexity -- native egress boundary validates each supported session route before relaying to its source actor
 export async function handleContainerSessionEgress(
   request: Request,
   env: Bindings,
@@ -522,39 +568,100 @@ export async function handleContainerSessionEgress(
   if (hatchHandler !== undefined) return hatchHandler(request, env, context);
 
   const matched = CONTAINER_SESSION_ROUTE.exec(url.pathname);
-  if (matched === null) return rejectedRequest("Invalid container session route");
-  const targetId = Result.try({
-    try: () => parseSessionId(decodeURIComponent(matched[1] ?? "")),
-    catch: () => badRequest("Invalid session id"),
-  });
-  if (Result.isFailure(targetId)) return scottyErrorResponse(targetId.failure);
-  const action = matched[2];
+  if (matched === null && url.pathname !== "/api/sessions" && url.pathname !== "/api/settings")
+    return rejectedRequest("Invalid container session route");
+  const targetId =
+    matched === null
+      ? undefined
+      : parseBoundary(
+          () => parseSessionId(decodeURIComponent(matched[1] ?? "")),
+          "Invalid session id",
+        );
+  if (targetId !== undefined && Result.isFailure(targetId))
+    return scottyErrorResponse(targetId.failure);
+  const action =
+    url.pathname === "/api/settings"
+      ? "settings"
+      : url.pathname === "/api/sessions"
+        ? "create"
+        : matched?.[2];
   let operation: ContainerSessionRequest;
-  if (action === "inspect") {
+  if (action === "settings") {
     if (request.method !== "GET" || request.body !== null)
-      return rejectedRequest("Inspect requires an empty GET request");
-    operation = { action, targetId: targetId.success };
-  } else {
+      return rejectedRequest("Settings requires an empty GET request");
+    operation = { action };
+  } else if (action === "create") {
     if (
       request.method !== "POST" ||
       mediaType(request.headers.get("content-type")) !== "application/json"
     )
-      return rejectedRequest("Steer requires a JSON POST request");
-    const bodyText = await readBoundedUtf8Body(request, PI_CONSOLE_MAX_COMMAND_BYTES);
-    if (bodyText === undefined) return rejectedRequest("Steer request body is too large");
+      return rejectedRequest("Create requires a JSON POST request");
+    const idempotencyKey = request.headers.get("idempotency-key");
+    if (idempotencyKey === null) return rejectedRequest("Create requires an idempotency-key");
+    const bodyText = await readBoundedUtf8Body(request, PI_CONSOLE_MAX_RESPONSE_BYTES);
+    if (bodyText === undefined) return rejectedRequest("Create request body is too large");
     const body = decodeJsonValue(bodyText);
     if (Option.isNone(body)) return rejectedRequest("Request body must be valid JSON");
-    const message = Result.try({
-      try: () => parseSteerInput(body.value),
-      catch: () => badRequest("Invalid steer request"),
-    });
-    if (Result.isFailure(message)) return scottyErrorResponse(message.failure);
-    operation = {
-      action: "steer",
-      targetId: targetId.success,
-      message: message.success,
-    };
-  }
+    const input = parseBoundary(() => {
+      parseIdempotencyKey(idempotencyKey);
+      return parseCreateInput(body.value);
+    }, "Invalid create request");
+    if (Result.isFailure(input)) return scottyErrorResponse(input.failure);
+    operation = { action, input: input.success, idempotencyKey };
+  } else if (
+    (action === "inspect" || action === "conversation") &&
+    targetId !== undefined &&
+    Result.isSuccess(targetId)
+  ) {
+    if (request.method !== "GET" || request.body !== null)
+      return rejectedRequest("Read requires an empty GET request");
+    operation = { action, targetId: targetId.success };
+  } else if (
+    (action === "steer" || action === "interrupt") &&
+    targetId !== undefined &&
+    Result.isSuccess(targetId)
+  ) {
+    if (
+      request.method !== "POST" ||
+      mediaType(request.headers.get("content-type")) !== "application/json"
+    )
+      return rejectedRequest("Control requires a JSON POST request");
+    const bodyText = await readBoundedUtf8Body(request, PI_CONSOLE_MAX_COMMAND_BYTES);
+    if (bodyText === undefined) return rejectedRequest("Control request body is too large");
+    const body = decodeJsonValue(bodyText);
+    if (Option.isNone(body)) return rejectedRequest("Request body must be valid JSON");
+    if (action === "interrupt") {
+      const input = parseBoundary(
+        () => parseInterruptInput(body.value),
+        "Invalid interrupt request",
+      );
+      if (Result.isFailure(input)) return scottyErrorResponse(input.failure);
+      operation = { action, targetId: targetId.success, input: input.success };
+    } else {
+      const delivery = decodeSessionMessageInput(body.value);
+      if (Option.isNone(delivery)) return rejectedRequest("Invalid message delivery request");
+      const message = parseBoundary(
+        () => parseSteerInput({ message: delivery.value.message }),
+        "Invalid steer request",
+      );
+      if (Result.isFailure(message)) return scottyErrorResponse(message.failure);
+      const idempotencyKey = request.headers.get("idempotency-key") ?? undefined;
+      if (idempotencyKey !== undefined) {
+        const parsed = parseBoundary(
+          () => parseIdempotencyKey(idempotencyKey),
+          "Invalid idempotency key",
+        );
+        if (Result.isFailure(parsed)) return scottyErrorResponse(parsed.failure);
+      }
+      operation = {
+        action: "steer",
+        targetId: targetId.success,
+        message: message.success,
+        ...(delivery.value.deliverAs === undefined ? {} : { deliverAs: delivery.value.deliverAs }),
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+      };
+    }
+  } else return rejectedRequest("Invalid container session route");
 
   if (typeof context.containerId !== "string" || context.containerId.length === 0)
     return scottyErrorResponse(

@@ -657,6 +657,81 @@ describe("configuration and transport", () => {
     expect(keys[2]).not.toBe(keys[1]);
   });
 
+  test("sandbox beam reads internal defaults and reuses its pending admission without bearer authority", async () => {
+    const home = await temporaryDirectory();
+    const requests: Request[] = [];
+    let creates = 0;
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (new URL(request.url).pathname === "/api/settings")
+        return Response.json({
+          revision: 1,
+          activeDigest: null,
+          settings: {
+            agent: "codex",
+            pi: { agent: "pi" },
+            codex: { agent: "codex", model: "gpt-5.6-sol", effort: "medium" },
+            environment: {},
+          },
+        });
+      creates++;
+      if (creates === 1) return rejected("lost create reply");
+      return Response.json({
+        id: "peer-1",
+        title: "Peer",
+        url: "https://scotty.internal/s/peer-1",
+        branch: "scotty/peer-1",
+        provider: "cloudflare",
+        status: "warm",
+      });
+    };
+    const args = [
+      "beam",
+      "do peer work",
+      "--title",
+      "Peer",
+      "--repo",
+      "owner/project",
+      "--provider",
+      "cloudflare",
+      "--detach",
+      "--json",
+    ];
+    const options = { passthroughSettings: true };
+    const env = {
+      SCOTTY_SESSION_ID: "source",
+      SCOTTY_HOST: "https://ignored.example",
+      SCOTTY_TOKEN: "must-not-send",
+    };
+    expect(await main(args, harness({ home, env, fetch }, options).deps)).toBe(EXIT.GENERIC);
+    expect(await main(args, harness({ home, env, fetch }, options).deps)).toBe(EXIT.OK);
+    expect(await main(args, harness({ home, env, fetch }, options).deps)).toBe(EXIT.OK);
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://scotty.internal/api/settings",
+      "https://scotty.internal/api/sessions",
+      "https://scotty.internal/api/settings",
+      "https://scotty.internal/api/sessions",
+      "https://scotty.internal/api/settings",
+      "https://scotty.internal/api/sessions",
+    ]);
+    const createRequests = requests.filter((request) => request.method === "POST");
+    expect(createRequests.map((request) => request.headers.get("idempotency-key"))).toEqual([
+      createRequests[0]?.headers.get("idempotency-key"),
+      createRequests[0]?.headers.get("idempotency-key"),
+      createRequests[2]?.headers.get("idempotency-key"),
+    ]);
+    expect(createRequests[2]?.headers.get("idempotency-key")).not.toBe(
+      createRequests[0]?.headers.get("idempotency-key"),
+    );
+    expect(await createRequests[1]?.json()).toMatchObject({
+      agent: "codex",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+    });
+    expect(requests.every((request) => !request.headers.has("authorization"))).toBe(true);
+  });
+
   test("beam retries once with a fresh idempotency key after a vaporized-session conflict", async () => {
     const home = await temporaryDirectory();
     const host = "https://worker.example";

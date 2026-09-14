@@ -33,6 +33,7 @@ const ResultBase = {
 export const SleepProviderResultSchema = Schema.Union([
   Schema.TaggedStruct("PiQuiesced", { ...ResultBase, piStoppedAt: Schema.String }),
   Schema.TaggedStruct("WorkspaceSynced", ResultBase),
+  Schema.TaggedStruct("BackupPrepared", { ...ResultBase, backup: BackupIdentitySchema }),
   Schema.TaggedStruct("BackupConfirmed", { ...ResultBase, backup: BackupIdentitySchema }),
   Schema.TaggedStruct("RuntimeStopRequested", { ...ResultBase, requestedAt: Schema.String }),
   Schema.TaggedStruct("RuntimeStopped", { ...ResultBase, stop: StopObservationSchema }),
@@ -58,7 +59,13 @@ export interface SleepTransitionProviderShape {
     Extract<SleepProviderResult, { readonly _tag: "WorkspaceSynced" }>,
     SleepProviderFailure
   >;
-  readonly createConfirmedBackup: (
+  readonly prepareBackup: (
+    context: SleepProviderContext,
+  ) => Effect.Effect<
+    Extract<SleepProviderResult, { readonly _tag: "BackupPrepared" }>,
+    SleepProviderFailure
+  >;
+  readonly confirmBackup: (
     context: SleepProviderContext,
   ) => Effect.Effect<
     Extract<SleepProviderResult, { readonly _tag: "BackupConfirmed" }>,
@@ -217,8 +224,37 @@ const applyResult = (
             ),
           )
         : Effect.fail(staleProof(committed, transition, value.observedAt)),
+    BackupPrepared: (value) =>
+      transition.phase === "Syncing" &&
+      (value.backup.confirmedAt === null ||
+        (transition.mode === "reconciling" &&
+          value.backup.backupId === transition.attempt &&
+          transition.proof.backup.ownedBackupIds.includes(transition.attempt))) &&
+      value.backup.sourceRuntimeGeneration === transition.proof.readiness.runtime.runtimeGeneration
+        ? Effect.succeed(
+            progress(
+              committed,
+              transition,
+              "BackupPrepared",
+              {
+                ...transition.proof,
+                backup: {
+                  ...transition.proof.backup,
+                  prepared: value.backup,
+                  ownedBackupIds: [
+                    ...new Set([...transition.proof.backup.ownedBackupIds, value.backup.backupId]),
+                  ],
+                },
+              },
+              value.observedAt,
+              value.resultCode,
+            ),
+          )
+        : Effect.fail(staleProof(committed, transition, value.observedAt)),
     BackupConfirmed: (value) =>
-      transition.phase === "Syncing" && validBackupForRuntime(value.backup, transition)
+      transition.phase === "BackupPrepared" &&
+      validBackupForRuntime(value.backup, transition) &&
+      transition.proof.backup.prepared?.backupId === value.backup.backupId
         ? Effect.succeed(
             progress(
               committed,
@@ -297,7 +333,8 @@ const dispatch = (
   Match.value(context.transition.phase).pipe(
     Match.when("Quiescing", () => provider.quiescePi(context)),
     Match.when("PiStopped", () => provider.syncWorkspace(context)),
-    Match.when("Syncing", () => provider.createConfirmedBackup(context)),
+    Match.when("Syncing", () => provider.prepareBackup(context)),
+    Match.when("BackupPrepared", () => provider.confirmBackup(context)),
     Match.when("BackupConfirmed", () => provider.requestRuntimeStop(context)),
     Match.when("StopRequested", () => provider.observeRuntimeStopped(context)),
     Match.when("RuntimeStopped", () => provider.confirmRuntimeStopped(context)),
