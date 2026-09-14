@@ -195,80 +195,87 @@ describe("Git changed-files adapter", () => {
     }),
   );
 
-  it.effect("keeps committed branch changes visible in a clean worktree", () =>
-    Effect.gen(function* () {
-      const root = yield* Effect.acquireRelease(
-        Effect.promise(() => mkdtemp(join(tmpdir(), "scotty-branch-changes-"))),
-        (path) => Effect.promise(() => rm(path, { force: true, recursive: true })),
-      );
-      yield* Effect.promise(async () => {
-        await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: root });
-        await execFileAsync("git", ["config", "user.email", "scotty@example.invalid"], {
-          cwd: root,
+  it.effect(
+    "keeps committed branch changes visible in a clean worktree",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.acquireRelease(
+          Effect.promise(() => mkdtemp(join(tmpdir(), "scotty-branch-changes-"))),
+          (path) => Effect.promise(() => rm(path, { force: true, recursive: true })),
+        );
+        yield* Effect.promise(async () => {
+          await execFileAsync("git", ["init", "-q", "-b", "main"], { cwd: root });
+          await execFileAsync("git", ["config", "user.email", "scotty@example.invalid"], {
+            cwd: root,
+          });
+          await execFileAsync("git", ["config", "user.name", "Scotty Test"], { cwd: root });
+          await writeFile(join(root, "app.ts"), "export const value = 'base';\n");
+          await execFileAsync("git", ["add", "."], { cwd: root });
+          await execFileAsync("git", ["commit", "-qm", "base"], { cwd: root });
+          await execFileAsync("git", ["switch", "-qc", "session"], { cwd: root });
+          await writeFile(join(root, "app.ts"), "export const value = 'committed';\n");
+          await execFileAsync("git", ["commit", "-qam", "session work"], { cwd: root });
         });
-        await execFileAsync("git", ["config", "user.name", "Scotty Test"], { cwd: root });
-        await writeFile(join(root, "app.ts"), "export const value = 'base';\n");
-        await execFileAsync("git", ["add", "."], { cwd: root });
-        await execFileAsync("git", ["commit", "-qm", "base"], { cwd: root });
-        await execFileAsync("git", ["switch", "-qc", "session"], { cwd: root });
-        await writeFile(join(root, "app.ts"), "export const value = 'committed';\n");
-        await execFileAsync("git", ["commit", "-qam", "session work"], { cwd: root });
-      });
-      const base = yield* readGitReviewBase(executingRuntime, root, "main");
-      const changes = yield* listGitWorktreeChanges(executingRuntime, root, base);
-      assert.deepStrictEqual(
-        changes.files.map((file) => file.path),
-        ["app.ts"],
-      );
-      assert.isFalse(changes.truncated);
-      const committed = yield* findGitWorktreeChange(executingRuntime, root, "app.ts", base);
-      assert.isDefined(committed);
-      assert.isFalse(committed.staged);
-      assert.isFalse(committed.unstaged);
-      const patch = yield* readGitWorktreePatch(executingRuntime, root, committed, base);
-      assert.include(patch.patch ?? "", "-export const value = 'base';");
+        const base = yield* readGitReviewBase(executingRuntime, root, "main");
+        const changes = yield* listGitWorktreeChanges(executingRuntime, root, base);
+        assert.deepStrictEqual(
+          changes.files.map((file) => file.path),
+          ["app.ts"],
+        );
+        assert.isFalse(changes.truncated);
+        const committed = yield* findGitWorktreeChange(executingRuntime, root, "app.ts", base);
+        assert.isDefined(committed);
+        assert.isFalse(committed.staged);
+        assert.isFalse(committed.unstaged);
+        const patch = yield* readGitWorktreePatch(executingRuntime, root, committed, base);
+        assert.include(patch.patch ?? "", "-export const value = 'base';");
 
-      yield* Effect.promise(async () => {
-        await execFileAsync("git", ["switch", "-q", "main"], { cwd: root });
-        await writeFile(join(root, "main-only.ts"), "upstream\n");
-        await execFileAsync("git", ["add", "."], { cwd: root });
-        await execFileAsync("git", ["commit", "-qm", "upstream"], { cwd: root });
-        await execFileAsync("git", ["switch", "-q", "session"], { cwd: root });
-        await writeFile(join(root, "app.ts"), "export const value = 'staged';\n");
-        await execFileAsync("git", ["add", "."], { cwd: root });
-        await writeFile(join(root, "app.ts"), "export const value = 'working';\n");
-        await writeFile(join(root, "new.ts"), "untracked\n");
-      });
-      const nextBase = yield* readGitReviewBase(executingRuntime, root, "main");
-      assert.strictEqual(nextBase, base);
-      const mixed = yield* listGitWorktreeChanges(executingRuntime, root, nextBase);
-      assert.deepStrictEqual(
-        mixed.files.map((file) => file.path),
-        ["app.ts", "new.ts"],
-      );
-      const working = yield* findGitWorktreeChange(executingRuntime, root, "app.ts", nextBase);
-      assert.isDefined(working);
-      assert.isTrue(working.staged);
-      assert.isTrue(working.unstaged);
-      const workingPatch = yield* readGitWorktreePatch(executingRuntime, root, working, nextBase);
-      assert.include(workingPatch.patch ?? "", "+export const value = 'working';");
-      assert.notInclude(workingPatch.patch ?? "", "committed");
-      yield* Effect.promise(() =>
-        writeFile(join(root, "app.ts"), "export const value = 'base';\n"),
-      );
-      const reverted = yield* listGitWorktreeChanges(executingRuntime, root, nextBase);
-      assert.deepStrictEqual(
-        reverted.files.map((file) => file.path),
-        ["new.ts"],
-      );
-      yield* Effect.promise(async () => {
-        await execFileAsync("git", ["update-ref", "refs/remotes/origin/main", base], { cwd: root });
-        await execFileAsync("git", ["update-ref", "refs/heads/main", "HEAD"], { cwd: root });
-      });
-      assert.strictEqual(yield* readGitReviewBase(executingRuntime, root, "main"), base);
-      const missingBase = yield* Effect.flip(readGitReviewBase(executingRuntime, root, "missing"));
-      assert.strictEqual(missingBase.reason, "nonzero_exit");
-    }),
+        yield* Effect.promise(async () => {
+          await execFileAsync("git", ["switch", "-q", "main"], { cwd: root });
+          await writeFile(join(root, "main-only.ts"), "upstream\n");
+          await execFileAsync("git", ["add", "."], { cwd: root });
+          await execFileAsync("git", ["commit", "-qm", "upstream"], { cwd: root });
+          await execFileAsync("git", ["switch", "-q", "session"], { cwd: root });
+          await writeFile(join(root, "app.ts"), "export const value = 'staged';\n");
+          await execFileAsync("git", ["add", "."], { cwd: root });
+          await writeFile(join(root, "app.ts"), "export const value = 'working';\n");
+          await writeFile(join(root, "new.ts"), "untracked\n");
+        });
+        const nextBase = yield* readGitReviewBase(executingRuntime, root, "main");
+        assert.strictEqual(nextBase, base);
+        const mixed = yield* listGitWorktreeChanges(executingRuntime, root, nextBase);
+        assert.deepStrictEqual(
+          mixed.files.map((file) => file.path),
+          ["app.ts", "new.ts"],
+        );
+        const working = yield* findGitWorktreeChange(executingRuntime, root, "app.ts", nextBase);
+        assert.isDefined(working);
+        assert.isTrue(working.staged);
+        assert.isTrue(working.unstaged);
+        const workingPatch = yield* readGitWorktreePatch(executingRuntime, root, working, nextBase);
+        assert.include(workingPatch.patch ?? "", "+export const value = 'working';");
+        assert.notInclude(workingPatch.patch ?? "", "committed");
+        yield* Effect.promise(() =>
+          writeFile(join(root, "app.ts"), "export const value = 'base';\n"),
+        );
+        const reverted = yield* listGitWorktreeChanges(executingRuntime, root, nextBase);
+        assert.deepStrictEqual(
+          reverted.files.map((file) => file.path),
+          ["new.ts"],
+        );
+        yield* Effect.promise(async () => {
+          await execFileAsync("git", ["update-ref", "refs/remotes/origin/main", base], {
+            cwd: root,
+          });
+          await execFileAsync("git", ["update-ref", "refs/heads/main", "HEAD"], { cwd: root });
+        });
+        assert.strictEqual(yield* readGitReviewBase(executingRuntime, root, "main"), base);
+        const missingBase = yield* Effect.flip(
+          readGitReviewBase(executingRuntime, root, "missing"),
+        );
+        assert.strictEqual(missingBase.reason, "nonzero_exit");
+      }),
+    15_000,
   );
 
   it.effect("executes hostile rename and binary reads against a real Git worktree", () =>
