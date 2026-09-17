@@ -17,6 +17,7 @@ export interface SessionRowProps {
   readonly projectedFreshness?: SessionPresentation["freshness"];
   readonly selected?: boolean;
   readonly session: SessionRailSession;
+  readonly variant?: "landing" | "rail";
 }
 
 const styles = stylex.create({
@@ -56,6 +57,14 @@ const styles = stylex.create({
     color: colors.quiet,
     opacity: 0.68,
     ":hover": { opacity: 1 },
+  },
+  landingLink: {
+    minHeight: "54px",
+    paddingBlock: spacing.sm,
+    paddingInline: spacing.xs,
+    gridTemplateColumns: "minmax(0, 1fr)",
+    color: colors.ink,
+    opacity: 1,
   },
   stateSlot: { width: "8px", display: "grid", placeItems: "center" },
   stateDot: { width: "5px", height: "5px", borderRadius: "50%", backgroundColor: colors.quiet },
@@ -105,7 +114,19 @@ const styles = stylex.create({
   status: { overflow: "hidden", textOverflow: "ellipsis" },
   provenance: { color: colors.focus },
   stale: { color: colors.warning },
+  landingTitle: { fontSize: "13px", fontWeight: 620, lineHeight: 1.35 },
+  landingMetadata: { color: colors.muted, fontSize: "11px", lineHeight: 1.35 },
 });
+
+const rowPlacementStyle = (
+  variant: NonNullable<SessionRowProps["variant"]>,
+  placement: NonNullable<SessionRowProps["placement"]>,
+) =>
+  variant === "landing"
+    ? styles.landingLink
+    : placement === "archived"
+      ? styles.archivedLink
+      : undefined;
 
 type StatusIconProps = Pick<SessionRowProps, "presentation">;
 
@@ -184,6 +205,33 @@ const rowAriaLabel = (session: SessionRowProps["session"], presentation: Session
 
 const repositoryName = (repository: string): string => repository.split("/").at(-1) ?? repository;
 
+function LandingRowContent({
+  presentation,
+  session,
+}: Pick<SessionRowProps, "presentation" | "session">) {
+  return (
+    <span data-design="landing-row-text" {...stylex.props(styles.text)}>
+      <span
+        title={session.display.title}
+        data-design="landing-row-title"
+        {...stylex.props(styles.title, styles.landingTitle)}
+      >
+        {session.display.title}
+      </span>
+      <span
+        data-design="landing-row-metadata"
+        {...stylex.props(styles.metadata, styles.landingMetadata)}
+      >
+        <span>{repositoryName(session.display.repository)}</span>
+        <span aria-hidden {...stylex.props(styles.separator)}>
+          ·
+        </span>
+        <span>{presentation.railLabel}</span>
+      </span>
+    </span>
+  );
+}
+
 export function SessionRow({
   actorCorrected = false,
   onNavigate,
@@ -192,6 +240,7 @@ export function SessionRow({
   projectedFreshness,
   selected = false,
   session,
+  variant = "rail",
 }: SessionRowProps) {
   const operation = presentation.operation;
 
@@ -216,45 +265,55 @@ export function SessionRow({
       }
       {...stylex.props(
         styles.link,
-        placement === "archived" && styles.archivedLink,
+        rowPlacementStyle(variant, placement),
         selected && styles.selected,
       )}
     >
-      {placement === "archived" ? (
-        <span aria-hidden {...stylex.props(styles.stateSlot)} />
+      {variant === "landing" ? (
+        <LandingRowContent presentation={presentation} session={session} />
       ) : (
-        <StatusIcon presentation={presentation} />
-      )}
-      <span data-design="row-text" {...stylex.props(styles.text)}>
-        {placement === "active" ? (
-          <span
-            title={session.display.repository}
-            data-design="row-repository"
-            {...stylex.props(styles.repository)}
-          >
-            <FolderClosed aria-hidden {...stylex.props(styles.repositoryIcon)} />
-            {session.display.repository}
-          </span>
-        ) : null}
-        <span title={session.display.title} data-design="row-title" {...stylex.props(styles.title)}>
-          {session.display.title}
-        </span>
-        {placement === "archived" ? (
-          <span data-design="row-metadata" {...stylex.props(styles.metadata)}>
-            <span>{repositoryName(session.display.repository)}</span>
-            <span aria-hidden {...stylex.props(styles.separator)}>
-              ·
+        <>
+          {placement === "archived" ? (
+            <span aria-hidden {...stylex.props(styles.stateSlot)} />
+          ) : (
+            <StatusIcon presentation={presentation} />
+          )}
+          <span data-design="row-text" {...stylex.props(styles.text)}>
+            {placement === "active" ? (
+              <span
+                title={session.display.repository}
+                data-design="row-repository"
+                {...stylex.props(styles.repository)}
+              >
+                <FolderClosed aria-hidden {...stylex.props(styles.repositoryIcon)} />
+                {session.display.repository}
+              </span>
+            ) : null}
+            <span
+              title={session.display.title}
+              data-design="row-title"
+              {...stylex.props(styles.title)}
+            >
+              {session.display.title}
             </span>
-            <span>{presentation.railLabel}</span>
+            {placement === "archived" ? (
+              <span data-design="row-metadata" {...stylex.props(styles.metadata)}>
+                <span>{repositoryName(session.display.repository)}</span>
+                <span aria-hidden {...stylex.props(styles.separator)}>
+                  ·
+                </span>
+                <span>{presentation.railLabel}</span>
+              </span>
+            ) : (
+              <SessionMetadata
+                actorCorrected={actorCorrected}
+                presentation={presentation}
+                projectedFreshness={projectedFreshness}
+              />
+            )}
           </span>
-        ) : (
-          <SessionMetadata
-            actorCorrected={actorCorrected}
-            presentation={presentation}
-            projectedFreshness={projectedFreshness}
-          />
-        )}
-      </span>
+        </>
+      )}
     </Link>
   );
 }
