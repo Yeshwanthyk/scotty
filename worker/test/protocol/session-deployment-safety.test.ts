@@ -11,6 +11,7 @@ const base = {
   recordStatus: "sleeping" as const,
   operation: null,
   runtime: "stopped" as const,
+  pi: "not_running" as const,
   agentRuntime: { agent: "pi" as const, state: "not_running" as const },
 };
 const decodeReadinessResponse = Schema.decodeUnknownSync(SessionDeploymentReadinessResponseSchema);
@@ -71,6 +72,15 @@ describe("session deployment readiness", () => {
   });
 
   it("owns a strict JSON response contract", () => {
+    assert.deepStrictEqual(decodeReadinessResponse([assessSessionDeploymentReadiness(base)]), [
+      assessSessionDeploymentReadiness(base),
+    ]);
+  });
+
+  it("accepts readiness from old and new Workers", () => {
+    const oldWorker = { ...assessSessionDeploymentReadiness(base) };
+    delete oldWorker.agentRuntime;
+    assert.deepStrictEqual(decodeReadinessResponse([oldWorker]), [oldWorker]);
     assert.deepStrictEqual(decodeReadinessResponse([assessSessionDeploymentReadiness(base)]), [
       assessSessionDeploymentReadiness(base),
     ]);

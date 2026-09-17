@@ -4011,6 +4011,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ? {}
           : { lastAgentEventAt: record.lastAgentEventAt }),
         runtime,
+        pi: agent === "pi" ? agentRuntimeState : "unknown",
         agentRuntime: { agent, state: agentRuntimeState },
       });
     },

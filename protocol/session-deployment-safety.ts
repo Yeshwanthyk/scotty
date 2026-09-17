@@ -25,12 +25,15 @@ export const SessionDeploymentRuntimeStateSchema = Schema.Literals([
 ]);
 export type SessionDeploymentRuntimeState = typeof SessionDeploymentRuntimeStateSchema.Type;
 
-export const SessionDeploymentAgentRuntimeStateSchema = Schema.Literals([
+export const SessionDeploymentPiStateSchema = Schema.Literals([
   "reachable",
   "unreachable",
   "not_running",
   "unknown",
 ]);
+export type SessionDeploymentPiState = typeof SessionDeploymentPiStateSchema.Type;
+
+export const SessionDeploymentAgentRuntimeStateSchema = SessionDeploymentPiStateSchema;
 export type SessionDeploymentAgentRuntimeState =
   typeof SessionDeploymentAgentRuntimeStateSchema.Type;
 
@@ -43,6 +46,7 @@ export const SessionDeploymentReadinessReasonSchema = Schema.Literals([
   "agent_working",
   "runtime_running",
   "runtime_unreachable",
+  "pi_unreachable",
   "sleeping_checkpointed",
   "gone",
 ]);
@@ -56,10 +60,13 @@ export const SessionDeploymentReadinessSchema = Schema.Struct({
   agentState: Schema.optionalKey(SessionDeploymentAgentStateSchema),
   lastAgentEventAt: Schema.optionalKey(Schema.String),
   runtime: SessionDeploymentRuntimeStateSchema,
-  agentRuntime: Schema.Struct({
-    agent: Schema.Literals(["pi", "codex"]),
-    state: SessionDeploymentAgentRuntimeStateSchema,
-  }),
+  pi: SessionDeploymentPiStateSchema,
+  agentRuntime: Schema.optionalKey(
+    Schema.Struct({
+      agent: Schema.Literals(["pi", "codex"]),
+      state: SessionDeploymentAgentRuntimeStateSchema,
+    }),
+  ),
   ready: Schema.Boolean,
   reason: SessionDeploymentReadinessReasonSchema,
 });
@@ -79,7 +86,8 @@ export interface SessionDeploymentReadinessInput {
   readonly agentState?: SessionDeploymentAgentState;
   readonly lastAgentEventAt?: string;
   readonly runtime: SessionDeploymentRuntimeState;
-  readonly agentRuntime: {
+  readonly pi: SessionDeploymentPiState;
+  readonly agentRuntime?: {
     readonly agent: "pi" | "codex";
     readonly state: SessionDeploymentAgentRuntimeState;
   };
@@ -101,7 +109,8 @@ export const assessSessionDeploymentReadiness = (
     ...(input.agentState === undefined ? {} : { agentState: input.agentState }),
     ...(input.lastAgentEventAt === undefined ? {} : { lastAgentEventAt: input.lastAgentEventAt }),
     runtime: input.runtime,
-    agentRuntime: input.agentRuntime,
+    pi: input.pi,
+    ...(input.agentRuntime === undefined ? {} : { agentRuntime: input.agentRuntime }),
   };
 
   if (input.operation !== null) return { ...shared, ready: false, reason: "lifecycle_busy" };
