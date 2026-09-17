@@ -1,14 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import { Link } from "@tanstack/react-router";
-import {
-  CircleAlert,
-  FolderClosed,
-  LoaderCircle,
-  MessageSquare,
-  Moon,
-  Radio,
-  Trash2,
-} from "lucide-react";
+import { CircleAlert, FolderClosed } from "lucide-react";
 import type { SessionModel } from "../data/session-reader";
 import type { SessionPresentation } from "../domain/session-presentation";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
@@ -33,7 +25,7 @@ const styles = stylex.create({
     paddingBlock: "7px",
     paddingInline: spacing.sm,
     display: "grid",
-    gridTemplateColumns: "18px minmax(0, 1fr)",
+    gridTemplateColumns: "8px minmax(0, 1fr)",
     alignItems: "center",
     gap: spacing.sm,
     borderWidth: "1px",
@@ -65,17 +57,11 @@ const styles = stylex.create({
     opacity: 0.68,
     ":hover": { opacity: 1 },
   },
-  icon: {
-    width: "15px",
-    height: "15px",
-    color: colors.quiet,
-    strokeWidth: 1.8,
-  },
-  warm: { color: colors.success },
-  sleeping: { color: colors.quiet },
-  failed: { color: colors.danger },
-  gone: { color: colors.quiet },
-  operation: { color: colors.warning },
+  stateSlot: { width: "8px", display: "grid", placeItems: "center" },
+  stateDot: { width: "5px", height: "5px", borderRadius: "50%", backgroundColor: colors.quiet },
+  sleeping: { backgroundColor: colors.quiet },
+  operation: { backgroundColor: colors.warning },
+  failedIcon: { width: "13px", height: "13px", color: colors.danger, strokeWidth: 1.8 },
   text: {
     minWidth: 0,
     display: "grid",
@@ -115,45 +101,36 @@ const styles = stylex.create({
     fontVariantNumeric: "tabular-nums",
     whiteSpace: "nowrap",
   },
-  branch: {
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-  },
   separator: { opacity: 0.55 },
   status: { overflow: "hidden", textOverflow: "ellipsis" },
   provenance: { color: colors.focus },
   stale: { color: colors.warning },
-  spin: {
-    animationName: stylex.keyframes({ to: { transform: "rotate(360deg)" } }),
-    animationDuration: "900ms",
-    animationIterationCount: "infinite",
-    animationTimingFunction: "linear",
-  },
 });
 
 type StatusIconProps = Pick<SessionRowProps, "presentation">;
 
 function StatusIcon({ presentation }: StatusIconProps) {
   const operation = presentation.operation;
-
-  if (operation?.action === "vaporize" || presentation.destructiveProgress)
-    return <Trash2 aria-hidden {...stylex.props(styles.icon, styles.failed)} />;
-  if (operation !== null)
+  if (presentation.authority.kind === "stable" && presentation.authority.lifecycle === "failed")
     return (
-      <LoaderCircle aria-hidden {...stylex.props(styles.icon, styles.operation, styles.spin)} />
+      <span {...stylex.props(styles.stateSlot)}>
+        <CircleAlert aria-hidden {...stylex.props(styles.failedIcon)} />
+      </span>
     );
-  if (presentation.authority.lifecycle === "sleeping")
-    return <Moon aria-hidden {...stylex.props(styles.icon, styles.sleeping)} />;
-  if (presentation.authority.lifecycle === "failed")
-    return <CircleAlert aria-hidden {...stylex.props(styles.icon, styles.failed)} />;
-  if (presentation.authority.lifecycle === "gone")
-    return <Trash2 aria-hidden {...stylex.props(styles.icon, styles.gone)} />;
-  return <Radio aria-hidden {...stylex.props(styles.icon, styles.warm)} />;
+  if (operation !== null || presentation.destructiveProgress)
+    return (
+      <span {...stylex.props(styles.stateSlot)}>
+        <span aria-hidden {...stylex.props(styles.stateDot, styles.operation)} />
+      </span>
+    );
+  if (presentation.authority.kind === "stable" && presentation.authority.lifecycle === "sleeping")
+    return (
+      <span {...stylex.props(styles.stateSlot)}>
+        <span aria-hidden {...stylex.props(styles.stateDot, styles.sleeping)} />
+      </span>
+    );
+  return <span aria-hidden {...stylex.props(styles.stateSlot)} />;
 }
-
-const ArchivedIcon = () => (
-  <MessageSquare aria-hidden {...stylex.props(styles.icon, styles.sleeping)} />
-);
 
 const provenanceFor = (
   presentation: SessionPresentation,
@@ -168,35 +145,35 @@ function SessionMetadata({
   actorCorrected,
   presentation,
   projectedFreshness,
-  session,
-}: Pick<SessionRowProps, "actorCorrected" | "presentation" | "projectedFreshness" | "session">) {
+}: Pick<SessionRowProps, "actorCorrected" | "presentation" | "projectedFreshness">) {
   const provenance = provenanceFor(presentation, actorCorrected ?? false);
+  const stateLabel = presentation.railLabel === "Awake" ? undefined : presentation.railLabel;
+  if (stateLabel === undefined && provenance === undefined) return null;
   return (
     <span data-design="row-metadata" {...stylex.props(styles.metadata)}>
-      <span
-        title={session.display.branch ?? undefined}
-        data-design="row-branch"
-        {...stylex.props(styles.branch)}
-      >
-        {session.display.branch}
-      </span>
-      <span aria-hidden {...stylex.props(styles.separator)}>
-        ·
-      </span>
-      <span title={presentation.railLabel} {...stylex.props(styles.status)}>
-        {presentation.railLabel}
-      </span>
-      {provenance ? (
-        <span
-          title={
-            actorCorrected && projectedFreshness === "stale"
-              ? "Showing the latest session state"
-              : provenance
-          }
-          {...stylex.props(actorCorrected ? styles.provenance : styles.stale)}
-        >
-          {provenance}
+      {stateLabel ? (
+        <span title={presentation.railLabel} {...stylex.props(styles.status)}>
+          {stateLabel}
         </span>
+      ) : null}
+      {provenance ? (
+        <>
+          {stateLabel ? (
+            <span aria-hidden {...stylex.props(styles.separator)}>
+              ·
+            </span>
+          ) : null}
+          <span
+            title={
+              actorCorrected && projectedFreshness === "stale"
+                ? "Showing the latest session state"
+                : provenance
+            }
+            {...stylex.props(actorCorrected ? styles.provenance : styles.stale)}
+          >
+            {provenance}
+          </span>
+        </>
       ) : null}
     </span>
   );
@@ -243,7 +220,11 @@ export function SessionRow({
         selected && styles.selected,
       )}
     >
-      {placement === "archived" ? <ArchivedIcon /> : <StatusIcon presentation={presentation} />}
+      {placement === "archived" ? (
+        <span aria-hidden {...stylex.props(styles.stateSlot)} />
+      ) : (
+        <StatusIcon presentation={presentation} />
+      )}
       <span data-design="row-text" {...stylex.props(styles.text)}>
         {placement === "active" ? (
           <span
@@ -271,7 +252,6 @@ export function SessionRow({
             actorCorrected={actorCorrected}
             presentation={presentation}
             projectedFreshness={projectedFreshness}
-            session={session}
           />
         )}
       </span>

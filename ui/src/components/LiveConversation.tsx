@@ -57,10 +57,10 @@ const styles = stylex.create({
     height: "100%",
     minHeight: 0,
     position: "relative",
-    display: "grid",
-    gridTemplateRows: "auto minmax(0, 1fr) auto auto",
+    display: "flex",
+    flexDirection: "column",
   },
-  rootHealthy: { gridTemplateRows: "minmax(0, 1fr) auto auto" },
+  conversationContent: { minHeight: 0, flex: 1, display: "grid", overflow: "hidden" },
   blockedNotice: {
     margin: 0,
     padding: `${spacing.sm} clamp(16px, 3vw, 32px)`,
@@ -83,13 +83,14 @@ const styles = stylex.create({
   },
   connectionHealthy: {
     position: "absolute",
-    zIndex: 1,
-    top: spacing.md,
-    left: "clamp(16px, 3vw, 32px)",
+    width: "1px",
+    height: "1px",
     minHeight: 0,
     padding: 0,
+    overflow: "hidden",
+    clipPath: "inset(50%)",
+    whiteSpace: "nowrap",
     borderBottomWidth: 0,
-    pointerEvents: "none",
   },
   connectionIdentity: { display: "inline-flex", alignItems: "center", gap: "6px" },
   connectionIcon: { width: "12px", height: "12px", color: colors.success, strokeWidth: 2 },
@@ -447,6 +448,7 @@ function ConnectionStatus({
       role="status"
       aria-live="polite"
       data-design="connection"
+      data-connection-health={healthy ? "healthy" : "attention"}
       {...stylex.props(styles.connection, healthy && styles.connectionHealthy)}
     >
       <span {...stylex.props(styles.connectionIdentity)}>
@@ -470,23 +472,20 @@ function ConnectionStatus({
 function ConversationShell({
   children,
   composer,
-  healthy,
   status,
   warning,
 }: {
   readonly children: ReactNode;
   readonly composer: ReactNode;
-  readonly healthy: boolean;
   readonly status: ReactNode;
   readonly warning?: ReactNode;
 }) {
   return (
-    <div
-      data-design="conversation-shell"
-      {...stylex.props(styles.root, healthy && styles.rootHealthy)}
-    >
+    <div data-design="conversation-shell" {...stylex.props(styles.root)}>
       {status}
-      {children}
+      <div data-design="conversation-content" {...stylex.props(styles.conversationContent)}>
+        {children}
+      </div>
       {warning === undefined ? null : (
         <p role="alert" {...stylex.props(styles.blockedNotice)}>
           {warning}
@@ -786,7 +785,7 @@ function ConversationComposer({
           {...stylex.props(styles.input)}
         />
         <div data-design="composer-attachments" {...stylex.props(styles.attachmentArea)}>
-          <ImageAttachments attachments={attachments} />
+          <ImageAttachments attachments={attachments} compact />
         </div>
         {active ? (
           <Button
@@ -877,15 +876,9 @@ export function LiveConversation({
   const evidenceState = useConversationEvidence(sessionId, snapshot);
   const activeTurn = activeConversationTurn(snapshot?.turns ?? []);
   const active = activeTurn !== undefined;
-  const healthy =
-    connection.kind === "ready" &&
-    connection.connection === "connected" &&
-    connection.detail === undefined &&
-    !runtimeStopped(connection);
 
   return (
     <ConversationShell
-      healthy={healthy}
       status={<ConnectionStatus active={active} connection={connection} />}
       warning={conversationWarning(connection, snapshot)}
       composer={
@@ -924,16 +917,16 @@ export function ConversationPreview({
   const activeTurn = activeConversationTurn(turns);
   return (
     <ConversationShell
-      healthy
       status={
         <div
           role="status"
           data-design="connection"
+          data-connection-health="healthy"
           {...stylex.props(styles.connection, styles.connectionHealthy)}
         >
           <span {...stylex.props(styles.connectionIdentity)}>
             <Wifi aria-hidden {...stylex.props(styles.connectionIcon)} />
-            {activeTurn === undefined ? "Preview" : "Preview · working"}
+            {activeTurn === undefined ? "Ready" : "Working"}
           </span>
         </div>
       }

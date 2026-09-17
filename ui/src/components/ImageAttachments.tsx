@@ -128,17 +128,33 @@ const styles = stylex.create({
     paddingTop: "4px",
   },
   error: { margin: 0, color: colors.danger, fontSize: "12px", lineHeight: 1.5 },
+  visuallyHidden: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    padding: 0,
+    overflow: "hidden",
+    clipPath: "inset(50%)",
+    whiteSpace: "nowrap",
+  },
 });
+
+const hideIdleAttachmentNotice = (quiet: boolean, dragging: boolean, reading: boolean): boolean =>
+  quiet && !dragging && !reading;
 
 export function ImageAttachments({
   attachments,
+  compact = false,
+  quiet = false,
 }: {
   readonly attachments: ReturnType<typeof useImageAttachments>;
+  readonly compact?: boolean;
+  readonly quiet?: boolean;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const hintId = useId();
   return (
-    <div {...stylex.props(styles.root)}>
+    <div data-design={compact ? "compact-attachments" : undefined} {...stylex.props(styles.root)}>
       {attachments.items.length > 0 ? (
         <ul aria-label="Attached images" {...stylex.props(styles.list)}>
           {attachments.items.map((item) => (
@@ -164,7 +180,7 @@ export function ImageAttachments({
           ))}
         </ul>
       ) : null}
-      <div {...stylex.props(styles.bar)}>
+      <div data-design="attachment-controls" {...stylex.props(styles.bar)}>
         <input
           ref={input}
           type="file"
@@ -180,17 +196,32 @@ export function ImageAttachments({
         <Button
           type="button"
           disabled={attachments.locked || attachments.items.length >= PI_CONSOLE_MAX_IMAGES}
+          aria-label={attachments.reading ? "Reading images" : "Add images"}
+          title="Add images"
+          variant={compact || quiet ? "quiet" : "default"}
+          iconOnly={compact}
           aria-describedby={hintId}
           onClick={() => input.current?.click()}
-          style={{ minHeight: 44 }}
+          style={compact ? undefined : { minHeight: 44 }}
         >
           <ImagePlus aria-hidden {...stylex.props(styles.icon)} />
-          {attachments.reading ? "Reading images…" : "Add images"}
+          {compact ? null : attachments.reading ? "Reading images…" : "Add images"}
         </Button>
-        <p id={hintId} aria-live="polite" {...stylex.props(styles.hint)}>
-          {attachments.dragging
-            ? "Drop images here"
-            : `${attachments.items.length ? `${attachments.items.length}/${PI_CONSOLE_MAX_IMAGES} attached · ` : "Paste or drop · "}PNG, JPG, WebP, GIF · ${PI_CONSOLE_MAX_IMAGE_BYTES / 1024 / 1024} MB total`}
+        <p
+          id={hintId}
+          data-attachment-notice={attachments.dragging || attachments.reading ? "active" : "idle"}
+          aria-live="polite"
+          {...stylex.props(
+            styles.hint,
+            hideIdleAttachmentNotice(quiet, attachments.dragging, attachments.reading) &&
+              styles.visuallyHidden,
+          )}
+        >
+          {attachments.reading
+            ? "Reading images…"
+            : attachments.dragging
+              ? "Drop images here"
+              : `${attachments.items.length ? `${attachments.items.length}/${PI_CONSOLE_MAX_IMAGES} attached · ` : "Paste or drop · "}PNG, JPG, WebP, GIF · ${PI_CONSOLE_MAX_IMAGE_BYTES / 1024 / 1024} MB total`}
         </p>
       </div>
       {attachments.error ? (
