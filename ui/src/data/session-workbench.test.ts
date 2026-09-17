@@ -77,6 +77,13 @@ describe("session workbench boundaries", () => {
               completedSteps: 1,
               frameCount: 1,
               recordVideo: true,
+              video: {
+                artifactId: "recording",
+                sha256: "a".repeat(64),
+                bytes: 1024,
+                capturedAt: "2026-09-14T00:00:00.000Z",
+                offsetMillis: 100,
+              },
               steps: [{ name: "Session view", status: "passed", frame: { frameId: "frame-1" } }],
             },
           ]),
@@ -94,7 +101,11 @@ describe("session workbench boundaries", () => {
     );
 
     await expect(readEvidence("session-1")).resolves.toEqual([
-      expect.objectContaining({ jobId: "job-1", recordVideo: true }),
+      expect.objectContaining({
+        jobId: "job-1",
+        recordVideo: true,
+        videoAvailable: true,
+      }),
     ]);
     await expect(readHatch("session-1")).resolves.toEqual({
       configured: true,
@@ -103,5 +114,28 @@ describe("session workbench boundaries", () => {
       status: "running",
       available: true,
     });
+  });
+
+  it("only exposes a recording after the authenticated projection publishes it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json([
+          {
+            jobId: "job-1",
+            status: "failed",
+            totalSteps: 1,
+            completedSteps: 0,
+            frameCount: 0,
+            recordVideo: true,
+            steps: [],
+          },
+        ]),
+      ),
+    );
+
+    await expect(readEvidence("session-1")).resolves.toEqual([
+      expect.objectContaining({ recordVideo: true, videoAvailable: false }),
+    ]);
   });
 });

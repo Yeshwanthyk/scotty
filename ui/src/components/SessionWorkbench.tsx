@@ -769,7 +769,7 @@ function EvidenceSection({
                 ) : null}
                 <span {...stylex.props(styles.link)}>
                   <FlaskConical aria-hidden {...stylex.props(styles.icon)} />
-                  {job.recordVideo ? "Evidence + recording" : "Browser evidence"}
+                  {job.videoAvailable ? "Evidence + recording" : "Browser evidence"}
                   <ChevronRight aria-hidden {...stylex.props(styles.icon)} />
                 </span>
               </a>
