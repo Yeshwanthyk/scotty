@@ -190,6 +190,25 @@ describe("container managed credential projection", () => {
       }),
   );
 
+  it("gives capture an ownership-neutral before-and-after workflow", () => {
+    assert.include(
+      sandboxAgentsInstructions,
+      "Capture cleans up only resources it created. It leaves the target app running.",
+    );
+    assert.include(sandboxAgentsInstructions, "App preview and capture are independent workflows");
+    assert.include(sandboxAgentsInstructions, "already-running target app's sandbox-local address");
+    assert.include(sandboxAgentsInstructions, "first-party tool call in the current turn");
+    assert.include(
+      sandboxAgentsInstructions,
+      "First-party tool results are not universally structured",
+    );
+    const captureInstruction = sandboxAgentsInstructions
+      .split("\n")
+      .find((line) => line.includes("reproducible browser flow"));
+    assert.ok(captureInstruction);
+    assert.notInclude(captureInstruction, "Hatch");
+  });
+
   it("directs PR creation through the repository-scoped GitHub REST API", () => {
     assert.include(
       sandboxAgentsInstructions,

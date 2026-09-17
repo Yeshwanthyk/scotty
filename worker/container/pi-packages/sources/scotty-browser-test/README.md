@@ -12,6 +12,11 @@ describing the intended task, such as `Checking the invoice checkout flow`. Pi a
 as the conversation tool label. It is optional for compatibility and removed before the job is
 submitted to the evidence API; older calls retain their default labels.
 
-For a Showcase, run the same viewport, steps, and assertions before a change with video disabled,
-then after the change with video enabled. Publish both exact `scotty-evidence:<jobId>` references in
-the same final update.
+App preview and capture are independent workflows. Browser evidence needs only an already-running
+target app's sandbox-local address and real render readiness. For a Showcase, capture the same
+viewport, steps, and assertions before a change with video disabled, then after the change with
+video enabled. Capture cleans up only resources it created. It leaves the target app running. If
+the result reports `port_conflict`, report the blocker without restarting or reconfiguring the
+target app. Publish each exact
+`scotty-evidence:<jobId>` marker returned by the first-party tool result at most once; the
+authenticated `summaryUrl` remains internal and is not rendered.
