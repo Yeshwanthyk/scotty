@@ -157,7 +157,7 @@ if [ "$1" = "-tf" ]; then
   exit 0
 fi
 printf 'payload'
-sleep 10
+while :; do :; done
 `,
     prepareOutput: async (output) => {
       await mkdir(path.join(output, member), { recursive: true, mode: 0o700 });
