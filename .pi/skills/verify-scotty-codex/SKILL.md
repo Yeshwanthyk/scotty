@@ -54,9 +54,11 @@ owned cleanup succeeds. Other recipes must record equally explicit action/result
 receipts to turns. A follow-up must reach its admitted turn with the requested completed tool.
 Native delegation requires native activity/child identity evidence, not the model claiming it ran.
 A stopped runtime fails the feature even if an earlier turn passed.
-Canonical tool output is capped at 1,200 bytes; this smoke proves that the requested large command
-ran and projected its bounded output, not the full native aggregate byte count. The protocol
-decoder test separately accepts a synthetic 211,769-byte aggregate; it is not live native proof.
+Scotty's canonical projection has no 1,200-byte tool-output cap, but a smoke proves only the content
+it observes; it does not prove unlimited native retention. Pi's upstream console producer still
+shortens individual values at 16 KiB, keeps the latest 500 messages and 100 active tools, and caps
+the snapshot response at 2 MiB. Its `truncated` flags must remain visible. A synthetic large-value
+decoder test proves decoder acceptance only; it is not live native proof.
 See [Coverage audit](features/coverage-audit.md) for unsupported and unproven paths.
 For Hatch or language support changes, also run the [Hatch and toolchains](features/hatch-toolchains.md)
 recipe and keep local image proof separate from deployed session proof.
