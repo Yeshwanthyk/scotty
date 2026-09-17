@@ -99,14 +99,23 @@ const sanitizeText = (value: string): string =>
     // oxlint-disable-next-line eslint/no-control-regex -- preserve transcript whitespace, remove unsafe controls
     .replaceAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu, "");
 
+const sanitizeJsonValue = (value: JsonValue): JsonValue => {
+  if (typeof value === "string") return sanitizeText(value);
+  if (Array.isArray(value)) return value.map(sanitizeJsonValue);
+  if (!isJsonObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nested]) => [sanitizeText(key), sanitizeJsonValue(nested)]),
+  );
+};
+
 const jsonText = (value: JsonValue | undefined, budget: DisplayBudget): string | undefined => {
   if (value === undefined) return undefined;
-  const encoded = JSON.stringify(value);
+  const encoded = JSON.stringify(sanitizeJsonValue(value));
   if (encoded === undefined) {
     budget.truncated = true;
     return undefined;
   }
-  return sanitizeText(encoded);
+  return encoded;
 };
 
 const stableIdentifier = (

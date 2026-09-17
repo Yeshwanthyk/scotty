@@ -157,6 +157,45 @@ describe("canonical conversation snapshot mapper", () => {
     assert.notInclude(encoded, "extensionSurface");
   });
 
+  it("sanitizes nested tool strings and keys before JSON encoding", () => {
+    const result = canonicalConversationSnapshotFromPi(
+      snapshot({
+        messages: [
+          { id: "user-1", role: "user", content: "Run it" },
+          {
+            id: "assistant-1",
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "tool-1",
+                name: "custom",
+                arguments: {
+                  "scotty-managed://key": {
+                    nested: "scotty-managed://handle\nKEEP_THIS_TEXT",
+                    "\u001b[31mcolored\u001b[0m": "safe",
+                  },
+                },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "tool-1",
+            content: { nested: "before\u001b]0;title\u0007after\u001b[32mgreen\u001b[0m" },
+          },
+        ],
+      }),
+    );
+
+    assert.ok(result);
+    assert.strictEqual(
+      result.turns[0]?.tools[0]?.invocation,
+      'custom({"[managed-handle]":{"nested":"[managed-handle]\\nKEEP_THIS_TEXT","colored":"safe"}})',
+    );
+    assert.strictEqual(result.turns[0]?.tools[0]?.output, '{"nested":"beforeaftergreen"}');
+  });
+
   it("applies contiguous streaming overlap and keeps active tools running", () => {
     const result = canonicalConversationSnapshotFromPi(
       snapshot({
