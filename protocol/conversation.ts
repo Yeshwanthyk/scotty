@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 
 export const CONVERSATION_WIRE_VERSION = 1 as const;
 export const CONVERSATION_MAX_TURNS = 100;
@@ -30,7 +30,11 @@ export const CanonicalConversationTransportSchema = Schema.Struct({
   baseSequence: SequenceSchema,
   sequence: SequenceSchema,
   sessionRevision: SequenceSchema,
-});
+}).check(
+  Schema.makeFilter(({ baseSequence, sequence }) => baseSequence <= sequence, {
+    expected: "a transport with baseSequence no greater than sequence",
+  }),
+);
 export type CanonicalConversationTransport = typeof CanonicalConversationTransportSchema.Type;
 
 export const CanonicalConversationToolSchema = Schema.Struct({
@@ -99,3 +103,13 @@ export const decodeCanonicalConversationSnapshot = Schema.decodeUnknownEffect(
   CanonicalConversationSnapshotSchema,
   { onExcessProperty: "error" },
 );
+
+const decodeCanonicalConversationSnapshotOption = Schema.decodeUnknownOption(
+  CanonicalConversationSnapshotSchema,
+  { onExcessProperty: "error" },
+);
+
+export const decodeCanonicalConversationSnapshotSync = (
+  value: unknown,
+): CanonicalConversationSnapshot | undefined =>
+  Option.getOrUndefined(decodeCanonicalConversationSnapshotOption(value));

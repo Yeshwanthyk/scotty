@@ -52,6 +52,27 @@ describe("conversation client boundary", () => {
     ).toBe(false);
   });
 
+  it("accepts a full producer snapshot without browser-only display limits", () => {
+    const tools = Array.from({ length: 53 }, (_, index) => ({
+      id: `tool-${index}`,
+      state: "completed" as const,
+      label: `Tool ${index} 😀`,
+      invocation: `invoke-${index}(${"界".repeat(2_000)})`,
+      output: `result-${index}-${"🚀".repeat(2_000)}`,
+    }));
+    const turns = Array.from({ length: 101 }, (_, index) => ({
+      id: `turn-${index}`,
+      state: "completed" as const,
+      user: `user-${index}-${"é".repeat(20_000)}`,
+      assistant: `assistant-${index}-${"🙂".repeat(20_000)}`,
+      tools: index === 100 ? tools : [],
+    }));
+    const fullSnapshot = { ...snapshot, turns };
+
+    expect(decodeConversationSnapshot(fullSnapshot)).toEqual(fullSnapshot);
+    expect(new TextEncoder().encode(turns[100]?.assistant).byteLength).toBeGreaterThan(16 * 1024);
+    expect(decodeConversationSnapshot(fullSnapshot)?.turns[100]?.tools).toHaveLength(53);
+  });
   it("strictly decodes the canonical conversation projection", () => {
     expect(decodeConversationSnapshot(snapshot)).toEqual(snapshot);
     expect(decodeConversationSnapshot({ ...snapshot, privateState: true })).toBeUndefined();
@@ -65,6 +86,15 @@ describe("conversation client boundary", () => {
       decodeConversationSnapshot({
         ...snapshot,
         turns: [{ ...snapshot.turns[0], elapsedSeconds: 7 * 24 * 60 * 60 + 1 }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("rejects invalid canonical transport ordering", () => {
+    expect(
+      decodeConversationSnapshot({
+        ...snapshot,
+        transport: { ...snapshot.transport, baseSequence: 8, sequence: 7 },
       }),
     ).toBeUndefined();
   });
