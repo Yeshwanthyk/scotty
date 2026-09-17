@@ -1,3 +1,4 @@
+import { readChunkedJson, writeChunkedJson, deleteChunkedJson } from "./chunked-storage";
 import type { CodexFollowUps } from "./codex-follow-ups";
 import { Data, Predicate, Result } from "effect";
 import {
@@ -170,7 +171,7 @@ export const readActorSessionRecord = async (
 ): Promise<unknown | undefined> => {
   const [storedAuthority, storedMetadata, journalTail] = await Promise.all([
     transaction.get<unknown>(SESSION_ACTOR_AUTHORITY_KEY),
-    transaction.get<unknown>(SESSION_ACTOR_METADATA_KEY),
+    readChunkedJson(transaction, SESSION_ACTOR_METADATA_KEY),
     transaction.get<{ readonly timestamp?: unknown }>(SESSION_ACTOR_JOURNAL_TAIL_KEY),
   ]);
   if (storedAuthority === undefined || storedMetadata === undefined) return undefined;
@@ -303,22 +304,28 @@ export const durableObjectSessionActorMetadataStorage = (
   storage: DurableObjectStorage,
   controlGate: SessionControlGate = makeSessionControlGate(),
 ): MetadataStoragePort => ({
-  read: () => storage.get<unknown>(SESSION_ACTOR_METADATA_KEY),
+  read: () =>
+    storage.transaction((transaction) => readChunkedJson(transaction, SESSION_ACTOR_METADATA_KEY)),
   transaction: (decide) =>
     controlGate.run(() =>
       storage.transaction(async (transaction) => {
-        const mutation = decide(await transaction.get<unknown>(SESSION_ACTOR_METADATA_KEY));
+        const mutation = decide(await readChunkedJson(transaction, SESSION_ACTOR_METADATA_KEY));
         if (Predicate.isTagged(mutation, "Put"))
-          await transaction.put(SESSION_ACTOR_METADATA_KEY, mutation.value);
+          await writeChunkedJson(transaction, SESSION_ACTOR_METADATA_KEY, mutation.value);
         if (Predicate.isTagged(mutation, "Delete"))
-          await transaction.delete(SESSION_ACTOR_METADATA_KEY);
+          await deleteChunkedJson(transaction, SESSION_ACTOR_METADATA_KEY);
         return mutation.outcome;
       }),
     ),
 });
 
 export const codexFollowUpStorage = (storage: DurableObjectStorage) => ({
-  clear: () => storage.delete("scotty:codex-follow-ups").then(() => undefined),
-  read: () => storage.get<unknown>("scotty:codex-follow-ups"),
-  write: (queue: CodexFollowUps) => storage.put("scotty:codex-follow-ups", queue),
+  clear: () =>
+    storage.transaction((transaction) => deleteChunkedJson(transaction, "scotty:codex-follow-ups")),
+  read: () =>
+    storage.transaction((transaction) => readChunkedJson(transaction, "scotty:codex-follow-ups")),
+  write: (queue: CodexFollowUps) =>
+    storage.transaction((transaction) =>
+      writeChunkedJson(transaction, "scotty:codex-follow-ups", queue),
+    ),
 });

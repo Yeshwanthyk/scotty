@@ -1,3 +1,4 @@
+import type { PiConsoleImage } from "../../../protocol/pi-console";
 import {
   commandIntentDigest,
   PI_CONSOLE_MAX_RESPONSE_BYTES,
@@ -86,8 +87,9 @@ export async function steerSessionControl(
   message: string,
   idempotencyKey?: string,
   deliverAs?: "followUp",
+  images?: ReadonlyArray<PiConsoleImage>,
 ): Promise<Response> {
-  const codex = await target.steerScottyCodexSession(message, idempotencyKey, deliverAs);
+  const codex = await target.steerScottyCodexSession(message, idempotencyKey, deliverAs, images);
   if (codex !== null) return codex;
   if (deliverAs !== undefined)
     return scottyErrorResponse(
@@ -97,7 +99,7 @@ export async function steerSessionControl(
       }),
     );
   parseSteerInput({ message });
-  return steerPassiveSession(target, id, message);
+  return steerPassiveSession(target, id, message, images);
 }
 
 export async function interruptSessionControl(
@@ -280,6 +282,7 @@ export async function steerPassiveSession(
   target: PassiveSessionTarget,
   id: string,
   message: string,
+  images?: ReadonlyArray<PiConsoleImage>,
 ): Promise<Response> {
   const snapshotResult = await Promise.resolve()
     .then(() =>
@@ -313,7 +316,12 @@ export async function steerPassiveSession(
   if (Option.isNone(snapshot)) return unavailableSteer(id);
 
   const commandId = crypto.randomUUID();
-  const intent = { type: "prompt" as const, message, streamingBehavior: "steer" as const };
+  const intent = {
+    type: "prompt" as const,
+    message,
+    streamingBehavior: "steer" as const,
+    ...(images === undefined ? {} : { images }),
+  };
   const command = {
     epoch: snapshot.value.epoch,
     commandId,

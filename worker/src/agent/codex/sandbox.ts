@@ -1,3 +1,4 @@
+import type { PiConsoleImage } from "../../../../protocol/pi-console";
 import { CodexPersistenceIdentity } from "./persistence-format";
 import { SessionConfigurationSchema } from "../../session-actor/configuration";
 import { Clock, Data, Effect, Option, Result, Schedule, Schema } from "effect";
@@ -233,6 +234,7 @@ export const admitCodexSandbox = Effect.fnUntraced(function* (
   threadId: string,
   text: string,
   reconcile: boolean,
+  images?: ReadonlyArray<PiConsoleImage>,
 ) {
   const runtime = yield* SandboxRuntime;
   const before = yield* readCodexSandbox(identity, threadId);
@@ -247,7 +249,7 @@ export const admitCodexSandbox = Effect.fnUntraced(function* (
         "POST",
         undefined,
         headers(identity),
-        JSON.stringify({ threadId, text }),
+        JSON.stringify({ threadId, text, ...(images === undefined ? {} : { images }) }),
       )
       .pipe(
         Effect.timeoutOrElse({
@@ -271,6 +273,7 @@ export const sendCodexSandboxMessage = Effect.fnUntraced(function* (
   text: string,
   clientUserMessageId?: string,
   delivery: "auto" | "followUp" | "reconcile" = "auto",
+  images?: ReadonlyArray<PiConsoleImage>,
 ) {
   const identity = yield* decodeIdentity(input).pipe(
     Effect.mapError(() => failure("Codex identity is invalid")),
@@ -310,7 +313,7 @@ export const sendCodexSandboxMessage = Effect.fnUntraced(function* (
       "POST",
       undefined,
       headers(identity),
-      JSON.stringify(body),
+      JSON.stringify({ ...body, images }),
     )
     .pipe(
       Effect.timeoutOrElse({

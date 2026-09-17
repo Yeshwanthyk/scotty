@@ -627,7 +627,32 @@ const admitInitialPrompt = async () => {
   if (!hasInitialPrompt) return;
   const initialPrompt = await readFile(initialPromptPath, "utf8");
   await rename(initialPromptPath, consumedPromptPath);
-  const promptResponse = await sendRpc({ type: "prompt", message: initialPrompt });
+  const imagesPath = resolve(piHome, "initial-images.json");
+  const images = await readFile(imagesPath, "utf8").then(
+    (text) => JSON.parse(text),
+    (error) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    },
+  );
+  const intent = normalizeCommand(
+    {
+      epoch,
+      commandId: randomUUID(),
+      expectedSessionRevision: 0,
+      intent: {
+        type: "prompt",
+        message: initialPrompt,
+        ...(images === undefined ? {} : { images }),
+      },
+    },
+    epoch,
+  );
+  if (images !== undefined && !intent.ok) throw new Error("Invalid initial prompt images");
+  const promptResponse = await sendRpc(
+    images === undefined ? { type: "prompt", message: initialPrompt } : intent.command,
+  );
+  if (images !== undefined) await unlink(imagesPath);
   if (promptResponse.success === false) throw new Error("Pi rejected the initial prompt");
 };
 

@@ -1,3 +1,4 @@
+import { PiConsoleImagesSchema } from "../../../protocol/pi-console";
 import { AgentSelectionSchema } from "../../../protocol/agent-selection";
 import { SessionConfigurationSchema } from "./configuration";
 import { Match, Predicate, Result, Schema } from "effect";
@@ -46,6 +47,7 @@ const CreatePrivateInputSchema = Schema.Struct({
   attempt: SafeReferenceSchema,
   payload: CreatePayloadReferenceSchema,
   initialPrompt: InitialPromptSchema,
+  images: Schema.optionalKey(PiConsoleImagesSchema),
 });
 
 const CreateObservationFence = {
@@ -84,6 +86,7 @@ const CreateResourceObservationsSchema = Schema.Struct({
 const CodexControlMetadataSchema = Schema.Struct({
   token: Sha256DigestSchema,
   initialPrompt: InitialPromptSchema,
+  images: Schema.optionalKey(PiConsoleImagesSchema),
 });
 export const SessionActorMetadataSchema = Schema.Struct({
   selection: Schema.optionalKey(AgentSelectionSchema),
@@ -115,6 +118,7 @@ export const SessionActorMetadataInputSchema = Schema.Struct({
   createIdempotency: Schema.NullOr(CreateIdempotencyDigestMetadataSchema),
   payload: CreatePayloadReferenceSchema,
   initialPrompt: InitialPromptSchema,
+  images: Schema.optionalKey(PiConsoleImagesSchema),
 });
 export type SessionActorMetadataInput = typeof SessionActorMetadataInputSchema.Type;
 
@@ -270,6 +274,7 @@ export const makeSessionActorMetadata = (
       attempt: create.attempt,
       payload,
       initialPrompt: input.initialPrompt,
+      ...(input.images === undefined ? {} : { images: input.images }),
     },
     createObservations: { workspace: null, bundle: null, credentialGrants: null },
   };
@@ -364,7 +369,9 @@ const privateInputChangeIsAllowed = (
   return (
     current.privateCreateInput.attempt === next.privateCreateInput.attempt &&
     current.privateCreateInput.payload.reference === next.privateCreateInput.payload.reference &&
-    current.privateCreateInput.initialPrompt === next.privateCreateInput.initialPrompt
+    current.privateCreateInput.initialPrompt === next.privateCreateInput.initialPrompt &&
+    JSON.stringify(current.privateCreateInput.images) ===
+      JSON.stringify(next.privateCreateInput.images)
   );
 };
 

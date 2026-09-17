@@ -2,6 +2,8 @@ import * as stylex from "@stylexjs/stylex";
 import { useNavigate } from "@tanstack/react-router";
 import { Cloud, LoaderCircle } from "lucide-react";
 import { useRef, useState } from "react";
+import { ImageAttachments, useImageAttachments } from "./ImageAttachments";
+import { IMAGE_ONLY_PROMPT } from "../data/image-attachments";
 import { Button } from "./Button";
 import {
   buildCreateSessionPayload,
@@ -161,6 +163,7 @@ const styles = stylex.create({
 });
 
 interface DraftFieldProps {
+  readonly disabled?: boolean;
   readonly id: string;
   readonly label: string;
   readonly value: string;
@@ -170,7 +173,7 @@ interface DraftFieldProps {
   readonly onChange: (value: string) => void;
 }
 
-function DraftField({ error, field, hint, id, label, onChange, value }: DraftFieldProps) {
+function DraftField({ disabled, error, field, hint, id, label, onChange, value }: DraftFieldProps) {
   const errorId = `${id}-error`;
   return (
     <div {...stylex.props(styles.field)}>
@@ -178,6 +181,7 @@ function DraftField({ error, field, hint, id, label, onChange, value }: DraftFie
         {label}
       </label>
       <input
+        disabled={disabled}
         id={id}
         name={field === "repository" ? "repo" : field}
         value={value}
@@ -211,6 +215,12 @@ export function CreateSessionForm() {
   const submittingRef = useRef(false);
   const idempotencyKeyRef = useRef<string | undefined>(undefined);
 
+  const attachments = useImageAttachments(submitting, () => {
+    idempotencyKeyRef.current = undefined;
+    setFieldError(undefined);
+    setFailure(undefined);
+  });
+
   const updateDraft = (field: keyof CreateSessionDraft, value: string) => {
     idempotencyKeyRef.current = undefined;
     setDraft((current) => ({ ...current, [field]: value }));
@@ -220,8 +230,11 @@ export function CreateSessionForm() {
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (submittingRef.current) return;
-    const parsed = buildCreateSessionPayload(draft);
+    if (submittingRef.current || attachments.reading) return;
+    const parsed = buildCreateSessionPayload({
+      ...draft,
+      prompt: draft.prompt.trim() || (attachments.items.length ? IMAGE_ONLY_PROMPT : ""),
+    });
     if (!parsed.ok) {
       setFieldError({ field: parsed.field, message: parsed.message });
       setFailure(undefined);
@@ -234,7 +247,10 @@ export function CreateSessionForm() {
     try {
       const idempotencyKey = idempotencyKeyRef.current ?? createSessionIdempotencyKey();
       idempotencyKeyRef.current = idempotencyKey;
-      const result = await createSession(parsed.payload, { idempotencyKey });
+      const result = await createSession(
+        { ...parsed.payload, ...(attachments.images.length ? { images: attachments.images } : {}) },
+        { idempotencyKey },
+      );
       if (!result.ok) {
         setFailure(result.failure);
         return;
@@ -271,6 +287,7 @@ export function CreateSessionForm() {
         >
           <div {...stylex.props(styles.fieldGrid)}>
             <DraftField
+              disabled={submitting}
               id="session-title"
               label="Title"
               field="title"
@@ -280,6 +297,7 @@ export function CreateSessionForm() {
               onChange={(value) => updateDraft("title", value)}
             />
             <DraftField
+              disabled={submitting}
               id="session-repository"
               label="Repository"
               field="repository"
@@ -305,11 +323,12 @@ export function CreateSessionForm() {
             </div>
           </div>
 
-          <div {...stylex.props(styles.field)}>
+          <div {...attachments.handlers} {...stylex.props(styles.field)}>
             <label htmlFor="session-prompt" {...stylex.props(styles.label)}>
               Prompt
             </label>
             <textarea
+              disabled={submitting}
               id="session-prompt"
               name="prompt"
               value={draft.prompt}
@@ -319,6 +338,7 @@ export function CreateSessionForm() {
               aria-describedby={errorFor("prompt") ? "session-prompt-error" : undefined}
               {...stylex.props(styles.control, styles.textarea)}
             />
+            <ImageAttachments attachments={attachments} />
             {errorFor("prompt") ? (
               <p id="session-prompt-error" {...stylex.props(styles.fieldError)}>
                 {errorFor("prompt")}
@@ -331,6 +351,7 @@ export function CreateSessionForm() {
               Time limit <span {...stylex.props(styles.hint)}>(optional)</span>
             </label>
             <select
+              disabled={submitting}
               id="session-cap"
               name="hardCapSeconds"
               value={draft.hardCapSeconds ?? ""}
@@ -376,7 +397,7 @@ export function CreateSessionForm() {
             <Button
               type="submit"
               variant="primary"
-              disabled={submitting}
+              disabled={submitting || attachments.reading}
               {...stylex.props(styles.actionButton)}
             >
               {submitting ? <LoaderCircle aria-hidden {...stylex.props(styles.busyIcon)} /> : null}

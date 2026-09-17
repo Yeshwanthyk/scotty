@@ -1,3 +1,5 @@
+import { ImageAttachments, useImageAttachments } from "./ImageAttachments";
+import { IMAGE_ONLY_PROMPT } from "../data/image-attachments";
 import * as stylex from "@stylexjs/stylex";
 import { CircleAlert, RefreshCw, Send, Square, Wifi, WifiOff } from "lucide-react";
 import {
@@ -177,6 +179,7 @@ const styles = stylex.create({
         "0 0 0 3px rgb(126 217 232 / 0.1), 0 1px 0 rgb(255 255 255 / 0.05) inset, 0 12px 32px rgb(0 0 0 / 0.26)",
     },
   },
+  attachmentArea: { width: "100%", minWidth: 0, gridColumn: "1 / -1", gridRow: 2 },
   input: {
     width: "100%",
     minHeight: "32px",
@@ -626,6 +629,38 @@ const queueDeliveryIntent = (
 const canIssueSessionCommand = (enabled: boolean, admissionAvailable: boolean): boolean =>
   enabled && admissionAvailable;
 
+type QueuedImageRequest = { text: string; attachmentKey: string; id: string };
+
+const isQueuedRetry = (
+  request: QueuedImageRequest | undefined,
+  draft: string,
+  attachmentKey: string,
+): boolean =>
+  request !== undefined &&
+  request.text === (draft.trim() || IMAGE_ONLY_PROMPT) &&
+  request.attachmentKey === attachmentKey;
+
+const composerAvailability = (
+  enabled: boolean,
+  admissionAvailable: boolean,
+  deliveryBusy: boolean,
+  reading: boolean,
+  hasContent: boolean,
+  active: boolean,
+  activeTurnId: string | undefined,
+  sessionRevision: number | undefined,
+) => ({
+  canSubmit:
+    canIssueSessionCommand(enabled, admissionAvailable) && hasContent && !deliveryBusy && !reading,
+  canInterrupt:
+    canIssueSessionCommand(enabled, admissionAvailable) &&
+    active &&
+    activeTurnId !== undefined &&
+    sessionRevision !== undefined &&
+    !deliveryBusy &&
+    !reading,
+});
+
 function ConversationComposer({
   active,
   activeTurnId,
@@ -651,40 +686,49 @@ function ConversationComposer({
 }) {
   const [draft, setDraft] = useState("");
   const [queueAfterTurn, setQueueAfterTurn] = useState(false);
-  const queuedRequest = useRef<{ text: string; id: string } | undefined>(undefined);
+  const queuedRequest = useRef<QueuedImageRequest | undefined>(undefined);
   const [delivery, setDelivery] = useState<DeliveryState>({ kind: "idle" });
   const deliveryBusy = delivery.kind === "submitting" || delivery.kind === "interrupting";
-  const canSubmit =
-    canIssueSessionCommand(enabled, admissionAvailable) && draft.trim().length > 0 && !deliveryBusy;
-  const canInterrupt =
-    canIssueSessionCommand(enabled, admissionAvailable) &&
-    active &&
-    activeTurnId !== undefined &&
-    sessionRevision !== undefined &&
-    !deliveryBusy;
+  const attachments = useImageAttachments(!enabled || deliveryBusy, () => {
+    queuedRequest.current = undefined;
+    setDelivery({ kind: "idle" });
+  });
+  const attachmentKey = attachments.items.map((item) => item.id).join(",");
+  const { canSubmit, canInterrupt } = composerAvailability(
+    enabled,
+    admissionAvailable,
+    deliveryBusy,
+    attachments.reading,
+    Boolean(draft.trim().length + attachments.items.length),
+    active,
+    activeTurnId,
+    sessionRevision,
+  );
   const supportsQueue = followUpAvailable && active;
-  const retryingQueued = queuedRequest.current?.text === draft.trim();
+  const retryingQueued = isQueuedRetry(queuedRequest.current, draft, attachmentKey);
   const followUp = queueDeliveryIntent(retryingQueued, supportsQueue, queueAfterTurn);
   const sendLabel = composerSendLabel(followUp, active);
 
   const submit = async (event?: FormEvent): Promise<void> => {
     event?.preventDefault();
     if (!canSubmit) return;
-    const message = draft.trim();
+    const message = draft.trim() || IMAGE_ONLY_PROMPT;
     setDelivery({ kind: "submitting" });
     if (preview) {
       setDelivery({ kind: "accepted", message: "Preview only" });
       return;
     }
     if (followUp && queuedRequest.current?.text !== message)
-      queuedRequest.current = { text: message, id: crypto.randomUUID() };
-    const result = await steerConversation(
-      sessionId,
-      message,
-      followUp ? { deliverAs: "followUp", clientUserMessageId: queuedRequest.current?.id } : {},
-    );
+      queuedRequest.current = { text: message, attachmentKey, id: crypto.randomUUID() };
+    const result = await steerConversation(sessionId, message, {
+      images: attachments.images,
+      ...(followUp
+        ? { deliverAs: "followUp", clientUserMessageId: queuedRequest.current?.id }
+        : {}),
+    });
     if (result.ok) {
       setDraft("");
+      attachments.clear();
       queuedRequest.current = undefined;
       setDelivery({
         kind: "accepted",
@@ -721,12 +765,16 @@ function ConversationComposer({
   };
 
   return (
-    <form onSubmit={(event) => void submit(event)} {...stylex.props(styles.composer)}>
+    <form
+      {...attachments.handlers}
+      onSubmit={(event) => void submit(event)}
+      {...stylex.props(styles.composer)}
+    >
       <ComposerQueue queue={queue} />
       <div {...stylex.props(styles.composerControl)}>
         <textarea
           aria-label="Message this session"
-          disabled={!enabled}
+          disabled={!enabled || deliveryBusy}
           onChange={(event) => {
             setDraft(event.currentTarget.value);
             if (delivery.kind !== "idle") setDelivery({ kind: "idle" });
@@ -737,6 +785,9 @@ function ConversationComposer({
           value={draft}
           {...stylex.props(styles.input)}
         />
+        <div data-design="composer-attachments" {...stylex.props(styles.attachmentArea)}>
+          <ImageAttachments attachments={attachments} />
+        </div>
         {active ? (
           <Button
             aria-label="Stop"
@@ -759,7 +810,7 @@ function ConversationComposer({
           <label>
             <input
               type="checkbox"
-              disabled={retryingQueued}
+              disabled={retryingQueued || deliveryBusy}
               checked={queueAfterTurn}
               onChange={(event) => setQueueAfterTurn(event.currentTarget.checked)}
             />{" "}

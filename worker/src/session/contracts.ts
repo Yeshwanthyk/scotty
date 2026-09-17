@@ -1,3 +1,4 @@
+import { PiConsoleImagesSchema } from "../../../protocol/pi-console";
 import { AgentSelectionSchema, decodeAgentSelection } from "../../../protocol/agent-selection";
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Effect, Option, Result, Schema } from "effect";
@@ -63,6 +64,7 @@ export const ContainerSessionRequestSchema = Schema.Union([
     action: Schema.Literal("steer"),
     targetId: SessionIdSchema,
     message: ContainerSteerMessageSchema,
+    images: Schema.optionalKey(PiConsoleImagesSchema),
     deliverAs: Schema.optionalKey(Schema.Literal("followUp")),
     idempotencyKey: Schema.optionalKey(IdempotencyKeySchema),
   }),
@@ -301,6 +303,7 @@ export const CreateSessionInputSchema = Schema.Struct({
   selection: Schema.optionalKey(AgentSelectionSchema),
   title: Schema.String,
   prompt: Schema.String,
+  images: Schema.optionalKey(PiConsoleImagesSchema),
   provider: ProviderSchema,
   runner: Schema.optionalKey(Schema.String),
   repo: Schema.String,
@@ -342,6 +345,7 @@ export async function createSessionIdempotency(
             ? [input.title, input.prompt, input.provider, input.repo, true, input.hardCapSeconds]
             : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds]),
         ...(input.selection === undefined ? [] : [input.selection]),
+        ...(input.images === undefined || input.images.length === 0 ? [] : [input.images]),
       ]),
     ),
   ]);
@@ -497,6 +501,7 @@ const RawCreateSessionInputSchema = Schema.Struct({
   effort: Schema.optionalKey(Schema.Unknown),
   title: Schema.optionalKey(Schema.Unknown),
   prompt: Schema.optionalKey(Schema.Unknown),
+  images: Schema.optionalKey(PiConsoleImagesSchema),
   provider: Schema.optionalKey(Schema.Unknown),
   runner: Schema.optionalKey(Schema.Unknown),
   repo: Schema.optionalKey(Schema.Unknown),
@@ -550,6 +555,7 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
   return {
     title,
     prompt,
+    ...(decoded.value.images === undefined ? {} : { images: decoded.value.images }),
     provider,
     ...(decoded.value.agent === undefined && Object.keys(selection.success).length === 1
       ? {}

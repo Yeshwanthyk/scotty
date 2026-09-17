@@ -1,3 +1,4 @@
+import type { PiConsoleImage } from "../../../protocol/pi-console";
 import { codexFollowUpStorage } from "./store";
 import { resolveSessionConfiguration } from "../session-actor/configuration";
 import { decodeCloudSettingsSnapshot } from "../../../protocol/cloud-settings";
@@ -3421,6 +3422,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 byte.toString(16).padStart(2, "0"),
               ).join(""),
               initialPrompt: input.prompt,
+              ...(input.images === undefined ? {} : { images: input.images }),
             },
           }
         : {}),
@@ -3436,6 +3438,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       branch: `scotty/${id}`,
       createRepositoryIfMissing: input.newRepo,
       initialPrompt: input.prompt,
+      ...(input.images === undefined ? {} : { images: input.images }),
       payloadReference: crypto.randomUUID(),
       ...(idempotency === undefined ? {} : { idempotency }),
       correlationId: crypto.randomUUID(),
@@ -5082,6 +5085,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       decoded.value.message,
       decoded.value.idempotencyKey,
       decoded.value.deliverAs,
+      decoded.value.images,
     );
   }
 
@@ -5908,6 +5912,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             item.text,
             item.id,
             reconcileOnly ? "reconcile" : "followUp",
+            item.images,
           );
           const currentIncarnation = yield* runtime.getContainerIncarnationId();
           const current = (yield* (yield* ActorStore).read).authority;
@@ -5924,6 +5929,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     message: string,
     clientUserMessageId?: string,
     deliverAs?: "followUp",
+    images?: ReadonlyArray<PiConsoleImage>,
   ): Promise<Response | null> {
     let sessionId: string | undefined;
     const result = await this.sessionControlGate.run(() =>
@@ -5948,14 +5954,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
               if (clientUserMessageId === undefined)
                 return yield* badRequest("Queued follow-up requires an idempotency-key");
               const queue = yield* this.readCodexFollowUpsProgram();
+              const imageDigest = !images?.length
+                ? undefined
+                : yield* Effect.tryPromise({
+                    try: () => sha256Hex(JSON.stringify(images)),
+                    catch: () =>
+                      this.upstreamError("Image identity could not be computed", undefined),
+                  });
               const result = enqueueCodexFollowUp(queue, {
                 id: clientUserMessageId,
                 text: message,
+                ...(imageDigest === undefined ? {} : { images, imageDigest }),
               });
               if (result.status === "conflict")
-                return yield* conflict("Follow-up ID already has different text");
+                return yield* conflict("Follow-up ID already has different content");
               if (result.status === "full")
-                return yield* conflict("Codex follow-up admission limit reached");
+                return yield* conflict(
+                  "The follow-up queue is full. Wait for queued messages to send before adding more images.",
+                );
               yield* this.scheduleCodexFollowUpsProgram();
               yield* hostEffect("codexQueue", () => this.codexFollowUps.write(result.queue));
               return Response.json(
@@ -6006,6 +6022,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
               readiness.supervisor.supervisorEpoch,
               message,
               clientUserMessageId,
+              "auto",
+              images,
             ).pipe(
               Effect.mapError((error) =>
                 Predicate.isTagged(error, "CodexMessageAdmissionUnknown")

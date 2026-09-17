@@ -1,3 +1,4 @@
+import { PiConsoleImagesSchema } from "./pi-console";
 import { Schema } from "effect";
 
 const Identifier = Schema.NonEmptyString;
@@ -79,6 +80,7 @@ export type SessionSteerResponse = typeof SessionSteerResponseSchema.Type;
 export const decodeSessionMessageInput = Schema.decodeUnknownOption(
   Schema.Struct({
     message: Schema.Unknown,
+    images: Schema.optionalKey(PiConsoleImagesSchema),
     deliverAs: Schema.optionalKey(Schema.Literal("followUp")),
   }),
   { onExcessProperty: "error" },
