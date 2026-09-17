@@ -481,7 +481,11 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
   const rail = buildSessionRail(data.projections, { selectedActor: session });
   return (
     <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>
-      <div data-session-source={fixture ? "fixture" : "actor"} {...stylex.props(styles.page)}>
+      <div
+        data-design="session-page"
+        data-session-source={fixture ? "fixture" : "actor"}
+        {...stylex.props(styles.page)}
+      >
         <div data-design="workspace" {...stylex.props(styles.workspace)}>
           <header data-design="session-header" {...stylex.props(styles.headingRow)}>
             <div data-design="session-title" {...stylex.props(styles.titleBlock)}>
@@ -508,6 +512,8 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
                 <dd>{formatDuration(session.times.capRemainingSeconds)}</dd>
                 <dt>Status</dt>
                 <dd>{presentation.operation?.label ?? presentation.railLabel}</dd>
+                <dt>Data source</dt>
+                <dd>{fixture ? "Local preview" : "Live session"}</dd>
                 <dt>Agent, model, and thinking</dt>
                 <dd>{configuredSelectionLabel(session.selection)}</dd>
               </dl>

@@ -34,7 +34,10 @@ export function SessionMenu({ children }: { readonly children: ReactNode }) {
       <summary ref={trigger} aria-label="Session details and actions">
         <MoreHorizontal aria-hidden size={18} />
       </summary>
-      <div className="session-menu-panel">{children}</div>
+      <div className="session-menu-panel">
+        <div id="session-workbench-actions" />
+        {children}
+      </div>
     </details>
   );
 }

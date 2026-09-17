@@ -111,7 +111,7 @@ export function AppShell({
         />
       ) : null}
       <main data-scrollbar="quiet" {...stylex.props(styles.main)}>
-        <div {...stylex.props(styles.mobileBar)}>
+        <div data-design="mobile-navigation" {...stylex.props(styles.mobileBar)}>
           <button
             type="button"
             aria-controls="session-navigation"

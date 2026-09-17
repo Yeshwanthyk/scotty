@@ -3,18 +3,17 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import * as stylex from "@stylexjs/stylex";
 import {
+  ArrowLeft,
   Check,
   ChevronRight,
   ExternalLink,
-  FileDiff,
   FlaskConical,
   LoaderCircle,
-  PanelRight,
   RefreshCw,
   TerminalSquare,
-  X,
 } from "lucide-react";
 import { type ReactNode, lazy, Suspense, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { readConversation, type ConversationSnapshot } from "../data/conversation-client";
 import {
   type ChangedFile,
@@ -39,69 +38,17 @@ const styles = stylex.create({
     minHeight: 0,
     position: "relative",
     display: "grid",
-    gridTemplateRows: "38px minmax(0, 1fr)",
+    gridTemplateRows: "minmax(0, 1fr)",
     overflow: "hidden",
-    "@media (max-width: 760px)": { gridTemplateRows: "40px minmax(0, 1fr)" },
   },
-  toolbar: {
-    minWidth: 0,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.md,
-    paddingInline: "clamp(0px, 1vw, 12px)",
+  sessionToolsMenu: {
+    marginBottom: spacing.sm,
+    paddingBottom: spacing.sm,
+    display: "grid",
+    gap: "2px",
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
-    borderBottomColor: colors.lineSoft,
-    "@media (max-width: 760px)": { gap: spacing.xs },
-  },
-  toolbarLabel: {
-    color: colors.quiet,
-    fontSize: "11px",
-    fontWeight: 620,
-    whiteSpace: "nowrap",
-    "@media (max-width: 760px)": { fontSize: "10px" },
-    "@media (max-width: 360px)": { display: "none" },
-  },
-  toolbarActions: {
-    minWidth: 0,
-    display: "flex",
-    alignItems: "center",
-    gap: "2px",
-    "@media (max-width: 760px)": { display: "none" },
-  },
-  mobileTools: {
-    position: "relative",
-    "@media (min-width: 761px)": { display: "none" },
-  },
-  mobileToolsSummary: {
-    minHeight: "36px",
-    paddingInline: "8px",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "6px",
-    borderRadius: "7px",
-    color: colors.muted,
-    fontSize: "11px",
-    fontWeight: 620,
-    cursor: "pointer",
-    listStyle: "none",
-    "::-webkit-details-marker": { display: "none" },
-  },
-  mobileToolsMenu: {
-    position: "absolute",
-    zIndex: 20,
-    top: "calc(100% + 4px)",
-    right: 0,
-    width: "150px",
-    padding: spacing.xs,
-    display: "grid",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: colors.line,
-    borderRadius: "8px",
-    backgroundColor: colors.panelRaised,
-    boxShadow: "0 8px 24px rgb(0 0 0 / 35%)",
+    borderBottomColor: colors.line,
   },
   toolButton: {
     minHeight: "30px",
@@ -118,69 +65,69 @@ const styles = stylex.create({
     transitionProperty: "background-color, color",
     transitionDuration: motion.fast,
     ":hover": { backgroundColor: "rgb(255 255 255 / 0.05)", color: colors.ink },
-    "@media (max-width: 760px)": { minHeight: "36px", paddingInline: "6px" },
+    ":focus-visible": { outline: `2px solid ${colors.focus}`, outlineOffset: "2px" },
+    ":disabled": { cursor: "not-allowed", opacity: 0.42 },
+    "@media (max-width: 760px)": { minHeight: "44px", paddingInline: "8px" },
     "@media (max-width: 360px)": { paddingInline: "4px" },
   },
-  toolButtonActive: { backgroundColor: colors.panelRaised, color: colors.ink },
+  toolButtonActive: { color: colors.ink, fontWeight: 650 },
   icon: { width: "13px", height: "13px", strokeWidth: 1.8 },
   stage: { minHeight: 0, display: "grid", overflow: "hidden" },
-  stageWithSummary: {
-    gridTemplateColumns: "minmax(0, 1fr) minmax(300px, 380px)",
-    "@media (max-width: 900px)": { gridTemplateColumns: "1fr" },
-  },
   main: { minWidth: 0, minHeight: 0, overflow: "hidden" },
-  panel: {
-    boxSizing: "border-box",
-    width: "100%",
-    maxWidth: "100%",
+  toolView: {
+    height: "100%",
     minWidth: 0,
     minHeight: 0,
-    overflowX: "hidden",
-    overflowY: "auto",
-    padding: spacing.xl,
-    borderLeftWidth: "1px",
-    borderLeftStyle: "solid",
-    borderLeftColor: colors.line,
+    display: "grid",
+    gridTemplateRows: "auto minmax(0, 1fr)",
     backgroundColor: colors.shell,
     animationName: stylex.keyframes({
-      from: { opacity: 0, transform: "translateX(10px)" },
-      to: { opacity: 1, transform: "translateX(0)" },
+      from: { opacity: 0 },
+      to: { opacity: 1 },
     }),
-    animationDuration: motion.standard,
+    animationDuration: motion.fast,
     animationTimingFunction: motion.easeOut,
-    "@media (max-width: 900px)": {
-      position: "fixed",
-      zIndex: 40,
-      inset: 0,
-      borderLeftWidth: 0,
-    },
-    "@media (max-width: 760px)": { padding: spacing.lg },
   },
-  panelHeader: {
-    position: "sticky",
-    zIndex: 1,
-    top: 0,
+  toolViewHeader: {
+    minHeight: "44px",
+    paddingInline: spacing.md,
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
     gap: spacing.md,
-    marginBottom: spacing.xl,
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colors.lineSoft,
     backgroundColor: colors.shell,
+    "@media (max-width: 760px)": { minHeight: "48px" },
   },
-  panelTitle: { margin: 0, color: colors.ink, fontSize: "15px", fontWeight: 680 },
-  close: {
-    width: "30px",
-    height: "30px",
-    display: "grid",
-    placeItems: "center",
+  back: {
+    minHeight: "36px",
+    paddingInline: "4px",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: spacing.sm,
     borderWidth: 0,
-    borderRadius: "7px",
+    borderRadius: "4px",
     backgroundColor: "transparent",
-    color: colors.quiet,
+    color: colors.muted,
+    fontFamily: "inherit",
+    fontSize: "12px",
+    fontWeight: 500,
+    order: -1,
     cursor: "pointer",
     ":hover": { backgroundColor: colors.panelRaised, color: colors.ink },
-    "@media (max-width: 760px)": { width: "44px", height: "44px" },
+    ":focus-visible": { outline: `2px solid ${colors.focus}`, outlineOffset: "2px" },
+    "@media (max-width: 760px)": { minHeight: "44px" },
   },
+  panelTitle: {
+    margin: 0,
+    color: colors.ink,
+    fontSize: "13px",
+    fontWeight: 600,
+    outline: "none",
+  },
+  toolViewBody: { minWidth: 0, minHeight: 0, overflow: "hidden" },
+  toolViewBodyScroll: { overflowX: "hidden", overflowY: "auto", padding: spacing.xl },
   summaryStack: { minWidth: 0, display: "grid", gap: spacing.xl },
   section: {
     minWidth: 0,
@@ -268,11 +215,11 @@ const styles = stylex.create({
     height: "100%",
     minHeight: 0,
     display: "grid",
-    gridTemplateColumns: "280px minmax(0, 1fr)",
+    gridTemplateColumns: "minmax(160px, 220px) minmax(0, 1fr)",
     overflow: "hidden",
     "@media (max-width: 760px)": {
       gridTemplateColumns: "1fr",
-      gridTemplateRows: "minmax(120px, 38%) minmax(0, 1fr)",
+      gridTemplateRows: "auto minmax(0, 1fr)",
     },
   },
   fileList: {
@@ -283,6 +230,9 @@ const styles = stylex.create({
     borderRightStyle: "solid",
     borderRightColor: colors.lineSoft,
     "@media (max-width: 760px)": {
+      display: "flex",
+      overflowX: "auto",
+      overflowY: "hidden",
       borderRightWidth: 0,
       borderBottomWidth: "1px",
       borderBottomStyle: "solid",
@@ -301,8 +251,9 @@ const styles = stylex.create({
     textAlign: "left",
     cursor: "pointer",
     ":hover": { backgroundColor: "rgb(255 255 255 / 0.04)", color: colors.ink },
+    "@media (max-width: 760px)": { width: "auto", minWidth: "180px", flex: "0 0 auto" },
   },
-  fileButtonActive: { backgroundColor: colors.panelRaised, color: colors.ink },
+  fileButtonActive: { color: colors.ink, fontWeight: 650 },
   filePath: {
     overflow: "hidden",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -321,50 +272,61 @@ const styles = stylex.create({
     display: "flex",
     flexWrap: "wrap",
     alignItems: "center",
-    gap: spacing.sm,
-    padding: spacing.sm,
-    borderBottom: "1px solid",
-    borderBottomColor: colors.lineSoft,
+    gap: "4px",
+    padding: "4px 10px",
+  },
+  diffControl: {
+    minHeight: "36px",
+    paddingInline: "7px",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    borderWidth: 0,
+    borderRadius: "6px",
+    backgroundColor: "transparent",
+    color: colors.quiet,
+    fontFamily: "inherit",
+    fontSize: "12px",
+    cursor: "pointer",
+    ":hover": { backgroundColor: "rgb(255 255 255 / 0.04)", color: colors.ink },
+    ":focus-visible": { outline: `2px solid ${colors.focus}`, outlineOffset: "-2px" },
+    "@media (max-width: 760px)": { minHeight: "44px", paddingInline: "7px" },
+  },
+  diffControlActive: { color: colors.ink, fontWeight: 650 },
+  diffToggle: {
+    minHeight: "36px",
+    paddingInline: "7px",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    color: colors.quiet,
+    fontSize: "12px",
+    cursor: "pointer",
+    "@media (max-width: 760px)": { minHeight: "44px" },
   },
   patch: {
     minWidth: 0,
     minHeight: 0,
     overflow: "auto",
     margin: 0,
-    padding: spacing.xl,
+    padding: spacing.sm,
     backgroundColor: "#080808",
     color: colors.muted,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: "11px",
     lineHeight: 1.55,
   },
-  terminalDrawer: {
-    position: "absolute",
-    zIndex: 20,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    height: "min(46%, 430px)",
-    minHeight: "240px",
+  terminalView: {
+    height: "100%",
+    minHeight: 0,
     display: "grid",
-    gridTemplateRows: "42px minmax(0, 1fr)",
-    borderTopWidth: "1px",
-    borderTopStyle: "solid",
-    borderTopColor: colors.lineHover,
+    gridTemplateRows: "36px minmax(0, 1fr)",
     backgroundColor: "#07090a",
-    boxShadow: "0 -18px 42px rgb(0 0 0 / 45%)",
-    animationName: stylex.keyframes({
-      from: { transform: "translateY(18px)", opacity: 0 },
-      to: { transform: "translateY(0)", opacity: 1 },
-    }),
-    animationDuration: motion.standard,
-    animationTimingFunction: motion.easeOut,
   },
-  terminalHeader: {
+  terminalStatus: {
     paddingInline: spacing.md,
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
     borderBottomColor: colors.lineSoft,
@@ -393,105 +355,81 @@ export function SessionWorkbench({
   readonly runtimeAvailable: boolean;
   readonly sessionId: string;
 }) {
-  const [summaryOpen, setSummaryOpen] = useState(false);
-  const [changesOpen, setChangesOpen] = useState(false);
-  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [activeTool, setActiveTool] = useState<"summary" | "diff" | "terminal" | null>(null);
+  const [sessionActionsTarget, setSessionActionsTarget] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    if (!summaryOpen) return;
-    const previousFocus = document.activeElement;
+    setSessionActionsTarget(document.getElementById("session-workbench-actions"));
+  }, []);
+  useEffect(() => {
+    if (activeTool === null) return;
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        setSummaryOpen(false);
+        setActiveTool(null);
+        window.requestAnimationFrame(() => {
+          document.querySelector<HTMLElement>(".session-menu > summary")?.focus();
+        });
       }
     };
     document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("keydown", escape);
-      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
-    };
-  }, [summaryOpen]);
+    return () => document.removeEventListener("keydown", escape);
+  }, [activeTool]);
+  const closeTool = (): void => {
+    setActiveTool(null);
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(".session-menu > summary")?.focus();
+    });
+  };
   return (
     <div data-design="workbench" {...stylex.props(styles.root)}>
-      <nav aria-label="Session workbench" {...stylex.props(styles.toolbar)}>
-        <span {...stylex.props(styles.toolbarLabel)}>
-          {changesOpen ? "Branch changes" : "Conversation"}
-        </span>
-        <div {...stylex.props(styles.toolbarActions)}>
-          <ToolButton
-            active={summaryOpen}
-            icon={PanelRight}
-            label="Summary"
-            onClick={() => setSummaryOpen((open) => !open)}
-          />
-          <ToolButton
-            active={changesOpen}
-            icon={FileDiff}
-            label="Diff"
-            onClick={() => setChangesOpen((open) => !open)}
-          />
-          <ToolButton
-            active={terminalOpen}
-            disabled={!runtimeAvailable || previewTurns !== undefined}
-            icon={TerminalSquare}
-            label="Terminal"
-            onClick={() => setTerminalOpen((open) => !open)}
-          />
+      {sessionActionsTarget === null
+        ? null
+        : createPortal(
+            <nav aria-label="Session tools" {...stylex.props(styles.sessionToolsMenu)}>
+              <ToolButton
+                active={activeTool === "summary"}
+                label="Summary"
+                onClick={() => setActiveTool((tool) => (tool === "summary" ? null : "summary"))}
+              />
+              <ToolButton
+                active={activeTool === "diff"}
+                label="Diff"
+                onClick={() => setActiveTool((tool) => (tool === "diff" ? null : "diff"))}
+              />
+              <ToolButton
+                active={activeTool === "terminal"}
+                disabled={!runtimeAvailable || previewTurns !== undefined}
+                label="Terminal"
+                onClick={() => setActiveTool((tool) => (tool === "terminal" ? null : "terminal"))}
+              />
+            </nav>,
+            sessionActionsTarget,
+          )}
+      <div data-design="workbench-stage" {...stylex.props(styles.stage)}>
+        <div hidden={activeTool !== null} {...stylex.props(styles.main)}>
+          {children}
         </div>
-        <details {...stylex.props(styles.mobileTools)}>
-          <summary {...stylex.props(styles.mobileToolsSummary)}>
-            <PanelRight aria-hidden {...stylex.props(styles.icon)} />
-            Tools
-          </summary>
-          <div {...stylex.props(styles.mobileToolsMenu)}>
-            <ToolButton
-              active={summaryOpen}
-              icon={PanelRight}
-              label="Summary"
-              onClick={() => setSummaryOpen((open) => !open)}
-            />
-            <ToolButton
-              active={changesOpen}
-              icon={FileDiff}
-              label="Diff"
-              onClick={() => setChangesOpen((open) => !open)}
-            />
-            <ToolButton
-              active={terminalOpen}
-              disabled={!runtimeAvailable || previewTurns !== undefined}
-              icon={TerminalSquare}
-              label="Terminal"
-              onClick={() => setTerminalOpen((open) => !open)}
-            />
-          </div>
-        </details>
-      </nav>
-      <div
-        data-design="workbench-stage"
-        {...stylex.props(styles.stage, summaryOpen && styles.stageWithSummary)}
-      >
-        <div {...stylex.props(styles.main)}>
-          {changesOpen ? (
+        {activeTool === "summary" ? (
+          <ToolView close={closeTool} title="Summary" scroll>
+            <SummaryContent previewTurns={previewTurns} sessionId={sessionId} />
+          </ToolView>
+        ) : activeTool === "diff" ? (
+          <ToolView
+            close={closeTool}
+            title={defaultBranch === null ? "Diff" : `Diff · ${defaultBranch}`}
+          >
             <ChangesView
               sessionId={sessionId}
               preview={previewTurns !== undefined}
               defaultBranch={defaultBranch}
             />
-          ) : (
-            children
-          )}
-        </div>
-        {summaryOpen ? (
-          <SummaryPanel
-            previewTurns={previewTurns}
-            close={() => setSummaryOpen(false)}
-            sessionId={sessionId}
-          />
+          </ToolView>
+        ) : activeTool === "terminal" ? (
+          <ToolView close={closeTool} title="Terminal">
+            <TerminalView sessionId={sessionId} />
+          </ToolView>
         ) : null}
       </div>
-      {terminalOpen ? (
-        <TerminalDrawer close={() => setTerminalOpen(false)} sessionId={sessionId} />
-      ) : null}
     </div>
   );
 }
@@ -499,13 +437,11 @@ export function SessionWorkbench({
 function ToolButton({
   active,
   disabled = false,
-  icon: Icon,
   label,
   onClick,
 }: {
   readonly active: boolean;
   readonly disabled?: boolean;
-  readonly icon: typeof PanelRight;
   readonly label: string;
   readonly onClick: () => void;
 }) {
@@ -521,19 +457,52 @@ function ToolButton({
       type="button"
       {...stylex.props(styles.toolButton, active && styles.toolButtonActive)}
     >
-      <Icon aria-hidden {...stylex.props(styles.icon)} />
       {label}
     </button>
   );
 }
 
-function SummaryPanel({
-  previewTurns,
+function ToolView({
+  children,
   close,
+  scroll = false,
+  title,
+}: {
+  readonly children: ReactNode;
+  readonly close: () => void;
+  readonly scroll?: boolean;
+  readonly title: string;
+}) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => heading.current?.focus(), []);
+  return (
+    <section aria-label={`${title} tool`} {...stylex.props(styles.toolView)}>
+      <header {...stylex.props(styles.toolViewHeader)}>
+        <h2 ref={heading} tabIndex={-1} {...stylex.props(styles.panelTitle)}>
+          {title}
+        </h2>
+        <button
+          aria-label="Back to conversation"
+          onClick={close}
+          type="button"
+          {...stylex.props(styles.back)}
+        >
+          <ArrowLeft aria-hidden {...stylex.props(styles.icon)} />
+          Conversation
+        </button>
+      </header>
+      <div {...stylex.props(styles.toolViewBody, scroll && styles.toolViewBodyScroll)}>
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function SummaryContent({
+  previewTurns,
   sessionId,
 }: {
   readonly previewTurns?: ReadonlyArray<ConversationTurn>;
-  readonly close: () => void;
   readonly sessionId: string;
 }) {
   const [state, setState] = useState<{
@@ -597,56 +566,43 @@ function SummaryPanel({
     (turn) => turn.assistant.trim().length > 0,
   );
   return (
-    <aside aria-label="Session summary" {...stylex.props(styles.panel)}>
-      <header {...stylex.props(styles.panelHeader)}>
-        <h2 {...stylex.props(styles.panelTitle)}>Summary</h2>
-        <button
-          aria-label="Close summary"
-          onClick={close}
-          type="button"
-          {...stylex.props(styles.close)}
-        >
-          <X aria-hidden {...stylex.props(styles.icon)} />
-        </button>
-      </header>
-      <div {...stylex.props(styles.summaryStack)}>
-        <section {...stylex.props(styles.section)}>
-          <span {...stylex.props(styles.eyebrow)}>Latest update</span>
-          {state.conversationError !== undefined ? (
-            <p role="alert" {...stylex.props(styles.muted)}>
-              {state.conversationError}
-            </p>
-          ) : state.snapshot === undefined && previewTurns === undefined ? (
-            <LoaderCircle
-              aria-label="Loading latest update"
-              {...stylex.props(styles.icon, styles.spin)}
-            />
-          ) : latest === undefined ? (
-            <p {...stylex.props(styles.muted)}>No completed update yet.</p>
-          ) : (
-            <Markdown source={latest.assistant} />
-          )}
-        </section>
-        {previewTurns ? (
-          <section className="tool-empty">
-            <h3>Local preview</h3>
-            <p>
-              Summary text comes from the conversation fixture. Browser evidence and workspace
-              services are not connected.
-            </p>
-          </section>
+    <div aria-label="Session summary" {...stylex.props(styles.summaryStack)}>
+      <section {...stylex.props(styles.section)}>
+        <span {...stylex.props(styles.eyebrow)}>Latest update</span>
+        {state.conversationError !== undefined ? (
+          <p role="alert" {...stylex.props(styles.muted)}>
+            {state.conversationError}
+          </p>
+        ) : state.snapshot === undefined && previewTurns === undefined ? (
+          <LoaderCircle
+            aria-label="Loading latest update"
+            {...stylex.props(styles.icon, styles.spin)}
+          />
+        ) : latest === undefined ? (
+          <p {...stylex.props(styles.muted)}>No completed update yet.</p>
         ) : (
-          <>
-            <HatchSection error={state.hatchError} hatch={state.hatch} sessionId={sessionId} />
-            <EvidenceSection
-              error={state.evidenceError}
-              evidence={state.evidence}
-              sessionId={sessionId}
-            />
-          </>
+          <Markdown source={latest.assistant} />
         )}
-      </div>
-    </aside>
+      </section>
+      {previewTurns ? (
+        <section {...stylex.props(styles.section)}>
+          <span {...stylex.props(styles.eyebrow)}>Local preview</span>
+          <p {...stylex.props(styles.muted)}>
+            Summary text comes from the conversation fixture. Browser evidence and workspace
+            services are not connected.
+          </p>
+        </section>
+      ) : (
+        <>
+          <HatchSection error={state.hatchError} hatch={state.hatch} sessionId={sessionId} />
+          <EvidenceSection
+            error={state.evidenceError}
+            evidence={state.evidence}
+            sessionId={sessionId}
+          />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -911,18 +867,11 @@ function ChangesView({
       </nav>
       <section aria-label="Selected file patch" {...stylex.props(styles.diffPanel)}>
         <div aria-label="Diff options" {...stylex.props(styles.diffControls)}>
-          <span
-            data-testid="diff-comparison"
-            title="Includes committed and uncommitted changes since the branch point"
-            {...stylex.props(styles.fileMeta)}
-          >
-            Changes from {comparison}
-          </span>
           <button
             type="button"
             aria-pressed={!split}
             onClick={() => setSplit(false)}
-            {...stylex.props(styles.toolButton, !split && styles.toolButtonActive)}
+            {...stylex.props(styles.diffControl, !split && styles.diffControlActive)}
           >
             Unified
           </button>
@@ -930,25 +879,24 @@ function ChangesView({
             type="button"
             aria-pressed={split}
             onClick={() => setSplit(true)}
-            {...stylex.props(styles.toolButton, split && styles.toolButtonActive)}
+            {...stylex.props(styles.diffControl, split && styles.diffControlActive)}
           >
             Split
           </button>
-          <button
-            type="button"
-            aria-pressed={words}
-            onClick={() => setWords(!words)}
-            {...stylex.props(styles.toolButton, words && styles.toolButtonActive)}
-          >
+          <label {...stylex.props(styles.diffToggle)}>
+            <input
+              checked={words}
+              onChange={(event) => setWords(event.currentTarget.checked)}
+              type="checkbox"
+            />
             Word highlights
-          </button>
-          <button type="button" onClick={load} {...stylex.props(styles.toolButton)}>
+          </label>
+          <button type="button" onClick={load} {...stylex.props(styles.diffControl)}>
             <RefreshCw aria-hidden {...stylex.props(styles.icon)} />
             Refresh
           </button>
         </div>
         <div {...stylex.props(styles.patch)}>
-          {preview ? <p>Preview changes · sample file</p> : null}
           {patch?.truncated ? (
             <p role="status">This patch is truncated. Only part of the changes is shown.</p>
           ) : null}
@@ -969,13 +917,7 @@ function ChangesView({
   );
 }
 
-function TerminalDrawer({
-  close,
-  sessionId,
-}: {
-  readonly close: () => void;
-  readonly sessionId: string;
-}) {
+function TerminalView({ sessionId }: { readonly sessionId: string }) {
   const surface = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState("Connecting");
   useEffect(() => {
@@ -1044,22 +986,14 @@ function TerminalDrawer({
     };
   }, [sessionId]);
   return (
-    <aside aria-label="Session terminal" {...stylex.props(styles.terminalDrawer)}>
-      <header {...stylex.props(styles.terminalHeader)}>
+    <div aria-label="Session terminal" {...stylex.props(styles.terminalView)}>
+      <div role="status" {...stylex.props(styles.terminalStatus)}>
         <span {...stylex.props(styles.terminalTitle)}>
           <TerminalSquare aria-hidden {...stylex.props(styles.icon)} />
-          Terminal · {status}
+          {status}
         </span>
-        <button
-          aria-label="Close terminal"
-          onClick={close}
-          type="button"
-          {...stylex.props(styles.close)}
-        >
-          <X aria-hidden {...stylex.props(styles.icon)} />
-        </button>
-      </header>
+      </div>
       <div ref={surface} {...stylex.props(styles.terminalSurface)} />
-    </aside>
+    </div>
   );
 }

@@ -158,10 +158,6 @@ const styles = stylex.create({
   },
   thinking: {
     margin: 0,
-    paddingLeft: spacing.md,
-    borderLeftWidth: "1px",
-    borderLeftStyle: "solid",
-    borderLeftColor: colors.lineHover,
     color: colors.quiet,
     fontSize: "12px",
     lineHeight: 1.55,
@@ -169,10 +165,6 @@ const styles = stylex.create({
   activity: {
     display: "grid",
     gap: "2px",
-    paddingLeft: spacing.md,
-    borderLeftWidth: "1px",
-    borderLeftStyle: "solid",
-    borderLeftColor: colors.lineSoft,
   },
   tool: {
     position: "relative",
@@ -189,7 +181,7 @@ const styles = stylex.create({
     minHeight: "42px",
     padding: "7px 8px",
     display: "grid",
-    gridTemplateColumns: "18px minmax(0, 1fr) auto",
+    gridTemplateColumns: "14px minmax(0, 1fr)",
     alignItems: "center",
     gap: spacing.sm,
     cursor: "pointer",
@@ -202,10 +194,11 @@ const styles = stylex.create({
     "::-webkit-details-marker": { display: "none" },
   },
   toolIcon: { width: "14px", height: "14px", color: colors.quiet, strokeWidth: 1.8 },
-  toolIconDone: { color: colors.success },
-  toolIconRunning: { color: colors.warning },
+  toolIconDone: { color: colors.quiet },
+  toolIconRunning: { color: colors.quiet },
   toolIconFailed: { color: colors.danger },
   toolIdentity: { minWidth: 0, display: "grid", gap: "2px" },
+  toolHeading: { minWidth: 0, display: "flex", alignItems: "baseline", gap: spacing.sm },
   toolLabel: {
     overflow: "hidden",
     color: colors.muted,
@@ -228,19 +221,25 @@ const styles = stylex.create({
     fontWeight: 650,
     textTransform: "capitalize",
   },
-  toolStateRunning: { color: colors.warning },
+  toolStateRunning: { color: colors.quiet },
   toolStateFailed: { color: colors.danger },
   toolDetails: {
-    margin: "0 8px 9px 34px",
+    margin: `0 8px ${spacing.sm} 30px`,
     display: "grid",
-    gap: spacing.sm,
+    gap: "4px",
+  },
+  toolDetailLabel: {
+    marginTop: spacing.xs,
+    color: colors.quiet,
+    fontSize: "10px",
+    fontWeight: 620,
   },
   toolInvocationFull: {
-    padding: spacing.md,
+    margin: 0,
+    padding: "4px 0",
     overflowX: "auto",
     overflowWrap: "anywhere",
-    borderRadius: "6px",
-    backgroundColor: colors.space,
+    backgroundColor: "transparent",
     color: colors.muted,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: "10px",
@@ -249,10 +248,9 @@ const styles = stylex.create({
   },
   toolOutput: {
     margin: 0,
-    padding: spacing.md,
+    padding: "4px 0",
     overflowX: "auto",
-    borderRadius: "6px",
-    backgroundColor: colors.space,
+    backgroundColor: "transparent",
     color: colors.muted,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: "10px",
@@ -262,7 +260,7 @@ const styles = stylex.create({
   evidenceOwner: { minWidth: 0 },
   evidence: {
     minWidth: 0,
-    margin: `2px 8px ${spacing.sm} 34px`,
+    margin: `2px 8px ${spacing.sm}`,
     padding: spacing.md,
     display: "grid",
     gap: spacing.sm,
@@ -271,7 +269,6 @@ const styles = stylex.create({
     borderColor: colors.lineSoft,
     borderRadius: "10px",
     backgroundColor: "rgb(255 255 255 / 0.02)",
-    "@media (max-width: 720px)": { marginLeft: spacing.sm },
   },
   evidenceHeader: {
     display: "flex",
@@ -539,25 +536,35 @@ function ToolRow({
         <summary {...stylex.props(styles.toolSummary)}>
           {toolIcon(tool)}
           <span {...stylex.props(styles.toolIdentity)}>
-            <span {...stylex.props(styles.toolLabel)}>{tool.label}</span>
+            <span {...stylex.props(styles.toolHeading)}>
+              <span {...stylex.props(styles.toolLabel)}>{tool.label}</span>
+              {tool.state === "running" || tool.state === "failed" ? (
+                <span
+                  {...stylex.props(
+                    styles.toolState,
+                    tool.state === "running" && styles.toolStateRunning,
+                    tool.state === "failed" && styles.toolStateFailed,
+                  )}
+                >
+                  {tool.state}
+                </span>
+              ) : null}
+            </span>
             <span {...stylex.props(styles.toolInvocation)}>{tool.invocation}</span>
-          </span>
-          <span
-            {...stylex.props(
-              styles.toolState,
-              tool.state === "running" && styles.toolStateRunning,
-              tool.state === "failed" && styles.toolStateFailed,
-            )}
-          >
-            {tool.state}
           </span>
         </summary>
         <div {...stylex.props(styles.toolDetails)}>
+          <span {...stylex.props(styles.toolDetailLabel)}>Input</span>
           <pre aria-label="Complete tool invocation" {...stylex.props(styles.toolInvocationFull)}>
             {tool.invocation}
           </pre>
           {tool.output === undefined ? null : (
-            <pre {...stylex.props(styles.toolOutput)}>{tool.output}</pre>
+            <>
+              <span {...stylex.props(styles.toolDetailLabel)}>Result</span>
+              <pre aria-label="Tool result" {...stylex.props(styles.toolOutput)}>
+                {tool.output}
+              </pre>
+            </>
           )}
         </div>
       </details>
@@ -662,6 +669,7 @@ export function Conversation({
   readonly turns: ReadonlyArray<ConversationTurn>;
 }) {
   const active = turns.findLast((turn) => turn.state === "streaming");
+  const activeHasRunningTool = active?.tools.some((tool) => tool.state === "running") ?? false;
   const completed = turns.filter((turn) => turn.state !== "streaming");
   const latestCompleted = active === undefined ? completed.at(-1) : undefined;
   const foldedCompleted = latestCompleted === undefined ? completed : completed.slice(0, -1);
@@ -733,7 +741,9 @@ export function Conversation({
             )}
             <div {...stylex.props(styles.workingHeader)}>
               <span {...stylex.props(styles.workingLabel)}>
-                <LoaderCircle aria-hidden {...stylex.props(styles.spin)} />
+                {activeHasRunningTool ? null : (
+                  <LoaderCircle aria-hidden {...stylex.props(styles.spin)} />
+                )}
                 Working
               </span>
             </div>
