@@ -36,8 +36,6 @@ export const enqueueCodexFollowUp = (
   if (queue.pending.length + queue.receipts.length >= CONVERSATION_MAX_QUEUE_ITEMS)
     return { status: "full" as const, queue };
   const next = { ...queue, pending: [...queue.pending, item] };
-  if (new TextEncoder().encode(JSON.stringify(next)).byteLength > 96 * 1024)
-    return { status: "full" as const, queue };
   return { status: "queued" as const, queue: next };
 };
 export const confirmCodexFollowUp = (queue: CodexFollowUps, id: string): CodexFollowUps => {

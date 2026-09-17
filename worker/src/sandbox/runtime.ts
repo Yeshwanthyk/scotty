@@ -93,7 +93,7 @@ interface SandboxRuntimeShape {
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly readFile: (
     path: string,
-    maxBytes: number,
+    maxBytes?: number,
   ) => Effect.Effect<Uint8Array, SandboxRuntimeFailure>;
   readonly writeFile: (
     path: string,
@@ -119,7 +119,7 @@ interface SandboxRuntimeShape {
     path: string,
     port: number,
     method: "GET" | "POST",
-    maxBytes: number,
+    maxBytes?: number,
     headers?: Readonly<Record<string, string>>,
     body?: string,
   ) => Effect.Effect<{ readonly status: number; readonly body: string }, SandboxRuntimeFailure>;
@@ -207,7 +207,7 @@ const makeSandboxRuntime = <E>(
         });
         if (next.done) break;
         total += next.value.byteLength;
-        if (total > maxBytes) {
+        if (maxBytes !== undefined && total > maxBytes) {
           yield* Effect.promise(() => reader.cancel()).pipe(Effect.ignore);
           return yield* transportFailure("Sandbox file exceeds its byte limit");
         }
@@ -290,7 +290,8 @@ const makeSandboxRuntime = <E>(
     fetchPortBody: (path, port, method, maxBytes, headers, body) => {
       if (
         body !== undefined &&
-        (method !== "POST" || new TextEncoder().encode(body).byteLength > 256 * 1024)
+        (method !== "POST" ||
+          (maxBytes !== undefined && new TextEncoder().encode(body).byteLength > 256 * 1024))
       )
         return Effect.fail(
           transportFailure("Sandbox port request body is invalid or exceeds its byte limit"),
@@ -307,7 +308,8 @@ const makeSandboxRuntime = <E>(
         ),
         Effect.flatMap((response) =>
           Effect.tryPromise({
-            try: (signal) => readBoundedUtf8Body(response, maxBytes, signal),
+            try: (signal) =>
+              readBoundedUtf8Body(response, maxBytes ?? Number.MAX_SAFE_INTEGER, signal),
             catch: () => transportFailure("Sandbox port response transport failed"),
           }).pipe(
             Effect.flatMap((body) =>

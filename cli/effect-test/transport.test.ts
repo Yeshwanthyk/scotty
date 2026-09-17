@@ -2,7 +2,19 @@ import { assert, it } from "@effect/vitest";
 import { Effect, Fiber, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { cliLayer } from "../src/services";
-import { apiRequest } from "../src/transport";
+import { apiRequest, readResponseBytes } from "../src/transport";
+
+it.effect("reads a snapshot response beyond the former 64 MiB client cap", () =>
+  Effect.gen(function* () {
+    const bytes = new Uint8Array(64 * 1024 * 1024 + 1);
+    bytes[bytes.length - 1] = 1;
+    const received = yield* readResponseBytes(
+      new Response(bytes, { headers: { "content-length": String(bytes.byteLength) } }),
+    );
+    assert.strictEqual(received.byteLength, bytes.byteLength);
+    assert.strictEqual(received.at(-1), 1);
+  }),
+);
 
 it.effect(
   "keeps one mutation fetch alive beyond five minutes and aborts at its bounded deadline",

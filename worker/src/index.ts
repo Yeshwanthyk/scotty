@@ -1055,8 +1055,8 @@ app.post("/api/sessions/:id/steer", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
   const id = parseSessionId(c.req.param("id"));
-  const bodyText = await readBoundedUtf8Body(c.req.raw, PI_CONSOLE_MAX_COMMAND_BYTES);
-  if (bodyText === undefined) throw badRequest("Steer request body is too large");
+  const bodyText = await readBoundedUtf8Body(c.req.raw);
+  if (bodyText === undefined) throw badRequest("Steer request body must be valid UTF-8");
   const body = decodeJsonValue(bodyText);
   if (Option.isNone(body)) throw badRequest("Request body must be valid JSON");
   const input = decodeSessionMessageInput(body.value);

@@ -9,21 +9,74 @@ import test from "node:test";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-test("captures parent and child native rollouts as private files with matching hashes", async (t) => {
+const failureMessage = "Codex rollout capture failed; inspect the private output directory.\n";
+
+async function runCapture(root, { tarScript, prepareOutput = async () => {}, pathValue }) {
+  const bin = path.join(root, "bin");
+  if (tarScript) {
+    await mkdir(bin, { recursive: true });
+    await writeFile(path.join(bin, "tar"), tarScript, { mode: 0o755 });
+  }
+  const output = path.join(root, "captured");
+  const server = createServer((_request, response) => {
+    prepareOutput(output).then(
+      () => {
+        response.writeHead(200, { "content-type": "application/x-tar" });
+        response.end("synthetic archive");
+      },
+      () => {
+        response.writeHead(500);
+        response.end();
+      },
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const tokenFile = path.join(root, "token");
+  await writeFile(tokenFile, "dummy-token\n", { mode: 0o600 });
+  const child = spawn(
+    process.execPath,
+    [
+      new URL("./capture-codex-rollouts.mjs", import.meta.url).pathname,
+      "a0b1c2d3e4f5",
+      `http://127.0.0.1:${address.port}/`,
+      tokenFile,
+      output,
+    ],
+    {
+      env: { ...process.env, PATH: pathValue ?? `${bin}:${process.env.PATH ?? ""}` },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const exit = await new Promise((resolve) => child.once("exit", resolve));
+  await new Promise((resolve) => server.close(resolve));
+  return { exit, output, stderr };
+}
+
+test("streams large rollout archives and listings into private files", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "scotty-rollout-capture-test-"));
   const source = path.join(root, "source");
-  const relative = [
-    "sessions/2026/09/12/rollout-parent.jsonl",
-    "sessions/2026/09/12/rollout-child.jsonl",
-  ];
-  for (const name of relative) {
+  const relative = Array.from(
+    { length: 300 },
+    (_, index) =>
+      `sessions/2026/09/12/rollout-${String(index).padStart(3, "0")}-${"x".repeat(180)}.jsonl`,
+  );
+  for (const [index, name] of relative.entries()) {
     const file = path.join(source, name);
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, `${name}\n`);
+    await writeFile(file, index === 0 ? Buffer.alloc(21 * 1024 * 1024, 120) : `${name}\n`);
   }
   const tarPath = path.join(root, "fixture.tar");
   execFileSync("tar", ["-cf", tarPath, "-C", source, ...relative]);
   const archive = await readFile(tarPath);
+  assert.ok(archive.byteLength > 20 * 1024 * 1024);
+  assert.ok(Buffer.byteLength(`${relative.join("\n")}\n`) > 64 * 1024);
   const server = createServer((request, response) => {
     assert.equal(request.url, "/api/sessions/a0b1c2d3e4f5/codex/rollouts");
     assert.equal(request.headers.authorization, "Bearer dummy-token");
@@ -63,4 +116,57 @@ test("captures parent and child native rollouts as private files with matching h
   }
   assert.equal((await stat(path.join(output, "rollouts.tar"))).mode & 0o777, 0o600);
   assert.equal((await stat(path.join(output, "manifest.json"))).mode & 0o777, 0o600);
+});
+
+test("observes a failing tar child while extraction output is active", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "scotty-rollout-child-failure-"));
+  const result = await runCapture(root, {
+    tarScript: `#!/bin/sh
+if [ "$1" = "-tf" ]; then
+  printf 'sessions/2026/09/12/rollout-failure.jsonl\\n'
+  exit 0
+fi
+printf 'synthetic tar failure\\n' >&2
+exit 23
+`,
+  });
+
+  assert.equal(result.exit, 1);
+  assert.equal(result.stderr, failureMessage);
+  await assert.rejects(stat(path.join(result.output, "sessions/2026/09/12/rollout-failure.jsonl")));
+});
+
+test("reports a missing tar executable without leaking launch details", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "scotty-rollout-missing-tar-"));
+  const result = await runCapture(root, { pathValue: path.join(root, "no-executables") });
+
+  assert.equal(result.exit, 1);
+  assert.equal(result.stderr, failureMessage);
+  assert.doesNotMatch(result.stderr, /uncaught|unhandled|ENOENT/iu);
+  assert.equal(result.stderr.includes(root), false);
+});
+
+test("kills and waits for tar when the extraction output fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "scotty-rollout-output-failure-"));
+  const member = "sessions/2026/09/12/rollout-output.jsonl";
+  const startedAt = Date.now();
+  const result = await runCapture(root, {
+    tarScript: `#!/bin/sh
+if [ "$1" = "-tf" ]; then
+  printf '${member}\\n'
+  exit 0
+fi
+printf 'payload'
+while :; do :; done
+`,
+    prepareOutput: async (output) => {
+      await mkdir(path.join(output, member), { recursive: true, mode: 0o700 });
+    },
+  });
+
+  assert.equal(result.exit, 1);
+  assert.equal(result.stderr, failureMessage);
+  assert.ok((await stat(path.join(result.output, "rollouts.tar"))).isFile());
+  assert.ok((await stat(path.join(result.output, member))).isDirectory());
+  assert.ok(Date.now() - startedAt < 5_000);
 });

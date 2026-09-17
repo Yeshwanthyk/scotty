@@ -5,7 +5,7 @@ const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
 export async function readBoundedBytes(
   message: Pick<Request | Response, "body" | "headers">,
-  maxBytes: number,
+  maxBytes = Number.POSITIVE_INFINITY,
   signal?: AbortSignal,
 ): Promise<Uint8Array | undefined> {
   const declaredLength = Number(message.headers.get("content-length") ?? "0");
@@ -61,7 +61,7 @@ export async function readBoundedBytes(
 
 export async function readBoundedUtf8Body(
   message: Pick<Request | Response, "body" | "headers">,
-  maxBytes: number,
+  maxBytes = Number.POSITIVE_INFINITY,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
   const body = await readBoundedBytes(message, maxBytes, signal);

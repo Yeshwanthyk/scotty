@@ -4,6 +4,7 @@ import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import type { CredentialGrant } from "../../../../protocol/credentials";
 import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import { codexConversation } from "../../../src/agent/codex/conversation";
 import {
   admitCodexSandbox,
   interruptCodexSandbox,
@@ -54,6 +55,75 @@ const snapshot = {
 };
 
 describe("Codex Sandbox adapter", () => {
+  it.effect(
+    "roundtrips a large prompt and terminal snapshot through the production port adapter",
+    () =>
+      Effect.gen(function* () {
+        const text = "界".repeat(180_000);
+        const answer = "答".repeat(240_000);
+        let posted: unknown;
+        const terminal = {
+          ...snapshot,
+          prompt: {
+            status: "terminal" as const,
+            turnId: "turn-1",
+            outcome: "completed" as const,
+            text: answer,
+          },
+          turns: [
+            {
+              id: "turn-1",
+              state: "completed",
+              user: text,
+              assistant: answer,
+              tools: [
+                {
+                  id: "tool-1",
+                  state: "completed",
+                  label: "Command",
+                  invocation: "run",
+                  output: answer,
+                },
+              ],
+            },
+          ],
+        };
+        const layer = sandboxRuntimeLayer({
+          ...sandboxRuntimeCapabilitiesFake(),
+          fetchPort: (path, _port, method, _headers, body) => {
+            if (method === "POST") {
+              posted = body === undefined ? undefined : JSON.parse(body);
+              return Promise.resolve(
+                Response.json(
+                  { generation: identity.generation, threadId: "thread-1", turnId: "turn-1" },
+                  { status: 202 },
+                ),
+              );
+            }
+            assert.equal(path, "/snapshot");
+            return Promise.resolve(Response.json(terminal));
+          },
+        });
+        const result = yield* sendCodexSandboxMessage(identity, "thread-1", text, "message-1").pipe(
+          Effect.provide(layer),
+        );
+        assert.deepEqual(posted, {
+          mode: "message",
+          threadId: "thread-1",
+          text,
+          clientUserMessageId: "message-1",
+        });
+        assert.deepEqual(result.snapshot.prompt, terminal.prompt);
+        const conversation = yield* codexConversation(result.snapshot, {
+          prompt: text,
+          turnId: "turn-1",
+          revision: 1,
+        });
+        assert.equal(conversation.turns[0]?.user, text);
+        assert.equal(conversation.turns[0]?.assistant, answer);
+        assert.equal(conversation.turns[0]?.tools[0]?.output, answer);
+      }),
+  );
   for (const valid of [true, false]) {
     it.effect(
       `records exit status and ${valid ? "classified" : "rejects untrusted"} startup diagnostics`,

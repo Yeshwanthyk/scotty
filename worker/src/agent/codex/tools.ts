@@ -1,11 +1,7 @@
 import { Predicate } from "effect";
 import { toolDisplayText } from "../../../../protocol/tool-display-text";
 import type { CodexNotification } from "../../../../protocol/codex-app-server";
-import {
-  CONVERSATION_MAX_TOOLS_PER_TURN,
-  CONVERSATION_MAX_TOOL_VALUE_BYTES,
-  type CanonicalConversationTool,
-} from "../../../../protocol/conversation";
+import type { CanonicalConversationTool } from "../../../../protocol/conversation";
 
 type CommandItemEvent = Extract<CodexNotification, { method: "item/started" | "item/completed" }>;
 type CommandOutputEvent = Extract<
@@ -24,35 +20,17 @@ export const makeCodexTools = () => {
   // Completion aggregates are a fallback. Once a stream delta is accepted,
   // preserve its order instead of guessing how it overlaps the aggregate.
   const outputDeltas = new Set<string>();
-  let truncated = false;
   let sequence = 0;
-  const bound = (value: string) => {
-    let text = "",
-      size = 0;
-    for (const character of value) {
-      size += new TextEncoder().encode(character).length;
-      if (size > CONVERSATION_MAX_TOOL_VALUE_BYTES) {
-        truncated = true;
-        break;
-      }
-      text += character;
-    }
-    return text;
-  };
   const acceptItem = (event: CommandItemEvent) => {
     const item = event.params.item;
     if (!Predicate.hasProperty(item, "command")) return;
-    if (!tools.has(item.id) && tools.size >= CONVERSATION_MAX_TOOLS_PER_TURN) {
-      truncated = true;
-      return;
-    }
     commandItems.add(item.id);
     const previous = tools.get(item.id);
     const hasOutputDeltas = outputDeltas.has(item.id);
     tools.set(item.id, {
       id: item.id,
       label: "Command",
-      invocation: bound(item.command),
+      invocation: item.command,
       state:
         item.status === "inProgress"
           ? "running"
@@ -60,7 +38,7 @@ export const makeCodexTools = () => {
             ? "cancelled"
             : item.status,
       ...(item.aggregatedOutput != null && !hasOutputDeltas
-        ? { output: bound(item.aggregatedOutput) }
+        ? { output: item.aggregatedOutput }
         : previous?.output !== undefined
           ? { output: previous.output }
           : {}),
@@ -75,10 +53,6 @@ export const makeCodexTools = () => {
       !Predicate.hasProperty(item, "status")
     )
       return;
-    if (!tools.has(item.id) && tools.size >= CONVERSATION_MAX_TOOLS_PER_TURN) {
-      truncated = true;
-      return;
-    }
     const previous = tools.get(item.id);
     const label =
       item.tool === "scotty_hatch"
@@ -97,7 +71,7 @@ export const makeCodexTools = () => {
   const acceptDynamicResult = (callId: string, text: string) => {
     const previous = tools.get(callId);
     if (previous === undefined) return;
-    tools.set(callId, { ...previous, output: bound(text) });
+    tools.set(callId, { ...previous, output: text });
   };
   const acceptDynamicCall = (callId: string, input: unknown) => {
     const previous = tools.get(callId);
@@ -113,10 +87,9 @@ export const makeCodexTools = () => {
     outputDeltas.add(event.params.itemId);
     tools.set(previous.id, {
       ...previous,
-      output: bound(
+      output:
         (hadOutputDeltas && previous.output !== undefined ? previous.output : "") +
-          event.params.delta,
-      ),
+        event.params.delta,
     });
   };
   const acceptTurnCompleted = (event: TurnCompletedEvent) => {
@@ -137,7 +110,6 @@ export const makeCodexTools = () => {
       tools.clear();
       commandItems.clear();
       outputDeltas.clear();
-      truncated = false;
     } else if (event.method === "item/started" || event.method === "item/completed") {
       acceptItem(event);
       acceptDynamicItem(event);
@@ -151,6 +123,6 @@ export const makeCodexTools = () => {
     accept,
     acceptDynamicCall,
     acceptDynamicResult,
-    snapshot: () => ({ tools: [...tools.values()], toolsTruncated: truncated, sequence }),
+    snapshot: () => ({ tools: [...tools.values()], toolsTruncated: false, sequence }),
   };
 };

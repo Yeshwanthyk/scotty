@@ -69,6 +69,39 @@ const fixture = Effect.fnUntraced(function* () {
 });
 
 describe("Codex allowlisted saved-state production filesystem adapter", () => {
+  it.effect("retains more than 128 valid native rollout files", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 129 }, (_, index) =>
+            fs.writeFile(`${f.home}/sessions/2026/09/08/rollout-extra-${index}.jsonl`, content),
+          ),
+        ),
+      );
+      yield* writeCodexSavedState(f.workspace, f.home, history);
+      const saved = yield* readCodexSavedState(f.workspace, history);
+      assert.equal(saved.files.length, 130);
+    }),
+  );
+  it.effect("persists and restores a native rollout beyond the former 16 MiB cap", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const large = "x".repeat(17 * 1024 * 1024);
+      const native = `${JSON.stringify({ type: "session_meta", payload: { id: "thread" } })}\n${JSON.stringify({ type: "response_item", payload: { text: large } })}\n`;
+      yield* Effect.promise(() => fs.writeFile(`${f.home}/${rollout}`, native));
+      const retained = {
+        ...history,
+        prompt: { ...history.prompt, text: large },
+        turns: [history.turns[0], { ...history.turns[1], assistant: large }],
+      };
+      yield* writeCodexSavedState(f.workspace, f.home, retained);
+      const saved = yield* readCodexSavedState(f.workspace, history);
+      assert.equal(saved.files[0]?.content.length, native.length);
+      assert.deepEqual(saved.history.prompt, retained.prompt);
+      assert.equal(saved.history.turns[1]?.assistant.length, large.length);
+    }),
+  );
   it.effect(
     "exports nested JSONL and canonical receipts, then restores into a clean home without private configuration",
     () =>

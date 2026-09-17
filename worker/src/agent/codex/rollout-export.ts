@@ -1,4 +1,4 @@
-import { CODEX_ROLLOUT_RELATIVE_PATH, CODEX_SAVED_STATE_MAX_BYTES } from "./persistence-format";
+import { CODEX_ROLLOUT_RELATIVE_PATH } from "./persistence-format";
 
 export interface CodexRolloutFile {
   readonly path: string;
@@ -8,12 +8,11 @@ export interface CodexRolloutFile {
 // GNU find emits only relative names, byte sizes and link counts. Reject the
 // entire listing if a native path cannot belong to the private sessions tree.
 export function parseCodexRolloutListing(stdout: string): ReadonlyArray<CodexRolloutFile> | null {
-  if (!stdout.endsWith("\n") || stdout.length > 40_000) return null;
+  if (!stdout.endsWith("\n")) return null;
   const lines = stdout.slice(0, -1).split("\n");
-  if (lines.length === 0 || lines.length > 128) return null;
+  if (lines.length === 0) return null;
   const seen = new Set<string>();
   const files: CodexRolloutFile[] = [];
-  let total = 0;
   for (const line of lines) {
     const fields = line.split("\t");
     if (fields.length !== 3) return null;
@@ -29,8 +28,7 @@ export function parseCodexRolloutListing(stdout: string): ReadonlyArray<CodexRol
     )
       return null;
     const size = Number(sizeText);
-    if (!Number.isSafeInteger(size) || size > CODEX_SAVED_STATE_MAX_BYTES - total) return null;
-    total += size;
+    if (!Number.isSafeInteger(size)) return null;
     seen.add(path);
     files.push({ path, size });
   }

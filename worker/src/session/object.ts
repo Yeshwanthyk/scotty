@@ -14,7 +14,6 @@ import {
   sendCodexSandboxMessage,
 } from "../agent/codex/sandbox";
 import { parseCodexRolloutListing } from "../agent/codex/rollout-export";
-import { CODEX_SAVED_STATE_MAX_BYTES } from "../agent/codex/persistence-format";
 import type { CodexSnapshot } from "../agent/codex/runtime";
 import { codexConversation } from "../agent/codex/conversation";
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
@@ -3412,14 +3411,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
             ),
           )
         : { selection: reservation.selection, configuration: reservation.configuration };
-    if (
-      pinned.selection?.agent === "codex" &&
-      new TextEncoder().encode(input.prompt).length > 64 * 1024
-    )
-      return yield* new ScottyError("bad_request", "Codex prompt exceeds its UTF-8 byte limit", {
-        httpStatus: 400,
-        exitCode: 2,
-      });
     const now = yield* Clock.currentTimeMillis;
     const nowIso = new Date(now).toISOString();
     const request: CreateControllerRequest = {
@@ -3982,30 +3973,34 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly getScottyDeploymentReadinessProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
       const record = yield* this.requireRecordProgram();
+      const state = yield* this.readActorSessionStateProgram();
       const runtime =
         this.rawContainer === undefined
           ? ("unknown" as const)
           : this.rawContainer.running
             ? ("running" as const)
             : ("stopped" as const);
-      const pi =
+      const agent = state.authority.session.selection?.agent ?? "pi";
+      const agentRuntimeState =
         runtime !== "running" || record.status !== "warm" || record.operation !== null
           ? runtime === "stopped"
             ? ("not_running" as const)
             : ("unknown" as const)
-          : yield* Effect.tryPromise({
-              try: () =>
-                inspectPassiveSession({
-                  fetch: (request) =>
-                    this.fetchNativePassivePiConsole({ sessionId: record.id, request }),
-                }),
-              catch: () => undefined,
-            }).pipe(
-              Effect.map((response) =>
-                response.status === 200 ? ("reachable" as const) : ("unreachable" as const),
-              ),
-              Effect.orElseSucceed(() => "unreachable" as const),
-            );
+          : agent === "codex"
+            ? ("unknown" as const)
+            : yield* Effect.tryPromise({
+                try: () =>
+                  inspectPassiveSession({
+                    fetch: (request) =>
+                      this.fetchNativePassivePiConsole({ sessionId: record.id, request }),
+                  }),
+                catch: () => undefined,
+              }).pipe(
+                Effect.map((response) =>
+                  response.status === 200 ? ("reachable" as const) : ("unreachable" as const),
+                ),
+                Effect.orElseSucceed(() => "unreachable" as const),
+              );
       return assessSessionDeploymentReadiness({
         id: record.id,
         title: record.title,
@@ -4016,7 +4011,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ? {}
           : { lastAgentEventAt: record.lastAgentEventAt }),
         runtime,
-        pi,
+        pi: agent === "pi" ? agentRuntimeState : "unknown",
+        agentRuntime: { agent, state: agentRuntimeState },
       });
     },
   );
@@ -4102,9 +4098,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
       )
       .pipe(Effect.mapError(() => this.upstreamError("Codex rollout archive failed", undefined)));
     const archive = yield* runtime
-      .readFile(path, 20 * 1024 * 1024)
+      .readFile(path)
       .pipe(Effect.mapError(() => this.upstreamError("Codex rollout archive failed", undefined)));
-    const members = parseSandboxTar(archive, CODEX_SAVED_STATE_MAX_BYTES);
+    const members = parseSandboxTar(archive, Number.POSITIVE_INFINITY);
     const expected = new Set(files.map((file) => file.path));
     if (
       Result.isFailure(members) ||
@@ -4112,9 +4108,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       members.success.some(
         (member) =>
           member.type !== "file" || member.modeClass !== "regular" || !expected.has(member.path),
-      ) ||
-      members.success.reduce((total, member) => total + member.bytes.byteLength, 0) >
-        CODEX_SAVED_STATE_MAX_BYTES
+      )
     )
       return yield* this.upstreamError("Codex rollout archive failed validation", undefined);
 

@@ -33,6 +33,15 @@ export const SessionDeploymentPiStateSchema = Schema.Literals([
 ]);
 export type SessionDeploymentPiState = typeof SessionDeploymentPiStateSchema.Type;
 
+export const SessionDeploymentAgentRuntimeStateSchema = Schema.Literals([
+  "reachable",
+  "unreachable",
+  "not_running",
+  "unknown",
+]);
+export type SessionDeploymentAgentRuntimeState =
+  typeof SessionDeploymentAgentRuntimeStateSchema.Type;
+
 export const SessionDeploymentReadinessReasonSchema = Schema.Literals([
   "record_booting",
   "record_warm",
@@ -57,6 +66,12 @@ export const SessionDeploymentReadinessSchema = Schema.Struct({
   lastAgentEventAt: Schema.optionalKey(Schema.String),
   runtime: SessionDeploymentRuntimeStateSchema,
   pi: SessionDeploymentPiStateSchema,
+  agentRuntime: Schema.optionalKey(
+    Schema.Struct({
+      agent: Schema.Literals(["pi", "codex"]),
+      state: SessionDeploymentAgentRuntimeStateSchema,
+    }),
+  ),
   ready: Schema.Boolean,
   reason: SessionDeploymentReadinessReasonSchema,
 });
@@ -77,6 +92,10 @@ export interface SessionDeploymentReadinessInput {
   readonly lastAgentEventAt?: string;
   readonly runtime: SessionDeploymentRuntimeState;
   readonly pi: SessionDeploymentPiState;
+  readonly agentRuntime?: {
+    readonly agent: "pi" | "codex";
+    readonly state: SessionDeploymentAgentRuntimeState;
+  };
 }
 
 /**
@@ -96,6 +115,7 @@ export const assessSessionDeploymentReadiness = (
     ...(input.lastAgentEventAt === undefined ? {} : { lastAgentEventAt: input.lastAgentEventAt }),
     runtime: input.runtime,
     pi: input.pi,
+    ...(input.agentRuntime === undefined ? {} : { agentRuntime: input.agentRuntime }),
   };
 
   if (input.operation !== null) return { ...shared, ready: false, reason: "lifecycle_busy" };

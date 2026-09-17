@@ -1,22 +1,9 @@
 import { Effect } from "effect";
 import {
-  CONVERSATION_MAX_TEXT_BYTES,
   decodeCanonicalConversationSnapshot,
   type CanonicalConversationTurn,
 } from "../../../../protocol/conversation";
 import type { CodexSnapshot } from "./runtime";
-
-const boundedText = (text: string): string => {
-  const encoder = new TextEncoder();
-  let bytes = 0;
-  let bounded = "";
-  for (const character of text) {
-    bytes += encoder.encode(character).length;
-    if (bytes > CONVERSATION_MAX_TEXT_BYTES) break;
-    bounded += character;
-  }
-  return bounded;
-};
 
 type CodexPromptState = (typeof CodexSnapshot.Type)["prompt"];
 
@@ -42,9 +29,7 @@ const projectFailedTurn = (
 const runtimeFailureSummary = (snapshot: typeof CodexSnapshot.Type) =>
   snapshot.failure === null
     ? undefined
-    : boundedText(
-        `Runtime failure: ${snapshot.failure}${snapshot.failureDiagnostic === undefined ? "" : ` (${snapshot.failureDiagnostic})`}`,
-      );
+    : `Runtime failure: ${snapshot.failure}${snapshot.failureDiagnostic === undefined ? "" : ` (${snapshot.failureDiagnostic})`}`;
 
 export const codexConversation = Effect.fnUntraced(function* (
   snapshot: typeof CodexSnapshot.Type,
@@ -58,9 +43,9 @@ export const codexConversation = Effect.fnUntraced(function* (
   },
 ) {
   const prompt = snapshot.prompt;
-  const user = boundedText(input.prompt);
+  const user = input.prompt;
   const text = prompt.status === "terminal" ? prompt.text : "";
-  const assistant = boundedText(text);
+  const assistant = text;
   const terminal = prompt.status === "terminal";
   const state = terminal
     ? prompt.outcome === "interrupted"

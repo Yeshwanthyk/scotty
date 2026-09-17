@@ -1,15 +1,12 @@
 import { NodeHttpServer, NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Effect, Fiber, FileSystem, Option, Schema, Scope } from "effect";
+import { Cause, Effect, Fiber, Option, Schema, Scope } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { HttpIncomingMessage } from "effect/unstable/http";
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { CodexStartupFailure } from "./errors";
 import {
   CODEX_CONTROL_GENERATION_HEADER,
   CODEX_CONTROL_TOKEN_HEADER,
-  CODEX_CONTROL_MAX_BODY,
-  CODEX_CONTROL_MAX_RESPONSE,
   CodexBridgeError,
   CodexControlToken,
   CodexGeneration,
@@ -43,12 +40,6 @@ const decodeHeaders = Schema.decodeUnknownEffect(
     [CODEX_CONTROL_GENERATION_HEADER]: CodexGeneration,
   }),
 );
-const decodeLength = Schema.decodeUnknownEffect(
-  Schema.NumberFromString.check(
-    Schema.isInt(),
-    Schema.isBetween({ minimum: 0, maximum: CODEX_CONTROL_MAX_BODY }),
-  ),
-);
 const decodePrompt = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexPrompt), {
   onExcessProperty: "error",
 });
@@ -62,16 +53,16 @@ const decodeMessage = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexMess
 const decodeInterrupt = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexInterrupt), {
   onExcessProperty: "error",
 });
-const respond = Effect.fnUntraced(function* (value: unknown, status = 200) {
+const respond = (value: unknown, status = 200) => {
   const body = JSON.stringify(value);
-  if (new TextEncoder().encode(body).length > CODEX_CONTROL_MAX_RESPONSE)
-    return yield* new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" });
-  return HttpServerResponse.text(body, {
-    status,
-    contentType: "application/json",
-    headers: { "cache-control": "no-store" },
-  });
-});
+  return Effect.succeed(
+    HttpServerResponse.text(body, {
+      status,
+      contentType: "application/json",
+      headers: { "cache-control": "no-store" },
+    }),
+  );
+};
 const statusFor = (error: CodexBridgeError) =>
   error.code === "unauthorized"
     ? 401
@@ -126,17 +117,7 @@ export const makeCodexControl = Effect.fnUntraced(function* (
         const request = yield* HttpServerRequest.HttpServerRequest;
         if (request.headers["content-type"] !== "application/json")
           return yield* new CodexBridgeError({ code: "invalid_request", outcome: "rejected" });
-        if (request.headers["content-length"] !== undefined)
-          yield* decodeLength(request.headers["content-length"]).pipe(
-            Effect.mapError(
-              () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
-            ),
-          );
         const buffer = yield* request.arrayBuffer.pipe(
-          Effect.provideService(
-            HttpIncomingMessage.MaxBodySize,
-            FileSystem.Size(CODEX_CONTROL_MAX_BODY),
-          ),
           Effect.mapError(
             () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
           ),
@@ -169,17 +150,7 @@ export const makeCodexControl = Effect.fnUntraced(function* (
         const request = yield* HttpServerRequest.HttpServerRequest;
         if (request.headers["content-type"] !== "application/json")
           return yield* new CodexBridgeError({ code: "invalid_request", outcome: "rejected" });
-        if (request.headers["content-length"] !== undefined)
-          yield* decodeLength(request.headers["content-length"]).pipe(
-            Effect.mapError(
-              () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
-            ),
-          );
         const buffer = yield* request.arrayBuffer.pipe(
-          Effect.provideService(
-            HttpIncomingMessage.MaxBodySize,
-            FileSystem.Size(CODEX_CONTROL_MAX_BODY),
-          ),
           Effect.mapError(
             () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
           ),
@@ -230,17 +201,7 @@ export const makeCodexControl = Effect.fnUntraced(function* (
         const request = yield* HttpServerRequest.HttpServerRequest;
         if (request.headers["content-type"] !== "application/json")
           return yield* new CodexBridgeError({ code: "invalid_request", outcome: "rejected" });
-        if (request.headers["content-length"] !== undefined)
-          yield* decodeLength(request.headers["content-length"]).pipe(
-            Effect.mapError(
-              () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
-            ),
-          );
         const buffer = yield* request.arrayBuffer.pipe(
-          Effect.provideService(
-            HttpIncomingMessage.MaxBodySize,
-            FileSystem.Size(CODEX_CONTROL_MAX_BODY),
-          ),
           Effect.mapError(
             () => new CodexBridgeError({ code: "invalid_request", outcome: "rejected" }),
           ),

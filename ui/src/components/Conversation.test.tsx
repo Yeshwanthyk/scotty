@@ -12,37 +12,33 @@ const completed = (id: string): ConversationTurn => ({
   tools: [],
 });
 
-const evidence: EvidenceSummary = {
+const evidence = (overrides: Partial<EvidenceSummary> = {}): EvidenceSummary => ({
   jobId: "job-1",
   status: "succeeded",
   totalSteps: 1,
   completedSteps: 1,
   frameCount: 1,
-  recordVideo: true,
-  videoAvailable: true,
+  recordVideo: false,
+  videoAvailable: false,
   steps: [{ name: "Conversation view", status: "passed", frameId: "frame-1" }],
-};
+  ...overrides,
+});
 
 describe("conversation disclosure", () => {
-  it.each([true, false])(
-    "renders the existing streaming snapshot immediately (animateStreaming=%s)",
-    (animateStreaming) => {
-      const streaming: ConversationTurn = {
-        ...completed("current"),
-        state: "streaming",
-        assistant: "Previously received response text",
-      };
-      const markup = renderToStaticMarkup(
-        <Conversation animateStreaming={animateStreaming} turns={[streaming]} />,
-      );
+  it("renders the existing streaming snapshot immediately", () => {
+    const streaming: ConversationTurn = {
+      ...completed("current"),
+      state: "streaming",
+      assistant: "Previously received response text",
+    };
+    const markup = renderToStaticMarkup(<Conversation turns={[streaming]} />);
 
-      expect(markup).toContain(streaming.assistant);
-    },
-  );
+    expect(markup).toContain(streaming.assistant);
+  });
 
   it("renders the newest completed turn in full and keeps older work folded", () => {
     const markup = renderToStaticMarkup(
-      <Conversation animateStreaming={false} turns={[completed("one"), completed("two")]} />,
+      <Conversation turns={[completed("one"), completed("two")]} />,
     );
 
     expect(markup.match(/data-turn-disclosure="folded"/gu)).toHaveLength(1);
@@ -55,9 +51,7 @@ describe("conversation disclosure", () => {
       ...completed("current"),
       state: "streaming",
     };
-    const markup = renderToStaticMarkup(
-      <Conversation animateStreaming={false} turns={[completed("older"), streaming]} />,
-    );
+    const markup = renderToStaticMarkup(<Conversation turns={[completed("older"), streaming]} />);
 
     expect(markup).toContain('data-turn-disclosure="folded"');
     expect(markup).not.toContain('data-turn-disclosure="latest"');
@@ -77,31 +71,54 @@ describe("conversation disclosure", () => {
         },
       ],
     };
-    const markup = renderToStaticMarkup(
-      <Conversation animateStreaming={false} turns={[streaming]} />,
-    );
+    const markup = renderToStaticMarkup(<Conversation turns={[streaming]} />);
 
     expect(markup.indexOf("Question current")).toBeLessThan(markup.indexOf("Working"));
     expect(markup.indexOf("Working")).toBeLessThan(markup.indexOf("Reading project"));
   });
 
-  it("renders referenced authenticated pictures and video inside the owning turn", () => {
+  it("includes the complete tool invocation in its disclosure", () => {
+    const invocation = `bash(${"readable-argument ".repeat(100)})`;
+    const withTool: ConversationTurn = {
+      ...completed("tool"),
+      tools: [
+        {
+          id: "tool-1",
+          invocation,
+          label: "Running command",
+          state: "completed",
+        },
+      ],
+    };
+    const markup = renderToStaticMarkup(<Conversation turns={[withTool]} />);
+
+    expect(markup).toContain('aria-label="Complete tool invocation"');
+    expect(markup.split(invocation)).toHaveLength(3);
+  });
+});
+
+describe("inline conversation evidence", () => {
+  it("renders a failed run's screenshot beneath the tool that owns its persisted reference", () => {
     const turn: ConversationTurn = {
       ...completed("evidence"),
+      assistant: "The run failed after capturing a checkpoint.",
       tools: [
         {
           id: "tool-evidence",
           invocation: "Browser evidence",
           label: "Browser evidence",
-          state: "completed",
-          output: '{"jobId":"job-1","summaryUrl":"/s/a0b1c2d3e4f5/evidence/job-1"}',
+          state: "failed",
+          output: "scotty-evidence:job-1",
         },
       ],
     };
     const markup = renderToStaticMarkup(
       <Conversation
-        animateStreaming={false}
-        evidence={[evidence]}
+        evidenceState={{
+          kind: "ready",
+          sessionId: "a0b1c2d3e4f5",
+          evidence: [evidence({ status: "failed" })],
+        }}
         sessionId="a0b1c2d3e4f5"
         turns={[turn]}
       />,
@@ -109,73 +126,116 @@ describe("conversation disclosure", () => {
 
     expect(markup).toContain('aria-label="Browser evidence"');
     expect(markup).toContain('src="/s/a0b1c2d3e4f5/evidence/job-1/frames/frame-1.png"');
-    expect(markup).toContain('aria-label="Browser evidence recording"');
-    expect(markup).toContain('src="/s/a0b1c2d3e4f5/evidence/job-1/video.webm"');
-    expect(markup).toContain("controls");
+    expect(markup.indexOf("scotty-evidence:job-1")).toBeLessThan(
+      markup.indexOf('aria-label="Browser evidence"'),
+    );
   });
 
-  it("does not attach unreferenced evidence to a conversation turn", () => {
+  it("does not associate an assistant prose marker with evidence", () => {
+    const turn: ConversationTurn = {
+      ...completed("prose"),
+      assistant: "Earlier proof was scotty-evidence:job-1.",
+    };
     const markup = renderToStaticMarkup(
       <Conversation
-        animateStreaming={false}
-        evidence={[evidence]}
+        evidenceState={{
+          kind: "ready",
+          sessionId: "a0b1c2d3e4f5",
+          evidence: [evidence()],
+        }}
         sessionId="a0b1c2d3e4f5"
-        turns={[completed("plain")]}
+        turns={[turn]}
       />,
     );
 
     expect(markup).not.toContain('aria-label="Browser evidence"');
-    expect(markup).not.toContain("video.webm");
   });
 
-  it("does not confuse an evidence job with an identifier that only shares its prefix", () => {
+  it("keeps the detail link and explains a referenced run with no screenshot artifact", () => {
     const turn: ConversationTurn = {
-      ...completed("other-evidence"),
-      assistant: "Proof: scotty-evidence:job-10",
+      ...completed("missing"),
+      tools: [
+        {
+          id: "tool-evidence",
+          invocation: "Browser evidence",
+          label: "Browser evidence",
+          state: "failed",
+          output: "scotty-evidence:job-1",
+        },
+      ],
     };
     const markup = renderToStaticMarkup(
-      <Conversation evidence={[evidence]} sessionId="a0b1c2d3e4f5" turns={[turn]} />,
+      <Conversation
+        evidenceState={{
+          kind: "ready",
+          sessionId: "a0b1c2d3e4f5",
+          evidence: [evidence({ status: "failed", frameCount: 0, steps: [] })],
+        }}
+        sessionId="a0b1c2d3e4f5"
+        turns={[turn]}
+      />,
     );
 
-    expect(markup).not.toContain('aria-label="Browser evidence"');
+    expect(markup).toContain("No screenshots were captured for this run.");
+    expect(markup).toContain('href="/s/a0b1c2d3e4f5/evidence/job-1"');
   });
 
-  it("finds an exact evidence marker after an identifier that shares its prefix", () => {
+  it("renders a native recording beneath the tool-owned evidence", () => {
     const turn: ConversationTurn = {
-      ...completed("mixed-evidence"),
-      assistant: "Compared scotty-evidence:job-10 before confirming scotty-evidence:job-1.",
-    };
-    const markup = renderToStaticMarkup(
-      <Conversation evidence={[evidence]} sessionId="a0b1c2d3e4f5" turns={[turn]} />,
-    );
-
-    expect(markup).toContain('aria-label="Browser evidence"');
-  });
-
-  it("keeps evidence with its tool turn when a later turn quotes the same reference", () => {
-    const owner: ConversationTurn = {
-      ...completed("owner"),
+      ...completed("video"),
       tools: [
         {
           id: "tool-evidence",
           invocation: "Browser evidence",
           label: "Browser evidence",
           state: "completed",
-          output: '{"summaryUrl":"/s/a0b1c2d3e4f5/evidence/job-1"}',
+          output: "scotty-evidence:job-1",
         },
       ],
     };
-    const quote: ConversationTurn = {
-      ...completed("quote"),
-      assistant: "Earlier proof was scotty-evidence:job-1.",
-    };
     const markup = renderToStaticMarkup(
-      <Conversation evidence={[evidence]} sessionId="a0b1c2d3e4f5" turns={[owner, quote]} />,
+      <Conversation
+        evidenceState={{
+          kind: "ready",
+          sessionId: "a0b1c2d3e4f5",
+          evidence: [evidence({ recordVideo: true, videoAvailable: true })],
+        }}
+        sessionId="a0b1c2d3e4f5"
+        turns={[turn]}
+      />,
     );
 
-    expect(markup.match(/aria-label="Browser evidence"/gu)).toHaveLength(1);
-    expect(markup.indexOf('aria-label="Browser evidence"')).toBeLessThan(
-      markup.indexOf("Earlier proof was"),
+    expect(markup).toContain('aria-label="Browser evidence recording"');
+    expect(markup).toContain('src="/s/a0b1c2d3e4f5/evidence/job-1/video.webm"');
+  });
+
+  it("does not expose evidence loaded for a different session", () => {
+    const turn: ConversationTurn = {
+      ...completed("isolated"),
+      tools: [
+        {
+          id: "tool-evidence",
+          invocation: "Browser evidence",
+          label: "Browser evidence",
+          state: "completed",
+          output: "scotty-evidence:job-1",
+        },
+      ],
+    };
+    const markup = renderToStaticMarkup(
+      <Conversation
+        evidenceState={{
+          kind: "ready",
+          sessionId: "b0b1c2d3e4f5",
+          evidence: [evidence()],
+        }}
+        sessionId="a0b1c2d3e4f5"
+        turns={[turn]}
+      />,
     );
+
+    expect(markup).toContain("Loading screenshots…");
+    expect(markup).not.toContain("frames/frame-1.png");
+    expect(markup).not.toContain("/s/b0b1c2d3e4f5/evidence/");
   });
 });

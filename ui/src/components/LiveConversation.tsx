@@ -5,7 +5,6 @@ import {
   type KeyboardEvent,
   type ReactNode,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -24,12 +23,15 @@ import { activeConversationTurn, type ConversationTurn } from "../domain/convers
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { SessionSelectionLabel } from "./SessionSelection";
 import { Button } from "./Button";
-import { Conversation } from "./Conversation";
+import {
+  Conversation,
+  evidenceJobIdFromTool,
+  type ConversationEvidenceState,
+} from "./Conversation";
 
 const ACTIVE_POLL_MS = 750;
 const IDLE_POLL_MS = 2_500;
 const RETRY_POLL_MS = 1_500;
-const MAX_MESSAGE_BYTES = 16 * 1024;
 
 type ConnectionState =
   | { readonly kind: "loading" }
@@ -215,11 +217,13 @@ const styles = stylex.create({
   sendIcon: { width: "14px", height: "14px", strokeWidth: 1.8 },
   queue: {
     width: "min(900px, 100%)",
+    maxHeight: "160px",
     margin: 0,
     padding: 0,
     display: "grid",
     gap: "4px",
     listStyle: "none",
+    overflowY: "auto",
   },
   queueItem: {
     minWidth: 0,
@@ -239,9 +243,8 @@ const styles = stylex.create({
     textAlign: "center",
   },
   queueText: {
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
+    overflowWrap: "anywhere",
+    whiteSpace: "normal",
   },
   queueMode: { color: colors.quiet, fontSize: "10px" },
 });
@@ -384,8 +387,32 @@ function useConversationConnection(
   };
 }
 
+const truncationWarning = (snapshot: ConversationSnapshot | undefined): string | undefined => {
+  if (snapshot?.truncated.turns && snapshot.truncated.values)
+    return "The agent transport reported omitted turns and shortened values. The visible transcript is incomplete.";
+  if (snapshot?.truncated.turns)
+    return "The agent transport reported omitted earlier turns. The visible transcript is incomplete.";
+  if (snapshot?.truncated.values)
+    return "The agent transport reported shortened values. Expandable content may be incomplete.";
+  return undefined;
+};
+
 const runtimeStopped = (connection: ConnectionState): boolean =>
   connection.kind === "ready" && connection.snapshot.runtimeStopped === true;
+
+const conversationWarning = (
+  connection: ConnectionState,
+  snapshot: ConversationSnapshot | undefined,
+): string | undefined => {
+  if (runtimeStopped(connection)) return runtimeFailureMessage(snapshot);
+  const truncated = truncationWarning(snapshot);
+  if (truncated !== undefined) return truncated;
+  if (snapshot?.followUpBlocked === true)
+    return "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue.";
+  if (snapshot?.messageAdmissionAvailable === false)
+    return "A Hatch or browser evidence operation is in progress. Messages will be available when it finishes.";
+  return undefined;
+};
 
 const connectionLabelFor = (connection: ConnectionState, active: boolean): string => {
   if (connection.kind === "loading") return "Connecting";
@@ -469,12 +496,12 @@ function ConversationShell({
 
 function ConversationContent({
   connection,
-  evidence,
+  evidenceState,
   retry,
   sessionId,
 }: {
   readonly connection: ConnectionState;
-  readonly evidence: ReadonlyArray<EvidenceSummary>;
+  readonly evidenceState: ConversationEvidenceState;
   readonly retry: () => void;
   readonly sessionId: string;
 }) {
@@ -493,30 +520,22 @@ function ConversationContent({
     return <UnavailableConversation failure={connection.failure} retry={retry} />;
   if (connection.snapshot.turns.length === 0) return <EmptyConversation />;
   return (
-    <Conversation evidence={evidence} sessionId={sessionId} turns={connection.snapshot.turns} />
+    <Conversation
+      evidenceState={evidenceState}
+      sessionId={sessionId}
+      turns={connection.snapshot.turns}
+    />
   );
 }
 
-function useConversationEvidence(sessionId: string, evidenceRevision: string | undefined) {
-  const [evidence, setEvidence] = useState<ReadonlyArray<EvidenceSummary>>([]);
-  const verifiedSessionId = useRef(sessionId);
-  useEffect(() => {
-    if (verifiedSessionId.current !== sessionId) {
-      verifiedSessionId.current = sessionId;
-      setEvidence([]);
-    }
-    const controller = new AbortController();
-    let retryTimer: number | undefined;
-    void refreshConversationEvidence(sessionId, controller.signal, setEvidence, (retry) => {
-      retryTimer = window.setTimeout(() => void retry(), RETRY_POLL_MS);
-    });
-    return () => {
-      controller.abort();
-      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
-    };
-  }, [evidenceRevision, sessionId]);
-  return evidence;
-}
+const evidenceRevisionFor = (snapshot: ConversationSnapshot | undefined): string =>
+  snapshot?.turns
+    .flatMap((turn) => turn.tools)
+    .flatMap((tool) => {
+      const jobId = evidenceJobIdFromTool(tool);
+      return jobId === undefined ? [] : [`${tool.id}:${tool.state}:${jobId}`];
+    })
+    .join("\n") ?? "";
 
 type ConversationEvidenceReader = (
   sessionId: string,
@@ -542,20 +561,54 @@ export const refreshConversationEvidence = (
     },
   );
 
-const evidenceRevisionFor = (snapshot: ConversationSnapshot | undefined): string | undefined =>
-  snapshot?.turns
-    .flatMap((turn) => turn.tools)
-    .filter(
-      (tool) =>
-        tool.invocation === "Browser evidence" ||
-        tool.output?.includes("scotty-evidence:") === true ||
-        tool.output?.includes("/evidence/") === true,
-    )
-    .map((tool) => `${tool.id}:${tool.state}:${tool.output ?? ""}`)
-    .join("\n");
+function useConversationEvidence(
+  sessionId: string,
+  snapshot: ConversationSnapshot | undefined,
+): ConversationEvidenceState {
+  const revision = evidenceRevisionFor(snapshot);
+  const [loaded, setLoaded] = useState<{
+    readonly sessionId: string;
+    readonly revision: string;
+    readonly state: ConversationEvidenceState;
+  }>({ sessionId, revision, state: { kind: "loading", sessionId } });
 
-const deliveryMessage = (delivery: DeliveryState, draftTooLong: boolean): string => {
-  if (draftTooLong) return "Message is too long";
+  useEffect(() => {
+    const controller = new AbortController();
+    if (revision.length === 0) {
+      setLoaded({
+        sessionId,
+        revision,
+        state: { kind: "ready", sessionId, evidence: [] },
+      });
+      return () => controller.abort();
+    }
+    setLoaded({ sessionId, revision, state: { kind: "loading", sessionId } });
+    let retryTimer: number | undefined;
+    void refreshConversationEvidence(
+      sessionId,
+      controller.signal,
+      (evidence) =>
+        setLoaded({
+          sessionId,
+          revision,
+          state: { kind: "ready", sessionId, evidence },
+        }),
+      (retry) => {
+        retryTimer = window.setTimeout(() => void retry(), RETRY_POLL_MS);
+      },
+    );
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [revision, sessionId]);
+
+  return loaded.sessionId === sessionId && loaded.revision === revision
+    ? loaded.state
+    : { kind: "loading", sessionId };
+}
+
+const deliveryMessage = (delivery: DeliveryState): string => {
   if (delivery.kind === "accepted" || delivery.kind === "failed" || delivery.kind === "ambiguous")
     return delivery.message;
   return "";
@@ -600,14 +653,9 @@ function ConversationComposer({
   const [queueAfterTurn, setQueueAfterTurn] = useState(false);
   const queuedRequest = useRef<{ text: string; id: string } | undefined>(undefined);
   const [delivery, setDelivery] = useState<DeliveryState>({ kind: "idle" });
-  const draftBytes = useMemo(() => new TextEncoder().encode(draft).byteLength, [draft]);
-  const draftTooLong = draftBytes > MAX_MESSAGE_BYTES;
   const deliveryBusy = delivery.kind === "submitting" || delivery.kind === "interrupting";
   const canSubmit =
-    canIssueSessionCommand(enabled, admissionAvailable) &&
-    draft.trim().length > 0 &&
-    !draftTooLong &&
-    !deliveryBusy;
+    canIssueSessionCommand(enabled, admissionAvailable) && draft.trim().length > 0 && !deliveryBusy;
   const canInterrupt =
     canIssueSessionCommand(enabled, admissionAvailable) &&
     active &&
@@ -727,7 +775,7 @@ function ConversationComposer({
             delivery.kind === "ambiguous" && styles.deliveryWarning,
           )}
         >
-          {deliveryMessage(delivery, draftTooLong)}
+          {deliveryMessage(delivery)}
         </span>
       </div>
     </form>
@@ -735,8 +783,7 @@ function ConversationComposer({
 }
 
 const compactQueueText = (item: ConversationQueueItem): string => {
-  const compact = item.text.replaceAll(/\s+/gu, " ").trim();
-  return compact.length > 120 ? `${compact.slice(0, 119).trimEnd()}…` : compact;
+  return item.text.replaceAll(/\s+/gu, " ").trim();
 };
 
 function ComposerQueue({ queue }: { readonly queue: ConversationSnapshot["queue"] }) {
@@ -745,10 +792,9 @@ function ComposerQueue({ queue }: { readonly queue: ConversationSnapshot["queue"
     ...queue.followUp.map((item) => ({ item, label: "Queued" })),
   ];
   if (items.length === 0) return null;
-  const visible = items.slice(0, 3);
   return (
     <ol aria-label="Queued messages" {...stylex.props(styles.queue)}>
-      {visible.map(({ item, label }, index) => (
+      {items.map(({ item, label }, index) => (
         <li key={`${label}-${item.id}`} {...stylex.props(styles.queueItem)}>
           <span {...stylex.props(styles.queueOrder)}>{index + 1}</span>
           <span title={item.text} {...stylex.props(styles.queueText)}>
@@ -757,13 +803,6 @@ function ComposerQueue({ queue }: { readonly queue: ConversationSnapshot["queue"
           <small {...stylex.props(styles.queueMode)}>{label}</small>
         </li>
       ))}
-      {items.length > visible.length ? (
-        <li {...stylex.props(styles.queueItem)}>
-          <span {...stylex.props(styles.queueOrder)}>+</span>
-          <span {...stylex.props(styles.queueText)}>{items.length - visible.length} more</span>
-          <small {...stylex.props(styles.queueMode)}>Queued</small>
-        </li>
-      ) : null}
     </ol>
   );
 }
@@ -784,7 +823,7 @@ export function LiveConversation({
   );
 
   const snapshot = connection.kind === "ready" ? connection.snapshot : undefined;
-  const evidence = useConversationEvidence(sessionId, evidenceRevisionFor(snapshot));
+  const evidenceState = useConversationEvidence(sessionId, snapshot);
   const activeTurn = activeConversationTurn(snapshot?.turns ?? []);
   const active = activeTurn !== undefined;
   const healthy =
@@ -797,15 +836,7 @@ export function LiveConversation({
     <ConversationShell
       healthy={healthy}
       status={<ConnectionStatus active={active} connection={connection} />}
-      warning={
-        runtimeStopped(connection)
-          ? runtimeFailureMessage(snapshot)
-          : snapshot?.followUpBlocked === true
-            ? "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue."
-            : snapshot?.messageAdmissionAvailable === false
-              ? "A Hatch or browser evidence operation is in progress. Messages will be available when it finishes."
-              : undefined
-      }
+      warning={conversationWarning(connection, snapshot)}
       composer={
         <ConversationComposer
           active={active}
@@ -826,7 +857,7 @@ export function LiveConversation({
     >
       <ConversationContent
         connection={connection}
-        evidence={evidence}
+        evidenceState={evidenceState}
         retry={refresh}
         sessionId={sessionId}
       />
@@ -870,7 +901,7 @@ export function ConversationPreview({
         />
       }
     >
-      <Conversation animateStreaming turns={turns} />
+      <Conversation turns={turns} />
     </ConversationShell>
   );
 }

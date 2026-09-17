@@ -1,6 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Result, Schema } from "effect";
-import { CanonicalConversationTurnSchema } from "../../../protocol/conversation";
+import {
+  CanonicalConversationTurnSchema,
+  decodeCanonicalConversationSnapshotSync,
+} from "../../../protocol/conversation";
 import { decodeAgentSelection } from "../../../protocol/agent-selection";
 
 const decodeTurn = Schema.decodeUnknownResult(CanonicalConversationTurnSchema, {
@@ -16,7 +19,33 @@ describe("public agent and conversation schemas", () => {
       );
     });
   }
-  it("retains strict text bounds and rejects invented terminal states", () => {
+  it("decodes producer payloads with 101 turns, 53 tools, and full UTF-8 values", () => {
+    const tools = Array.from({ length: 53 }, (_, index) => ({
+      id: `tool-${index}`,
+      state: "completed" as const,
+      label: `Tool ${index}`,
+      invocation: "界".repeat(2_000),
+      output: "🚀".repeat(2_000),
+    }));
+    const turns = Array.from({ length: 101 }, (_, index) => ({
+      id: `turn-${index}`,
+      state: "completed" as const,
+      user: "é".repeat(20_000),
+      assistant: "🙂".repeat(20_000),
+      tools: index === 100 ? tools : [],
+    }));
+    const value = {
+      version: 1 as const,
+      transport: { epoch: "epoch-1", baseSequence: 0, sequence: 1, sessionRevision: 1 },
+      turns,
+      queue: { steer: [], followUp: [] },
+      truncated: { turns: false, values: false },
+    };
+
+    assert.deepStrictEqual(decodeCanonicalConversationSnapshotSync(value), value);
+  });
+
+  it("accepts long conversation text and rejects invented terminal states", () => {
     for (const state of ["interrupted", "successful", "unknown"])
       assert.isTrue(
         Result.isFailure(
@@ -24,7 +53,7 @@ describe("public agent and conversation schemas", () => {
         ),
       );
     assert.isTrue(
-      Result.isFailure(
+      Result.isSuccess(
         decodeTurn({
           id: "turn-1",
           state: "failed",

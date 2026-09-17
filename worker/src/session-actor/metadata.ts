@@ -19,7 +19,7 @@ const SessionBranchSchema = Schema.String.check(
     { expected: "a bounded session branch" },
   ),
 );
-const InitialPromptSchema = Schema.NonEmptyString.check(Schema.isMaxLength(1_048_576));
+const InitialPromptSchema = Schema.NonEmptyString;
 const Sha256DigestSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const HardCapDurationSchema = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(60),
