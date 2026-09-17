@@ -6,7 +6,7 @@ import {
   decodeUpResponse,
   type AttachOutput,
   type BeamUpOutput,
-  type InspectResponse,
+  type PiInspectSnapshot,
   type SessionResponse,
   type SessionOperationOutput,
   type InterruptResponse,
@@ -176,7 +176,7 @@ export function stableUp(
   });
 }
 
-export function humanInspect(id: string, snapshot: InspectResponse): string {
+export function humanPiInspect(id: string, snapshot: PiInspectSnapshot): string {
   const queued = snapshot.queue.steer.length + snapshot.queue.followUp.length;
   const truncated = snapshot.truncated.messages || snapshot.truncated.values ? "yes" : "no";
   return (
@@ -228,7 +228,7 @@ const readableMessageContent = (content: unknown): string | undefined => {
 };
 
 export function readableMessages(
-  snapshot: InspectResponse,
+  snapshot: PiInspectSnapshot,
   options: {
     readonly last: number;
     readonly role?: ReadMessageRole;
@@ -258,7 +258,7 @@ export function readableMessages(
 
 export function readOutput(
   id: string,
-  snapshot: InspectResponse,
+  snapshot: PiInspectSnapshot,
   messages: ReadonlyArray<ReadMessage>,
 ): ReadOutput {
   return {

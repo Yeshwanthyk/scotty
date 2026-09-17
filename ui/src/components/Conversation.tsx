@@ -1,8 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { Check, CircleAlert, LoaderCircle } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
-  streamedTextAt,
   turnActivityLabel,
   turnPreview,
   type ConversationTurn,
@@ -230,8 +229,25 @@ const styles = stylex.create({
   },
   toolStateRunning: { color: colors.warning },
   toolStateFailed: { color: colors.danger },
-  toolOutput: {
+  toolDetails: {
     margin: "0 8px 9px 34px",
+    display: "grid",
+    gap: spacing.sm,
+  },
+  toolInvocationFull: {
+    padding: spacing.md,
+    overflowX: "auto",
+    overflowWrap: "anywhere",
+    borderRadius: "6px",
+    backgroundColor: colors.space,
+    color: colors.muted,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "10px",
+    lineHeight: 1.55,
+    whiteSpace: "pre-wrap",
+  },
+  toolOutput: {
+    margin: 0,
     padding: spacing.md,
     overflowX: "auto",
     borderRadius: "6px",
@@ -241,18 +257,6 @@ const styles = stylex.create({
     fontSize: "10px",
     lineHeight: 1.55,
     whiteSpace: "pre-wrap",
-  },
-  caret: {
-    display: "inline-block",
-    width: "2px",
-    height: "1em",
-    marginLeft: "2px",
-    verticalAlign: "-0.12em",
-    backgroundColor: colors.warning,
-    animationName: stylex.keyframes({ "0%, 45%": { opacity: 1 }, "46%, 100%": { opacity: 0 } }),
-    animationDuration: "900ms",
-    animationIterationCount: "infinite",
-    animationTimingFunction: "steps(1, end)",
   },
 });
 
@@ -293,9 +297,14 @@ function ToolRow({ tool }: { readonly tool: ToolActivity }) {
           {tool.state}
         </span>
       </summary>
-      {tool.output === undefined ? null : (
-        <pre {...stylex.props(styles.toolOutput)}>{tool.output}</pre>
-      )}
+      <div {...stylex.props(styles.toolDetails)}>
+        <pre aria-label="Complete tool invocation" {...stylex.props(styles.toolInvocationFull)}>
+          {tool.invocation}
+        </pre>
+        {tool.output === undefined ? null : (
+          <pre {...stylex.props(styles.toolOutput)}>{tool.output}</pre>
+        )}
+      </div>
     </details>
   );
 }
@@ -360,57 +369,20 @@ function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
   );
 }
 
-export function Conversation({
-  animateStreaming = true,
-  turns,
-}: {
-  readonly animateStreaming?: boolean;
-  readonly turns: ReadonlyArray<ConversationTurn>;
-}) {
+export function Conversation({ turns }: { readonly turns: ReadonlyArray<ConversationTurn> }) {
   const active = turns.findLast((turn) => turn.state === "streaming");
   const completed = turns.filter((turn) => turn.state !== "streaming");
   const latestCompleted = active === undefined ? completed.at(-1) : undefined;
   const foldedCompleted = latestCompleted === undefined ? completed : completed.slice(0, -1);
   const [visibleCompleted, setVisibleCompleted] = useState(3);
-  const [visibleCharacters, setVisibleCharacters] = useState(active?.assistant.length ?? 0);
-  const activeTurnId = useRef(active?.id);
   const viewport = useRef<HTMLDivElement | null>(null);
   const followTail = useRef(true);
-
-  useEffect(() => {
-    if (active?.id === activeTurnId.current) return;
-    activeTurnId.current = active?.id;
-    setVisibleCharacters(0);
-  }, [active?.id]);
-
-  useEffect(() => {
-    if (active === undefined) return;
-    if (!animateStreaming) {
-      setVisibleCharacters(active.assistant.length);
-      return;
-    }
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion) {
-      setVisibleCharacters(active.assistant.length);
-      return;
-    }
-    const timer = window.setInterval(() => {
-      setVisibleCharacters((current) => {
-        if (current >= active.assistant.length) {
-          window.clearInterval(timer);
-          return current;
-        }
-        return Math.min(active.assistant.length, current + 2);
-      });
-    }, 28);
-    return () => window.clearInterval(timer);
-  }, [active?.assistant, animateStreaming]);
 
   useLayoutEffect(() => {
     const element = viewport.current;
     if (element === null || !followTail.current) return;
     element.scrollTop = element.scrollHeight;
-  }, [active?.assistant, completed.length, turns.length, visibleCharacters]);
+  }, [active?.assistant, completed.length, turns.length]);
 
   return (
     <div
@@ -466,10 +438,7 @@ export function Conversation({
             </div>
             <TurnContent assistant="" showUser={false} turn={active} />
             <div aria-live="polite" {...stylex.props(styles.assistantMessage)}>
-              <Markdown source={streamedTextAt(active.assistant, visibleCharacters)} />
-              {visibleCharacters < active.assistant.length ? (
-                <span aria-hidden {...stylex.props(styles.caret)} />
-              ) : null}
+              <Markdown source={active.assistant} />
             </div>
           </article>
         )}

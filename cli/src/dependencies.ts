@@ -1,4 +1,4 @@
-import { decodeCanonicalReadSnapshot, decodeInspectResponse } from "./schemas";
+import { decodeCanonicalReadSnapshot, decodePiInspectSnapshot } from "./schemas";
 import { readableMessages } from "./pure";
 import type { CanonicalConversationSnapshot } from "../../protocol/conversation";
 import type { ReadMessage } from "./pure";
@@ -413,7 +413,7 @@ export const decodeReadSnapshot = (
 ) => {
   const canonical = decodeCanonicalReadSnapshot(raw);
   if (Option.isSome(canonical)) return Option.some(canonicalReadSnapshot(canonical.value, options));
-  return Option.map(decodeInspectResponse(raw), (snapshot) => ({
+  return Option.map(decodePiInspectSnapshot(raw), (snapshot) => ({
     epoch: snapshot.epoch,
     sequence: snapshot.sequence,
     messages: readableMessages(snapshot, options),

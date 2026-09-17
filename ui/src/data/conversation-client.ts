@@ -1,54 +1,13 @@
-import type { ConversationTurn, ToolActivity } from "../domain/conversation";
+import {
+  decodeCanonicalConversationSnapshotSync,
+  type CanonicalConversationQueueItem,
+  type CanonicalConversationSnapshot,
+  type CanonicalConversationTransport,
+} from "../../../protocol/conversation";
 
-const MAX_TURNS = 100;
-const MAX_TOOLS_PER_TURN = 32;
-const MAX_TEXT_LENGTH = 16 * 1024;
-const MAX_TOOL_VALUE_LENGTH = 1_200;
-const MAX_ELAPSED_SECONDS = 7 * 24 * 60 * 60;
-const utf8Encoder = new TextEncoder();
-
-type JsonValue = string | number | boolean | null | JsonObject | ReadonlyArray<JsonValue>;
-interface JsonObject {
-  readonly [key: string]: JsonValue | undefined;
-}
-
-interface ConversationTurnObject extends JsonObject {
-  readonly id: string;
-  readonly state: "completed" | "streaming" | "failed" | "aborted";
-  readonly user: string;
-  readonly assistant: string;
-  readonly tools: ReadonlyArray<JsonValue>;
-  readonly activitySummary?: string;
-  readonly elapsedSeconds?: number;
-}
-
-export interface ConversationTransport {
-  readonly epoch: string;
-  readonly baseSequence: number;
-  readonly sequence: number;
-  readonly sessionRevision: number;
-}
-
-export interface ConversationSnapshot {
-  readonly runtimeStopped?: boolean;
-  readonly runtimeFailure?: { readonly code: string; readonly diagnostic?: string };
-  readonly followUpAvailable?: boolean;
-  readonly followUpBlocked?: boolean;
-  readonly messageAdmissionAvailable?: boolean;
-  readonly version: 1;
-  readonly transport: ConversationTransport;
-  readonly turns: ReadonlyArray<ConversationTurn>;
-  readonly queue: {
-    readonly steer: ReadonlyArray<ConversationQueueItem>;
-    readonly followUp: ReadonlyArray<ConversationQueueItem>;
-  };
-  readonly truncated: { readonly turns: boolean; readonly values: boolean };
-}
-
-export interface ConversationQueueItem {
-  readonly id: string;
-  readonly text: string;
-}
+export type ConversationTransport = CanonicalConversationTransport;
+export type ConversationSnapshot = CanonicalConversationSnapshot;
+export type ConversationQueueItem = CanonicalConversationQueueItem;
 
 export type ConversationFailure =
   | { readonly kind: "network"; readonly message: string }
@@ -91,6 +50,11 @@ export interface ConversationRequestOptions {
   readonly signal?: AbortSignal;
 }
 
+type JsonValue = string | number | boolean | null | JsonObject | ReadonlyArray<JsonValue>;
+interface JsonObject {
+  readonly [key: string]: JsonValue | undefined;
+}
+
 const isJsonValue = (value: unknown): value is JsonValue => {
   if (
     value === null ||
@@ -107,140 +71,10 @@ const isJsonValue = (value: unknown): value is JsonValue => {
 const isJsonObject = (value: unknown): value is JsonObject =>
   isJsonValue(value) && value !== null && !Array.isArray(value) && typeof value === "object";
 
-const hasExactKeys = (value: JsonObject, keys: ReadonlyArray<string>): boolean => {
-  const actual = Object.keys(value);
-  return actual.length === keys.length && keys.every((key) => actual.includes(key));
-};
-
 const isSafeSequence = (value: JsonValue | undefined): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
-const isBoundedText = (value: JsonValue | undefined, maximum = MAX_TEXT_LENGTH): value is string =>
-  typeof value === "string" && utf8Encoder.encode(value).byteLength <= maximum;
-
-const decodeTransport = (value: JsonValue | undefined): ConversationTransport | undefined => {
-  if (
-    !isJsonObject(value) ||
-    !hasExactKeys(value, ["epoch", "baseSequence", "sequence", "sessionRevision"]) ||
-    !isBoundedText(value.epoch, 256) ||
-    value.epoch.length === 0 ||
-    !isSafeSequence(value.baseSequence) ||
-    !isSafeSequence(value.sequence) ||
-    !isSafeSequence(value.sessionRevision) ||
-    value.baseSequence > value.sequence
-  )
-    return undefined;
-  return {
-    epoch: value.epoch,
-    baseSequence: value.baseSequence,
-    sequence: value.sequence,
-    sessionRevision: value.sessionRevision,
-  };
-};
-
-const decodeTool = (value: JsonValue): ToolActivity | undefined => {
-  if (
-    !isJsonObject(value) ||
-    !hasExactKeys(
-      value,
-      value.output === undefined
-        ? ["id", "state", "label", "invocation"]
-        : ["id", "state", "label", "invocation", "output"],
-    ) ||
-    !isBoundedText(value.id, 256) ||
-    value.id.length === 0 ||
-    (value.state !== "completed" &&
-      value.state !== "running" &&
-      value.state !== "failed" &&
-      value.state !== "cancelled") ||
-    !isBoundedText(value.label) ||
-    !isBoundedText(value.invocation, MAX_TOOL_VALUE_LENGTH) ||
-    (value.output !== undefined && !isBoundedText(value.output, MAX_TOOL_VALUE_LENGTH))
-  )
-    return undefined;
-  return {
-    id: value.id,
-    state: value.state,
-    label: value.label,
-    invocation: value.invocation,
-    ...(value.output === undefined ? {} : { output: value.output }),
-  };
-};
-
-const expectedTurnKeys = (value: JsonObject): ReadonlyArray<string> => [
-  "id",
-  "state",
-  "user",
-  "assistant",
-  "tools",
-  ...(value.activitySummary === undefined ? [] : ["activitySummary"]),
-  ...(value.elapsedSeconds === undefined ? [] : ["elapsedSeconds"]),
-];
-
-const validElapsedSeconds = (value: JsonValue | undefined): boolean =>
-  value === undefined ||
-  (typeof value === "number" &&
-    Number.isFinite(value) &&
-    value >= 0 &&
-    value <= MAX_ELAPSED_SECONDS);
-
-const validTurnShape = (value: JsonObject): value is ConversationTurnObject =>
-  hasExactKeys(value, expectedTurnKeys(value)) &&
-  isBoundedText(value.id, 256) &&
-  value.id.length > 0 &&
-  (value.state === "completed" ||
-    value.state === "streaming" ||
-    value.state === "failed" ||
-    value.state === "aborted") &&
-  isBoundedText(value.user) &&
-  isBoundedText(value.assistant) &&
-  (value.activitySummary === undefined || isBoundedText(value.activitySummary)) &&
-  validElapsedSeconds(value.elapsedSeconds) &&
-  Array.isArray(value.tools) &&
-  value.tools.length <= MAX_TOOLS_PER_TURN;
-
-const decodeTurn = (value: JsonValue): ConversationTurn | undefined => {
-  if (!isJsonObject(value) || !validTurnShape(value) || !Array.isArray(value.tools))
-    return undefined;
-  const tools = value.tools.map(decodeTool);
-  if (tools.some((tool) => tool === undefined)) return undefined;
-  return {
-    id: value.id,
-    state: value.state,
-    user: value.user,
-    assistant: value.assistant,
-    tools: tools.filter((tool): tool is ToolActivity => tool !== undefined),
-    ...(value.activitySummary === undefined ? {} : { activitySummary: value.activitySummary }),
-    ...(value.elapsedSeconds === undefined ? {} : { elapsedSeconds: value.elapsedSeconds }),
-  };
-};
-
-const decodeQueueItem = (value: JsonValue): ConversationQueueItem | undefined => {
-  if (
-    !isJsonObject(value) ||
-    !hasExactKeys(value, ["id", "text"]) ||
-    !isBoundedText(value.id, 256) ||
-    value.id.length === 0 ||
-    !isBoundedText(value.text)
-  )
-    return undefined;
-  return { id: value.id, text: value.text };
-};
-
-const decodeRuntimeFailure = (value: JsonValue): ConversationSnapshot["runtimeFailure"] => {
-  if (
-    !isJsonObject(value) ||
-    !hasExactKeys(value, ["code", ...(value.diagnostic === undefined ? [] : ["diagnostic"])]) ||
-    !isBoundedText(value.code, 64) ||
-    value.code.length === 0 ||
-    (value.diagnostic !== undefined && !isBoundedText(value.diagnostic, 256))
-  )
-    return undefined;
-  return {
-    code: value.code,
-    ...(typeof value.diagnostic === "string" ? { diagnostic: value.diagnostic } : {}),
-  };
-};
+export const decodeConversationSnapshot = decodeCanonicalConversationSnapshotSync;
 
 export const runtimeFailureMessage = (snapshot: ConversationSnapshot | undefined): string => {
   const failure = snapshot?.runtimeFailure;
@@ -249,85 +83,6 @@ export const runtimeFailureMessage = (snapshot: ConversationSnapshot | undefined
     : "Agent runtime stopped.";
   return `${reason} Review the last tool result and session diagnostics before starting a new session; pending commands may have run.`;
 };
-
-const hasConversationSnapshotKeys = (value: JsonObject): boolean =>
-  hasExactKeys(value, [
-    "version",
-    "transport",
-    "turns",
-    "queue",
-    "truncated",
-    ...(value.runtimeStopped === undefined ? [] : ["runtimeStopped"]),
-    ...(value.runtimeFailure === undefined ? [] : ["runtimeFailure"]),
-    ...(value.followUpAvailable === undefined ? [] : ["followUpAvailable"]),
-    ...(value.followUpBlocked === undefined ? [] : ["followUpBlocked"]),
-    ...(value.messageAdmissionAvailable === undefined ? [] : ["messageAdmissionAvailable"]),
-  ]) &&
-  (value.runtimeStopped === undefined || typeof value.runtimeStopped === "boolean") &&
-  (value.runtimeFailure === undefined ||
-    decodeRuntimeFailure(value.runtimeFailure) !== undefined) &&
-  (value.followUpAvailable === undefined || typeof value.followUpAvailable === "boolean") &&
-  (value.followUpBlocked === undefined || typeof value.followUpBlocked === "boolean") &&
-  (value.messageAdmissionAvailable === undefined ||
-    typeof value.messageAdmissionAvailable === "boolean");
-
-const decodeFollowUpCapabilities = (value: JsonObject) => ({
-  ...(value.runtimeFailure === undefined
-    ? {}
-    : { runtimeFailure: decodeRuntimeFailure(value.runtimeFailure) }),
-  ...(typeof value.runtimeStopped === "boolean" ? { runtimeStopped: value.runtimeStopped } : {}),
-  ...(typeof value.followUpAvailable === "boolean"
-    ? { followUpAvailable: value.followUpAvailable }
-    : {}),
-  ...(typeof value.followUpBlocked === "boolean" ? { followUpBlocked: value.followUpBlocked } : {}),
-  ...(typeof value.messageAdmissionAvailable === "boolean"
-    ? { messageAdmissionAvailable: value.messageAdmissionAvailable }
-    : {}),
-});
-
-export const decodeConversationSnapshot = (value: unknown): ConversationSnapshot | undefined => {
-  if (
-    !isJsonObject(value) ||
-    !hasConversationSnapshotKeys(value) ||
-    value.version !== 1 ||
-    !Array.isArray(value.turns) ||
-    value.turns.length > MAX_TURNS ||
-    !isJsonObject(value.queue) ||
-    !hasExactKeys(value.queue, ["steer", "followUp"]) ||
-    !Array.isArray(value.queue.steer) ||
-    !Array.isArray(value.queue.followUp) ||
-    value.queue.steer.length > 100 ||
-    value.queue.followUp.length > 100 ||
-    !isJsonObject(value.truncated) ||
-    !hasExactKeys(value.truncated, ["turns", "values"]) ||
-    typeof value.truncated.turns !== "boolean" ||
-    typeof value.truncated.values !== "boolean"
-  )
-    return undefined;
-  const transport = decodeTransport(value.transport);
-  const turns = value.turns.map(decodeTurn);
-  const steer = value.queue.steer.map(decodeQueueItem);
-  const followUp = value.queue.followUp.map(decodeQueueItem);
-  if (
-    transport === undefined ||
-    turns.some((turn) => turn === undefined) ||
-    steer.some((item) => item === undefined) ||
-    followUp.some((item) => item === undefined)
-  )
-    return undefined;
-  return {
-    version: 1,
-    transport,
-    ...decodeFollowUpCapabilities(value),
-    turns: turns.filter((turn): turn is ConversationTurn => turn !== undefined),
-    queue: {
-      steer: steer.filter((item): item is ConversationQueueItem => item !== undefined),
-      followUp: followUp.filter((item): item is ConversationQueueItem => item !== undefined),
-    },
-    truncated: { turns: value.truncated.turns, values: value.truncated.values },
-  };
-};
-
 const readJson = async (response: Response): Promise<unknown> =>
   response.json().catch(() => undefined);
 

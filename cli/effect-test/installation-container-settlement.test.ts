@@ -215,6 +215,7 @@ describe("installation container rollout settlement", () => {
               operation: null,
               runtime: "stopped",
               pi: "not_running",
+              agentRuntime: { agent: "pi", state: "not_running" },
               ready: true,
               reason: "sleeping_checkpointed",
             },
@@ -228,11 +229,36 @@ describe("installation container rollout settlement", () => {
         operation: null,
         runtime: "stopped",
         pi: "not_running",
+        agentRuntime: { agent: "pi", state: "not_running" },
         ready: true,
         reason: "sleeping_checkpointed",
       });
       assert.strictEqual(request?.url, "https://scotty.example/api/sessions/deployment-readiness");
       assert.strictEqual(request?.headers.get("authorization"), "Bearer root-token");
+    }),
+  );
+
+  it.effect("accepts sleeping readiness from an old Worker", () =>
+    Effect.gen(function* () {
+      const readiness = yield* readDeploymentSessionReadiness(
+        "https://scotty.example/",
+        "root-token",
+        async () =>
+          Response.json([
+            {
+              id: "a0b1c2d3e4f5",
+              title: "Checkpointed",
+              recordStatus: "sleeping",
+              operation: null,
+              runtime: "stopped",
+              pi: "not_running",
+              ready: true,
+              reason: "sleeping_checkpointed",
+            },
+          ]),
+      );
+      yield* assertDeploymentSessionReadiness(readiness);
+      assert.isUndefined(readiness[0]?.agentRuntime);
     }),
   );
 
@@ -248,7 +274,8 @@ describe("installation container rollout settlement", () => {
             agentState: "working",
             lastAgentEventAt: "2026-08-30T12:00:00.000Z",
             runtime: "running",
-            pi: "reachable",
+            pi: "unknown",
+            agentRuntime: { agent: "codex", state: "unknown" },
             ready: false,
             reason: "lifecycle_busy",
           },
@@ -264,7 +291,8 @@ describe("installation container rollout settlement", () => {
         agentState: "working",
         lastAgentEventAt: "2026-08-30T12:00:00.000Z",
         runtime: "running",
-        pi: "reachable",
+        pi: "unknown",
+        agentRuntime: { agent: "codex", state: "unknown" },
         ready: false,
         reason: "lifecycle_busy",
       });

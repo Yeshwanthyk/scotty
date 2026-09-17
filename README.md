@@ -455,7 +455,7 @@ Then run the repeatable user-service setup:
 ```
 
 `inspect` passively reads a warm session without starting or waking its container. `steer` takes a
-fresh passive snapshot and submits one bounded prompt against that exact epoch and session revision;
+fresh passive snapshot and submits one non-empty prompt against that exact epoch and session revision;
 stale or ambiguous outcomes are never retried automatically. On a local machine these commands use
 the configured Worker and root bearer token. Inside a Scotty sandbox they instead use the exact
 `https://scotty.internal` origin without loading or forwarding root credentials or source identity.

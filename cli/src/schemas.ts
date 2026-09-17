@@ -182,8 +182,8 @@ export const SessionsResponseSchema = Schema.Struct({
   sessions: Schema.Array(SessionResponseSchema),
 });
 export type SessionsResponse = typeof SessionsResponseSchema.Type;
-export const InspectResponseSchema = PiConsoleSnapshotSchema;
-export type InspectResponse = typeof InspectResponseSchema.Type;
+export const PiInspectSnapshotSchema = PiConsoleSnapshotSchema;
+export type PiInspectSnapshot = typeof PiInspectSnapshotSchema.Type;
 export const SteerResponseSchema = SessionSteerResponseSchema;
 export type SteerResponse = typeof SessionSteerResponseSchema.Type;
 export const InterruptResponseSchema = SessionInterruptResponseSchema;
@@ -271,7 +271,7 @@ export const decodeOperationResponse = Schema.decodeUnknownOption(OperationRespo
 export const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema, {
   onExcessProperty: "error",
 });
-export const decodeInspectResponse = Schema.decodeUnknownOption(InspectResponseSchema, {
+export const decodePiInspectSnapshot = Schema.decodeUnknownOption(PiInspectSnapshotSchema, {
   onExcessProperty: "ignore",
 });
 export const decodeSteerResponse = Schema.decodeUnknownOption(SteerResponseSchema, {

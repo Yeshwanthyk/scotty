@@ -1,11 +1,5 @@
 import { Effect, Option } from "effect";
-import {
-  CliError,
-  DEFAULT_REQUEST_TIMEOUT_MS,
-  EXIT,
-  MAX_RESPONSE_BYTES,
-  MUTATION_REQUEST_TIMEOUT_MS,
-} from "./core";
+import { CliError, DEFAULT_REQUEST_TIMEOUT_MS, EXIT, MUTATION_REQUEST_TIMEOUT_MS } from "./core";
 import { decodeErrorEnvelope, decodeErrorFields, decodeJsonValue, decodeString } from "./schemas";
 import { HttpTransport } from "./services";
 import { invalidResponse, redact, statusExit } from "./pure";
@@ -29,28 +23,13 @@ const timeoutError = (method: string): CliError =>
     EXIT.GENERIC,
   );
 
-export const readLimited = Effect.fnUntraced(function* (response: Response) {
-  const declared = Number(response.headers.get("content-length") || 0);
-  if (declared > MAX_RESPONSE_BYTES)
-    return yield* new CliError(
-      "response_too_large",
-      "Server response is too large",
-      "Retry the operation or inspect the Worker.",
-      EXIT.GENERIC,
-    );
+export const readResponseBytes = Effect.fnUntraced(function* (response: Response) {
   const bytes = new Uint8Array(
     yield* Effect.tryPromise({
       try: () => response.arrayBuffer(),
       catch: networkError,
     }),
   );
-  if (bytes.byteLength > MAX_RESPONSE_BYTES)
-    return yield* new CliError(
-      "response_too_large",
-      "Server response is too large",
-      "Retry the operation or inspect the Worker.",
-      EXIT.GENERIC,
-    );
   return bytes;
 });
 
@@ -121,7 +100,7 @@ export const apiRequest = Effect.fnUntraced(function* (
     : controller.signal;
   const responseOption = yield* Effect.gen(function* () {
     const response = yield* transport.fetch(`${target.host}${path}`, { ...init, headers, signal });
-    const bytes = yield* readLimited(response);
+    const bytes = yield* readResponseBytes(response);
     return { response, bytes };
   }).pipe(
     Effect.ensuring(Effect.sync(() => controller.abort())),

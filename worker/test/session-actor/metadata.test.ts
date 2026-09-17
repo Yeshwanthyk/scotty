@@ -62,6 +62,13 @@ const input = (): SessionActorMetadataInput => ({
   initialPrompt: "Keep this prompt private and scrub it after create settles.",
 });
 
+it("preserves initial prompts beyond the former metadata display limit", () => {
+  const initialPrompt = "界".repeat(1_100_000);
+  const result = makeSessionActorMetadata(createAuthority(), { ...input(), initialPrompt });
+  assert.ok(Result.isSuccess(result));
+  assert.strictEqual(result.success.privateCreateInput?.initialPrompt, initialPrompt);
+});
+
 const metadata = (): SessionActorMetadata => {
   const result = makeSessionActorMetadata(createAuthority(), input());
   assert.ok(Result.isSuccess(result));

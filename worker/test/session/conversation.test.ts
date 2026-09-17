@@ -157,6 +157,45 @@ describe("canonical conversation snapshot mapper", () => {
     assert.notInclude(encoded, "extensionSurface");
   });
 
+  it("sanitizes nested tool strings and keys before JSON encoding", () => {
+    const result = canonicalConversationSnapshotFromPi(
+      snapshot({
+        messages: [
+          { id: "user-1", role: "user", content: "Run it" },
+          {
+            id: "assistant-1",
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "tool-1",
+                name: "custom",
+                arguments: {
+                  "scotty-managed://key": {
+                    nested: "scotty-managed://handle\nKEEP_THIS_TEXT",
+                    "\u001b[31mcolored\u001b[0m": "safe",
+                  },
+                },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "tool-1",
+            content: { nested: "before\u001b]0;title\u0007after\u001b[32mgreen\u001b[0m" },
+          },
+        ],
+      }),
+    );
+
+    assert.ok(result);
+    assert.strictEqual(
+      result.turns[0]?.tools[0]?.invocation,
+      'custom({"[managed-handle]":{"nested":"[managed-handle]\\nKEEP_THIS_TEXT","colored":"safe"}})',
+    );
+    assert.strictEqual(result.turns[0]?.tools[0]?.output, '{"nested":"beforeaftergreen"}');
+  });
+
   it("applies contiguous streaming overlap and keeps active tools running", () => {
     const result = canonicalConversationSnapshotFromPi(
       snapshot({
@@ -225,7 +264,7 @@ describe("canonical conversation snapshot mapper", () => {
     );
   });
 
-  it("bounds retained turns and marks source or local truncation", () => {
+  it("retains every projected turn and reports only upstream truncation", () => {
     const messages = Array.from({ length: 101 }, (_, index) => ({
       id: `user-${index}`,
       role: "user" as const,
@@ -233,8 +272,35 @@ describe("canonical conversation snapshot mapper", () => {
     }));
     const result = canonicalConversationSnapshotFromPi(snapshot({ messages }));
     assert.ok(result);
-    assert.strictEqual(result.turns.length, 100);
-    assert.strictEqual(result.turns[0]?.id, "user-1");
-    assert.deepStrictEqual(result.truncated, { turns: true, values: false });
+    assert.strictEqual(result.turns.length, 101);
+    assert.strictEqual(result.turns[0]?.id, "user-0");
+    assert.deepStrictEqual(result.truncated, { turns: false, values: false });
+
+    const upstreamTruncated = canonicalConversationSnapshotFromPi(
+      snapshot({ messages, truncated: { messages: true, values: true } }),
+    );
+    assert.deepStrictEqual(upstreamTruncated?.truncated, { turns: true, values: true });
+  });
+
+  it("retains full tool activity and values from the Pi snapshot", () => {
+    const tools = Array.from({ length: 53 }, (_, index) => ({
+      type: "toolCall",
+      id: `tool-${index}`,
+      name: `tool-${index}`,
+      arguments: { value: "界".repeat(2_000), index },
+    }));
+    const result = canonicalConversationSnapshotFromPi(
+      snapshot({
+        messages: [
+          { id: "user-1", role: "user", content: "Run every tool" },
+          { id: "assistant-1", role: "assistant", content: tools },
+        ],
+      }),
+    );
+
+    assert.ok(result);
+    assert.strictEqual(result.turns[0]?.tools.length, 53);
+    assert.include(result.turns[0]?.tools[52]?.invocation ?? "", "界".repeat(2_000));
+    assert.isFalse(result.truncated.values);
   });
 });

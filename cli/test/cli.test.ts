@@ -3940,23 +3940,31 @@ describe("commands and schemas", () => {
     }
   });
 
-  test("steer rejects empty, slash-command, oversized, and trailing input before fetching", async () => {
+  test("steer rejects invalid grammar and admits text beyond the former display budget", async () => {
     let calls = 0;
     const h = harness({
       fetch: async () => {
         calls++;
-        return Response.json({});
+        return Response.json({
+          id: "s1",
+          status: "accepted",
+          commandId: "command-1",
+          epoch: "epoch-1",
+          sessionRevision: 1,
+        });
       },
     });
     for (const args of [
       ["steer", "s1", "  "],
       ["steer", "s1", "/help"],
-      ["steer", "s1", "é".repeat(8_193)],
       ["steer", "s1", "continue", "extra"],
     ]) {
       expect(await main([...args, "--host", "https://worker.example"], h.deps)).toBe(EXIT.USAGE);
     }
-    expect(calls).toBe(0);
+    expect(
+      await main(["steer", "s1", "é".repeat(8_193), "--host", "https://worker.example"], h.deps),
+    ).toBe(EXIT.OK);
+    expect(calls).toBe(1);
   });
 
   test("checkpoint and resume emit minimal stable schemas", async () => {

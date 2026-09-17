@@ -147,6 +147,7 @@ const validImages = (images) => {
 
 const isBoundedString = (value) =>
   typeof value === "string" && Buffer.byteLength(value, "utf8") <= maxStringBytes;
+const isString = (value) => typeof value === "string";
 const isIdentifier = (value) => typeof value === "string" && identifierPattern.test(value);
 
 const truncateUtf8 = (value, maxBytes) => {
@@ -901,7 +902,7 @@ const commandEnvelopeKeys = new Set(["epoch", "commandId", "expectedSessionRevis
 const invalidCommandResult = () => ({ ok: false, error: "invalid_command" });
 const validatePromptIntent = (command) => {
   if (
-    !isBoundedString(command.message) ||
+    !isString(command.message) ||
     !validImages(command.images) ||
     (command.streamingBehavior !== undefined &&
       command.streamingBehavior !== "steer" &&
@@ -913,9 +914,7 @@ const validatePromptIntent = (command) => {
   return undefined;
 };
 const validateMessageIntent = (command) =>
-  !isBoundedString(command.message) || !validImages(command.images)
-    ? invalidCommandResult()
-    : undefined;
+  !isString(command.message) || !validImages(command.images) ? invalidCommandResult() : undefined;
 const validateExtensionUiResponseIntent = (command) => {
   if (
     !isIdentifier(command.id) ||

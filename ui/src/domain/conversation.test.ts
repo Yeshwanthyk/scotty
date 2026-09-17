@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   activeConversationTurn,
-  streamedTextAt,
   turnActivityLabel,
   turnPreview,
   type ConversationTurn,
@@ -25,12 +24,6 @@ describe("conversation presentation", () => {
       id: "streaming",
       state: "streaming",
     });
-  });
-
-  it("bounds streaming text without splitting past the source", () => {
-    expect(streamedTextAt("Scotty", -2)).toBe("");
-    expect(streamedTextAt("Scotty", 4)).toBe("Scot");
-    expect(streamedTextAt("Scotty", 100)).toBe("Scotty");
   });
 
   it("summarizes terminal and active activity", () => {
