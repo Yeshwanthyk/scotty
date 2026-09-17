@@ -598,7 +598,7 @@ export async function handleContainerSessionEgress(
       return rejectedRequest("Create requires a JSON POST request");
     const idempotencyKey = request.headers.get("idempotency-key");
     if (idempotencyKey === null) return rejectedRequest("Create requires an idempotency-key");
-    const bodyText = await readBoundedUtf8Body(request);
+    const bodyText = await readBoundedUtf8Body(request, PI_CONSOLE_MAX_COMMAND_BYTES);
     if (bodyText === undefined) return rejectedRequest("Create request body is too large");
     const body = decodeJsonValue(bodyText);
     if (Option.isNone(body)) return rejectedRequest("Request body must be valid JSON");
@@ -629,7 +629,7 @@ export async function handleContainerSessionEgress(
     const bodyText =
       action === "interrupt"
         ? await readBoundedUtf8Body(request, PI_CONSOLE_MAX_COMMAND_BYTES)
-        : await readBoundedUtf8Body(request);
+        : await readBoundedUtf8Body(request, PI_CONSOLE_MAX_COMMAND_BYTES);
     if (bodyText === undefined) return rejectedRequest("Control request body is too large");
     const body = decodeJsonValue(bodyText);
     if (Option.isNone(body)) return rejectedRequest("Request body must be valid JSON");
@@ -660,6 +660,7 @@ export async function handleContainerSessionEgress(
         action: "steer",
         targetId: targetId.success,
         message: message.success,
+        ...(delivery.value.images === undefined ? {} : { images: delivery.value.images }),
         ...(delivery.value.deliverAs === undefined ? {} : { deliverAs: delivery.value.deliverAs }),
         ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
       };

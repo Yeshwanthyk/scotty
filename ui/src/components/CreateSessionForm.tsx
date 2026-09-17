@@ -2,6 +2,8 @@ import * as stylex from "@stylexjs/stylex";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, GitBranch, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ImageAttachments, useImageAttachments } from "./ImageAttachments";
+import { IMAGE_ONLY_PROMPT } from "../data/image-attachments";
 import { Button } from "./Button";
 import { readRepositories } from "../data/settings";
 import {
@@ -239,6 +241,12 @@ export function CreateSessionForm({
   const submittingRef = useRef(false);
   const idempotencyKeyRef = useRef<string | undefined>(undefined);
 
+  const attachments = useImageAttachments(submitting, () => {
+    idempotencyKeyRef.current = undefined;
+    setFieldError(undefined);
+    setFailure(undefined);
+  });
+
   const updateDraft = (field: keyof CreateSessionDraft, value: string) => {
     idempotencyKeyRef.current = undefined;
     setDraft((current) => ({ ...current, [field]: value }));
@@ -248,13 +256,12 @@ export function CreateSessionForm({
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (submittingRef.current) return;
+    if (submittingRef.current || attachments.reading) return;
+    const prompt = draft.prompt.trim() || (attachments.items.length ? IMAGE_ONLY_PROMPT : "");
     const parsed = buildCreateSessionPayload({
       ...draft,
-      title:
-        draft.title.trim() ||
-        draft.prompt.trim().split(/\r?\n/u)[0]?.slice(0, 120) ||
-        "New session",
+      prompt,
+      title: draft.title.trim() || prompt.split(/\r?\n/u)[0]?.slice(0, 120) || "New session",
     });
     if (!parsed.ok) {
       setFieldError({ field: parsed.field, message: parsed.message });
@@ -281,7 +288,10 @@ export function CreateSessionForm({
     try {
       const idempotencyKey = idempotencyKeyRef.current ?? createSessionIdempotencyKey();
       idempotencyKeyRef.current = idempotencyKey;
-      const result = await createSession(parsed.payload, { idempotencyKey });
+      const result = await createSession(
+        { ...parsed.payload, ...(attachments.images.length ? { images: attachments.images } : {}) },
+        { idempotencyKey },
+      );
       if (!result.ok) {
         setFailure(result.failure);
         return;
@@ -438,7 +448,7 @@ export function CreateSessionForm({
               ) : null}
             </div>
 
-            <div {...stylex.props(styles.field)}>
+            <div {...attachments.handlers} {...stylex.props(styles.field)}>
               <label htmlFor="session-prompt" {...stylex.props(styles.label)}>
                 What would you like to do?
               </label>
@@ -454,6 +464,7 @@ export function CreateSessionForm({
                 aria-describedby={errorFor("prompt") ? "session-prompt-error" : undefined}
                 {...stylex.props(styles.control, styles.textarea)}
               />
+              <ImageAttachments attachments={attachments} />
               {errorFor("prompt") ? (
                 <p id="session-prompt-error" {...stylex.props(styles.fieldError)}>
                   {errorFor("prompt")}
@@ -534,7 +545,7 @@ export function CreateSessionForm({
                 aria-keyshortcuts="Meta+Enter Control+Enter"
                 type="submit"
                 variant="primary"
-                disabled={submitting}
+                disabled={submitting || attachments.reading}
                 {...stylex.props(styles.actionButton)}
               >
                 {submitting ? (

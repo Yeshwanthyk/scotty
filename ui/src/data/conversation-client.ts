@@ -1,3 +1,4 @@
+import type { PiConsoleImage } from "../../../protocol/pi-console";
 import {
   decodeCanonicalConversationSnapshotSync,
   type CanonicalConversationQueueItem,
@@ -162,6 +163,7 @@ export const steerConversation = async (
   sessionId: string,
   message: string,
   options: ConversationRequestOptions & {
+    readonly images?: readonly PiConsoleImage[];
     readonly deliverAs?: "followUp";
     readonly clientUserMessageId?: string;
   } = {},
@@ -183,6 +185,7 @@ export const steerConversation = async (
         },
         body: JSON.stringify({
           message,
+          ...(options.images?.length ? { images: options.images } : {}),
           ...(options.deliverAs === undefined ? {} : { deliverAs: options.deliverAs }),
         }),
         signal: options.signal,

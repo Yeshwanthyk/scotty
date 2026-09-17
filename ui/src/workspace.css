@@ -385,7 +385,7 @@ html {
   }
   [aria-label="Conversation"] form .session-selection-label {
     grid-column: 1 / -1;
-    grid-row: 2;
+    grid-row: 3;
     align-self: center;
     min-width: 0;
     width: auto;
@@ -395,7 +395,7 @@ html {
       sans-serif;
   }
   [aria-label="Conversation"] form > div:has(textarea) > button {
-    grid-row: 3;
+    grid-row: 4;
     min-height: 44px;
     padding: 7px 12px;
     border-radius: 7px;
@@ -444,10 +444,10 @@ html {
 @container composer (min-width: 500px) {
   html [aria-label="Conversation"] form .session-selection-label {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 3;
   }
   html [aria-label="Conversation"] form > div:has(textarea) > button {
-    grid-row: 2;
+    grid-row: 3;
   }
 }
 @media (min-width: 761px) {

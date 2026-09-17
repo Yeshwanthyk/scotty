@@ -3037,6 +3037,82 @@ describe("real Hono boundary", () => {
     }
   });
 
+  it("delivers create and public steer images through the real session actor to native Codex", async () => {
+    const images = [{ type: "image", mimeType: "image/png", data: "aGVsbG8=" }];
+    const posted: Array<{ path: string; body: unknown }> = [];
+    let admitted = false;
+    const harness = await createSessionHarness({
+      credentialRegistryGrants: DEFAULT_CREDENTIAL_GRANTS,
+      containerFetch: async (request) => {
+        const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+        if (authority === undefined) throw new RouteTestFailure("missing authority");
+        const path = new URL(request.url).pathname;
+        const generation = request.headers.get("x-scotty-codex-generation");
+        if (path === "/prompt" || path === "/message") {
+          posted.push({ path, body: await request.json() });
+          admitted = true;
+          return Response.json(
+            { generation, threadId: "thread-image", turnId: "turn-image" },
+            { status: 202 },
+          );
+        }
+        return Response.json({
+          generation,
+          threadId: "thread-image",
+          version: CODEX_VERSION,
+          settings: {
+            model: "gpt-5.4",
+            effort: "high",
+            workspace: `/workspace/${authority.session.id}`,
+            modelProvider: "scotty-managed",
+            approvalPolicy: "never",
+            sandbox: "dangerFullAccess",
+          },
+          ready: true,
+          failure: null,
+          cleanup: null,
+          prompt: admitted ? { status: "running", turnId: "turn-image" } : { status: "idle" },
+        });
+      },
+    });
+    useRealSandbox(harness);
+    const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+    const created = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: "Image task",
+          prompt: "Inspect image",
+          images,
+          provider: "cloudflare",
+          repo: "owner/project",
+          agent: "codex",
+          model: "gpt-5.4",
+          effort: "high",
+        }),
+      },
+      env(),
+    );
+    expect(created.status).toBe(200);
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    expect(authority).toBeDefined();
+    const response = await app.request(
+      `/api/sessions/${authority?.session.id}/steer`,
+      { method: "POST", headers, body: JSON.stringify({ message: "Compare image", images }) },
+      env(),
+    );
+    expect(response.status).toBe(202);
+    expect(posted).toEqual([
+      { path: "/prompt", body: expect.objectContaining({ text: "Inspect image", images }) },
+      {
+        path: "/message",
+        body: expect.objectContaining({ text: "Compare image", images, mode: "steer" }),
+      },
+    ]);
+  });
+
   it("returns Codex follow-up and active-steer admissions with their native turn mode", async () => {
     sandbox.steerScottyCodexSession
       .mockResolvedValueOnce(
@@ -3100,10 +3176,12 @@ describe("real Hono boundary", () => {
       "continue",
       undefined,
       undefined,
+      undefined,
     );
     expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(
       2,
       "continue",
+      undefined,
       undefined,
       undefined,
     );

@@ -172,3 +172,20 @@ describe("create session boundary", () => {
     });
   });
 });
+
+it("includes images in the initial session request", async () => {
+  const images = [{ type: "image", mimeType: "image/jpeg", data: "aGVsbG8=" }] as const;
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(success));
+  const payload = {
+    title: "Image task",
+    repo: "owner/project",
+    prompt: "Review this",
+    provider: "cloudflare",
+    images,
+  } as const;
+  expect((await createSession(payload, { origin, fetch: fetchMock })).ok).toBe(true);
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/sessions",
+    expect.objectContaining({ body: JSON.stringify(payload) }),
+  );
+});

@@ -458,3 +458,27 @@ describe("queued follow-up public intent", () => {
     );
   });
 });
+
+it("delivers attached images with queued message identity", async () => {
+  const images = [{ type: "image", mimeType: "image/png", data: "aGVsbG8=" }] as const;
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(Response.json({ id: "session-1", status: "accepted" }));
+  expect(
+    (
+      await steerConversation("session-1", "Review this", {
+        images,
+        deliverAs: "followUp",
+        clientUserMessageId: "image-message",
+        fetch: fetchMock,
+      })
+    ).ok,
+  ).toBe(true);
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/sessions/session-1/steer",
+    expect.objectContaining({
+      body: JSON.stringify({ message: "Review this", images, deliverAs: "followUp" }),
+      headers: expect.objectContaining({ "idempotency-key": "image-message" }),
+    }),
+  );
+});

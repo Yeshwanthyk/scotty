@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { Check, CircleAlert, LoaderCircle } from "lucide-react";
+import { Check, CircleAlert, ExternalLink, Images, LoaderCircle } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import {
   turnActivityLabel,
@@ -7,6 +7,7 @@ import {
   type ConversationTurn,
   type ToolActivity,
 } from "../domain/conversation";
+import type { EvidenceSummary } from "../data/session-workbench";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { Markdown } from "./Markdown";
 
@@ -258,7 +259,251 @@ const styles = stylex.create({
     lineHeight: 1.55,
     whiteSpace: "pre-wrap",
   },
+  evidenceOwner: { minWidth: 0 },
+  evidence: {
+    minWidth: 0,
+    margin: `2px 8px ${spacing.sm} 34px`,
+    padding: spacing.md,
+    display: "grid",
+    gap: spacing.sm,
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colors.lineSoft,
+    borderRadius: "10px",
+    backgroundColor: "rgb(255 255 255 / 0.02)",
+    "@media (max-width: 720px)": { marginLeft: spacing.sm },
+  },
+  evidenceHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  evidenceTitle: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: spacing.sm,
+    color: colors.muted,
+    fontSize: "12px",
+    fontWeight: 650,
+  },
+  evidenceIcon: { width: "14px", height: "14px", color: colors.quiet, strokeWidth: 1.8 },
+  evidenceLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    color: colors.muted,
+    fontSize: "11px",
+    textDecoration: "none",
+    whiteSpace: "nowrap",
+    ":hover": { color: colors.ink },
+  },
+  evidenceStatus: { margin: 0, color: colors.quiet, fontSize: "11px", lineHeight: 1.5 },
+  evidenceError: { color: colors.danger },
+  evidenceFrames: {
+    minWidth: 0,
+    display: "flex",
+    gap: spacing.sm,
+    overflowX: "auto",
+    scrollSnapType: "x proximity",
+  },
+  evidenceFrameLink: {
+    width: "min(240px, 82vw)",
+    flex: "0 0 auto",
+    overflow: "hidden",
+    borderRadius: "7px",
+    backgroundColor: colors.space,
+    color: colors.muted,
+    textDecoration: "none",
+    scrollSnapAlign: "start",
+  },
+  evidenceFrameViewport: {
+    height: "180px",
+    position: "relative",
+    display: "grid",
+    placeItems: "center",
+    backgroundColor: colors.space,
+  },
+  evidenceFrame: {
+    width: "100%",
+    height: "100%",
+    display: "block",
+    objectFit: "contain",
+  },
+  evidenceFrameUnavailable: { opacity: 0 },
+  evidenceFrameStatus: {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
+    padding: spacing.md,
+    color: colors.quiet,
+    fontSize: "11px",
+    textAlign: "center",
+  },
+  evidenceFrameLoaded: { display: "none" },
+  evidenceCaption: {
+    display: "block",
+    padding: `${spacing.sm} ${spacing.md}`,
+    overflow: "hidden",
+    fontSize: "11px",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  evidenceVideo: {
+    width: "100%",
+    maxHeight: "460px",
+    display: "block",
+    borderRadius: "7px",
+    backgroundColor: colors.space,
+  },
 });
+
+export type ConversationEvidenceState =
+  | { readonly kind: "loading"; readonly sessionId: string }
+  | {
+      readonly kind: "ready";
+      readonly sessionId: string;
+      readonly evidence: ReadonlyArray<EvidenceSummary>;
+    }
+  | { readonly kind: "error"; readonly sessionId: string; readonly message: string };
+
+const EVIDENCE_REFERENCE =
+  /(?:^|[^A-Za-z0-9_-])scotty-evidence:([A-Za-z0-9][A-Za-z0-9_-]{0,127})(?![A-Za-z0-9_-])/u;
+
+export const evidenceJobIdFromTool = (tool: ToolActivity): string | undefined =>
+  tool.output?.match(EVIDENCE_REFERENCE)?.[1];
+
+const evidencePath = (sessionId: string, jobId: string): string =>
+  `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(jobId)}`;
+
+function EvidenceThumbnail({
+  frameId,
+  name,
+  summaryPath,
+}: {
+  readonly frameId: string;
+  readonly name: string;
+  readonly summaryPath: string;
+}) {
+  const [imageState, setImageState] = useState<"loading" | "loaded" | "error">("loading");
+  const framePath = `${summaryPath}/frames/${encodeURIComponent(frameId)}.png`;
+  return (
+    <a
+      aria-label={`Open ${name} screenshot`}
+      href={framePath}
+      target="_blank"
+      rel="noreferrer"
+      {...stylex.props(styles.evidenceFrameLink)}
+    >
+      <span aria-busy={imageState === "loading"} {...stylex.props(styles.evidenceFrameViewport)}>
+        <img
+          alt={`${name} browser evidence`}
+          decoding="async"
+          loading="lazy"
+          onError={() => setImageState("error")}
+          onLoad={() => setImageState("loaded")}
+          src={framePath}
+          {...stylex.props(
+            styles.evidenceFrame,
+            imageState === "error" && styles.evidenceFrameUnavailable,
+          )}
+        />
+        <span
+          {...stylex.props(
+            styles.evidenceFrameStatus,
+            imageState === "loaded" && styles.evidenceFrameLoaded,
+          )}
+        >
+          {imageState === "error" ? "Screenshot unavailable" : "Loading screenshot…"}
+        </span>
+      </span>
+      <span {...stylex.props(styles.evidenceCaption)}>{name}</span>
+    </a>
+  );
+}
+
+function ToolEvidence({
+  evidenceState,
+  jobId,
+  sessionId,
+}: {
+  readonly evidenceState: ConversationEvidenceState;
+  readonly jobId: string;
+  readonly sessionId: string;
+}) {
+  const summaryPath = evidencePath(sessionId, jobId);
+  const state =
+    evidenceState.sessionId === sessionId ? evidenceState : { kind: "loading" as const };
+  const job =
+    state.kind === "ready"
+      ? state.evidence.find((candidate) => candidate.jobId === jobId)
+      : undefined;
+  const frames =
+    job?.steps.filter(
+      (step): step is typeof step & { readonly frameId: string } => step.frameId !== undefined,
+    ) ?? [];
+  return (
+    <section aria-label="Browser evidence" {...stylex.props(styles.evidence)}>
+      <header {...stylex.props(styles.evidenceHeader)}>
+        <span {...stylex.props(styles.evidenceTitle)}>
+          <Images aria-hidden {...stylex.props(styles.evidenceIcon)} />
+          Browser evidence
+        </span>
+        <a
+          aria-label="Open browser evidence details"
+          href={summaryPath}
+          target="_blank"
+          rel="noreferrer"
+          {...stylex.props(styles.evidenceLink)}
+        >
+          Details <ExternalLink aria-hidden {...stylex.props(styles.evidenceIcon)} />
+        </a>
+      </header>
+      {state.kind === "loading" ? (
+        <p role="status" {...stylex.props(styles.evidenceStatus)}>
+          Loading screenshots…
+        </p>
+      ) : state.kind === "error" ? (
+        <p role="alert" {...stylex.props(styles.evidenceStatus, styles.evidenceError)}>
+          Screenshots could not be loaded. {state.message}
+        </p>
+      ) : job === undefined ? (
+        <p {...stylex.props(styles.evidenceStatus)}>Evidence is not available for this session.</p>
+      ) : frames.length === 0 ? (
+        <p {...stylex.props(styles.evidenceStatus)}>
+          {job.status === "accepted" ||
+          job.status === "exposing" ||
+          job.status === "running" ||
+          job.status === "finalizing"
+            ? "Screenshots are not available yet."
+            : "No screenshots were captured for this run."}
+        </p>
+      ) : (
+        <div aria-label="Evidence screenshots" {...stylex.props(styles.evidenceFrames)}>
+          {frames.map((frame) => (
+            <EvidenceThumbnail
+              frameId={frame.frameId}
+              key={frame.frameId}
+              name={frame.name}
+              summaryPath={summaryPath}
+            />
+          ))}
+        </div>
+      )}
+      {job?.videoAvailable === true ? (
+        <video
+          aria-label="Browser evidence recording"
+          controls
+          playsInline
+          preload="metadata"
+          src={`${summaryPath}/video.webm`}
+          {...stylex.props(styles.evidenceVideo)}
+        />
+      ) : null}
+    </section>
+  );
+}
 
 const toolIcon = (tool: ToolActivity) => {
   if (tool.state === "running")
@@ -273,49 +518,69 @@ const toolIcon = (tool: ToolActivity) => {
   return <Check aria-hidden {...stylex.props(styles.toolIcon, styles.toolIconDone)} />;
 };
 
-function ToolRow({ tool }: { readonly tool: ToolActivity }) {
+function ToolRow({
+  evidenceState,
+  sessionId,
+  tool,
+}: {
+  readonly evidenceState: ConversationEvidenceState | undefined;
+  readonly sessionId: string | undefined;
+  readonly tool: ToolActivity;
+}) {
   const [open, setOpen] = useState(tool.state === "running");
+  const evidenceJobId = evidenceJobIdFromTool(tool);
   return (
-    <details
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-      open={open}
-      {...stylex.props(styles.tool)}
-    >
-      <summary {...stylex.props(styles.toolSummary)}>
-        {toolIcon(tool)}
-        <span {...stylex.props(styles.toolIdentity)}>
-          <span {...stylex.props(styles.toolLabel)}>{tool.label}</span>
-          <span {...stylex.props(styles.toolInvocation)}>{tool.invocation}</span>
-        </span>
-        <span
-          {...stylex.props(
-            styles.toolState,
-            tool.state === "running" && styles.toolStateRunning,
-            tool.state === "failed" && styles.toolStateFailed,
+    <div {...stylex.props(styles.evidenceOwner)}>
+      <details
+        onToggle={(event) => setOpen(event.currentTarget.open)}
+        open={open}
+        {...stylex.props(styles.tool)}
+      >
+        <summary {...stylex.props(styles.toolSummary)}>
+          {toolIcon(tool)}
+          <span {...stylex.props(styles.toolIdentity)}>
+            <span {...stylex.props(styles.toolLabel)}>{tool.label}</span>
+            <span {...stylex.props(styles.toolInvocation)}>{tool.invocation}</span>
+          </span>
+          <span
+            {...stylex.props(
+              styles.toolState,
+              tool.state === "running" && styles.toolStateRunning,
+              tool.state === "failed" && styles.toolStateFailed,
+            )}
+          >
+            {tool.state}
+          </span>
+        </summary>
+        <div {...stylex.props(styles.toolDetails)}>
+          <pre aria-label="Complete tool invocation" {...stylex.props(styles.toolInvocationFull)}>
+            {tool.invocation}
+          </pre>
+          {tool.output === undefined ? null : (
+            <pre {...stylex.props(styles.toolOutput)}>{tool.output}</pre>
           )}
-        >
-          {tool.state}
-        </span>
-      </summary>
-      <div {...stylex.props(styles.toolDetails)}>
-        <pre aria-label="Complete tool invocation" {...stylex.props(styles.toolInvocationFull)}>
-          {tool.invocation}
-        </pre>
-        {tool.output === undefined ? null : (
-          <pre {...stylex.props(styles.toolOutput)}>{tool.output}</pre>
-        )}
-      </div>
-    </details>
+        </div>
+      </details>
+      {evidenceJobId === undefined ||
+      sessionId === undefined ||
+      evidenceState === undefined ? null : (
+        <ToolEvidence evidenceState={evidenceState} jobId={evidenceJobId} sessionId={sessionId} />
+      )}
+    </div>
   );
 }
 
 function TurnContent({
   turn,
   assistant,
+  evidenceState,
+  sessionId,
   showUser = true,
 }: {
   readonly turn: ConversationTurn;
   readonly assistant: string;
+  readonly evidenceState: ConversationEvidenceState | undefined;
+  readonly sessionId: string | undefined;
   readonly showUser?: boolean;
 }) {
   return (
@@ -329,7 +594,12 @@ function TurnContent({
       {turn.tools.length === 0 ? null : (
         <div aria-label="Tool activity" {...stylex.props(styles.activity)}>
           {turn.tools.map((tool) => (
-            <ToolRow key={tool.id} tool={tool} />
+            <ToolRow
+              evidenceState={evidenceState}
+              key={tool.id}
+              sessionId={sessionId}
+              tool={tool}
+            />
           ))}
         </div>
       )}
@@ -342,7 +612,15 @@ function TurnContent({
   );
 }
 
-function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
+function CompletedTurn({
+  evidenceState,
+  sessionId,
+  turn,
+}: {
+  readonly evidenceState: ConversationEvidenceState | undefined;
+  readonly sessionId: string | undefined;
+  readonly turn: ConversationTurn;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <details
@@ -363,13 +641,26 @@ function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
         </span>
       </summary>
       <div {...stylex.props(styles.turnBody)}>
-        <TurnContent assistant={turn.assistant} turn={turn} />
+        <TurnContent
+          assistant={turn.assistant}
+          evidenceState={evidenceState}
+          sessionId={sessionId}
+          turn={turn}
+        />
       </div>
     </details>
   );
 }
 
-export function Conversation({ turns }: { readonly turns: ReadonlyArray<ConversationTurn> }) {
+export function Conversation({
+  evidenceState,
+  sessionId,
+  turns,
+}: {
+  readonly evidenceState?: ConversationEvidenceState;
+  readonly sessionId?: string;
+  readonly turns: ReadonlyArray<ConversationTurn>;
+}) {
   const active = turns.findLast((turn) => turn.state === "streaming");
   const completed = turns.filter((turn) => turn.state !== "streaming");
   const latestCompleted = active === undefined ? completed.at(-1) : undefined;
@@ -409,7 +700,12 @@ export function Conversation({ turns }: { readonly turns: ReadonlyArray<Conversa
           </button>
         ) : null}
         {foldedCompleted.slice(-visibleCompleted).map((turn) => (
-          <CompletedTurn key={turn.id} turn={turn} />
+          <CompletedTurn
+            evidenceState={evidenceState}
+            key={turn.id}
+            sessionId={sessionId}
+            turn={turn}
+          />
         ))}
         {latestCompleted === undefined ? null : (
           <article
@@ -417,7 +713,12 @@ export function Conversation({ turns }: { readonly turns: ReadonlyArray<Conversa
             data-turn-disclosure="latest"
             {...stylex.props(styles.latestTurn)}
           >
-            <TurnContent assistant={latestCompleted.assistant} turn={latestCompleted} />
+            <TurnContent
+              assistant={latestCompleted.assistant}
+              evidenceState={evidenceState}
+              sessionId={sessionId}
+              turn={latestCompleted}
+            />
           </article>
         )}
         {active === undefined ? null : (
@@ -436,7 +737,13 @@ export function Conversation({ turns }: { readonly turns: ReadonlyArray<Conversa
                 Working
               </span>
             </div>
-            <TurnContent assistant="" showUser={false} turn={active} />
+            <TurnContent
+              assistant=""
+              evidenceState={evidenceState}
+              sessionId={sessionId}
+              showUser={false}
+              turn={active}
+            />
             <div aria-live="polite" {...stylex.props(styles.assistantMessage)}>
               <Markdown source={active.assistant} />
             </div>

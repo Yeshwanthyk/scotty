@@ -862,10 +862,12 @@ app.post("/api/runners/:name/:action", async (c) => {
 app.post("/api/sessions", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
-  const body: unknown = await c.req.json().catch(() => {
-    throw badRequest("Request body must be valid JSON");
-  });
-  const input = parseCreateInput(body);
+  const text = await readBoundedUtf8Body(c.req.raw, PI_CONSOLE_MAX_COMMAND_BYTES);
+  if (text === undefined)
+    throw badRequest("Session request exceeds the size limit or is not valid UTF-8");
+  const body = decodeJsonValue(text);
+  if (Option.isNone(body)) throw badRequest("Request body must be valid JSON");
+  const input = parseCreateInput(body.value);
   if (input.provider === "runner") {
     throw badRequest(
       "Runner-backed sessions require a native Pi transport and cannot be created yet",
@@ -1055,7 +1057,7 @@ app.post("/api/sessions/:id/steer", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
   const id = parseSessionId(c.req.param("id"));
-  const bodyText = await readBoundedUtf8Body(c.req.raw);
+  const bodyText = await readBoundedUtf8Body(c.req.raw, PI_CONSOLE_MAX_COMMAND_BYTES);
   if (bodyText === undefined) throw badRequest("Steer request body must be valid UTF-8");
   const body = decodeJsonValue(bodyText);
   if (Option.isNone(body)) throw badRequest("Request body must be valid JSON");
@@ -1065,7 +1067,14 @@ app.post("/api/sessions/:id/steer", async (c) => {
   const idempotencyKey = c.req.header("idempotency-key");
   if (idempotencyKey !== undefined) parseIdempotencyKey(idempotencyKey);
   const sandbox = sessionSandbox(c.env, id);
-  return steerSessionControl(sandbox, id, message, idempotencyKey, input.value.deliverAs);
+  return steerSessionControl(
+    sandbox,
+    id,
+    message,
+    idempotencyKey,
+    input.value.deliverAs,
+    input.value.images,
+  );
 });
 
 app.post("/api/sessions/:id/interrupt", async (c) => {
