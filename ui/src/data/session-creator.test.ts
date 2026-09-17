@@ -42,6 +42,20 @@ describe("create session boundary", () => {
     ).toMatchObject({ ok: true, payload: { hardCapSeconds: 3600 } });
   });
 
+  it("preserves a large valid initial prompt", () => {
+    const prompt = "界".repeat(90_000);
+    expect(
+      buildCreateSessionPayload({
+        title: "Large task",
+        repository: "owner/project",
+        prompt,
+      }),
+    ).toEqual({
+      ok: true,
+      payload: { title: "Large task", repo: "owner/project", prompt, provider: "cloudflare" },
+    });
+  });
+
   it("reports field validation before a request is made", () => {
     expect(
       buildCreateSessionPayload({ title: "", repository: "owner/project", prompt: "work" }),

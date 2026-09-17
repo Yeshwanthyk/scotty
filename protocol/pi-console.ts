@@ -35,6 +35,7 @@ const BoundedStringSchema = Schema.String.check(
   ),
 );
 const NonEmptyBoundedStringSchema = BoundedStringSchema.check(Schema.isMinLength(1));
+const ConversationTextSchema = Schema.String;
 const IdentifierSchema = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/),
 );
@@ -237,19 +238,19 @@ export const PiConsoleImagesSchema = Schema.Array(PiConsoleImageSchema).check(
 
 const PromptIntentSchema = Schema.Struct({
   type: Schema.Literal("prompt"),
-  message: BoundedStringSchema,
+  message: ConversationTextSchema,
   images: Schema.optionalKey(PiConsoleImagesSchema),
   streamingBehavior: Schema.optionalKey(Schema.Literals(["steer", "followUp"])),
 }).check(Schema.makeFilter((intent) => !intent.message.trimStart().startsWith("/")));
 const MessageIntentSchema = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("steer"),
-    message: BoundedStringSchema,
+    message: ConversationTextSchema,
     images: Schema.optionalKey(PiConsoleImagesSchema),
   }),
   Schema.Struct({
     type: Schema.Literal("follow_up"),
-    message: BoundedStringSchema,
+    message: ConversationTextSchema,
     images: Schema.optionalKey(PiConsoleImagesSchema),
   }),
 ]);

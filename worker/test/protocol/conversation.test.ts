@@ -35,7 +35,7 @@ describe("public agent and conversation schemas", () => {
       tools: index === 100 ? tools : [],
     }));
     const value = {
-      version: 1,
+      version: 1 as const,
       transport: { epoch: "epoch-1", baseSequence: 0, sequence: 1, sessionRevision: 1 },
       turns,
       queue: { steer: [], followUp: [] },

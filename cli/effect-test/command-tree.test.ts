@@ -120,6 +120,25 @@ describe("Effect command tree", () => {
     }),
   );
 
+  it.effect("sends a steering message beyond the former CLI display limit", () =>
+    Effect.gen(function* () {
+      const message = "界".repeat(20_000);
+      let body = "";
+      const execution = run(["steer", "s1", message, "--json"], {
+        env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "secret" },
+        fetch: async (_url, init) => {
+          body = String(init?.body);
+          return Response.json(
+            { id: "s1", status: "accepted", mode: "steer", turnId: "turn-1", sessionRevision: 1 },
+            { status: 202 },
+          );
+        },
+      });
+      assert.strictEqual(yield* execution.effect, EXIT.OK);
+      assert.deepStrictEqual(JSON.parse(body), { message });
+    }),
+  );
+
   it.effect("defaults omitted boolean switches on ordinary command execution", () =>
     Effect.gen(function* () {
       const requests: Request[] = [];

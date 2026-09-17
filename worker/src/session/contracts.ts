@@ -1,7 +1,6 @@
 import { AgentSelectionSchema, decodeAgentSelection } from "../../../protocol/agent-selection";
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Effect, Option, Result, Schema } from "effect";
-import { PI_CONSOLE_MAX_STRING_BYTES } from "../../../protocol/pi-console";
 import { CredentialGrantSchema } from "../../../protocol/credentials";
 import {
   RepositoryDefaultBranchSchema,
@@ -524,10 +523,7 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
     throw badRequest(
       "Codex requires a supported model and effort and does not accept modelProvider; Pi overrides must be valid model settings",
     );
-  const prompt =
-    decoded.value.agent === undefined || selection.success.agent === "codex"
-      ? readNonEmptyText(decoded.value.prompt, "prompt")
-      : readNonEmptyString(decoded.value.prompt, "prompt", 64_000);
+  const prompt = readNonEmptyText(decoded.value.prompt, "prompt");
   const provider = parseProvider(decoded.value.provider);
   const runner =
     decoded.value.runner === undefined
@@ -583,7 +579,7 @@ const decodeRawInterruptInput = Schema.decodeUnknownOption(RawInterruptInputSche
   onExcessProperty: "error",
 });
 
-export function parseSteerInput(value: unknown, enforcePiLimit = true): string {
+export function parseSteerInput(value: unknown): string {
   const decoded = decodeRawSteerInput(value);
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
   if (Option.isNone(decoded)) throw badRequest("Request body must contain only message");
@@ -591,9 +587,6 @@ export function parseSteerInput(value: unknown, enforcePiLimit = true): string {
   if (typeof message !== "string" || message.trim().length === 0)
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest("message must be a non-empty string");
-  if (enforcePiLimit && new TextEncoder().encode(message).byteLength > PI_CONSOLE_MAX_STRING_BYTES)
-    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
-    throw badRequest(`message must be at most ${PI_CONSOLE_MAX_STRING_BYTES} UTF-8 bytes`);
   if (message.trimStart().startsWith("/"))
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest("message must be a prompt, not a slash command");

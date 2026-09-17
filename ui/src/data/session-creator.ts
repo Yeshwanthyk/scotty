@@ -173,13 +173,6 @@ export const buildCreateSessionPayload = (draft: CreateSessionDraft): CreateSess
   const prompt = draft.prompt.replace(/\r\n?/gu, "\n").trim();
   if (prompt.length === 0)
     return { ok: false, field: "prompt", message: "Describe what Codex should do." };
-  if (prompt.length > 64_000)
-    return {
-      ok: false,
-      field: "prompt",
-      message: "Use 64,000 characters or fewer for the prompt.",
-    };
-
   const rawCap = draft.hardCapSeconds?.trim() ?? "";
   if (rawCap.length === 0)
     return { ok: true, payload: { title, repo, prompt, provider: "cloudflare" } };

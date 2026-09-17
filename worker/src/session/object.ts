@@ -3411,11 +3411,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
             ),
           )
         : { selection: reservation.selection, configuration: reservation.configuration };
-    if (pinned.selection?.agent !== "codex" && input.prompt.length > 64_000)
-      return yield* new ScottyError("bad_request", "prompt must be at most 64000 characters", {
-        httpStatus: 400,
-        exitCode: 2,
-      });
     const now = yield* Clock.currentTimeMillis;
     const nowIso = new Date(now).toISOString();
     const request: CreateControllerRequest = {

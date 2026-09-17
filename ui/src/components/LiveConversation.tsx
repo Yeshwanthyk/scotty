@@ -5,7 +5,6 @@ import {
   type KeyboardEvent,
   type ReactNode,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -28,7 +27,6 @@ import { Conversation } from "./Conversation";
 const ACTIVE_POLL_MS = 750;
 const IDLE_POLL_MS = 2_500;
 const RETRY_POLL_MS = 1_500;
-const MAX_MESSAGE_BYTES = 16 * 1024;
 
 type ConnectionState =
   | { readonly kind: "loading" }
@@ -490,8 +488,7 @@ function ConversationContent({
   return <Conversation turns={connection.snapshot.turns} />;
 }
 
-const deliveryMessage = (delivery: DeliveryState, draftTooLong: boolean): string => {
-  if (draftTooLong) return "Message is too long";
+const deliveryMessage = (delivery: DeliveryState): string => {
   if (delivery.kind === "accepted" || delivery.kind === "failed" || delivery.kind === "ambiguous")
     return delivery.message;
   return "";
@@ -536,14 +533,9 @@ function ConversationComposer({
   const [queueAfterTurn, setQueueAfterTurn] = useState(false);
   const queuedRequest = useRef<{ text: string; id: string } | undefined>(undefined);
   const [delivery, setDelivery] = useState<DeliveryState>({ kind: "idle" });
-  const draftBytes = useMemo(() => new TextEncoder().encode(draft).byteLength, [draft]);
-  const draftTooLong = draftBytes > MAX_MESSAGE_BYTES;
   const deliveryBusy = delivery.kind === "submitting" || delivery.kind === "interrupting";
   const canSubmit =
-    canIssueSessionCommand(enabled, admissionAvailable) &&
-    draft.trim().length > 0 &&
-    !draftTooLong &&
-    !deliveryBusy;
+    canIssueSessionCommand(enabled, admissionAvailable) && draft.trim().length > 0 && !deliveryBusy;
   const canInterrupt =
     canIssueSessionCommand(enabled, admissionAvailable) &&
     active &&
@@ -663,7 +655,7 @@ function ConversationComposer({
             delivery.kind === "ambiguous" && styles.deliveryWarning,
           )}
         >
-          {deliveryMessage(delivery, draftTooLong)}
+          {deliveryMessage(delivery)}
         </span>
       </div>
     </form>

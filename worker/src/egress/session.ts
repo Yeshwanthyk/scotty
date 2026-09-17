@@ -644,7 +644,7 @@ export async function handleContainerSessionEgress(
       const delivery = decodeSessionMessageInput(body.value);
       if (Option.isNone(delivery)) return rejectedRequest("Invalid message delivery request");
       const message = parseBoundary(
-        () => parseSteerInput({ message: delivery.value.message }, false),
+        () => parseSteerInput({ message: delivery.value.message }),
         "Invalid steer request",
       );
       if (Result.isFailure(message)) return scottyErrorResponse(message.failure);

@@ -4,11 +4,13 @@ This lane removes display-era limits from the canonical conversation path while 
 
 ## Slice evidence
 
-- Shared canonical decoder: pending commit. The browser now consumes the protocol decoder used to validate producer output. Coverage includes 101 turns, 53 tools, multibyte UTF-8 content, exact-key rejection, invalid states, and invalid sequence ordering.
+- `337551f` shared canonical decoder. The browser consumes the protocol decoder used to validate producer output. Coverage includes 101 turns, 53 tools, multibyte UTF-8 content, exact-key rejection, invalid states, and invalid sequence ordering.
+- Conversation admission: pending commit. Browser creation/composer, CLI steer, Worker create/steer, Session metadata, and Pi command decoding accept full non-empty text. The 8 MiB Pi command envelope remains a native transport resource bound; messages beyond the former 16 KiB display budget are covered end to end through command normalization.
 
 ## Remaining platform constraints
 
 - Queue admission remains bounded at 100 items per mode because it controls durable pending work, not transcript display.
 - Canonical identifiers remain non-empty and bounded to 256 UTF-8 bytes; runtime failure codes/diagnostics and elapsed time retain their protocol bounds.
+- Pi command envelopes remain bounded to 8 MiB, including JSON and image data. This is a native process transport resource bound, not a text-field admission policy.
 
 No deployment, push, or live-session mutation is part of this work. Local and synthetic checks are not live proof.

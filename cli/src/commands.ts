@@ -116,7 +116,6 @@ import {
   makeInstallationTopology,
   parseInstallationName,
 } from "../../infra/installation.ts";
-import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 
 const beamAgentSelection = Effect.fnUntraced(function* (
   target: import("./transport").ApiRequestTarget,
@@ -1929,8 +1928,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ({ id, message, followUp, messageId }) =>
       Effect.gen(function* () {
         if (!message.trim()) return yield* usage("Message must not be empty");
-        if (new TextEncoder().encode(message).byteLength > PI_CONSOLE_MAX_STRING_BYTES)
-          return yield* usage(`Message must be at most ${PI_CONSOLE_MAX_STRING_BYTES} UTF-8 bytes`);
         if (message.trimStart().startsWith("/"))
           return yield* usage("Message must be a prompt, not a slash command");
         const { autoJson, options, runtime } = yield* commandContext();

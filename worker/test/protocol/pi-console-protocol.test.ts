@@ -11,7 +11,6 @@ import {
   PI_CONSOLE_MAX_IMAGE_BYTES,
   PI_CONSOLE_MAX_IMAGES,
   PI_CONSOLE_MAX_STATUSES,
-  PI_CONSOLE_MAX_STRING_BYTES,
 } from "../../../protocol/pi-console";
 
 const command = (intent: unknown) => ({
@@ -140,11 +139,12 @@ describe("Pi console protocol v1", () => {
       yield* assertDecodeFailure(
         decodePiConsoleCommand(command({ type: "fold", targetId: "tool-1", folded: true })),
       );
-      yield* assertDecodeFailure(
-        decodePiConsoleCommand(
-          command({ type: "prompt", message: "🙂".repeat(PI_CONSOLE_MAX_STRING_BYTES / 4 + 1) }),
-        ),
+      const longMessage = "🙂".repeat(20_000);
+      const decoded = yield* decodePiConsoleCommand(
+        command({ type: "prompt", message: longMessage }),
       );
+      assert.strictEqual(decoded.intent.type, "prompt");
+      if (decoded.intent.type === "prompt") assert.strictEqual(decoded.intent.message, longMessage);
     }),
   );
 

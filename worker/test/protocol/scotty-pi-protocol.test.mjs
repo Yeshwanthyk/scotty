@@ -225,6 +225,21 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.deepStrictEqual(canonicalizePiSubagentsActivity(snapshot), snapshot);
   });
 
+  it("admits conversation text beyond the remote display value budget", () => {
+    const message = "界".repeat(20_000);
+    const normalized = normalizeCommand(
+      {
+        epoch,
+        commandId,
+        expectedSessionRevision: 7,
+        intent: { type: "prompt", message },
+      },
+      epoch,
+    );
+    assert.strictEqual(normalized.ok, true);
+    assert.strictEqual(normalized.command?.message, message);
+  });
+
   it("suppresses only marked passive SSE heartbeats", () => {
     assert.strictEqual(shouldEmitSseHeartbeat({}), true);
     assert.strictEqual(
