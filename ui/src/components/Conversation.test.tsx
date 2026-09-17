@@ -12,25 +12,20 @@ const completed = (id: string): ConversationTurn => ({
 });
 
 describe("conversation disclosure", () => {
-  it.each([true, false])(
-    "renders the existing streaming snapshot immediately (animateStreaming=%s)",
-    (animateStreaming) => {
-      const streaming: ConversationTurn = {
-        ...completed("current"),
-        state: "streaming",
-        assistant: "Previously received response text",
-      };
-      const markup = renderToStaticMarkup(
-        <Conversation animateStreaming={animateStreaming} turns={[streaming]} />,
-      );
+  it("renders the existing streaming snapshot immediately", () => {
+    const streaming: ConversationTurn = {
+      ...completed("current"),
+      state: "streaming",
+      assistant: "Previously received response text",
+    };
+    const markup = renderToStaticMarkup(<Conversation turns={[streaming]} />);
 
-      expect(markup).toContain(streaming.assistant);
-    },
-  );
+    expect(markup).toContain(streaming.assistant);
+  });
 
   it("renders the newest completed turn in full and keeps older work folded", () => {
     const markup = renderToStaticMarkup(
-      <Conversation animateStreaming={false} turns={[completed("one"), completed("two")]} />,
+      <Conversation turns={[completed("one"), completed("two")]} />,
     );
 
     expect(markup.match(/data-turn-disclosure="folded"/gu)).toHaveLength(1);
@@ -43,9 +38,7 @@ describe("conversation disclosure", () => {
       ...completed("current"),
       state: "streaming",
     };
-    const markup = renderToStaticMarkup(
-      <Conversation animateStreaming={false} turns={[completed("older"), streaming]} />,
-    );
+    const markup = renderToStaticMarkup(<Conversation turns={[completed("older"), streaming]} />);
 
     expect(markup).toContain('data-turn-disclosure="folded"');
     expect(markup).not.toContain('data-turn-disclosure="latest"');
@@ -65,11 +58,28 @@ describe("conversation disclosure", () => {
         },
       ],
     };
-    const markup = renderToStaticMarkup(
-      <Conversation animateStreaming={false} turns={[streaming]} />,
-    );
+    const markup = renderToStaticMarkup(<Conversation turns={[streaming]} />);
 
     expect(markup.indexOf("Question current")).toBeLessThan(markup.indexOf("Working"));
     expect(markup.indexOf("Working")).toBeLessThan(markup.indexOf("Reading project"));
+  });
+
+  it("includes the complete tool invocation in its disclosure", () => {
+    const invocation = `bash(${"readable-argument ".repeat(100)})`;
+    const withTool: ConversationTurn = {
+      ...completed("tool"),
+      tools: [
+        {
+          id: "tool-1",
+          invocation,
+          label: "Running command",
+          state: "completed",
+        },
+      ],
+    };
+    const markup = renderToStaticMarkup(<Conversation turns={[withTool]} />);
+
+    expect(markup).toContain('aria-label="Complete tool invocation"');
+    expect(markup.split(invocation)).toHaveLength(3);
   });
 });

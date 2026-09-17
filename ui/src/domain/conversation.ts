@@ -23,9 +23,6 @@ export const activeConversationTurn = (
   turns: ReadonlyArray<ConversationTurn>,
 ): ConversationTurn | undefined => turns.findLast((turn) => turn.state === "streaming");
 
-export const streamedTextAt = (text: string, visibleCharacters: number): string =>
-  text.slice(0, Math.max(0, Math.min(text.length, visibleCharacters)));
-
 export const turnActivityLabel = (turn: ConversationTurn): string => {
   const failed = turn.tools.filter((tool) => tool.state === "failed").length;
   if (turn.state === "streaming") return "Working";

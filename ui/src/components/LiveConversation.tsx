@@ -800,7 +800,7 @@ export function ConversationPreview({
         />
       }
     >
-      <Conversation animateStreaming turns={turns} />
+      <Conversation turns={turns} />
     </ConversationShell>
   );
 }

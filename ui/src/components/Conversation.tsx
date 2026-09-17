@@ -229,8 +229,25 @@ const styles = stylex.create({
   },
   toolStateRunning: { color: colors.warning },
   toolStateFailed: { color: colors.danger },
-  toolOutput: {
+  toolDetails: {
     margin: "0 8px 9px 34px",
+    display: "grid",
+    gap: spacing.sm,
+  },
+  toolInvocationFull: {
+    padding: spacing.md,
+    overflowX: "auto",
+    overflowWrap: "anywhere",
+    borderRadius: "6px",
+    backgroundColor: colors.space,
+    color: colors.muted,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "10px",
+    lineHeight: 1.55,
+    whiteSpace: "pre-wrap",
+  },
+  toolOutput: {
+    margin: 0,
     padding: spacing.md,
     overflowX: "auto",
     borderRadius: "6px",
@@ -280,9 +297,14 @@ function ToolRow({ tool }: { readonly tool: ToolActivity }) {
           {tool.state}
         </span>
       </summary>
-      {tool.output === undefined ? null : (
-        <pre {...stylex.props(styles.toolOutput)}>{tool.output}</pre>
-      )}
+      <div {...stylex.props(styles.toolDetails)}>
+        <pre aria-label="Complete tool invocation" {...stylex.props(styles.toolInvocationFull)}>
+          {tool.invocation}
+        </pre>
+        {tool.output === undefined ? null : (
+          <pre {...stylex.props(styles.toolOutput)}>{tool.output}</pre>
+        )}
+      </div>
     </details>
   );
 }
@@ -347,12 +369,7 @@ function CompletedTurn({ turn }: { readonly turn: ConversationTurn }) {
   );
 }
 
-export function Conversation({
-  turns,
-}: {
-  readonly animateStreaming?: boolean;
-  readonly turns: ReadonlyArray<ConversationTurn>;
-}) {
+export function Conversation({ turns }: { readonly turns: ReadonlyArray<ConversationTurn> }) {
   const active = turns.findLast((turn) => turn.state === "streaming");
   const completed = turns.filter((turn) => turn.state !== "streaming");
   const latestCompleted = active === undefined ? completed.at(-1) : undefined;
