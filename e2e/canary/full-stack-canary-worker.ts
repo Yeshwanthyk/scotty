@@ -1,9 +1,6 @@
 import { getSandbox } from "@cloudflare/sandbox";
 import { Option, Schema } from "effect";
-import {
-  PI_CONSOLE_MAX_RESPONSE_BYTES,
-  PI_CONSOLE_MAX_STRING_BYTES,
-} from "../../protocol/pi-console";
+import { PI_CONSOLE_MAX_RESPONSE_BYTES } from "../../protocol/pi-console";
 import type { Bindings } from "../../worker/src/shared/bindings";
 import { readBoundedUtf8Body } from "../../worker/src/shared/bounded-http";
 import { decodeJsonValue } from "../../worker/src/shared/json";
@@ -23,7 +20,6 @@ const RECORD_KEY = "scotty:session";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
 const SESSION_ID_PATTERN = /^[0-9a-f]{12}$/u;
 const CANARY_STAGE_PATTERN = /^scotty-e2e-[a-f0-9]{32}$/u;
-const CANARY_REQUEST_MAX_BYTES = 32 * 1024;
 
 interface CanaryBindings extends Omit<Bindings, "SANDBOX"> {
   readonly SANDBOX: DurableObjectNamespace<ScottySandbox>;
@@ -33,11 +29,8 @@ interface CanaryBindings extends Omit<Bindings, "SANDBOX"> {
 const CanarySessionIdSchema = Schema.String.check(Schema.isPattern(SESSION_ID_PATTERN));
 const CanarySteerMessageSchema = Schema.String.check(
   Schema.makeFilter(
-    (message) =>
-      message.trim().length > 0 &&
-      !message.trimStart().startsWith("/") &&
-      new TextEncoder().encode(message).byteLength <= PI_CONSOLE_MAX_STRING_BYTES,
-    { expected: "a bounded non-command steering message" },
+    (message) => message.trim().length > 0 && !message.trimStart().startsWith("/"),
+    { expected: "a non-empty non-command steering message" },
   ),
 );
 const CanaryPeerRouteInputSchema = Schema.Union([
@@ -99,7 +92,7 @@ const jsonError = (status: number, error: string): Response =>
 
 const utf8Bytes = (value: string): number => new TextEncoder().encode(value).byteLength;
 async function readBoundedJson(request: Request): Promise<unknown | undefined> {
-  const text = await readBoundedUtf8Body(request, CANARY_REQUEST_MAX_BYTES);
+  const text = await readBoundedUtf8Body(request);
   if (text === undefined) return undefined;
   return Option.getOrUndefined(decodeJsonValue(text));
 }

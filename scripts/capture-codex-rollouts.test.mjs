@@ -9,21 +9,24 @@ import test from "node:test";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-test("captures parent and child native rollouts as private files with matching hashes", async (t) => {
+test("streams large rollout archives and listings into private files", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "scotty-rollout-capture-test-"));
   const source = path.join(root, "source");
-  const relative = [
-    "sessions/2026/09/12/rollout-parent.jsonl",
-    "sessions/2026/09/12/rollout-child.jsonl",
-  ];
-  for (const name of relative) {
+  const relative = Array.from(
+    { length: 300 },
+    (_, index) =>
+      `sessions/2026/09/12/rollout-${String(index).padStart(3, "0")}-${"x".repeat(180)}.jsonl`,
+  );
+  for (const [index, name] of relative.entries()) {
     const file = path.join(source, name);
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, `${name}\n`);
+    await writeFile(file, index === 0 ? Buffer.alloc(21 * 1024 * 1024, 120) : `${name}\n`);
   }
   const tarPath = path.join(root, "fixture.tar");
   execFileSync("tar", ["-cf", tarPath, "-C", source, ...relative]);
   const archive = await readFile(tarPath);
+  assert.ok(archive.byteLength > 20 * 1024 * 1024);
+  assert.ok(Buffer.byteLength(`${relative.join("\n")}\n`) > 64 * 1024);
   const server = createServer((request, response) => {
     assert.equal(request.url, "/api/sessions/a0b1c2d3e4f5/codex/rollouts");
     assert.equal(request.headers.authorization, "Bearer dummy-token");
