@@ -1,8 +1,9 @@
 import * as stylex from "@stylexjs/stylex";
 import { useNavigate } from "@tanstack/react-router";
-import { Cloud, LoaderCircle } from "lucide-react";
-import { useRef, useState } from "react";
+import { Check, GitBranch, LoaderCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "./Button";
+import { readRepositories } from "../data/settings";
 import {
   buildCreateSessionPayload,
   createSession,
@@ -34,21 +35,13 @@ const styles = stylex.create({
     gap: spacing.xxl,
   },
   intro: { display: "grid", gap: spacing.sm },
-  eyebrow: {
-    margin: 0,
-    color: colors.accentStrong,
-    fontSize: "11px",
-    fontWeight: 750,
-    letterSpacing: "0.1em",
-    textTransform: "uppercase",
-  },
   heading: {
     margin: 0,
     color: colors.ink,
-    fontSize: "clamp(28px, 5vw, 44px)",
+    fontSize: "28px",
     fontWeight: 720,
     lineHeight: 1.05,
-    letterSpacing: "-0.045em",
+    letterSpacing: "-0.025em",
     textWrap: "balance",
   },
   copy: {
@@ -58,6 +51,7 @@ const styles = stylex.create({
     fontSize: "14px",
     lineHeight: 1.55,
   },
+  fields: { display: "contents", borderWidth: 0, padding: 0, margin: 0 },
   form: {
     display: "grid",
     gap: spacing.xl,
@@ -68,15 +62,9 @@ const styles = stylex.create({
     borderRadius: "12px",
     backgroundColor: colors.panel,
   },
-  fieldGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: spacing.lg,
-    "@media (max-width: 620px)": { gridTemplateColumns: "1fr" },
-  },
   field: { minWidth: 0, display: "grid", alignContent: "start", gap: spacing.xs },
   label: { color: colors.ink, fontSize: "12px", fontWeight: 650 },
-  hint: { margin: 0, color: colors.quiet, fontSize: "11px", lineHeight: 1.4 },
+  hint: { margin: 0, color: colors.muted, fontSize: "12px", lineHeight: 1.4 },
   control: {
     width: "100%",
     minHeight: "44px",
@@ -97,26 +85,30 @@ const styles = stylex.create({
       borderColor: colors.focus,
       boxShadow: `0 0 0 2px ${colors.focus}`,
     },
-    "::placeholder": { color: colors.quiet },
+    "::placeholder": { color: colors.muted },
   },
   textarea: { minHeight: "160px", resize: "vertical", lineHeight: 1.5 },
-  provider: {
-    minHeight: "44px",
-    paddingBlock: spacing.sm,
-    paddingInline: spacing.md,
+  repositoryList: { display: "grid", gap: spacing.xs, maxHeight: "204px", overflowY: "auto" },
+  repositoryOption: {
     display: "flex",
     alignItems: "center",
     gap: spacing.sm,
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: colors.lineSoft,
-    borderRadius: "8px",
+    minHeight: "44px",
+    padding: spacing.sm,
+    borderWidth: 0,
+    borderRadius: "6px",
     backgroundColor: colors.control,
-    color: colors.muted,
-    fontSize: "13px",
+    color: colors.ink,
+    cursor: "pointer",
+    textAlign: "left",
+    ":hover": { backgroundColor: colors.panelRaised },
   },
-  providerIcon: { width: "15px", height: "15px", color: colors.focus, strokeWidth: 1.8 },
-  providerName: { color: colors.ink, fontWeight: 650 },
+  repositoryName: { flex: 1, minWidth: 0, overflowWrap: "anywhere", fontSize: "13px" },
+  icon: { width: "16px", height: "16px", flexShrink: 0, color: colors.muted },
+  selectedRepository: { display: "flex", alignItems: "center", gap: spacing.sm, minHeight: "44px" },
+  optional: { display: "grid", gap: spacing.lg, paddingTop: spacing.lg },
+  summary: { color: colors.muted, cursor: "pointer", fontSize: "13px", paddingBlock: spacing.xs },
+  footerHint: { margin: 0, marginRight: "auto", color: colors.muted, fontSize: "12px" },
   error: {
     margin: 0,
     padding: spacing.md,
@@ -157,6 +149,7 @@ const styles = stylex.create({
     animationDuration: "900ms",
     animationIterationCount: "infinite",
     animationTimingFunction: "linear",
+    "@media (prefers-reduced-motion: reduce)": { animationName: "none" },
   },
 });
 
@@ -200,9 +193,44 @@ function DraftField({ error, field, hint, id, label, onChange, value }: DraftFie
 const failureCode = (failure: CreateSessionFailure): string | undefined =>
   failure.kind === "http" && failure.code !== undefined ? failure.code : undefined;
 
-export function CreateSessionForm() {
+export function CreateSessionForm({
+  recentRepositories = [],
+}: {
+  readonly recentRepositories?: ReadonlyArray<string>;
+}) {
   const navigate = useNavigate();
   const [draft, setDraft] = useState(initialDraft);
+  const [repositories, setRepositories] = useState<ReadonlyArray<string>>([]);
+  const [repositoryStatus, setRepositoryStatus] = useState("Loading repositories…");
+  const [repositorySelected, setRepositorySelected] = useState(false);
+  const repositoryInputRef = useRef<HTMLInputElement>(null);
+  const repositoryListRef = useRef<HTMLDivElement>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (window.matchMedia("(pointer: fine)").matches) repositoryInputRef.current?.focus();
+    const controller = new AbortController();
+    void readRepositories({ signal: controller.signal }).then((result) => {
+      if (controller.signal.aborted) return;
+      if (result.ok) {
+        setRepositories(
+          [...result.value]
+            .sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt))
+            .map((entry) => entry.repo),
+        );
+        setRepositoryStatus(
+          result.value.length ? "" : "Enter a repository as owner/name to get started.",
+        );
+      } else
+        setRepositoryStatus(
+          "Repository list unavailable. Choose a recent repository or enter owner/name.",
+        );
+    });
+    return () => controller.abort();
+  }, []);
+  const choices = [...new Set([...repositories, ...recentRepositories])];
+  const matchingRepositories = choices.filter((repo) =>
+    repo.toLocaleLowerCase().includes(draft.repository.trim().toLocaleLowerCase()),
+  );
   const [fieldError, setFieldError] = useState<
     { readonly field: CreateSessionField; readonly message: string } | undefined
   >();
@@ -221,10 +249,29 @@ export function CreateSessionForm() {
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (submittingRef.current) return;
-    const parsed = buildCreateSessionPayload(draft);
+    const parsed = buildCreateSessionPayload({
+      ...draft,
+      title:
+        draft.title.trim() ||
+        draft.prompt.trim().split(/\r?\n/u)[0]?.slice(0, 120) ||
+        "New session",
+    });
     if (!parsed.ok) {
       setFieldError({ field: parsed.field, message: parsed.message });
       setFailure(undefined);
+      const fieldId = {
+        title: "session-title",
+        repository: "session-repository",
+        prompt: "session-prompt",
+        hardCapSeconds: "session-cap",
+      }[parsed.field];
+      if (parsed.field === "repository") setRepositorySelected(false);
+      requestAnimationFrame(() => {
+        const field = document.getElementById(fieldId);
+        const details = field?.closest("details");
+        if (details) details.open = true;
+        field?.focus();
+      });
       return;
     }
     submittingRef.current = true;
@@ -256,133 +303,247 @@ export function CreateSessionForm() {
     <section aria-labelledby="create-session-heading" {...stylex.props(styles.page)}>
       <div {...stylex.props(styles.content)}>
         <header {...stylex.props(styles.intro)}>
-          <p {...stylex.props(styles.eyebrow)}>New workspace</p>
           <h1 id="create-session-heading" {...stylex.props(styles.heading)}>
-            Create a session
+            New session
           </h1>
-          <p {...stylex.props(styles.copy)}>Choose a repository and give Codex its first task.</p>
+          <p {...stylex.props(styles.copy)}>Pick a repository. Tell Codex what to do.</p>
         </header>
 
         <form
           noValidate
+          onKeyDown={(event) => {
+            if (
+              (event.metaKey || event.ctrlKey) &&
+              event.key === "Enter" &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              event.currentTarget.requestSubmit();
+            }
+          }}
           aria-busy={submitting}
           onSubmit={(event) => void submit(event)}
           {...stylex.props(styles.form)}
         >
-          <div {...stylex.props(styles.fieldGrid)}>
-            <DraftField
-              id="session-title"
-              label="Title"
-              field="title"
-              value={draft.title}
-              error={errorFor("title")}
-              hint="A short name you will recognize later."
-              onChange={(value) => updateDraft("title", value)}
-            />
-            <DraftField
-              id="session-repository"
-              label="Repository"
-              field="repository"
-              value={draft.repository}
-              error={errorFor("repository")}
-              hint="owner/name"
-              onChange={(value) => updateDraft("repository", value)}
-            />
-          </div>
-
-          <div {...stylex.props(styles.field)}>
-            <span id="session-provider-label" {...stylex.props(styles.label)}>
-              Provider
-            </span>
-            <div
-              role="group"
-              aria-labelledby="session-provider-label"
-              {...stylex.props(styles.provider)}
-            >
-              <Cloud aria-hidden {...stylex.props(styles.providerIcon)} />
-              <span {...stylex.props(styles.providerName)}>Cloudflare</span>
-              <input type="hidden" name="provider" value="cloudflare" />
-            </div>
-          </div>
-
-          <div {...stylex.props(styles.field)}>
-            <label htmlFor="session-prompt" {...stylex.props(styles.label)}>
-              Prompt
-            </label>
-            <textarea
-              id="session-prompt"
-              name="prompt"
-              value={draft.prompt}
-              onChange={(event) => updateDraft("prompt", event.currentTarget.value)}
-              placeholder="Describe the outcome and how to verify it."
-              aria-invalid={errorFor("prompt") !== undefined}
-              aria-describedby={errorFor("prompt") ? "session-prompt-error" : undefined}
-              {...stylex.props(styles.control, styles.textarea)}
-            />
-            {errorFor("prompt") ? (
-              <p id="session-prompt-error" {...stylex.props(styles.fieldError)}>
-                {errorFor("prompt")}
-              </p>
-            ) : null}
-          </div>
-
-          <div {...stylex.props(styles.field)}>
-            <label htmlFor="session-cap" {...stylex.props(styles.label)}>
-              Time limit <span {...stylex.props(styles.hint)}>(optional)</span>
-            </label>
-            <select
-              id="session-cap"
-              name="hardCapSeconds"
-              value={draft.hardCapSeconds ?? ""}
-              onChange={(event) => updateDraft("hardCapSeconds", event.currentTarget.value)}
-              aria-invalid={errorFor("hardCapSeconds") !== undefined}
-              aria-describedby={errorFor("hardCapSeconds") ? "session-cap-error" : undefined}
-              {...stylex.props(styles.control)}
-            >
-              <option value="">Default · {DEFAULT_HARD_CAP_SECONDS / 3_600} hours</option>
-              <option value="3600">1 hour</option>
-              <option value="14400">4 hours</option>
-              <option value="28800">8 hours</option>
-              <option value="43200">12 hours</option>
-              <option value="86400">24 hours</option>
-            </select>
-            {errorFor("hardCapSeconds") ? (
-              <p id="session-cap-error" {...stylex.props(styles.fieldError)}>
-                {errorFor("hardCapSeconds")}
-              </p>
-            ) : null}
-          </div>
-
-          {failure ? (
-            <div role="alert" {...stylex.props(styles.error)}>
-              <strong>{failure.message}</strong>
-              {failureCode(failure) ? (
-                <span {...stylex.props(styles.errorCode)}>{failureCode(failure)}</span>
+          <fieldset disabled={submitting} {...stylex.props(styles.fields)}>
+            <div {...stylex.props(styles.field)}>
+              <label htmlFor="session-repository" {...stylex.props(styles.label)}>
+                Repository
+              </label>
+              {repositorySelected ? (
+                <div {...stylex.props(styles.selectedRepository)}>
+                  <GitBranch aria-hidden {...stylex.props(styles.icon)} />
+                  <span {...stylex.props(styles.repositoryName)}>{draft.repository}</span>
+                  <Check aria-hidden {...stylex.props(styles.icon)} />
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    disabled={submitting}
+                    onClick={() => {
+                      setRepositorySelected(false);
+                      updateDraft("repository", "");
+                      requestAnimationFrame(() => repositoryInputRef.current?.focus());
+                    }}
+                  >
+                    Change
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <input
+                    ref={repositoryInputRef}
+                    id="session-repository"
+                    name="repo"
+                    autoComplete="off"
+                    placeholder="Search or enter owner/name"
+                    value={draft.repository}
+                    disabled={submitting}
+                    aria-invalid={errorFor("repository") !== undefined}
+                    aria-describedby={
+                      errorFor("repository") ? "session-repository-error" : "repository-help"
+                    }
+                    onChange={(event) => updateDraft("repository", event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.nativeEvent.isComposing) return;
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        repositoryListRef.current?.querySelector("button")?.focus();
+                      }
+                      if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) {
+                        event.preventDefault();
+                        const first = matchingRepositories[0];
+                        if (first) updateDraft("repository", first);
+                        if (first || draft.repository.trim()) {
+                          setRepositorySelected(true);
+                          promptRef.current?.focus();
+                        }
+                      }
+                    }}
+                    {...stylex.props(styles.control)}
+                  />
+                  <p id="repository-help" {...stylex.props(styles.hint)}>
+                    {repositoryStatus || "Select a repository, or enter another owner/name."}
+                  </p>
+                  <div
+                    ref={repositoryListRef}
+                    aria-label="Repository suggestions"
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        repositoryInputRef.current?.focus();
+                        return;
+                      }
+                      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                      const buttons = [...event.currentTarget.querySelectorAll("button")];
+                      const current = buttons.findIndex(
+                        (button) => button === document.activeElement,
+                      );
+                      if (current < 0) return;
+                      event.preventDefault();
+                      buttons[
+                        (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) %
+                          buttons.length
+                      ]?.focus();
+                    }}
+                    {...stylex.props(styles.repositoryList)}
+                  >
+                    {matchingRepositories.map((repo) => (
+                      <button
+                        key={repo}
+                        type="button"
+                        disabled={submitting}
+                        onClick={() => {
+                          updateDraft("repository", repo);
+                          setRepositorySelected(true);
+                          promptRef.current?.focus();
+                        }}
+                        {...stylex.props(styles.repositoryOption)}
+                      >
+                        <GitBranch aria-hidden {...stylex.props(styles.icon)} />
+                        <span {...stylex.props(styles.repositoryName)}>{repo}</span>
+                        <span {...stylex.props(styles.hint)}>Select</span>
+                      </button>
+                    ))}
+                  </div>
+                  {matchingRepositories.length === 0 && draft.repository.trim() ? (
+                    <p {...stylex.props(styles.hint)}>
+                      Use the repository above to start your session.
+                    </p>
+                  ) : null}
+                </>
+              )}
+              {errorFor("repository") ? (
+                <p id="session-repository-error" {...stylex.props(styles.fieldError)}>
+                  {errorFor("repository")}
+                </p>
               ) : null}
-              {failure.kind === "http" && failure.hint ? <span>{failure.hint}</span> : null}
             </div>
-          ) : null}
 
-          <footer {...stylex.props(styles.actions)}>
-            <Button
-              type="button"
-              variant="quiet"
-              disabled={submitting}
-              onClick={() => void navigate({ to: "/sessions" })}
-              {...stylex.props(styles.actionButton)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={submitting}
-              {...stylex.props(styles.actionButton)}
-            >
-              {submitting ? <LoaderCircle aria-hidden {...stylex.props(styles.busyIcon)} /> : null}
-              {submitting ? "Starting…" : "Start session"}
-            </Button>
-          </footer>
+            <div {...stylex.props(styles.field)}>
+              <label htmlFor="session-prompt" {...stylex.props(styles.label)}>
+                What would you like to do?
+              </label>
+              <textarea
+                ref={promptRef}
+                disabled={submitting}
+                id="session-prompt"
+                name="prompt"
+                value={draft.prompt}
+                onChange={(event) => updateDraft("prompt", event.currentTarget.value)}
+                placeholder="Describe the outcome and how to verify it."
+                aria-invalid={errorFor("prompt") !== undefined}
+                aria-describedby={errorFor("prompt") ? "session-prompt-error" : undefined}
+                {...stylex.props(styles.control, styles.textarea)}
+              />
+              {errorFor("prompt") ? (
+                <p id="session-prompt-error" {...stylex.props(styles.fieldError)}>
+                  {errorFor("prompt")}
+                </p>
+              ) : null}
+            </div>
+
+            <details>
+              <summary {...stylex.props(styles.summary)}>
+                Session options <span {...stylex.props(styles.hint)}>· title & time limit</span>
+              </summary>
+              <div {...stylex.props(styles.optional)}>
+                <DraftField
+                  id="session-title"
+                  label="Title (optional)"
+                  field="title"
+                  value={draft.title}
+                  error={errorFor("title")}
+                  hint="Uses the first line of your task when left blank."
+                  onChange={(value) => updateDraft("title", value)}
+                />
+                <div {...stylex.props(styles.field)}>
+                  <label htmlFor="session-cap" {...stylex.props(styles.label)}>
+                    Time limit <span {...stylex.props(styles.hint)}>(optional)</span>
+                  </label>
+                  <select
+                    id="session-cap"
+                    name="hardCapSeconds"
+                    value={draft.hardCapSeconds ?? ""}
+                    onChange={(event) => updateDraft("hardCapSeconds", event.currentTarget.value)}
+                    aria-invalid={errorFor("hardCapSeconds") !== undefined}
+                    aria-describedby={errorFor("hardCapSeconds") ? "session-cap-error" : undefined}
+                    {...stylex.props(styles.control)}
+                  >
+                    <option value="">Default · {DEFAULT_HARD_CAP_SECONDS / 3_600} hours</option>
+                    <option value="3600">1 hour</option>
+                    <option value="14400">4 hours</option>
+                    <option value="28800">8 hours</option>
+                    <option value="43200">12 hours</option>
+                    <option value="86400">24 hours</option>
+                  </select>
+                  {errorFor("hardCapSeconds") ? (
+                    <p id="session-cap-error" {...stylex.props(styles.fieldError)}>
+                      {errorFor("hardCapSeconds")}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </details>
+
+            {failure ? (
+              <div role="alert" {...stylex.props(styles.error)}>
+                <strong>{failure.message}</strong>
+                {failureCode(failure) ? (
+                  <span {...stylex.props(styles.errorCode)}>{failureCode(failure)}</span>
+                ) : null}
+                {failure.kind === "http" && failure.hint ? <span>{failure.hint}</span> : null}
+              </div>
+            ) : null}
+
+            <footer {...stylex.props(styles.actions)}>
+              <p {...stylex.props(styles.footerHint)}>
+                Codex · Cloudflare ·{" "}
+                {Number(draft.hardCapSeconds || DEFAULT_HARD_CAP_SECONDS) / 3600}
+                h limit
+              </p>
+              <Button
+                type="button"
+                variant="quiet"
+                disabled={submitting}
+                onClick={() => void navigate({ to: "/sessions" })}
+                {...stylex.props(styles.actionButton)}
+              >
+                Cancel
+              </Button>
+              <Button
+                title="Start session (⌘Enter / Ctrl+Enter)"
+                aria-keyshortcuts="Meta+Enter Control+Enter"
+                type="submit"
+                variant="primary"
+                disabled={submitting}
+                {...stylex.props(styles.actionButton)}
+              >
+                {submitting ? (
+                  <LoaderCircle aria-hidden {...stylex.props(styles.busyIcon)} />
+                ) : null}
+                {submitting ? "Starting session…" : "Start session"}
+              </Button>
+            </footer>
+          </fieldset>
         </form>
       </div>
     </section>

@@ -163,20 +163,14 @@ export function SessionSwitcher({
     [normalizedQuery, sessions],
   );
 
-  const openSwitcher = useCallback(
-    (opener: HTMLElement | null) => {
-      openerRef.current = opener;
-      setQuery("");
-      setActiveIndex(
-        Math.max(
-          0,
-          sessions.findIndex((session) => session.selected),
-        ),
-      );
-      setOpen(true);
-    },
-    [sessions],
-  );
+  const resultCount = filteredSessions.length + 1;
+
+  const openSwitcher = useCallback((opener: HTMLElement | null) => {
+    openerRef.current = opener;
+    setQuery("");
+    setActiveIndex(0);
+    setOpen(true);
+  }, []);
 
   const closeSwitcher = useCallback(() => {
     dialogRef.current?.close();
@@ -190,13 +184,15 @@ export function SessionSwitcher({
   }, [open]);
 
   useEffect(() => {
-    setActiveIndex((current) => Math.min(current, Math.max(0, filteredSessions.length - 1)));
-  }, [filteredSessions.length]);
+    setActiveIndex((current) => Math.min(current, resultCount - 1));
+  }, [resultCount]);
 
   useEffect(() => {
-    const active = filteredSessions[activeIndex];
-    if (!open || active === undefined) return;
-    optionRefs.current.get(active.session.id)?.scrollIntoView({ block: "nearest" });
+    if (!open) return;
+    const active = filteredSessions[activeIndex - 1];
+    optionRefs.current
+      .get(activeIndex === 0 ? "create" : (active?.session.id ?? ""))
+      ?.scrollIntoView({ block: "nearest" });
   }, [activeIndex, filteredSessions, open]);
 
   useEffect(() => {
@@ -231,6 +227,12 @@ export function SessionSwitcher({
     void navigate({ to: "/s/$sessionId", params: { sessionId: session.session.id } });
   };
 
+  const selectCreate = () => {
+    closeSwitcher();
+    onNavigate?.();
+    void navigate({ to: "/sessions/create" });
+  };
+
   return (
     <>
       <button
@@ -257,39 +259,50 @@ export function SessionSwitcher({
         {...stylex.props(styles.dialog)}
       >
         <h2 id="session-switcher-title" {...stylex.props(styles.heading)}>
-          Switch session
+          Sessions & actions
         </h2>
         <div {...stylex.props(styles.inputRow)}>
           <Search aria-hidden {...stylex.props(styles.searchIcon)} />
           <input
             ref={inputRef}
             aria-activedescendant={
-              filteredSessions.length === 0
-                ? undefined
-                : `session-switcher-option-${filteredSessions[activeIndex]?.session.id}`
+              activeIndex === 0
+                ? "session-switcher-create"
+                : `session-switcher-option-${filteredSessions[activeIndex - 1]?.session.id}`
             }
-            aria-controls={filteredSessions.length === 0 ? undefined : "session-switcher-results"}
+            aria-controls="session-switcher-results"
             aria-expanded="true"
             aria-label="Search sessions"
             autoComplete="off"
-            placeholder="Search by title, repository, or branch"
+            placeholder="Search sessions or start a new one…"
             role="combobox"
             value={query}
             onChange={(event) => {
               setQuery(event.currentTarget.value);
-              setActiveIndex(0);
+              const nextQuery = event.currentTarget.value.trim().toLocaleLowerCase("en-US");
+              setActiveIndex(
+                nextQuery &&
+                  !"new session create start".includes(nextQuery) &&
+                  sessions.some(({ session }) => matchesSessionQuery(session, nextQuery))
+                  ? 1
+                  : 0,
+              );
             }}
             onKeyDown={(event) => {
               if (event.nativeEvent.isComposing) return;
-              if (event.key === "ArrowDown" && filteredSessions.length > 0) {
+              if (event.key === "ArrowDown") {
                 event.preventDefault();
-                setActiveIndex((current) => moveSessionIndex(current, filteredSessions.length, 1));
-              } else if (event.key === "ArrowUp" && filteredSessions.length > 0) {
+                setActiveIndex((current) => moveSessionIndex(current, resultCount, 1));
+              } else if (event.key === "ArrowUp") {
                 event.preventDefault();
-                setActiveIndex((current) => moveSessionIndex(current, filteredSessions.length, -1));
-              } else if (event.key === "Enter" && filteredSessions[activeIndex] !== undefined) {
+                setActiveIndex((current) => moveSessionIndex(current, resultCount, -1));
+              } else if (event.key === "Enter") {
                 event.preventDefault();
-                selectSession(filteredSessions[activeIndex]);
+                if (activeIndex === 0) selectCreate();
+                else {
+                  const session = filteredSessions[activeIndex - 1];
+                  if (session) selectSession(session);
+                }
               } else if (event.key === "Escape") {
                 event.preventDefault();
                 closeSwitcher();
@@ -298,39 +311,64 @@ export function SessionSwitcher({
             {...stylex.props(styles.input)}
           />
         </div>
-        {filteredSessions.length === 0 ? (
-          <p {...stylex.props(styles.empty)}>No matching sessions</p>
-        ) : (
-          <ul id="session-switcher-results" role="listbox" {...stylex.props(styles.results)}>
-            {filteredSessions.map((session, index) => (
-              <li key={session.session.id} role="presentation">
-                <button
-                  ref={(element) => {
-                    if (element === null) optionRefs.current.delete(session.session.id);
-                    else optionRefs.current.set(session.session.id, element);
-                  }}
-                  id={`session-switcher-option-${session.session.id}`}
-                  type="button"
-                  role="option"
-                  tabIndex={-1}
-                  aria-selected={index === activeIndex}
-                  onClick={() => selectSession(session)}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  {...stylex.props(styles.option, index === activeIndex && styles.optionActive)}
-                >
-                  <span {...stylex.props(styles.optionTitle)}>{session.session.display.title}</span>
-                  <span {...stylex.props(styles.optionContext)}>
-                    {session.session.display.repository}
-                    {session.session.display.branch === null
-                      ? ""
-                      : ` / ${session.session.display.branch}`}
-                    {` · ${session.selected ? "Current" : session.presentation.railLabel}`}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+        <ul
+          id="session-switcher-results"
+          role="listbox"
+          aria-label="Sessions and actions"
+          {...stylex.props(styles.results)}
+        >
+          <li role="presentation">
+            <button
+              ref={(element) => {
+                if (element) optionRefs.current.set("create", element);
+                else optionRefs.current.delete("create");
+              }}
+              id="session-switcher-create"
+              type="button"
+              role="option"
+              tabIndex={-1}
+              aria-selected={activeIndex === 0}
+              onClick={selectCreate}
+              onMouseEnter={() => setActiveIndex(0)}
+              {...stylex.props(styles.option, activeIndex === 0 && styles.optionActive)}
+            >
+              <span {...stylex.props(styles.optionTitle)}>＋ New session</span>
+              <span {...stylex.props(styles.optionContext)}>
+                Choose a repository and start a task
+              </span>
+            </button>
+          </li>
+          {filteredSessions.map((session, index) => (
+            <li key={session.session.id} role="presentation">
+              <button
+                ref={(element) => {
+                  if (element === null) optionRefs.current.delete(session.session.id);
+                  else optionRefs.current.set(session.session.id, element);
+                }}
+                id={`session-switcher-option-${session.session.id}`}
+                type="button"
+                role="option"
+                tabIndex={-1}
+                aria-selected={index + 1 === activeIndex}
+                onClick={() => selectSession(session)}
+                onMouseEnter={() => setActiveIndex(index + 1)}
+                {...stylex.props(styles.option, index + 1 === activeIndex && styles.optionActive)}
+              >
+                <span {...stylex.props(styles.optionTitle)}>{session.session.display.title}</span>
+                <span {...stylex.props(styles.optionContext)}>
+                  {session.session.display.repository}
+                  {session.session.display.branch === null
+                    ? ""
+                    : ` / ${session.session.display.branch}`}
+                  {` · ${session.selected ? "Current" : session.presentation.railLabel}`}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        {filteredSessions.length === 0 && normalizedQuery ? (
+          <p {...stylex.props(styles.empty)}>No matching sessions. Start a new one above.</p>
+        ) : null}
       </dialog>
     </>
   );

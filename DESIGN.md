@@ -181,7 +181,7 @@ Use the system sans-serif stack in [global.css](ui/src/global.css). Use platform
 | Form label      | `CreateSessionForm`; `fieldLabel`     | Persistent labels above fields.                                                         |
 | Metadata        | Session route; `metadata`             | State, selection, branch, and duration.                                                 |
 
-The create-session page currently uses a larger fluid heading (`clamp(28px, 5vw, 44px)`). That is an entry-page treatment, not a heading scale for the working session. Several existing hints and tool details use 10px text; treat those as density to review, not a general-purpose size for new controls.
+The create-session page uses a fixed 28px heading with restrained spacing so repository selection and the task stay primary. Several existing hints and tool details use 10px text; treat those as density to review, not a general-purpose size for new controls.
 
 **Readable controls.** Labels remain legible at narrow widths and zoom. Use tabular numerals for changing durations and counts. Keep action labels on one line; allow prose to wrap. Long code and paths must not expand the outer workspace.
 
@@ -261,6 +261,8 @@ Owners: [Sidebar](ui/src/components/Sidebar.tsx), [SessionRow](ui/src/components
 
 Use repository grouping, a stronger session title, quieter metadata, and a compact state icon. Selected rows combine surface/border emphasis with readable text. Hover must remain distinguishable from selection. Keep active and archived groupings explicit. Long names truncate within the row rather than pushing the sidebar wider.
 
+Cmd/Ctrl+K opens sessions and actions. New session is the initial keyboard selection; typing a matching session query selects its first result. Arrow keys move through both actions and sessions, Enter opens the selection, and Escape dismisses the menu.
+
 Preserve row identity and keyboard focus during refreshes. The mobile drawer must expose the same destinations and a clear close action.
 
 ### Conversation and composer
@@ -284,6 +286,8 @@ Following Cursor's adjacent tool-pane pattern, Summary, Diff, and Terminal are t
 Owners: [CreateSessionForm](ui/src/components/CreateSessionForm.tsx), [SettingsShell](ui/src/components/SettingsShell.tsx), [AdminPage](ui/src/components/AdminPage.tsx), [ResourcesSection](ui/src/components/ResourcesSection.tsx).
 
 Use persistent labels, control surfaces, structural borders, and errors adjacent to the relevant field. The existing create-session control uses a 44px minimum height, control radius, and 14px text. Focus changes the border and adds a 2px cyan ring. Textareas expand vertically. Keep helper text separate from placeholders and preserve entered values when validation fails.
+
+Session creation starts with searchable registered repositories, supplemented by repositories from recent sessions. Selecting a repository collapses the choices and focuses the task; Change reopens the choices. Manual owner/name entry remains available when the registry is empty or unavailable. Session options disclose an optional title and time limit. A blank title uses the first task line, limited to 120 characters. Cmd/Ctrl+Enter launches, and failed requests preserve the draft for retry.
 
 Use the shared Button for actions; group settings by user task. These files still own local field and navigation styles—there is no shared Input or Card component established by this document. Extract a primitive only when a component migration demonstrates a repeated need.
 
