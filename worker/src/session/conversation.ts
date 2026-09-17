@@ -1,10 +1,6 @@
 import {
   CanonicalConversationSnapshotSchema,
   CONVERSATION_MAX_ID_BYTES,
-  CONVERSATION_MAX_TEXT_BYTES,
-  CONVERSATION_MAX_TOOL_VALUE_BYTES,
-  CONVERSATION_MAX_TOOLS_PER_TURN,
-  CONVERSATION_MAX_TURNS,
   CONVERSATION_WIRE_VERSION,
   type CanonicalConversationSnapshot,
   type CanonicalConversationTool,
@@ -24,12 +20,6 @@ const decodePiConsoleSnapshot = Schema.decodeUnknownOption(PiConsoleSnapshotSche
   onExcessProperty: "error",
 });
 
-const MAX_DISPLAY_JSON_DEPTH = 5;
-const MAX_DISPLAY_JSON_NODES = 128;
-const MAX_DISPLAY_JSON_ITEMS = 20;
-const MAX_DISPLAY_JSON_KEYS = 20;
-const MAX_TOOL_NAME_BYTES = 120;
-
 type JsonValue =
   | null
   | boolean
@@ -40,7 +30,6 @@ type JsonValue =
 type JsonObject = { readonly [key: string]: JsonValue };
 
 interface DisplayBudget {
-  nodes: number;
   truncated: boolean;
 }
 
@@ -99,8 +88,8 @@ const truncateUtf8 = (value: string, maximumBytes: number): string => {
   return value.slice(0, end);
 };
 
-const sanitizeText = (value: string, maximumBytes: number, budget: DisplayBudget): string => {
-  const sanitized = value
+const sanitizeText = (value: string): string =>
+  value
     // oxlint-disable-next-line eslint/no-control-regex -- display projection removes terminal controls
     .replaceAll(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
     // oxlint-disable-next-line eslint/no-control-regex -- display projection removes ANSI controls
@@ -109,46 +98,15 @@ const sanitizeText = (value: string, maximumBytes: number, budget: DisplayBudget
     .replaceAll(/(?:ghp_|github_pat_)[A-Za-z0-9_]+/gu, "[credential]")
     // oxlint-disable-next-line eslint/no-control-regex -- preserve transcript whitespace, remove unsafe controls
     .replaceAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu, "");
-  const bounded = truncateUtf8(sanitized, maximumBytes);
-  if (bounded !== sanitized) budget.truncated = true;
-  return bounded;
-};
-
-const boundedJsonValue = (value: JsonValue, budget: DisplayBudget, depth = 0): JsonValue => {
-  budget.nodes += 1;
-  if (budget.nodes > MAX_DISPLAY_JSON_NODES || depth > MAX_DISPLAY_JSON_DEPTH) {
-    budget.truncated = true;
-    return "[truncated]";
-  }
-  if (typeof value === "string")
-    return sanitizeText(value, CONVERSATION_MAX_TOOL_VALUE_BYTES, budget);
-  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
-  if (Array.isArray(value)) {
-    const values = value
-      .slice(0, MAX_DISPLAY_JSON_ITEMS)
-      .map((item) => boundedJsonValue(item, budget, depth + 1));
-    if (value.length > MAX_DISPLAY_JSON_ITEMS) budget.truncated = true;
-    return values;
-  }
-  const entries = Object.entries(value).slice(0, MAX_DISPLAY_JSON_KEYS);
-  if (Object.keys(value).length > MAX_DISPLAY_JSON_KEYS) budget.truncated = true;
-  return Object.fromEntries(
-    entries.map(([key, item]) => [
-      sanitizeText(key, CONVERSATION_MAX_TOOL_VALUE_BYTES, budget),
-      boundedJsonValue(item, budget, depth + 1),
-    ]),
-  );
-};
 
 const jsonText = (value: JsonValue | undefined, budget: DisplayBudget): string | undefined => {
   if (value === undefined) return undefined;
-  const bounded = boundedJsonValue(value, budget);
-  const encoded = JSON.stringify(bounded);
+  const encoded = JSON.stringify(value);
   if (encoded === undefined) {
     budget.truncated = true;
     return undefined;
   }
-  return truncateUtf8(encoded, CONVERSATION_MAX_TOOL_VALUE_BYTES);
+  return sanitizeText(encoded);
 };
 
 const stableIdentifier = (
@@ -156,7 +114,9 @@ const stableIdentifier = (
   fallback: string,
   budget: DisplayBudget,
 ): string => {
-  const sanitized = sanitizeText(value ?? fallback, CONVERSATION_MAX_ID_BYTES, budget).trim();
+  const safe = sanitizeText(value ?? fallback);
+  const sanitized = truncateUtf8(safe, CONVERSATION_MAX_ID_BYTES).trim();
+  if (sanitized !== safe.trim()) budget.truncated = true;
   return sanitized.length === 0 ? fallback : sanitized;
 };
 
@@ -180,11 +140,11 @@ const contentParts = (message: JsonObject): ReadonlyArray<JsonValue> => {
   return [];
 };
 
-const partText = (part: JsonValue, budget: DisplayBudget): string => {
-  if (typeof part === "string") return sanitizeText(part, CONVERSATION_MAX_TEXT_BYTES, budget);
+const partText = (part: JsonValue, _budget: DisplayBudget): string => {
+  if (typeof part === "string") return sanitizeText(part);
   if (!isJsonObject(part)) return "";
   const text = stringProperty(part, "text") ?? stringProperty(part, "content");
-  return text === undefined ? "" : sanitizeText(text, CONVERSATION_MAX_TEXT_BYTES, budget);
+  return text === undefined ? "" : sanitizeText(text);
 };
 
 const messageText = (message: JsonObject, budget: DisplayBudget): string =>
@@ -283,7 +243,7 @@ const applyAssistantContent = (
     stringProperty(delta, "text") ??
     stringProperty(delta, "content") ??
     "";
-  const text = sanitizeText(`${previousText}${nextText}`, CONVERSATION_MAX_TEXT_BYTES, budget);
+  const text = sanitizeText(`${previousText}${nextText}`);
   content[index] = { ...previous, type: contentType, [field]: text };
 };
 
@@ -314,7 +274,7 @@ const ensureTool = (
   status: ToolRecord["status"],
 ): ToolRecord | undefined => {
   const rawId = toolId(value) ?? fallbackId;
-  const id = stableIdentifier(rawId, fallbackId, { nodes: 0, truncated: false });
+  const id = stableIdentifier(rawId, fallbackId, { truncated: false });
   const previous = projection.tools.get(id);
   const tool: ToolRecord = previous ?? {
     id,
@@ -474,18 +434,10 @@ const toolDisplay = (
   active: boolean,
   budget: DisplayBudget,
 ): CanonicalConversationTool => {
-  const name = sanitizeText(tool.name, MAX_TOOL_NAME_BYTES, budget);
+  const name = sanitizeText(tool.name);
   const invocationArgs = jsonText(tool.arguments, budget);
   const output = jsonText(tool.output, budget);
-  const invocation = truncateUtf8(
-    invocationArgs === undefined ? name : `${name}(${invocationArgs})`,
-    CONVERSATION_MAX_TOOL_VALUE_BYTES,
-  );
-  if (
-    invocationArgs !== undefined &&
-    utf8ByteLength(invocation) < utf8ByteLength(`${name}(${invocationArgs})`)
-  )
-    budget.truncated = true;
+  const invocation = invocationArgs === undefined ? name : `${name}(${invocationArgs})`;
   return {
     id: stableIdentifier(tool.id, "tool", budget),
     state: active && tool.status === "running" ? "running" : tool.status,
@@ -521,15 +473,10 @@ const turnFromBuilder = (
   const turnTools = builder.toolIds
     .map((id) => tools.get(id))
     .filter(Predicate.isNotUndefined)
-    .slice(0, CONVERSATION_MAX_TOOLS_PER_TURN)
     .map((tool) => toolDisplay(tool, active && isLast, budget));
   const failed = turnTools.filter((tool) => tool.state === "failed").length;
   const running = turnTools.filter((tool) => tool.state === "running").length;
-  const assistant = sanitizeText(
-    builder.assistantParts.join("\n"),
-    CONVERSATION_MAX_TEXT_BYTES,
-    budget,
-  );
+  const assistant = sanitizeText(builder.assistantParts.join("\n"));
   const elapsedSeconds =
     builder.timestamps.length >= 2
       ? Math.floor((Math.max(...builder.timestamps) - Math.min(...builder.timestamps)) / 1_000)
@@ -537,7 +484,7 @@ const turnFromBuilder = (
   const turn: CanonicalConversationTurn = {
     id: builder.id,
     state: active && isLast ? "streaming" : "completed",
-    user: sanitizeText(builder.user, CONVERSATION_MAX_TEXT_BYTES, budget),
+    user: sanitizeText(builder.user),
     assistant,
     tools: turnTools,
     ...(turnTools.length === 0
@@ -676,7 +623,7 @@ const projectionFromSnapshot = (snapshot: PiConsoleSnapshot): FoldedProjection =
 export const canonicalConversationSnapshotFromPi = (
   snapshot: PiConsoleSnapshot,
 ): CanonicalConversationSnapshot | undefined => {
-  const budget: DisplayBudget = { nodes: 0, truncated: false };
+  const budget: DisplayBudget = { truncated: false };
   const projection = projectionFromSnapshot(snapshot);
   const events = snapshot.overlapEvents
     .slice()
@@ -688,9 +635,7 @@ export const canonicalConversationSnapshotFromPi = (
   if (!projection.active)
     for (const tool of projection.tools.values())
       if (tool.status === "running") tool.status = projection.terminalToolState;
-  let turns = [...buildTurns(projection, budget)];
-  const turnsTruncated = snapshot.truncated.messages || turns.length > CONVERSATION_MAX_TURNS;
-  if (turns.length > CONVERSATION_MAX_TURNS) turns = turns.slice(-CONVERSATION_MAX_TURNS);
+  const turns = [...buildTurns(projection, budget)];
   return {
     version: CONVERSATION_WIRE_VERSION,
     transport: {
@@ -703,15 +648,15 @@ export const canonicalConversationSnapshotFromPi = (
     queue: {
       steer: snapshot.queue.steer.map(({ id, text }) => ({
         id: stableIdentifier(id, "queued-steer", budget),
-        text: sanitizeText(text, CONVERSATION_MAX_TEXT_BYTES, budget),
+        text: sanitizeText(text),
       })),
       followUp: snapshot.queue.followUp.map(({ id, text }) => ({
         id: stableIdentifier(id, "queued-follow-up", budget),
-        text: sanitizeText(text, CONVERSATION_MAX_TEXT_BYTES, budget),
+        text: sanitizeText(text),
       })),
     },
     truncated: {
-      turns: turnsTruncated,
+      turns: snapshot.truncated.messages,
       values: projection.valuesTruncated || budget.truncated,
     },
   };

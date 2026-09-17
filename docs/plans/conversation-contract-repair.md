@@ -5,7 +5,8 @@ This lane removes display-era limits from the canonical conversation path while 
 ## Slice evidence
 
 - `337551f` shared canonical decoder. The browser consumes the protocol decoder used to validate producer output. Coverage includes 101 turns, 53 tools, multibyte UTF-8 content, exact-key rejection, invalid states, and invalid sequence ordering.
-- Conversation admission: pending commit. Browser creation/composer, CLI steer, Worker create/steer, Session metadata, and Pi command decoding accept full non-empty text. The 8 MiB Pi command envelope remains a native transport resource bound; messages beyond the former 16 KiB display budget are covered end to end through command normalization.
+- `f0d4793` conversation admission. Browser creation/composer, CLI steer, Worker create/steer, Session metadata, and Pi command decoding accept full non-empty text. The 8 MiB Pi command envelope remains a native transport resource bound; messages beyond the former 16 KiB display budget are covered end to end through command normalization.
+- Full projection and UI access: pending commit. The Pi-to-canonical mapper no longer adds turn, tool, text, or tool-value clipping; producer-reported truncation remains visible in the snapshot and now produces a UI warning. Every queued item is rendered in a scrollable list, and polled streaming text renders immediately without the synthetic two-character timer.
 
 ## Remaining platform constraints
 

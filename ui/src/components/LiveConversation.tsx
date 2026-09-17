@@ -212,11 +212,13 @@ const styles = stylex.create({
   sendIcon: { width: "14px", height: "14px", strokeWidth: 1.8 },
   queue: {
     width: "min(900px, 100%)",
+    maxHeight: "160px",
     margin: 0,
     padding: 0,
     display: "grid",
     gap: "4px",
     listStyle: "none",
+    overflowY: "auto",
   },
   queueItem: {
     minWidth: 0,
@@ -236,9 +238,8 @@ const styles = stylex.create({
     textAlign: "center",
   },
   queueText: {
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
+    overflowWrap: "anywhere",
+    whiteSpace: "normal",
   },
   queueMode: { color: colors.quiet, fontSize: "10px" },
 });
@@ -380,6 +381,16 @@ function useConversationConnection(
     refresh: () => setRefreshGeneration((current) => current + 1),
   };
 }
+
+const truncationWarning = (snapshot: ConversationSnapshot | undefined): string | undefined => {
+  if (snapshot?.truncated.turns && snapshot.truncated.values)
+    return "The agent transport reported omitted turns and shortened values. The visible transcript is incomplete.";
+  if (snapshot?.truncated.turns)
+    return "The agent transport reported omitted earlier turns. The visible transcript is incomplete.";
+  if (snapshot?.truncated.values)
+    return "The agent transport reported shortened values. Expandable content may be incomplete.";
+  return undefined;
+};
 
 const runtimeStopped = (connection: ConnectionState): boolean =>
   connection.kind === "ready" && connection.snapshot.runtimeStopped === true;
@@ -663,8 +674,7 @@ function ConversationComposer({
 }
 
 const compactQueueText = (item: ConversationQueueItem): string => {
-  const compact = item.text.replaceAll(/\s+/gu, " ").trim();
-  return compact.length > 120 ? `${compact.slice(0, 119).trimEnd()}…` : compact;
+  return item.text.replaceAll(/\s+/gu, " ").trim();
 };
 
 function ComposerQueue({ queue }: { readonly queue: ConversationSnapshot["queue"] }) {
@@ -673,10 +683,9 @@ function ComposerQueue({ queue }: { readonly queue: ConversationSnapshot["queue"
     ...queue.followUp.map((item) => ({ item, label: "Queued" })),
   ];
   if (items.length === 0) return null;
-  const visible = items.slice(0, 3);
   return (
     <ol aria-label="Queued messages" {...stylex.props(styles.queue)}>
-      {visible.map(({ item, label }, index) => (
+      {items.map(({ item, label }, index) => (
         <li key={`${label}-${item.id}`} {...stylex.props(styles.queueItem)}>
           <span {...stylex.props(styles.queueOrder)}>{index + 1}</span>
           <span title={item.text} {...stylex.props(styles.queueText)}>
@@ -685,13 +694,6 @@ function ComposerQueue({ queue }: { readonly queue: ConversationSnapshot["queue"
           <small {...stylex.props(styles.queueMode)}>{label}</small>
         </li>
       ))}
-      {items.length > visible.length ? (
-        <li {...stylex.props(styles.queueItem)}>
-          <span {...stylex.props(styles.queueOrder)}>+</span>
-          <span {...stylex.props(styles.queueText)}>{items.length - visible.length} more</span>
-          <small {...stylex.props(styles.queueMode)}>Queued</small>
-        </li>
-      ) : null}
     </ol>
   );
 }
@@ -727,11 +729,12 @@ export function LiveConversation({
       warning={
         runtimeStopped(connection)
           ? runtimeFailureMessage(snapshot)
-          : snapshot?.followUpBlocked === true
-            ? "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue."
-            : snapshot?.messageAdmissionAvailable === false
-              ? "A Hatch or browser evidence operation is in progress. Messages will be available when it finishes."
-              : undefined
+          : (truncationWarning(snapshot) ??
+            (snapshot?.followUpBlocked === true
+              ? "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue."
+              : snapshot?.messageAdmissionAvailable === false
+                ? "A Hatch or browser evidence operation is in progress. Messages will be available when it finishes."
+                : undefined))
       }
       composer={
         <ConversationComposer
