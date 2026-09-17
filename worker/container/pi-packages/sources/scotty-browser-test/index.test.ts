@@ -141,7 +141,7 @@ test("posts only the decoded job to the exact internal route and returns safe me
   assert.deepEqual(output, result());
 });
 
-test("renders a port conflict with the distinct-target recovery hint", () => {
+test("renders a port conflict without changing target ownership", () => {
   const conflict = {
     ...result(),
     status: "failed" as const,
@@ -150,8 +150,12 @@ test("renders a port conflict with the distinct-target recovery hint", () => {
     video: false,
     failure: { code: "port_conflict" as const },
   };
-  assert.match(renderBrowserEvidenceResult(conflict), /Failure: port_conflict/u);
-  assert.match(renderBrowserEvidenceResult(conflict), /different port from Hatch/u);
+  const rendered = renderBrowserEvidenceResult(conflict);
+  assert.match(rendered, /Failure: port_conflict/u);
+  assert.match(rendered, /without restarting or reconfiguring the target app/u);
+  assert.doesNotMatch(rendered, /Hatch/u);
+  assert.doesNotMatch(rendered, /summaryUrl|\/s\/abcdef123456/u);
+  assert.equal(rendered.split("\n").at(-1), "scotty-evidence:job-abcd1234");
 });
 
 test("preserves a rejected preflight recovery hint", async () => {
@@ -198,6 +202,11 @@ test("registers exactly one scotty_browser_test tool with safe reference guidanc
   assert.deepEqual(tools.map(({ name }) => name), ["scotty_browser_test"]);
   assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /exact scotty-evidence:<jobId>/u);
   assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /once/u);
+  assert.match(
+    tools[0]?.promptGuidelines.join("\n") ?? "",
+    /Capture cleans up only resources it created\. It leaves the target app running\./u,
+  );
+  assert.doesNotMatch(tools[0]?.promptGuidelines.join("\n") ?? "", /Hatch/u);
   assert.match(
     tools[0]?.promptGuidelines.join("\n") ?? "",
     /do not publish the authenticated summary URL/u,

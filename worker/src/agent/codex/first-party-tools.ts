@@ -7,6 +7,7 @@ import {
 import { Schema } from "effect";
 import {
   BrowserEvidenceToolParameters,
+  renderBrowserEvidenceResult,
   runScottyBrowserTest,
 } from "../../../container/pi-packages/sources/scotty-browser-test/index";
 
@@ -26,7 +27,7 @@ export const codexFirstPartyToolSpecs = [
     type: "function" as const,
     name: "scotty_browser_test",
     description:
-      "Run one bounded browser evidence job against an app port in this warm Scotty session. Use relative paths and declarative assertions. For user-visible changes, use the same flow before and after; enable video for the after run. Include the exact returned scotty-evidence reference once in the next meaningful update; never publish the authenticated summary URL. Include displayText on every call: a short phrase describing the intended task, not the tool name or a claim of success; omit credentials, URLs, and internal identifiers.",
+      "Run one bounded browser evidence job against an already-running local app at its sandbox-local address after confirming real render readiness. App preview and capture are independent workflows. Use the app's allowed port, relative paths, and declarative assertions. For user-visible changes, capture the same flow before and after, with video enabled for the after run. Capture cleans up only resources it created. It leaves the target app running. A port_conflict is a concrete blocker: report it without restarting or reconfiguring the target app. Include the exact scotty-evidence reference returned by the first-party tool result once in the next meaningful update; never publish the authenticated summary URL. Include displayText on every call: a short phrase describing the intended task, not the tool name or a claim of success; omit credentials, URLs, and internal identifiers.",
     inputSchema: Schema.decodeUnknownSync(Schema.fromJsonString(Schema.JsonObject))(
       JSON.stringify(BrowserEvidenceToolParameters),
     ),
@@ -69,17 +70,7 @@ export function makeCodexFirstPartyTools(workspaceRoot: string): CodexFirstParty
       }
       const result = await runScottyBrowserTest(input, signal);
       return {
-        text: [
-          `Browser evidence: ${result.status}.`,
-          `Completed steps: ${result.completedSteps}. Frames: ${result.frameCount}.`,
-          `Video: ${result.video ? "recorded" : "not requested"}.`,
-          ...(result.failure === undefined
-            ? []
-            : [
-                `Failure: ${result.failure.code}${result.failure.step === undefined ? "" : ` at step ${result.failure.step + 1}`}.`,
-              ]),
-          `scotty-evidence:${result.jobId}`,
-        ].join("\n"),
+        text: renderBrowserEvidenceResult(result),
         success: result.status === "succeeded",
       };
     },

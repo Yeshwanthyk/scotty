@@ -4605,7 +4605,7 @@ describe("real Hono boundary", () => {
     expect(shell.status).toBe(200);
     expect(shell.headers.get("cache-control")).toBe("private, no-store");
     expect(await shell.text()).toContain("<title>Scotty evidence</title>");
-    expect(evidenceScript).toContain('"Verified screenshots and recording"');
+    expect(evidenceScript).toContain('"Captured screenshots and recording"');
     expect(evidenceScript).toContain("setTimeout(() => void refresh(), POLL_INTERVAL)");
     expect(evidenceScript).toContain("orderedEvidenceFrames(summary)");
 

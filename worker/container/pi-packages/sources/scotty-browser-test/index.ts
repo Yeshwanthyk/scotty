@@ -329,10 +329,10 @@ export function renderBrowserEvidenceResult(result: BrowserEvidenceResult): stri
     lines.push(`Failure: ${result.failure.code}${step}`);
     if (result.failure.code === "port_conflict")
       lines.push(
-        "Recovery: Start a separate temporary app server on a different port from Hatch, then rerun the same flow. Leave Hatch running.",
+        "Blocker: The requested capture port is unavailable. Report the conflict without restarting or reconfiguring the target app.",
       );
   }
-  lines.push(`Authenticated summary: ${result.summaryUrl}`);
+  lines.push(`scotty-evidence:${result.jobId}`);
   return lines.join("\n");
 }
 
@@ -346,9 +346,10 @@ export default function scottyBrowserTest(pi: ExtensionAPI): void {
       "Run a bounded one-shot browser evidence job against the current warm Scotty session",
     promptGuidelines: [
       "Include displayText on every call: a short phrase describing the intended task, not the tool name or a claim of success. Omit credentials, URLs, and internal identifiers.",
-      "Use scotty_browser_test only after starting the repository app on 0.0.0.0 at an allowed port; use relative paths and declarative assertions.",
+      "App preview and capture are independent workflows. Target an already-running repository app at its sandbox-local address after confirming real render readiness; use its allowed port, relative paths, and declarative assertions.",
       "For user-visible work, run the same viewport, steps, and assertions before and after the change. Set video false for the before run and true for the after run so Scotty can build one matched Showcase.",
-      "In the next meaningful progress or final update, include the exact scotty-evidence:<jobId> reference derived from the structured result once. Never invent or repeat a reference, and do not publish the authenticated summary URL.",
+      "Capture cleans up only resources it created. It leaves the target app running. If the result reports port_conflict, report the blocker without restarting or reconfiguring the target app.",
+      "In the next meaningful progress or final update, include the exact scotty-evidence:<jobId> reference emitted by the first-party tool result once. Never invent or repeat a reference, and do not publish the authenticated summary URL.",
     ],
     parameters: BrowserEvidenceToolParameters,
     async execute(_toolCallId, params, signal) {

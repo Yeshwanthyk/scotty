@@ -139,10 +139,10 @@ function renderScreenshots(parent, summary) {
   panel.className = "evidence-frames-panel";
   panel.setAttribute(
     "aria-label",
-    summary.video === undefined ? "Verified screenshots" : "Verified screenshots and recording",
+    summary.video === undefined ? "Captured screenshots" : "Captured screenshots and recording",
   );
   renderRecording(panel, summary);
-  addText(panel, "evidence-frames-title", "Verified screenshots", "h2");
+  addText(panel, "evidence-frames-title", "Captured screenshots", "h2");
   if (frames.length === 0) {
     addText(
       panel,
@@ -214,8 +214,8 @@ function renderSummary(summary) {
   pageSubtitle.textContent =
     failure === undefined
       ? summary.video
-        ? "Verified screenshots and a real browser recording are available."
-        : "Verified screenshots are available for this baseline run."
+        ? "Captured screenshots and a real browser recording are available."
+        : "Captured screenshots are available for this baseline run."
       : `${failure.detail}${failure.hint === undefined ? "" : ` ${failure.hint}`}`;
   jobStatus.hidden = false;
   jobStatus.dataset.status = summary.status;
