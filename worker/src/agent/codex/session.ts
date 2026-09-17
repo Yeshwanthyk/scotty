@@ -1,3 +1,4 @@
+import type { PiConsoleImage } from "../../../../protocol/pi-console";
 import { HatchFailure, renderHatchFailure } from "./first-party-tools";
 import type { CodexSavedState } from "./persistence-format";
 import { createHash } from "node:crypto";
@@ -839,7 +840,11 @@ export const makeSession = Effect.fnUntraced(function* (
     return yield* handleUpstreamFailure(entry.rejection);
   });
 
-  const prompt = Effect.fnUntraced(function* (text: string, clientUserMessageId?: string) {
+  const prompt = Effect.fnUntraced(function* (
+    text: string,
+    clientUserMessageId?: string,
+    images: ReadonlyArray<PiConsoleImage> = [],
+  ) {
     if (!ready || closing || !threadId) return yield* new CodexHostError({ code: "not_ready" });
     if (active) return yield* new CodexHostError({ code: "turn_busy" });
     if (transport.options.credential.expiresAt <= (yield* Clock.currentTimeMillis))
@@ -850,7 +855,13 @@ export const makeSession = Effect.fnUntraced(function* (
     const params = {
       threadId,
       ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
-      input: [{ type: "text", text }],
+      input: [
+        { type: "text", text },
+        ...images.map((image) => ({
+          type: "image" as const,
+          url: `data:${image.mimeType};base64,${image.data}`,
+        })),
+      ],
       effort: transport.options.effort,
     } as const;
     yield* decoded(
@@ -898,6 +909,7 @@ export const makeSession = Effect.fnUntraced(function* (
     text: string,
     expectedTurnId: string,
     clientUserMessageId?: string,
+    images: ReadonlyArray<PiConsoleImage> = [],
   ) {
     if (!ready || closing || !threadId) return yield* new CodexHostError({ code: "not_ready" });
     const turn = active;
@@ -911,7 +923,13 @@ export const makeSession = Effect.fnUntraced(function* (
     const params = {
       threadId,
       ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
-      input: [{ type: "text", text }],
+      input: [
+        { type: "text", text },
+        ...images.map((image) => ({
+          type: "image" as const,
+          url: `data:${image.mimeType};base64,${image.data}`,
+        })),
+      ],
       expectedTurnId,
     } as const;
     yield* decoded(

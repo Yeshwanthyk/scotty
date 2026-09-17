@@ -297,3 +297,31 @@ describe("session actor companion metadata", () => {
     assert.ok(!serialized.includes('"phase"'));
   });
 });
+
+it("preserves private create images, forbids replacing them, and scrubs them when settled", () => {
+  const authority = createAuthority();
+  const image = { type: "image" as const, mimeType: "image/png" as const, data: "aGVsbG8=" };
+  const made = makeSessionActorMetadata(authority, { ...input(), images: [image] });
+  assert.ok(Result.isSuccess(made));
+  const value = made.success;
+  assert.deepEqual(value.privateCreateInput?.images, [image]);
+  const decoded = decodeSessionActorMetadata(value);
+  assert.ok(Result.isSuccess(decoded));
+  assert.deepEqual(decoded.success.privateCreateInput?.images, [image]);
+  assert.isNotNull(value.privateCreateInput);
+  assert.ok(
+    Result.isFailure(
+      validateSessionActorMetadataUpdate(authority, value, {
+        ...value,
+        privateCreateInput: {
+          ...value.privateCreateInput,
+          images: [{ ...image, data: "d29ybGQ=" }],
+        },
+      }),
+    ),
+  );
+  assert.notInclude(JSON.stringify(safeSessionActorMetadata(value)), image.data);
+  const scrubbed = scrubSettledCreatePrivateInput(stableAuthority(warm()), value);
+  assert.ok(Result.isSuccess(scrubbed));
+  assert.isNull(scrubbed.success.privateCreateInput);
+});

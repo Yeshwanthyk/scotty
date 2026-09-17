@@ -24,6 +24,13 @@ const DynamicToolSpec = Schema.Struct({
   inputSchema: Schema.JsonObject,
 });
 
+const UserInput = Schema.TupleWithRest(
+  Schema.Tuple([
+    Schema.Struct({ type: Schema.Literal("text"), text: Text.check(Schema.isMinLength(1)) }),
+  ]),
+  [Schema.Struct({ type: Schema.Literal("image"), url: Schema.String })],
+).check(Schema.isMaxLength(5));
+
 export const CodexClientMessageSchema = Schema.Union([
   Schema.Struct({
     id: RequestId,
@@ -71,9 +78,7 @@ export const CodexClientMessageSchema = Schema.Union([
     params: Schema.Struct({
       threadId: Identifier,
       clientUserMessageId: Schema.optionalKey(Schema.NullOr(Identifier)),
-      input: Schema.Tuple([
-        Schema.Struct({ type: Schema.Literal("text"), text: Text.check(Schema.isMinLength(1)) }),
-      ]),
+      input: UserInput,
       effort: Identifier,
     }),
   }),
@@ -83,9 +88,7 @@ export const CodexClientMessageSchema = Schema.Union([
     params: Schema.Struct({
       threadId: Identifier,
       clientUserMessageId: Schema.optionalKey(Schema.NullOr(Identifier)),
-      input: Schema.Tuple([
-        Schema.Struct({ type: Schema.Literal("text"), text: Text.check(Schema.isMinLength(1)) }),
-      ]),
+      input: UserInput,
       expectedTurnId: Identifier,
     }),
   }),

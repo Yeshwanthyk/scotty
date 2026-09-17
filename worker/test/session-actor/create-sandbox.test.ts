@@ -115,6 +115,7 @@ const metadata = (current: SessionAuthority): SessionActorMetadata => ({
     attempt: "create-attempt",
     payload: { reference: "payload-1" },
     initialPrompt: "Implement the requested change",
+    images: [{ type: "image", mimeType: "image/png", data: "aGVsbG8=" }],
   },
   createObservations: { workspace: null, bundle: null, credentialGrants: null },
 });
@@ -371,7 +372,10 @@ describe("Cloudflare create transition provider", () => {
             ),
         };
         const authOverrides: Partial<ContainerAuth["Service"]> = {
-          seed: () => {
+          seed: (_id, _credentials, options) => {
+            assert.deepEqual(options?.images, [
+              { type: "image", mimeType: "image/png", data: "aGVsbG8=" },
+            ]);
             seedCalls += 1;
             return Effect.void;
           },

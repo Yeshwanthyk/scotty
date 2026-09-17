@@ -1,3 +1,4 @@
+import type { PiConsoleImage } from "../../../protocol/pi-console";
 import {
   PiModelSettingSchema,
   PiReasoningEffortSchema,
@@ -353,6 +354,7 @@ export const sandboxAgentsInstructions = `- Read and follow the repository AGENT
 export interface ContainerAuthSeedOptions {
   readonly selection?: PiAgentSelection;
   readonly initialPrompt?: string;
+  readonly images?: ReadonlyArray<PiConsoleImage>;
   readonly items?: ReadonlyArray<{
     readonly kind: SandboxBundleItemKind;
     readonly name: string;
@@ -544,6 +546,8 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       yield* runtime.writeFile(shellPath, terminalShell(id, credentials, toolPaths));
       if (options?.initialPrompt !== undefined)
         yield* runtime.writeFile(promptPath, options.initialPrompt);
+      if (options?.images !== undefined && options.images.length > 0)
+        yield* runtime.writeFile(`${piHome}/initial-images.json`, JSON.stringify(options.images));
       yield* runtime.execChecked(
         `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(gitConfigPath)} && ${mergedSkillCommand(id, skills, options?.bundleRoot)}`,
       );

@@ -36,6 +36,7 @@ export interface CreateControllerRequest {
   readonly branch: string;
   readonly createRepositoryIfMissing: boolean;
   readonly initialPrompt: string;
+  readonly images?: SessionActorMetadataInput["images"];
   readonly payloadReference: string;
   readonly idempotency?: CreateIdempotencyDigestMetadata;
   readonly correlationId: string;
@@ -257,6 +258,7 @@ const metadataInput = (request: CreateControllerRequest): SessionActorMetadataIn
   createIdempotency: request.idempotency ?? null,
   payload: { reference: request.payloadReference },
   initialPrompt: request.initialPrompt,
+  ...(request.images === undefined ? {} : { images: request.images }),
 });
 
 const matchingIdempotency = (

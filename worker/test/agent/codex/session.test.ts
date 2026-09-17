@@ -316,6 +316,29 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
 });
 
 describe("scoped Codex session", () => {
+  it.effect("sends image data URLs in native prompt and steering inputs", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const host = yield* makeSession(f.transport);
+      const image = { type: "image" as const, mimeType: "image/png" as const, data: "aGVsbG8=" };
+      yield* host.prompt("Inspect this", "image-prompt", [image]);
+      const prompt = f.messages.find((message) => message.method === "turn/start");
+      assert.isDefined(prompt);
+      assert.deepEqual(prompt.params.input, [
+        { type: "text", text: "Inspect this" },
+        { type: "image", url: "data:image/png;base64,aGVsbG8=" },
+      ]);
+      yield* host.steer("Compare this", "turn", "image-steer", [{ ...image, data: "d29ybGQ=" }]);
+      const steer = f.messages.find((message) => message.method === "turn/steer");
+      assert.isDefined(steer);
+      assert.deepEqual(steer.params.input, [
+        { type: "text", text: "Compare this" },
+        { type: "image", url: "data:image/png;base64,d29ybGQ=" },
+      ]);
+      yield* host.stop;
+    }),
+  );
+
   it.effect("replays exact parent start and completion received before turn/start reply", () =>
     Effect.gen(function* () {
       const f = yield* fixture("early-turn");

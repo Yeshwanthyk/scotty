@@ -1,3 +1,4 @@
+import type { PiConsoleImage } from "../../../protocol/pi-console";
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
 export const MIN_HARD_CAP_SECONDS = 60;
 export const MAX_HARD_CAP_SECONDS = 24 * 60 * 60;
@@ -32,6 +33,7 @@ export interface CreateSessionDraft {
 }
 
 export interface CreateSessionPayload {
+  readonly images?: readonly PiConsoleImage[];
   readonly title: string;
   readonly repo: string;
   readonly prompt: string;

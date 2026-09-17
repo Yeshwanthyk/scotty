@@ -303,6 +303,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
             }),
         token: metadata.codexControl.token,
         initialPrompt: metadata.codexControl.initialPrompt,
+        images: metadata.codexControl.images,
       };
     });
 
@@ -444,6 +445,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         );
       const seedOptions = {
         initialPrompt,
+        images: metadata?.privateCreateInput?.images,
         items: materialized.items,
         bundleRoot: materialized.bundleRoot,
       };
@@ -642,6 +644,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
           supervisor.supervisorEpoch,
           identity.initialPrompt,
           reconcile,
+          identity.images,
         ).pipe(
           Effect.provideService(SandboxRuntime, runtime),
           Effect.mapError((error) =>

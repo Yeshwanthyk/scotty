@@ -1,3 +1,4 @@
+import { PiConsoleImagesSchema, type PiConsoleImage } from "../../../../protocol/pi-console";
 import {
   CodexPersistenceIdentity,
   CodexSavedHistory,
@@ -34,11 +35,13 @@ export const CodexPrompt = Schema.Struct({
   reconcileOnly: Schema.optionalKey(Schema.Boolean),
   threadId: Identifier,
   text: Schema.String.check(Schema.isMinLength(1)),
+  images: Schema.optionalKey(PiConsoleImagesSchema),
   clientUserMessageId: Schema.optionalKey(Identifier),
 });
 export const CodexSteer = Schema.Struct({
   threadId: Identifier,
   text: Schema.String.check(Schema.isMinLength(1)),
+  images: Schema.optionalKey(PiConsoleImagesSchema),
   expectedTurnId: Identifier,
   clientUserMessageId: Schema.optionalKey(Identifier),
 });
@@ -157,9 +160,19 @@ const fingerprintOperation = (
   mode: OperationMode,
   text: string,
   turnId?: string,
+  images?: ReadonlyArray<PiConsoleImage>,
 ) =>
   Effect.tryPromise({
-    try: () => sha256Hex(JSON.stringify([threadId, mode, text, turnId ?? null])),
+    try: () =>
+      sha256Hex(
+        JSON.stringify([
+          threadId,
+          mode,
+          text,
+          turnId ?? null,
+          ...(images === undefined || images.length === 0 ? [] : [images]),
+        ]),
+      ),
     catch: () => new CodexBridgeError({ code: "host_failed", outcome: "rejected" }),
   });
 
@@ -336,7 +349,13 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
     if (command.threadId !== initial.threadId)
       return yield* new CodexBridgeError({ code: "wrong_thread", outcome: "rejected" });
     const userText = command.text;
-    const fingerprint = yield* fingerprintOperation(command.threadId, "message", command.text);
+    const fingerprint = yield* fingerprintOperation(
+      command.threadId,
+      "message",
+      command.text,
+      undefined,
+      command.images,
+    );
     const existing = existingOperation(command.clientUserMessageId, "message", fingerprint);
     if (Predicate.isTagged(existing, "CodexBridgeError")) return yield* existing;
     if (existing !== undefined) {
@@ -370,7 +389,11 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
         let turnId: string | null = null;
         // Admission and terminal observation belong to the generation, not a disconnected HTTP caller.
         yield* Effect.gen(function* () {
-          const turn = yield* host.prompt(command.text, command.clientUserMessageId);
+          const turn = yield* host.prompt(
+            command.text,
+            command.clientUserMessageId,
+            command.images,
+          );
           turnId = turn.turnId;
           prompt = { status: "running", turnId };
           activeTurn = {
@@ -470,6 +493,7 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
       "steer",
       command.text,
       command.expectedTurnId,
+      command.images,
     );
     const existing = existingOperation(command.clientUserMessageId, "steer", fingerprint);
     if (Predicate.isTagged(existing, "CodexBridgeError")) return yield* existing;
@@ -496,14 +520,18 @@ export const makeCodexRuntime = Effect.fnUntraced(function* (
     recordOperation(command.clientUserMessageId, operation);
     steering = true;
     const admitted = yield* Effect.result(
-      host.steer(command.text, command.expectedTurnId, command.clientUserMessageId).pipe(
-        Effect.mapError(() => new CodexBridgeError({ code: "host_failed", outcome: "ambiguous" })),
-        Effect.ensuring(
-          Effect.sync(() => {
-            steering = false;
-          }),
+      host
+        .steer(command.text, command.expectedTurnId, command.clientUserMessageId, command.images)
+        .pipe(
+          Effect.mapError(
+            () => new CodexBridgeError({ code: "host_failed", outcome: "ambiguous" }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              steering = false;
+            }),
+          ),
         ),
-      ),
     );
     if (Result.isFailure(admitted)) {
       operation.status = "unknown";

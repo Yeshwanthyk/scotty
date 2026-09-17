@@ -63,11 +63,16 @@ test("Pi session supervisor hydrates, replays commands, and owns extension UI", 
   await mkdir(path.dirname(sessionFile), { recursive: true });
   await writeFile(sessionFile, "");
   await writeFile(path.join(piHome, "initial-prompt"), "Start the task");
+  await writeFile(
+    path.join(piHome, "initial-images.json"),
+    JSON.stringify([{ type: "image", mimeType: "image/png", data: "aGVsbG8=" }]),
+  );
   await writeFile(tokenFile, transportToken);
   await writeFile(
     fakePi,
     `#!/usr/bin/env node
 import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
 const messages = [];
 let model = { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" };
 let thinkingLevel = "high";
@@ -106,6 +111,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
     output({ id: command.id, type: "response", command: command.type, success: true });
   }
   else if (command.type === "prompt") {
+    if (command.message === "Start the task") writeFileSync(${JSON.stringify(path.join(work, "initial-command.json"))}, JSON.stringify(command));
     if (command.message === "Oversized dialog") {
       output({ id: command.id, type: "response", command: command.type, success: true });
       output({ type: "extension_ui_request", id: "oversized-1", method: "select", title: "Too many", options: Array.from({ length: 101 }, (_, index) => String(index)) });
@@ -171,6 +177,17 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   assert.equal(
     await readFile(path.join(piHome, "initial-prompt.consumed"), "utf8"),
     "Start the task",
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(work, "initial-command.json"), "utf8")).images,
+    [{ type: "image", mimeType: "image/png", data: "aGVsbG8=" }],
+  );
+  assert.equal(
+    await access(path.join(piHome, "initial-images.json")).then(
+      () => true,
+      () => false,
+    ),
+    false,
   );
   assert.equal(await readFile(path.join(piHome, "scotty-session-id"), "utf8"), `${sessionId}\n`);
 

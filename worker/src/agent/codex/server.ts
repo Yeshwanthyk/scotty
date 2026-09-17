@@ -177,6 +177,7 @@ export const makeCodexControl = Effect.fnUntraced(function* (
                   : { reconcileOnly: command.reconcileOnly }),
                 threadId: command.threadId,
                 text: command.text,
+                ...(command.images === undefined ? {} : { images: command.images }),
                 ...(command.clientUserMessageId === undefined
                   ? {}
                   : { clientUserMessageId: command.clientUserMessageId }),
@@ -184,6 +185,7 @@ export const makeCodexControl = Effect.fnUntraced(function* (
             : runtime.steer({
                 threadId: command.threadId,
                 text: command.text,
+                ...(command.images === undefined ? {} : { images: command.images }),
                 expectedTurnId: command.expectedTurnId,
                 ...(command.clientUserMessageId === undefined
                   ? {}
