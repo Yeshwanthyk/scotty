@@ -33,7 +33,12 @@ export const SessionDeploymentPiStateSchema = Schema.Literals([
 ]);
 export type SessionDeploymentPiState = typeof SessionDeploymentPiStateSchema.Type;
 
-export const SessionDeploymentAgentRuntimeStateSchema = SessionDeploymentPiStateSchema;
+export const SessionDeploymentAgentRuntimeStateSchema = Schema.Literals([
+  "reachable",
+  "unreachable",
+  "not_running",
+  "unknown",
+]);
 export type SessionDeploymentAgentRuntimeState =
   typeof SessionDeploymentAgentRuntimeStateSchema.Type;
 

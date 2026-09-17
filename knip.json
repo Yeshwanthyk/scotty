@@ -15,7 +15,7 @@
         "e2e/canary/full-stack-canary-worker.ts"
       ],
       "project": ["cli/**/*.ts", "e2e/canary/**/*.ts", "infra/**/*.ts", "protocol/**/*.ts"],
-      "ignoreDependencies": ["cloudflare", "@alchemy.run/cloudflare-runtime"]
+      "ignoreDependencies": ["cloudflare"]
     },
     "worker": {
       "entry": ["test/**/*.test.ts", "src/agent/codex/main.ts"],
