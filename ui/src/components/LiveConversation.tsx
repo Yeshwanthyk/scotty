@@ -395,6 +395,20 @@ const truncationWarning = (snapshot: ConversationSnapshot | undefined): string |
 const runtimeStopped = (connection: ConnectionState): boolean =>
   connection.kind === "ready" && connection.snapshot.runtimeStopped === true;
 
+const conversationWarning = (
+  connection: ConnectionState,
+  snapshot: ConversationSnapshot | undefined,
+): string | undefined => {
+  if (runtimeStopped(connection)) return runtimeFailureMessage(snapshot);
+  const truncated = truncationWarning(snapshot);
+  if (truncated !== undefined) return truncated;
+  if (snapshot?.followUpBlocked === true)
+    return "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue.";
+  if (snapshot?.messageAdmissionAvailable === false)
+    return "A Hatch or browser evidence operation is in progress. Messages will be available when it finishes.";
+  return undefined;
+};
+
 const connectionLabelFor = (connection: ConnectionState, active: boolean): string => {
   if (connection.kind === "loading") return "Connecting";
   if (connection.kind === "paused") return "Session paused";
@@ -726,16 +740,7 @@ export function LiveConversation({
     <ConversationShell
       healthy={healthy}
       status={<ConnectionStatus active={active} connection={connection} />}
-      warning={
-        runtimeStopped(connection)
-          ? runtimeFailureMessage(snapshot)
-          : (truncationWarning(snapshot) ??
-            (snapshot?.followUpBlocked === true
-              ? "A queued follow-up has unconfirmed delivery. Scotty is checking its receipt before continuing the queue."
-              : snapshot?.messageAdmissionAvailable === false
-                ? "A Hatch or browser evidence operation is in progress. Messages will be available when it finishes."
-                : undefined))
-      }
+      warning={conversationWarning(connection, snapshot)}
       composer={
         <ConversationComposer
           active={active}

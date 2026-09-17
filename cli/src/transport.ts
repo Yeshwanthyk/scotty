@@ -23,7 +23,7 @@ const timeoutError = (method: string): CliError =>
     EXIT.GENERIC,
   );
 
-export const readLimited = Effect.fnUntraced(function* (response: Response) {
+export const readResponseBytes = Effect.fnUntraced(function* (response: Response) {
   const bytes = new Uint8Array(
     yield* Effect.tryPromise({
       try: () => response.arrayBuffer(),
@@ -100,7 +100,7 @@ export const apiRequest = Effect.fnUntraced(function* (
     : controller.signal;
   const responseOption = yield* Effect.gen(function* () {
     const response = yield* transport.fetch(`${target.host}${path}`, { ...init, headers, signal });
-    const bytes = yield* readLimited(response);
+    const bytes = yield* readResponseBytes(response);
     return { response, bytes };
   }).pipe(
     Effect.ensuring(Effect.sync(() => controller.abort())),

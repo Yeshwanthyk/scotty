@@ -11,7 +11,7 @@ const base = {
   recordStatus: "sleeping" as const,
   operation: null,
   runtime: "stopped" as const,
-  pi: "not_running" as const,
+  agentRuntime: { agent: "pi" as const, state: "not_running" as const },
 };
 const decodeReadinessResponse = Schema.decodeUnknownSync(SessionDeploymentReadinessResponseSchema);
 
@@ -24,19 +24,19 @@ describe("session deployment readiness", () => {
     });
   });
 
-  it("blocks warm sessions even when Pi is reachable", () => {
+  it("blocks warm sessions while reporting the selected agent runtime", () => {
     const readiness = assessSessionDeploymentReadiness({
       ...base,
       recordStatus: "warm",
       runtime: "running",
-      pi: "reachable",
+      agentRuntime: { agent: "codex", state: "unknown" },
     });
     assert.deepInclude(readiness, {
       ready: false,
       reason: "runtime_running",
       recordStatus: "warm",
       runtime: "running",
-      pi: "reachable",
+      agentRuntime: { agent: "codex", state: "unknown" },
     });
   });
 

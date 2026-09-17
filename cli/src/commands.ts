@@ -34,7 +34,7 @@ import { EMBEDDED_SCOTTY_SKILL_NAMES, loadEmbeddedScottySkill } from "./embedded
 import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
 import {
   decodeInitJournalJson,
-  decodeInspectResponse,
+  decodePiInspectSnapshot,
   decodeInterruptResponse,
   decodeOperationResponse,
   decodeRepositoriesResponse,
@@ -64,7 +64,7 @@ import { isRepositoryIdentity } from "../../protocol/repository";
 import {
   browserUrl,
   durationSeconds,
-  humanInspect,
+  humanPiInspect,
   humanInterrupt,
   humanRead,
   humanResult,
@@ -1828,11 +1828,11 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             );
           return;
         }
-        const decoded = decodeInspectResponse(raw);
+        const decoded = decodePiInspectSnapshot(raw);
         if (Option.isNone(decoded))
-          return yield* invalidResponse("Server returned an invalid Pi snapshot");
+          return yield* invalidResponse("Server returned an invalid runtime inspection snapshot");
         if (autoJson) outputJson(runtime.stdout, { id: sessionId, ...decoded.value });
-        else runtime.stdout(humanInspect(sessionId, decoded.value));
+        else runtime.stdout(humanPiInspect(sessionId, decoded.value));
       }),
   ).pipe(Command.withDescription("Inspect a warm session or sandbox peer without waking it"));
 

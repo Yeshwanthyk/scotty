@@ -25,13 +25,14 @@ export const SessionDeploymentRuntimeStateSchema = Schema.Literals([
 ]);
 export type SessionDeploymentRuntimeState = typeof SessionDeploymentRuntimeStateSchema.Type;
 
-export const SessionDeploymentPiStateSchema = Schema.Literals([
+export const SessionDeploymentAgentRuntimeStateSchema = Schema.Literals([
   "reachable",
   "unreachable",
   "not_running",
   "unknown",
 ]);
-export type SessionDeploymentPiState = typeof SessionDeploymentPiStateSchema.Type;
+export type SessionDeploymentAgentRuntimeState =
+  typeof SessionDeploymentAgentRuntimeStateSchema.Type;
 
 export const SessionDeploymentReadinessReasonSchema = Schema.Literals([
   "record_booting",
@@ -42,7 +43,6 @@ export const SessionDeploymentReadinessReasonSchema = Schema.Literals([
   "agent_working",
   "runtime_running",
   "runtime_unreachable",
-  "pi_unreachable",
   "sleeping_checkpointed",
   "gone",
 ]);
@@ -56,7 +56,10 @@ export const SessionDeploymentReadinessSchema = Schema.Struct({
   agentState: Schema.optionalKey(SessionDeploymentAgentStateSchema),
   lastAgentEventAt: Schema.optionalKey(Schema.String),
   runtime: SessionDeploymentRuntimeStateSchema,
-  pi: SessionDeploymentPiStateSchema,
+  agentRuntime: Schema.Struct({
+    agent: Schema.Literals(["pi", "codex"]),
+    state: SessionDeploymentAgentRuntimeStateSchema,
+  }),
   ready: Schema.Boolean,
   reason: SessionDeploymentReadinessReasonSchema,
 });
@@ -76,7 +79,10 @@ export interface SessionDeploymentReadinessInput {
   readonly agentState?: SessionDeploymentAgentState;
   readonly lastAgentEventAt?: string;
   readonly runtime: SessionDeploymentRuntimeState;
-  readonly pi: SessionDeploymentPiState;
+  readonly agentRuntime: {
+    readonly agent: "pi" | "codex";
+    readonly state: SessionDeploymentAgentRuntimeState;
+  };
 }
 
 /**
@@ -95,7 +101,7 @@ export const assessSessionDeploymentReadiness = (
     ...(input.agentState === undefined ? {} : { agentState: input.agentState }),
     ...(input.lastAgentEventAt === undefined ? {} : { lastAgentEventAt: input.lastAgentEventAt }),
     runtime: input.runtime,
-    pi: input.pi,
+    agentRuntime: input.agentRuntime,
   };
 
   if (input.operation !== null) return { ...shared, ready: false, reason: "lifecycle_busy" };

@@ -516,7 +516,7 @@ describe("real Hono boundary", () => {
       recordStatus: "sleeping",
       operation: null,
       runtime: "stopped",
-      pi: "not_running",
+      agentRuntime: { agent: "pi", state: "not_running" },
       ready: true,
       reason: "sleeping_checkpointed",
     });
@@ -943,7 +943,7 @@ describe("real Hono boundary", () => {
       agentState: "waiting",
       lastAgentEventAt: "2026-08-30T11:59:00.000Z",
       runtime: "running",
-      pi: "reachable",
+      agentRuntime: { agent: "codex", state: "unknown" },
       ready: false,
       reason: "record_warm",
     });
@@ -962,7 +962,7 @@ describe("real Hono boundary", () => {
         agentState: "waiting",
         lastAgentEventAt: "2026-08-30T11:59:00.000Z",
         runtime: "running",
-        pi: "reachable",
+        agentRuntime: { agent: "codex", state: "unknown" },
         ready: false,
         reason: "record_warm",
       },
@@ -3230,7 +3230,7 @@ describe("real Hono boundary", () => {
     });
   });
 
-  it("requires sessions:write and strictly bounds steer input before passive access", async () => {
+  it("requires sessions:write and validates steer shape before passive access", async () => {
     auth.authenticate.mockResolvedValueOnce({
       ok: true,
       value: {
@@ -3269,7 +3269,8 @@ describe("real Hono boundary", () => {
       );
       expect(response.status).toBe(400);
     }
-    const oversized = await app.request(
+    const longMessage = "é".repeat(8_193);
+    const admitted = await app.request(
       "/api/sessions/a0b1c2d3e4f5/steer",
       {
         method: "POST",
@@ -3277,12 +3278,12 @@ describe("real Hono boundary", () => {
           authorization: `Bearer ${TOKEN}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ message: "é".repeat(8_193) }),
+        body: JSON.stringify({ message: longMessage }),
       },
       env(),
     );
-    expect(oversized.status).toBe(400);
-    expect(sandbox.fetch).not.toHaveBeenCalled();
+    expect(admitted.status).toBe(200);
+    expect(sandbox.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("keeps passive inspect failures in the public Worker error envelope", async () => {

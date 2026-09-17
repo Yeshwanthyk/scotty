@@ -218,8 +218,8 @@ For Codex, `scotty steer SESSION MESSAGE --follow-up --idempotency-key ID` expli
 message after the current turn. Reuse the same ID and text when retrying that queue admission;
 the CLI generates an ID when omitted. The browser offers “Queue after this turn” while working;
 default submission still steers. Queue acceptance confirms durable storage, not native execution.
-The Session DO owns pending items and retained receipts, bounded to 100 IDs and 96 KiB of serialized
-admission state. Its alarm drains pending work without an open browser. Pending work survives DO
+The Session DO owns pending items and retained receipts, with a capacity of 100 IDs per queue. It
+does not impose a separate text-content budget. Its alarm drains pending work without an open browser. Pending work survives DO
 eviction and sleep; resume checks readiness before dispatch. Ordinary interrupt preserves queued
 work, while vaporize removes it.
 

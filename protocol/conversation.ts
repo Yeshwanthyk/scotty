@@ -1,11 +1,7 @@
 import { Option, Schema } from "effect";
 
 export const CONVERSATION_WIRE_VERSION = 1 as const;
-export const CONVERSATION_MAX_TURNS = 100;
-export const CONVERSATION_MAX_TOOLS_PER_TURN = 32;
 export const CONVERSATION_MAX_ID_BYTES = 256;
-export const CONVERSATION_MAX_TEXT_BYTES = 16 * 1024;
-export const CONVERSATION_MAX_TOOL_VALUE_BYTES = 1_200;
 export const CONVERSATION_MAX_ELAPSED_SECONDS = 7 * 24 * 60 * 60;
 export const CONVERSATION_MAX_QUEUE_ITEMS = 100;
 

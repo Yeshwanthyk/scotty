@@ -143,8 +143,7 @@ describe("Pi console protocol v1", () => {
       const decoded = yield* decodePiConsoleCommand(
         command({ type: "prompt", message: longMessage }),
       );
-      assert.strictEqual(decoded.intent.type, "prompt");
-      if (decoded.intent.type === "prompt") assert.strictEqual(decoded.intent.message, longMessage);
+      assert.deepStrictEqual(decoded.intent, { type: "prompt", message: longMessage });
     }),
   );
 

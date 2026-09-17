@@ -63,7 +63,8 @@ Session grant and substitutes the pinned credential. Do not add native OAuth imp
 The public vertical supports create, canonical read, terminal follow-up messages, active-turn
 steering, interruption, sleep/resume, and vaporize. Correlate message receipts with native turn IDs
 and preserve typed ambiguity after dispatch. Sleep settles the active turn and saves allowlisted
-native conversation files and bounded display history through the existing Session backup. Resume
+native conversation files and canonical history through the existing Session backup; any native
+or producer truncation must remain explicit in the snapshot. Resume
 requires that backup's native thread and initial turn identities, regenerates private configuration,
 and verifies the same thread in a fresh runtime before publishing readiness. A missing or invalid
 save must fail rather than start a new conversation. Standalone checkpoint remains unavailable;

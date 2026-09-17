@@ -140,16 +140,16 @@ const contentParts = (message: JsonObject): ReadonlyArray<JsonValue> => {
   return [];
 };
 
-const partText = (part: JsonValue, _budget: DisplayBudget): string => {
+const partText = (part: JsonValue): string => {
   if (typeof part === "string") return sanitizeText(part);
   if (!isJsonObject(part)) return "";
   const text = stringProperty(part, "text") ?? stringProperty(part, "content");
   return text === undefined ? "" : sanitizeText(text);
 };
 
-const messageText = (message: JsonObject, budget: DisplayBudget): string =>
+const messageText = (message: JsonObject): string =>
   contentParts(message)
-    .map((part) => partText(part, budget))
+    .map(partText)
     .filter((part) => part.length > 0)
     .join("\n");
 
@@ -218,7 +218,6 @@ const applyAssistantContent = (
   content: JsonValue[],
   delta: JsonObject,
   event: JsonObject,
-  budget: DisplayBudget,
 ): void => {
   const type = stringProperty(delta, "type") ?? stringProperty(event, "updateType");
   const index = assistantContentIndex(delta);
@@ -247,11 +246,7 @@ const applyAssistantContent = (
   content[index] = { ...previous, type: contentType, [field]: text };
 };
 
-const applyAssistantDelta = (
-  messages: JsonObject[],
-  event: JsonObject,
-  budget: DisplayBudget,
-): void => {
+const applyAssistantDelta = (messages: JsonObject[], event: JsonObject): void => {
   let message = messages.at(-1);
   if (message === undefined || roleOf(message) !== "assistant") {
     message = { role: "assistant", content: [] };
@@ -260,7 +255,7 @@ const applyAssistantDelta = (
   const content = message.content;
   const mutableContent: JsonValue[] = Array.isArray(content) ? [...content] : [];
   const delta = assistantDelta(event);
-  applyAssistantContent(mutableContent, delta, event, budget);
+  applyAssistantContent(mutableContent, delta, event);
   messages[messages.length - 1] = { ...message, content: mutableContent };
 };
 
@@ -323,11 +318,7 @@ const claimsSnapshotMessage = (projection: FoldedProjection, message: JsonObject
   return true;
 };
 
-const applyMessageEvent = (
-  projection: FoldedProjection,
-  event: JsonObject,
-  budget: DisplayBudget,
-): void => {
+const applyMessageEvent = (projection: FoldedProjection, event: JsonObject): void => {
   const type = stringProperty(event, "type");
   const message = event.message;
   if ((type === "message_start" || type === "message_end") && isJsonObject(message)) {
@@ -339,7 +330,7 @@ const applyMessageEvent = (
   }
   if (type === "message_update") {
     if (isJsonObject(message)) upsertMessage(projection.messages, message);
-    else applyAssistantDelta(projection.messages, event, budget);
+    else applyAssistantDelta(projection.messages, event);
   }
 };
 
@@ -375,14 +366,10 @@ const settleTools = (projection: FoldedProjection, status: "completed" | "cancel
   for (const tool of projection.tools.values()) if (tool.status === "running") tool.status = status;
 };
 
-const applyEventPayload = (
-  projection: FoldedProjection,
-  event: JsonObject,
-  budget: DisplayBudget,
-): void => {
+const applyEventPayload = (projection: FoldedProjection, event: JsonObject): void => {
   const type = stringProperty(event, "type");
   if (["message_start", "message_end", "message_update"].includes(type ?? "")) {
-    applyMessageEvent(projection, event, budget);
+    applyMessageEvent(projection, event);
     return;
   }
   if (
@@ -407,11 +394,7 @@ const admissibleSequence = (
   return sequence === projection.sequence + 1 ? sequence : undefined;
 };
 
-const applyEvent = (
-  projection: FoldedProjection,
-  envelope: JsonObject,
-  budget: DisplayBudget,
-): boolean => {
+const applyEvent = (projection: FoldedProjection, envelope: JsonObject): boolean => {
   const sequence = admissibleSequence(projection, envelope);
   const event = envelope.event;
   if (sequence === undefined) return false;
@@ -425,7 +408,7 @@ const applyEvent = (
     projection.active = false;
     settleTools(projection, terminalToolState(type));
   }
-  applyEventPayload(projection, event, budget);
+  applyEventPayload(projection, event);
   return true;
 };
 
@@ -533,7 +516,7 @@ const buildTurns = (
     if (role === "user") {
       current = {
         id: turnIdFor(message, builders.length, budget),
-        user: messageText(message, budget),
+        user: messageText(message),
         assistantParts: [],
         toolIds: [],
         timestamps: [],
@@ -552,7 +535,7 @@ const buildTurns = (
         else {
           const type = isJsonObject(part) ? stringProperty(part, "type") : undefined;
           if (type === "text" || typeof part === "string") {
-            const text = partText(part, budget);
+            const text = partText(part);
             if (text.length > 0) turn.assistantParts.push(text);
           }
         }
@@ -629,7 +612,7 @@ export const canonicalConversationSnapshotFromPi = (
     .slice()
     .sort((left, right) => left.sequence - right.sequence);
   for (const envelope of events) {
-    if (!applyEvent(projection, envelope, budget)) return undefined;
+    if (!applyEvent(projection, envelope)) return undefined;
   }
   if (projection.sequence !== snapshot.sequence) return undefined;
   if (!projection.active)

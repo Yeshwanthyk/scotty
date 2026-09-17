@@ -3973,30 +3973,34 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly getScottyDeploymentReadinessProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
       const record = yield* this.requireRecordProgram();
+      const state = yield* this.readActorSessionStateProgram();
       const runtime =
         this.rawContainer === undefined
           ? ("unknown" as const)
           : this.rawContainer.running
             ? ("running" as const)
             : ("stopped" as const);
-      const pi =
+      const agent = state.authority.session.selection?.agent ?? "pi";
+      const agentRuntimeState =
         runtime !== "running" || record.status !== "warm" || record.operation !== null
           ? runtime === "stopped"
             ? ("not_running" as const)
             : ("unknown" as const)
-          : yield* Effect.tryPromise({
-              try: () =>
-                inspectPassiveSession({
-                  fetch: (request) =>
-                    this.fetchNativePassivePiConsole({ sessionId: record.id, request }),
-                }),
-              catch: () => undefined,
-            }).pipe(
-              Effect.map((response) =>
-                response.status === 200 ? ("reachable" as const) : ("unreachable" as const),
-              ),
-              Effect.orElseSucceed(() => "unreachable" as const),
-            );
+          : agent === "codex"
+            ? ("unknown" as const)
+            : yield* Effect.tryPromise({
+                try: () =>
+                  inspectPassiveSession({
+                    fetch: (request) =>
+                      this.fetchNativePassivePiConsole({ sessionId: record.id, request }),
+                  }),
+                catch: () => undefined,
+              }).pipe(
+                Effect.map((response) =>
+                  response.status === 200 ? ("reachable" as const) : ("unreachable" as const),
+                ),
+                Effect.orElseSucceed(() => "unreachable" as const),
+              );
       return assessSessionDeploymentReadiness({
         id: record.id,
         title: record.title,
@@ -4007,7 +4011,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ? {}
           : { lastAgentEventAt: record.lastAgentEventAt }),
         runtime,
-        pi,
+        agentRuntime: { agent, state: agentRuntimeState },
       });
     },
   );
