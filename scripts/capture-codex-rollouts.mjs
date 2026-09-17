@@ -95,12 +95,10 @@ async function extractMember(archiveFile, name, destination) {
   });
   const { child, settled } = tarProcess(["-xOf", archiveFile, name]);
   try {
-    await pipeline(
-      child.stdout,
-      account,
-      createWriteStream(destination, { flags: "wx", mode: 0o600 }),
-    );
-    await settled;
+    await Promise.all([
+      pipeline(child.stdout, account, createWriteStream(destination, { flags: "wx", mode: 0o600 })),
+      settled,
+    ]);
   } catch (error) {
     child.kill();
     await settled.catch(() => undefined);
