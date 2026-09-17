@@ -11,21 +11,30 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 const failureMessage = "Codex rollout capture failed; inspect the private output directory.\n";
 
-async function runCaptureWithTar(root, tarScript, prepareOutput = async () => {}) {
+async function runCapture(root, { tarScript, prepareOutput = async () => {}, pathValue }) {
   const bin = path.join(root, "bin");
-  await mkdir(bin, { recursive: true });
-  await writeFile(path.join(bin, "tar"), tarScript, { mode: 0o755 });
+  if (tarScript) {
+    await mkdir(bin, { recursive: true });
+    await writeFile(path.join(bin, "tar"), tarScript, { mode: 0o755 });
+  }
+  const output = path.join(root, "captured");
   const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/x-tar" });
-    response.end("synthetic archive");
+    prepareOutput(output).then(
+      () => {
+        response.writeHead(200, { "content-type": "application/x-tar" });
+        response.end("synthetic archive");
+      },
+      () => {
+        response.writeHead(500);
+        response.end();
+      },
+    );
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   const tokenFile = path.join(root, "token");
   await writeFile(tokenFile, "dummy-token\n", { mode: 0o600 });
-  const output = path.join(root, "captured");
-  await prepareOutput(output);
   const child = spawn(
     process.execPath,
     [
@@ -36,7 +45,7 @@ async function runCaptureWithTar(root, tarScript, prepareOutput = async () => {}
       output,
     ],
     {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      env: { ...process.env, PATH: pathValue ?? `${bin}:${process.env.PATH ?? ""}` },
       stdio: ["ignore", "ignore", "pipe"],
     },
   );
@@ -46,7 +55,7 @@ async function runCaptureWithTar(root, tarScript, prepareOutput = async () => {}
     stderr += chunk;
   });
   const exit = await new Promise((resolve) => child.once("exit", resolve));
-  server.close();
+  await new Promise((resolve) => server.close(resolve));
   return { exit, output, stderr };
 }
 
@@ -111,9 +120,8 @@ test("streams large rollout archives and listings into private files", async (t)
 
 test("observes a failing tar child while extraction output is active", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "scotty-rollout-child-failure-"));
-  const result = await runCaptureWithTar(
-    root,
-    `#!/bin/sh
+  const result = await runCapture(root, {
+    tarScript: `#!/bin/sh
 if [ "$1" = "-tf" ]; then
   printf 'sessions/2026/09/12/rollout-failure.jsonl\\n'
   exit 0
@@ -121,19 +129,29 @@ fi
 printf 'synthetic tar failure\\n' >&2
 exit 23
 `,
-  );
+  });
 
   assert.equal(result.exit, 1);
   assert.equal(result.stderr, failureMessage);
   await assert.rejects(stat(path.join(result.output, "sessions/2026/09/12/rollout-failure.jsonl")));
 });
 
+test("reports a missing tar executable without leaking launch details", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "scotty-rollout-missing-tar-"));
+  const result = await runCapture(root, { pathValue: path.join(root, "no-executables") });
+
+  assert.equal(result.exit, 1);
+  assert.equal(result.stderr, failureMessage);
+  assert.doesNotMatch(result.stderr, /uncaught|unhandled|ENOENT/iu);
+  assert.equal(result.stderr.includes(root), false);
+});
+
 test("kills and waits for tar when the extraction output fails", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "scotty-rollout-output-failure-"));
   const member = "sessions/2026/09/12/rollout-output.jsonl";
-  const result = await runCaptureWithTar(
-    root,
-    `#!/bin/sh
+  const startedAt = Date.now();
+  const result = await runCapture(root, {
+    tarScript: `#!/bin/sh
 if [ "$1" = "-tf" ]; then
   printf '${member}\\n'
   exit 0
@@ -141,12 +159,14 @@ fi
 printf 'payload'
 sleep 10
 `,
-    async (output) => {
+    prepareOutput: async (output) => {
       await mkdir(path.join(output, member), { recursive: true, mode: 0o700 });
     },
-  );
+  });
 
   assert.equal(result.exit, 1);
   assert.equal(result.stderr, failureMessage);
+  assert.ok((await stat(path.join(result.output, "rollouts.tar"))).isFile());
   assert.ok((await stat(path.join(result.output, member))).isDirectory());
+  assert.ok(Date.now() - startedAt < 5_000);
 });

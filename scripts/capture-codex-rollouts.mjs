@@ -69,9 +69,19 @@ const tarProcess = (args) => {
 async function listArchive(archiveFile) {
   const { child, settled } = tarProcess(["-tf", archiveFile]);
   child.stdout.setEncoding("utf8");
-  let listing = "";
-  for await (const chunk of child.stdout) listing += chunk;
-  await settled;
+  const consumeListing = async () => {
+    let listing = "";
+    for await (const chunk of child.stdout) listing += chunk;
+    return listing;
+  };
+  let listing;
+  try {
+    [listing] = await Promise.all([consumeListing(), settled]);
+  } catch (error) {
+    child.kill();
+    await settled.catch(() => undefined);
+    throw error;
+  }
   const names = listing.trimEnd().split("\n");
   if (
     names.length === 0 ||

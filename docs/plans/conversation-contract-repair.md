@@ -25,7 +25,7 @@ This lane removes display-era limits from the canonical conversation path while 
 - `node e2e/scripts/scan.mjs`
 - `bun build cli/scotty.ts --compile --outfile /tmp/scotty-cli`
 
-All passed. `npm run test:all` ran 1,602 tests: 1,579 passed and 23 environment-dependent tests were skipped. Focused readiness (133), rollout capture (3), conversation mapper (8), and UI conversation/domain (8) tests also passed. The focused UI Vitest process reported its existing 10-second close timeout after reporting all tests successful. No deployed canary, live runtime, push, or deployment was exercised.
+All passed. `npm run test:all` ran 1,700 tests: 1,677 passed and 23 environment-dependent tests were skipped, counting the 97 Bun CLI tests emitted on stderr. Focused readiness (133), rollout capture (4), conversation mapper (8), and UI conversation/domain (8) tests also passed. The focused UI Vitest process reported its existing 10-second close timeout after reporting all tests successful. No deployed canary, live runtime, push, or deployment was exercised.
 
 ## Remaining platform constraints
 
