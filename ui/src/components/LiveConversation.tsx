@@ -18,11 +18,16 @@ import {
   runtimeFailureMessage,
   steerConversation,
 } from "../data/conversation-client";
+import { readEvidence, type EvidenceSummary } from "../data/session-workbench";
 import { activeConversationTurn, type ConversationTurn } from "../domain/conversation";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { SessionSelectionLabel } from "./SessionSelection";
 import { Button } from "./Button";
-import { Conversation } from "./Conversation";
+import {
+  Conversation,
+  evidenceJobIdFromTool,
+  type ConversationEvidenceState,
+} from "./Conversation";
 
 const ACTIVE_POLL_MS = 750;
 const IDLE_POLL_MS = 2_500;
@@ -491,10 +496,14 @@ function ConversationShell({
 
 function ConversationContent({
   connection,
+  evidenceState,
   retry,
+  sessionId,
 }: {
   readonly connection: ConnectionState;
+  readonly evidenceState: ConversationEvidenceState;
   readonly retry: () => void;
+  readonly sessionId: string;
 }) {
   if (connection.kind === "loading") return <ConversationSkeleton />;
   if (connection.kind === "paused")
@@ -510,7 +519,93 @@ function ConversationContent({
   if (connection.kind === "unavailable")
     return <UnavailableConversation failure={connection.failure} retry={retry} />;
   if (connection.snapshot.turns.length === 0) return <EmptyConversation />;
-  return <Conversation turns={connection.snapshot.turns} />;
+  return (
+    <Conversation
+      evidenceState={evidenceState}
+      sessionId={sessionId}
+      turns={connection.snapshot.turns}
+    />
+  );
+}
+
+const evidenceRevisionFor = (snapshot: ConversationSnapshot | undefined): string =>
+  snapshot?.turns
+    .flatMap((turn) => turn.tools)
+    .flatMap((tool) => {
+      const jobId = evidenceJobIdFromTool(tool);
+      return jobId === undefined ? [] : [`${tool.id}:${tool.state}:${jobId}`];
+    })
+    .join("\n") ?? "";
+
+type ConversationEvidenceReader = (
+  sessionId: string,
+  signal: AbortSignal,
+) => Promise<ReadonlyArray<EvidenceSummary>>;
+
+export const refreshConversationEvidence = (
+  sessionId: string,
+  signal: AbortSignal,
+  publish: (evidence: ReadonlyArray<EvidenceSummary>) => void,
+  scheduleRetry: (retry: () => Promise<void>) => void,
+  read: ConversationEvidenceReader = readEvidence,
+): Promise<void> =>
+  read(sessionId, signal).then(
+    (evidence) => {
+      if (!signal.aborted) publish(evidence);
+    },
+    () => {
+      if (!signal.aborted)
+        scheduleRetry(() =>
+          refreshConversationEvidence(sessionId, signal, publish, scheduleRetry, read),
+        );
+    },
+  );
+
+function useConversationEvidence(
+  sessionId: string,
+  snapshot: ConversationSnapshot | undefined,
+): ConversationEvidenceState {
+  const revision = evidenceRevisionFor(snapshot);
+  const [loaded, setLoaded] = useState<{
+    readonly sessionId: string;
+    readonly revision: string;
+    readonly state: ConversationEvidenceState;
+  }>({ sessionId, revision, state: { kind: "loading", sessionId } });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    if (revision.length === 0) {
+      setLoaded({
+        sessionId,
+        revision,
+        state: { kind: "ready", sessionId, evidence: [] },
+      });
+      return () => controller.abort();
+    }
+    setLoaded({ sessionId, revision, state: { kind: "loading", sessionId } });
+    let retryTimer: number | undefined;
+    void refreshConversationEvidence(
+      sessionId,
+      controller.signal,
+      (evidence) =>
+        setLoaded({
+          sessionId,
+          revision,
+          state: { kind: "ready", sessionId, evidence },
+        }),
+      (retry) => {
+        retryTimer = window.setTimeout(() => void retry(), RETRY_POLL_MS);
+      },
+    );
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [revision, sessionId]);
+
+  return loaded.sessionId === sessionId && loaded.revision === revision
+    ? loaded.state
+    : { kind: "loading", sessionId };
 }
 
 const deliveryMessage = (delivery: DeliveryState): string => {
@@ -728,6 +823,7 @@ export function LiveConversation({
   );
 
   const snapshot = connection.kind === "ready" ? connection.snapshot : undefined;
+  const evidenceState = useConversationEvidence(sessionId, snapshot);
   const activeTurn = activeConversationTurn(snapshot?.turns ?? []);
   const active = activeTurn !== undefined;
   const healthy =
@@ -759,7 +855,12 @@ export function LiveConversation({
         />
       }
     >
-      <ConversationContent connection={connection} retry={refresh} />
+      <ConversationContent
+        connection={connection}
+        evidenceState={evidenceState}
+        retry={refresh}
+        sessionId={sessionId}
+      />
     </ConversationShell>
   );
 }
