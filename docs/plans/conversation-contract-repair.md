@@ -9,6 +9,11 @@ This lane removes display-era limits from the canonical conversation path while 
 - `8de2a14` full projection and UI access. The Pi-to-canonical mapper no longer adds turn, tool, text, or tool-value clipping; producer-reported truncation remains visible in the snapshot and produces a UI warning. Every queued item is rendered in a scrollable list, and polled streaming text renders immediately without the synthetic two-character timer.
 - `81df38a` operational capture and clients. Rollout capture streams archives and members to mode-0600 files while validating every unique archive path, without archive/member/listing display caps. CLI responses and canary peer messages no longer inherit content-size gates. Tests cover a 20+ MiB archive, a 64+ KiB listing with 300 members, and a CLI response beyond 64 MiB.
 - `bc42d88` runtime-specific diagnostics and documentation. CLI Pi fallback schema names are explicit, malformed inspect output names the runtime-neutral contract, and deployment readiness identifies the selected agent runtime without probing Pi for Codex sessions. Stale bounded-content and 96 KiB admission claims are removed.
+- `0a8e26d` deployment compatibility repair. Readiness retains the required public `pi` field and old readiness reasons while making selected-agent diagnostics additive and optional. Protocol, CLI, and route tests cover old and new Worker responses, including upgrade readiness for an already sleeping session.
+- `ec8a4c4` rollout capture settlement. Extraction observes the output pipeline and `tar` settlement concurrently, then retains kill, wait, and unlink cleanup. Regressions cover a failing child and a failing destination stream.
+- `4a96d5c` structured conversation sanitization. Nested tool strings and keys are sanitized before JSON encoding, preserving text after managed handles containing newlines and removing terminal controls without restoring display clipping.
+- `224f684` tool invocation disclosure. The compact summary remains scannable while the disclosure contains the complete wrapping, horizontally scrollable invocation. Unused streaming animation props and the production-unused slicing helper are removed.
+- `3bc4ce1` verification guidance. The Codex verification skill removes the stale 1,200-byte canonical cap and retains the actual bounded Pi producer behavior without claiming unlimited native retention.
 
 ## Final local verification
 
@@ -20,7 +25,7 @@ This lane removes display-era limits from the canonical conversation path while 
 - `node e2e/scripts/scan.mjs`
 - `bun build cli/scotty.ts --compile --outfile /tmp/scotty-cli`
 
-All passed. The test suite retained its environment-dependent skips. No deployed canary or live runtime was exercised.
+All passed. `npm run test:all` ran 1,602 tests: 1,579 passed and 23 environment-dependent tests were skipped. Focused readiness (133), rollout capture (3), conversation mapper (8), and UI conversation/domain (8) tests also passed. The focused UI Vitest process reported its existing 10-second close timeout after reporting all tests successful. No deployed canary, live runtime, push, or deployment was exercised.
 
 ## Remaining platform constraints
 
