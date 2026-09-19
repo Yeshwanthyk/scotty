@@ -1,6 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { Marked, type MarkedToken, type Token, type Tokens } from "marked";
 import { createElement, Fragment, type ReactNode } from "react";
+import { MermaidDiagram } from "./MermaidDiagram";
 import { colors, spacing } from "../theme/tokens.stylex";
 
 const markdown = new Marked({ breaks: false, gfm: true, pedantic: false });
@@ -33,14 +34,18 @@ const KNOWN_TOKEN_TYPES = new Set([
 const styles = stylex.create({
   root: {
     width: "100%",
-    maxWidth: "68ch",
     minWidth: 0,
     color: colors.ink,
     fontSize: "14px",
     lineHeight: 1.7,
     overflowWrap: "anywhere",
   },
-  paragraph: { margin: `0 0 ${spacing.md}`, overflowWrap: "anywhere", textWrap: "pretty" },
+  paragraph: {
+    maxWidth: "68ch",
+    margin: `0 0 ${spacing.md}`,
+    overflowWrap: "anywhere",
+    textWrap: "pretty",
+  },
   lastBlock: { marginBottom: 0 },
   heading: {
     margin: `${spacing.xl} 0 ${spacing.sm}`,
@@ -111,9 +116,24 @@ const styles = stylex.create({
     fontSize: "0.9em",
   },
   rule: { margin: `${spacing.xl} 0`, border: 0, borderTop: `1px solid ${colors.lineSoft}` },
-  tableWrap: { marginBottom: spacing.lg, overflowX: "auto" },
-  table: { width: "100%", borderCollapse: "collapse", fontSize: "13px" },
+  tableWrap: {
+    maxWidth: "100%",
+    marginBottom: spacing.lg,
+    overflowX: "auto",
+    border: `1px solid ${colors.lineSoft}`,
+    borderRadius: "8px",
+  },
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+    fontSize: "13px",
+    lineHeight: 1.6,
+    overflowWrap: "normal",
+    wordBreak: "normal",
+  },
   tableCell: {
+    minWidth: "8ch",
+    maxWidth: "36ch",
     padding: `${spacing.sm} ${spacing.md}`,
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
@@ -121,7 +141,12 @@ const styles = stylex.create({
     textAlign: "left",
     verticalAlign: "top",
   },
-  tableHead: { color: colors.muted, fontWeight: 650 },
+  tableHead: {
+    color: colors.ink,
+    fontWeight: 650,
+    whiteSpace: "nowrap",
+    backgroundColor: colors.panelRaised,
+  },
   alignCenter: { textAlign: "center" },
   alignRight: { textAlign: "right" },
 });
@@ -212,6 +237,7 @@ const tableCell = (cell: Tokens.TableCell, tag: "td" | "th", key: string): React
     tag,
     {
       key,
+      scope: tag === "th" ? "col" : undefined,
       ...stylex.props(
         styles.tableCell,
         tag === "th" && styles.tableHead,
@@ -244,6 +270,9 @@ function renderTable(token: Tokens.Table, key: string, isLast: boolean): ReactNo
     <div
       key={key}
       data-scrollbar="quiet"
+      role="region"
+      aria-label="Scrollable table"
+      tabIndex={0}
       {...stylex.props(styles.tableWrap, isLast && styles.lastBlock)}
     >
       <table {...stylex.props(styles.table)}>
@@ -314,6 +343,8 @@ function renderProseBlock(
 }
 
 function renderTechnicalBlock(token: MarkedToken, key: string, isLast: boolean): ReactNode {
+  if (token.type === "code" && token.lang?.trim().toLowerCase() === "mermaid")
+    return <MermaidDiagram key={key} source={token.text} />;
   if (token.type === "code")
     return (
       <pre
