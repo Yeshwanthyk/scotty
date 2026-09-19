@@ -25,6 +25,26 @@ const evidence = (overrides: Partial<EvidenceSummary> = {}): EvidenceSummary => 
 });
 
 describe("conversation disclosure", () => {
+  it.each(["completed", "streaming"] as const)(
+    "renders published images in %s assistant messages",
+    (state) => {
+      const turn: ConversationTurn = {
+        ...completed("image"),
+        state,
+        assistant: "![Fixed table](scotty-evidence:job-1)",
+      };
+      const markup = renderToStaticMarkup(
+        <Conversation
+          turns={[turn]}
+          sessionId="a0b1c2d3e4f5"
+          evidenceState={{ kind: "ready", sessionId: "a0b1c2d3e4f5", evidence: [evidence()] }}
+        />,
+      );
+      expect(markup).toContain('alt="Fixed table"');
+      expect(markup).toContain('src="/s/a0b1c2d3e4f5/evidence/job-1/frames/frame-1.png"');
+    },
+  );
+
   it("renders the existing streaming snapshot immediately", () => {
     const streaming: ConversationTurn = {
       ...completed("current"),

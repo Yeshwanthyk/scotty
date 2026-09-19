@@ -1,3 +1,4 @@
+import { markdownEvidenceReferences } from "./MarkdownImage";
 import { ImageAttachments, useImageAttachments } from "./ImageAttachments";
 import { IMAGE_ONLY_PROMPT } from "../data/image-attachments";
 import * as stylex from "@stylexjs/stylex";
@@ -532,11 +533,13 @@ function ConversationContent({
 
 const evidenceRevisionFor = (snapshot: ConversationSnapshot | undefined): string =>
   snapshot?.turns
-    .flatMap((turn) => turn.tools)
-    .flatMap((tool) => {
-      const jobId = evidenceJobIdFromTool(tool);
-      return jobId === undefined ? [] : [`${tool.id}:${tool.state}:${jobId}`];
-    })
+    .flatMap((turn) => [
+      ...markdownEvidenceReferences(turn.assistant),
+      ...turn.tools.flatMap((tool) => {
+        const jobId = evidenceJobIdFromTool(tool);
+        return jobId === undefined ? [] : [`${tool.id}:${tool.state}:${jobId}`];
+      }),
+    ])
     .join("\n") ?? "";
 
 type ConversationEvidenceReader = (
@@ -596,6 +599,11 @@ function useConversationEvidence(
           state: { kind: "ready", sessionId, evidence },
         }),
       (retry) => {
+        setLoaded({
+          sessionId,
+          revision,
+          state: { kind: "error", sessionId, message: "Retrying screenshot details…" },
+        });
         retryTimer = window.setTimeout(() => void retry(), RETRY_POLL_MS);
       },
     );

@@ -14,13 +14,13 @@ describe("Markdown", () => {
     expect(output).toContain("<code");
   });
 
-  it("renders raw HTML and images as inert text", () => {
+  it("keeps raw HTML inert and reports unsupported images", () => {
     const output = render('<script>alert("no")</script>\n\n![alt](https://example.com/a.png)');
 
     expect(output).not.toContain("<script>");
     expect(output).not.toContain("<img");
     expect(output).toContain("&lt;script&gt;");
-    expect(output).toContain("![alt](https://example.com/a.png)");
+    expect(output).toContain("Image unavailable: alt.");
   });
 
   it("blocks executable links", () => {
