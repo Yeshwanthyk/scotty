@@ -54,7 +54,7 @@ const runWorkflowScript = (script, environment) =>
 const fixture = async () => {
   const compatibility = await readImageCompatibility();
   return {
-    releaseTag: "v0.3.18",
+    releaseTag: "v0.3.19",
     repository: "index.docker.io/example/scotty",
     digest,
     platform: IMAGE_PLATFORM,
@@ -111,8 +111,8 @@ describe("S1 image release gate", () => {
   });
 
   it("rejects invalid or missing maintainer configuration", () => {
-    assert.equal(validateImageReleaseTag("v0.3.18"), "v0.3.18");
-    assert.throws(() => validateImageReleaseTag("v0.3.17"), /match the package version/u);
+    assert.equal(validateImageReleaseTag("v0.3.19"), "v0.3.19");
+    assert.throws(() => validateImageReleaseTag("v0.3.18"), /match the package version/u);
     assert.throws(() => validateImageReleaseTag("latest"), /match the package version/u);
     assert.equal(
       validateImageRepository("index.docker.io/example/scotty"),
@@ -190,7 +190,7 @@ describe("S1 image release gate", () => {
 
   it("strictly decodes manifest environment strings without retaining extra fields", () => {
     const valid = {
-      releaseTag: "v0.3.18",
+      releaseTag: "v0.3.19",
       repository: "index.docker.io/example/scotty",
       digest,
       platform: IMAGE_PLATFORM,
@@ -219,19 +219,19 @@ describe("S1 image release gate", () => {
   });
 
   it("accepts only the immutable digest reported by the completed Docker push", () => {
-    const output = `layer: pushed\nv0.3.18: digest: ${digest} size: 1234\n`;
-    assert.equal(parseDockerPushDigest(output, "v0.3.18"), digest);
+    const output = `layer: pushed\nv0.3.19: digest: ${digest} size: 1234\n`;
+    assert.equal(parseDockerPushDigest(output, "v0.3.19"), digest);
     for (const invalid of [
       "",
       `digest: ${digest} size: 1234\n`,
-      `v0.3.17: digest: ${digest} size: 1234\n`,
-      `v0.3.18: Digest: ${digest} size: 1234\n`,
-      `v0.3.18: digest: ${digest} size: 0\n`,
-      `v0.3.18: digest: sha256:bad size: 1234\n`,
-      `${output}v0.3.18: digest: sha256:${"d".repeat(64)} size: 1234\n`,
+      `v0.3.18: digest: ${digest} size: 1234\n`,
+      `v0.3.19: Digest: ${digest} size: 1234\n`,
+      `v0.3.19: digest: ${digest} size: 0\n`,
+      `v0.3.19: digest: sha256:bad size: 1234\n`,
+      `${output}v0.3.19: digest: sha256:${"d".repeat(64)} size: 1234\n`,
     ]) {
       assert.throws(
-        () => parseDockerPushDigest(invalid, "v0.3.18"),
+        () => parseDockerPushDigest(invalid, "v0.3.19"),
         /exactly one immutable image digest/u,
       );
     }
@@ -248,7 +248,7 @@ describe("S1 image release gate", () => {
     assert.doesNotMatch(workflow, /DOCKER_CONFIG: \$\{\{ runner\.temp/u);
     assert.match(
       imageJob,
-      /Initialize isolated Docker configuration[\s\S]*docker_config="\$RUNNER_TEMP\/scotty-docker-config"[\s\S]*rm -rf "\$docker_config"[\s\S]*install -d -m 0700 "\$docker_config"[\s\S]*echo "DOCKER_CONFIG=\$docker_config" >> "\$GITHUB_ENV"/u,
+      /Initialize isolated Docker configuration[\s\S]*publish_root="\$RUNNER_TEMP\/scotty-image-publication"[\s\S]*rm -rf "\$publish_root"[\s\S]*install -d -m 0700 "\$publish_root" "\$publish_root\/\.docker"[\s\S]*echo "DOCKER_CONFIG=\$publish_root\/\.docker" >> "\$GITHUB_ENV"/u,
     );
     assert.ok(
       imageJob.indexOf("Initialize isolated Docker configuration") <
@@ -260,12 +260,12 @@ describe("S1 image release gate", () => {
     );
     assert.match(
       imageJob,
-      /Remove any remaining publication credentials[\s\S]*if: always\(\)[\s\S]*if \[ -n "\$\{RUNNER_TEMP:-\}" \]; then[\s\S]*rm -rf "\$RUNNER_TEMP\/scotty-docker-config"/u,
+      /Remove any remaining publication credentials[\s\S]*if: always\(\)[\s\S]*rm -rf "\$RUNNER_TEMP\/scotty-image-publication"/u,
     );
 
     assert.match(
       verifyJob,
-      /Initialize anonymous Docker configuration[\s\S]*docker_config="\$RUNNER_TEMP\/scotty-public-pull-config"[\s\S]*rm -rf "\$docker_config"[\s\S]*install -d -m 0700 "\$docker_config"[\s\S]*echo "DOCKER_CONFIG=\$docker_config" >> "\$GITHUB_ENV"/u,
+      /Initialize anonymous Docker configuration[\s\S]*verification_root="\$RUNNER_TEMP\/scotty-anonymous-verification"[\s\S]*docker_config="\$verification_root\/\.docker"[\s\S]*printf '%s\\n' '\{"auths":\{\}\}' > "\$docker_config\/config\.json"[\s\S]*chmod 0600 "\$docker_config\/config\.json"[\s\S]*echo "DOCKER_CONFIG=\$docker_config" >> "\$GITHUB_ENV"/u,
     );
     assert.ok(
       verifyJob.indexOf("Initialize anonymous Docker configuration") <
@@ -275,53 +275,115 @@ describe("S1 image release gate", () => {
       verifyJob.indexOf("Initialize anonymous Docker configuration") <
         verifyJob.indexOf("docker pull --platform"),
     );
-    assert.match(verifyJob, /test ! -e "\$DOCKER_CONFIG\/config\.json"/u);
+    assert.equal((verifyJob.match(/assert\.equal\(isAnonymousConfig, true,/gu) ?? []).length, 2);
+    assert.doesNotMatch(verifyJob, /JSON\.parse/u);
     assert.match(
       verifyJob,
-      /Remove anonymous pull configuration[\s\S]*if: always\(\)[\s\S]*if \[ -n "\$\{RUNNER_TEMP:-\}" \]; then[\s\S]*rm -rf "\$RUNNER_TEMP\/scotty-public-pull-config"/u,
+      /Remove anonymous pull configuration[\s\S]*if: always\(\)[\s\S]*rm -rf "\$RUNNER_TEMP\/scotty-anonymous-verification"/u,
     );
   });
 
-  it("cleans exact Docker configuration paths after normal and failed environment export", () => {
+  it("cleans owned roots after normal and failed environment export", () => {
     const workflow = read(".github/workflows/release-cli.yml");
     for (const [initializeStep, cleanupStep, directoryName] of [
       [
         "Initialize isolated Docker configuration",
         "Remove any remaining publication credentials",
-        "scotty-docker-config",
+        "scotty-image-publication",
       ],
       [
         "Initialize anonymous Docker configuration",
         "Remove anonymous pull configuration",
-        "scotty-public-pull-config",
+        "scotty-anonymous-verification",
       ],
     ]) {
       const initialize = workflowRunScript(workflow, initializeStep);
       const cleanup = workflowRunScript(workflow, cleanupStep);
       const root = mkdtempSync(join(tmpdir(), "scotty-docker-cleanup-"));
       try {
-        const configPath = join(root, directoryName);
+        const ownedPath = join(root, directoryName);
+        const configPath = join(ownedPath, ".docker");
         const githubEnvironment = join(root, "github-environment");
         const environment = { GITHUB_ENV: githubEnvironment, RUNNER_TEMP: root };
 
         const initialized = runWorkflowScript(initialize, environment);
         assert.equal(initialized.status, 0, initialized.stderr);
         assert.equal(existsSync(configPath), true);
+        if (directoryName === "scotty-anonymous-verification") {
+          assert.deepEqual(JSON.parse(readFileSync(join(configPath, "config.json"), "utf8")), {
+            auths: {},
+          });
+        }
         const cleaned = runWorkflowScript(cleanup, environment);
         assert.equal(cleaned.status, 0, cleaned.stderr);
-        assert.equal(existsSync(configPath), false);
+        assert.equal(existsSync(ownedPath), false);
 
         rmSync(githubEnvironment, { force: true });
         mkdirSync(githubEnvironment);
         const failed = runWorkflowScript(initialize, environment);
         assert.notEqual(failed.status, 0, "GITHUB_ENV append unexpectedly succeeded");
-        assert.equal(existsSync(configPath), true);
+        assert.equal(existsSync(ownedPath), true);
         const cleanedAfterFailure = runWorkflowScript(cleanup, environment);
         assert.equal(cleanedAfterFailure.status, 0, cleanedAfterFailure.stderr);
-        assert.equal(existsSync(configPath), false);
+        assert.equal(existsSync(ownedPath), false);
       } finally {
         rmSync(root, { force: true, recursive: true });
       }
+    }
+  });
+
+  it("rejects polluted anonymous configuration before Docker or gh without leaking it", () => {
+    const workflow = read(".github/workflows/release-cli.yml");
+    const scripts = [
+      workflowRunScript(
+        workflow,
+        "Verify anonymous public pull and tested identity on a fresh runner",
+      ),
+      workflowRunScript(workflow, "Verify immutable image provenance"),
+    ];
+    const root = mkdtempSync(join(tmpdir(), "scotty-anonymous-config-"));
+    try {
+      const bin = join(root, "bin");
+      const verificationRoot = join(root, "scotty-anonymous-verification");
+      const dockerConfig = join(verificationRoot, ".docker");
+      const clientLog = join(root, "client-log");
+      const syntheticUsername = "synthetic-user-must-not-leak";
+      const syntheticPassword = "synthetic-password-must-not-leak";
+      const syntheticAuth = Buffer.from(`${syntheticUsername}:${syntheticPassword}`).toString(
+        "base64",
+      );
+      mkdirSync(bin);
+      mkdirSync(verificationRoot);
+      mkdirSync(dockerConfig);
+      writeFileSync(
+        join(dockerConfig, "config.json"),
+        `${JSON.stringify({ auths: { "index.docker.io": { auth: syntheticAuth } } })}\n`,
+      );
+      for (const client of ["docker", "gh"]) {
+        const executable = join(bin, client);
+        writeFileSync(executable, `#!/bin/bash\nprintf '%s\\n' '${client}' >> "$CLIENT_LOG"\n`);
+        chmodSync(executable, 0o755);
+      }
+      const environment = {
+        CLIENT_LOG: clientLog,
+        DOCKER_CONFIG: dockerConfig,
+        HOME: verificationRoot,
+        PATH: `${bin}:${process.env.PATH}`,
+        SCOTTY_DOCKERHUB_REPOSITORY: "index.docker.io/example/scotty",
+        SCOTTY_IMAGE_DIGEST: digest,
+      };
+
+      for (const script of scripts) {
+        const result = runWorkflowScript(script, environment);
+        assert.notEqual(result.status, 0, "polluted configuration unexpectedly passed");
+        const output = `${result.stdout}\n${result.stderr}`;
+        assert.match(output, /Anonymous Docker configuration is not empty/u);
+        for (const secret of [syntheticUsername, syntheticPassword, syntheticAuth])
+          assert.equal(output.includes(secret), false, "polluted credential leaked");
+        assert.equal(existsSync(clientLog), false, "registry client ran before rejection");
+      }
+    } finally {
+      rmSync(root, { force: true, recursive: true });
     }
   });
 
@@ -332,8 +394,10 @@ describe("S1 image release gate", () => {
     const root = mkdtempSync(join(tmpdir(), "scotty-docker-auth-"));
     try {
       const bin = join(root, "bin");
-      const dockerConfig = join(root, "docker-config");
+      const publicationRoot = join(root, "scotty-image-publication");
+      const dockerConfig = join(publicationRoot, ".docker");
       mkdirSync(bin);
+      mkdirSync(publicationRoot);
       mkdirSync(dockerConfig);
       const docker = join(bin, "docker");
       writeFileSync(
@@ -357,7 +421,8 @@ esac
       const environment = {
         DOCKER_CONFIG: dockerConfig,
         GITHUB_OUTPUT: join(root, "github-output"),
-        GITHUB_REF_NAME: "v0.3.18",
+        HOME: publicationRoot,
+        GITHUB_REF_NAME: "v0.3.19",
         PATH: `${bin}:${process.env.PATH}`,
         RUNNER_TEMP: root,
         SCOTTY_CONTAINER_IMAGE: "scotty-container:release",
@@ -384,7 +449,7 @@ esac
       const cleaned = runWorkflowScript(cleanup, environment);
       assert.equal(cleaned.status, 0, cleaned.stderr);
       assert.equal(readFileSync(`${environment.STUB_LOG}.logout.args`, "utf8").trim(), "");
-      assert.equal(existsSync(dockerConfig), false);
+      assert.equal(existsSync(publicationRoot), false);
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
@@ -405,12 +470,29 @@ esac
       imageJob.indexOf("Build and test release image"),
       imageJob.indexOf("Publish tested image"),
     );
+    const publishStep = imageJob.slice(
+      imageJob.indexOf("Publish tested image"),
+      imageJob.indexOf("Attest published image provenance"),
+    );
+    const attestationStep = imageJob.slice(
+      imageJob.indexOf("Attest published image provenance"),
+      imageJob.indexOf("Record image attestation receipt"),
+    );
     assert.match(imageJob, /environment: image-release/u);
     assert.match(imageJob, /SCOTTY_IMAGE_PUBLICATION_AUTHORIZED/u);
     assert.match(imageJob, /publish-public-image/u);
     assert.equal((imageJob.match(/secrets\.SCOTTY_DOCKERHUB_USERNAME/gu) ?? []).length, 1);
     assert.equal((imageJob.match(/secrets\.SCOTTY_DOCKERHUB_TOKEN/gu) ?? []).length, 1);
-    assert.doesNotMatch(buildStep, /DOCKERHUB|password|token/iu);
+    assert.doesNotMatch(buildStep, /HOME:|DOCKERHUB|password|token/iu);
+    assert.match(publishStep, /HOME: \$\{\{ runner\.temp \}\}\/scotty-image-publication/u);
+    assert.match(
+      attestationStep,
+      /actions\/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a[\s\S]*HOME: \$\{\{ runner\.temp \}\}\/scotty-image-publication/u,
+    );
+    assert.equal(
+      (imageJob.match(/HOME: \$\{\{ runner\.temp \}\}\/scotty-image-publication/gu) ?? []).length,
+      3,
+    );
     assert.match(imageJob, /--password-stdin/u);
     assert.match(
       imageJob,
@@ -424,7 +506,10 @@ esac
     assert.match(imageJob, /tested_image_id[\s\S]*\^sha256:\[0-9a-f\]\{64\}\$/u);
     assert.doesNotMatch(imageOutputs, /repository|attestation/u);
     assert.match(imageJob, /name: image-attestation-receipt/u);
-    assert.match(imageJob, /Remove publication credentials[\s\S]*rm -rf "\$DOCKER_CONFIG"/u);
+    assert.match(
+      imageJob,
+      /Remove publication credentials[\s\S]*rm -rf "\$RUNNER_TEMP\/scotty-image-publication"/u,
+    );
     assert.match(imageJob, /docker push[\s\S]*scotty-image-push\.log/u);
     assert.match(imageJob, /--docker-push-digest/u);
     assert.doesNotMatch(imageJob, /imagetools inspect/u);
@@ -444,6 +529,11 @@ esac
       verifyJob,
       /needs\.image\.outputs\.(?:repository|attestation_url)|secrets\.SCOTTY_DOCKERHUB/u,
     );
+    assert.equal(
+      (verifyJob.match(/HOME: \$\{\{ runner\.temp \}\}\/scotty-anonymous-verification/gu) ?? [])
+        .length,
+      2,
+    );
     assert.match(verifyJob, /validateImageRepository/u);
     assert.ok(
       verifyJob.indexOf("Validate maintainer repository for anonymous verification") <
@@ -455,7 +545,7 @@ esac
       /SCOTTY_IMAGE_ATTESTATION_URL="\$\(cat dist\/image-attestation\/scotty-image-attestation-url\)"/u,
     );
     assert.doesNotMatch(verifyJob, /docker login|DOCKERHUB_(?:USERNAME|TOKEN)/u);
-    assert.match(verifyJob, /test ! -e "\$DOCKER_CONFIG\/config\.json"/u);
+    assert.equal((verifyJob.match(/assert\.equal\(isAnonymousConfig, true,/gu) ?? []).length, 2);
     assert.match(verifyJob, /docker pull --platform "\$SCOTTY_IMAGE_PLATFORM" "\$image_ref"/u);
     assert.match(verifyJob, /test "\$public_id" = "\$SCOTTY_TESTED_IMAGE_ID"/u);
     assert.match(verifyJob, /gh attestation verify "oci:\/\/\$image_ref"/u);
