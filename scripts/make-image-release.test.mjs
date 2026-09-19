@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -12,6 +20,7 @@ import {
   parseDockerPushDigest,
   readImageCompatibility,
   validateImageReleaseTag,
+  validateImageRepository,
   validatePublicationConfig,
 } from "./make-image-release.mjs";
 
@@ -45,7 +54,7 @@ const runWorkflowScript = (script, environment) =>
 const fixture = async () => {
   const compatibility = await readImageCompatibility();
   return {
-    releaseTag: "v0.3.17",
+    releaseTag: "v0.3.18",
     repository: "index.docker.io/example/scotty",
     digest,
     platform: IMAGE_PLATFORM,
@@ -102,9 +111,13 @@ describe("S1 image release gate", () => {
   });
 
   it("rejects invalid or missing maintainer configuration", () => {
-    assert.equal(validateImageReleaseTag("v0.3.17"), "v0.3.17");
-    assert.throws(() => validateImageReleaseTag("v0.3.15"), /match the package version/u);
+    assert.equal(validateImageReleaseTag("v0.3.18"), "v0.3.18");
+    assert.throws(() => validateImageReleaseTag("v0.3.17"), /match the package version/u);
     assert.throws(() => validateImageReleaseTag("latest"), /match the package version/u);
+    assert.equal(
+      validateImageRepository("index.docker.io/example/scotty"),
+      "index.docker.io/example/scotty",
+    );
     for (const repository of [
       undefined,
       "",
@@ -113,6 +126,10 @@ describe("S1 image release gate", () => {
       "index.docker.io/example/scotty:latest",
       "index.docker.io/example/scotty@sha256:abc",
     ]) {
+      assert.throws(
+        () => validateImageRepository(repository),
+        /fully-qualified index\.docker\.io/u,
+      );
       assert.throws(
         () => validatePublicationConfig({ repository, usernamePresent: true, tokenPresent: true }),
         /fully-qualified index\.docker\.io/u,
@@ -173,7 +190,7 @@ describe("S1 image release gate", () => {
 
   it("strictly decodes manifest environment strings without retaining extra fields", () => {
     const valid = {
-      releaseTag: "v0.3.17",
+      releaseTag: "v0.3.18",
       repository: "index.docker.io/example/scotty",
       digest,
       platform: IMAGE_PLATFORM,
@@ -202,19 +219,19 @@ describe("S1 image release gate", () => {
   });
 
   it("accepts only the immutable digest reported by the completed Docker push", () => {
-    const output = `layer: pushed\nv0.3.17: digest: ${digest} size: 1234\n`;
-    assert.equal(parseDockerPushDigest(output, "v0.3.17"), digest);
+    const output = `layer: pushed\nv0.3.18: digest: ${digest} size: 1234\n`;
+    assert.equal(parseDockerPushDigest(output, "v0.3.18"), digest);
     for (const invalid of [
       "",
       `digest: ${digest} size: 1234\n`,
-      `v0.3.15: digest: ${digest} size: 1234\n`,
-      `v0.3.17: Digest: ${digest} size: 1234\n`,
-      `v0.3.17: digest: ${digest} size: 0\n`,
-      `v0.3.17: digest: sha256:bad size: 1234\n`,
-      `${output}v0.3.17: digest: sha256:${"d".repeat(64)} size: 1234\n`,
+      `v0.3.17: digest: ${digest} size: 1234\n`,
+      `v0.3.18: Digest: ${digest} size: 1234\n`,
+      `v0.3.18: digest: ${digest} size: 0\n`,
+      `v0.3.18: digest: sha256:bad size: 1234\n`,
+      `${output}v0.3.18: digest: sha256:${"d".repeat(64)} size: 1234\n`,
     ]) {
       assert.throws(
-        () => parseDockerPushDigest(invalid, "v0.3.17"),
+        () => parseDockerPushDigest(invalid, "v0.3.18"),
         /exactly one immutable image digest/u,
       );
     }
@@ -308,6 +325,71 @@ describe("S1 image release gate", () => {
     }
   });
 
+  it("uses canonical Docker Hub auth arguments and sends only the synthetic token on stdin", () => {
+    const workflow = read(".github/workflows/release-cli.yml");
+    const publish = workflowRunScript(workflow, "Publish tested image");
+    const cleanup = workflowRunScript(workflow, "Remove publication credentials");
+    const root = mkdtempSync(join(tmpdir(), "scotty-docker-auth-"));
+    try {
+      const bin = join(root, "bin");
+      const dockerConfig = join(root, "docker-config");
+      mkdirSync(bin);
+      mkdirSync(dockerConfig);
+      const docker = join(bin, "docker");
+      writeFileSync(
+        docker,
+        `#!/bin/bash
+set -euo pipefail
+command="$1"
+shift
+printf '%s\\n' "$@" > "$STUB_LOG.$command.args"
+case "$command" in
+  login) cat > "$STUB_LOG.login.stdin" ;;
+  push)
+    reference=""
+    for argument in "$@"; do reference="$argument"; done
+    printf '%s: digest: sha256:%064d size: 1234\\n' "\${reference##*:}" 0
+    ;;
+esac
+`,
+      );
+      chmodSync(docker, 0o755);
+      const environment = {
+        DOCKER_CONFIG: dockerConfig,
+        GITHUB_OUTPUT: join(root, "github-output"),
+        GITHUB_REF_NAME: "v0.3.18",
+        PATH: `${bin}:${process.env.PATH}`,
+        RUNNER_TEMP: root,
+        SCOTTY_CONTAINER_IMAGE: "scotty-container:release",
+        SCOTTY_DOCKERHUB_REPOSITORY: "index.docker.io/synthetic-user/scotty",
+        SCOTTY_DOCKERHUB_TOKEN: "synthetic-token",
+        SCOTTY_DOCKERHUB_USERNAME: "synthetic-user",
+        SCOTTY_IMAGE_PLATFORM: IMAGE_PLATFORM,
+        STUB_LOG: join(root, "docker"),
+      };
+
+      const published = runWorkflowScript(publish, environment);
+      assert.equal(published.status, 0, published.stderr);
+      assert.deepEqual(
+        readFileSync(`${environment.STUB_LOG}.login.args`, "utf8").trim().split("\n"),
+        ["--username", "synthetic-user", "--password-stdin"],
+      );
+      assert.equal(readFileSync(`${environment.STUB_LOG}.login.stdin`, "utf8"), "synthetic-token");
+      assert.doesNotMatch(
+        readFileSync(`${environment.STUB_LOG}.login.args`, "utf8"),
+        /index\.docker\.io|synthetic-token/u,
+      );
+      assert.match(readFileSync(environment.GITHUB_OUTPUT, "utf8"), /^digest=sha256:[0-9]{64}$/mu);
+
+      const cleaned = runWorkflowScript(cleanup, environment);
+      assert.equal(cleaned.status, 0, cleaned.stderr);
+      assert.equal(readFileSync(`${environment.STUB_LOG}.logout.args`, "utf8").trim(), "");
+      assert.equal(existsSync(dockerConfig), false);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   it("keeps credentials inside the authorized publication boundary", () => {
     const workflow = read(".github/workflows/release-cli.yml");
     const imageStart = workflow.indexOf("  image:");
@@ -315,6 +397,10 @@ describe("S1 image release gate", () => {
     const attestStart = workflow.indexOf("  attest:");
     const imageJob = workflow.slice(imageStart, verifyStart);
     const verifyJob = workflow.slice(verifyStart, attestStart);
+    const imageOutputs = imageJob.slice(
+      imageJob.indexOf("    outputs:"),
+      imageJob.indexOf("    permissions:"),
+    );
     const buildStep = imageJob.slice(
       imageJob.indexOf("Build and test release image"),
       imageJob.indexOf("Publish tested image"),
@@ -326,6 +412,18 @@ describe("S1 image release gate", () => {
     assert.equal((imageJob.match(/secrets\.SCOTTY_DOCKERHUB_TOKEN/gu) ?? []).length, 1);
     assert.doesNotMatch(buildStep, /DOCKERHUB|password|token/iu);
     assert.match(imageJob, /--password-stdin/u);
+    assert.match(
+      imageJob,
+      /docker login \\\n\s+--username "\$SCOTTY_DOCKERHUB_USERNAME" --password-stdin/u,
+    );
+    assert.doesNotMatch(imageJob, /docker login index\.docker\.io/u);
+    assert.match(imageJob, /docker logout \|\| true/u);
+    assert.doesNotMatch(imageJob, /docker logout index\.docker\.io/u);
+    assert.match(imageOutputs, /digest: \$\{\{ steps\.published-image\.outputs\.digest \}\}/u);
+    assert.match(imageOutputs, /tested_image_id:/u);
+    assert.match(imageJob, /tested_image_id[\s\S]*\^sha256:\[0-9a-f\]\{64\}\$/u);
+    assert.doesNotMatch(imageOutputs, /repository|attestation/u);
+    assert.match(imageJob, /name: image-attestation-receipt/u);
     assert.match(imageJob, /Remove publication credentials[\s\S]*rm -rf "\$DOCKER_CONFIG"/u);
     assert.match(imageJob, /docker push[\s\S]*scotty-image-push\.log/u);
     assert.match(imageJob, /--docker-push-digest/u);
@@ -337,6 +435,25 @@ describe("S1 image release gate", () => {
     );
     assert.match(verifyJob, /needs: image/u);
     assert.match(verifyJob, /runs-on: ubuntu-latest/u);
+    assert.match(verifyJob, /environment: image-release/u);
+    assert.match(
+      verifyJob,
+      /SCOTTY_DOCKERHUB_REPOSITORY: \$\{\{ vars\.SCOTTY_DOCKERHUB_REPOSITORY \}\}/u,
+    );
+    assert.doesNotMatch(
+      verifyJob,
+      /needs\.image\.outputs\.(?:repository|attestation_url)|secrets\.SCOTTY_DOCKERHUB/u,
+    );
+    assert.match(verifyJob, /validateImageRepository/u);
+    assert.ok(
+      verifyJob.indexOf("Validate maintainer repository for anonymous verification") <
+        verifyJob.indexOf("docker pull --platform"),
+    );
+    assert.match(verifyJob, /name: image-attestation-receipt/u);
+    assert.match(
+      verifyJob,
+      /SCOTTY_IMAGE_ATTESTATION_URL="\$\(cat dist\/image-attestation\/scotty-image-attestation-url\)"/u,
+    );
     assert.doesNotMatch(verifyJob, /docker login|DOCKERHUB_(?:USERNAME|TOKEN)/u);
     assert.match(verifyJob, /test ! -e "\$DOCKER_CONFIG\/config\.json"/u);
     assert.match(verifyJob, /docker pull --platform "\$SCOTTY_IMAGE_PLATFORM" "\$image_ref"/u);

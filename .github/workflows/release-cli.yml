@@ -98,9 +98,7 @@ jobs:
     timeout-minutes: 60
     environment: image-release
     outputs:
-      attestation_url: ${{ steps.attest-image.outputs.attestation-url }}
       digest: ${{ steps.published-image.outputs.digest }}
-      repository: ${{ steps.publication.outputs.repository }}
       tested_image_id: ${{ steps.tested-image.outputs.id }}
     permissions:
       contents: read
@@ -133,21 +131,19 @@ jobs:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - run: npm ci --no-audit --no-fund
       - name: Validate maintainer publication authorization and repository
-        id: publication
         run: |
           test "$SCOTTY_IMAGE_PUBLICATION_AUTHORIZED" = publish-public-image
-          node --input-type=module - <<'NODE' >> "$GITHUB_OUTPUT"
+          node --input-type=module - <<'NODE'
           import {
             validateImageReleaseTag,
             validatePublicationConfig,
           } from "./scripts/make-image-release.mjs";
           validateImageReleaseTag(process.env.GITHUB_REF_NAME);
-          const repository = validatePublicationConfig({
+          validatePublicationConfig({
             repository: process.env.SCOTTY_DOCKERHUB_REPOSITORY,
             usernamePresent: true,
             tokenPresent: true,
           });
-          process.stdout.write(`repository=${repository}\n`);
           NODE
       - name: Build and test release image
         run: npm run check:container-image
@@ -155,7 +151,10 @@ jobs:
         run: npm run check:codex-native-workflows
       - name: Record tested image identity
         id: tested-image
-        run: echo "id=$(docker image inspect "$SCOTTY_CONTAINER_IMAGE" --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
+        run: |
+          tested_image_id="$(docker image inspect "$SCOTTY_CONTAINER_IMAGE" --format '{{.Id}}')"
+          [[ "$tested_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "id=$tested_image_id" >> "$GITHUB_OUTPUT"
       - name: Publish tested image
         id: published-image
         env:
@@ -165,7 +164,7 @@ jobs:
           set -euo pipefail
           test -n "$SCOTTY_DOCKERHUB_USERNAME"
           test -n "$SCOTTY_DOCKERHUB_TOKEN"
-          printf '%s' "$SCOTTY_DOCKERHUB_TOKEN" | docker login index.docker.io \
+          printf '%s' "$SCOTTY_DOCKERHUB_TOKEN" | docker login \
             --username "$SCOTTY_DOCKERHUB_USERNAME" --password-stdin
           published_tag="$SCOTTY_DOCKERHUB_REPOSITORY:$GITHUB_REF_NAME"
           docker tag "$SCOTTY_CONTAINER_IMAGE" "$published_tag"
@@ -181,9 +180,22 @@ jobs:
           subject-name: ${{ env.SCOTTY_DOCKERHUB_REPOSITORY }}
           subject-digest: ${{ steps.published-image.outputs.digest }}
           push-to-registry: true
+      - name: Record image attestation receipt
+        env:
+          SCOTTY_IMAGE_ATTESTATION_URL: ${{ steps.attest-image.outputs.attestation-url }}
+        run: |
+          set -euo pipefail
+          test -n "$SCOTTY_IMAGE_ATTESTATION_URL"
+          printf '%s\n' "$SCOTTY_IMAGE_ATTESTATION_URL" > "$RUNNER_TEMP/scotty-image-attestation-url"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-attestation-receipt
+          path: ${{ runner.temp }}/scotty-image-attestation-url
+          if-no-files-found: error
+          retention-days: 1
       - name: Remove publication credentials
         run: |
-          docker logout index.docker.io || true
+          docker logout || true
           rm -rf "$DOCKER_CONFIG"
       - name: Remove any remaining publication credentials
         if: always()
@@ -196,12 +208,12 @@ jobs:
     needs: image
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: image-release
     permissions:
       contents: read
       attestations: read
     env:
-      SCOTTY_DOCKERHUB_REPOSITORY: ${{ needs.image.outputs.repository }}
-      SCOTTY_IMAGE_ATTESTATION_URL: ${{ needs.image.outputs.attestation_url }}
+      SCOTTY_DOCKERHUB_REPOSITORY: ${{ vars.SCOTTY_DOCKERHUB_REPOSITORY }}
       SCOTTY_IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
       SCOTTY_IMAGE_PLATFORM: linux/amd64
       SCOTTY_TESTED_IMAGE_ID: ${{ needs.image.outputs.tested_image_id }}
@@ -219,6 +231,20 @@ jobs:
           node-version: 22.22.2
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Validate maintainer repository for anonymous verification
+        run: |
+          node --input-type=module - <<'NODE'
+          import {
+            validateImageReleaseTag,
+            validateImageRepository,
+          } from "./scripts/make-image-release.mjs";
+          validateImageReleaseTag(process.env.GITHUB_REF_NAME);
+          validateImageRepository(process.env.SCOTTY_DOCKERHUB_REPOSITORY);
+          NODE
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: image-attestation-receipt
+          path: dist/image-attestation
       - name: Verify anonymous public pull and tested identity on a fresh runner
         id: public-image
         run: |
@@ -252,6 +278,9 @@ jobs:
           SCOTTY_PUBLIC_IMAGE_ID: ${{ steps.public-image.outputs.id }}
           SCOTTY_RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          SCOTTY_IMAGE_ATTESTATION_URL="$(cat dist/image-attestation/scotty-image-attestation-url)"
+          export SCOTTY_IMAGE_ATTESTATION_URL
           mkdir -p dist/image-release
           node scripts/make-image-release.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
