@@ -38,3 +38,33 @@ describe("Markdown", () => {
     expect(output).toContain('rel="noopener noreferrer"');
   });
 });
+
+describe("Markdown technical blocks", () => {
+  it("keeps table semantics, alignment, and a keyboard-accessible scroll region", () => {
+    const output = render("| Candidate | Added |\n| :--- | ---: |\n| **Browser vault** | Sep 10 |");
+    expect(output).toContain('aria-label="Scrollable table"');
+    expect(output).toContain('tabindex="0"');
+    expect(output).toContain('scope="col"');
+    expect(output).toContain("<thead>");
+    expect(output).toContain("<tbody>");
+    expect(output).toContain("<strong>Browser vault</strong>");
+    expect(output).toContain("Sep 10");
+  });
+
+  it("renders Mermaid fences with source available before the client renderer loads", () => {
+    const output = render("```mermaid\nflowchart LR\n  A --> B\n```");
+    expect(output).toContain("data-mermaid");
+    expect(output).toContain("Rendering diagram");
+    expect(output).toContain("Diagram source");
+    expect(output).toContain("A --&gt; B");
+  });
+
+  it("keeps ordinary code and potentially executable diagram source inert", () => {
+    const code = render("```typescript\nconst diagram = 'mermaid';\n```");
+    const diagram = render("```mermaid\n<script>alert(1)</script>\n```");
+    expect(code).not.toContain("data-mermaid");
+    expect(code).toContain("<pre");
+    expect(diagram).not.toContain("<script>");
+    expect(diagram).toContain("&lt;script&gt;");
+  });
+});

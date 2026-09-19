@@ -133,7 +133,8 @@ const styles = stylex.create({
     animationTimingFunction: motion.easeOut,
   },
   assistantMessage: {
-    maxWidth: "68ch",
+    minWidth: 0,
+    maxWidth: "100%",
   },
   workingHeader: {
     display: "flex",

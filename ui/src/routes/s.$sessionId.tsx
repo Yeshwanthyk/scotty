@@ -36,6 +36,7 @@ import { presentSession, type SessionPresentation } from "../domain/session-pres
 import { buildSessionRail } from "../domain/session-rail";
 import { sessionFixtureForId, sessionListFixtures } from "../fixtures/sessions";
 import { conversationFixture } from "../fixtures/conversation";
+import { markdownFixture } from "../fixtures/markdown";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 
 interface SessionRouteReady {
@@ -525,7 +526,13 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
             <SessionSelection.Provider value={configuredSelectionLabel(session.selection)}>
               <SessionWorkbench
                 defaultBranch={session.display.defaultBranch}
-                previewTurns={fixture ? conversationFixture : undefined}
+                previewTurns={
+                  fixture
+                    ? session.id === "warm-demo-01"
+                      ? markdownFixture
+                      : conversationFixture
+                    : undefined
+                }
                 runtimeAvailable={eligibility.eligible}
                 sessionId={session.id}
               >
@@ -534,7 +541,9 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
                   presentation={presentation}
                   onLifecycleMismatch={refreshLifecycle}
                   sessionId={session.id}
-                  simulateConversation={fixture && session.id === "warm-working-001"}
+                  simulateConversation={
+                    fixture && (session.id === "warm-working-001" || session.id === "warm-demo-01")
+                  }
                 />
               </SessionWorkbench>
             </SessionSelection.Provider>
@@ -851,7 +860,12 @@ function SessionSurface({
   readonly sessionId: string;
   readonly simulateConversation: boolean;
 }) {
-  if (simulateConversation) return <ConversationPreview turns={conversationFixture} />;
+  if (simulateConversation)
+    return (
+      <ConversationPreview
+        turns={sessionId === "warm-demo-01" ? markdownFixture : conversationFixture}
+      />
+    );
   if (eligibility.eligible)
     return (
       <LiveConversation
