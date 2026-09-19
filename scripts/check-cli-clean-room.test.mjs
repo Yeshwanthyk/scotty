@@ -86,10 +86,7 @@ describe("clean-room CLI image gate", () => {
     const dockerfile = read("worker/container/Dockerfile");
     const bunVersion = read(".bun-version").trim();
     const release = read(".github/workflows/release-cli.yml");
-    const releaseBuildJob = release.slice(
-      release.indexOf("  build:"),
-      release.indexOf("  attest:"),
-    );
+    const releaseBuildJob = release.slice(release.indexOf("  build:"), release.indexOf("  image:"));
     const releaseAttestJob = release.slice(
       release.indexOf("  attest:"),
       release.indexOf("  release:"),
@@ -128,7 +125,7 @@ describe("clean-room CLI image gate", () => {
       /actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4/u,
     );
     assert.match(releaseAttestJob, /subject-path: dist\/release\/scotty-\*/u);
-    assert.match(release, /release:\n    needs: attest/u);
+    assert.match(release, /release:\n    needs: \[attest, image-verify\]/u);
     assert.match(
       dockerfile,
       /FROM docker\.io\/cloudflare\/sandbox:0\.12\.9@sha256:[0-9a-f]{64} AS scotty-cli-build/u,

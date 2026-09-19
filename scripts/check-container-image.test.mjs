@@ -334,6 +334,7 @@ describe("final container image gate", () => {
     const plan = containerImagePlan("/repo", {
       GITHUB_ACTIONS: "true",
       ACTIONS_CACHE_URL: "https://results.example/cache/",
+      SCOTTY_IMAGE_REVISION: "a".repeat(40),
     });
     assert.deepEqual(plan.cache, {
       from: [
@@ -348,6 +349,7 @@ describe("final container image gate", () => {
     assert.ok(args.includes("--cache-to"));
     assert.ok(args.includes(`type=gha,scope=${CLEAN_ROOM_CACHE_SCOPE}`));
     assert.ok(args.includes(`type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`));
+    assert.ok(args.includes(`SCOTTY_REVISION=${"a".repeat(40)}`));
   });
 
   it("runs the explicit full-image command in its own PR CI job", () => {
