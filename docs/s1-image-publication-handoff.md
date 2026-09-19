@@ -59,17 +59,27 @@ gh attestation verify "oci://$image_ref" \
 
 The resulting real digest, manifest, and attestation URL are the S1 publication receipt. None is fabricated or recorded here.
 
+## Baseline package metadata repair
+
+- Initial failing native CI: [run 35454641687](https://github.com/Yeshwanthyk/scotty/actions/runs/35454641687) at `69c7acf27665d15ff4c7eb469578acea30f24d4c`. Its `container-image` job passed the full `npm run check:container-image` and 15-case `check:codex-native-workflows` gates, and `cli-clean-room` passed. The `check` job failed at `npm run check:pi-packages`: indexed `scotty-browser-test` sources hashed to `081f82ac1f4e1175dba3af90d1843c131f0babc5ac522915e242510cd7fa1078`, while the manifest retained `ca843cd91735fac2c13017d15d34c8eed416e10a0e4cc3cf7a80f95568d6426b`.
+- The checker hashes every staged ordinary file under the source directory in Git index order, including mode, relative path, byte length, and blob bytes. The hashed inventory is 11 files: `.gitignore`, `LICENSE`, `README.md`, `index.test.ts`, `index.ts`, `package-lock.json`, `package.json`, `runner.smoke.test.ts`, `runner.test.ts`, `runner.ts`, and `tsconfig.json`.
+- History establishes the divergence: commit `0ff88cf8e30b3db7c965e30b9c92ea4ebe1a635c` refreshed the manifest to `ca843…`, which exactly hashes that commit's 11-file source tree. Intended commit `af6db27b9a54b792eb9c34bde499be581984e761` then changed `README.md`, `index.ts`, and `index.test.ts` together to restore inline evidence and correct capture ownership/instructions, with matching source tests, but did not refresh the manifest. That commit's tree, S1 base `b9955b36019f2b1f25e90bd45a2c5942085da69b`, and current HEAD all hash identically to `081f…`; the source inputs did not change during S1.
+- The repair changes only `worker/container/pi-packages/manifest.json`, replacing the stale browser-test digest with the proven current indexed-source digest. No package source, runtime payload, package set, checker, dependency, or tool behavior changed; therefore the already-passed native image result remains the relevant runtime proof and no image rebuild was repeated.
+
 ## Verification
 
 Formatting ran before lint. Exact local commands and results:
 
 - `npx oxfmt --disable-nested-config --write .github/workflows/release-cli.yml docs/s1-image-publication-handoff.md scripts/check-cli-clean-room.test.mjs scripts/check-container-image.mjs scripts/check-container-image.test.mjs scripts/make-image-release.mjs scripts/make-image-release.test.mjs` — passed.
+- `./node_modules/.bin/oxfmt worker/container/pi-packages/manifest.json docs/s1-image-publication-handoff.md` — passed for the metadata repair.
+- `npm run check:pi-packages` — reproduced the CI mismatch before the edit, then passed after the manifest-only correction: 0 externally vendored, 2 first-party, and 0 pinned npm Pi packages.
+- `node --test scripts/check-pi-packages.test.mjs worker/container/pi-packages/sources/scotty-browser-test/index.test.ts` — passed, 16/16.
 - `npm run lint:skills` — passed; 38 rule sources, 8 diagnostic skill references, and 9 required skills verified.
 - `npm run lint` — passed with no warnings.
 - `node --test scripts/check-cli-clean-room.test.mjs scripts/check-container-image.test.mjs scripts/make-image-release.test.mjs` — passed, 18/18, including executable cleanup checks for normal initialization and failed `GITHUB_ENV` export.
 - `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release-cli.yml")'` — parsed successfully.
 - `npm run typecheck` — Worker, contracts, CLI, and lab passed; UI then failed because the existing local install cannot resolve `mermaid` from `ui/src/components/MermaidDiagram.tsx`.
-- `npm run test:ops` — failed in the existing Pi-package checks because `scotty-browser-test` source digest `081f82ac1f4e1175dba3af90d1843c131f0babc5ac522915e242510cd7fa1078` does not match manifest digest `ca843cd91735fac2c13017d15d34c8eed416e10a0e4cc3cf7a80f95568d6426b`; the one release-workflow packaging assertion affected by S1 was updated and its focused test now passes.
+- `npm run test:ops` — passed: 235 tests, 213 passed, 22 skipped, 0 failed.
 - `npm run check:container-image` — Docker 29.2.1 built and loaded the `linux/amd64` image, and the preceding Pi/native/package probes ran; the full gate failed under local amd64-on-arm64 QEMU when Node 24/libuv aborted during the pnpm toolchain probe (`uv__io_poll: Assertion 'errno == EEXIST' failed`). This is not asserted as a complete image-gate pass.
 - `npm run check:codex-native-workflows` — passed independently against that exact loaded image, 15/15 native Codex cases.
 - `docker run --rm --platform linux/amd64 --network=none --entrypoint du scotty-container:ci -sbx /` — measured `3546092078` bytes, below the existing 3,660 MiB budget.
