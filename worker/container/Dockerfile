@@ -238,6 +238,18 @@ RUN set -eu; \
 
 FROM scotty-package-image
 
+ARG SCOTTY_REVISION=development
+LABEL org.opencontainers.image.source="https://github.com/Yeshwanthyk/scotty" \
+  org.opencontainers.image.revision="${SCOTTY_REVISION}" \
+  org.opencontainers.image.base.name="docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe" \
+  io.scotty.image.platform="linux/amd64" \
+  io.scotty.compatibility.cloudflare-sandbox="0.12.9" \
+  io.scotty.compatibility.cloudflare-containers="0.3.7" \
+  io.scotty.compatibility.alchemy="2.0.0-beta.76" \
+  io.scotty.compatibility.pi="0.84.0" \
+  io.scotty.compatibility.codex="0.154.0" \
+  io.scotty.compatibility.node="24.21.0"
+
 EXPOSE 43117
 
 RUN set -eu; \

@@ -92,6 +92,180 @@ jobs:
           path: dist/release/scotty-${{ matrix.platform }}-${{ matrix.architecture }}
           if-no-files-found: error
 
+  image:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: image-release
+    outputs:
+      attestation_url: ${{ steps.attest-image.outputs.attestation-url }}
+      digest: ${{ steps.published-image.outputs.digest }}
+      repository: ${{ steps.publication.outputs.repository }}
+      tested_image_id: ${{ steps.tested-image.outputs.id }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      SCOTTY_CONTAINER_IMAGE: scotty-container:release
+      SCOTTY_DOCKERHUB_REPOSITORY: ${{ vars.SCOTTY_DOCKERHUB_REPOSITORY }}
+      SCOTTY_IMAGE_PLATFORM: linux/amd64
+      SCOTTY_IMAGE_PUBLICATION_AUTHORIZED: ${{ vars.SCOTTY_IMAGE_PUBLICATION_AUTHORIZED }}
+      SCOTTY_IMAGE_REVISION: ${{ github.sha }}
+    steps:
+      - name: Initialize isolated Docker configuration
+        run: |
+          set -euo pipefail
+          docker_config="$RUNNER_TEMP/scotty-docker-config"
+          rm -rf "$docker_config"
+          install -d -m 0700 "$docker_config"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - run: npm ci --no-audit --no-fund
+      - name: Validate maintainer publication authorization and repository
+        id: publication
+        run: |
+          test "$SCOTTY_IMAGE_PUBLICATION_AUTHORIZED" = publish-public-image
+          node --input-type=module - <<'NODE' >> "$GITHUB_OUTPUT"
+          import {
+            validateImageReleaseTag,
+            validatePublicationConfig,
+          } from "./scripts/make-image-release.mjs";
+          validateImageReleaseTag(process.env.GITHUB_REF_NAME);
+          const repository = validatePublicationConfig({
+            repository: process.env.SCOTTY_DOCKERHUB_REPOSITORY,
+            usernamePresent: true,
+            tokenPresent: true,
+          });
+          process.stdout.write(`repository=${repository}\n`);
+          NODE
+      - name: Build and test release image
+        run: npm run check:container-image
+      - name: Exercise native Codex workflows against tested image
+        run: npm run check:codex-native-workflows
+      - name: Record tested image identity
+        id: tested-image
+        run: echo "id=$(docker image inspect "$SCOTTY_CONTAINER_IMAGE" --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
+      - name: Publish tested image
+        id: published-image
+        env:
+          SCOTTY_DOCKERHUB_USERNAME: ${{ secrets.SCOTTY_DOCKERHUB_USERNAME }}
+          SCOTTY_DOCKERHUB_TOKEN: ${{ secrets.SCOTTY_DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$SCOTTY_DOCKERHUB_USERNAME"
+          test -n "$SCOTTY_DOCKERHUB_TOKEN"
+          printf '%s' "$SCOTTY_DOCKERHUB_TOKEN" | docker login index.docker.io \
+            --username "$SCOTTY_DOCKERHUB_USERNAME" --password-stdin
+          published_tag="$SCOTTY_DOCKERHUB_REPOSITORY:$GITHUB_REF_NAME"
+          docker tag "$SCOTTY_CONTAINER_IMAGE" "$published_tag"
+          docker push --platform "$SCOTTY_IMAGE_PLATFORM" "$published_tag" \
+            2>&1 | tee "$RUNNER_TEMP/scotty-image-push.log"
+          digest="$(node scripts/make-image-release.mjs \
+            --docker-push-digest "$RUNNER_TEMP/scotty-image-push.log")"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest published image provenance
+        id: attest-image
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.SCOTTY_DOCKERHUB_REPOSITORY }}
+          subject-digest: ${{ steps.published-image.outputs.digest }}
+          push-to-registry: true
+      - name: Remove publication credentials
+        run: |
+          docker logout index.docker.io || true
+          rm -rf "$DOCKER_CONFIG"
+      - name: Remove any remaining publication credentials
+        if: always()
+        run: |
+          if [ -n "${RUNNER_TEMP:-}" ]; then
+            rm -rf "$RUNNER_TEMP/scotty-docker-config"
+          fi
+
+  image-verify:
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      SCOTTY_DOCKERHUB_REPOSITORY: ${{ needs.image.outputs.repository }}
+      SCOTTY_IMAGE_ATTESTATION_URL: ${{ needs.image.outputs.attestation_url }}
+      SCOTTY_IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+      SCOTTY_IMAGE_PLATFORM: linux/amd64
+      SCOTTY_TESTED_IMAGE_ID: ${{ needs.image.outputs.tested_image_id }}
+    steps:
+      - name: Initialize anonymous Docker configuration
+        run: |
+          set -euo pipefail
+          docker_config="$RUNNER_TEMP/scotty-public-pull-config"
+          rm -rf "$docker_config"
+          install -d -m 0700 "$docker_config"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Verify anonymous public pull and tested identity on a fresh runner
+        id: public-image
+        run: |
+          set -euo pipefail
+          test ! -e "$DOCKER_CONFIG/config.json"
+          image_ref="$SCOTTY_DOCKERHUB_REPOSITORY@$SCOTTY_IMAGE_DIGEST"
+          docker pull --platform "$SCOTTY_IMAGE_PLATFORM" "$image_ref"
+          public_id="$(docker image inspect "$image_ref" --format '{{.Id}}')"
+          test "$public_id" = "$SCOTTY_TESTED_IMAGE_ID"
+          test "$(docker image inspect "$image_ref" --format '{{.Os}}/{{.Architecture}}')" = "$SCOTTY_IMAGE_PLATFORM"
+          docker image inspect "$image_ref" --format '{{json .Config.Labels}}' > "$RUNNER_TEMP/scotty-image-labels.json"
+          echo "id=$public_id" >> "$GITHUB_OUTPUT"
+      - name: Verify immutable image provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image_ref="$SCOTTY_DOCKERHUB_REPOSITORY@$SCOTTY_IMAGE_DIGEST"
+          signer_workflow="${GITHUB_SERVER_URL#https://}/$GITHUB_REPOSITORY/.github/workflows/release-cli.yml"
+          gh attestation verify "oci://$image_ref" \
+            --bundle-from-oci \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$signer_workflow" \
+            --source-ref "$GITHUB_REF" \
+            --source-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners
+      - name: Create image release manifest
+        env:
+          SCOTTY_IMAGE_LABELS_PATH: ${{ runner.temp }}/scotty-image-labels.json
+          SCOTTY_IMAGE_MANIFEST_PATH: dist/image-release/scotty-image-manifest.json
+          SCOTTY_PUBLIC_IMAGE_ID: ${{ steps.public-image.outputs.id }}
+          SCOTTY_RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist/image-release
+          node scripts/make-image-release.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scotty-image-manifest
+          path: dist/image-release/scotty-image-manifest.json
+          if-no-files-found: error
+      - name: Remove anonymous pull configuration
+        if: always()
+        run: |
+          if [ -n "${RUNNER_TEMP:-}" ]; then
+            rm -rf "$RUNNER_TEMP/scotty-public-pull-config"
+          fi
+
   attest:
     needs: build
     runs-on: ubuntu-latest
@@ -102,7 +276,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: scotty-*
+          pattern: scotty-darwin-*
+          path: dist/release
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: scotty-linux-*
           path: dist/release
           merge-multiple: true
       - name: Attest release executables
@@ -111,7 +290,7 @@ jobs:
           subject-path: dist/release/scotty-*
 
   release:
-    needs: attest
+    needs: [attest, image-verify]
     runs-on: ubuntu-latest
     environment: cli-release
     permissions:

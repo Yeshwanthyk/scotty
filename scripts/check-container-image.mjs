@@ -15,7 +15,7 @@ import {
   buildSkillsPreflightCommands,
 } from "../worker/src/sandbox/skill-commands.ts";
 
-export const CONTAINER_IMAGE = "scotty-container:ci";
+export const CONTAINER_IMAGE = process.env.SCOTTY_CONTAINER_IMAGE ?? "scotty-container:ci";
 export const CONTAINER_IMAGE_PLATFORM = CLEAN_ROOM_CLI_PLATFORM;
 export const CONTAINER_IMAGE_CACHE_SCOPE = "scotty-container-image";
 export const CONTAINER_IMAGE_PI_PACKAGES = Object.freeze(["scotty-browser-test", "scotty-hatch"]);
@@ -40,6 +40,9 @@ export const containerImagePlan = (root = process.cwd(), environment = process.e
     dockerfile: resolve(context, "worker/container/Dockerfile"),
     platform: CONTAINER_IMAGE_PLATFORM,
     image: CONTAINER_IMAGE,
+    ...(environment.SCOTTY_IMAGE_REVISION === undefined
+      ? {}
+      : { revision: environment.SCOTTY_IMAGE_REVISION }),
     cache: ghaCacheEnabled(environment)
       ? {
           from: [
@@ -65,6 +68,7 @@ export const containerImageBuildArgs = (plan) => [
   "--load",
   "-t",
   plan.image,
+  ...(plan.revision === undefined ? [] : ["--build-arg", `SCOTTY_REVISION=${plan.revision}`]),
   "-f",
   plan.dockerfile,
   ...cacheArgs(plan.cache),
