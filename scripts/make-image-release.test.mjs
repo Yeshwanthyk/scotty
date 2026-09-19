@@ -45,7 +45,7 @@ const runWorkflowScript = (script, environment) =>
 const fixture = async () => {
   const compatibility = await readImageCompatibility();
   return {
-    releaseTag: "v0.3.16",
+    releaseTag: "v0.3.17",
     repository: "index.docker.io/example/scotty",
     digest,
     platform: IMAGE_PLATFORM,
@@ -102,7 +102,7 @@ describe("S1 image release gate", () => {
   });
 
   it("rejects invalid or missing maintainer configuration", () => {
-    assert.equal(validateImageReleaseTag("v0.3.16"), "v0.3.16");
+    assert.equal(validateImageReleaseTag("v0.3.17"), "v0.3.17");
     assert.throws(() => validateImageReleaseTag("v0.3.15"), /match the package version/u);
     assert.throws(() => validateImageReleaseTag("latest"), /match the package version/u);
     for (const repository of [
@@ -173,7 +173,7 @@ describe("S1 image release gate", () => {
 
   it("strictly decodes manifest environment strings without retaining extra fields", () => {
     const valid = {
-      releaseTag: "v0.3.16",
+      releaseTag: "v0.3.17",
       repository: "index.docker.io/example/scotty",
       digest,
       platform: IMAGE_PLATFORM,
@@ -202,19 +202,19 @@ describe("S1 image release gate", () => {
   });
 
   it("accepts only the immutable digest reported by the completed Docker push", () => {
-    const output = `layer: pushed\nv0.3.16: digest: ${digest} size: 1234\n`;
-    assert.equal(parseDockerPushDigest(output, "v0.3.16"), digest);
+    const output = `layer: pushed\nv0.3.17: digest: ${digest} size: 1234\n`;
+    assert.equal(parseDockerPushDigest(output, "v0.3.17"), digest);
     for (const invalid of [
       "",
       `digest: ${digest} size: 1234\n`,
       `v0.3.15: digest: ${digest} size: 1234\n`,
-      `v0.3.16: Digest: ${digest} size: 1234\n`,
-      `v0.3.16: digest: ${digest} size: 0\n`,
-      `v0.3.16: digest: sha256:bad size: 1234\n`,
-      `${output}v0.3.16: digest: sha256:${"d".repeat(64)} size: 1234\n`,
+      `v0.3.17: Digest: ${digest} size: 1234\n`,
+      `v0.3.17: digest: ${digest} size: 0\n`,
+      `v0.3.17: digest: sha256:bad size: 1234\n`,
+      `${output}v0.3.17: digest: sha256:${"d".repeat(64)} size: 1234\n`,
     ]) {
       assert.throws(
-        () => parseDockerPushDigest(invalid, "v0.3.16"),
+        () => parseDockerPushDigest(invalid, "v0.3.17"),
         /exactly one immutable image digest/u,
       );
     }

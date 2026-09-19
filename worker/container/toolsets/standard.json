@@ -211,7 +211,7 @@
       "commands": ["scotty"],
       "source": "first-party compiled CLI",
       "versionPolicy": "pinned",
-      "expectedVersion": "0.3.16",
+      "expectedVersion": "0.3.17",
       "probe": ["scotty", "--version"]
     },
     {
