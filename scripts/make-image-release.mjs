@@ -65,11 +65,16 @@ export const validateImageReleaseTag = (releaseTag) => {
   return releaseTag;
 };
 
-export const validatePublicationConfig = ({ repository, usernamePresent, tokenPresent }) => {
+export const validateImageRepository = (repository) => {
   if (typeof repository !== "string" || !repositoryPattern.test(repository))
     assert.fail(
       "SCOTTY_DOCKERHUB_REPOSITORY must be a fully-qualified index.docker.io namespace/repository without a tag or digest.",
     );
+  return repository;
+};
+
+export const validatePublicationConfig = ({ repository, usernamePresent, tokenPresent }) => {
+  validateImageRepository(repository);
   if (usernamePresent !== true) assert.fail("SCOTTY_DOCKERHUB_USERNAME is required.");
   if (tokenPresent !== true) assert.fail("SCOTTY_DOCKERHUB_TOKEN is required.");
   return repository;
