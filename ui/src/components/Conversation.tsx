@@ -7,7 +7,7 @@ import {
   type ConversationTurn,
   type ToolActivity,
 } from "../domain/conversation";
-import type { EvidenceSummary } from "../data/session-workbench";
+import type { MarkdownEvidence } from "./MarkdownImage";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { Markdown } from "./Markdown";
 
@@ -357,14 +357,7 @@ const styles = stylex.create({
   },
 });
 
-export type ConversationEvidenceState =
-  | { readonly kind: "loading"; readonly sessionId: string }
-  | {
-      readonly kind: "ready";
-      readonly sessionId: string;
-      readonly evidence: ReadonlyArray<EvidenceSummary>;
-    }
-  | { readonly kind: "error"; readonly sessionId: string; readonly message: string };
+export type ConversationEvidenceState = MarkdownEvidence;
 
 const EVIDENCE_REFERENCE =
   /(?:^|[^A-Za-z0-9_-])scotty-evidence:([A-Za-z0-9][A-Za-z0-9_-]{0,127})(?![A-Za-z0-9_-])/u;
@@ -613,7 +606,7 @@ function TurnContent({
       )}
       {assistant.length === 0 ? null : (
         <div {...stylex.props(styles.assistantMessage)}>
-          <Markdown source={assistant} />
+          <Markdown source={assistant} sessionId={sessionId} evidence={evidenceState} />
         </div>
       )}
     </>
@@ -756,7 +749,7 @@ export function Conversation({
               turn={active}
             />
             <div aria-live="polite" {...stylex.props(styles.assistantMessage)}>
-              <Markdown source={active.assistant} />
+              <Markdown source={active.assistant} sessionId={sessionId} evidence={evidenceState} />
             </div>
           </article>
         )}

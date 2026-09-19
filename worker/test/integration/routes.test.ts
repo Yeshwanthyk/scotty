@@ -4618,9 +4618,28 @@ describe("real Hono boundary", () => {
     expect(missingFrame.headers.get("cache-control")).toBe("private, no-store");
 
     const firstFramePath = framePath("frame-1");
+    for (const requestHeaders of [
+      new Headers(),
+      new Headers({ authorization: `Bearer ${TOKEN}` }),
+      new Headers({ ...headers, authorization: `Bearer ${TOKEN}` }),
+    ]) {
+      const denied = await app.request(firstFramePath, { headers: requestHeaders }, testEnv);
+      expect(denied.status).toBe(401);
+      expect(denied.headers.get("content-type")).not.toBe("image/png");
+    }
+    for (const invalidFrame of ["%2e%2e%2fprivate.png", "frame-1.svg", "frame-1%00.png"]) {
+      const denied = await app.request(
+        `${detailPath}/frames/${invalidFrame}`,
+        { headers },
+        testEnv,
+      );
+      expect(denied.status).toBe(404);
+      expect(denied.headers.get("content-type")).not.toBe("image/png");
+    }
     const frame = await app.request(firstFramePath, { headers }, testEnv);
     expect(frame.status).toBe(200);
     expect(frame.headers.get("content-type")).toBe("image/png");
+    expect(frame.headers.get("x-content-type-options")).toBe("nosniff");
     expect(frame.headers.get("cache-control")).toBe("private, no-store");
     expect(new Uint8Array(await frame.arrayBuffer())).toEqual(evidencePng);
 

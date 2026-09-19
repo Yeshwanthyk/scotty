@@ -411,7 +411,7 @@ export function SessionWorkbench({
         </div>
         {activeTool === "summary" ? (
           <ToolView close={closeTool} title="Summary" scroll>
-            <SummaryContent previewTurns={previewTurns} sessionId={sessionId} />
+            <SummaryContent key={sessionId} previewTurns={previewTurns} sessionId={sessionId} />
           </ToolView>
         ) : activeTool === "diff" ? (
           <ToolView
@@ -581,7 +581,17 @@ function SummaryContent({
         ) : latest === undefined ? (
           <p {...stylex.props(styles.muted)}>No completed update yet.</p>
         ) : (
-          <Markdown source={latest.assistant} />
+          <Markdown
+            source={latest.assistant}
+            sessionId={sessionId}
+            evidence={
+              state.evidenceError !== undefined
+                ? { kind: "error", sessionId, message: state.evidenceError }
+                : state.evidence === undefined
+                  ? { kind: "loading", sessionId }
+                  : { kind: "ready", sessionId, evidence: state.evidence }
+            }
+          />
         )}
       </section>
       {previewTurns ? (

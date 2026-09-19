@@ -442,6 +442,14 @@ Hatch control and one private Showcase link. Showcase contains matched before/af
 passed assertions, and the actual WebM recorded by the after browser run. Do not blindly retry a
 failed evidence run; change the failure cause or session state first.
 
+Assistant Markdown can display the first published screenshot with
+`![Description](scotty-evidence:<jobId>)`, using the exact reference returned by the browser tool.
+This counts as the reference's one inclusion. The UI resolves it against that session's evidence
+and loads it through the existing registered-browser authentication. Tool evidence cards retain
+all frames. Missing or expired screenshots show an unavailable message. Filesystem paths, external
+URLs, and raw HTML cannot supply assistant images; capture and publish screenshots through the
+browser evidence tool first.
+
 For a trusted Linux VPS, first build or pull the pinned runtime image and sign in with `gh`.
 Then run the repeatable user-service setup:
 
