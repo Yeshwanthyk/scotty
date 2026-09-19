@@ -4,7 +4,7 @@
 
 - Base/initial HEAD: `b9955b36019f2b1f25e90bd45a2c5942085da69b` on `feat/s1-image-publication`.
 - Start: the Cloudflare image was built and tested in PR CI, but the tag release had no image publication, public-pull gate, image provenance, or image release manifest.
-- Local verification milestone: implementation and independent review completed without registry writes, deployment, credential access, or account/installation inference. The user-owned untracked `docs/plans/multi-provider-session-plan.md` was not changed. Subsequent commit, branch push, and PR CI are user-authorized; image publication, release tags, merge, and deployment are not.
+- Release-preparation milestone: PR #258 merged as `33979efb6974cb6cced47b11197c7949fe5e99ba`. The user explicitly authorized preparation and eventual publication of `v0.3.17`; only the parent operator owns commit, push, PR, merge, tag, and other external release actions. This local preparation performed no registry write, deployment, credential read, or account/installation inference. The user-owned untracked plan and `.quickdiff/` remain unchanged.
 - Scope: S1 only. S2+, Linux runner work, MCP, and Daytona remain excluded.
 
 ## Changed files
@@ -38,9 +38,9 @@ The release helper uses module-scoped Effect Schema decoders for the allow-liste
 
 ## Intended authorized maintainer demo
 
-1. Create and protect the `image-release` GitHub Environment with required reviewers; this repository does not assert that it already exists or is protected.
-2. Configure `SCOTTY_IMAGE_PUBLICATION_AUTHORIZED=publish-public-image` and `SCOTTY_DOCKERHUB_REPOSITORY=index.docker.io/<maintainer-namespace>/<public-repository>` as environment variables, and configure the two environment secrets named above.
-3. After review, push an already-approved `vMAJOR.MINOR.PATCH` tag and observe the release workflow.
+1. For `v0.3.17`, the user explicitly waived required reviewers on the `image-release` Environment; this explicit operator consent replaces the proposed reviewer-protection gate for this release only.
+2. The user reports that `SCOTTY_IMAGE_PUBLICATION_AUTHORIZED`, `SCOTTY_DOCKERHUB_REPOSITORY`, and both named Docker Hub secrets are configured. Their values were not read and live authentication remains unverified.
+3. After independent review and green release-preparation CI, the parent operator may push the approved `v0.3.17` tag and observe the release workflow.
 4. On another machine without Docker Hub credentials, download `scotty-image-manifest.json`, then run. GitHub CLI authentication is separately required for `gh attestation verify`; CI supplies only a step-scoped `GH_TOKEN` for verification, not Docker Hub credentials.
 
 ```sh
@@ -66,12 +66,24 @@ The resulting real digest, manifest, and attestation URL are the S1 publication 
 - History establishes the divergence: commit `0ff88cf8e30b3db7c965e30b9c92ea4ebe1a635c` refreshed the manifest to `ca843…`, which exactly hashes that commit's 11-file source tree. Intended commit `af6db27b9a54b792eb9c34bde499be581984e761` then changed `README.md`, `index.ts`, and `index.test.ts` together to restore inline evidence and correct capture ownership/instructions, with matching source tests, but did not refresh the manifest. That commit's tree, S1 base `b9955b36019f2b1f25e90bd45a2c5942085da69b`, and current HEAD all hash identically to `081f…`; the source inputs did not change during S1.
 - The repair changes only `worker/container/pi-packages/manifest.json`, replacing the stale browser-test digest with the proven current indexed-source digest. No package source, runtime payload, package set, checker, dependency, or tool behavior changed; therefore the already-passed native image result remains the relevant runtime proof and no image rebuild was repeated.
 
+## v0.3.17 release preparation
+
+- Final PR #258 CI [run 35455568839](https://github.com/Yeshwanthyk/scotty/actions/runs/35455568839) passed `check`, `cli-clean-room`, and `container-image` at `297752e`; PR #258 then merged as `33979efb6974cb6cced47b11197c7949fe5e99ba`.
+- The release bump changes the root package version, both root lockfile version fields, current image-release test fixtures, and the container inventory's first-party `scotty` expected version from `0.3.16` to `0.3.17`. The toolset metadata expansion was explicitly approved because a fresh image gate compares `scotty --version` with that inventory value. Dependencies, lockfile dependency resolution, CLI manifest/signature format, image runtime, and package behavior remain unchanged.
+- A `v0.3.17` tag triggers both the public Docker Hub image path and the four-executable CLI GitHub Release path. It does not deploy Scotty infrastructure or sessions. The tag did not exist on the remote when preparation was authorized; this local work neither created nor pushed it.
+- Required-reviewer protection is intentionally waived for this release by explicit user consent. The user reports the image-release variables and both secret names are configured, but no value or credential was accessed. Docker Hub authentication, push, public pull, immutable identity, provenance verification, and final GitHub Release remain live gates, not completed evidence.
+
 ## Verification
 
 Formatting ran before lint. Exact local commands and results:
 
 - `npx oxfmt --disable-nested-config --write .github/workflows/release-cli.yml docs/s1-image-publication-handoff.md scripts/check-cli-clean-room.test.mjs scripts/check-container-image.mjs scripts/check-container-image.test.mjs scripts/make-image-release.mjs scripts/make-image-release.test.mjs` — passed.
 - `./node_modules/.bin/oxfmt worker/container/pi-packages/manifest.json docs/s1-image-publication-handoff.md` — passed for the metadata repair.
+- `./node_modules/.bin/oxfmt package.json package-lock.json worker/container/toolsets/standard.json scripts/make-image-release.test.mjs docs/s1-image-publication-handoff.md` — passed for release preparation before lint; the lockfile diff remains exactly its two root version fields.
+- `node --test scripts/make-image-release.test.mjs scripts/check-cli-clean-room.test.mjs scripts/check-container-image.test.mjs` — passed, 18/18.
+- `npx vitest run cli/effect-test/command-tree.test.ts` — passed, 14/14, including CLI `--version` from root package metadata.
+- A read-only metadata consistency probe confirmed `package.json`, both root lockfile fields, and the `scotty --version` inventory expectation are exactly `0.3.17`; its first attempt selected a nonexistent lowercase tool display name, then the corrected command selected the `scotty` command entry and passed.
+- Credential-free `make-cli-release.mjs` boundary probes rejected stale tag `v0.3.16` as mismatched, accepted `v0.3.17` through tag validation, and then stopped at the intentionally empty four-asset directory before reading any signing key.
 - `npm run check:pi-packages` — reproduced the CI mismatch before the edit, then passed after the manifest-only correction: 0 externally vendored, 2 first-party, and 0 pinned npm Pi packages.
 - `node --test scripts/check-pi-packages.test.mjs worker/container/pi-packages/sources/scotty-browser-test/index.test.ts` — passed, 16/16.
 - `npm run lint:skills` — passed; 38 rule sources, 8 diagnostic skill references, and 9 required skills verified.
