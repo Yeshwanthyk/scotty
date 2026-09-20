@@ -128,7 +128,7 @@ describe("installation failure diagnostics", () => {
                 {
                   code: "installation_create_failed",
                   message: "Could not create the Scotty installation",
-                  hint: "Check Cloudflare authentication, Docker, and permissions, then retry scotty init.",
+                  hint: "Check Cloudflare authentication, registry access, and permissions, then retry scotty init.",
                   operation: "init",
                   phase: "create",
                   installationName: "home",
@@ -142,7 +142,7 @@ describe("installation failure diagnostics", () => {
             assert.equal(error.exitCode, EXIT.GENERIC);
             assert.equal(
               error.hint.startsWith(
-                "Check Cloudflare authentication, Docker, and permissions, then retry scotty init.",
+                "Check Cloudflare authentication, registry access, and permissions, then retry scotty init.",
               ),
               true,
             );

@@ -29,7 +29,7 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
   entry("worker/src", "archive", "cliSource"),
   entry("worker/public", "archive", "archivePublic"),
   entry("worker/prebuilt", "archive"),
-  entry("worker/container", "archive", "containerRuntime"),
+  entry("worker/container", "containerRuntime"),
   entry("scripts/apply-dependency-patches.mjs", "archive", "containerStatic"),
   entry("scripts/cloudflare-topology-data.mjs", "archive", "containerStatic"),
   entry("scripts/container-control-plane.mjs", "archive", "containerStatic"),

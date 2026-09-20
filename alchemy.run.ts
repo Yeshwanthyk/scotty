@@ -1,7 +1,9 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { fileURLToPath } from "node:url";
 import {
   assertCloudflareDeploymentAssets,
@@ -47,6 +49,17 @@ if (Option.isNone(decodedPreview)) {
 const preview: InstallationPreviewConfiguration = decodedPreview.value;
 
 const installation = makeInstallationTopology(installationName, preview, true);
+const expectedAccountId = required("SCOTTY_EXPECTED_ACCOUNT_ID");
+if (!/^[0-9a-f]{32}$/u.test(expectedAccountId)) {
+  // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects an invalid account fence
+  throw new Error("SCOTTY_EXPECTED_ACCOUNT_ID must identify the authorized Cloudflare account.");
+}
+const decodeExpectedAccountId = Schema.decodeUnknownEffect(Schema.Literal(expectedAccountId));
+const containerImageDigest = required("SCOTTY_CONTAINER_IMAGE_DIGEST");
+if (!/^sha256:[0-9a-f]{64}$/u.test(containerImageDigest)) {
+  // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects an unverified image selector
+  throw new Error("SCOTTY_CONTAINER_IMAGE_DIGEST must identify a verified prepushed image.");
+}
 const deploymentRoot = fileURLToPath(new URL(".", import.meta.url));
 assertCloudflareDeploymentAssets(deploymentRoot, makeCloudflareStackTopology(installation));
 
@@ -58,11 +71,17 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const stage = yield* Alchemy.Stage;
+    const environment = yield* Cloudflare.CloudflareEnvironment;
+    const { accountId } = yield* environment;
+    yield* decodeExpectedAccountId(accountId).pipe(
+      Effect.mapError((cause) => new Config.ConfigError(cause)),
+    );
     return yield* cloudflareStack({
       stage,
       telemetryDisabled: process.env.ALCHEMY_TELEMETRY_DISABLED === "1",
       deploymentRoot,
       installation,
+      containerImage: { digest: containerImageDigest },
       resourceConfirmation: process.env.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED,
       approval: process.env.SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL,
     });

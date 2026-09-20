@@ -80,6 +80,12 @@ function harness(
       )
         return Response.json({ revision: settingsRevision, activeDigest: null, settings });
       const response = await providedFetch?.(input, init);
+      if (
+        url.origin === "https://github.com" &&
+        url.pathname ===
+          `/Yeshwanthyk/scotty/releases/download/v${VERSION}/scotty-image-manifest.json`
+      )
+        return Response.json(releaseImageManifest());
       if (response && response.status !== 404) return response;
       if (url.pathname === "/api/settings") {
         if (request.method === "PUT") {
@@ -159,6 +165,26 @@ const HATCH_INIT_ARGS = [
   "0123456789abcdef0123456789abcdef",
 ] as const;
 
+const RELEASE_IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
+const RELEASE_CONFIG_DIGEST = `sha256:${"b".repeat(64)}`;
+const RELEASE_IMAGE_REFERENCE = `index.docker.io/example/scotty@${RELEASE_IMAGE_DIGEST}`;
+const CUSTOM_IMAGE_REFERENCE = `ghcr.io/example/custom@sha256:${"d".repeat(64)}`;
+const OVERRIDE_IMAGE_REFERENCE = `ghcr.io/example/override@sha256:${"e".repeat(64)}`;
+const DEPLOYED_IMAGE_REFERENCE = `registry.cloudflare.com/${"0".repeat(32)}/scotty-home-sandbox@${RELEASE_IMAGE_DIGEST}`;
+
+const releaseImageManifest = () => ({
+  version: 1,
+  releaseTag: `v${VERSION}`,
+  image: {
+    repository: "index.docker.io/example/scotty",
+    digest: RELEASE_IMAGE_DIGEST,
+    reference: RELEASE_IMAGE_REFERENCE,
+    platform: "linux/amd64",
+    configDigest: RELEASE_CONFIG_DIGEST,
+    revision: "c".repeat(40),
+  },
+});
+
 const managedConfig = () => ({
   installationName: "home",
   profile: "default",
@@ -173,6 +199,7 @@ const managedConfig = () => ({
   previewBase: "preview.scotty.example",
   previewZoneId: "0123456789abcdef0123456789abcdef",
   evidenceEnabled: true as const,
+  deployedContainerImageReference: DEPLOYED_IMAGE_REFERENCE,
   host: "https://worker.example",
   token: "root-secret",
 });
@@ -1314,12 +1341,14 @@ describe("configuration and transport", () => {
     const home = await temporaryDirectory();
     let unavailable = true;
     let creates = 0;
+    let releaseLookups = 0;
     const h = harness(
       {
         home,
         fetch: async (input, init) => {
           const request = new Request(input, init);
           const url = new URL(request.url);
+          if (url.origin === "https://github.com") releaseLookups += 1;
           if (url.pathname === "/api/settings" && unavailable)
             return Response.json(
               {
@@ -1375,6 +1404,7 @@ describe("configuration and transport", () => {
     expect(config.host).toBe("https://scotty-home-worker.example.workers.dev");
     expect(config.token).toMatch(/^[0-9a-f]{64}$/u);
     expect((await stat(managedInstallationPath(home))).mode & 0o777).toBe(0o600);
+    expect(releaseLookups).toBe(1);
     unavailable = false;
     h.stderr.length = 0;
     h.stdout.length = 0;
@@ -1382,6 +1412,7 @@ describe("configuration and transport", () => {
       EXIT.OK,
     );
     expect(creates).toBe(1);
+    expect(releaseLookups).toBe(1);
     expect(h.json().rootTokenRotated).toBe(false);
   });
 
@@ -1675,7 +1706,17 @@ describe("configuration and transport", () => {
 
     expect(
       await main(
-        ["init", "--name", "home", "--profile", "personal", ...HATCH_INIT_ARGS, "--yes"],
+        [
+          "init",
+          "--name",
+          "home",
+          "--profile",
+          "personal",
+          "--image",
+          CUSTOM_IMAGE_REFERENCE,
+          ...HATCH_INIT_ARGS,
+          "--yes",
+        ],
         h.deps,
       ),
     ).toBe(EXIT.GENERIC);
@@ -1683,13 +1724,21 @@ describe("configuration and transport", () => {
     const journalText = await readFile(journalPath, "utf8");
     const journal = JSON.parse(journalText);
     expect(journal.phase).toBe("apply_started");
+    expect(journal.containerImageReference).toBe(CUSTOM_IMAGE_REFERENCE);
+    expect(journal.containerImageSource).toBe(CUSTOM_IMAGE_REFERENCE);
     expect(journal.credentialWrappingKey).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect((await stat(journalPath)).mode & 0o777).toBe(0o600);
 
     let retryPlans = 0;
     let retryCreates = 0;
+    let retryReleaseLookups = 0;
     const retry = harness({
       home,
+      fetch: async (input, init) => {
+        if (new URL(new Request(input, init).url).origin === "https://github.com")
+          retryReleaseLookups += 1;
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
       planCreateInstallation: async () => {
         retryPlans += 1;
         return Promise.reject(new Error("init must not re-plan an ambiguous installation"));
@@ -1708,6 +1757,7 @@ describe("configuration and transport", () => {
     expect(plans).toBe(1);
     expect(retryPlans).toBe(0);
     expect(retryCreates).toBe(0);
+    expect(retryReleaseLookups).toBe(0);
     const error = retry.error().error;
     expect(error).toMatchObject({
       code: "init_outcome_ambiguous",
@@ -1721,11 +1771,18 @@ describe("configuration and transport", () => {
 
   test("recover inspects, confirms, and rotates only the token", async () => {
     const home = await temporaryDirectory();
+    await writeFile(
+      managedInstallationPath(home),
+      JSON.stringify({ ...managedConfig(), containerImageSource: CUSTOM_IMAGE_REFERENCE }),
+      { mode: 0o600 },
+    );
     const inspected: Array<Parameters<NonNullable<CliDependencies["inspectInstallation"]>>[0]> = [];
     const recovered: Array<Parameters<NonNullable<CliDependencies["recoverInstallation"]>>[0]> = [];
+    let releaseLookups = 0;
     const result = {
       installationName: "home",
       profile: "default",
+      deployedContainerImageReference: DEPLOYED_IMAGE_REFERENCE,
       stackName: "Scotty-home",
       stage: "production",
       accountId: "0123456789abcdef0123456789abcdef",
@@ -1738,6 +1795,10 @@ describe("configuration and transport", () => {
     } as const;
     const h = harness({
       home,
+      fetch: async (input, init) => {
+        if (new URL(new Request(input, init).url).origin === "https://github.com") releaseLookups++;
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
       inspectInstallation: async (input) => {
         inspected.push(input);
         return result;
@@ -1748,6 +1809,7 @@ describe("configuration and transport", () => {
       },
     });
     expect(await main(["recover", "--name", "home", "--yes"], h.deps)).toBe(EXIT.OK);
+    expect(releaseLookups).toBe(0);
     expect(inspected).toEqual([
       {
         installationName: "home",
@@ -1768,10 +1830,114 @@ describe("configuration and transport", () => {
     expect(recovered[0]?.token).toMatch(/^[0-9a-f]{64}$/u);
     const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(config.token).toBe(recovered[0]?.token);
+    expect(config.containerImageSource).toBe(CUSTOM_IMAGE_REFERENCE);
+    expect(config).not.toHaveProperty("containerImagePolicyUnresolved");
     expect(h.stdout.join("")).not.toContain(config.token);
   });
 
-  test("deploy updates code without passing or changing the root token", async () => {
+  test("config-absent recovery defers image policy until deploy explicitly selects managed or custom", async () => {
+    const home = await temporaryDirectory();
+    const recovered = {
+      installationName: "home",
+      profile: "default",
+      deployedContainerImageReference: DEPLOYED_IMAGE_REFERENCE,
+      stackName: "Scotty-home",
+      stage: "production",
+      accountId: "0123456789abcdef0123456789abcdef",
+      workerName: "scotty-home-worker",
+      runnerWorkerName: "scotty-home-runner",
+      containerName: "scotty-home-sandbox",
+      kvTitle: "scotty-home-sessions",
+      backupBucketName: "scotty-home-backups",
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+      evidenceEnabled: true,
+      host: "https://worker.example",
+    } as const;
+    const recovery = harness({
+      home,
+      inspectInstallation: async () => recovered,
+      recoverInstallation: async () => recovered,
+    });
+    expect(await main(["recover", "--name", "home", "--yes"], recovery.deps)).toBe(EXIT.OK);
+    expect(JSON.parse(await readFile(managedInstallationPath(home), "utf8"))).toMatchObject({
+      containerImagePolicyUnresolved: true,
+    });
+
+    let releaseLookups = 0;
+    let plans = 0;
+    const blocked = harness({
+      home,
+      fetch: async (input, init) => {
+        if (new URL(new Request(input, init).url).origin === "https://github.com")
+          releaseLookups += 1;
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+      planInstallation: async () => {
+        plans += 1;
+        return rejected("unresolved policy must stop before planning");
+      },
+    });
+    expect(await main(["deploy", "--plan"], blocked.deps)).toBe(EXIT.USAGE);
+    expect(blocked.error().error.message).toContain("policy is unresolved");
+    expect(releaseLookups).toBe(0);
+    expect(plans).toBe(0);
+  });
+
+  test("authorized no-op deploy persists explicit managed and custom policy choices", async () => {
+    const home = await temporaryDirectory();
+    const writeUnresolved = () =>
+      writeFile(
+        managedInstallationPath(home),
+        JSON.stringify({ ...managedConfig(), containerImagePolicyUnresolved: true }),
+        { mode: 0o600 },
+      );
+    await writeUnresolved();
+    const selected: string[] = [];
+    let releaseLookups = 0;
+    const h = harness({
+      home,
+      fetch: async (input, init) => {
+        if (new URL(new Request(input, init).url).origin === "https://github.com")
+          releaseLookups += 1;
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+      planInstallation: async (input) => {
+        selected.push(input.containerImage.reference);
+        return {
+          installationName: "home",
+          accountId: "0123456789abcdef0123456789abcdef",
+          hasExistingResources: true,
+          fingerprint: `noop-${input.containerImage.digest}`,
+          changes: [],
+        };
+      },
+    });
+
+    expect(await main(["deploy", "--plan", "--image", "managed"], h.deps)).toBe(EXIT.OK);
+    expect(await main(["deploy", "--yes", "--image", "managed"], h.deps)).toBe(EXIT.OK);
+    let config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
+    expect(config).not.toHaveProperty("containerImagePolicyUnresolved");
+    expect(config).not.toHaveProperty("containerImageSource");
+    expect(selected).toEqual([RELEASE_IMAGE_REFERENCE, RELEASE_IMAGE_REFERENCE]);
+    expect(releaseLookups).toBe(2);
+
+    await writeUnresolved();
+    selected.length = 0;
+    expect(await main(["deploy", "--plan", "--image", CUSTOM_IMAGE_REFERENCE], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(await main(["deploy", "--yes", "--image", CUSTOM_IMAGE_REFERENCE], h.deps)).toBe(
+      EXIT.OK,
+    );
+    config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
+    expect(config).not.toHaveProperty("containerImagePolicyUnresolved");
+    expect(config.containerImageSource).toBe(CUSTOM_IMAGE_REFERENCE);
+    expect(selected).toEqual([CUSTOM_IMAGE_REFERENCE, CUSTOM_IMAGE_REFERENCE]);
+    expect(releaseLookups).toBe(2);
+  });
+
+  test("default deploy upgrade selects the current release without changing the root token", async () => {
     const home = await temporaryDirectory();
     await writeFile(
       managedInstallationPath(home),
@@ -1827,6 +1993,7 @@ describe("configuration and transport", () => {
           containerName: "scotty-home-sandbox",
           kvTitle: "scotty-home-sessions",
           backupBucketName: "scotty-home-backups",
+          deployedContainerImageReference: DEPLOYED_IMAGE_REFERENCE,
           host: "https://new.example/",
         };
       },
@@ -1837,6 +2004,11 @@ describe("configuration and transport", () => {
     expect(request).toEqual({
       installationName: "home",
       profile: "personal",
+      containerImage: {
+        reference: RELEASE_IMAGE_REFERENCE,
+        digest: RELEASE_IMAGE_DIGEST,
+        expectedConfigDigest: RELEASE_CONFIG_DIGEST,
+      },
       expectedAccountId: "0123456789abcdef0123456789abcdef",
       expectedPlanFingerprint: "plan-1",
       previewBase: "preview.scotty.example",
@@ -1847,12 +2019,96 @@ describe("configuration and transport", () => {
     const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(config.token).toBe("root-secret");
     expect(config.host).toBe("https://new.example");
+    expect(config.deployedContainerImageReference).toBe(DEPLOYED_IMAGE_REFERENCE);
+    expect(config).not.toHaveProperty("containerImageSource");
     expect(h.json().rootTokenRotated).toBe(false);
     expect(putOrigin).toBeUndefined();
     expect(putAuthorization).toBeNull();
     await expect(readFile(deploymentPlanPath(home), "utf8")).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  test("deploy retains an explicit custom image until another explicit override", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      managedInstallationPath(home),
+      JSON.stringify({
+        ...managedConfig(),
+        containerImageSource: CUSTOM_IMAGE_REFERENCE,
+        deployedContainerImageReference: `registry.cloudflare.com/${"0".repeat(32)}/scotty-home-sandbox@sha256:${"d".repeat(64)}`,
+      }),
+      { mode: 0o600 },
+    );
+    const selected: string[] = [];
+    let releaseLookups = 0;
+    const h = harness({
+      home,
+      fetch: async (input, init) => {
+        if (new URL(new Request(input, init).url).origin === "https://github.com") releaseLookups++;
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+      planInstallation: async (input) => {
+        selected.push(input.containerImage.reference);
+        return {
+          installationName: "home",
+          accountId: "0123456789abcdef0123456789abcdef",
+          hasExistingResources: true,
+          fingerprint: `plan-${input.containerImage.digest}`,
+          changes: [{ id: "Scotty-home/SandboxContainer", action: "update" }],
+        };
+      },
+      deployInstallation: async (input, _readinessTarget, progress) => {
+        selected.push(input.containerImage.reference);
+        progress?.providerOperationsSucceeded(1);
+        progress?.readinessVerified();
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          deployedContainerImageReference: `registry.cloudflare.com/${"0".repeat(32)}/scotty-home-sandbox@${input.containerImage.digest}`,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          previewBase: "preview.scotty.example",
+          previewZoneId: "0123456789abcdef0123456789abcdef",
+          evidenceEnabled: true,
+          host: "https://worker.example",
+        };
+      },
+    });
+
+    expect(await main(["deploy", "--plan"], h.deps)).toBe(EXIT.OK);
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.OK);
+    expect(selected).toEqual([
+      CUSTOM_IMAGE_REFERENCE,
+      CUSTOM_IMAGE_REFERENCE,
+      CUSTOM_IMAGE_REFERENCE,
+    ]);
+    expect(releaseLookups).toBe(0);
+    expect(JSON.parse(await readFile(managedInstallationPath(home), "utf8"))).toMatchObject({
+      containerImageSource: CUSTOM_IMAGE_REFERENCE,
+    });
+
+    expect(await main(["deploy", "--plan", "--image", OVERRIDE_IMAGE_REFERENCE], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(await main(["deploy", "--yes", "--image", OVERRIDE_IMAGE_REFERENCE], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(selected.slice(-3)).toEqual([
+      OVERRIDE_IMAGE_REFERENCE,
+      OVERRIDE_IMAGE_REFERENCE,
+      OVERRIDE_IMAGE_REFERENCE,
+    ]);
+    expect(JSON.parse(await readFile(managedInstallationPath(home), "utf8"))).toMatchObject({
+      containerImageSource: OVERRIDE_IMAGE_REFERENCE,
+    });
+    expect(releaseLookups).toBe(0);
   });
 
   test("deploy plan is read-only and saves the exact provider identity", async () => {
@@ -1883,7 +2139,7 @@ describe("configuration and transport", () => {
 
     expect(await main(["deploy", "--plan"], h.deps)).toBe(EXIT.OK);
     expect(applied).toBe(false);
-    expect(fetched).toBe(false);
+    expect(fetched).toBe(true);
     expect(h.json()).toMatchObject({
       installationName: "home",
       version: VERSION,
@@ -2669,7 +2925,7 @@ describe("configuration and transport", () => {
       message: "Could not create the Scotty installation",
     });
     expect(envelope.error.hint).toMatch(
-      /^Check Cloudflare authentication, Docker, and permissions, then retry scotty init\./u,
+      /^Check Cloudflare authentication, registry access, and permissions, then retry scotty init\./u,
     );
     expect(envelope.error.hint).toContain(
       `Diagnostic: ${join(home, ".scotty/diagnostics/init-create.json")}`,
@@ -2767,8 +3023,8 @@ describe("configuration and transport", () => {
           message: "missing",
         };
       },
-      fetch: async () => {
-        synchronized = true;
+      fetch: async (input, init) => {
+        synchronized = new URL(new Request(input, init).url).origin !== "https://github.com";
         return Response.json(
           { error: { code: "unexpected", message: "must not sync" } },
           { status: 500 },
@@ -2844,7 +3100,7 @@ describe("configuration and transport", () => {
       message: "Could not deploy the Scotty installation",
     });
     expect(envelope.error.hint).toMatch(
-      /^Check Cloudflare authentication and Docker, then retry scotty deploy\./u,
+      /^Check Cloudflare authentication and registry access, then retry scotty deploy\./u,
     );
     expect(envelope.error.hint).toContain(
       `Diagnostic: ${join(home, ".scotty/diagnostics/deploy-apply.json")}`,
@@ -2881,6 +3137,7 @@ describe("configuration and transport", () => {
   });
 
   test("uninstall removes compute, retains data by default, and deletes local config", async () => {
+    let releaseLookups = 0;
     const home = await temporaryDirectory();
     const configPath = managedInstallationPath(home);
     await writeFile(
@@ -2898,6 +3155,10 @@ describe("configuration and transport", () => {
     let request: Parameters<NonNullable<CliDependencies["uninstallInstallation"]>>[0] | undefined;
     const h = harness({
       home,
+      fetch: async (input, init) => {
+        if (new URL(new Request(input, init).url).origin === "https://github.com") releaseLookups++;
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
       uninstallInstallation: async (input) => {
         request = input;
         return {
@@ -2910,6 +3171,7 @@ describe("configuration and transport", () => {
     });
 
     expect(await main(["uninstall", "--yes"], h.deps)).toBe(EXIT.OK);
+    expect(releaseLookups).toBe(0);
     expect(request).toEqual({
       installationName: "home",
       profile: "personal",

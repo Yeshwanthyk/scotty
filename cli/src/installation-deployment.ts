@@ -71,12 +71,11 @@ import {
   readOwnedPreviewTopologyDeletion,
 } from "../../infra/preview-ownership.ts";
 import {
-  CONTAINER_INPUTS,
   DEPLOYMENT_ARCHIVE_NAME,
   DEPLOYMENT_INPUTS,
   isDeploymentArchiveFileName,
-  prepareContainerContext,
 } from "./deployment-packaging.mjs";
+import { parseContainerImageSource, transferContainerImage } from "./container-image.ts";
 import {
   missingPrebuiltWorkerEntries,
   rewritePrebuiltRunnerStackPlaceholders,
@@ -494,10 +493,6 @@ const preparePrebuiltWorkerDeployment = async (
   await rewritePrebuiltRunnerStackPlaceholders(root, installation.stackName, CLOUDFLARE_STAGE);
 };
 
-const prepareInstallationContainerContext = async (root: string): Promise<void> => {
-  await prepareContainerContext(root, { inputs: CONTAINER_INPUTS });
-};
-
 export interface DeploymentProviderReceipt {
   readonly succeeded: Set<string>;
   readonly containerName?: string;
@@ -591,70 +586,6 @@ const provideAlchemy = <A, E, R>(
     Effect.provide(alchemyRuntimeLayer(quiet, receipt)),
   );
 
-const DOCKER_CONTEXT_INSPECT_ARGS = [
-  "context",
-  "inspect",
-  "--format",
-  "{{json .Endpoints.docker.Host}}",
-] as const;
-const DOCKER_CONTEXT_INSPECT_TIMEOUT_MS = 30_000;
-
-export type InstallationDockerInspect = (
-  command: string,
-  args: ReadonlyArray<string>,
-) => Promise<string>;
-
-const decodeDockerContextHostJson = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.String),
-);
-const sanitizedChildEnvironment = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
-  const sanitized = { ...environment };
-  for (const name of ["GH_TOKEN", "PI_AUTH_JSON", "CREDENTIAL_WRAPPING_KEY"]) {
-    delete sanitized[name];
-  }
-  return sanitized;
-};
-
-const inspectDockerContextHost: InstallationDockerInspect = async (command, args) => {
-  const child = Bun.spawn([command, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: sanitizedChildEnvironment(process.env),
-  });
-  let timedOut = false;
-  // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: host subprocess timeout uses the platform timer API
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill();
-  }, DOCKER_CONTEXT_INSPECT_TIMEOUT_MS);
-  const [exitCode, stdout] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-  ]).finally(() => {
-    clearTimeout(timer);
-  });
-  if (timedOut || exitCode !== 0) {
-    // oxlint-disable-next-line scotty/no-try-catch-or-throw, scotty/no-error-constructor -- boundary: host subprocess adapter reports inspect failure through Promise rejection
-    throw new Error("docker context inspect failed");
-  }
-  return stdout;
-};
-
-export const resolveInstallationDockerHost = Effect.fnUntraced(function* (
-  environment: NodeJS.ProcessEnv = process.env,
-  inspect: InstallationDockerInspect = inspectDockerContextHost,
-) {
-  if (environment.DOCKER_HOST?.trim()) return undefined;
-  const output = yield* Effect.tryPromise({
-    try: () => inspect("docker", DOCKER_CONTEXT_INSPECT_ARGS),
-    catch: (cause) => cause,
-  }).pipe(Effect.option);
-  if (Option.isNone(output)) return undefined;
-  const decoded = decodeDockerContextHostJson(output.value.trim());
-  if (Option.isNone(decoded) || decoded.value.length === 0) return undefined;
-  return decoded.value;
-});
-
 export class CredentialWrappingKeyUnavailable extends Data.TaggedError(
   "CredentialWrappingKeyUnavailable",
 )<{
@@ -666,10 +597,10 @@ const runWithProfile = async <A, E>(
   root: string,
   makeProgram: () => Effect.Effect<A, E>,
   secrets: { readonly credentialWrappingKey?: string } = {},
+  signal?: AbortSignal,
 ): Promise<A> => {
   const previousProfile = process.env.ALCHEMY_PROFILE;
   const previousTelemetry = process.env.ALCHEMY_TELEMETRY_DISABLED;
-  const previousDockerHost = process.env.DOCKER_HOST;
   const previousCredentialWrappingKey = process.env.CREDENTIAL_WRAPPING_KEY;
   const previousDirectory = process.cwd();
   process.env.ALCHEMY_PROFILE = profile;
@@ -680,18 +611,13 @@ const runWithProfile = async <A, E>(
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must restore process-wide profile and cwd state
   try {
     // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: standalone CLI owns this Alchemy Effect-to-Promise execution
-    const resolvedDockerHost = await Effect.runPromise(resolveInstallationDockerHost());
-    if (resolvedDockerHost !== undefined) process.env.DOCKER_HOST = resolvedDockerHost;
-    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: standalone CLI owns this Alchemy Effect-to-Promise execution
-    return await Effect.runPromise(makeProgram());
+    return await Effect.runPromise(makeProgram(), { signal });
   } finally {
     process.chdir(previousDirectory);
     if (previousProfile === undefined) delete process.env.ALCHEMY_PROFILE;
     else process.env.ALCHEMY_PROFILE = previousProfile;
     if (previousTelemetry === undefined) delete process.env.ALCHEMY_TELEMETRY_DISABLED;
     else process.env.ALCHEMY_TELEMETRY_DISABLED = previousTelemetry;
-    if (previousDockerHost === undefined) delete process.env.DOCKER_HOST;
-    else process.env.DOCKER_HOST = previousDockerHost;
     if (previousCredentialWrappingKey === undefined) delete process.env.CREDENTIAL_WRAPPING_KEY;
     else process.env.CREDENTIAL_WRAPPING_KEY = previousCredentialWrappingKey;
   }
@@ -714,8 +640,10 @@ const previewConfiguration = (
   return decoded.value;
 };
 
+const DESTROY_ONLY_CONTAINER_IMAGE = { digest: `sha256:${"0".repeat(64)}` } as const;
+
 const makeStack = (
-  request: InstallationDeployRequest,
+  request: InstallationInspectRequest & Partial<Pick<InstallationDeployRequest, "containerImage">>,
   deploymentRoot: string,
   prebuiltWorkers: boolean,
   deploymentAssetsRequired = true,
@@ -738,6 +666,9 @@ const makeStack = (
       telemetryDisabled: true,
       deploymentRoot,
       installation,
+      // Destroy compiles current Alchemy state into a deletion-only plan. This
+      // placeholder is discarded before apply and is never a deployment target.
+      containerImage: request.containerImage ?? DESTROY_ONLY_CONTAINER_IMAGE,
       resourceConfirmation: expectedCloudflareResourceConfirmation(installation),
       approval: expectedCloudflareStackApproval(installation),
       prebuiltWorkers,
@@ -836,26 +767,138 @@ const planWithProfile = async (
   root: string,
   prebuiltWorkers: boolean,
   quiet = false,
+  signal?: AbortSignal,
 ): Promise<InstallationPlan> => {
   const { assetConfig, stack } = makeStack(request, root, prebuiltWorkers);
-  return runWithProfile(request.profile, root, () =>
-    provideAlchemy(
-      evalStack(
-        stack,
-        (compiled) =>
-          Effect.gen(function* () {
-            const environment = yield* Cloudflare.CloudflareEnvironment;
-            const { accountId } = yield* environment;
-            const plan = yield* Plan.make(compiled);
-            const assets = yield* Cloudflare.Workers.readAssets(assetConfig);
-            return yield* fingerprintPlan(request.installationName, accountId, plan, assets.hash);
-          }).pipe(Effect.provide(cloudflareApiLive())),
-        { stage: CLOUDFLARE_STAGE },
+  return runWithProfile(
+    request.profile,
+    root,
+    () =>
+      provideAlchemy(
+        evalStack(
+          stack,
+          (compiled) =>
+            Effect.gen(function* () {
+              const environment = yield* Cloudflare.CloudflareEnvironment;
+              const { accountId } = yield* environment;
+              const plan = yield* Plan.make(compiled);
+              const assets = yield* Cloudflare.Workers.readAssets(assetConfig);
+              return yield* fingerprintPlan(request.installationName, accountId, plan, assets.hash);
+            }).pipe(Effect.provide(cloudflareApiLive())),
+          { stage: CLOUDFLARE_STAGE },
+        ),
+        quiet,
       ),
-      quiet,
-    ),
+    {},
+    signal,
   );
 };
+
+export const prepareContainerImageForDeployment = Effect.fnUntraced(function* (input: {
+  readonly source: InstallationDeployRequest["containerImage"];
+  readonly accountId: string;
+  readonly expectedAccountId?: string;
+  readonly repository: string;
+}) {
+  if (input.expectedAccountId !== undefined && input.accountId !== input.expectedAccountId)
+    return yield* new InstallationDeploymentError({
+      message: "The Cloudflare account changed before Container image preparation.",
+    });
+  const deployedReference = `registry.cloudflare.com/${input.accountId}/${input.repository}@${input.source.digest}`;
+  const credentials = yield* Containers.createContainerRegistryCredentials({
+    accountId: input.accountId,
+    registryId: "registry.cloudflare.com",
+    permissions: ["pull", "push"],
+    expirationMinutes: 60,
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new InstallationDeploymentError({
+          message: "Could not create short-lived Cloudflare registry credentials.",
+          cause,
+        }),
+    ),
+  );
+  const username = credentials.username ?? credentials.user;
+  if (!username)
+    return yield* new InstallationDeploymentError({
+      message: "Cloudflare registry credentials did not include a username.",
+    });
+  const transferred = yield* transferContainerImage({
+    source: input.source,
+    accountId: input.accountId,
+    repository: input.repository,
+    username,
+    password: credentials.password,
+  }).pipe(
+    Effect.scoped,
+    Effect.mapError(
+      (cause) =>
+        new InstallationDeploymentError({
+          message: "Docker-free Container image transfer or verification failed.",
+          cause,
+        }),
+    ),
+  );
+  if (transferred !== deployedReference)
+    return yield* new InstallationDeploymentError({
+      message: "Transferred Container image identity changed before deployment.",
+    });
+  return deployedReference;
+});
+
+export async function prepareMaintainerContainerImage(
+  request: {
+    readonly installationName: string;
+    readonly profile: string;
+    readonly expectedAccountId: string;
+    readonly source: InstallationDeployRequest["containerImage"];
+  },
+  signal?: AbortSignal,
+): Promise<string> {
+  const installation = makeInstallationTopology(request.installationName);
+  return runWithProfile(
+    request.profile,
+    process.cwd(),
+    () =>
+      provideAlchemy(
+        Effect.gen(function* () {
+          const environment = yield* Cloudflare.CloudflareEnvironment;
+          const { accountId } = yield* environment;
+          return yield* prepareContainerImageForDeployment({
+            source: request.source,
+            accountId,
+            expectedAccountId: request.expectedAccountId,
+            repository: installation.containerName.toLowerCase(),
+          });
+        }).pipe(Effect.provide(cloudflareApiLive())),
+        true,
+      ),
+    {},
+    signal,
+  );
+}
+
+export async function resolveMaintainerCloudflareAccountId(
+  profile: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  return runWithProfile(
+    profile,
+    process.cwd(),
+    () =>
+      provideAlchemy(
+        Effect.gen(function* () {
+          const environment = yield* Cloudflare.CloudflareEnvironment;
+          const { accountId } = yield* environment;
+          return accountId;
+        }).pipe(Effect.provide(cloudflareApiLive())),
+        true,
+      ),
+    {},
+    signal,
+  );
+}
 
 const deployWithProfile = async (
   request: InstallationApplyRequest,
@@ -865,6 +908,7 @@ const deployWithProfile = async (
   readinessTarget?: InstallationDeploymentReadinessTarget,
   quiet = false,
   progress?: InstallationDeploymentProgress,
+  signal?: AbortSignal,
 ): Promise<InstallationResult> => {
   const { assetConfig, installation, stack } = makeStack(request, root, prebuiltWorkers);
   const providerReceipt: DeploymentProviderReceipt = {
@@ -936,6 +980,14 @@ const deployWithProfile = async (
                 }
               }
 
+              const deployedContainerImageReference = containerChanged
+                ? yield* prepareContainerImageForDeployment({
+                    source: request.containerImage,
+                    accountId,
+                    repository: installation.containerName.toLowerCase(),
+                  })
+                : `registry.cloudflare.com/${accountId}/${installation.containerName.toLowerCase()}@${request.containerImage.digest}`;
+
               const output = yield* Apply.apply(plan);
               progress?.providerOperationsSucceeded(providerReceipt.succeeded.size);
               if (!output.url)
@@ -972,6 +1024,7 @@ const deployWithProfile = async (
               return {
                 installationName: request.installationName,
                 profile: request.profile,
+                deployedContainerImageReference,
                 stackName: installation.stackName,
                 stage: CLOUDFLARE_STAGE,
                 accountId: output.accountId,
@@ -998,6 +1051,7 @@ const deployWithProfile = async (
         providerReceipt,
       ),
     { credentialWrappingKey },
+    signal,
   );
 };
 
@@ -1104,109 +1158,125 @@ const inspectWithProfile = async (
   token?: string,
   expectedAccountId?: string,
   quiet = false,
+  signal?: AbortSignal,
 ): Promise<InstallationResult> => {
   const installation = makeInstallationTopology(
     request.installationName,
     previewConfiguration(request),
     request.evidenceEnabled === true,
   );
-  return runWithProfile(request.profile, root, () =>
-    provideAlchemy(
-      Effect.gen(function* () {
-        const environment = yield* Cloudflare.CloudflareEnvironment;
-        const { accountId } = yield* environment;
-        if (expectedAccountId !== undefined && accountId !== expectedAccountId)
-          return yield* new InstallationDeploymentError({
-            message: "The Cloudflare account changed after confirmation.",
-          });
-        yield* requireCredentialWrappingKeyBinding({
-          accountId,
-          scriptName: installation.workerName,
-        });
-        const workerSettings = yield* Workers.getScriptScriptAndVersionSetting({
-          accountId,
-          scriptName: installation.workerName,
-        });
-        const bindings = workerSettings.bindings ?? [];
-        const requiredBindings = requiredInstallationBindings(bindings, installation);
-        if (requiredBindings === undefined)
-          return yield* new InstallationDeploymentError({
-            message: "The named Worker does not have the required Scotty bindings.",
-          });
-        const { sandbox: sandboxBinding, sessions: sessionsBinding } = requiredBindings;
-        yield* Workers.getScriptScriptAndVersionSetting({
-          accountId,
-          scriptName: installation.runnerWorkerName,
-        }).pipe(Effect.asVoid);
-        const applications = yield* Containers.listContainerApplications({ accountId });
-        const application = applications.find(
-          (candidate) => candidate.name === installation.containerName,
-        );
-        if (!application || application.durableObjects?.namespaceId !== sandboxBinding.namespaceId)
-          return yield* new InstallationDeploymentError({
-            message: "The named Scotty Container application is not bound to this Worker.",
-          });
-        const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
-          Stream.filter((candidate) => candidate.title === installation.kvTitle),
-          Stream.runHead,
-        );
-        if (Option.isNone(namespace) || namespace.value.id !== sessionsBinding.namespaceId)
-          return yield* new InstallationDeploymentError({
-            message: "The named Scotty KV namespace is not bound to this Worker.",
-          });
-        yield* R2.getBucket({
-          accountId,
-          bucketName: installation.backupBucketName,
-        }).pipe(Effect.asVoid);
-        yield* R2.getBucket({
-          accountId,
-          bucketName: installation.artifactBucketName,
-        }).pipe(Effect.asVoid);
-        yield* R2.getBucket({
-          accountId,
-          bucketName: installation.sandboxBundleBucketName,
-        }).pipe(Effect.asVoid);
-        yield* verifyInstallationPreview(installation);
-        const scriptSubdomain = yield* Workers.getScriptSubdomain({
-          accountId,
-          scriptName: installation.workerName,
-        });
-        if (!scriptSubdomain.enabled)
-          return yield* new InstallationDeploymentError({
-            message: "The Scotty Worker has no workers.dev URL.",
-          });
-        const { subdomain } = yield* Workers.getSubdomain({ accountId });
-        if (token !== undefined)
-          yield* Workers.putScriptSecret({
+  return runWithProfile(
+    request.profile,
+    root,
+    () =>
+      provideAlchemy(
+        Effect.gen(function* () {
+          const environment = yield* Cloudflare.CloudflareEnvironment;
+          const { accountId } = yield* environment;
+          if (expectedAccountId !== undefined && accountId !== expectedAccountId)
+            return yield* new InstallationDeploymentError({
+              message: "The Cloudflare account changed after confirmation.",
+            });
+          yield* requireCredentialWrappingKeyBinding({
             accountId,
             scriptName: installation.workerName,
-            name: "SCOTTY_TOKEN",
-            text: token,
-            type: "secret_text",
           });
-        return {
-          installationName: request.installationName,
-          profile: request.profile,
-          stackName: installation.stackName,
-          stage: CLOUDFLARE_STAGE,
-          accountId,
-          workerName: installation.workerName,
-          runnerWorkerName: installation.runnerWorkerName,
-          containerName: installation.containerName,
-          kvTitle: installation.kvTitle,
-          backupBucketName: installation.backupBucketName,
-          ...(installation.preview === undefined
-            ? {}
-            : {
-                previewBase: installation.preview.base,
-                previewZoneId: installation.preview.zoneId,
-              }),
-          ...(installation.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
-          host: `https://${installation.workerName}.${subdomain}.workers.dev`,
-        } satisfies InstallationResult;
-      }).pipe(Effect.provide(cloudflareApiLive())),
-      quiet,
-    ),
+          const workerSettings = yield* Workers.getScriptScriptAndVersionSetting({
+            accountId,
+            scriptName: installation.workerName,
+          });
+          const bindings = workerSettings.bindings ?? [];
+          const requiredBindings = requiredInstallationBindings(bindings, installation);
+          if (requiredBindings === undefined)
+            return yield* new InstallationDeploymentError({
+              message: "The named Worker does not have the required Scotty bindings.",
+            });
+          const { sandbox: sandboxBinding, sessions: sessionsBinding } = requiredBindings;
+          yield* Workers.getScriptScriptAndVersionSetting({
+            accountId,
+            scriptName: installation.runnerWorkerName,
+          }).pipe(Effect.asVoid);
+          const applications = yield* Containers.listContainerApplications({ accountId });
+          const application = applications.find(
+            (candidate) => candidate.name === installation.containerName,
+          );
+          if (
+            !application ||
+            application.durableObjects?.namespaceId !== sandboxBinding.namespaceId
+          )
+            return yield* new InstallationDeploymentError({
+              message: "The named Scotty Container application is not bound to this Worker.",
+            });
+          const deployedImage = application.configuration.image;
+          if (typeof deployedImage !== "string")
+            return yield* new InstallationDeploymentError({
+              message: "The named Scotty Container has no immutable image reference.",
+            });
+          const containerImage = parseContainerImageSource(deployedImage);
+          const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
+            Stream.filter((candidate) => candidate.title === installation.kvTitle),
+            Stream.runHead,
+          );
+          if (Option.isNone(namespace) || namespace.value.id !== sessionsBinding.namespaceId)
+            return yield* new InstallationDeploymentError({
+              message: "The named Scotty KV namespace is not bound to this Worker.",
+            });
+          yield* R2.getBucket({
+            accountId,
+            bucketName: installation.backupBucketName,
+          }).pipe(Effect.asVoid);
+          yield* R2.getBucket({
+            accountId,
+            bucketName: installation.artifactBucketName,
+          }).pipe(Effect.asVoid);
+          yield* R2.getBucket({
+            accountId,
+            bucketName: installation.sandboxBundleBucketName,
+          }).pipe(Effect.asVoid);
+          yield* verifyInstallationPreview(installation);
+          const scriptSubdomain = yield* Workers.getScriptSubdomain({
+            accountId,
+            scriptName: installation.workerName,
+          });
+          if (!scriptSubdomain.enabled)
+            return yield* new InstallationDeploymentError({
+              message: "The Scotty Worker has no workers.dev URL.",
+            });
+          const { subdomain } = yield* Workers.getSubdomain({ accountId });
+          if (token !== undefined)
+            yield* Workers.putScriptSecret({
+              accountId,
+              scriptName: installation.workerName,
+              name: "SCOTTY_TOKEN",
+              text: token,
+              type: "secret_text",
+            });
+          return {
+            installationName: request.installationName,
+            profile: request.profile,
+            deployedContainerImageReference: containerImage.reference,
+            stackName: installation.stackName,
+            stage: CLOUDFLARE_STAGE,
+            accountId,
+            workerName: installation.workerName,
+            runnerWorkerName: installation.runnerWorkerName,
+            containerName: installation.containerName,
+            kvTitle: installation.kvTitle,
+            backupBucketName: installation.backupBucketName,
+            ...(installation.preview === undefined
+              ? {}
+              : {
+                  previewBase: installation.preview.base,
+                  previewZoneId: installation.preview.zoneId,
+                }),
+            ...(installation.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
+            host: `https://${installation.workerName}.${subdomain}.workers.dev`,
+          } satisfies InstallationResult;
+        }).pipe(Effect.provide(cloudflareApiLive())),
+        quiet,
+      ),
+    {},
+    signal,
   );
 };
 
@@ -1214,12 +1284,12 @@ const prepareInstallationDeployment = async (
   deployment: { readonly root: string; readonly prebuiltWorkers: boolean },
   installation: ReturnType<typeof makeInstallationTopology>,
 ): Promise<void> => {
-  await prepareInstallationContainerContext(deployment.root);
   await preparePrebuiltWorkerDeployment(deployment.root, deployment.prebuiltWorkers, installation);
 };
 
 export async function planInstallation(
   request: InstallationDeployRequest,
+  signal?: AbortSignal,
 ): Promise<InstallationPlan> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
@@ -1236,7 +1306,13 @@ export async function planInstallation(
       true,
     );
     await prepareInstallationDeployment(deployment, installation);
-    return await planWithProfile(request, deployment.root, deployment.prebuiltWorkers, true);
+    return await planWithProfile(
+      request,
+      deployment.root,
+      deployment.prebuiltWorkers,
+      true,
+      signal,
+    );
   } finally {
     await deployment.cleanup();
   }
@@ -1246,6 +1322,7 @@ export async function deployInstallation(
   request: InstallationApplyRequest,
   readinessTarget?: InstallationDeploymentReadinessTarget,
   progress?: InstallationDeploymentProgress,
+  signal?: AbortSignal,
 ): Promise<InstallationResult> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
@@ -1273,6 +1350,7 @@ export async function deployInstallation(
       readinessTarget,
       true,
       progress,
+      signal,
     );
   } finally {
     await deployment.cleanup();
@@ -1281,6 +1359,7 @@ export async function deployInstallation(
 
 export async function planCreateInstallation(
   request: InstallationDeployRequest,
+  signal?: AbortSignal,
 ): Promise<InstallationPlan> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
@@ -1291,7 +1370,13 @@ export async function planCreateInstallation(
       request.evidenceEnabled === true,
     );
     await prepareInstallationDeployment(deployment, installation);
-    return await planWithProfile(request, deployment.root, deployment.prebuiltWorkers, true);
+    return await planWithProfile(
+      request,
+      deployment.root,
+      deployment.prebuiltWorkers,
+      true,
+      signal,
+    );
   } finally {
     await deployment.cleanup();
   }
@@ -1299,6 +1384,7 @@ export async function planCreateInstallation(
 
 export async function createInstallation(
   request: InstallationCreateRequest,
+  signal?: AbortSignal,
 ): Promise<InstallationResult> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
@@ -1306,6 +1392,7 @@ export async function createInstallation(
     const deployRequest = {
       installationName: request.installationName,
       profile: request.profile,
+      containerImage: request.containerImage,
       ...(request.previewBase === undefined || request.previewZoneId === undefined
         ? {}
         : { previewBase: request.previewBase, previewZoneId: request.previewZoneId }),
@@ -1322,6 +1409,7 @@ export async function createInstallation(
       deployment.root,
       deployment.prebuiltWorkers,
       true,
+      signal,
     );
     if (
       plan.accountId !== request.expectedAccountId ||
@@ -1376,6 +1464,7 @@ export async function createInstallation(
         request.token,
         request.expectedAccountId,
         true,
+        signal,
       );
     } else {
       deployed = await deployWithProfile(
@@ -1389,6 +1478,8 @@ export async function createInstallation(
         request.credentialWrappingKey,
         undefined,
         true,
+        undefined,
+        signal,
       );
       await uploadCredentialWrappingKeyWithProfile(
         request.profile,
@@ -1408,6 +1499,7 @@ export async function createInstallation(
         request.token,
         request.expectedAccountId,
         true,
+        signal,
       );
     return deployed;
   } finally {
@@ -1417,6 +1509,7 @@ export async function createInstallation(
 
 export async function uninstallInstallation(
   request: InstallationUninstallRequest,
+  signal?: AbortSignal,
 ): Promise<InstallationUninstallResult> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
@@ -1428,150 +1521,157 @@ export async function uninstallInstallation(
     );
     await prepareInstallationDeployment(deployment, installation);
     const { stack } = makeStack(request, deployment.root, deployment.prebuiltWorkers, false);
-    return await runWithProfile(request.profile, deployment.root, () =>
-      provideAlchemy(
-        evalStack(
-          stack,
-          (compiled) =>
-            Effect.gen(function* () {
-              const environment = yield* Cloudflare.CloudflareEnvironment;
-              const { accountId } = yield* environment;
-              if (!uninstallTargetMatches(accountId, installation, request))
-                return yield* new InstallationDeploymentError({
-                  message: "The uninstall target no longer matches the saved installation.",
-                });
+    return await runWithProfile(
+      request.profile,
+      deployment.root,
+      () =>
+        provideAlchemy(
+          evalStack(
+            stack,
+            (compiled) =>
+              Effect.gen(function* () {
+                const environment = yield* Cloudflare.CloudflareEnvironment;
+                const { accountId } = yield* environment;
+                if (!uninstallTargetMatches(accountId, installation, request))
+                  return yield* new InstallationDeploymentError({
+                    message: "The uninstall target no longer matches the saved installation.",
+                  });
 
-              const destroyPlan = yield* Plan.make({
-                ...compiled,
-                resources: {},
-                bindings: {},
-                actions: {},
-                output: {},
-              });
-              const missingOwnership = Object.keys(compiled.resources).filter(
-                (id) => destroyPlan.deletions[id] === undefined,
-              );
-              if (missingOwnership.length > 0)
-                return yield* new InstallationDeploymentError({
-                  message: `Alchemy state does not prove ownership of every installation resource: ${missingOwnership.join(", ")}`,
+                const destroyPlan = yield* Plan.make({
+                  ...compiled,
+                  resources: {},
+                  bindings: {},
+                  actions: {},
+                  output: {},
                 });
-              const ownedPreviewDeletion =
-                installation.preview === undefined
-                  ? undefined
-                  : readOwnedPreviewTopologyDeletion(
-                      Object.values(destroyPlan.deletions),
-                      installation.preview,
-                      installation.workerName,
-                    );
-              if (installation.preview !== undefined && ownedPreviewDeletion === undefined)
-                return yield* new PreviewCleanupOwnershipError({
-                  message:
-                    "Alchemy state does not prove ownership of the evidence preview route and DNS record",
-                  hint: "No preview resource was deleted. Verify Alchemy state ownership, then remove the wildcard route and DNS record manually or rerun uninstall after restoring ownership proof.",
-                });
-
-              const applications = yield* Containers.listContainerApplications({ accountId });
-              const application = applications.find(
-                (candidate) => candidate.name === installation.containerName,
-              );
-              if (application)
-                yield* Containers.deleteContainerApplication({
-                  accountId,
-                  applicationId: application.id,
-                }).pipe(Effect.catchTag("ContainerApplicationNotFound", () => Effect.void));
-
-              const deletedPreviewResources: string[] = [];
-              if (installation.preview !== undefined && ownedPreviewDeletion !== undefined) {
-                const previewDnsName = `*.${installation.preview.base}`;
-                const previewRoutePattern = `${previewDnsName}/*`;
-                yield* Workers.deleteRoute({
-                  zoneId: installation.preview.zoneId,
-                  routeId: ownedPreviewDeletion.routeId,
-                }).pipe(Effect.catchTag("RouteNotFound", () => Effect.void));
-                yield* DNS.deleteRecord({
-                  zoneId: installation.preview.zoneId,
-                  dnsRecordId: ownedPreviewDeletion.dnsRecordId,
-                }).pipe(
-                  // Distilled maps HTTP 404 to this shared error even though this generated
-                  // operation's static error union omits non-default HTTP status errors.
-                  Effect.mapError((error): DNS.DeleteRecordError | CloudflareNotFound => error),
-                  Effect.catchTag("NotFound", () => Effect.void),
+                const missingOwnership = Object.keys(compiled.resources).filter(
+                  (id) => destroyPlan.deletions[id] === undefined,
                 );
-                deletedPreviewResources.push(previewRoutePattern, previewDnsName);
-              }
+                if (missingOwnership.length > 0)
+                  return yield* new InstallationDeploymentError({
+                    message: `Alchemy state does not prove ownership of every installation resource: ${missingOwnership.join(", ")}`,
+                  });
+                const ownedPreviewDeletion =
+                  installation.preview === undefined
+                    ? undefined
+                    : readOwnedPreviewTopologyDeletion(
+                        Object.values(destroyPlan.deletions),
+                        installation.preview,
+                        installation.workerName,
+                      );
+                if (installation.preview !== undefined && ownedPreviewDeletion === undefined)
+                  return yield* new PreviewCleanupOwnershipError({
+                    message:
+                      "Alchemy state does not prove ownership of the evidence preview route and DNS record",
+                    hint: "No preview resource was deleted. Verify Alchemy state ownership, then remove the wildcard route and DNS record manually or rerun uninstall after restoring ownership proof.",
+                  });
 
-              yield* Workers.deleteScript({
-                accountId,
-                scriptName: installation.runnerWorkerName,
-                force: true,
-              }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
-              yield* Workers.deleteScript({
-                accountId,
-                scriptName: installation.workerName,
-                force: true,
-              }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
-
-              const retainedBuckets = [
-                installation.backupBucketName,
-                installation.artifactBucketName,
-                installation.sandboxBundleBucketName,
-              ];
-              const retainedData = [installation.kvTitle, ...retainedBuckets];
-              const deletedData: string[] = [];
-              if (request.deleteData) {
-                const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
-                  Stream.filter((candidate) => candidate.title === installation.kvTitle),
-                  Stream.runHead,
+                const applications = yield* Containers.listContainerApplications({ accountId });
+                const application = applications.find(
+                  (candidate) => candidate.name === installation.containerName,
                 );
-                if (Option.isSome(namespace)) {
-                  yield* KV.deleteNamespace({
+                if (application)
+                  yield* Containers.deleteContainerApplication({
                     accountId,
-                    namespaceId: namespace.value.id,
-                  }).pipe(Effect.catchTag("NamespaceNotFound", () => Effect.void));
-                  deletedData.push(installation.kvTitle);
+                    applicationId: application.id,
+                  }).pipe(Effect.catchTag("ContainerApplicationNotFound", () => Effect.void));
+
+                const deletedPreviewResources: string[] = [];
+                if (installation.preview !== undefined && ownedPreviewDeletion !== undefined) {
+                  const previewDnsName = `*.${installation.preview.base}`;
+                  const previewRoutePattern = `${previewDnsName}/*`;
+                  yield* Workers.deleteRoute({
+                    zoneId: installation.preview.zoneId,
+                    routeId: ownedPreviewDeletion.routeId,
+                  }).pipe(Effect.catchTag("RouteNotFound", () => Effect.void));
+                  yield* DNS.deleteRecord({
+                    zoneId: installation.preview.zoneId,
+                    dnsRecordId: ownedPreviewDeletion.dnsRecordId,
+                  }).pipe(
+                    // Distilled maps HTTP 404 to this shared error even though this generated
+                    // operation's static error union omits non-default HTTP status errors.
+                    Effect.mapError((error): DNS.DeleteRecordError | CloudflareNotFound => error),
+                    Effect.catchTag("NotFound", () => Effect.void),
+                  );
+                  deletedPreviewResources.push(previewRoutePattern, previewDnsName);
                 }
 
-                for (const bucketName of retainedBuckets) {
-                  yield* R2.listObjects.items({ accountId, bucketName, perPage: 1000 }).pipe(
-                    Stream.filter(
-                      (object): object is typeof object & { key: string } =>
-                        typeof object.key === "string" && object.key.length > 0,
-                    ),
-                    Stream.map((object) => object.key),
-                    Stream.runForEachArray((keys) =>
-                      R2.deleteObjects({
-                        accountId,
-                        bucketName,
-                        body: [...keys],
-                      }),
-                    ),
-                    Effect.catchTag("NoSuchBucket", () => Effect.void),
-                  );
-                  yield* R2.deleteBucket({ accountId, bucketName }).pipe(
-                    Effect.catchTag("NoSuchBucket", () => Effect.void),
-                  );
-                  deletedData.push(bucketName);
-                }
-              }
+                yield* Workers.deleteScript({
+                  accountId,
+                  scriptName: installation.runnerWorkerName,
+                  force: true,
+                }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
+                yield* Workers.deleteScript({
+                  accountId,
+                  scriptName: installation.workerName,
+                  force: true,
+                }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
 
-              // Retained resources stay in Alchemy state until every direct deletion succeeds.
-              // This preserves ownership proof across interruption and makes retries safe.
-              yield* Apply.apply(destroyPlan);
-              return {
-                installationName: request.installationName,
-                deletedCompute: [
-                  installation.containerName,
-                  installation.runnerWorkerName,
-                  installation.workerName,
-                  ...deletedPreviewResources,
-                ],
-                retainedData: request.deleteData ? [] : retainedData,
-                deletedData,
-              } satisfies InstallationUninstallResult;
-            }).pipe(Effect.provide(cloudflareApiLive())),
-          { stage: CLOUDFLARE_STAGE },
+                const retainedBuckets = [
+                  installation.backupBucketName,
+                  installation.artifactBucketName,
+                  installation.sandboxBundleBucketName,
+                ];
+                const retainedData = [installation.kvTitle, ...retainedBuckets];
+                const deletedData: string[] = [];
+                if (request.deleteData) {
+                  const namespace = yield* KV.listNamespaces
+                    .items({ accountId, perPage: 100 })
+                    .pipe(
+                      Stream.filter((candidate) => candidate.title === installation.kvTitle),
+                      Stream.runHead,
+                    );
+                  if (Option.isSome(namespace)) {
+                    yield* KV.deleteNamespace({
+                      accountId,
+                      namespaceId: namespace.value.id,
+                    }).pipe(Effect.catchTag("NamespaceNotFound", () => Effect.void));
+                    deletedData.push(installation.kvTitle);
+                  }
+
+                  for (const bucketName of retainedBuckets) {
+                    yield* R2.listObjects.items({ accountId, bucketName, perPage: 1000 }).pipe(
+                      Stream.filter(
+                        (object): object is typeof object & { key: string } =>
+                          typeof object.key === "string" && object.key.length > 0,
+                      ),
+                      Stream.map((object) => object.key),
+                      Stream.runForEachArray((keys) =>
+                        R2.deleteObjects({
+                          accountId,
+                          bucketName,
+                          body: [...keys],
+                        }),
+                      ),
+                      Effect.catchTag("NoSuchBucket", () => Effect.void),
+                    );
+                    yield* R2.deleteBucket({ accountId, bucketName }).pipe(
+                      Effect.catchTag("NoSuchBucket", () => Effect.void),
+                    );
+                    deletedData.push(bucketName);
+                  }
+                }
+
+                // Retained resources stay in Alchemy state until every direct deletion succeeds.
+                // This preserves ownership proof across interruption and makes retries safe.
+                yield* Apply.apply(destroyPlan);
+                return {
+                  installationName: request.installationName,
+                  deletedCompute: [
+                    installation.containerName,
+                    installation.runnerWorkerName,
+                    installation.workerName,
+                    ...deletedPreviewResources,
+                  ],
+                  retainedData: request.deleteData ? [] : retainedData,
+                  deletedData,
+                } satisfies InstallationUninstallResult;
+              }).pipe(Effect.provide(cloudflareApiLive())),
+            { stage: CLOUDFLARE_STAGE },
+          ),
         ),
-      ),
+      {},
+      signal,
     );
   } finally {
     await deployment.cleanup();
@@ -1580,11 +1680,12 @@ export async function uninstallInstallation(
 
 export async function inspectInstallation(
   request: InstallationInspectRequest,
+  signal?: AbortSignal,
 ): Promise<InstallationResult> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone inspection must remove its extracted payload on every exit
   try {
-    return await inspectWithProfile(request, deployment.root);
+    return await inspectWithProfile(request, deployment.root, undefined, undefined, false, signal);
   } finally {
     await deployment.cleanup();
   }
@@ -1592,6 +1693,7 @@ export async function inspectInstallation(
 
 export async function recoverInstallation(
   request: InstallationRecoverRequest,
+  signal?: AbortSignal,
 ): Promise<InstallationResult> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone recovery must remove its extracted payload on every exit
@@ -1620,6 +1722,8 @@ export async function recoverInstallation(
       deployment.root,
       request.token,
       request.expectedAccountId,
+      false,
+      signal,
     );
   } finally {
     await deployment.cleanup();

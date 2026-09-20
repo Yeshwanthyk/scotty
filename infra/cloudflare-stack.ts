@@ -52,8 +52,6 @@ export const makeCloudflareStackTopology = (
     container: {
       logicalId: "SandboxContainer",
       name: installation.containerName,
-      context: ".alchemy/scotty-container-context",
-      dockerfile: ".alchemy/scotty-container-context/worker/container/Dockerfile",
       instanceType: "standard-2",
       maxInstances: 10,
     },
@@ -111,6 +109,7 @@ export interface CloudflareStackConfig {
   readonly telemetryDisabled: boolean;
   readonly deploymentRoot: string;
   readonly installation: InstallationTopology;
+  readonly containerImage: { readonly digest: string };
   readonly resourceConfirmation: string | undefined;
   readonly approval: string | undefined;
   readonly prebuiltWorkers?: boolean;
@@ -328,8 +327,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   });
   const container = yield* Cloudflare.Containers.ContainerPlatform(topology.container.logicalId, {
     name: topology.container.name,
-    context: topology.container.context,
-    dockerfile: topology.container.dockerfile,
+    image: `registry.cloudflare.com/${accountId}/${topology.container.name.toLowerCase()}@${config.containerImage.digest}`,
     instanceType: topology.container.instanceType,
     maxInstances: topology.container.maxInstances,
   }).pipe(removalPolicy);

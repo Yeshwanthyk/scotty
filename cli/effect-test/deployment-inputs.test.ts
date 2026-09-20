@@ -89,7 +89,11 @@ describe("standalone deployment archive", () => {
     expect(DEPLOYMENT_PACKAGING.exclusions).toEqual(["node_modules", ".git"]);
     expect(DEPLOYMENT_EXCLUSIONS).toEqual(["node_modules", ".git"]);
     expect(DEPLOYMENT_PACKAGING.contextPath).toBe(".alchemy/scotty-container-context");
-    expect(DEPLOYMENT_ENTRIES.map((entry) => entry.path)).toEqual(DEPLOYMENT_INPUTS);
+    expect(DEPLOYMENT_ENTRIES.map((entry) => entry.path)).toEqual([
+      ...DEPLOYMENT_INPUTS.slice(0, 12),
+      "worker/container",
+      ...DEPLOYMENT_INPUTS.slice(12),
+    ]);
     expect(DEPLOYMENT_INPUTS).toContain("worker/public");
     expect(DEPLOYMENT_INPUTS).toContain("worker/prebuilt");
     expect(ARCHIVE_PUBLIC_ASSETS).toEqual(["worker/public"]);
@@ -97,6 +101,7 @@ describe("standalone deployment archive", () => {
     expect(CONTAINER_STATIC_INPUTS).not.toContain("worker/public");
     expect(CONTAINER_RUNTIME_ASSETS).toEqual(["worker/container"]);
     expect(CONTAINER_STATIC_INPUTS).toContain("worker/container");
+    expect(DEPLOYMENT_INPUTS).not.toContain("worker/container");
     expect(DEPLOYMENT_INPUTS).not.toContain("tui/package.json");
     expect(DEPLOYMENT_INPUTS).not.toContain("tui/src");
     expect(CONTAINER_INPUTS).not.toContain("tui/package.json");
@@ -166,7 +171,6 @@ describe("standalone deployment archive", () => {
       const cliCovered = isCoveredByProjectInputs(source, CLI_SOURCE_TREES);
       expect(staticCovered || cliCovered).toBe(true);
       expect(isCoveredByProjectInputs(source, CONTAINER_INPUTS)).toBe(true);
-      expect(isCoveredByProjectInputs(source, DEPLOYMENT_INPUTS)).toBe(true);
     }
   });
 

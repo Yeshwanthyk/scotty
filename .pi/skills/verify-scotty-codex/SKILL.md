@@ -1,9 +1,9 @@
 ---
 name: verify-scotty-codex
-description: Verify Scotty's deployed Codex CLI session surface after runtime, protocol, settings, or lifecycle changes; audit native event coverage when a session stops unexpectedly.
+description: Verify Scotty's deployed Pi or Codex CLI commands and native tool receipts after runtime, protocol, settings, or lifecycle changes; audit native event coverage when a session stops unexpectedly.
 ---
 
-# Verify Scotty Codex sessions
+# Verify Scotty Pi and Codex sessions
 
 ## Launch
 
@@ -26,6 +26,9 @@ from the cloud profile need separate displayed/persisted selection readback.
 `Warm`, `doctor.ok`, and a marker-only answer are not native tool or delegation proof.
 
 ## Drive
+
+For Pi, use [Pi native commands](features/pi-commands.md) and its dedicated helper.
+The Codex helper below requires canonical turns and must not be reused for Pi snapshots.
 
 Read [Features](features/README.md), select the affected recipes, and label each proof tier.
 The executable smoke recipe uses the real CLI, requires a fresh evidence directory, creates one

@@ -1,9 +1,10 @@
-# Codex CLI verification features
+# Pi and Codex CLI verification features
 
 Use the launch, doctor, evidence and ownership rules in [SKILL.md](../SKILL.md).
 
 | Recipe | User-visible behavior | Current proof limit |
 | --- | --- | --- |
+| [Pi native commands](pi-commands.md) | Pi shell tool, terminal follow-up, owned cleanup | Dedicated native-message helper; other Pi lifecycle features remain unproven |
 | [Commands and messages](commands.md) | Create, output, read, follow-up, selected model | Executable deployed smoke; browser/settings readback separate |
 | [Native tools and delegation](native-events.md) | Research, native tools, parallel/nested agents | Late completion passed; other deployed child paths remain unproven |
 | [Steering and queue](steering.md) | Active steering, interrupt, queued follow-up | Recipes require active native turn and receipt correlation |
