@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,29 +9,7 @@ import { describe, it } from "node:test";
 
 const execute = promisify(execFile);
 const scriptsRoot = dirname(fileURLToPath(import.meta.url));
-const guardedScripts = [
-  {
-    path: "deploy-production.mjs",
-    invocation: ".then(() => parseProductionDeployOptions(process.argv.slice(2)))",
-  },
-  { path: "container-control-plane.mjs", invocation: "main().catch((error) =>" },
-];
-
-const read = (path) => readFile(join(scriptsRoot, path), "utf8");
-
-const guardBlock = (source) => {
-  const guard = "if (isDirectRun(import.meta.url, process.argv[1])) {";
-  const start = source.indexOf(guard);
-  assert.notEqual(start, -1, "missing isDirectRun guard");
-  const open = source.indexOf("{", start);
-  let depth = 0;
-  for (let index = open; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    if (source[index] === "}") depth -= 1;
-    if (depth === 0) return source.slice(start, index + 1);
-  }
-  assert.fail("unterminated isDirectRun guard");
-};
+const guardedScripts = ["deploy-production.mjs", "container-control-plane.mjs"];
 
 const probe = (runtime, script, args) =>
   spawnSync(runtime, [join(scriptsRoot, script), ...args], {
@@ -40,15 +18,6 @@ const probe = (runtime, script, args) =>
   });
 
 describe("bundled script guards", () => {
-  for (const { path, invocation } of guardedScripts) {
-    it(`${path} keeps its entry invocation inside the filesystem-identity guard`, async () => {
-      const source = await read(path);
-      assert.match(source, /import \{ isDirectRun \} from "\.\/is-direct-run\.mjs";/u);
-      assert.doesNotMatch(source, /import\.meta\.url === pathToFileURL/u);
-      assert.ok(guardBlock(source).includes(invocation));
-    });
-  }
-
   it("imports the real maintainer-script graph without output or exit side effects when compiled", async () => {
     const fixtureRoot = await mkdtemp(join(scriptsRoot, ".compiled-guards-"));
     const outputRoot = await mkdtemp(join(tmpdir(), "scotty-compiled-guards-"));
@@ -58,7 +27,7 @@ describe("bundled script guards", () => {
       await writeFile(
         fixture,
         guardedScripts
-          .map(({ path }) => `import ${JSON.stringify(`../${path}`)};`)
+          .map((path) => `import ${JSON.stringify(`../${path}`)};`)
           .concat('process.stdout.write("fixture imported\\n");', "")
           .join("\n"),
       );

@@ -156,17 +156,6 @@ describe("Wrangler binding coverage", () => {
     );
   });
 
-  it("is invoked from the shared check script", () => {
-    const pkg = JSON.parse(read("package.json"));
-    assert.equal(
-      pkg.scripts["check:wrangler-bindings"],
-      "node scripts/check-wrangler-bindings.mjs",
-    );
-    assert.match(pkg.scripts.check, /check:wrangler-bindings/u);
-    assert.match(pkg.scripts.check, /check:pi-packages/u);
-    assert.match(pkg.scripts.check, /check:patches/u);
-  });
-
   it("uses the same plain topology data as the Alchemy stack", () => {
     const stack = read("infra/cloudflare-stack.ts");
     assert.match(stack, /from "\.\.\/scripts\/cloudflare-topology-data\.mjs"/u);

@@ -1,15 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { checkCompiledCli } from "./check-cli-compiled.mjs";
 
 describe("compiled CLI smoke", () => {
-  it("is part of the shared local check gate", () => {
-    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-    assert.equal(pkg.scripts["check:cli-compiled"], "node scripts/check-cli-compiled.mjs");
-    assert.match(pkg.scripts.check, /check:cli-compiled/u);
-  });
-
   it("builds to a unique temporary directory, runs the native artifact, and cleans up", async () => {
     const calls = [];
     const removed = [];

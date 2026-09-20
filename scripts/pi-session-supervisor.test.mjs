@@ -38,6 +38,15 @@ test("LF record parser preserves JSON Unicode separators and chunk boundaries", 
   assert.deepEqual(records, [first, '{"second":2}', '{"final":true}']);
 });
 
+async function waitForPendingUi(url, headers, id) {
+  for (let attempt = 0; attempt < 250; attempt += 1) {
+    const snapshot = await (await fetch(`${url}/snapshot`, { headers })).json();
+    if (snapshot.pendingUi?.some((dialog) => dialog.id === id)) return snapshot;
+    await delay(20);
+  }
+  throw new Error(`supervisor did not expose pending UI ${id}`);
+}
+
 async function waitForReady(url, supervisor, readStderr) {
   for (let attempt = 0; attempt < 250; attempt += 1) {
     const response = await fetch(`${url}/health`).catch(() => undefined);
@@ -368,6 +377,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
     headers: { ...transportHeaders, "content-type": "application/json" },
     body: JSON.stringify(commandEnvelope({ type: "prompt", message: "Ask again" })),
   });
+  await waitForPendingUi(url, transportHeaders, "ask-1");
   const answerCommand = commandEnvelope({
     type: "extension_ui_response",
     id: "ask-1",
