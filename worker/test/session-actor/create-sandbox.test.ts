@@ -1,3 +1,4 @@
+import { runtimeCliMaterializerTestLayer } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
@@ -188,7 +189,16 @@ const providerLayer = (
     ...boundaryOverrides,
   });
   return createSandboxTransitionProviderLayer.pipe(
-    Layer.provide(Layer.mergeAll(runtime, auth, bundle, metadataStore, boundary)),
+    Layer.provide(
+      Layer.mergeAll(
+        runtime,
+        auth,
+        bundle,
+        metadataStore,
+        boundary,
+        runtimeCliMaterializerTestLayer,
+      ),
+    ),
   );
 };
 

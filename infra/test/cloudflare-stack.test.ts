@@ -61,6 +61,7 @@ const approvedConfig = (): CloudflareStackConfig => ({
   telemetryDisabled: true,
   deploymentRoot: fileURLToPath(new URL("../..", import.meta.url)),
   installation,
+  containerImage: { digest: `sha256:${"a".repeat(64)}` },
   resourceConfirmation: expectedCloudflareResourceConfirmation(installation),
   approval: expectedCloudflareStackApproval(installation),
 });

@@ -22,11 +22,6 @@ export const PRODUCTION_DEPLOY_STEPS = [
     redact: true,
   },
   {
-    name: "Prepare isolated Container context",
-    command: process.execPath,
-    args: ["scripts/prepare-container-context.mjs"],
-  },
-  {
     name: "Check Worker credential binding",
     command: "npx",
     args: [
@@ -964,8 +959,79 @@ export async function auditProductionHatchEvidenceTopology(
   process.stdout.write("Production Hatch and Evidence topology audit passed.\n");
 }
 
-function productionEnvironment(environment = process.env) {
+export function requireProductionContainerImageSource(environment) {
+  const reference = environment.SCOTTY_CONTAINER_IMAGE_SOURCE?.trim();
+  const match = reference?.match(
+    /^(?:localhost(?::[0-9]+)?|[a-z0-9.-]*\.[a-z0-9.-]+)\/[a-z0-9]+(?:[._/-][a-z0-9]+)*@(sha256:[0-9a-f]{64})$/u,
+  );
+  if (!match)
+    throw new Error(
+      "SCOTTY_CONTAINER_IMAGE_SOURCE must identify the immutable production source image.",
+    );
+  return { reference, digest: match[1] };
+}
+
+export async function resolveProductionAccountId(environment, execute = runCommand) {
+  const output = await execute(
+    "bun",
+    ["scripts/prepare-production-container-image.ts", "--account"],
+    {
+      env: environment,
+      capture: true,
+      timeoutMs: 2 * 60 * 1_000,
+    },
+  );
+  let decoded;
+  try {
+    decoded = JSON.parse(output);
+  } catch {
+    throw new Error("Cloudflare account discovery returned an invalid receipt.");
+  }
+  if (
+    typeof decoded !== "object" ||
+    decoded === null ||
+    Object.keys(decoded).length !== 1 ||
+    typeof decoded.accountId !== "string" ||
+    !/^[0-9a-f]{32}$/u.test(decoded.accountId)
+  )
+    throw new Error("Cloudflare account discovery did not return one valid account identity.");
+  return decoded.accountId;
+}
+
+export async function prepareProductionContainerImage(environment, topology, execute = runCommand) {
+  const source = requireProductionContainerImageSource(environment);
+  const expectedAccountId = environment.SCOTTY_EXPECTED_ACCOUNT_ID?.trim();
+  if (!/^[0-9a-f]{32}$/u.test(expectedAccountId ?? ""))
+    throw new Error("Container image preparation requires the authorized Cloudflare account.");
+  const output = await execute("bun", ["scripts/prepare-production-container-image.ts"], {
+    env: environment,
+    capture: true,
+    timeoutMs: 20 * 60 * 1_000,
+  });
+  let decoded;
+  try {
+    decoded = JSON.parse(output);
+  } catch {
+    throw new Error("Container image preparation returned an invalid receipt.");
+  }
+  const expected = new RegExp(
+    `^registry\\.cloudflare\\.com/${expectedAccountId}/${topology.containerName.toLowerCase()}@${source.digest}$`,
+    "u",
+  );
+  if (
+    typeof decoded !== "object" ||
+    decoded === null ||
+    Object.keys(decoded).length !== 1 ||
+    typeof decoded.reference !== "string" ||
+    !expected.test(decoded.reference)
+  )
+    throw new Error("Container image preparation did not verify the planned target digest.");
+  return source.digest;
+}
+
+function productionEnvironment(environment = process.env, expectedAccountId) {
   const topology = resolveProductionTopology(environment);
+  const containerImage = requireProductionContainerImageSource(environment);
   const resourceConfirmation = [
     "confirmed",
     topology.installationName,
@@ -989,6 +1055,14 @@ function productionEnvironment(environment = process.env) {
     SCOTTY_PREVIEW_ZONE_ID: topology.previewZoneId,
     SCOTTY_EVIDENCE_ENABLED: "true",
     SCOTTY_CONTAINER_APPLICATION_NAME: topology.containerName,
+    SCOTTY_CONTAINER_IMAGE_SOURCE: containerImage.reference,
+    SCOTTY_CONTAINER_IMAGE_DIGEST: containerImage.digest,
+    ...(environment.SCOTTY_RUNTIME_IMAGE_COMPATIBILITY === undefined
+      ? {}
+      : {
+          SCOTTY_RUNTIME_IMAGE_COMPATIBILITY: environment.SCOTTY_RUNTIME_IMAGE_COMPATIBILITY,
+        }),
+    ...(expectedAccountId === undefined ? {} : { SCOTTY_EXPECTED_ACCOUNT_ID: expectedAccountId }),
     SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED: resourceConfirmation,
     SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL: `deploy:${topology.installationName}:${topology.workerName}`,
   };
@@ -1046,20 +1120,22 @@ export async function executeProductionDeploySteps(
     readControlPlane = readProductionContainerControlPlane,
     waitForRollout = waitForProductionContainerRollout,
     auditTopology = auditProductionHatchEvidenceTopology,
-    resolveDockerEnvironment = resolveProductionDockerEnvironment,
+    resolveAccountId = resolveProductionAccountId,
+    prepareContainerImage = prepareProductionContainerImage,
     environment = process.env,
     allowContainerRollout = false,
   } = {},
 ) {
   const topology = resolveProductionTopology(environment);
   const verificationEnv = sanitizedLocalEnvironment(environment);
-  const productionEnv = productionEnvironment(environment);
+  const accountDiscoveryEnv = productionEnvironment(environment);
   await execute(PRODUCTION_DEPLOY_STEPS[0], verificationEnv);
+  const expectedAccountId = await resolveAccountId(accountDiscoveryEnv);
+  const productionEnv = productionEnvironment(environment, expectedAccountId);
   await execute(PRODUCTION_DEPLOY_STEPS[1], productionEnv);
-  await execute(PRODUCTION_DEPLOY_STEPS[2], verificationEnv);
   await revalidate();
   const credentialPreflight = {
-    ...PRODUCTION_DEPLOY_STEPS[3],
+    ...PRODUCTION_DEPLOY_STEPS[2],
     args: [
       "--no-install",
       "wrangler",
@@ -1073,21 +1149,21 @@ export async function executeProductionDeploySteps(
   };
   const credentialBindings = await execute(credentialPreflight, productionEnv);
   assertProductionCredentialWrappingKeyBinding(credentialBindings);
-  const planOutput = await execute(PRODUCTION_DEPLOY_STEPS[4], productionEnv);
+  const planOutput = await execute(PRODUCTION_DEPLOY_STEPS[3], productionEnv);
   const plannedContainerAction = assertContainerPlanAuthorized(planOutput, allowContainerRollout);
   const controlPlaneBeforeDeploy = await readControlPlane(productionEnv);
   assertSettledContainerBaseline(controlPlaneBeforeDeploy);
   if (plannedContainerAction !== "noop")
     assertNoActiveInstancesBeforeContainerRollout(controlPlaneBeforeDeploy);
-  const deployEnv =
-    plannedContainerAction === "noop"
-      ? productionEnv
-      : await resolveDockerEnvironment(productionEnv);
-
+  if (plannedContainerAction !== "noop") {
+    const preparedDigest = await prepareContainerImage(productionEnv, topology);
+    if (preparedDigest !== productionEnv.SCOTTY_CONTAINER_IMAGE_DIGEST)
+      throw new Error("Prepared Container image digest changed after the authorized plan.");
+  }
   let deployError;
   let containerAction = "unknown";
   try {
-    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[5], deployEnv);
+    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[4], productionEnv);
     containerAction = readAlchemyContainerAction(deployOutput);
   } catch (error) {
     deployError = error;
@@ -1103,7 +1179,7 @@ export async function executeProductionDeploySteps(
 
   let auditError;
   try {
-    await execute(PRODUCTION_DEPLOY_STEPS[6], productionEnv, { allowAfterSignal: true });
+    await execute(PRODUCTION_DEPLOY_STEPS[5], productionEnv, { allowAfterSignal: true });
   } catch (error) {
     auditError = error;
   }

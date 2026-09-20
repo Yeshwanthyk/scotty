@@ -1,3 +1,4 @@
+import type { RuntimeCliSelectionStorage } from "../runtime-cli/selection";
 import { Context, Data, Effect, Layer, Result, Schema } from "effect";
 import {
   SandboxActivateInputSchema,
@@ -10,6 +11,19 @@ import {
 import { defaultCloudSettings, type CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
 
 const AUTHORITY_KEY = "scotty:sandbox-config:1";
+const RUNTIME_CLI_AUTHORITY_KEY = "scotty:runtime-cli-selection:1";
+
+export const durableRuntimeCliSelectionStorage = (
+  storage: DurableObjectStorage,
+): RuntimeCliSelectionStorage => ({
+  transaction: (operation) =>
+    storage.transaction((transaction) =>
+      operation({
+        get: () => transaction.get(RUNTIME_CLI_AUTHORITY_KEY),
+        put: (value) => transaction.put(RUNTIME_CLI_AUTHORITY_KEY, value),
+      }),
+    ),
+});
 
 export type SandboxConfigFailureReason =
   | "conflict"

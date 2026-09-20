@@ -24,6 +24,11 @@ import {
 } from "./core";
 import { managedInstallationPath } from "./managed-installation-path.mjs";
 import {
+  fetchReleasedContainerImage,
+  parseContainerImageSource,
+  type ContainerImageSource,
+} from "./container-image.ts";
+import {
   deploymentPlanPath,
   readDeploymentPlan,
   removeDeploymentPlan,
@@ -545,34 +550,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     return decoded.value;
   });
 
-  const ensureDocker = Effect.fnUntraced(function* () {
-    const runtime = yield* CliRuntime;
-    const processRunner = yield* ProcessRunner;
-    const first = yield* processRunner.run(["docker", "info", "--format", "{{.ServerVersion}}"]);
-    if (first.exitCode === 0) return;
-    if (process.platform === "darwin" && runtime.stdinIsTTY && runtime.stdoutIsTTY) {
-      const answer = runtime.prompt("Docker is unavailable. Start Colima? [y/N]: ");
-      if (answer?.trim().toLowerCase() === "y") {
-        const started = yield* processRunner.run(["colima", "start"]);
-        if (started.exitCode === 0) {
-          const retried = yield* processRunner.run([
-            "docker",
-            "info",
-            "--format",
-            "{{.ServerVersion}}",
-          ]);
-          if (retried.exitCode === 0) return;
-        }
-      }
-    }
-    return yield* new CliError(
-      "docker_unavailable",
-      "Docker is not available in the current Docker context",
-      "Start your Docker runtime or select a working Docker context, then retry.",
-      EXIT.GENERIC,
-    );
-  });
-
   const rootToken = (): string =>
     `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
 
@@ -581,9 +558,19 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     return Buffer.from(bytes).toString("base64url");
   };
 
-  const managedConfig = (deployed: InstallationResult, token: string) => ({
+  const MANAGED_CONTAINER_IMAGE_SELECTOR = "managed" as const;
+
+  const managedConfig = (
+    deployed: InstallationResult,
+    token: string,
+    containerImageSource?: string,
+    containerImagePolicyUnresolved?: true,
+  ) => ({
     installationName: deployed.installationName,
     profile: deployed.profile,
+    ...(containerImagePolicyUnresolved === true ? { containerImagePolicyUnresolved } : {}),
+    ...(containerImageSource === undefined ? {} : { containerImageSource }),
+    deployedContainerImageReference: deployed.deployedContainerImageReference,
     stackName: deployed.stackName,
     stage: deployed.stage,
     accountId: deployed.accountId,
@@ -608,6 +595,38 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const configuredEvidence = (config: Config) =>
     config.evidenceEnabled === true ? { evidenceEnabled: true as const } : {};
 
+  const selectedContainerImage = Effect.fnUntraced(function* (
+    explicit: string | undefined,
+    configured?: string,
+  ) {
+    const selected = explicit?.trim() || configured?.trim();
+    if (selected !== undefined)
+      return yield* Effect.try({
+        try: () => parseContainerImageSource(selected),
+        catch: () =>
+          new CliError(
+            "container_image_invalid",
+            "The selected container image is not an immutable OCI reference",
+            "Use a fully qualified REPOSITORY@sha256:64_LOWER_HEX reference.",
+            EXIT.USAGE,
+          ),
+      });
+    const runtime = yield* CliRuntime;
+    return yield* fetchReleasedContainerImage(VERSION, (input, init) =>
+      runtime.hostFetch(new Request(input, init)),
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new CliError(
+            "container_image_unavailable",
+            "The verified Scotty release image could not be selected",
+            "Check network access to the matching GitHub release and retry.",
+            EXIT.GENERIC,
+          ),
+      ),
+    );
+  });
+
   const completeInstallationOwnership = (
     config: Config,
   ): config is Config & { readonly accountId: string } => config.accountId !== undefined;
@@ -616,11 +635,13 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     journal: InitJournal,
     installationName: string,
     profile: string,
+    containerImage: ContainerImageSource,
     plan: InstallationPlan,
     topology: ReturnType<typeof makeInstallationTopology>,
   ): boolean =>
     journal.installationName === installationName &&
     journal.profile === profile &&
+    journal.containerImageReference === containerImage.reference &&
     journal.accountId === plan.accountId &&
     journal.stackName === topology.stackName &&
     journal.workerName === topology.workerName &&
@@ -636,13 +657,21 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     existingJournal: Option.Option<InitJournal>,
     installationName: string,
     profile: string,
+    containerImage: ContainerImageSource,
     plan: InstallationPlan,
     topology: ReturnType<typeof makeInstallationTopology>,
     journalPath: string,
   ) {
     if (
       Option.isSome(existingJournal) &&
-      !initJournalMatches(existingJournal.value, installationName, profile, plan, topology)
+      !initJournalMatches(
+        existingJournal.value,
+        installationName,
+        profile,
+        containerImage,
+        plan,
+        topology,
+      )
     )
       return yield* new CliError(
         "init_journal_conflict",
@@ -689,6 +718,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       profile: Flag.string("profile").pipe(
         Flag.optional,
         Flag.withDescription("Alchemy Cloudflare authentication profile"),
+      ),
+      image: Flag.string("image").pipe(
+        Flag.optional,
+        Flag.withDescription("Digest-pinned public OCI image (defaults to this Scotty release)"),
       ),
       previewBase: Flag.string("preview-base").pipe(
         Flag.optional,
@@ -745,6 +778,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       previewBase,
       previewZoneId,
       profile,
+      image,
       yes,
       agent,
       modelProvider,
@@ -769,6 +803,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           Option.getOrUndefined(profile) ??
           ((interactive ? runtime.prompt("Cloudflare profile [default]: ")?.trim() : undefined) ||
             "default");
+        let containerImage: ContainerImageSource;
+        const requestedContainerImage = Option.getOrUndefined(image)?.trim() || undefined;
+        let containerImageSource =
+          requestedContainerImage === MANAGED_CONTAINER_IMAGE_SELECTOR
+            ? undefined
+            : requestedContainerImage;
         const preview = yield* optionalPreviewConfiguration(
           interactive && Option.isNone(previewBase)
             ? Option.fromNullishOr(runtime.prompt("Preview DNS base: ")?.trim())
@@ -925,16 +965,21 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 );
               return;
             }
-            const dockerPhase = initUi.phase("Checking Docker");
-            yield* ensureDocker().pipe(
-              Effect.onExit((exit) =>
-                finishUiPhase(dockerPhase, exit, "Docker is ready", "Docker check failed"),
-              ),
-            );
+            if (Option.isSome(existingJournal)) {
+              containerImage = yield* selectedContainerImage(
+                existingJournal.value.containerImageSource === undefined
+                  ? undefined
+                  : existingJournal.value.containerImageReference,
+              );
+              containerImageSource = existingJournal.value.containerImageSource;
+            } else {
+              containerImage = yield* selectedContainerImage(containerImageSource);
+            }
             const creator = yield* InstallationCreator;
             const deploymentTarget = {
               installationName,
               profile: selectedProfile,
+              containerImage,
               previewBase: preview.base,
               previewZoneId: preview.zoneId,
               evidenceEnabled,
@@ -957,6 +1002,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               existingJournal,
               installationName,
               selectedProfile,
+              containerImage,
               plan,
               topology,
               journalPath,
@@ -1001,6 +1047,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               phase: "prepared" as const,
               installationName,
               profile: selectedProfile,
+              containerImageReference: containerImage.reference,
+              ...(containerImageSource === undefined ? {} : { containerImageSource }),
               accountId: plan.accountId,
               stackName: topology.stackName,
               workerName: topology.workerName,
@@ -1048,7 +1096,11 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const host = yield* Effect.fromResult(normalizeHost(deployed.host));
             yield* secureWrite(
               configPath,
-              `${JSON.stringify(managedConfig({ ...deployed, host }, token), null, 2)}\n`,
+              `${JSON.stringify(
+                managedConfig({ ...deployed, host }, token, containerImageSource),
+                null,
+                2,
+              )}\n`,
             );
             yield* fileSystem
               .remove(journalPath)
@@ -1146,6 +1198,17 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (enableEvidence && preview === undefined)
           return yield* usage("--enable-evidence requires --preview-base and --preview-zone-id");
         const evidenceEnabled = enableEvidence ? (true as const) : undefined;
+        const configPath = managedInstallationPath(runtime.home);
+        const previousConfig = yield* readConfig(configPath);
+        const previousPolicyMatches =
+          previousConfig.installationName === installationName &&
+          previousConfig.profile === profile;
+        const previousContainerImageSource = previousPolicyMatches
+          ? previousConfig.containerImageSource
+          : undefined;
+        const previousContainerImagePolicyUnresolved = previousPolicyMatches
+          ? previousConfig.containerImagePolicyUnresolved
+          : true;
         const recovery = yield* InstallationRecovery;
         const deploymentTarget = {
           installationName,
@@ -1193,7 +1256,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             );
         }
 
-        const configPath = managedInstallationPath(runtime.home);
         const journalPath = join(runtime.home, ".scotty", `recover-${installationName}.json`);
         const fileSystem = yield* CliFileSystem;
         yield* fileSystem.withLock(
@@ -1214,9 +1276,24 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               existingJournal.evidenceEnabled === inspected.evidenceEnabled;
             const token =
               journalMatchesTarget && existingJournal.token ? existingJournal.token : rootToken();
+            const containerImageSource = journalMatchesTarget
+              ? existingJournal.containerImageSource
+              : previousContainerImageSource;
+            const containerImagePolicyUnresolved = journalMatchesTarget
+              ? existingJournal.containerImagePolicyUnresolved
+              : previousContainerImagePolicyUnresolved;
             yield* secureWrite(
               journalPath,
-              `${JSON.stringify(managedConfig(inspected, token), null, 2)}\n`,
+              `${JSON.stringify(
+                managedConfig(
+                  inspected,
+                  token,
+                  containerImageSource,
+                  containerImagePolicyUnresolved,
+                ),
+                null,
+                2,
+              )}\n`,
             );
             const recovered = yield* recovery.recover({
               ...deploymentTarget,
@@ -1237,7 +1314,16 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const host = yield* Effect.fromResult(normalizeHost(recovered.host));
             yield* secureWrite(
               configPath,
-              `${JSON.stringify(managedConfig({ ...recovered, host }, token), null, 2)}\n`,
+              `${JSON.stringify(
+                managedConfig(
+                  { ...recovered, host },
+                  token,
+                  containerImageSource,
+                  containerImagePolicyUnresolved,
+                ),
+                null,
+                2,
+              )}\n`,
             );
             yield* fileSystem
               .remove(journalPath)
@@ -1410,8 +1496,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDefault(false),
         Flag.withDescription("Apply the saved exact deployment plan"),
       ),
+      image: Flag.string("image").pipe(
+        Flag.optional,
+        Flag.withDescription("Use 'managed' releases or a digest-pinned public OCI image"),
+      ),
     },
-    ({ plan: planOnly, yes }) =>
+    ({ plan: planOnly, yes, image }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
@@ -1434,8 +1524,35 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               "Managed installation credentials are missing",
               "Run scotty recover --name NAME first.",
             );
-          yield* ensureDocker();
-          return { accountId, config, installationName, profile, token };
+          const explicitContainerImageSelection = Option.getOrUndefined(image)?.trim() || undefined;
+          if (
+            config.containerImagePolicyUnresolved === true &&
+            explicitContainerImageSelection === undefined
+          )
+            return yield* usage(
+              "The recovered installation's Container image policy is unresolved",
+              "Choose managed releases with --image managed, or retain a custom image with --image REPOSITORY@sha256:DIGEST.",
+            );
+          const explicitContainerImageSource =
+            explicitContainerImageSelection === MANAGED_CONTAINER_IMAGE_SELECTOR
+              ? undefined
+              : explicitContainerImageSelection;
+          const containerImageSource =
+            explicitContainerImageSelection === MANAGED_CONTAINER_IMAGE_SELECTOR
+              ? undefined
+              : (explicitContainerImageSource ?? config.containerImageSource);
+          const containerImage = yield* selectedContainerImage(containerImageSource);
+          return {
+            accountId,
+            config,
+            containerImage,
+            containerImageSource,
+            explicitContainerImageSelection,
+            explicitContainerImageSource,
+            installationName,
+            profile,
+            token,
+          };
         }).pipe(
           Effect.onExit((exit) =>
             finishUiPhase(
@@ -1446,11 +1563,22 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             ),
           ),
         );
-        const { accountId, config, installationName, profile, token } = prerequisites;
+        const {
+          accountId,
+          config,
+          containerImage,
+          containerImageSource,
+          explicitContainerImageSelection,
+          explicitContainerImageSource,
+          installationName,
+          profile,
+          token,
+        } = prerequisites;
         const deployer = yield* InstallationDeployer;
         const request = {
           installationName,
           profile,
+          containerImage,
           ...configuredPreview(config),
           ...configuredEvidence(config),
         };
@@ -1513,6 +1641,19 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               "Run scotty init or pass --host / SCOTTY_HOST.",
             );
           yield* consumeAuthorizedDeploymentPlan(runtime.home, savedPlan);
+          if (explicitContainerImageSelection !== undefined)
+            yield* secureWrite(
+              managedInstallationPath(runtime.home),
+              `${JSON.stringify(
+                {
+                  ...config,
+                  containerImageSource: explicitContainerImageSource,
+                  containerImagePolicyUnresolved: undefined,
+                },
+                null,
+                2,
+              )}\n`,
+            );
           const resourcePhase = deployUi.phase("Applying resource changes");
           resourcePhase.succeed("No provider resource operations needed");
           const readinessPhase = deployUi.phase("Verifying rollout readiness");
@@ -1590,7 +1731,11 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const host = yield* Effect.fromResult(normalizeHost(deployed.host));
         yield* secureWrite(
           managedInstallationPath(runtime.home),
-          `${JSON.stringify(managedConfig({ ...deployed, host }, token), null, 2)}\n`,
+          `${JSON.stringify(
+            managedConfig({ ...deployed, host }, token, containerImageSource),
+            null,
+            2,
+          )}\n`,
         );
         const result = {
           installationName: deployed.installationName,
@@ -2307,7 +2452,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Runner isolation mode"),
       ),
       image: Flag.string("image").pipe(
-        Flag.withDescription("Digest-pinned Docker image"),
+        Flag.withDescription("Use 'managed' releases or a digest-pinned public OCI image"),
         Flag.optional,
       ),
       codexAuth: Flag.string("codex-auth").pipe(

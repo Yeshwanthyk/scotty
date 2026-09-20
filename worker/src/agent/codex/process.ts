@@ -1,3 +1,4 @@
+import { runtimeCliPath } from "../../runtime-cli/paths";
 import { importCodexSavedState } from "./persistence";
 import { CloudSettingsEnvironmentSchema } from "../../../../protocol/cloud-settings";
 import { SandboxDigestSchema } from "../../sandbox/config-contracts";
@@ -261,7 +262,10 @@ export const launchProcess = Effect.fnUntraced(function* (
       CODEX_HOME: homes.codexHome,
       TMPDIR: homes.home,
       // Match the image tool directories without inheriting ambient credentials.
-      PATH: "/usr/local/bin:/usr/bin:/bin",
+      PATH:
+        options.sessionId === undefined
+          ? "/usr/local/bin:/usr/bin:/bin"
+          : runtimeCliPath(options.sessionId),
       ...(trustedCaReadable ? { NODE_EXTRA_CA_CERTS: CLOUDFLARE_CA_FILE } : {}),
       ...(packagedCorepackReadable ? { COREPACK_HOME: PACKAGED_COREPACK_HOME } : {}),
       ...(options.sessionId === undefined ? {} : { SCOTTY_SESSION_ID: options.sessionId }),

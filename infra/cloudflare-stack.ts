@@ -1,3 +1,9 @@
+import * as Config from "effect/Config";
+import * as ConfigProvider from "effect/ConfigProvider";
+import {
+  verifyRuntimeImageCompatibility,
+  type RuntimeImageCompatibilityEvidence,
+} from "../protocol/runtime-image-compatibility";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Data from "effect/Data";
@@ -52,8 +58,6 @@ export const makeCloudflareStackTopology = (
     container: {
       logicalId: "SandboxContainer",
       name: installation.containerName,
-      context: ".alchemy/scotty-container-context",
-      dockerfile: ".alchemy/scotty-container-context/worker/container/Dockerfile",
       instanceType: "standard-2",
       maxInstances: 10,
     },
@@ -111,6 +115,10 @@ export interface CloudflareStackConfig {
   readonly telemetryDisabled: boolean;
   readonly deploymentRoot: string;
   readonly installation: InstallationTopology;
+  readonly containerImage: {
+    readonly digest: string;
+    readonly runtimeCompatibility?: RuntimeImageCompatibilityEvidence;
+  };
   readonly resourceConfirmation: string | undefined;
   readonly approval: string | undefined;
   readonly prebuiltWorkers?: boolean;
@@ -241,6 +249,22 @@ export function assertCloudflareStackConfig(config: CloudflareStackConfig): void
 
 export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareStackConfig) {
   assertCloudflareStackConfig(config);
+  const runtimeCompatibility =
+    config.containerImage.runtimeCompatibility === undefined
+      ? undefined
+      : yield* verifyRuntimeImageCompatibility(
+          config.containerImage.runtimeCompatibility,
+          config.containerImage.digest,
+        ).pipe(
+          Effect.mapError(
+            () =>
+              new Config.ConfigError(
+                new ConfigProvider.SourceError({
+                  message: "Invalid signed standard-image runtime compatibility",
+                }),
+              ),
+          ),
+        );
 
   const topology = makeCloudflareStackTopology(
     config.installation,
@@ -320,6 +344,9 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
       BACKUP_BUCKET: backups,
       ARTIFACT_BUCKET: artifacts,
       SANDBOX_BUNDLE_BUCKET: sandboxBundles,
+      SCOTTY_CONTAINER_IMAGE_DIGEST: config.containerImage.digest,
+      SCOTTY_RUNTIME_IMAGE_COMPATIBILITY:
+        runtimeCompatibility === undefined ? "" : JSON.stringify(runtimeCompatibility),
       ...topology.vars,
     },
   }).pipe(removalPolicy);
@@ -328,8 +355,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   });
   const container = yield* Cloudflare.Containers.ContainerPlatform(topology.container.logicalId, {
     name: topology.container.name,
-    context: topology.container.context,
-    dockerfile: topology.container.dockerfile,
+    image: `registry.cloudflare.com/${accountId}/${topology.container.name.toLowerCase()}@${config.containerImage.digest}`,
     instanceType: topology.container.instanceType,
     maxInstances: topology.container.maxInstances,
   }).pipe(removalPolicy);

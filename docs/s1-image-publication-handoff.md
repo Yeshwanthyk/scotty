@@ -1,6 +1,20 @@
 # S1 image-publication handoff
 
-## Boundary and state
+## Final receipt — S1 complete
+
+The `v0.3.19` release completed successfully on 2026-09-19. This receipt supersedes all pre-release/unrun statements in the historical sections below.
+
+- Final repair [PR #261](https://github.com/Yeshwanthyk/scotty/pull/261) merged after green CI. Release source revision: `7c84770356f09f9cfbe068a1a12aefa218b88653`.
+- [Release run 35465340703](https://github.com/Yeshwanthyk/scotty/actions/runs/35465340703): **success**, including `verify`, native image build/tests/publication, four CLI builds, executable attestations, `image-verify`, and final release.
+- [Public release v0.3.19](https://github.com/Yeshwanthyk/scotty/releases/tag/v0.3.19), published `2026-09-19T19:59:52Z`: four Darwin/Linux arm64/x64 executables, `scotty-image-manifest.json`, and `scotty-upgrade-manifest.json`.
+- Image platform: **`linux/amd64` only**. Registry digest: `sha256:83068d1f8bc8cb705a70c379ef5cd33c02dd4f920d3166f415a6baa02c0f39a5`. Configuration digest: `sha256:5900adac481951b50f27d3787d1bc88e5387a9d348857fcbfe2a0392ddc16f24`. Obtain the full repository/reference from the published image manifest; maintainer account configuration remains outside source.
+- [Image provenance attestation](https://github.com/Yeshwanthyk/scotty/attestations/48674388). Fresh-runner `image-verify` anonymously pulled the actual layers, matched platform/configuration/compatibility labels, and cryptographically bound provenance to the source repository, release workflow, tag, source SHA, and hosted runner.
+- Independent post-release checks passed: release manifest tag/revision/platform/digest and four-CLI inventory; Ed25519 upgrade-manifest signature using the repository release public key and canonical encoding; `gh attestation verify --bundle-from-oci` with the expected signer workflow, `refs/tags/v0.3.19`, source SHA, and `--deny-self-hosted-runners`. Registry verification used a temporary Docker config containing exactly `{"auths":{}}` plus a newline, mode `0600`; the config was removed. Scratch evidence was saved under `/tmp/scotty-v0319-receipt.eCG7b3`; durable release/run links above are the restart evidence.
+- No deployment or teardown occurred. Existing installation behavior is unchanged. Retain failed `v0.3.17`/`v0.3.18` tags and the partial `v0.3.18` image; use the completed `v0.3.19` manifest for S2.
+
+**Next:** [S2 in the active plan](plans/multi-provider-session-plan.md#s2--cf-no-docker-install), starting with the pinned Alchemy Docker-free feasibility scout. S1 publication authority does not authorize S2 infrastructure changes.
+
+## Historical boundary and state
 
 - Base/initial HEAD: `b9955b36019f2b1f25e90bd45a2c5942085da69b` on `feat/s1-image-publication`.
 - Start: the Cloudflare image was built and tested in PR CI, but the tag release had no image publication, public-pull gate, image provenance, or image release manifest.
@@ -41,7 +55,7 @@ The release helper uses module-scoped Effect Schema decoders for the allow-liste
 
 ## Prior `v0.3.18` authorized maintainer plan
 
-This pre-run plan is retained as history and is superseded by the live outcome below.
+This pre-run plan is retained as history, not a current verification recipe, and is superseded by the final receipt. Its empty-directory Docker config recipe was strengthened in `v0.3.19` to an explicit empty-auth file used by both clients, as described under Result.
 
 1. For `v0.3.18`, the user explicitly waived required reviewers on the `image-release` Environment; this explicit operator consent replaces the proposed reviewer-protection gate for this release only.
 2. The user reports that `SCOTTY_IMAGE_PUBLICATION_AUTHORIZED`, `SCOTTY_DOCKERHUB_REPOSITORY`, and both named Docker Hub secrets are configured. Their values were not read and live authentication remains unverified.
@@ -153,14 +167,14 @@ Both earlier background terminals settled: the combined image/native gate failed
 - Pinned Alchemy `ContainerApplication.ts` and `ContainerProvider.ts` were inspected read-only. No provider, registry framework, reconciler, dependency, vendor file, local install path, tool, or image consumer was removed.
 - CF tool impact: none intended; the same current image is labeled and published, not minimized or replaced in deployment configuration.
 - Local repair cleanup: temporary synthetic-client fixtures only; no deployment resources were created or removed. Prior partial release state includes the retained `v0.3.17`/`v0.3.18` tags and the published `v0.3.18` image digest recorded above.
-- S2 prerequisite: an authorized run must supply a real public digest, successful anonymous pull, matching configuration/platform evidence, and verifiable provenance. S2 must then prove Alchemy's prebuilt remote-image path on a fresh Docker-free installation before removing any local context/build path.
+- S2 prerequisite is fulfilled by the final `v0.3.19` receipt: public digest, successful anonymous pull, matching configuration/platform, and verified provenance. S2 must still prove Alchemy's prebuilt remote-image path on a fresh Docker-free installation before removing any local context/build path.
 
 ## Evidence limits
 
-Fresh `v0.3.19` repair-branch CI, image build/native gates, registry authentication/push, anonymous public pull, OCI attestation upload and verification, image manifest, and final GitHub Release remain **UNRUN** at this local review receipt. The prior run proves only the public `v0.3.18` image digest and the earlier build/CLI gates; it does not prove the repaired credential path. The user authorized the next parent-owned release attempt after green CI, but no `v0.3.19` publication is claimed. Local synthetic clients and stubs do not prove remote authentication, registry policy, public pull, or publication.
+S1's live publication gates passed in `v0.3.19`; earlier local QEMU and missing-`mermaid` failures remain historical local limitations, not open release gates. Docker-free installation, custom-image deployment/restore compatibility, deployed CF regression, and Linux-runner portability are **not proven by S1**. No S2 implementation, deployment, or teardown is claimed. Local synthetic probes remain client-behavior evidence only; remote publication evidence comes from the final release run.
 
 ## Independent review acceptance
 
-The earlier independent verifier accepted the original S1 implementation for PR CI, not publication completion. The `v0.3.19` home-alignment repair documented above still requires fresh CI and live publication gates owned by the parent. `.quickdiff/` and the user-owned plan remain outside the change.
+The earlier independent verifier accepted the original S1 implementation and subsequent `v0.3.19` home-alignment repair for PR CI, not publication completion. Fresh CI and parent-owned live publication gates subsequently passed as recorded in the final receipt. `.quickdiff/` remains user-owned review metadata; the active plan now records S1 completion and the S2 restart procedure.
 
 Final independent local review accepted the repair for PR CI: 20 focused tests and 14 CLI tests passed, alongside formatting, lint, actionlint, and source/SRI-verified synthetic Sigstore and Go keychain probes. Parent approval to proceed comes from the user's explicit release decision, not from the reviewer or Jev advisory verdict.

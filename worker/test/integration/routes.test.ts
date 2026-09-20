@@ -111,6 +111,7 @@ const runnerRegistry = vi.hoisted(() => ({
 }));
 
 const sandboxConfig = vi.hoisted(() => ({
+  selectRuntimeCli: vi.fn(),
   status: vi.fn(),
   settings: vi.fn(),
   updateSettings: vi.fn(),

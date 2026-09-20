@@ -89,7 +89,11 @@ describe("standalone deployment archive", () => {
     expect(DEPLOYMENT_PACKAGING.exclusions).toEqual(["node_modules", ".git"]);
     expect(DEPLOYMENT_EXCLUSIONS).toEqual(["node_modules", ".git"]);
     expect(DEPLOYMENT_PACKAGING.contextPath).toBe(".alchemy/scotty-container-context");
-    expect(DEPLOYMENT_ENTRIES.map((entry) => entry.path)).toEqual(DEPLOYMENT_INPUTS);
+    expect(DEPLOYMENT_ENTRIES.map((entry) => entry.path)).toEqual([
+      ...DEPLOYMENT_INPUTS.slice(0, 12),
+      "worker/container",
+      ...DEPLOYMENT_INPUTS.slice(12),
+    ]);
     expect(DEPLOYMENT_INPUTS).toContain("worker/public");
     expect(DEPLOYMENT_INPUTS).toContain("worker/prebuilt");
     expect(ARCHIVE_PUBLIC_ASSETS).toEqual(["worker/public"]);
@@ -97,6 +101,7 @@ describe("standalone deployment archive", () => {
     expect(CONTAINER_STATIC_INPUTS).not.toContain("worker/public");
     expect(CONTAINER_RUNTIME_ASSETS).toEqual(["worker/container"]);
     expect(CONTAINER_STATIC_INPUTS).toContain("worker/container");
+    expect(DEPLOYMENT_INPUTS).not.toContain("worker/container");
     expect(DEPLOYMENT_INPUTS).not.toContain("tui/package.json");
     expect(DEPLOYMENT_INPUTS).not.toContain("tui/src");
     expect(CONTAINER_INPUTS).not.toContain("tui/package.json");
@@ -141,7 +146,7 @@ describe("standalone deployment archive", () => {
     );
     expect(sources).toContain("protocol/pi-console-shared.mjs");
     expect(sources).toContain("worker/container/pi-packages");
-    expect(sources).toContain("package.json");
+    expect(sources).toContain("worker/container/codex-server-build/package.json");
 
     const staticSources = sources.filter((source) =>
       isCoveredByProjectInputs(source, CONTAINER_STATIC_INPUTS),
@@ -149,28 +154,26 @@ describe("standalone deployment archive", () => {
     const metafileSources = sources.filter((source) =>
       isCoveredByProjectInputs(source, CLI_SOURCE_TREES),
     );
-    expect(staticSources).toContain("package.json");
+    expect(staticSources).toContain("worker/container/codex-server-build/package.json");
     expect(staticSources).toContain("worker/container/toolsets/standard.json");
     expect(staticSources).toContain("worker/container/pi-packages");
     expect(staticSources).not.toContain("tui/package.json");
     expect(staticSources).not.toContain("tui/src");
     expect(staticSources).not.toContain("protocol/pi-console-shared.mjs");
     expect(metafileSources).not.toContain("tui/src");
-    expect(metafileSources).toContain("cli/src");
+    expect(metafileSources).not.toContain("cli/src");
     expect(metafileSources).toContain("protocol/pi-console-shared.mjs");
-    expect(metafileSources).not.toContain("package.json");
+    expect(metafileSources).not.toContain("worker/container/codex-server-build/package.json");
     expect(metafileSources).not.toContain("worker/container/toolsets/standard.json");
 
     for (const source of sources) {
       const staticCovered = isCoveredByProjectInputs(source, CONTAINER_STATIC_INPUTS);
       const cliCovered = isCoveredByProjectInputs(source, CLI_SOURCE_TREES);
       expect(staticCovered || cliCovered).toBe(true);
-      expect(isCoveredByProjectInputs(source, CONTAINER_INPUTS)).toBe(true);
-      expect(isCoveredByProjectInputs(source, DEPLOYMENT_INPUTS)).toBe(true);
     }
   });
 
-  it("packages maintainer scripts, package metadata, and patches for the compiled CLI", () => {
+  it("keeps standalone maintainer inputs out of the container build context", () => {
     const files = [
       "scripts/apply-dependency-patches.mjs",
       "scripts/container-control-plane.mjs",
@@ -182,8 +185,8 @@ describe("standalone deployment archive", () => {
     ] as const;
     for (const file of files) {
       expect(DEPLOYMENT_INPUTS).toContain(file);
-      expect(CONTAINER_INPUTS).toContain(file);
-      expect(CONTAINER_STATIC_INPUTS).toContain(file);
+      expect(CONTAINER_INPUTS).not.toContain(file);
+      expect(CONTAINER_STATIC_INPUTS).not.toContain(file);
     }
     const npmCiIndex = dockerfile.indexOf(
       "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund",
@@ -192,48 +195,16 @@ describe("standalone deployment archive", () => {
     expect(dockerfile).not.toContain("COPY tui/package.json tui/package.json");
     expect(dockerfile).not.toContain("COPY tui/src tui/src");
     expect(dockerfile).toContain(
-      "COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs",
+      "COPY worker/container/codex-server-build/package.json package.json",
     );
     expect(dockerfile).toContain(
-      "COPY patches/@cloudflare+sandbox+0.12.9.patch patches/@cloudflare+sandbox+0.12.9.patch",
+      "COPY worker/container/codex-server-build/package-lock.json package-lock.json",
     );
-    expect(dockerfile).toContain(
-      "COPY patches/alchemy+2.0.0-beta.76.patch patches/alchemy+2.0.0-beta.76.patch",
-    );
-    expect(dockerfile).toContain(
-      "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch",
-    );
-    expect(
-      dockerfile.indexOf(
-        "COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs",
-      ),
-    ).toBeLessThan(npmCiIndex);
-    expect(
-      dockerfile.indexOf(
-        "COPY patches/@cloudflare+sandbox+0.12.9.patch patches/@cloudflare+sandbox+0.12.9.patch",
-      ),
-    ).toBeLessThan(npmCiIndex);
-    expect(
-      dockerfile.indexOf(
-        "COPY patches/alchemy+2.0.0-beta.76.patch patches/alchemy+2.0.0-beta.76.patch",
-      ),
-    ).toBeLessThan(npmCiIndex);
-    expect(
-      dockerfile.indexOf(
-        "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch",
-      ),
-    ).toBeLessThan(npmCiIndex);
-    expect(dockerfile.indexOf("RUN node scripts/apply-dependency-patches.mjs")).toBeGreaterThan(
-      npmCiIndex,
-    );
-    expect(dockerfile).toContain("COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs");
-    expect(dockerfile.indexOf("RUN bun build")).toBeGreaterThan(
-      dockerfile.indexOf("RUN node scripts/apply-dependency-patches.mjs"),
-    );
-    expect(dockerfile).not.toContain("COPY scripts/is-direct-run.mjs /tmp/is-direct-run.mjs");
+    expect(dockerfile).not.toMatch(/COPY (?:scripts|patches|cli|infra|skills)\//u);
+    expect(dockerfile.indexOf("RUN bun build")).toBeGreaterThan(npmCiIndex);
   });
 
-  it("catalogs and COPYs every maintainer script reachable from the bundled source graph", () => {
+  it("keeps standalone script imports in the archive but not the image", () => {
     const bundledScripts = listBundledScriptImports();
     expect(bundledScripts).toEqual(
       expect.arrayContaining([
@@ -243,13 +214,10 @@ describe("standalone deployment archive", () => {
       ]),
     );
 
-    const compileIndex = dockerfile.indexOf("RUN bun build");
-    expect(compileIndex).toBeGreaterThan(-1);
-    const cliBuildStage = dockerfile.slice(0, compileIndex);
     for (const script of bundledScripts) {
       const entry = DEPLOYMENT_ENTRIES.find((candidate) => candidate.path === script);
-      expect(entry?.categories).toEqual(expect.arrayContaining(["archive", "containerStatic"]));
-      expect(cliBuildStage).toContain(`COPY ${script} ${script}`);
+      expect(entry?.categories).toEqual(["archive"]);
+      expect(dockerfile).not.toContain(`COPY ${script} ${script}`);
     }
   });
 
@@ -278,16 +246,16 @@ describe("standalone deployment archive", () => {
       ?.split(/\n(?=RUN )/u)
       .find(
         (block) =>
-          block.includes('test "$(stat -c \'%a\' /usr/local/bin/scotty)" = "755"') &&
+          block.includes("test ! -e /usr/local/bin/scotty") &&
           block.includes('test "$(pi --version)" = "${PI_VERSION}"'),
       );
     expect(finalRun).toBeDefined();
     expect(finalRun).not.toContain("chmod -R");
-    expect(finalRun).toContain("scotty --version");
+    expect(finalRun).toContain("test ! -e /usr/local/bin/scotty");
     expect(finalRun).toContain("! -type l -perm /222");
     expect(finalRun).toContain("python git gh shellcheck");
     expect(finalRun).not.toMatch(/\bgo(?:fmt)?\b/u);
-    expect(finalRun).toContain("pi codex scotty scotty-codex-server scotty-pi-session");
+    expect(finalRun).toContain("pi codex scotty-codex-server scotty-pi-session");
     expect(finalRun).toContain(
       'test "$(stat -c \'%a\' /usr/local/bin/scotty-codex-server)" = "755"',
     );
@@ -329,18 +297,14 @@ describe("standalone deployment archive", () => {
       "RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs",
     );
     expect(dockerfile).toContain(
-      "COPY --from=scotty-cli-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs",
+      "COPY --from=scotty-codex-server-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs",
     );
     expect(dockerfile).toContain(
       "COPY worker/container/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server",
     );
     expect(dockerfile).not.toMatch(/scotty-codex-(?:host|session)/u);
 
-    const cliBuildIndex = dockerfile.indexOf("chmod 0755 /out/scotty");
-    expect(cliBuildIndex).toBeGreaterThan(-1);
-    expect(cliBuildIndex).toBeLessThan(
-      dockerfile.indexOf("COPY --from=scotty-cli-build /out/scotty"),
-    );
+    expect(dockerfile).not.toMatch(/bun build cli\/scotty\.ts|\/out\/scotty(?:\s|\\)/u);
     expect(dockerfile).not.toContain("ARG CODEX_VERSION=");
     expect(dockerfile).not.toContain("@openai/codex");
     expect(dockerfile).not.toContain("GOTOOLCHAIN=");

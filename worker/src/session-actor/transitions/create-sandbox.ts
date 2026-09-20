@@ -1,3 +1,4 @@
+import { RuntimeCliMaterializer } from "../../runtime-cli/materializer";
 import {
   admitCodexSandbox,
   codexSandboxProcessId,
@@ -263,6 +264,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
   | CreateSandboxBoundary
   | SessionActorMetadataStore
   | SandboxBundleMaterializer
+  | RuntimeCliMaterializer
   | ContainerAuth
   | SandboxRuntime
 > = Layer.effect(
@@ -271,6 +273,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const boundary = yield* CreateSandboxBoundary;
     const metadataStore = yield* SessionActorMetadataStore;
     const materializer = yield* SandboxBundleMaterializer;
+    const runtimeCli = yield* RuntimeCliMaterializer;
     const auth = yield* ContainerAuth;
     const runtime = yield* SandboxRuntime;
     const codexIdentity = Effect.fnUntraced(function* (
@@ -406,7 +409,32 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       };
     });
 
+    const materializeManagedCli = Effect.fnUntraced(function* (context: CreateProviderContext) {
+      const observedAt = yield* timestamp;
+      yield* beforeTransitionDeadline(
+        context,
+        "create_runtime_cli_timeout",
+        runtimeCli
+          .materialize(
+            context.authority.session.id,
+            context.authority.session.configuration?.runtimeCli,
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              failure(
+                error.reason === "runtime_unknown"
+                  ? "unknown_after_admission"
+                  : "rejected_before_admission",
+                `create_runtime_cli_${error.reason}`,
+                observedAt,
+              ),
+            ),
+          ),
+      );
+    });
+
     const materializeRuntime = Effect.fnUntraced(function* (context: CreateProviderContext) {
+      yield* materializeManagedCli(context);
       const input = yield* resolveInput(boundary, context);
       const observedAt = yield* timestamp;
       const materialized = yield* beforeTransitionDeadline(
@@ -554,6 +582,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
               context.authority.session.id,
               input.credentials,
               context.authority.session.selection,
+              context.authority.session.configuration,
             ),
       ).pipe(
         Effect.mapError((error) =>
@@ -714,6 +743,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
           : yield* recordWorkspace(context, prepared, observedAt);
       }
       if (context.transition.phase === "RuntimeMaterializing") {
+        yield* materializeManagedCli(context);
         const input = yield* resolveInput(boundary, context);
         const observedAt = yield* timestamp;
         const markerBytes = yield* runtime

@@ -15,6 +15,7 @@ import {
   InstallationDeploymentError,
   isContainerPlanChanged,
   makeQuietAlchemyCli,
+  prepareContainerImageForDeployment,
   waitForContainerRollout,
   type ContainerControlPlaneReader,
 } from "../src/installation-deployment.ts";
@@ -559,6 +560,27 @@ describe("installation container rollout settlement", () => {
     assert.isTrue(isContainerPlanChanged(createPlan));
   });
 
+  it.effect("rejects preparation account drift before registry credential or copy effects", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        prepareContainerImageForDeployment({
+          source: {
+            reference: `index.docker.io/example/scotty@sha256:${"a".repeat(64)}`,
+            digest: `sha256:${"a".repeat(64)}`,
+          },
+          accountId: "b".repeat(32),
+          expectedAccountId: "a".repeat(32),
+          repository: "scotty-test-sandbox",
+        }),
+      );
+      assert.isTrue(Result.isFailure(result));
+      assert.strictEqual(
+        failed(result).message,
+        "The Cloudflare account changed before Container image preparation.",
+      );
+    }),
+  );
+
   it.effect("asserts settled container baseline before deploy", () =>
     Effect.gen(function* () {
       const cleanBaseline = makeSnapshot({ activeRolloutId: null, rollouts: [] });
@@ -612,7 +634,7 @@ describe("installation container rollout settlement", () => {
             installationCommandFailure(home, {})(error, {
               code: "installation_deploy_failed",
               message: "Could not deploy the Scotty installation",
-              hint: "Check Cloudflare authentication and Docker, then retry scotty deploy.",
+              hint: "Check Cloudflare authentication and registry access, then retry scotty deploy.",
               operation: "deploy",
               phase: "apply",
               installationName: "home",

@@ -3,6 +3,7 @@ import { Option, Schema } from "effect";
 import { PI_CONSOLE_MAX_RESPONSE_BYTES } from "../../protocol/pi-console";
 import type { Bindings } from "../../worker/src/shared/bindings";
 import { readBoundedUtf8Body } from "../../worker/src/shared/bounded-http";
+import { runtimeCliExecutable } from "../../worker/src/runtime-cli/paths";
 import { decodeJsonValue } from "../../worker/src/shared/json";
 import { ContainerProxy } from "../../worker/src/egress/session";
 import { SESSION_KV_PREFIX, type SessionRecord } from "../../worker/src/session/contracts";
@@ -117,10 +118,11 @@ export const ScottySandbox = class Sandbox extends ProductionSandbox {
     )
       return jsonError(409, "source session is not an authoritative warm container");
 
+    const executable = shellQuote(runtimeCliExecutable(record.id));
     const invocation =
       command.action === "inspect"
-        ? `/usr/local/bin/scotty inspect ${command.targetId} --json`
-        : `/usr/local/bin/scotty steer ${command.targetId} ${shellQuote(command.message)} --json`;
+        ? `${executable} inspect ${command.targetId} --json`
+        : `${executable} steer ${command.targetId} ${shellQuote(command.message)} --json`;
     const executed = await this.exec(invocation, {
       env: { SCOTTY_SESSION_ID: record.id },
       timeout: 60_000,

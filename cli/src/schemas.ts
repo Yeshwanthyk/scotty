@@ -14,6 +14,9 @@ export const ProviderSchema = Schema.Literals(PROVIDERS);
 export const ConfigSchema = Schema.Struct({
   installationName: Schema.optionalKey(Schema.String),
   profile: Schema.optionalKey(Schema.String),
+  containerImagePolicyUnresolved: Schema.optionalKey(Schema.Literal(true)),
+  containerImageSource: Schema.optionalKey(Schema.String),
+  deployedContainerImageReference: Schema.optionalKey(Schema.String),
   stackName: Schema.optionalKey(Schema.String),
   stage: Schema.optionalKey(Schema.String),
   accountId: Schema.optionalKey(Schema.String),
@@ -41,6 +44,8 @@ export const InitJournalSchema = Schema.Struct({
   phase: Schema.Literals(["prepared", "apply_started"]),
   installationName: Schema.NonEmptyString,
   profile: Schema.NonEmptyString,
+  containerImageReference: Schema.NonEmptyString,
+  containerImageSource: Schema.optionalKey(Schema.NonEmptyString),
   accountId: Schema.NonEmptyString,
   stackName: Schema.NonEmptyString,
   workerName: Schema.NonEmptyString,
@@ -60,6 +65,9 @@ export type InitJournal = typeof InitJournalSchema.Type;
 export const RawConfigSchema = Schema.Struct({
   installationName: Schema.optionalKey(Schema.Unknown),
   profile: Schema.optionalKey(Schema.Unknown),
+  containerImagePolicyUnresolved: Schema.optionalKey(Schema.Unknown),
+  containerImageSource: Schema.optionalKey(Schema.Unknown),
+  deployedContainerImageReference: Schema.optionalKey(Schema.Unknown),
   stackName: Schema.optionalKey(Schema.Unknown),
   stage: Schema.optionalKey(Schema.Unknown),
   accountId: Schema.optionalKey(Schema.Unknown),

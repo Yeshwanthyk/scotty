@@ -46,12 +46,24 @@ const invalidManagedConfig = (
 const configIdentity = (values: {
   readonly installationName: string | undefined;
   readonly profile: string | undefined;
+  readonly containerImagePolicyUnresolved: true | undefined;
+  readonly containerImageSource: string | undefined;
+  readonly deployedContainerImageReference: string | undefined;
   readonly stackName: string | undefined;
   readonly stage: string | undefined;
   readonly accountId: string | undefined;
 }): Partial<Config> => ({
   ...(values.installationName === undefined ? {} : { installationName: values.installationName }),
   ...(values.profile === undefined ? {} : { profile: values.profile }),
+  ...(values.containerImagePolicyUnresolved === undefined
+    ? {}
+    : { containerImagePolicyUnresolved: values.containerImagePolicyUnresolved }),
+  ...(values.containerImageSource === undefined
+    ? {}
+    : { containerImageSource: values.containerImageSource }),
+  ...(values.deployedContainerImageReference === undefined
+    ? {}
+    : { deployedContainerImageReference: values.deployedContainerImageReference }),
   ...(values.stackName === undefined ? {} : { stackName: values.stackName }),
   ...(values.stage === undefined ? {} : { stage: values.stage }),
   ...(values.accountId === undefined ? {} : { accountId: values.accountId }),
@@ -129,6 +141,13 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
   const token = Option.getOrUndefined(decodeString(raw.value.token));
   const installationName = Option.getOrUndefined(decodeString(raw.value.installationName));
   const profile = Option.getOrUndefined(decodeString(raw.value.profile));
+  const containerImagePolicyUnresolved = Option.getOrUndefined(
+    decodeTrue(raw.value.containerImagePolicyUnresolved),
+  );
+  const containerImageSource = Option.getOrUndefined(decodeString(raw.value.containerImageSource));
+  const deployedContainerImageReference = Option.getOrUndefined(
+    decodeString(raw.value.deployedContainerImageReference),
+  );
   const stackName = Option.getOrUndefined(decodeString(raw.value.stackName));
   const stage = Option.getOrUndefined(decodeString(raw.value.stage));
   const accountId = Option.getOrUndefined(decodeString(raw.value.accountId));
@@ -154,7 +173,16 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
       EXIT.USAGE,
     );
   return {
-    ...configIdentity({ installationName, profile, stackName, stage, accountId }),
+    ...configIdentity({
+      installationName,
+      profile,
+      containerImagePolicyUnresolved,
+      containerImageSource,
+      deployedContainerImageReference,
+      stackName,
+      stage,
+      accountId,
+    }),
     ...configResources({ workerName, runnerWorkerName, containerName, kvTitle, backupBucketName }),
     ...configAccess(preview, evidenceEnabled, { host, token }),
   } satisfies Config;

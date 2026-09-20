@@ -206,15 +206,6 @@
       "probe": ["codex", "--version"]
     },
     {
-      "name": "Scotty CLI",
-      "category": "scotty",
-      "commands": ["scotty"],
-      "source": "first-party compiled CLI",
-      "versionPolicy": "pinned",
-      "expectedVersion": "0.3.19",
-      "probe": ["scotty", "--version"]
-    },
-    {
       "name": "ffmpeg",
       "category": "media",
       "commands": ["ffmpeg", "ffprobe"],

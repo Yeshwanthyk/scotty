@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { CONTAINER_CONTEXT_PATH, CONTAINER_IMAGE_BUDGET } from "../cli/src/deployment-packaging.ts";
-import { CLEAN_ROOM_CACHE_SCOPE, CLEAN_ROOM_CLI_TARGET } from "./check-cli-clean-room.mjs";
 import {
   CONTAINER_IMAGE,
   CONTAINER_IMAGE_ABSENT_PI_PACKAGES,
@@ -80,7 +79,7 @@ describe("final container image gate", () => {
     );
     assert.ok(
       dockerfile.includes(
-        "COPY --from=scotty-cli-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs",
+        "COPY --from=scotty-codex-server-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs",
       ),
     );
     assert.ok(
@@ -173,7 +172,6 @@ describe("final container image gate", () => {
       plan.context,
     ]);
     assert.equal(containerImageBuildArgs(plan).includes("--target"), false);
-    assert.notEqual(CLEAN_ROOM_CLI_TARGET, undefined);
     assert.match(containerImagePiVersionArgs(plan).join(" "), /--entrypoint pi/u);
     const piPackagesSmokeCommand = containerImagePiPackagesSmokeArgs(plan).join(" ");
     assert.match(piPackagesSmokeCommand, /pi list/u);
@@ -199,6 +197,7 @@ describe("final container image gate", () => {
       );
     }
     const dockerfile = read("worker/container/Dockerfile");
+    assert.doesNotMatch(dockerfile, /COPY .*\/usr\/local\/bin\/scotty(?:\s|$)/mu);
     assert.match(dockerfile, /RUN mkdir -p \/workspace/u);
     assert.doesNotMatch(dockerfile, /\/opt\/scotty\/skills|skills\.lock/u);
     for (const name of CONTAINER_IMAGE_ABSENT_PI_PACKAGES) {
@@ -330,24 +329,20 @@ describe("final container image gate", () => {
     );
   });
 
-  it("reuses the CLI-stage GHA cache and writes a distinct full-image scope", () => {
+  it("reuses the full-image GHA cache", () => {
     const plan = containerImagePlan("/repo", {
       GITHUB_ACTIONS: "true",
       ACTIONS_CACHE_URL: "https://results.example/cache/",
       SCOTTY_IMAGE_REVISION: "a".repeat(40),
     });
     assert.deepEqual(plan.cache, {
-      from: [
-        `type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`,
-        `type=gha,scope=${CLEAN_ROOM_CACHE_SCOPE}`,
-      ],
+      from: [`type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`],
       to: `type=gha,mode=max,scope=${CONTAINER_IMAGE_CACHE_SCOPE},ignore-error=true`,
     });
     const args = containerImageBuildArgs(plan);
     assert.equal(args.includes("--target"), false);
     assert.ok(args.includes("--cache-from"));
     assert.ok(args.includes("--cache-to"));
-    assert.ok(args.includes(`type=gha,scope=${CLEAN_ROOM_CACHE_SCOPE}`));
     assert.ok(args.includes(`type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`));
     assert.ok(args.includes(`SCOTTY_REVISION=${"a".repeat(40)}`));
   });
@@ -374,10 +369,11 @@ describe("final container image gate", () => {
   it("records probes for supported native, media, browser, and Scotty tools", () => {
     const inventory = JSON.parse(read("worker/container/toolsets/standard.json"));
     const tools = new Map(inventory.tools.map((tool) => [tool.name, tool]));
-    for (const name of ["Codex", "Scotty CLI", "ffmpeg", "Xvfb", "Playwright Chromium"]) {
+    for (const name of ["Codex", "ffmpeg", "Xvfb", "Playwright Chromium"]) {
       assert.ok(tools.has(name), `missing ${name}`);
       assert.ok(tools.get(name).probe.length > 0, `missing ${name} probe`);
     }
+    assert.equal(tools.has("Scotty CLI"), false);
     assert.equal(tools.get("git").source, "Debian");
     assert.equal(tools.get("Go").expectedVersion, "go1.27.1");
     assert.equal(tools.get("Rust").expectedVersion, "1.98.1");

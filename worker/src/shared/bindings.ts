@@ -20,6 +20,8 @@ export interface Bindings {
   SCOTTY_TOKEN: string;
   CREDENTIAL_WRAPPING_KEY?: string;
   SCOTTY_INSTALLATION_NAME?: string;
+  SCOTTY_CONTAINER_IMAGE_DIGEST?: string;
+  SCOTTY_RUNTIME_IMAGE_COMPATIBILITY?: string;
   SCOTTY_LOCAL_E2E?: string;
   SCOTTY_LOCAL_BACKUP?: string;
   R2_ACCESS_KEY_ID?: string;

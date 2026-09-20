@@ -28,8 +28,8 @@ export type {
 } from "./deployment-packaging.ts";
 
 export const assertSafeProjectPath: (source: string) => string;
-export const projectContainerCliInputs: (metafile: unknown) => string[];
-export const discoverContainerCliInputs: (
+export const projectContainerBuildInputs: (metafile: unknown) => string[];
+export const discoverContainerBuildInputs: (
   root?: string,
   execute?: (
     command: string,
@@ -73,7 +73,7 @@ export const inspectContainerImageBudget: (
 export const prepareContainerContext: (
   root?: string,
   options?: {
-    readonly discoverCliInputs?: (root: string) => Promise<readonly string[]>;
+    readonly discoverBuildInputs?: (root: string) => Promise<readonly string[]>;
     readonly inputs?: readonly string[];
   },
 ) => Promise<void>;

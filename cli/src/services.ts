@@ -1,3 +1,4 @@
+import type { ContainerImageSource } from "./container-image.ts";
 import { chmod, lstat, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { constants, type Stats } from "node:fs";
 import { homedir } from "node:os";
@@ -55,6 +56,7 @@ const deploymentSessionSafetyFailure = (
 };
 
 export interface CliDependencies {
+  signal?: AbortSignal;
   fetch: typeof fetch;
   env: Record<string, string | undefined>;
   home: string;
@@ -88,6 +90,7 @@ export interface CliDependencies {
 export interface InstallationDeployRequest {
   readonly installationName: string;
   readonly profile: string;
+  readonly containerImage: ContainerImageSource;
   readonly previewBase?: string;
   readonly previewZoneId?: string;
   readonly evidenceEnabled?: true;
@@ -192,6 +195,7 @@ export interface CliUpgradeResult {
 export interface InstallationResult {
   readonly installationName: string;
   readonly profile: string;
+  readonly deployedContainerImageReference: string;
   readonly stackName: string;
   readonly stage: string;
   readonly accountId: string;
@@ -479,7 +483,8 @@ export const sanitizedChildEnvironment = (
     Object.entries(environment).filter(([name]) => !CHILD_ENVIRONMENT_SECRET_NAMES.has(name)),
   );
 
-export const defaultDependencies = (): CliDependencies => ({
+export const defaultDependencies = (signal?: AbortSignal): CliDependencies => ({
+  signal,
   // oxlint-disable-next-line scotty/no-raw-fetch -- boundary: CliDependencies captures native fetch for the interruptible CLI host adapter
   fetch: globalThis.fetch,
   env: process.env,
@@ -531,31 +536,31 @@ export const defaultDependencies = (): CliDependencies => ({
   },
   createInstallation: async (request) => {
     const { createInstallation } = await import("./installation-deployment.ts");
-    return createInstallation(request);
+    return createInstallation(request, signal);
   },
   planCreateInstallation: async (request) => {
     const { planCreateInstallation } = await import("./installation-deployment.ts");
-    return planCreateInstallation(request);
+    return planCreateInstallation(request, signal);
   },
   planInstallation: async (request) => {
     const { planInstallation } = await import("./installation-deployment.ts");
-    return planInstallation(request);
+    return planInstallation(request, signal);
   },
   deployInstallation: async (request, readinessTarget, progress) => {
     const { deployInstallation } = await import("./installation-deployment.ts");
-    return deployInstallation(request, readinessTarget, progress);
+    return deployInstallation(request, readinessTarget, progress, signal);
   },
   inspectInstallation: async (request) => {
     const { inspectInstallation } = await import("./installation-deployment.ts");
-    return inspectInstallation(request);
+    return inspectInstallation(request, signal);
   },
   recoverInstallation: async (request) => {
     const { recoverInstallation } = await import("./installation-deployment.ts");
-    return recoverInstallation(request);
+    return recoverInstallation(request, signal);
   },
   uninstallInstallation: async (request) => {
     const { uninstallInstallation } = await import("./installation-deployment.ts");
-    return uninstallInstallation(request);
+    return uninstallInstallation(request, signal);
   },
   upgradeCli: async (request) => {
     const { upgradeCli } = await import("./upgrade-host.ts");
@@ -577,7 +582,7 @@ export const cliLayer = (
   | InstallationUninstaller
   | CliUpgrader
 > => {
-  const dependencies = { ...defaultDependencies(), ...overrides };
+  const dependencies = { ...defaultDependencies(overrides.signal), ...overrides };
   const failInstallation = installationCommandFailure(dependencies.home, dependencies.env);
   return Layer.mergeAll(
     Layer.succeed(CliRuntime)({
@@ -632,7 +637,7 @@ export const cliLayer = (
             failInstallation(cause, {
               code: "installation_create_plan_failed",
               message: "Could not plan the Scotty installation",
-              hint: "Check Cloudflare authentication, Docker, and permissions, then retry scotty init.",
+              hint: "Check Cloudflare authentication, registry access, and permissions, then retry scotty init.",
               operation: "init",
               phase: "plan",
               installationName: request.installationName,
@@ -649,7 +654,7 @@ export const cliLayer = (
             failInstallation(cause, {
               code: "installation_create_failed",
               message: "Could not create the Scotty installation",
-              hint: "Check Cloudflare authentication, Docker, and permissions, then retry scotty init.",
+              hint: "Check Cloudflare authentication, registry access, and permissions, then retry scotty init.",
               operation: "init",
               phase: "create",
               installationName: request.installationName,
@@ -671,7 +676,7 @@ export const cliLayer = (
               : failInstallation(cause, {
                   code: "installation_plan_failed",
                   message: "Could not plan the Scotty deployment",
-                  hint: "Check Cloudflare authentication and Docker, then retry scotty deploy.",
+                  hint: "Check Cloudflare authentication and registry access, then retry scotty deploy.",
                   operation: "deploy",
                   phase: "plan",
                   installationName: request.installationName,
@@ -694,7 +699,7 @@ export const cliLayer = (
               : failInstallation(cause, {
                   code: "installation_deploy_failed",
                   message: "Could not deploy the Scotty installation",
-                  hint: "Check Cloudflare authentication and Docker, then retry scotty deploy.",
+                  hint: "Check Cloudflare authentication and registry access, then retry scotty deploy.",
                   operation: "deploy",
                   phase: "apply",
                   installationName: request.installationName,

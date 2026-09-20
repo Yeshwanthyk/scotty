@@ -27,8 +27,11 @@ import {
   readAlchemyContainerAction,
   readAlchemyContainerPlanAction,
   redactProductionDeploymentOutput,
+  resolveProductionAccountId,
   resolveProductionDockerEnvironment,
   resolveProductionTopology,
+  prepareProductionContainerImage,
+  requireProductionContainerImageSource,
   runCommand,
   runProductionDeployStep,
   waitForProductionContainerRollout,
@@ -37,10 +40,13 @@ import { dedupeBindings, diffBindings, stripEffects } from "../node_modules/alch
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const INSTALLATION_ENVIRONMENT = { SCOTTY_INSTALLATION_NAME: "test" };
+const AUTHORIZED_ACCOUNT_ID = "a".repeat(32);
+const OTHER_ACCOUNT_ID = "b".repeat(32);
 const PRODUCTION_TOPOLOGY_ENVIRONMENT = {
   ...INSTALLATION_ENVIRONMENT,
   SCOTTY_PREVIEW_BASE: "preview.scotty.example",
   SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
+  SCOTTY_CONTAINER_IMAGE_SOURCE: `index.docker.io/example/scotty@sha256:${"a".repeat(64)}`,
   GH_TOKEN: "legacy-github-secret",
   PI_AUTH_JSON: "legacy-pi-secret",
   CREDENTIAL_WRAPPING_KEY: "installation-wrapping-secret",
@@ -247,7 +253,6 @@ describe("production deployment ownership", () => {
       [
         "Check repository",
         "Audit current runtime inventory",
-        "Prepare isolated Container context",
         "Check Worker credential binding",
         "Plan production through Alchemy",
         "Deploy production through Alchemy",
@@ -258,12 +263,12 @@ describe("production deployment ownership", () => {
       ({ command, args }) => `${command} ${args.join(" ")}`,
     );
     assert.equal(
-      commands[3],
+      commands[2],
       "npx --no-install wrangler secret list --name ${workerName} --format json",
     );
-    assert.equal(commands[4], "npx --no-install alchemy plan alchemy.run.ts --stage production");
+    assert.equal(commands[3], "npx --no-install alchemy plan alchemy.run.ts --stage production");
     assert.equal(
-      commands[5],
+      commands[4],
       "npx --no-install alchemy deploy alchemy.run.ts --stage production --yes",
     );
     assert.equal(commands.filter((command) => command === "npm run audit:containers").length, 2);
@@ -271,26 +276,91 @@ describe("production deployment ownership", () => {
       commands.some((command) => /wrangler\s+deploy/u.test(command)),
       false,
     );
-    assert.equal(commands[2], `${process.execPath} scripts/prepare-container-context.mjs`);
     assert.equal(PRODUCTION_DEPLOY_STEPS[1].redact, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[2].capture, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[2].redact, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].capture, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[3].redact, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[3].tee, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[3].projectOutput, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[4].capture, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[4].tee, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[4].projectOutput, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[5].capture, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[5].tee, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[5].projectOutput, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[5].reportProgress, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[5].explainFailure, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[5].failureDiagnostic, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].reportProgress, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].explainFailure, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].failureDiagnostic, true);
     assert.match(PRODUCTION_DEPLOY_DIAGNOSTIC_PATH, /scotty-production-deploy-failure\.log$/u);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[6].redact, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[5].redact, true);
     assert.equal(readAlchemyContainerAction("[SandboxContainer] updated\n"), "updated");
     assert.equal(
       readAlchemyContainerAction("\u001B[32m[SandboxContainer] noop\u001B[0m\n"),
       "noop",
     );
+  });
+
+  it("derives the planned digest from an immutable production source", () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const reference = `index.docker.io/example/scotty@${digest}`;
+    assert.deepEqual(
+      requireProductionContainerImageSource({ SCOTTY_CONTAINER_IMAGE_SOURCE: reference }),
+      {
+        reference,
+        digest,
+      },
+    );
+    assert.throws(() => requireProductionContainerImageSource({}), /immutable production source/u);
+    assert.match(read("alchemy.run.ts"), /required\("SCOTTY_CONTAINER_IMAGE_DIGEST"\)/u);
+    assert.match(read("alchemy.run.ts"), /\^sha256:\[0-9a-f\]\{64\}\$/u);
+    assert.match(read("scripts/deploy-production.mjs"), /SCOTTY_CONTAINER_IMAGE_SOURCE/u);
+  });
+
+  it("runs the supported producer and accepts only its exact authorized account target", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const environment = {
+      ...PRODUCTION_TOPOLOGY_ENVIRONMENT,
+      SCOTTY_EXPECTED_ACCOUNT_ID: AUTHORIZED_ACCOUNT_ID,
+    };
+    const calls = [];
+    const prepared = await prepareProductionContainerImage(
+      environment,
+      resolveProductionTopology(environment),
+      async (command, args, options) => {
+        calls.push({ command, args, options });
+        return JSON.stringify({
+          reference: `registry.cloudflare.com/${AUTHORIZED_ACCOUNT_ID}/${CONTAINER_APPLICATION_NAME}@${digest}`,
+        });
+      },
+    );
+    assert.equal(prepared, digest);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, "bun");
+    assert.deepEqual(calls[0].args, ["scripts/prepare-production-container-image.ts"]);
+    assert.equal(calls[0].options.env, environment);
+
+    await assert.rejects(
+      prepareProductionContainerImage(
+        environment,
+        resolveProductionTopology(environment),
+        async () =>
+          JSON.stringify({
+            reference: `registry.cloudflare.com/${OTHER_ACCOUNT_ID}/${CONTAINER_APPLICATION_NAME}@${digest}`,
+          }),
+      ),
+      /did not verify the planned target digest/u,
+    );
+  });
+
+  it("discovers the authoritative account through the production profile helper", async () => {
+    const calls = [];
+    const accountId = await resolveProductionAccountId(
+      PRODUCTION_TOPOLOGY_ENVIRONMENT,
+      async (command, args, options) => {
+        calls.push({ command, args, options });
+        return JSON.stringify({ accountId: AUTHORIZED_ACCOUNT_ID });
+      },
+    );
+    assert.equal(accountId, AUTHORIZED_ACCOUNT_ID);
+    assert.equal(calls[0].command, "bun");
+    assert.deepEqual(calls[0].args, ["scripts/prepare-production-container-image.ts", "--account"]);
   });
 
   it("requires the Worker wrapping-key binding by name before planning", () => {
@@ -624,7 +694,6 @@ describe("production deployment ownership", () => {
   it("waits for Container settlement and audits after an Alchemy failure", async () => {
     const executed = [];
     const environments = new Map();
-    let resolvedDockerEnvironment = false;
     const deployFailure = new Error("simulated partial Alchemy failure");
     const controlPlaneBeforeDeploy = snapshot();
     await assert.rejects(
@@ -645,6 +714,7 @@ describe("production deployment ownership", () => {
         },
         {
           environment: PRODUCTION_TOPOLOGY_ENVIRONMENT,
+          resolveAccountId: async () => AUTHORIZED_ACCOUNT_ID,
           readControlPlane: async (env) => {
             executed.push("Read Container baseline");
             environments.set("Read Container baseline", { env });
@@ -658,10 +728,6 @@ describe("production deployment ownership", () => {
             executed.push("Audit deployed Hatch and Evidence topology");
             environments.set("Audit deployed Hatch and Evidence topology", { topology, env });
           },
-          resolveDockerEnvironment: async () => {
-            resolvedDockerEnvironment = true;
-            assert.fail("Container no-op must not require Docker.");
-          },
         },
       ),
       deployFailure,
@@ -669,7 +735,6 @@ describe("production deployment ownership", () => {
     assert.deepEqual(executed, [
       "Check repository",
       "Audit current runtime inventory",
-      "Prepare isolated Container context",
       "Revalidate release state",
       "Check Worker credential binding",
       "Plan production through Alchemy",
@@ -713,6 +778,8 @@ describe("production deployment ownership", () => {
       assert.equal(env.SCOTTY_HOST, undefined);
       assert.equal(env.SCOTTY_INSTALLATION_NAME, "test");
       assert.equal(env.SCOTTY_CONTAINER_APPLICATION_NAME, CONTAINER_APPLICATION_NAME);
+      assert.equal(env.SCOTTY_CONTAINER_IMAGE_DIGEST, `sha256:${"a".repeat(64)}`);
+      assert.equal(env.SCOTTY_EXPECTED_ACCOUNT_ID, AUTHORIZED_ACCOUNT_ID);
       assert.equal(env.CLOUDFLARE_API_TOKEN, undefined);
       assert.equal(env.SCOTTY_RUNNER_TOKEN, undefined);
       assert.equal(env.SCOTTY_TOKEN, undefined);
@@ -748,12 +815,11 @@ describe("production deployment ownership", () => {
     });
     assert.equal(environments.get("Wait for Container rollout").before, controlPlaneBeforeDeploy);
     assert.equal(environments.get("Wait for Container rollout").options.containerAction, "unknown");
-    assert.equal(resolvedDockerEnvironment, false);
   });
 
-  it("resolves Docker only for an explicitly authorized Container release", async () => {
-    let resolvedDockerEnvironment = false;
+  it("transfers the selected image after authorization and passes its verified digest to Alchemy", async () => {
     let deployEnvironment;
+    let prepared = false;
     await executeProductionDeploySteps(
       async (step, env) => {
         if (step.name === "Check Worker credential binding") {
@@ -763,6 +829,7 @@ describe("production deployment ownership", () => {
           return "[SandboxContainer] update\n";
         }
         if (step.name === "Deploy production through Alchemy") {
+          assert.equal(prepared, true);
           deployEnvironment = env;
           return "[SandboxContainer] updated\n";
         }
@@ -770,21 +837,53 @@ describe("production deployment ownership", () => {
       async () => {},
       {
         environment: PRODUCTION_TOPOLOGY_ENVIRONMENT,
+        resolveAccountId: async () => AUTHORIZED_ACCOUNT_ID,
         allowContainerRollout: true,
         readControlPlane: async () => snapshot(),
+        prepareContainerImage: async (environment, topology) => {
+          assert.equal(
+            environment.SCOTTY_CONTAINER_IMAGE_SOURCE,
+            PRODUCTION_TOPOLOGY_ENVIRONMENT.SCOTTY_CONTAINER_IMAGE_SOURCE,
+          );
+          assert.equal(topology.containerName, CONTAINER_APPLICATION_NAME);
+          assert.equal(environment.SCOTTY_EXPECTED_ACCOUNT_ID, AUTHORIZED_ACCOUNT_ID);
+          prepared = true;
+          return `sha256:${"a".repeat(64)}`;
+        },
         waitForRollout: async () => {},
         auditTopology: async () => {},
-        resolveDockerEnvironment: async (env) => {
-          resolvedDockerEnvironment = true;
-          return { ...env, DOCKER_HOST: "unix:///test/docker.sock" };
-        },
       },
     );
-    assert.equal(resolvedDockerEnvironment, true);
-    assert.equal(deployEnvironment.DOCKER_HOST, "unix:///test/docker.sock");
+    assert.equal(deployEnvironment.DOCKER_HOST, undefined);
+    assert.equal(deployEnvironment.SCOTTY_CONTAINER_IMAGE_DIGEST, `sha256:${"a".repeat(64)}`);
+  });
+
+  it("does not deploy when verified image transfer fails", async () => {
+    let deployed = false;
+    await assert.rejects(
+      executeProductionDeploySteps(
+        async (step) => {
+          if (step.name === "Check Worker credential binding")
+            return JSON.stringify([{ name: "CREDENTIAL_WRAPPING_KEY", type: "secret_text" }]);
+          if (step.name === "Plan production through Alchemy") return "[SandboxContainer] update\n";
+          if (step.name === "Deploy production through Alchemy") deployed = true;
+        },
+        async () => {},
+        {
+          environment: PRODUCTION_TOPOLOGY_ENVIRONMENT,
+          resolveAccountId: async () => AUTHORIZED_ACCOUNT_ID,
+          allowContainerRollout: true,
+          readControlPlane: async () => snapshot(),
+          prepareContainerImage: async () => Promise.reject(new Error("synthetic copy failure")),
+        },
+      ),
+      /synthetic copy failure/u,
+    );
+    assert.equal(deployed, false);
   });
 
   it("refuses a Container rollout while a session instance is active", async () => {
+    let prepared = false;
     const active = snapshot({ application: { health: { ...application().health, active: 1 } } });
     assert.throws(
       () => assertNoActiveInstancesBeforeContainerRollout(active),
@@ -793,7 +892,6 @@ describe("production deployment ownership", () => {
     assert.doesNotThrow(() => assertNoActiveInstancesBeforeContainerRollout(snapshot()));
 
     const executed = [];
-    let resolvedDockerEnvironment = false;
     await assert.rejects(
       executeProductionDeploySteps(
         async (step) => {
@@ -805,18 +903,19 @@ describe("production deployment ownership", () => {
         async () => {},
         {
           environment: PRODUCTION_TOPOLOGY_ENVIRONMENT,
+          resolveAccountId: async () => AUTHORIZED_ACCOUNT_ID,
           allowContainerRollout: true,
           readControlPlane: async () => active,
-          resolveDockerEnvironment: async () => {
-            resolvedDockerEnvironment = true;
-            return {};
+          prepareContainerImage: async () => {
+            prepared = true;
+            return `sha256:${"a".repeat(64)}`;
           },
         },
       ),
       /rollout refused.*active session instance/u,
     );
+    assert.equal(prepared, false);
     assert.equal(executed.includes("Deploy production through Alchemy"), false);
-    assert.equal(resolvedDockerEnvironment, false);
   });
 
   it("requires the exact new rollout to complete and converge", () => {
