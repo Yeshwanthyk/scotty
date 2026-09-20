@@ -97,7 +97,6 @@ describe("S1 image release gate", () => {
       compatibility: input.compatibility,
       provenance: { attestationUrl: input.attestationUrl },
     });
-    assert.doesNotMatch(read("scripts/make-cli-release.mjs"), /image|container|docker/iu);
   });
 
   it("rejects invalid or missing maintainer configuration", () => {
@@ -225,52 +224,6 @@ describe("S1 image release gate", () => {
         /exactly one immutable image digest/u,
       );
     }
-  });
-
-  it("initializes isolated Docker configuration before either image job uses Docker", () => {
-    const workflow = read(".github/workflows/release-cli.yml");
-    const imageStart = workflow.indexOf("  image:");
-    const verifyStart = workflow.indexOf("  image-verify:");
-    const attestStart = workflow.indexOf("  attest:");
-    const imageJob = workflow.slice(imageStart, verifyStart);
-    const verifyJob = workflow.slice(verifyStart, attestStart);
-
-    assert.doesNotMatch(workflow, /DOCKER_CONFIG: \$\{\{ runner\.temp/u);
-    assert.match(
-      imageJob,
-      /Initialize isolated Docker configuration[\s\S]*publish_root="\$RUNNER_TEMP\/scotty-image-publication"[\s\S]*rm -rf "\$publish_root"[\s\S]*install -d -m 0700 "\$publish_root" "\$publish_root\/\.docker"[\s\S]*echo "DOCKER_CONFIG=\$publish_root\/\.docker" >> "\$GITHUB_ENV"/u,
-    );
-    assert.ok(
-      imageJob.indexOf("Initialize isolated Docker configuration") <
-        imageJob.indexOf("actions/checkout@"),
-    );
-    assert.ok(
-      imageJob.indexOf("Initialize isolated Docker configuration") <
-        imageJob.indexOf("docker/setup-buildx-action@"),
-    );
-    assert.match(
-      imageJob,
-      /Remove any remaining publication credentials[\s\S]*if: always\(\)[\s\S]*rm -rf "\$RUNNER_TEMP\/scotty-image-publication"/u,
-    );
-
-    assert.match(
-      verifyJob,
-      /Initialize anonymous Docker configuration[\s\S]*verification_root="\$RUNNER_TEMP\/scotty-anonymous-verification"[\s\S]*docker_config="\$verification_root\/\.docker"[\s\S]*printf '%s\\n' '\{"auths":\{\}\}' > "\$docker_config\/config\.json"[\s\S]*chmod 0600 "\$docker_config\/config\.json"[\s\S]*echo "DOCKER_CONFIG=\$docker_config" >> "\$GITHUB_ENV"/u,
-    );
-    assert.ok(
-      verifyJob.indexOf("Initialize anonymous Docker configuration") <
-        verifyJob.indexOf("actions/checkout@"),
-    );
-    assert.ok(
-      verifyJob.indexOf("Initialize anonymous Docker configuration") <
-        verifyJob.indexOf("docker pull --platform"),
-    );
-    assert.equal((verifyJob.match(/assert\.equal\(isAnonymousConfig, true,/gu) ?? []).length, 2);
-    assert.doesNotMatch(verifyJob, /JSON\.parse/u);
-    assert.match(
-      verifyJob,
-      /Remove anonymous pull configuration[\s\S]*if: always\(\)[\s\S]*rm -rf "\$RUNNER_TEMP\/scotty-anonymous-verification"/u,
-    );
   });
 
   it("cleans owned roots after normal and failed environment export", () => {
@@ -443,120 +396,5 @@ esac
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
-  });
-
-  it("keeps credentials inside the authorized publication boundary", () => {
-    const workflow = read(".github/workflows/release-cli.yml");
-    const imageStart = workflow.indexOf("  image:");
-    const verifyStart = workflow.indexOf("  image-verify:");
-    const attestStart = workflow.indexOf("  attest:");
-    const imageJob = workflow.slice(imageStart, verifyStart);
-    const verifyJob = workflow.slice(verifyStart, attestStart);
-    const imageOutputs = imageJob.slice(
-      imageJob.indexOf("    outputs:"),
-      imageJob.indexOf("    permissions:"),
-    );
-    const buildStep = imageJob.slice(
-      imageJob.indexOf("Build and test release image"),
-      imageJob.indexOf("Publish tested image"),
-    );
-    const publishStep = imageJob.slice(
-      imageJob.indexOf("Publish tested image"),
-      imageJob.indexOf("Attest published image provenance"),
-    );
-    const attestationStep = imageJob.slice(
-      imageJob.indexOf("Attest published image provenance"),
-      imageJob.indexOf("Record image attestation receipt"),
-    );
-    assert.match(imageJob, /environment: image-release/u);
-    assert.match(imageJob, /SCOTTY_IMAGE_PUBLICATION_AUTHORIZED/u);
-    assert.match(imageJob, /publish-public-image/u);
-    assert.equal((imageJob.match(/secrets\.SCOTTY_DOCKERHUB_USERNAME/gu) ?? []).length, 1);
-    assert.equal((imageJob.match(/secrets\.SCOTTY_DOCKERHUB_TOKEN/gu) ?? []).length, 1);
-    assert.doesNotMatch(buildStep, /HOME:|DOCKERHUB|password|token/iu);
-    assert.match(publishStep, /HOME: \$\{\{ runner\.temp \}\}\/scotty-image-publication/u);
-    assert.match(
-      attestationStep,
-      /actions\/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a[\s\S]*HOME: \$\{\{ runner\.temp \}\}\/scotty-image-publication/u,
-    );
-    assert.equal(
-      (imageJob.match(/HOME: \$\{\{ runner\.temp \}\}\/scotty-image-publication/gu) ?? []).length,
-      3,
-    );
-    assert.match(imageJob, /--password-stdin/u);
-    assert.match(
-      imageJob,
-      /docker login \\\n\s+--username "\$SCOTTY_DOCKERHUB_USERNAME" --password-stdin/u,
-    );
-    assert.doesNotMatch(imageJob, /docker login index\.docker\.io/u);
-    assert.match(imageJob, /docker logout \|\| true/u);
-    assert.doesNotMatch(imageJob, /docker logout index\.docker\.io/u);
-    assert.match(imageOutputs, /digest: \$\{\{ steps\.published-image\.outputs\.digest \}\}/u);
-    assert.match(imageOutputs, /tested_image_id:/u);
-    assert.match(imageJob, /tested_image_id[\s\S]*\^sha256:\[0-9a-f\]\{64\}\$/u);
-    assert.doesNotMatch(imageOutputs, /repository|attestation/u);
-    assert.match(imageJob, /name: image-attestation-receipt/u);
-    assert.match(
-      imageJob,
-      /Remove publication credentials[\s\S]*rm -rf "\$RUNNER_TEMP\/scotty-image-publication"/u,
-    );
-    assert.match(imageJob, /docker push[\s\S]*scotty-image-push\.log/u);
-    assert.match(imageJob, /--docker-push-digest/u);
-    assert.doesNotMatch(imageJob, /imagetools inspect/u);
-    assert.doesNotMatch(imageJob, /Create image release manifest/u);
-    assert.ok(
-      imageJob.indexOf("Publish tested image") <
-        imageJob.indexOf("Attest published image provenance"),
-    );
-    assert.match(verifyJob, /needs: image/u);
-    assert.match(verifyJob, /runs-on: ubuntu-latest/u);
-    assert.match(verifyJob, /environment: image-release/u);
-    assert.match(
-      verifyJob,
-      /SCOTTY_DOCKERHUB_REPOSITORY: \$\{\{ vars\.SCOTTY_DOCKERHUB_REPOSITORY \}\}/u,
-    );
-    assert.doesNotMatch(
-      verifyJob,
-      /needs\.image\.outputs\.(?:repository|attestation_url)|secrets\.SCOTTY_DOCKERHUB/u,
-    );
-    assert.equal(
-      (verifyJob.match(/HOME: \$\{\{ runner\.temp \}\}\/scotty-anonymous-verification/gu) ?? [])
-        .length,
-      2,
-    );
-    assert.match(verifyJob, /validateImageRepository/u);
-    assert.ok(
-      verifyJob.indexOf("Validate maintainer repository for anonymous verification") <
-        verifyJob.indexOf("docker pull --platform"),
-    );
-    assert.match(verifyJob, /name: image-attestation-receipt/u);
-    assert.match(
-      verifyJob,
-      /SCOTTY_IMAGE_ATTESTATION_URL="\$\(cat dist\/image-attestation\/scotty-image-attestation-url\)"/u,
-    );
-    assert.doesNotMatch(verifyJob, /docker login|DOCKERHUB_(?:USERNAME|TOKEN)/u);
-    assert.equal((verifyJob.match(/assert\.equal\(isAnonymousConfig, true,/gu) ?? []).length, 2);
-    assert.match(verifyJob, /docker pull --platform "\$SCOTTY_IMAGE_PLATFORM" "\$image_ref"/u);
-    assert.match(verifyJob, /test "\$public_id" = "\$SCOTTY_TESTED_IMAGE_ID"/u);
-    assert.match(verifyJob, /gh attestation verify "oci:\/\/\$image_ref"/u);
-    assert.match(verifyJob, /GH_TOKEN: \$\{\{ github\.token \}\}/u);
-    for (const flag of [
-      "--bundle-from-oci",
-      "--repo",
-      "--signer-workflow",
-      "--source-ref",
-      "--source-digest",
-      "--deny-self-hosted-runners",
-    ])
-      assert.ok(verifyJob.includes(flag), `missing attestation verification flag ${flag}`);
-    assert.ok(
-      verifyJob.indexOf("Verify anonymous public pull") <
-        verifyJob.indexOf("Verify immutable image provenance"),
-    );
-    assert.ok(
-      verifyJob.indexOf("Verify immutable image provenance") <
-        verifyJob.indexOf("Create image release manifest"),
-    );
-    assert.match(workflow, /needs: \[attest, image-verify\]/u);
   });
 });

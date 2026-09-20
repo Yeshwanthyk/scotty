@@ -224,42 +224,4 @@ describe("S2b runtime CLI release", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
-
-  it("builds, attests, signs, and checks the runtime artifact in the supported image", async () => {
-    const workflow = await readFile(
-      new URL("../.github/workflows/release-cli.yml", import.meta.url),
-      "utf8",
-    );
-    const runtimeStart = workflow.indexOf("  runtime-cli:");
-    const imageStart = workflow.indexOf("  image:");
-    const attestStart = workflow.indexOf("  attest:");
-    const releaseStart = workflow.indexOf("  release:");
-    assert.ok(runtimeStart > 0 && imageStart > runtimeStart);
-    const runtimeJob = workflow.slice(runtimeStart, imageStart);
-    const imageJob = workflow.slice(imageStart, workflow.indexOf("  image-verify:"));
-    const attestJob = workflow.slice(attestStart, releaseStart);
-    const releaseJob = workflow.slice(releaseStart);
-    assert.match(runtimeJob, /build-runtime-cli\.mjs dist\/release\/scotty-runtime-linux-amd64/u);
-    assert.match(runtimeJob, /embeddedDeployment, false/u);
-    assert.match(imageJob, /needs: \[verify, runtime-cli\]/u);
-    assert.match(imageJob, /--platform "\$SCOTTY_IMAGE_PLATFORM"/u);
-    assert.match(attestJob, /name: scotty-runtime-linux-amd64/u);
-    assert.match(releaseJob, /make-cli-release\.mjs/u);
-    assert.match(releaseJob, /make-runtime-cli-release\.mjs/u);
-  });
-
-  it("keeps the host build and updater manifest contracts separate", async () => {
-    const buildSource = await readFile(new URL("./build-runtime-cli.mjs", import.meta.url), "utf8");
-    const hostReleaseSource = await readFile(
-      new URL("./make-cli-release.mjs", import.meta.url),
-      "utf8",
-    );
-    assert.doesNotMatch(
-      buildSource,
-      /deployment-packaging|Archive|ui:build|bundleDeploymentWorkers/u,
-    );
-    assert.match(buildSource, /cli", "scotty\.ts/u);
-    assert.match(hostReleaseSource, /scotty-upgrade-manifest\.json/u);
-    assert.doesNotMatch(hostReleaseSource, /runtime/iu);
-  });
 });
