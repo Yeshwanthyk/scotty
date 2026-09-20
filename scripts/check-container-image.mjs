@@ -8,7 +8,6 @@ import {
   inspectContainerImageBudget,
   prepareContainerContext,
 } from "../cli/src/deployment-packaging.mjs";
-import { CLEAN_ROOM_CACHE_SCOPE, CLEAN_ROOM_CLI_PLATFORM } from "./check-cli-clean-room.mjs";
 import { containerProbeProcessSource } from "./container-probe-process.mjs";
 import {
   buildMergedSkillsCommand,
@@ -16,7 +15,7 @@ import {
 } from "../worker/src/sandbox/skill-commands.ts";
 
 export const CONTAINER_IMAGE = process.env.SCOTTY_CONTAINER_IMAGE ?? "scotty-container:ci";
-export const CONTAINER_IMAGE_PLATFORM = CLEAN_ROOM_CLI_PLATFORM;
+export const CONTAINER_IMAGE_PLATFORM = "linux/amd64";
 export const CONTAINER_IMAGE_CACHE_SCOPE = "scotty-container-image";
 export const CONTAINER_IMAGE_PI_PACKAGES = Object.freeze(["scotty-browser-test", "scotty-hatch"]);
 export const CONTAINER_IMAGE_ABSENT_PI_PACKAGES = Object.freeze([
@@ -45,10 +44,7 @@ export const containerImagePlan = (root = process.cwd(), environment = process.e
       : { revision: environment.SCOTTY_IMAGE_REVISION }),
     cache: ghaCacheEnabled(environment)
       ? {
-          from: [
-            `type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`,
-            `type=gha,scope=${CLEAN_ROOM_CACHE_SCOPE}`,
-          ],
+          from: [`type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`],
           to: `type=gha,mode=max,scope=${CONTAINER_IMAGE_CACHE_SCOPE},ignore-error=true`,
         }
       : undefined,

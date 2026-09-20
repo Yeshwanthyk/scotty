@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import {
   CONTAINER_STATIC_INPUTS,
   DEPLOYMENT_INPUTS,
-  discoverContainerCliInputs,
+  discoverContainerBuildInputs,
 } from "../cli/src/deployment-packaging.mjs";
 import { classifyCiPaths, detectChangedPaths } from "./ci-path-gates.mjs";
 
@@ -39,27 +39,29 @@ describe("PR CI path gates", () => {
     });
   });
 
-  it("runs image and clean-room proof for baked CLI and transitive runtime inputs", () => {
-    for (const path of [
-      "cli/src/commands.ts",
-      "protocol/runtime-cli-manifest.ts",
-      "worker/src/agent/codex/process.ts",
-      "worker/src/runtime-cli/paths.ts",
-      "package-lock.json",
-      "worker/container/Dockerfile",
-      "worker/container/pi-packages/settings.json",
-    ]) {
-      const decision = classifyCiPaths([path]);
-      assert.equal(decision.cli_clean_room, true, path);
-      assert.equal(decision.container_image, true, path);
+  it("decouples ordinary CLI source and version inputs from the container image", () => {
+    for (const path of ["cli/src/commands.ts", "package.json", "package-lock.json"]) {
+      assert.deepEqual(flags([path]), {
+        cli_clean_room: true,
+        cli_standalone: true,
+        container_image: false,
+        codex_native: false,
+      });
     }
+    const runtimeManifest = classifyCiPaths(["protocol/runtime-cli-manifest.ts"]);
+    assert.equal(runtimeManifest.container_image, false);
+    assert.equal(runtimeManifest.codex_native, true);
+    assert.equal(classifyCiPaths(["worker/src/agent/codex/process.ts"]).container_image, true);
+    assert.equal(classifyCiPaths(["worker/container/Dockerfile"]).container_image, true);
+    assert.equal(
+      classifyCiPaths(["worker/container/pi-packages/settings.json"]).container_image,
+      true,
+    );
   });
 
   it("covers every declared static container and standalone archive input", () => {
     for (const input of CONTAINER_STATIC_INPUTS) {
-      const decision = classifyCiPaths([representativePath(input)]);
-      assert.equal(decision.cli_clean_room, true, input);
-      assert.equal(decision.container_image, true, input);
+      assert.equal(classifyCiPaths([representativePath(input)]).container_image, true, input);
     }
     for (const input of DEPLOYMENT_INPUTS) {
       assert.equal(classifyCiPaths([representativePath(input)]).cli_standalone, true, input);
@@ -67,14 +69,12 @@ describe("PR CI path gates", () => {
   });
 
   it("covers every current Bun-discovered container build input", async () => {
-    for (const path of await discoverContainerCliInputs()) {
-      const decision = classifyCiPaths([path]);
-      assert.equal(decision.cli_clean_room, true, path);
-      assert.equal(decision.container_image, true, path);
+    for (const path of await discoverContainerBuildInputs()) {
+      assert.equal(classifyCiPaths([path]).container_image, true, path);
     }
   });
 
-  it("runs native proof for broad runtime callbacks even outside the baked image graph", () => {
+  it("runs native proof for runtime callbacks outside the baked image graph", () => {
     const decision = classifyCiPaths([
       "worker/src/session-actor/transitions/create-sandbox.ts",
       "worker/src/runtime-cli/materializer.ts",
@@ -83,26 +83,26 @@ describe("PR CI path gates", () => {
     assert.equal(decision.container_image, false);
   });
 
-  it("changes to owning workflows, gate logic, locks, and base pins cannot skip proof", () => {
+  it("changes to owning workflows and gate logic cannot skip proof", () => {
     for (const path of [
       ".github/workflows/ci.yml",
       ".github/workflows/release-cli.yml",
       "scripts/ci-path-gates.mjs",
-      "package.json",
-      "package-lock.json",
-      ".nvmrc",
-      ".bun-version",
     ]) {
-      assert.deepEqual(
-        flags([path]),
-        {
-          cli_clean_room: true,
-          cli_standalone: true,
-          container_image: true,
-          codex_native: true,
-        },
-        path,
-      );
+      assert.deepEqual(flags([path]), {
+        cli_clean_room: true,
+        cli_standalone: true,
+        container_image: true,
+        codex_native: true,
+      });
+    }
+    for (const path of ["package.json", "package-lock.json", ".nvmrc", ".bun-version"]) {
+      assert.deepEqual(flags([path]), {
+        cli_clean_room: true,
+        cli_standalone: true,
+        container_image: false,
+        codex_native: false,
+      });
     }
   });
 

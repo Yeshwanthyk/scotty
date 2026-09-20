@@ -86,7 +86,7 @@ export const readImageCompatibility = async (root = process.cwd()) => {
   const sandboxPackage = workerMetadata.dependencies["@cloudflare/sandbox"];
   const sandboxImage = requireMatch(
     dockerfile,
-    /^FROM (docker\.io\/cloudflare\/sandbox:[^\s]+) AS scotty-cli-build$/mu,
+    /^FROM (docker\.io\/cloudflare\/sandbox:[^\s]+) AS scotty-codex-server-build$/mu,
     "Cloudflare Sandbox base image",
   );
   const sandboxRuntimeImage = requireMatch(

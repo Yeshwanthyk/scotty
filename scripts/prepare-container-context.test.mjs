@@ -24,21 +24,20 @@ import {
   CONTAINER_CONTEXT_PATH,
   CONTAINER_CONTEXT_BUDGET,
   CONTAINER_IMAGE_BUDGET,
-  CONTAINER_INPUTS,
   CONTAINER_STATIC_INPUTS,
   assertContainerCopyInputs,
   assertContainerContextBudget,
   assertContainerImageBudget,
   assertRootDockerignoreInputs,
   assertSafeProjectPath,
-  discoverContainerCliInputs,
+  discoverContainerBuildInputs,
   inspectContainerImageBudget,
   isSafeProjectPath,
   listPackagedFiles,
   materializeProjectInputs,
   normalizeProjectPath,
   prepareContainerContext,
-  projectContainerCliInputs,
+  projectContainerBuildInputs,
 } from "../cli/src/deployment-packaging.mjs";
 
 const SENTINEL = "SCOTTY_IGNORED_NODE_MODULES_SENTINEL";
@@ -168,7 +167,7 @@ test("prepared contexts validate discovered Codex leaves against final ignore ru
   }
 });
 
-test("the Container context contains only static runtime assets and CLI graph inputs", async () => {
+test("the Container context contains only runtime assets and the native server graph", async () => {
   const root = await mkdtemp(join(tmpdir(), "scotty-container-context-"));
   try {
     for (const input of CONTAINER_STATIC_INPUTS) {
@@ -181,10 +180,10 @@ test("the Container context contains only static runtime assets and CLI graph in
       }
     }
 
-    const cliInput = "cli/scotty.ts";
-    const workerCliInput = "worker/src/runner/control.ts";
+    const serverInput = "worker/src/agent/codex/server.ts";
+    const serverDependency = "worker/src/shared/json.ts";
     const unrelatedWorkerInput = "worker/src/index.ts";
-    for (const input of [cliInput, workerCliInput, unrelatedWorkerInput]) {
+    for (const input of [serverInput, serverDependency, unrelatedWorkerInput]) {
       await mkdir(dirname(join(root, input)), { recursive: true });
       await writeFile(join(root, input), `${input}\n`);
     }
@@ -197,7 +196,7 @@ test("the Container context contains only static runtime assets and CLI graph in
     await writeFile(join(sourceRoot, "node_modules/dependency/index.js"), `${SENTINEL}\n`);
 
     await prepareContainerContext(root, {
-      discoverCliInputs: async () => [cliInput, workerCliInput],
+      discoverBuildInputs: async () => [serverInput, serverDependency],
     });
 
     const contextSource = join(
@@ -220,26 +219,7 @@ test("the Container context contains only static runtime assets and CLI graph in
         code: "ENOENT",
       },
     );
-    assert.ok(CONTAINER_STATIC_INPUTS.includes("skills/scotty/SKILL.md"));
-    assert.ok(CONTAINER_STATIC_INPUTS.includes("skills/scotty-live-observability/SKILL.md"));
-    assert.equal(CONTAINER_STATIC_INPUTS.includes("skills"), false);
-    assert.equal(
-      await readFile(join(root, CONTAINER_CONTEXT_PATH, "skills/scotty/SKILL.md"), "utf8"),
-      "skills/scotty/SKILL.md\n",
-    );
-    assert.equal(
-      await readFile(
-        join(root, CONTAINER_CONTEXT_PATH, "skills/scotty-live-observability/SKILL.md"),
-        "utf8",
-      ),
-      "skills/scotty-live-observability/SKILL.md\n",
-    );
-    for (const input of [
-      "scripts/apply-dependency-patches.mjs",
-      "patches/alchemy+2.0.0-beta.76.patch",
-    ]) {
-      assert.equal(await readFile(join(root, CONTAINER_CONTEXT_PATH, input), "utf8"), `${input}\n`);
-    }
+    assert.deepEqual(CONTAINER_STATIC_INPUTS, ["worker/container"]);
     for (const input of [
       "tui/package.json",
       "tui/src",
@@ -256,8 +236,8 @@ test("the Container context contains only static runtime assets and CLI graph in
       { code: "ENOENT" },
     );
     assert.equal(
-      await readFile(join(root, CONTAINER_CONTEXT_PATH, workerCliInput), "utf8"),
-      `${workerCliInput}\n`,
+      await readFile(join(root, CONTAINER_CONTEXT_PATH, serverDependency), "utf8"),
+      `${serverDependency}\n`,
     );
     await assert.rejects(
       readFile(join(root, CONTAINER_CONTEXT_PATH, unrelatedWorkerInput), "utf8"),
@@ -292,9 +272,7 @@ test("CLI installation context and archive listing omit ignored node_modules sen
     await materializeProjectInputs(root, destination, inputs);
     assert.deepEqual(await listAllFiles(destination), [...archiveFiles].sort());
 
-    await prepareContainerContext(root, {
-      inputs: CONTAINER_INPUTS.filter((input) => input === "cli/src" || input === "worker/src"),
-    });
+    await prepareContainerContext(root, { inputs });
     await assert.rejects(
       readFile(join(root, CONTAINER_CONTEXT_PATH, "cli/src/node_modules/ignored/index.js"), "utf8"),
       { code: "ENOENT" },
@@ -355,19 +333,19 @@ test("checkout roots under node_modules or .git still copy project files and omi
   }
 });
 
-test("CLI build metadata excludes installed dependencies and rejects paths outside the repo", () => {
+test("container build metadata excludes installed dependencies and rejects outside paths", () => {
   assert.deepEqual(
-    projectContainerCliInputs({
+    projectContainerBuildInputs({
       inputs: {
-        "cli/scotty.ts": {},
-        "worker/src/runner/control.ts": {},
+        "worker/src/agent/codex/server.ts": {},
+        "worker/src/shared/json.ts": {},
         "node_modules/effect/dist/index.js": {},
         "cli/src/node_modules/ignored.js": {},
         ".git/config": {},
         "worker/src/.git/HEAD": {},
       },
     }),
-    ["cli/scotty.ts", "worker/src/runner/control.ts"],
+    ["worker/src/agent/codex/server.ts", "worker/src/shared/json.ts"],
   );
   assert.equal(isSafeProjectPath("cli/src/index.ts"), true);
   assert.equal(isSafeProjectPath("../outside.ts"), false);
@@ -376,11 +354,11 @@ test("CLI build metadata excludes installed dependencies and rejects paths outsi
   assert.equal(isSafeProjectPath("cli//src.ts"), false);
   assert.throws(() => assertSafeProjectPath("../outside.ts"), /outside the repository/u);
   assert.throws(
-    () => projectContainerCliInputs({ inputs: { "../outside.ts": {} } }),
+    () => projectContainerBuildInputs({ inputs: { "../outside.ts": {} } }),
     /outside the repository/u,
   );
-  assert.throws(() => projectContainerCliInputs(null), /input map/u);
-  assert.throws(() => projectContainerCliInputs({ inputs: [] }), /input map/u);
+  assert.throws(() => projectContainerBuildInputs(null), /input map/u);
+  assert.throws(() => projectContainerBuildInputs({ inputs: [] }), /input map/u);
 });
 
 test("container context budget rejects node_modules, preinstalled Playwright, and oversize trees", async () => {
@@ -451,26 +429,12 @@ test("discovery follows transitive container-only source imports without includi
   const root = await mkdtemp(join(tmpdir(), "scotty-container-graph-"));
   try {
     await writeTree(root, {
-      "cli/scotty.ts": "console.log('cli');",
       "worker/src/agent/codex/server.ts": "export { value } from './server-only.ts';",
       "worker/src/agent/codex/server-only.ts": "export const value = 1;",
-      "worker/src/agent/codex/main.ts":
-        "export { value } from '../../../../protocol/codex-app-server.ts';",
-      "worker/src/sandbox/skill-commands.ts": "export const value = 1;",
-      "protocol/codex-app-server.ts": "export { value } from './codex-dependency.ts';",
-      "protocol/codex-dependency.ts": "export { value } from './nested/value.ts';",
-      "protocol/nested/value.ts": "export const value = 42;",
-      "protocol/unrelated.ts": "export const ignored = true;",
     });
-    assert.deepEqual(await discoverContainerCliInputs(root), [
-      "cli/scotty.ts",
-      "protocol/codex-app-server.ts",
-      "protocol/codex-dependency.ts",
-      "protocol/nested/value.ts",
-      "worker/src/agent/codex/main.ts",
+    assert.deepEqual(await discoverContainerBuildInputs(root), [
       "worker/src/agent/codex/server-only.ts",
       "worker/src/agent/codex/server.ts",
-      "worker/src/sandbox/skill-commands.ts",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -481,10 +445,9 @@ test("real discovery prepares and bundles the Effect Codex server for standalone
   const checkout = fileURLToPath(new URL("../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "scotty-real-container-context-"));
   try {
-    const discovered = await discoverContainerCliInputs(checkout);
+    const discovered = await discoverContainerBuildInputs(checkout);
     assert.ok(discovered.includes("protocol/codex-app-server.ts"));
     for (const module of [
-      "main",
       "process",
       "session",
       "framing",
@@ -495,10 +458,10 @@ test("real discovery prepares and bundles the Effect Codex server for standalone
     ]) {
       assert.ok(discovered.includes(`worker/src/agent/codex/${module}.ts`));
     }
-    assert.ok(discovered.includes("cli/scotty.ts"));
+    assert.ok(discovered.every((path) => !path.startsWith("cli/")));
     assert.ok(discovered.every((path) => !path.split("/").includes("node_modules")));
     await materializeProjectInputs(checkout, root, [...CONTAINER_STATIC_INPUTS, ...discovered]);
-    await prepareContainerContext(root, { discoverCliInputs: async () => discovered });
+    await prepareContainerContext(root, { discoverBuildInputs: async () => discovered });
     const context = join(root, CONTAINER_CONTEXT_PATH);
     const measured = await assertContainerContextBudget(context);
     t.diagnostic(`Prepared context: ${measured.fileCount} files, ${measured.bytes} bytes`);
@@ -506,7 +469,12 @@ test("real discovery prepares and bundles the Effect Codex server for standalone
       await readFile(join(context, "protocol/codex-app-server.ts"), "utf8"),
       await readFile(join(checkout, "protocol/codex-app-server.ts"), "utf8"),
     );
-    const lock = JSON.parse(await readFile(join(context, "package-lock.json"), "utf8"));
+    const lock = JSON.parse(
+      await readFile(
+        join(context, "worker/container/codex-server-build/package-lock.json"),
+        "utf8",
+      ),
+    );
     const installed = JSON.parse(
       await readFile(join(checkout, "node_modules/effect/package.json"), "utf8"),
     );

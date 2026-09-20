@@ -50,7 +50,7 @@ export const assertSafeProjectPath = (source) => {
   return normalized;
 };
 
-export function projectContainerCliInputs(metafile) {
+export function projectContainerBuildInputs(metafile) {
   if (
     metafile === null ||
     typeof metafile !== "object" ||
@@ -70,7 +70,7 @@ export function projectContainerCliInputs(metafile) {
   return [...new Set(inputs)].sort();
 }
 
-export async function discoverContainerCliInputs(root = process.cwd(), execute = execFileAsync) {
+export async function discoverContainerBuildInputs(root = process.cwd(), execute = execFileAsync) {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "scotty-container-cli-"));
   try {
     const outputDirectory = join(temporaryDirectory, "out");
@@ -86,7 +86,7 @@ export async function discoverContainerCliInputs(root = process.cwd(), execute =
       ],
       { cwd: root },
     );
-    return projectContainerCliInputs(JSON.parse(await readFile(metafilePath, "utf8")));
+    return projectContainerBuildInputs(JSON.parse(await readFile(metafilePath, "utf8")));
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
@@ -306,10 +306,10 @@ export async function inspectContainerImageBudget(
 
 export async function prepareContainerContext(
   root = process.cwd(),
-  { discoverCliInputs = discoverContainerCliInputs, inputs } = {},
+  { discoverBuildInputs = discoverContainerBuildInputs, inputs } = {},
 ) {
   const contextInputs =
-    inputs === undefined ? projectContainerContextInputs(await discoverCliInputs(root)) : inputs;
+    inputs === undefined ? projectContainerContextInputs(await discoverBuildInputs(root)) : inputs;
   const context = join(root, CONTAINER_CONTEXT_PATH);
   const hasRootDockerignore = await access(join(root, ".dockerignore")).then(
     () => true,

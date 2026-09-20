@@ -17,31 +17,27 @@ const entry = (path: string, ...categories: readonly DeploymentPackagingCategory
 export type DeploymentPackagingEntry = ReturnType<typeof entry>;
 
 export const DEPLOYMENT_ENTRIES = Object.freeze([
-  entry("package.json", "archive", "containerStatic"),
-  entry("package-lock.json", "archive", "containerStatic"),
+  entry("package.json", "archive"),
+  entry("package-lock.json", "archive"),
   entry("cli/scotty.ts", "archive", "cliSource"),
   entry("cli/src", "archive", "cliSource"),
-  entry("skills/scotty/SKILL.md", "archive", "containerStatic"),
-  entry("skills/scotty-live-observability/SKILL.md", "archive", "containerStatic"),
+  entry("skills/scotty/SKILL.md", "archive"),
+  entry("skills/scotty-live-observability/SKILL.md", "archive"),
   entry("infra", "archive", "cliSource"),
   entry("protocol", "archive", "cliSource"),
-  entry("worker/package.json", "archive", "containerStatic"),
+  entry("worker/package.json", "archive"),
   entry("worker/src", "archive", "cliSource"),
   entry("worker/public", "archive", "archivePublic"),
   entry("worker/prebuilt", "archive"),
   entry("worker/container", "containerRuntime"),
-  entry("scripts/apply-dependency-patches.mjs", "archive", "containerStatic"),
-  entry("scripts/cloudflare-topology-data.mjs", "archive", "containerStatic"),
-  entry("scripts/container-control-plane.mjs", "archive", "containerStatic"),
-  entry("scripts/deploy-production.mjs", "archive", "containerStatic"),
-  entry("scripts/is-direct-run.mjs", "archive", "containerStatic"),
-  entry("patches/@cloudflare+sandbox+0.12.9.patch", "archive", "containerStatic"),
-  entry("patches/alchemy+2.0.0-beta.76.patch", "archive", "containerStatic"),
-  entry(
-    "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch",
-    "archive",
-    "containerStatic",
-  ),
+  entry("scripts/apply-dependency-patches.mjs", "archive"),
+  entry("scripts/cloudflare-topology-data.mjs", "archive"),
+  entry("scripts/container-control-plane.mjs", "archive"),
+  entry("scripts/deploy-production.mjs", "archive"),
+  entry("scripts/is-direct-run.mjs", "archive"),
+  entry("patches/@cloudflare+sandbox+0.12.9.patch", "archive"),
+  entry("patches/alchemy+2.0.0-beta.76.patch", "archive"),
+  entry("patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch", "archive"),
 ]);
 
 const project = (...categories: readonly DeploymentPackagingCategory[]) =>
@@ -53,7 +49,7 @@ const project = (...categories: readonly DeploymentPackagingCategory[]) =>
 
 export const DEPLOYMENT_INPUTS = project("archive");
 export const CONTAINER_STATIC_INPUTS = project("containerStatic", "containerRuntime");
-export const CONTAINER_INPUTS = project("containerStatic", "containerRuntime", "cliSource");
+export const CONTAINER_INPUTS = project("containerStatic", "containerRuntime");
 export const CLI_SOURCE_TREES = project("cliSource");
 export const CONTAINER_RUNTIME_ASSETS = project("containerRuntime");
 export const ARCHIVE_PUBLIC_ASSETS = project("archivePublic");
@@ -71,12 +67,9 @@ export const DEPLOYMENT_PACKAGING = Object.freeze({
   cliSourceTrees: CLI_SOURCE_TREES,
 });
 
-// Discover all build roots, including both native Codex entries and their Effect graphs.
+// Discover the native Codex server and its complete bundled source graph.
 export const CONTAINER_BUILD_ENTRYPOINTS = Object.freeze([
-  "cli/scotty.ts",
-  "worker/src/agent/codex/main.ts",
   "worker/src/agent/codex/server.ts",
-  "worker/src/sandbox/skill-commands.ts",
 ] as const);
 
 export const CONTAINER_CONTEXT_BUDGET = Object.freeze({

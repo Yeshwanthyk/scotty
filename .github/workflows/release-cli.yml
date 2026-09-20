@@ -127,6 +127,25 @@ jobs:
             assert.equal(info.dirty, false);
             assert.equal(info.embeddedDeployment, false);
           '
+      - name: Prove runtime CLI in the exact supported Sandbox base
+        run: |
+          set -euo pipefail
+          artifact="$PWD/dist/release/scotty-runtime-linux-amd64"
+          base_image="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const dockerfile = readFileSync("worker/container/Dockerfile", "utf8");
+            const match = /^FROM (docker\.io\/cloudflare\/sandbox:[^\s]+) AS scotty-codex-server-build$/mu.exec(dockerfile);
+            if (!match) throw new Error("Pinned Sandbox base image was not found.");
+            process.stdout.write(match[1]);
+          ')"
+          docker run --rm --platform linux/amd64 --network none \
+            -v "$artifact:/tmp/scotty-runtime:ro" \
+            --entrypoint sh "$base_image" -c \
+            'test ! -e /usr/local/bin/scotty && test "$(/tmp/scotty-runtime --version)" = "'"${GITHUB_REF_NAME#v}"'"'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scotty-runtime-linux-amd64
+          path: dist/release/scotty-runtime-linux-amd64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: scotty-runtime-linux-amd64
@@ -197,10 +216,11 @@ jobs:
           set -euo pipefail
           artifact="$PWD/dist/runtime-cli/scotty-runtime-linux-amd64"
           chmod 0755 "$artifact"
-          docker run --rm --platform "$SCOTTY_IMAGE_PLATFORM" \
+          docker run --rm --platform "$SCOTTY_IMAGE_PLATFORM" --network none \
             -v "$artifact:/tmp/scotty-runtime:ro" \
-            --entrypoint /tmp/scotty-runtime \
-            "$SCOTTY_CONTAINER_IMAGE" --build-info > "$RUNNER_TEMP/scotty-runtime-build-info.json"
+            --entrypoint sh "$SCOTTY_CONTAINER_IMAGE" -c \
+            'test ! -e /usr/local/bin/scotty && exec /tmp/scotty-runtime --build-info' \
+            > "$RUNNER_TEMP/scotty-runtime-build-info.json"
           node --input-type=module -e '
             import { readFileSync } from "node:fs";
             import assert from "node:assert/strict";

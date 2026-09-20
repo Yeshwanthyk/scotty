@@ -51,8 +51,6 @@ jobs:
         if: steps.paths.outputs.cli_clean_room == 'true' || steps.paths.outputs.cli_standalone == 'true'
         with:
           bun-version-file: .bun-version
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-        if: steps.paths.outputs.cli_clean_room == 'true'
       - if: steps.paths.outputs.cli_clean_room == 'true' || steps.paths.outputs.cli_standalone == 'true'
         run: npm ci --no-audit --no-fund
       - if: steps.paths.outputs.cli_clean_room == 'true'
@@ -60,7 +58,7 @@ jobs:
       - if: steps.paths.outputs.cli_standalone == 'true'
         run: npm run check:cli-standalone-deploy
       - if: steps.paths.outputs.cli_clean_room != 'true' && steps.paths.outputs.cli_standalone != 'true'
-        run: echo "No clean-room image or standalone CLI inputs changed."
+        run: echo "No runtime clean-room or standalone CLI inputs changed."
 
   container-image:
     runs-on: ubuntu-latest

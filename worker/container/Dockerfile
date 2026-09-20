@@ -1,35 +1,17 @@
 # syntax=docker/dockerfile:1
 
 # Keep this image version paired with @cloudflare/sandbox in worker/package.json.
-FROM docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe AS scotty-cli-build
+FROM docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe AS scotty-codex-server-build
 
 WORKDIR /build
-COPY package.json package-lock.json ./
-COPY worker/package.json worker/package.json
-COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs
-COPY scripts/cloudflare-topology-data.mjs scripts/cloudflare-topology-data.mjs
-COPY scripts/container-control-plane.mjs scripts/container-control-plane.mjs
-COPY scripts/deploy-production.mjs scripts/deploy-production.mjs
-COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs
-COPY patches/@cloudflare+sandbox+0.12.9.patch patches/@cloudflare+sandbox+0.12.9.patch
-COPY patches/alchemy+2.0.0-beta.76.patch patches/alchemy+2.0.0-beta.76.patch
-COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.76.patch
+COPY worker/container/codex-server-build/package.json package.json
+COPY worker/container/codex-server-build/package-lock.json package-lock.json
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
-RUN node scripts/apply-dependency-patches.mjs
-COPY cli/scotty.ts cli/scotty.ts
-COPY cli/src cli/src
-COPY skills/scotty/SKILL.md skills/scotty/SKILL.md
-COPY skills/scotty-live-observability/SKILL.md skills/scotty-live-observability/SKILL.md
-COPY infra infra
 COPY protocol protocol
 COPY worker/src worker/src
 COPY worker/container/pi-packages/sources/scotty-hatch/index.ts worker/container/pi-packages/sources/scotty-hatch/index.ts
 COPY worker/container/pi-packages/sources/scotty-browser-test/index.ts worker/container/pi-packages/sources/scotty-browser-test/index.ts
 RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs
-RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
-  && chmod 0755 /out/scotty \
-  && test "$(stat -c '%a' /out/scotty)" = "755" \
-  && /out/scotty --version
 
 FROM docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe AS scotty-package-image
 
@@ -199,8 +181,7 @@ ENV LANG=en_US.UTF-8 \
 
 RUN mkdir -p /workspace
 
-COPY --from=scotty-cli-build /out/scotty /usr/local/bin/scotty
-COPY --from=scotty-cli-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs
+COPY --from=scotty-codex-server-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs
 COPY worker/container/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server
 COPY worker/container/pi-packages /opt/scotty/pi-packages
 COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json
@@ -289,18 +270,17 @@ RUN set -eu; \
       grep -F -- "${package_name}" /tmp/scotty-pi-packages.list >/dev/null || exit 1; \
     done \
   && rm -rf /tmp/scotty-pi-agent /tmp/scotty-pi-help /tmp/scotty-pi-packages.list \
-  && test "$(stat -c '%a' /usr/local/bin/scotty)" = "755" \
   && test -z "$(find /opt/scotty/pi-packages /opt/scotty/playwright-browsers ! -type l -perm /222 -print -quit)" \
   && test "$(stat -c '%a' /usr/local/bin/scotty-codex-server)" = "755" \
   && node --check /usr/local/bin/scotty-codex-server \
   && node --check /usr/local/bin/scotty-codex-server.mjs \
   && test "$(pi --version)" = "${PI_VERSION}" \
-  && scotty --version \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python git gh shellcheck ffmpeg Xvfb \
-    node npm bun corepack cc pkg-config pi codex scotty scotty-codex-server scotty-pi-session ffprobe; do \
+    node npm bun corepack cc pkg-config pi codex scotty-codex-server scotty-pi-session ffprobe; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done \
+  && test ! -e /usr/local/bin/scotty \
   && rm -rf /root/.cache /root/.npm /tmp/*
 
 # The SDK base image supplies /container-server/sandbox as its ENTRYPOINT.

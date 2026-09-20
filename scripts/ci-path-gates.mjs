@@ -8,7 +8,7 @@ const tree = (path) => ({ path, tree: true });
 const projectInputs = (inputs) =>
   inputs.map((path) => (path.includes(".") ? exact(path) : tree(path)));
 
-const SHARED_BUILD_INPUTS = Object.freeze([
+const CLI_BUILD_INPUTS = Object.freeze([
   exact("package.json"),
   exact("package-lock.json"),
   exact(".nvmrc"),
@@ -21,55 +21,60 @@ const GATE_OWNERS = Object.freeze([
   exact("scripts/ci-path-gates.test.mjs"),
 ]);
 
-// This is the current Bun metafile closure, grouped only where the whole tree is an
-// intentional CLI/protocol input. A changed parent import still opens the gate when
-// the closure grows; prepare-container-context tests verify real graph discovery.
+// Current native Codex server metafile closure. Protocol leaves stay exact so
+// unrelated CLI/runtime protocol changes do not rebuild the image.
 const CONTAINER_SOURCE_INPUTS = Object.freeze([
-  exact("cli/scotty.ts"),
-  tree("cli/src"),
-  tree("protocol"),
-  exact("infra/cloudflare-stack.ts"),
-  exact("infra/external-sandbox-container-binding.ts"),
-  exact("infra/installation.ts"),
-  exact("infra/preview-ownership.ts"),
   tree("worker/src/agent/codex"),
   exact("worker/src/credentials/managed.ts"),
-  exact("worker/src/runner-worker.ts"),
-  tree("worker/src/runner"),
   exact("worker/src/runtime-cli/paths.ts"),
   exact("worker/src/sandbox/config-contracts.ts"),
   exact("worker/src/sandbox/runtime.ts"),
-  exact("worker/src/sandbox/skill-commands.ts"),
   exact("worker/src/sandbox/workspace.ts"),
   exact("worker/src/session/contracts.ts"),
   exact("worker/src/shared/bounded-http.ts"),
   exact("worker/src/shared/digest.ts"),
   exact("worker/src/shared/json.ts"),
+  ...[
+    "agent-selection.ts",
+    "cloud-settings.ts",
+    "codex-app-server.ts",
+    "codex-model-capabilities.ts",
+    "conversation.ts",
+    "credentials.ts",
+    "pi-console-shared.mjs",
+    "pi-console.ts",
+    "repository.ts",
+    "tool-display-text.ts",
+  ].map((name) => exact(`protocol/${name}`)),
 ]);
 
 const CONTAINER_BUILD_INPUTS = Object.freeze([
   ...projectInputs(CONTAINER_STATIC_INPUTS),
   ...CONTAINER_SOURCE_INPUTS,
-  ...SHARED_BUILD_INPUTS,
   ...GATE_OWNERS,
   exact(".dockerignore"),
-  exact("tsconfig.json"),
   exact("cli/src/deployment-packaging.mjs"),
   exact("cli/src/deployment-packaging.ts"),
   exact("scripts/prepare-container-context.mjs"),
   exact("scripts/prepare-container-context.test.mjs"),
 ]);
 
-const CLEAN_ROOM_IMAGE_INPUTS = Object.freeze([
-  ...CONTAINER_BUILD_INPUTS,
+const CLEAN_ROOM_CLI_INPUTS = Object.freeze([
+  ...projectInputs(DEPLOYMENT_INPUTS),
+  ...CLI_BUILD_INPUTS,
+  ...GATE_OWNERS,
+  exact("tsconfig.json"),
+  exact("cli/tsconfig.json"),
+  exact("scripts/build-runtime-cli.mjs"),
   exact("scripts/check-cli-clean-room.mjs"),
   exact("scripts/check-cli-clean-room.test.mjs"),
+  exact("worker/container/Dockerfile"),
   exact(".github/workflows/release-cli.yml"),
 ]);
 
 const STANDALONE_INPUTS = Object.freeze([
   ...projectInputs(DEPLOYMENT_INPUTS),
-  ...SHARED_BUILD_INPUTS,
+  ...CLI_BUILD_INPUTS,
   ...GATE_OWNERS,
   tree("ui"),
   exact("tsconfig.json"),
@@ -89,22 +94,25 @@ const FINAL_IMAGE_INPUTS = Object.freeze([
   exact("scripts/check-language-package-downloads.sh"),
   exact("scripts/container-probe-process.mjs"),
   exact("scripts/container-probe-process.test.mjs"),
+  exact("scripts/make-image-release.mjs"),
+  exact("scripts/make-image-release.test.mjs"),
   exact(".github/workflows/release-cli.yml"),
 ]);
 
 const CODEX_NATIVE_INPUTS = Object.freeze([
   ...GATE_OWNERS,
-  ...SHARED_BUILD_INPUTS,
   exact("worker/container/Dockerfile"),
   exact("worker/container/scotty-codex-session.mjs"),
-  tree("worker/src/agent/codex"),
+  ...CONTAINER_SOURCE_INPUTS,
   tree("worker/src/credentials"),
   tree("worker/src/runtime-cli"),
   tree("worker/src/sandbox"),
   tree("worker/src/session"),
   tree("worker/src/session-actor"),
   tree("worker/test/agent/codex"),
-  tree("protocol"),
+  exact("protocol/runtime-cli-manifest.ts"),
+  exact("protocol/runtime-cli-pin.ts"),
+  exact("protocol/runtime-image-compatibility.ts"),
   exact("scripts/check-codex-native-workflows.mjs"),
   exact("scripts/codex-session-supervisor.test.mjs"),
   exact(".github/workflows/release-cli.yml"),
@@ -119,7 +127,7 @@ const matchingPaths = (paths, inputs) =>
 export const classifyCiPaths = (paths) => {
   const changedPaths = [...new Set(paths.map((path) => path.replaceAll("\\", "/")))];
   const reasons = {
-    cli_clean_room: matchingPaths(changedPaths, CLEAN_ROOM_IMAGE_INPUTS),
+    cli_clean_room: matchingPaths(changedPaths, CLEAN_ROOM_CLI_INPUTS),
     cli_standalone: matchingPaths(changedPaths, STANDALONE_INPUTS),
     container_image: matchingPaths(changedPaths, FINAL_IMAGE_INPUTS),
     codex_native: matchingPaths(changedPaths, CODEX_NATIVE_INPUTS),
