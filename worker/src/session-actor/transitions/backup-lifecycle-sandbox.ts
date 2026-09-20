@@ -1,3 +1,4 @@
+import { RuntimeCliMaterializer } from "../../runtime-cli/materializer";
 import {
   startCodexSandbox,
   saveCodexSandbox,
@@ -268,7 +269,7 @@ const runtimeReadyProof = Effect.fnUntraced(function* (
 export const backupLifecycleSandboxLayer: Layer.Layer<
   BackupLifecycleSandbox,
   never,
-  BackupStore | ContainerAuth | SandboxRuntime | SandboxRuntimeStop
+  BackupStore | ContainerAuth | SandboxRuntime | SandboxRuntimeStop | RuntimeCliMaterializer
 > = Layer.effect(
   BackupLifecycleSandbox,
   Effect.gen(function* () {
@@ -276,6 +277,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const auth = yield* ContainerAuth;
     const runtime = yield* SandboxRuntime;
     const runtimeStop = yield* SandboxRuntimeStop;
+    const runtimeCli = yield* RuntimeCliMaterializer;
 
     const observePiStopped = Effect.fnUntraced(function* () {
       const process = yield* runtime
@@ -487,6 +489,18 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const startSupervisor = Effect.fnUntraced(function* (
       input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
     ) {
+      yield* runtimeCli
+        .materialize(input.sessionId, input.configuration?.runtimeCli)
+        .pipe(
+          Effect.mapError((error) =>
+            boundaryFailure(
+              error.reason === "runtime_unknown"
+                ? "unknown_after_admission"
+                : "rejected_before_admission",
+              `resume_runtime_cli_${error.reason}`,
+            ),
+          ),
+        );
       if (input.configuration !== undefined)
         yield* runtime
           .setEnvVars(input.configuration.environment)
@@ -532,6 +546,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
           input.sessionId,
           input.credentials,
           input.selection?.agent === "pi" ? input.selection : undefined,
+          input.configuration,
         )
         .pipe(
           Effect.mapError((error) => mapRuntimeFailure(error, "supervisor_start_outcome_unknown")),
@@ -686,7 +701,7 @@ export const backupLifecycleSandboxLayerWithHatch = (
 ): Layer.Layer<
   BackupLifecycleSandbox,
   never,
-  BackupStore | ContainerAuth | SandboxRuntime | SandboxRuntimeStop
+  BackupStore | ContainerAuth | SandboxRuntime | SandboxRuntimeStop | RuntimeCliMaterializer
 > =>
   Layer.effect(
     BackupLifecycleSandbox,

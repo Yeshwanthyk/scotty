@@ -1,3 +1,4 @@
+import { runtimeCliPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate, Schema } from "effect";
 import { TestClock } from "effect/testing";
@@ -104,6 +105,7 @@ describe("Sandbox actor create boundary", () => {
     assert.isDefined(authority);
     assert.deepStrictEqual(authority.session.selection, initial.settings.pi);
     assert.deepStrictEqual(authority.session.configuration, {
+      runtimeCli: runtimeCliPin,
       revision: 7,
       bundleDigest,
       environment: { APP_MODE: "original" },
@@ -373,6 +375,7 @@ describe("Sandbox actor create boundary", () => {
     assert.strictEqual(committed.state.transition.mode, "executing");
     assert.strictEqual(committed.revision, 1);
     assert.deepStrictEqual(committed.session.configuration, {
+      runtimeCli: runtimeCliPin,
       revision: 5,
       bundleDigest: null,
       environment: { APP_MODE: "admitted" },

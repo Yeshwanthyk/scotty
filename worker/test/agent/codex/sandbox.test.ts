@@ -1,3 +1,4 @@
+import { runtimeCliPin } from "../../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
@@ -334,6 +335,7 @@ describe("Codex Sandbox adapter", () => {
         {
           ...identity,
           configuration: {
+            runtimeCli: runtimeCliPin,
             revision: 3,
             bundleDigest: "b".repeat(64),
             environment: { APP_MODE: "pinned" },

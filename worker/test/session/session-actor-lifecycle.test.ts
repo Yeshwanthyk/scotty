@@ -1,3 +1,4 @@
+import { runtimeCliPin } from "../runtime-cli/fixtures";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Predicate, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
@@ -627,7 +628,12 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.deepStrictEqual(harness.environmentUpdates.at(-1), { APP_MODE: "pinned" });
     assert.deepStrictEqual(
       harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority)?.session.configuration,
-      { revision: 3, bundleDigest: null, environment: { APP_MODE: "pinned" } },
+      {
+        runtimeCli: runtimeCliPin,
+        revision: 3,
+        bundleDigest: null,
+        environment: { APP_MODE: "pinned" },
+      },
     );
   });
 

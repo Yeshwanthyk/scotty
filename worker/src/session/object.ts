@@ -1,3 +1,5 @@
+import { RuntimeCliMaterializer, runtimeCliMaterializerLayer } from "../runtime-cli/materializer";
+import { decodeRuntimeCliPin } from "../../../protocol/runtime-cli-pin";
 import type { PiConsoleImage } from "../../../protocol/pi-console";
 import { codexFollowUpStorage } from "./store";
 import { resolveSessionConfiguration } from "../session-actor/configuration";
@@ -747,6 +749,7 @@ export interface TerminalSessionControl {
 }
 
 export interface SandboxEffectOptions {
+  readonly runtimeCliMaterializer?: RuntimeCliMaterializer["Service"];
   readonly actorRequestRecoveryAfterResume?: () => Promise<void>;
   readonly actorRequestRecoveryBeforeResume?: () => Promise<void>;
   readonly clock?: Clock.Clock;
@@ -1215,6 +1218,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const bundleStore = sandboxBundleStoreLayer(
       r2SandboxBundleCapabilities(env.SANDBOX_BUNDLE_BUCKET),
     );
+    const runtimeCliMaterializer =
+      options.runtimeCliMaterializer === undefined
+        ? runtimeCliMaterializerLayer(
+            env.SANDBOX_BUNDLE_BUCKET,
+            env.SCOTTY_RUNTIME_IMAGE_COMPATIBILITY,
+            env.SCOTTY_CONTAINER_IMAGE_DIGEST,
+          ).pipe(Layer.provide(runtime))
+        : Layer.succeed(RuntimeCliMaterializer)(options.runtimeCliMaterializer);
     const materializer = sandboxBundleMaterializerLayer.pipe(
       Layer.provide(Layer.merge(runtime, bundleStore)),
     );
@@ -1248,21 +1259,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
             )
               return yield* rejectBoundary("create_private_payload_fence_mismatch");
 
-            // Older admitted sessions have no configuration snapshot. Only their legacy
-            // recovery path reads the active bundle; all new sessions use admission's pin.
-            const bundleDigest =
-              authority.session.configuration === undefined
-                ? yield* Effect.tryPromise({
-                    try: () => env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).status(),
-                    catch: () => rejectBoundary("create_sandbox_config_unavailable"),
-                  }).pipe(
-                    Effect.flatMap((config) =>
-                      config.ok
-                        ? Effect.succeed(config.value.activeDigest)
-                        : Effect.fail(rejectBoundary("create_sandbox_config_unavailable")),
-                    ),
-                  )
-                : authority.session.configuration.bundleDigest;
+            if (authority.session.configuration === undefined)
+              return yield* rejectBoundary("create_configuration_pin_missing");
+            const bundleDigest = authority.session.configuration.bundleDigest;
 
             const registry = env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
             if (registry === undefined)
@@ -1406,6 +1405,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           createBoundary,
           actorMetadata,
           materializer,
+          runtimeCliMaterializer,
           runtimeAndContainerAuth,
           runtime,
         ),
@@ -1430,7 +1430,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
           input.runtimeGeneration,
           input.transitionFence,
         ).pipe(Effect.provide(Layer.mergeAll(hatch, runtime))),
-    }).pipe(Layer.provide(Layer.mergeAll(backup, runtimeAndContainerAuth, actorRuntimeStop)));
+    }).pipe(
+      Layer.provide(
+        Layer.mergeAll(backup, runtimeAndContainerAuth, actorRuntimeStop, runtimeCliMaterializer),
+      ),
+    );
     const checkpointProvider = checkpointSandboxTransitionProviderLayer.pipe(
       Layer.provide(Layer.merge(backupLifecycleSandbox, actorMetadata)),
     );
@@ -3405,10 +3409,34 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 : Effect.fail(this.upstreamError("Cloud settings are unavailable", undefined)),
             ),
             Effect.flatMap((snapshot) =>
-              Effect.fromResult(resolveSessionConfiguration(snapshot, input.selection)),
+              Effect.gen({ self: this }, function* () {
+                const result = yield* Effect.tryPromise({
+                  try: () =>
+                    this.env.SANDBOX_CONFIG.getByName(
+                      SANDBOX_CONFIG_OBJECT_NAME,
+                    ).selectRuntimeCli(),
+                  catch: () =>
+                    this.upstreamError("Runtime CLI selection is unavailable", undefined),
+                });
+                if (!result.ok)
+                  return yield* this.upstreamError(
+                    `Runtime CLI admission failed: ${result.reason}`,
+                    undefined,
+                  );
+                const runtimeCli = yield* decodeRuntimeCliPin(result.value).pipe(
+                  Effect.mapError(() =>
+                    this.upstreamError("Runtime CLI selection is invalid", undefined),
+                  ),
+                );
+                return yield* Effect.fromResult(
+                  resolveSessionConfiguration(snapshot, input.selection, runtimeCli),
+                );
+              }),
             ),
-            Effect.mapError(() =>
-              this.upstreamError("Cloud settings are invalid or unavailable", undefined),
+            Effect.mapError((error) =>
+              Predicate.isTagged(error, "ScottyError")
+                ? error
+                : this.upstreamError("Cloud settings are invalid or unavailable", undefined),
             ),
           )
         : { selection: reservation.selection, configuration: reservation.configuration };

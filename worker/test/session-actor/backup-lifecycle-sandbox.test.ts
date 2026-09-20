@@ -1,3 +1,4 @@
+import { runtimeCliMaterializerTestLayer } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import type { BackupOptions, ExecResult, ProcessStatus } from "@cloudflare/sandbox";
 import { Effect, Layer, Result } from "effect";
@@ -104,6 +105,7 @@ const withProvider = <A, E>(
   } = {},
 ): Effect.Effect<A, E> => {
   const dependencies = Layer.mergeAll(
+    runtimeCliMaterializerTestLayer,
     backupStoreLayer(options.backups ?? backupCapabilities()),
     sandboxRuntimeLayer(options.runtime ?? runtimeCapabilities()),
     Layer.succeed(ContainerAuth)(options.auth ?? authService()),

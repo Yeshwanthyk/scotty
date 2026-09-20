@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -177,6 +178,42 @@ export const makeImageReleaseManifest = ({
   };
 };
 
+export const signImageRuntimeCompatibility = ({
+  imageDigest,
+  compatibility,
+  privateKeyPem,
+  trustedPublicKeyBase64 = "b+jhy/AX9PzwFWofyVVPDg/FR8YLVJ9FGIAAJVVPpPE=",
+}) => {
+  assert.ok(privateKeyPem, "SCOTTY_RELEASE_ED25519_PRIVATE_KEY is required.");
+  const payload = { imageDigest, compatibility };
+  const bytes = new TextEncoder().encode(
+    JSON.stringify([
+      "scotty-standard-image-runtime-compatibility-v1",
+      imageDigest,
+      compatibility.bunVersion,
+      compatibility.compileTarget,
+      compatibility.cpu,
+      compatibility.libc,
+      compatibility.cloudflareSandbox.packageVersion,
+      compatibility.cloudflareSandbox.image,
+    ]),
+  );
+  const signature = sign(null, bytes, createPrivateKey(privateKeyPem));
+  const key = createPublicKey({
+    key: Buffer.concat([
+      Buffer.from("302a300506032b6570032100", "hex"),
+      Buffer.from(trustedPublicKeyBase64, "base64"),
+    ]),
+    format: "der",
+    type: "spki",
+  });
+  assert.ok(
+    verify(null, bytes, key, signature),
+    "Release signing key does not match Scotty trust root.",
+  );
+  return { ...payload, signature: signature.toString("base64") };
+};
+
 export const makeImageRelease = async ({
   environment = process.env,
   root = process.cwd(),
@@ -212,6 +249,17 @@ export const makeImageRelease = async ({
     attestationUrl: input.attestationUrl,
     labels,
     compatibility,
+  });
+  manifest.runtimeCompatibility = signImageRuntimeCompatibility({
+    imageDigest: input.digest,
+    compatibility: {
+      bunVersion: (await readFile(resolve(root, ".bun-version"), "utf8")).trim(),
+      compileTarget: "bun-linux-x64-baseline",
+      cpu: "x86-64-baseline",
+      libc: "glibc",
+      cloudflareSandbox: compatibility.cloudflareSandbox,
+    },
+    privateKeyPem: environment.SCOTTY_RELEASE_ED25519_PRIVATE_KEY,
   });
   const output = resolve(input.manifestPath);
   await writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644 });

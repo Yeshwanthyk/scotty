@@ -1,3 +1,8 @@
+import {
+  RuntimeImageCompatibilityEvidenceSchema,
+  verifyRuntimeImageCompatibility,
+  type RuntimeImageCompatibilityEvidence,
+} from "../../protocol/runtime-image-compatibility";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, platform as hostPlatform, arch as hostArchitecture, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,6 +39,7 @@ const ImageConfiguration = Schema.Struct({
   os: Schema.Literal("linux"),
 });
 export const ContainerImageReleaseManifestSchema = Schema.Struct({
+  runtimeCompatibility: Schema.optionalKey(RuntimeImageCompatibilityEvidenceSchema),
   version: Schema.Literal(1),
   releaseTag: Schema.NonEmptyString,
   image: Schema.Struct({
@@ -61,6 +67,7 @@ const isImageReference = Schema.is(ImageReference);
 const isDigest = Schema.is(Digest);
 
 export interface ContainerImageSource {
+  readonly runtimeCompatibility?: RuntimeImageCompatibilityEvidence;
   readonly reference: string;
   readonly digest: string;
   readonly expectedConfigDigest?: string;
@@ -390,7 +397,12 @@ export const decodeReleasedContainerImage = (
         message: "The Scotty release image manifest contains inconsistent image identity fields.",
       }),
     );
-  return source;
+  return {
+    ...source,
+    ...(decoded.value.runtimeCompatibility === undefined
+      ? {}
+      : { runtimeCompatibility: decoded.value.runtimeCompatibility }),
+  };
 };
 
 export const fetchReleasedContainerImage = Effect.fnUntraced(function* (
@@ -432,7 +444,7 @@ export const fetchReleasedContainerImage = Effect.fnUntraced(function* (
         cause,
       }),
   });
-  return yield* Effect.try({
+  const source = yield* Effect.try({
     try: () => decodeReleasedContainerImage(new TextDecoder().decode(bytes), releaseTag),
     catch: (cause) =>
       isContainerImageError(cause)
@@ -443,7 +455,20 @@ export const fetchReleasedContainerImage = Effect.fnUntraced(function* (
             cause,
           }),
   });
+  yield* verifyContainerRuntimeCompatibility(source);
+  return source;
 });
+
+export const verifyContainerRuntimeCompatibility = (source: ContainerImageSource) =>
+  verifyRuntimeImageCompatibility(source.runtimeCompatibility, source.digest).pipe(
+    Effect.mapError(
+      () =>
+        new ContainerImageError({
+          reason: "invalid_source",
+          message: "Standard image runtime compatibility evidence is missing or invalid.",
+        }),
+    ),
+  );
 
 export interface CraneCommand {
   readonly args: ReadonlyArray<string>;

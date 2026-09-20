@@ -1,3 +1,5 @@
+import type { RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import { runtimeCliPin } from "../runtime-cli/fixtures";
 import type {
   BackupOptions,
   DirectoryBackup,
@@ -569,6 +571,8 @@ export type HarnessFailureStage =
   | "workspacePrepare";
 
 export interface HarnessOptions {
+  readonly readRuntimeCli?: () => RuntimeCliPin;
+  readonly runtimeCliMaterializer?: SandboxEffectOptions["runtimeCliMaterializer"];
   readonly readCloudSettings?: () => CloudSettingsSnapshot;
   readonly containerFetch?: (request: Request, port: number) => Promise<Response>;
   readonly actorRequestRecoveryAfterResume?: SandboxEffectOptions["actorRequestRecoveryAfterResume"];
@@ -1437,6 +1441,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     CREDENTIALS: credentialRegistry,
     SANDBOX_CONFIG: {
       getByName: () => ({
+        selectRuntimeCli: async () => {
+          events.push("runtime-cli:select");
+          return { ok: true as const, value: options.readRuntimeCli?.() ?? runtimeCliPin };
+        },
         settings: async () => {
           sandboxConfigStatusCalls += 1;
           if (options.sandboxConfigStatusFailure !== undefined)
@@ -1598,6 +1606,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     actorRequestRecoveryBeforeResume: options.actorRequestRecoveryBeforeResume,
     clock: options.clock,
     containerEvidenceRecorder: options.containerEvidenceRecorder,
+    runtimeCliMaterializer: options.runtimeCliMaterializer ?? { materialize: () => Effect.void },
     evidencePreviewHostTimeoutMillis: options.evidencePreviewHostTimeoutMillis,
     hatchPublicProbe:
       options.hatchPublicProbe ??

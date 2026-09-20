@@ -1,3 +1,7 @@
+import { SANDBOX_MAX_FILE_BYTES } from "./archive";
+import type { SessionConfiguration } from "../session-actor/configuration";
+import { sandboxBundleRoot } from "./bundle-materializer";
+import { runtimeCliPath } from "../runtime-cli/paths";
 import type { PiConsoleImage } from "../../../protocol/pi-console";
 import {
   PiModelSettingSchema,
@@ -15,6 +19,7 @@ import type { SessionRecord } from "../session/contracts";
 import { sha256Hex } from "../shared/digest";
 import {
   PiPackageNameSchema,
+  SandboxBundleManifestSchema,
   SandboxBundleItemNameSchema,
   SkillNameSchema,
   type SandboxBundleItemKind,
@@ -121,6 +126,11 @@ const bundleItemPath = (bundleRoot: string, kind: SandboxBundleItemKind, name: s
   if (kind === "package") return extraPackagePath(bundleRoot, name);
   return `${bundleRoot}/${kind}s/${name}`;
 };
+
+const decodePinnedBundleManifest = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(SandboxBundleManifestSchema),
+  { onExcessProperty: "error" },
+);
 
 const decodeSkillName = Schema.decodeUnknownOption(SkillNameSchema);
 const decodePiPackageName = Schema.decodeUnknownOption(PiPackageNameSchema);
@@ -315,9 +325,7 @@ const terminalShell = (
 ): string => {
   const env = {
     ...agentEnv(id, credentials),
-    ...(toolPaths.length === 0
-      ? {}
-      : { PATH: `${toolPaths.join(":")}:/usr/local/bin:/usr/bin:/bin` }),
+    ...(toolPaths.length === 0 ? {} : { PATH: runtimeCliPath(id, toolPaths) }),
   };
   const exports = Object.entries(env)
     .map(([name, value]) => `export ${name}=${shellQuote(value)}`)
@@ -387,6 +395,7 @@ interface ContainerAuthShape {
     id: SessionRecord["id"],
     credentials: SessionRuntimeCredentials,
     selection?: PiAgentSelection,
+    configuration?: SessionConfiguration,
   ) => Effect.Effect<string, SandboxRuntimeFailure>;
   readonly waitForPiSessionReady: (
     id: SessionRecord["id"],
@@ -554,9 +563,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       );
       const env = {
         ...agentEnv(id, credentials),
-        ...(toolPaths.length === 0
-          ? {}
-          : { PATH: `${toolPaths.join(":")}:/usr/local/bin:/usr/bin:/bin` }),
+        ...(toolPaths.length === 0 ? {} : { PATH: runtimeCliPath(id, toolPaths) }),
       };
       yield* runtime.setEnvVars(env);
       const root = sessionRoot(id);
@@ -569,6 +576,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       id: SessionRecord["id"],
       credentials: SessionRuntimeCredentials,
       selection?: PiAgentSelection,
+      configuration?: SessionConfiguration,
     ) {
       const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
       if (existing?.status === "starting") return existing.id;
@@ -581,6 +589,24 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         yield* existing.waitForExit(10_000);
       }
       yield* refreshPiAuth(id, credentials, selection);
+      let toolPaths: ReadonlyArray<string> = [];
+      if (configuration?.bundleDigest) {
+        const bundleRoot = sandboxBundleRoot(id, configuration.bundleDigest);
+        const bytes = yield* runtime.readFile(
+          `${bundleRoot}/manifest.json`,
+          SANDBOX_MAX_FILE_BYTES,
+        );
+        const manifest = yield* decodePinnedBundleManifest(new TextDecoder().decode(bytes)).pipe(
+          Effect.mapError(
+            () =>
+              new SandboxRuntimeFailure({
+                reason: "nonzero_exit",
+                message: "Pinned sandbox tool manifest is invalid",
+              }),
+          ),
+        );
+        toolPaths = (yield* resolveSeedExtras({ bundleRoot, items: manifest.items })).toolPaths;
+      }
       const transportToken = yield* derivePiSessionTransportToken(id);
       const tokenPath = piSessionTokenPath(id);
       yield* runtime.writeFile(tokenPath, transportToken);
@@ -591,6 +617,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         env: {
           ...agentEnv(id, credentials),
           SCOTTY_PI_SESSION_PORT: String(PI_SESSION_PORT),
+          PATH: runtimeCliPath(id, toolPaths),
           SCOTTY_PI_SESSION_TOKEN_FILE: tokenPath,
           SCOTTY_WORKSPACE: sessionRoot(id),
           ...(selection?.modelProvider === undefined
@@ -787,6 +814,7 @@ export function agentEnv(
     CODEX_HOME: `${sessionRoot(id)}/.codex`,
     PI_CODING_AGENT_DIR: `${sessionRoot(id)}/.pi-agent`,
     SCOTTY_SESSION_ID: id,
+    PATH: runtimeCliPath(id),
     GIT_CONFIG_GLOBAL: `${sessionRoot(id)}/.pi-agent/gitconfig`,
     ...(github === undefined ? {} : { GH_TOKEN: github }),
     GH_PROMPT_DISABLED: "1",

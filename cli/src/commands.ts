@@ -967,7 +967,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             }
             if (Option.isSome(existingJournal)) {
               containerImage = yield* selectedContainerImage(
-                existingJournal.value.containerImageReference,
+                existingJournal.value.containerImageSource === undefined
+                  ? undefined
+                  : existingJournal.value.containerImageReference,
               );
               containerImageSource = existingJournal.value.containerImageSource;
             } else {

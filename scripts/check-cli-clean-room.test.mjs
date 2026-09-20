@@ -115,7 +115,7 @@ describe("clean-room CLI image gate", () => {
       release,
       /node scripts\/check-cli-standalone-deploy\.mjs dist\/release\/scotty-linux-x64/u,
     );
-    assert.match(releaseAttestJob, /attest:\n    needs: build/u);
+    assert.match(releaseAttestJob, /attest:\n    needs: \[build, runtime-cli\]/u);
     assert.doesNotMatch(releaseBuildJob, /id-token: write/u);
     assert.doesNotMatch(releaseBuildJob, /attestations: write/u);
     assert.match(releaseAttestJob, /id-token: write/u);

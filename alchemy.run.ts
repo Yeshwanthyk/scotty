@@ -1,3 +1,4 @@
+import { RuntimeImageCompatibilityEvidenceSchema } from "./protocol/runtime-image-compatibility";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
@@ -56,6 +57,9 @@ if (!/^[0-9a-f]{32}$/u.test(expectedAccountId)) {
 }
 const decodeExpectedAccountId = Schema.decodeUnknownEffect(Schema.Literal(expectedAccountId));
 const containerImageDigest = required("SCOTTY_CONTAINER_IMAGE_DIGEST");
+const decodeRuntimeCompatibility = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(RuntimeImageCompatibilityEvidenceSchema),
+);
 if (!/^sha256:[0-9a-f]{64}$/u.test(containerImageDigest)) {
   // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects an unverified image selector
   throw new Error("SCOTTY_CONTAINER_IMAGE_DIGEST must identify a verified prepushed image.");
@@ -76,12 +80,21 @@ export default Alchemy.Stack(
     yield* decodeExpectedAccountId(accountId).pipe(
       Effect.mapError((cause) => new Config.ConfigError(cause)),
     );
+    const runtimeCompatibility =
+      process.env.SCOTTY_RUNTIME_IMAGE_COMPATIBILITY === undefined
+        ? undefined
+        : yield* decodeRuntimeCompatibility(process.env.SCOTTY_RUNTIME_IMAGE_COMPATIBILITY).pipe(
+            Effect.mapError((cause) => new Config.ConfigError(cause)),
+          );
     return yield* cloudflareStack({
       stage,
       telemetryDisabled: process.env.ALCHEMY_TELEMETRY_DISABLED === "1",
       deploymentRoot,
       installation,
-      containerImage: { digest: containerImageDigest },
+      containerImage: {
+        digest: containerImageDigest,
+        ...(runtimeCompatibility === undefined ? {} : { runtimeCompatibility }),
+      },
       resourceConfirmation: process.env.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED,
       approval: process.env.SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL,
     });

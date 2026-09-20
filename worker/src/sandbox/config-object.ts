@@ -1,5 +1,18 @@
+import type { RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import { Schema } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { verifyRuntimeImageCompatibility } from "../../../protocol/runtime-image-compatibility";
+import { makeRuntimeCliReleaseResolverForClient } from "../runtime-cli/release-resolver";
+import { makeRuntimeCliCacheForServices, r2RuntimeCliCacheBucket } from "../runtime-cli/cache";
+import { makeRuntimeCliSelection, RuntimeCliSelectionFailure } from "../runtime-cli/selection";
+import { readRuntimeCliArtifact } from "../runtime-cli/artifact";
+
+const decodeCompatibilityJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+export type RuntimeCliSelectionRpcResult =
+  | { readonly ok: true; readonly value: RuntimeCliPin }
+  | { readonly ok: false; readonly reason: string };
 import { DurableObject } from "cloudflare:workers";
-import { Effect, Result } from "effect";
+import { Effect, Predicate, Result } from "effect";
 import type { Bindings } from "../shared/bindings";
 import type { RepositoryRegistryEntry } from "../../../protocol/repository";
 import type { CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
@@ -10,6 +23,7 @@ import type {
 } from "./config-contracts";
 import {
   SandboxConfigStore,
+  durableRuntimeCliSelectionStorage,
   type SandboxConfigFailure,
   durableObjectSandboxConfigAuthorityStorage,
   sandboxConfigStoreLayer,
@@ -50,6 +64,46 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
       durableObjectSandboxConfigAuthorityStorage(ctx.storage),
     );
     this.repoLayer = installationRepoStoreLayer(durableObjectInstallationRepoStorage(ctx.storage));
+  }
+
+  async selectRuntimeCli(): Promise<RuntimeCliSelectionRpcResult> {
+    const program = Effect.gen({ self: this }, function* () {
+      const raw = yield* decodeCompatibilityJson(
+        this.env.SCOTTY_RUNTIME_IMAGE_COMPATIBILITY || "null",
+      );
+      const evidence = yield* verifyRuntimeImageCompatibility(
+        raw,
+        this.env.SCOTTY_CONTAINER_IMAGE_DIGEST ?? "",
+      );
+      const client = yield* HttpClient.HttpClient;
+      const selection = makeRuntimeCliSelection(
+        durableRuntimeCliSelectionStorage(this.ctx.storage),
+        makeRuntimeCliReleaseResolverForClient(client),
+        makeRuntimeCliCacheForServices(
+          client,
+          r2RuntimeCliCacheBucket(this.env.SANDBOX_BUNDLE_BUCKET),
+        ),
+      );
+      const pin = yield* selection.select(evidence.compatibility);
+      const body = yield* readRuntimeCliArtifact(this.env.SANDBOX_BUNDLE_BUCKET, pin.descriptor);
+      yield* Effect.tryPromise({
+        try: () => body.cancel(),
+        catch: () => new RuntimeCliSelectionFailure({ reason: "storage" }),
+      });
+      return pin;
+    }).pipe(Effect.provide(FetchHttpClient.layer), Effect.result);
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: native Durable Object RPC returns a Promise to the host
+    const result = await Effect.runPromise(program);
+    return Result.match(result, {
+      onSuccess: (value) => ({ ok: true, value }),
+      onFailure: (error) => ({
+        ok: false,
+        reason: Predicate.isTagged(error, "RuntimeImageCompatibilityError")
+          ? `runtime_cli_${error.reason}`
+          : // oxlint-disable-next-line scotty/no-manual-tag-check -- boundary: RPC exposes only a typed failure code, never upstream causes or request data
+            error._tag,
+      }),
+    });
   }
 
   status(): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
@@ -112,6 +166,7 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
 }
 
 export type ScottySandboxConfigStub = {
+  readonly selectRuntimeCli: () => Promise<RuntimeCliSelectionRpcResult>;
   readonly status: () => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;
   readonly activate: (
     input: SandboxActivateInput,

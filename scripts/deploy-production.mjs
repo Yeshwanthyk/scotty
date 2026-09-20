@@ -1057,6 +1057,11 @@ function productionEnvironment(environment = process.env, expectedAccountId) {
     SCOTTY_CONTAINER_APPLICATION_NAME: topology.containerName,
     SCOTTY_CONTAINER_IMAGE_SOURCE: containerImage.reference,
     SCOTTY_CONTAINER_IMAGE_DIGEST: containerImage.digest,
+    ...(environment.SCOTTY_RUNTIME_IMAGE_COMPATIBILITY === undefined
+      ? {}
+      : {
+          SCOTTY_RUNTIME_IMAGE_COMPATIBILITY: environment.SCOTTY_RUNTIME_IMAGE_COMPATIBILITY,
+        }),
     ...(expectedAccountId === undefined ? {} : { SCOTTY_EXPECTED_ACCOUNT_ID: expectedAccountId }),
     SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED: resourceConfirmation,
     SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL: `deploy:${topology.installationName}:${topology.workerName}`,
