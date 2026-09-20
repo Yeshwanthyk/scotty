@@ -13,6 +13,8 @@ import {
   signRuntimeCliReleasePayload,
 } from "./make-runtime-cli-release.mjs";
 
+const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+const releaseTag = `v${version}`;
 const revision = "a".repeat(40);
 const digest = "b".repeat(64);
 const cloudflareSandbox = {
@@ -30,7 +32,7 @@ const keyPair = () => {
 };
 const payload = (patch = {}) =>
   makeRuntimeCliReleasePayload({
-    releaseTag: "v0.3.19",
+    releaseTag,
     revision,
     byteSize: 123,
     sha256: digest,
@@ -45,10 +47,10 @@ describe("S2b runtime CLI release", () => {
   it("binds the executable identity, target, size, digest, mode, and compatibility", () => {
     assert.deepEqual(payload(), {
       schemaVersion: 1,
-      releaseTag: "v0.3.19",
+      releaseTag,
       artifact: {
         name: RUNTIME_CLI_ASSET_NAME,
-        cliVersion: "0.3.19",
+        cliVersion: version,
         revision,
         target: "linux/amd64",
         byteSize: 123,
@@ -91,7 +93,7 @@ describe("S2b runtime CLI release", () => {
     );
 
     for (const changed of [
-      { ...signed, releaseTag: "v0.3.20" },
+      { ...signed, releaseTag: `${releaseTag}-tampered` },
       { ...signed, artifact: { ...signed.artifact, revision: "c".repeat(40) } },
       { ...signed, artifact: { ...signed.artifact, target: "linux/arm64" } },
       { ...signed, artifact: { ...signed.artifact, byteSize: 124 } },
@@ -127,7 +129,7 @@ describe("S2b runtime CLI release", () => {
   it("rejects malformed release claims", () => {
     for (const patch of [
       { releaseTag: "latest" },
-      { releaseTag: "v0.3.18" },
+      { releaseTag: `${releaseTag}-mismatch` },
       { revision: "short" },
       { byteSize: 0 },
       { sha256: "bad" },
@@ -202,7 +204,7 @@ describe("S2b runtime CLI release", () => {
       const asset = join(directory, RUNTIME_CLI_ASSET_NAME);
       await writeFile(asset, "runtime-cli", { mode: 0o600 });
       const manifest = await makeRuntimeCliRelease({
-        releaseTag: "v0.3.19",
+        releaseTag,
         assetDirectory: directory,
         revision,
         privateKeyPem: keys.privateKeyPem,
