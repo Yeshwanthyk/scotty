@@ -36,17 +36,31 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: true
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Detect expensive CI paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci-path-gates.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: steps.paths.outputs.cli_clean_room == 'true' || steps.paths.outputs.cli_standalone == 'true'
         with:
           bun-version-file: .bun-version
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - run: npm ci --no-audit --no-fund
-      - run: npm run check:cli-clean-room
-      - run: npm run check:cli-standalone-deploy
+        if: steps.paths.outputs.cli_clean_room == 'true'
+      - if: steps.paths.outputs.cli_clean_room == 'true' || steps.paths.outputs.cli_standalone == 'true'
+        run: npm ci --no-audit --no-fund
+      - if: steps.paths.outputs.cli_clean_room == 'true'
+        run: npm run check:cli-clean-room
+      - if: steps.paths.outputs.cli_standalone == 'true'
+        run: npm run check:cli-standalone-deploy
+      - if: steps.paths.outputs.cli_clean_room != 'true' && steps.paths.outputs.cli_standalone != 'true'
+        run: echo "No clean-room image or standalone CLI inputs changed."
 
   container-image:
     runs-on: ubuntu-latest
@@ -55,14 +69,29 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: true
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Detect expensive CI paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci-path-gates.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: steps.paths.outputs.container_image == 'true' || steps.paths.outputs.codex_native == 'true'
         with:
           bun-version-file: .bun-version
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - run: npm ci --no-audit --no-fund
-      - run: npm run check:container-image
-      - run: npm run check:codex-native-workflows
+        if: steps.paths.outputs.container_image == 'true' || steps.paths.outputs.codex_native == 'true'
+      - if: steps.paths.outputs.container_image == 'true' || steps.paths.outputs.codex_native == 'true'
+        run: npm ci --no-audit --no-fund
+      # Native callback changes still need the pinned image even when its baked inputs are unchanged.
+      - if: steps.paths.outputs.container_image == 'true' || steps.paths.outputs.codex_native == 'true'
+        run: npm run check:container-image
+      - if: steps.paths.outputs.codex_native == 'true'
+        run: npm run check:codex-native-workflows
+      - if: steps.paths.outputs.container_image != 'true' && steps.paths.outputs.codex_native != 'true'
+        run: echo "No container image or native Codex workflow inputs changed."

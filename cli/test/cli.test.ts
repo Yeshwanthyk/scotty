@@ -1,6 +1,6 @@
 import { strict as nodeAssert } from "node:assert";
-import { afterEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -13,6 +13,35 @@ import { managedInstallationPath } from "../src/managed-installation-path.mjs";
 import { deploymentPlanPath } from "../src/deployment-plan";
 import { Schema } from "effect";
 import type { CloudSettings } from "../../protocol/cloud-settings";
+import {
+  runtimeImageCompatibilityBytes,
+  type RuntimeImageCompatibilityEvidence,
+} from "../../protocol/runtime-image-compatibility";
+
+const runtimeCompatibilityKeys = generateKeyPairSync("ed25519");
+const runtimeCompatibilityPublicKey = runtimeCompatibilityKeys.publicKey
+  .export({ format: "der", type: "spki" })
+  .subarray(-32);
+const originalSubtleImportKey = crypto.subtle.importKey;
+
+beforeAll(() => {
+  Object.defineProperty(crypto.subtle, "importKey", {
+    configurable: true,
+    value: () =>
+      originalSubtleImportKey.call(
+        crypto.subtle,
+        "raw",
+        Uint8Array.from(runtimeCompatibilityPublicKey),
+        "Ed25519",
+        false,
+        ["verify"],
+      ),
+  });
+});
+
+afterAll(() => {
+  Reflect.deleteProperty(crypto.subtle, "importKey");
+});
 
 const temporaryDirectories: string[] = [];
 
@@ -172,9 +201,34 @@ const CUSTOM_IMAGE_REFERENCE = `ghcr.io/example/custom@sha256:${"d".repeat(64)}`
 const OVERRIDE_IMAGE_REFERENCE = `ghcr.io/example/override@sha256:${"e".repeat(64)}`;
 const DEPLOYED_IMAGE_REFERENCE = `registry.cloudflare.com/${"0".repeat(32)}/scotty-home-sandbox@${RELEASE_IMAGE_DIGEST}`;
 
+const releaseRuntimeCompatibility = (): RuntimeImageCompatibilityEvidence => {
+  const payload = {
+    imageDigest: RELEASE_IMAGE_DIGEST,
+    compatibility: {
+      bunVersion: "1.3.13",
+      compileTarget: "bun-linux-x64-baseline" as const,
+      cpu: "x86-64-baseline" as const,
+      libc: "glibc" as const,
+      cloudflareSandbox: {
+        packageVersion: "0.12.9",
+        image: `docker.io/cloudflare/sandbox:0.12.9@sha256:${"c".repeat(64)}`,
+      },
+    },
+  };
+  return {
+    ...payload,
+    signature: sign(
+      null,
+      runtimeImageCompatibilityBytes(payload),
+      runtimeCompatibilityKeys.privateKey,
+    ).toString("base64"),
+  };
+};
+
 const releaseImageManifest = () => ({
   version: 1,
   releaseTag: `v${VERSION}`,
+  runtimeCompatibility: releaseRuntimeCompatibility(),
   image: {
     repository: "index.docker.io/example/scotty",
     digest: RELEASE_IMAGE_DIGEST,
@@ -2008,6 +2062,7 @@ describe("configuration and transport", () => {
         reference: RELEASE_IMAGE_REFERENCE,
         digest: RELEASE_IMAGE_DIGEST,
         expectedConfigDigest: RELEASE_CONFIG_DIGEST,
+        runtimeCompatibility: releaseRuntimeCompatibility(),
       },
       expectedAccountId: "0123456789abcdef0123456789abcdef",
       expectedPlanFingerprint: "plan-1",

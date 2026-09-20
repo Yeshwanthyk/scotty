@@ -355,7 +355,10 @@ test("passes explicit Session identity without inheriting the parent environment
   const host = await f.launch();
   const rows = await f.rows();
   assert.equal(rows[0].env.SCOTTY_SESSION_ID, "a0b1c2d3e4f5");
-  assert.equal(rows[0].env.PATH, "/usr/local/bin:/usr/bin:/bin");
+  assert.equal(
+    rows[0].env.PATH,
+    "/workspace/a0b1c2d3e4f5/.scotty/runtime-cli/bin:/usr/local/bin:/usr/bin:/bin",
+  );
   assert.equal(rows[0].env.GH_TOKEN, "scotty-managed://github/github/git-https");
   assert.equal(rows[0].env.GIT_CONFIG_GLOBAL, "/workspace/a0b1c2d3e4f5/.pi-agent/gitconfig");
   assert.equal(rows[0].env.GIT_TERMINAL_PROMPT, "0");
