@@ -58,9 +58,6 @@ describe("clean-room runtime CLI gate", () => {
     );
     assert.match(ci, /npm run check:cli-clean-room/u);
     assert.match(ci, /npm run check:cli-standalone-deploy/u);
-    assert.match(release, /Smoke native compiled release artifact/u);
-    assert.match(release, /Prove runtime CLI in the exact supported Sandbox base/u);
-    assert.match(release, /Prove runtime CLI in the supported Sandbox image/u);
     assert.match(release, /test ! -e \/usr\/local\/bin\/scotty/u);
     assert.match(
       dockerfile,

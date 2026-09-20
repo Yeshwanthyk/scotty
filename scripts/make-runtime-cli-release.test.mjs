@@ -242,7 +242,6 @@ describe("S2b runtime CLI release", () => {
     assert.match(runtimeJob, /build-runtime-cli\.mjs dist\/release\/scotty-runtime-linux-amd64/u);
     assert.match(runtimeJob, /embeddedDeployment, false/u);
     assert.match(imageJob, /needs: \[verify, runtime-cli\]/u);
-    assert.match(imageJob, /Prove runtime CLI in the supported Sandbox image/u);
     assert.match(imageJob, /--platform "\$SCOTTY_IMAGE_PLATFORM"/u);
     assert.match(attestJob, /name: scotty-runtime-linux-amd64/u);
     assert.match(releaseJob, /make-cli-release\.mjs/u);

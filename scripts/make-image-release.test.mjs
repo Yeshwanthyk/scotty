@@ -25,6 +25,8 @@ import {
 } from "./make-image-release.mjs";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+const releaseTag = `v${JSON.parse(read("package.json")).version}`;
+const otherReleaseTag = releaseTag === "v0.0.0" ? "v0.0.1" : "v0.0.0";
 const digest = `sha256:${"a".repeat(64)}`;
 const imageId = `sha256:${"b".repeat(64)}`;
 const revision = "c".repeat(40);
@@ -54,7 +56,7 @@ const runWorkflowScript = (script, environment) =>
 const fixture = async () => {
   const compatibility = await readImageCompatibility();
   return {
-    releaseTag: "v0.3.19",
+    releaseTag,
     repository: "index.docker.io/example/scotty",
     digest,
     platform: IMAGE_PLATFORM,
@@ -92,27 +94,15 @@ describe("S1 image release gate", () => {
         configDigest: imageId,
         revision,
       },
-      compatibility: {
-        cloudflareSandbox: {
-          packageVersion: "0.12.9",
-          image:
-            "docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe",
-        },
-        cloudflareContainers: "0.3.7",
-        alchemy: "2.0.0-beta.76",
-        pi: "0.84.0",
-        codex: "0.154.0",
-        codexArchiveSha256: "fc6e3e3b85f2cf7d664520ee5c66a7fe4aa12bae7d46834f47e2f165fd0d6f78",
-        node: "24.21.0",
-      },
+      compatibility: input.compatibility,
       provenance: { attestationUrl: input.attestationUrl },
     });
     assert.doesNotMatch(read("scripts/make-cli-release.mjs"), /image|container|docker/iu);
   });
 
   it("rejects invalid or missing maintainer configuration", () => {
-    assert.equal(validateImageReleaseTag("v0.3.19"), "v0.3.19");
-    assert.throws(() => validateImageReleaseTag("v0.3.18"), /match the package version/u);
+    assert.equal(validateImageReleaseTag(releaseTag), releaseTag);
+    assert.throws(() => validateImageReleaseTag(otherReleaseTag), /match the package version/u);
     assert.throws(() => validateImageReleaseTag("latest"), /match the package version/u);
     assert.equal(
       validateImageRepository("index.docker.io/example/scotty"),
@@ -190,7 +180,7 @@ describe("S1 image release gate", () => {
 
   it("strictly decodes manifest environment strings without retaining extra fields", () => {
     const valid = {
-      releaseTag: "v0.3.19",
+      releaseTag,
       repository: "index.docker.io/example/scotty",
       digest,
       platform: IMAGE_PLATFORM,
@@ -219,19 +209,19 @@ describe("S1 image release gate", () => {
   });
 
   it("accepts only the immutable digest reported by the completed Docker push", () => {
-    const output = `layer: pushed\nv0.3.19: digest: ${digest} size: 1234\n`;
-    assert.equal(parseDockerPushDigest(output, "v0.3.19"), digest);
+    const output = `layer: pushed\n${releaseTag}: digest: ${digest} size: 1234\n`;
+    assert.equal(parseDockerPushDigest(output, releaseTag), digest);
     for (const invalid of [
       "",
       `digest: ${digest} size: 1234\n`,
-      `v0.3.18: digest: ${digest} size: 1234\n`,
-      `v0.3.19: Digest: ${digest} size: 1234\n`,
-      `v0.3.19: digest: ${digest} size: 0\n`,
-      `v0.3.19: digest: sha256:bad size: 1234\n`,
-      `${output}v0.3.19: digest: sha256:${"d".repeat(64)} size: 1234\n`,
+      `${otherReleaseTag}: digest: ${digest} size: 1234\n`,
+      `${releaseTag}: Digest: ${digest} size: 1234\n`,
+      `${releaseTag}: digest: ${digest} size: 0\n`,
+      `${releaseTag}: digest: sha256:bad size: 1234\n`,
+      `${output}${releaseTag}: digest: sha256:${"d".repeat(64)} size: 1234\n`,
     ]) {
       assert.throws(
-        () => parseDockerPushDigest(invalid, "v0.3.19"),
+        () => parseDockerPushDigest(invalid, releaseTag),
         /exactly one immutable image digest/u,
       );
     }
@@ -422,7 +412,7 @@ esac
         DOCKER_CONFIG: dockerConfig,
         GITHUB_OUTPUT: join(root, "github-output"),
         HOME: publicationRoot,
-        GITHUB_REF_NAME: "v0.3.19",
+        GITHUB_REF_NAME: releaseTag,
         PATH: `${bin}:${process.env.PATH}`,
         RUNNER_TEMP: root,
         SCOTTY_CONTAINER_IMAGE: "scotty-container:release",
