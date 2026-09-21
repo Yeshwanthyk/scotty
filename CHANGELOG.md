@@ -7,8 +7,6 @@ change behavior users need to know about.
 
 ## Unreleased
 
-## 0.3.23 — 2026-09-21
-
 ### Added
 
 - Manage individual cloud resources from the CLI with `scotty resources list`,
