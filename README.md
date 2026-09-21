@@ -1,104 +1,72 @@
-# Scotty
-
-Scotty runs Pi in a persistent Cloudflare Sandbox workspace, presents its live worklog at an
-authenticated `/s/<id>` URL, checkpoints the workspace to R2, and can resume, archive a rollout,
-or permanently destroy the session.
-
 ![Scotty](assets/brand/scotty-hero-16x9.png)
 
-## Set up with an AI agent
+# Beam up a task. From anywhere.
+
+Run coding agents across your repos without tying up your machine. Start sessions, follow
+progress, and steer the work from your browser or terminal. Work with several agents at once
+and try the apps they build.
+
+## Setup
+
+You’ll need Docker, an authenticated GitHub CLI, and a Cloudflare account with a domain for app previews.
+
+[Install the signed CLI](#cli). Already installed? Run `scotty upgrade` to update the CLI.
+For cloud updates and agent skill discovery, see [Setup and updates](docs/setup.md).
+
+Create your installation:
+
+```sh
+scotty init --name NAME --preview-base DOMAIN --preview-zone-id ZONE_ID
+scotty doctor --json
+scotty owner recover
+```
+
+`init` guides you through agent selection, credentials, and repositories. It shows the Cloudflare
+resources before asking you to approve deployment.
 
 Copy this prompt into your coding agent:
 
 ```text
-Set up Scotty on this machine end to end using only the signed `scotty` executable. Do not clone the
-Scotty repository and do not deploy with Wrangler, Alchemy, npm, or source scripts.
+Set up Scotty for me:
+https://github.com/Yeshwanthyk/scotty
 
-Before changing anything:
-1. Check the operating system, CPU architecture, `command -v scotty`, `scotty --version`, GitHub CLI
-   authentication, Docker, and available Cloudflare profiles.
-2. If Scotty is missing, install the latest release for this OS and architecture from
-   `Yeshwanthyk/scotty`. Verify its GitHub build provenance against
-   `.github/workflows/release-cli.yml` before installing or executing it. If Scotty is installed,
-   run `scotty upgrade`.
-3. Read `scotty skill show` and follow that embedded guide.
-4. Ask me for every value Scotty requires, including the lowercase installation name, Cloudflare
-   profile, preview DNS base, preview zone ID, credential source paths, and the explicit GitHub
-   repository used for the first sandbox. Never infer any of them.
+Read the README and install the latest signed CLI using its provenance
+verification instructions. No source checkout is needed. Run
+`scotty skill show` and follow the bundled setup guide.
 
-Run setup one step at a time. Before any command that creates, changes, or deletes Cloudflare
-resources, show me the exact account, resource plan, and command, then wait for my approval. Never
-add `--yes` on your own. Keep credentials out of output and source files.
+Ask me for the installation name, Cloudflare profile, preview domain
+and zone ID, agent credentials, and GitHub repositories to register.
+Never infer these values or print credentials.
 
-Finish only after `scotty init` has saved cloud settings and the supplied repository, `scotty doctor
---json` passes, owner recovery is opened in my browser, and one sandbox for the repository I
-supplied reaches warm. Report the installed Scotty version, installation name, Worker host, and
-sandbox ID.
+Before changing Cloudflare resources, show me the target account,
+resource plan, and command. Wait for my approval.
+
+Run `scotty doctor --json`, open browser owner recovery, and help me
+start a session in a repository I choose.
 ```
-
-## Update the CLI and bundled guidance
-
-```sh
-scotty upgrade
-scotty --version
-scotty --build-info
-scotty skill show
-scotty skill show scotty-live-observability
-```
-
-`upgrade` installs the latest published signed release, including its bundled guides. Main-branch
-pushes do not publish a release. `--version` remains the release version; `--build-info` reports
-the build commit and whether the executable contains the deployment archive. Use the packaged
-release artifact for deployment; a direct `bun build cli/scotty.ts --compile` omits that archive.
-
-Upgrading the executable does not update the Worker. Follow the production runbook below to
-review `scotty deploy --plan --json`, then apply with `scotty deploy --yes --json`. Deployment
-uses the code bundled in that release and requires the managed installation/profile, Cloudflare
-authentication, and Docker. Explicit sandbox resource publishing remains a separate command.
-
-`init` and `upgrade` do not install host-agent skill loaders. Your agent can read the guides with
-`scotty skill show`. For automatic discovery, add a small `SKILL.md` in your agent's configured
-skill directory that tells it to run that command and follow the result. Review any existing skill
-first, preserve custom delegation instructions, and verify discovery in a fresh agent session.
-This keeps the guide current after an upgrade without overwriting local skills. Native filesystem
-skill discovery is separate from Scotty's unavailable public shared skill catalog.
 
 ## Cloudflare structure
 
-```mermaid
-flowchart TB
-    User["Browser / scotty CLI"]
-    Preview["*.preview.example.com"]
-
-    subgraph Cloudflare["Cloudflare account"]
-        Worker["Main Worker<br/>API, UI, auth boundary"]
-        RunnerWorker["Runner Worker"]
-
-        subgraph DurableObjects["Durable Objects"]
-            Auth["Auth<br/>owner and paired browsers"]
-            Config["Sandbox config<br/>Pi seed and repositories"]
-            Credentials["Credential registry<br/>encrypted credentials"]
-            Session["Sandbox per session<br/>authoritative lifecycle"]
-            Runners["Runner registry and runners"]
-        end
-
-        Container["Container application<br/>persistent Pi workspace"]
-        KV["KV<br/>non-secret projections"]
-        R2["R2 buckets<br/>backups, artifacts, bundles"]
-    end
-
-    User --> Worker
-    Preview --> Worker
-    Worker --> Auth
-    Worker --> Config
-    Worker --> Credentials
-    Worker --> Session
-    Worker --> Runners
-    Runners --> RunnerWorker
-    Session --> Container
-    Session --> KV
-    Session --> R2
-    Config --> R2
+```text
+Browser / scotty CLI        *.preview.example.com
+          |                          |
+          +------------+-------------+
+                       |
+                       v
+               Cloudflare Worker
+                 API / UI / auth
+                       |
+          Durable Objects
+          +-- Auth: owner and paired browsers
+          +-- Config: agent settings and repositories
+          |     +--> R2: bundles
+          +-- Credentials: encrypted credentials
+          +-- Session: authoritative lifecycle
+          |     +--> Container: agent workspace
+          |     +--> KV: non-secret projections
+          |     +--> R2: backups and artifacts
+          +-- Runners: registry and control
+                +--> Runner Worker
 ```
 
 The per-session Sandbox Durable Object is authoritative. KV is a non-secret projection, R2 stores
