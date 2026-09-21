@@ -35,7 +35,7 @@ import {
   runCommand,
   runProductionDeployStep,
   waitForProductionContainerRollout,
-} from "./deploy-production.mjs";
+} from "./release/deploy-production.mjs";
 import { dedupeBindings, diffBindings, stripEffects } from "../node_modules/alchemy/lib/Diff.js";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -218,10 +218,13 @@ describe("production deployment ownership", () => {
       read("README.md"),
       read("docs/setup.md"),
       read("docs/development.md"),
-      read("scripts/deploy-production.mjs"),
+      read("scripts/release/deploy-production.mjs"),
     ].join("\n");
     assert.doesNotMatch(commands, /wrangler\s+deploy(?!\s+--dry-run)/u);
-    assert.equal(rootPackage.scripts["deploy:production"], "node scripts/deploy-production.mjs");
+    assert.equal(
+      rootPackage.scripts["deploy:production"],
+      "node scripts/release/deploy-production.mjs",
+    );
     assert.equal(workerPackage.scripts.deploy, undefined);
     assert.equal(
       existsSync(new URL("../.github/workflows/deploy-production.yml", import.meta.url)),
@@ -313,7 +316,7 @@ describe("production deployment ownership", () => {
     assert.throws(() => requireProductionContainerImageSource({}), /immutable production source/u);
     assert.match(read("alchemy.run.ts"), /required\("SCOTTY_CONTAINER_IMAGE_DIGEST"\)/u);
     assert.match(read("alchemy.run.ts"), /\^sha256:\[0-9a-f\]\{64\}\$/u);
-    assert.match(read("scripts/deploy-production.mjs"), /SCOTTY_CONTAINER_IMAGE_SOURCE/u);
+    assert.match(read("scripts/release/deploy-production.mjs"), /SCOTTY_CONTAINER_IMAGE_SOURCE/u);
   });
 
   it("runs the supported producer and accepts only its exact authorized account target", async () => {
@@ -336,7 +339,7 @@ describe("production deployment ownership", () => {
     assert.equal(prepared, digest);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].command, "bun");
-    assert.deepEqual(calls[0].args, ["scripts/prepare-production-container-image.ts"]);
+    assert.deepEqual(calls[0].args, ["scripts/release/prepare-production-container-image.ts"]);
     assert.equal(calls[0].options.env, environment);
 
     await assert.rejects(
@@ -363,7 +366,10 @@ describe("production deployment ownership", () => {
     );
     assert.equal(accountId, AUTHORIZED_ACCOUNT_ID);
     assert.equal(calls[0].command, "bun");
-    assert.deepEqual(calls[0].args, ["scripts/prepare-production-container-image.ts", "--account"]);
+    assert.deepEqual(calls[0].args, [
+      "scripts/release/prepare-production-container-image.ts",
+      "--account",
+    ]);
   });
 
   it("requires the Worker wrapping-key binding by name before planning", () => {
@@ -662,7 +668,7 @@ describe("production deployment ownership", () => {
       /rerun this same guarded command once/u,
     );
     assert.equal(productionDeploymentFailureHint({ stderr: "ordinary failure" }), "");
-    assert.doesNotMatch(read("scripts/deploy-production.mjs"), /retryProductionDeploy/u);
+    assert.doesNotMatch(read("scripts/release/deploy-production.mjs"), /retryProductionDeploy/u);
 
     const rawOutput = await runCommand(
       process.execPath,
@@ -1299,7 +1305,7 @@ describe("production deployment ownership", () => {
   );
 
   it("rejects CI and unsafe git state while holding a local lock", () => {
-    const runner = read("scripts/deploy-production.mjs");
+    const runner = read("scripts/release/deploy-production.mjs");
     assert.match(runner, /process\.env\.CI/u);
     assert.match(runner, /scotty-production-deploy\.lock/u);
     assert.match(runner, /branch !== "main"/u);
@@ -1317,7 +1323,7 @@ describe("production deployment ownership", () => {
     assert.doesNotMatch(infrastructure, /workers\.dev|[0-9a-f]{32}/u);
     assert.match(infrastructure, /name: topology\.container\.name/u);
     assert.doesNotMatch(
-      read("scripts/deploy-production.mjs"),
+      read("scripts/release/deploy-production.mjs"),
       /PRODUCTION_CONTAINER_APPLICATION_ID/u,
     );
   });

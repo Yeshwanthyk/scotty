@@ -4,7 +4,7 @@ import {
   type SessionAuthority,
 } from "../../src/session-actor/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
-import { CODEX_VERSION } from "../../../protocol/codex-app-server";
+import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sandbox = vi.hoisted(() => ({
@@ -141,7 +141,10 @@ const credentialRegistry = vi.hoisted(() => ({
 import { createDeterministicTarGz } from "../../../cli/src/sandbox-archive";
 import { app } from "../../src/index";
 import type { Bindings } from "../../src/shared/bindings";
-import { commandIntentDigest, decodePiConsoleCommandPromise } from "../../../protocol/pi-console";
+import {
+  commandIntentDigest,
+  decodePiConsoleCommandPromise,
+} from "../../../protocol/agents/pi/pi-console";
 import { conflict, ScottyError, toProjection } from "../../src/session/contracts";
 import type { EvidenceState } from "../../src/evidence/contracts";
 import { orderedEvidenceFrames } from "../../public/evidence/view.js";

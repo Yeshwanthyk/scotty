@@ -11,7 +11,7 @@ import {
   type InspectRuntime,
   type RunnerFrame,
   type RunnerResponse,
-} from "../../protocol/runner";
+} from "../../protocol/runner/runner";
 import {
   RunnerLinkError,
   runRunnerLinkWith,

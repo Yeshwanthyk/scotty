@@ -2,7 +2,7 @@
 
 import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { spawnWrangler, startWrangler } from "../e2e/support/local-worker.mjs";
+import { spawnWrangler, startWrangler } from "../../e2e/support/local-worker.mjs";
 
 const [workerConfig, envFile, persistPath, workerName, portText, logFile] = process.argv.slice(2);
 const port = Number(portText);

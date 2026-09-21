@@ -1,4 +1,4 @@
-import type { AgentSelection } from "../../../protocol/agent-selection";
+import type { AgentSelection } from "../../../protocol/agents/agent-selection";
 
 export const SESSION_WIRE_VERSION = 1 as const;
 

@@ -1,10 +1,10 @@
-import type { PiConsoleImage } from "../../../protocol/pi-console";
+import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 import {
   decodeCanonicalConversationSnapshotSync,
   type CanonicalConversationQueueItem,
   type CanonicalConversationSnapshot,
   type CanonicalConversationTransport,
-} from "../../../protocol/conversation";
+} from "../../../protocol/session/conversation";
 
 export type ConversationTransport = CanonicalConversationTransport;
 export type ConversationSnapshot = CanonicalConversationSnapshot;

@@ -1,5 +1,5 @@
 import { Option, Result, Schema } from "effect";
-import type { PiCredential } from "../../../protocol/pi-auth";
+import type { PiCredential } from "../../../protocol/agents/pi/pi-auth";
 import {
   CredentialGrantSchema,
   formatManagedHandle,
@@ -9,8 +9,11 @@ import {
   type ManagedHandle,
   type CredentialKind,
   type ManagedHandleSlotName,
-} from "../../../protocol/credentials";
-import { RepositoryIdentitySchema, isRepositoryIdentity } from "../../../protocol/repository";
+} from "../../../protocol/credentials/credentials";
+import {
+  RepositoryIdentitySchema,
+  isRepositoryIdentity,
+} from "../../../protocol/settings/repository";
 
 export const MANAGED_PI_ACCOUNT_ID = "scotty-managed";
 export const MANAGED_PI_PLAN_TYPE = "managed";

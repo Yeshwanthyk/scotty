@@ -1,8 +1,8 @@
 import {
   prepareMaintainerContainerImage,
   resolveMaintainerCloudflareAccountId,
-} from "../cli/src/installation-deployment.ts";
-import { parseContainerImageSource } from "../cli/src/container-image.ts";
+} from "../../cli/src/installation-deployment.ts";
+import { parseContainerImageSource } from "../../cli/src/container-image.ts";
 
 const required = (name: string): string => {
   const value = process.env[name]?.trim();

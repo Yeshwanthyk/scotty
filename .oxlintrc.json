@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "jsPlugins": [{ "name": "scotty", "specifier": "./scripts/oxlint-plugin-scotty.js" }],
+  "jsPlugins": [{ "name": "scotty", "specifier": "./scripts/lint/oxlint-plugin-scotty.js" }],
   "ignorePatterns": [
     ".pi/**",
     ".wrangler/**",
@@ -10,6 +10,8 @@
     "vendor/**",
     "work/**",
     "scripts/*.d.mts",
+    "scripts/lab/scotty-lab.d.mts",
+    "scripts/release/deploy-production.d.mts",
     "worker/container/pi-packages/sources/scotty-browser-test/**",
     "worker/public/app/**",
     "worker/public/vendor/**"
@@ -48,7 +50,7 @@
       "files": [
         "cli/scotty.ts",
         "cli/src/**/*.ts",
-        "scripts/scotty-lab.ts",
+        "scripts/lab/scotty-lab.ts",
         "infra/**/*.ts",
         "protocol/**/*.ts",
         "worker/src/agent/codex/**/*.ts",

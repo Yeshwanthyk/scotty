@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { afterEach, vi } from "vitest";
-import { runtimeImageCompatibilityBytes } from "../../protocol/runtime-image-compatibility";
+import { runtimeImageCompatibilityBytes } from "../../protocol/runtime/runtime-image-compatibility";
 import { runtimeCliPin } from "../../worker/test/runtime-cli/fixtures";
 import { fetchReleasedContainerImage, parseContainerImageSource } from "../src/container-image";
 

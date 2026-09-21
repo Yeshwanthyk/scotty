@@ -3,7 +3,7 @@ import {
   sandboxBundleItemDigestMaterial,
   sandboxBundleItemFilePath,
   sandboxBundleItemRoot,
-} from "../../../protocol/sandbox-bundle";
+} from "../../../protocol/resources/sandbox-bundle";
 import { sha256BytesHex } from "../shared/digest";
 import { SandboxBundleManifestSchema, type SandboxBundleManifest } from "./config-contracts";
 

@@ -5,7 +5,7 @@ import {
   HttpClientRequest,
   type HttpClientResponse,
 } from "effect/unstable/http";
-import { RUNTIME_CLI_ASSET_NAME } from "../../../protocol/runtime-cli-manifest";
+import { RUNTIME_CLI_ASSET_NAME } from "../../../protocol/runtime/runtime-cli-manifest";
 import type { ResolvedRuntimeCliRelease } from "./release-resolver";
 
 // The shared deployment typecheck also loads lib.dom, whose Crypto interface omits this

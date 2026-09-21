@@ -1,6 +1,6 @@
 import { getSandbox } from "@cloudflare/sandbox";
 import { Option, Schema } from "effect";
-import { PI_CONSOLE_MAX_RESPONSE_BYTES } from "../../protocol/pi-console";
+import { PI_CONSOLE_MAX_RESPONSE_BYTES } from "../../protocol/agents/pi/pi-console";
 import type { Bindings } from "../../worker/src/shared/bindings";
 import { readBoundedUtf8Body } from "../../worker/src/shared/bounded-http";
 import { runtimeCliExecutable } from "../../worker/src/runtime-cli/paths";

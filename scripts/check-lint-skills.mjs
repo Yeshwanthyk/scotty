@@ -1,8 +1,8 @@
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import scottyPlugin from "./oxlint-plugin-scotty.js";
+import scottyPlugin from "./lint/oxlint-plugin-scotty.js";
 
-const rulesRoot = path.resolve("scripts/oxlint-plugin-scotty/rules");
+const rulesRoot = path.resolve("scripts/lint/oxlint-plugin-scotty/rules");
 const skillsRoot = path.resolve(".agents/skills");
 const config = await readFile(path.resolve(".oxlintrc.json"), "utf8");
 const enabledRules = new Set();

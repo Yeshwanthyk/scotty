@@ -7,7 +7,7 @@ import { afterEach, vi } from "vitest";
 import {
   verifyRuntimeImageCompatibility,
   type RuntimeImageCompatibilityEvidence,
-} from "../../../protocol/runtime-image-compatibility";
+} from "../../../protocol/runtime/runtime-image-compatibility";
 import { runtimeCliPin } from "../runtime-cli/fixtures";
 
 const signEvidence: (input: {

@@ -1,4 +1,4 @@
-import { AgentSelectionSchema } from "../../../protocol/agent-selection";
+import { AgentSelectionSchema } from "../../../protocol/agents/agent-selection";
 import { Schema } from "effect";
 import { SessionConfigurationSchema } from "./configuration";
 

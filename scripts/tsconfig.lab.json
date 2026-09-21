@@ -4,5 +4,5 @@
     "lib": ["ES2023", "DOM"],
     "types": ["node", "bun"]
   },
-  "include": ["scotty-lab.ts", "scotty-lab.d.mts", "scotty-lab.test.ts"]
+  "include": ["lab/scotty-lab.ts", "lab/scotty-lab.d.mts", "lab/scotty-lab.test.ts"]
 }

@@ -5,7 +5,7 @@ import {
   type RunnerOperation,
   type RunnerResponse,
   RunnerResponseSchema,
-} from "../../protocol/runner";
+} from "../../protocol/runner/runner";
 
 const RECEIPT_DIRECTORY_MODE = 0o700;
 const RECEIPT_FILE_MODE = 0o600;

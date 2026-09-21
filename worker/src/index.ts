@@ -1,17 +1,17 @@
-import { decodeSessionMessageInput } from "../../protocol/session-steer";
+import { decodeSessionMessageInput } from "../../protocol/session/session-steer";
 import { getSandbox, proxyTerminal } from "@cloudflare/sandbox";
 import {
   decodePiConsoleCommandPromise,
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_PUBLIC_PATH_SEGMENT,
   PI_CONSOLE_PROXY_PREFIX,
-} from "../../protocol/pi-console";
+} from "../../protocol/agents/pi/pi-console";
 import {
   SESSION_TERMINAL_MAX_DIMENSION,
   SESSION_TERMINAL_PATH_SEGMENT,
   sessionTerminalId,
   type SessionTerminalRestarted,
-} from "../../protocol/session-terminal";
+} from "../../protocol/session/session-terminal";
 import { terminalShellPath } from "./sandbox/auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
@@ -82,7 +82,7 @@ import {
 import {
   decodeRepositoryRegistryRequest,
   type RepositoryRegistryEntry,
-} from "../../protocol/repository";
+} from "../../protocol/settings/repository";
 import { RepoVerifier, repoVerifierLayer } from "./repos/verifier";
 import {
   kvStatsProjectionStorage,
@@ -114,8 +114,8 @@ import {
   decodeCloudResourceDelete,
   decodeCloudResourcePut,
   type CloudResourceKind,
-} from "../../protocol/cloud-resources";
-import { sandboxBundleItemFilePath } from "../../protocol/sandbox-bundle";
+} from "../../protocol/resources/cloud-resources";
+import { sandboxBundleItemFilePath } from "../../protocol/resources/sandbox-bundle";
 import { type SandboxBundleManifest } from "./sandbox/config-contracts";
 import {
   SandboxBundleStore,
@@ -152,7 +152,7 @@ import {
 import {
   CLOUD_SETTINGS_MAX_BODY_BYTES,
   decodeCloudSettingsUpdate,
-} from "../../protocol/cloud-settings";
+} from "../../protocol/settings/cloud-settings";
 
 export {
   ContainerProxy,

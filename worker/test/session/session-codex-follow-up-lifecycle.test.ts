@@ -1,5 +1,5 @@
 import type { CodexFollowUps } from "../../src/session/codex-follow-ups";
-import { CODEX_VERSION } from "../../../protocol/codex-app-server";
+import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
 import { CodexSnapshot } from "../../src/agent/codex/runtime";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import type { SessionAuthority } from "../../src/session-actor/authority";

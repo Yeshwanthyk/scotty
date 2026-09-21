@@ -1,5 +1,8 @@
 import { gunzipSync, gzipSync } from "node:zlib";
-import { sandboxBundleItemFilePath, sandboxBundleItemRoot } from "../../protocol/sandbox-bundle";
+import {
+  sandboxBundleItemFilePath,
+  sandboxBundleItemRoot,
+} from "../../protocol/resources/sandbox-bundle";
 import { Result } from "effect";
 import {
   SANDBOX_MAX_FILE_BYTES,

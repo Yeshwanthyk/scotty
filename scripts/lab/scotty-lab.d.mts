@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import type { SessionActorDiagnostics } from "../worker/src/session-actor/diagnostics";
+import type { SessionActorDiagnostics } from "../../worker/src/session-actor/diagnostics";
 
 export interface LabManifest {
   readonly version: 1;

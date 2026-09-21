@@ -8,7 +8,10 @@ import {
   type SandboxConfigAuthority,
   type SandboxConfigStatus,
 } from "./config-contracts";
-import { defaultCloudSettings, type CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
+import {
+  defaultCloudSettings,
+  type CloudSettingsSnapshot,
+} from "../../../protocol/settings/cloud-settings";
 
 const AUTHORITY_KEY = "scotty:sandbox-config:1";
 const RUNTIME_CLI_AUTHORITY_KEY = "scotty:runtime-cli-selection:1";

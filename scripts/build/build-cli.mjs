@@ -3,17 +3,17 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEPLOYMENT_INPUTS, listPackagedFiles } from "../cli/src/deployment-packaging.mjs";
+import { DEPLOYMENT_INPUTS, listPackagedFiles } from "../../cli/src/deployment-packaging.mjs";
 import {
   PREBUILT_MAIN_WORKER_ENTRY,
   PREBUILT_RUNNER_WORKER_ENTRY,
   PREBUILT_WORKER_MARKER,
   PREBUILT_WORKER_ROOT,
-} from "../cli/src/prebuilt-worker-bundles.ts";
-import { DEPENDENCY_PATCHES } from "./apply-dependency-patches.mjs";
-import { bundleDeploymentWorkers } from "./bundle-deployment-workers.mjs";
+} from "../../cli/src/prebuilt-worker-bundles.ts";
+import { DEPENDENCY_PATCHES } from "../apply-dependency-patches.mjs";
+import { bundleDeploymentWorkers } from "../bundle-deployment-workers.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const buildDirectory = join(root, ".scotty-build");
 const archivePath = join(buildDirectory, "scotty-deployment.tar.gz");
 const entryPath = join(buildDirectory, "standalone.ts");

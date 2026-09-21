@@ -44,7 +44,7 @@ import {
   workerNameForRunId,
   writePrivateManifest,
 } from "./scotty-lab.mjs";
-import { labSystemEnvironment, wranglerInvocation } from "../e2e/support/local-worker.mjs";
+import { labSystemEnvironment, wranglerInvocation } from "../../e2e/support/local-worker.mjs";
 
 const RUN_ID = "lab-12345678-1234-4123-8123-123456789abc";
 

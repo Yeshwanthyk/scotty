@@ -1,5 +1,5 @@
 import { Option, Schema } from "effect";
-import { RepositoryIdentitySchema, repositoryIdentityKey } from "./repository";
+import { RepositoryIdentitySchema, repositoryIdentityKey } from "../settings/repository";
 
 const CREDENTIAL_NAME_PATTERN = /^(?:[a-z](?:[a-z0-9-]{0,62}[a-z0-9])?)$/u;
 const CREDENTIAL_SEGMENT_PATTERN = /^[a-z][a-z0-9-]{0,63}$/u;

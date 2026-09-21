@@ -58,7 +58,7 @@ describe("standalone deployment clean-room proof", () => {
       execute: (command, args, options) => {
         calls.push({ command, args, options });
         if (command === "bun") {
-          assert.deepEqual(args.slice(0, 1), ["scripts/build-cli.mjs"]);
+          assert.deepEqual(args.slice(0, 1), ["scripts/build/build-cli.mjs"]);
           writeFileSync(args[1], "binary");
           return { status: 0, signal: null, stdout: "", stderr: "", error: undefined };
         }

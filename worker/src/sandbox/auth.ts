@@ -2,14 +2,14 @@ import { SANDBOX_MAX_FILE_BYTES } from "./archive";
 import type { SessionConfiguration } from "../session-actor/configuration";
 import { sandboxBundleRoot } from "./bundle-materializer";
 import { runtimeCliPath } from "../runtime-cli/paths";
-import type { PiConsoleImage } from "../../../protocol/pi-console";
+import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 import {
   PiModelSettingSchema,
   PiReasoningEffortSchema,
   type PiAgentSelection,
-} from "../../../protocol/agent-selection";
+} from "../../../protocol/agents/agent-selection";
 import { Context, Effect, Layer, Option, Result, Schema } from "effect";
-import { PI_CONSOLE_MAX_RESPONSE_BYTES } from "../../../protocol/pi-console";
+import { PI_CONSOLE_MAX_RESPONSE_BYTES } from "../../../protocol/agents/pi/pi-console";
 import {
   githubManagedHandle,
   piAuthJson,

@@ -10,11 +10,11 @@ persisted selection. Native Codex thread and turn IDs are adapter state, not a s
 
 ## Ground the boundary
 
-1. Read `AGENTS.md`, `protocol/agent-selection.ts`, `protocol/codex-model-capabilities.ts`, and
+1. Read `AGENTS.md`, `protocol/agents/agent-selection.ts`, `protocol/agents/codex/codex-model-capabilities.ts`, and
    the current Session and Credential Registry contracts.
 2. Inspect the pinned package URL, digest, and layout assertions in
    `worker/container/Dockerfile`, plus the model projection provenance in
-   `protocol/codex-model-capabilities.ts`. The current pin is `rust-v0.154.0`, commit
+   `protocol/agents/codex/codex-model-capabilities.ts`. The current pin is `rust-v0.154.0`, commit
    `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`. Regenerate app-server JSON schemas
    with the pinned binary in isolated `HOME` and `CODEX_HOME`, and compare them with
    that commit's `codex-rs/app-server-protocol/schema/json` sources.
@@ -31,7 +31,7 @@ model default or cross-profile fallback. Read the shared capability catalog rath
 another model whitelist. Existing Sessions retain their authoritative selection.
 
 Reuse the current `pi-auth` Credential Registry declaration, Session-pinned grant, and managed
-egress projection. `protocol/credentials.ts` accepts `pi-auth` and `github-cli`; it does not expose a
+egress projection. `protocol/credentials/credentials.ts` accepts `pi-auth` and `github-cli`; it does not expose a
 `codex-auth` importer. Ordinary config parsing and `beam` do not read credential source files.
 Credential synchronization must remain separately authorized and use the existing sync workflow.
 

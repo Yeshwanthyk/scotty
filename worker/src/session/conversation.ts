@@ -5,15 +5,15 @@ import {
   type CanonicalConversationSnapshot,
   type CanonicalConversationTool,
   type CanonicalConversationTurn,
-} from "../../../protocol/conversation";
+} from "../../../protocol/session/conversation";
 import {
   PI_CONSOLE_MAX_RESPONSE_BYTES,
   PI_CONSOLE_PROXY_PREFIX,
   PiConsoleSnapshotSchema,
   type PiConsoleSnapshot,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 import { Effect, Option, Predicate, Result, Schema } from "effect";
-import { toolDisplayText } from "../../../protocol/tool-display-text";
+import { toolDisplayText } from "../../../protocol/agents/tool-display-text";
 import { readBoundedJson } from "../shared/bounded-http";
 
 const decodePiConsoleSnapshot = Schema.decodeUnknownOption(PiConsoleSnapshotSchema, {

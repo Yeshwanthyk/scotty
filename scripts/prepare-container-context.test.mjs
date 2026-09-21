@@ -446,7 +446,7 @@ test("real discovery prepares and bundles the Effect Codex server for standalone
   const root = await mkdtemp(join(tmpdir(), "scotty-real-container-context-"));
   try {
     const discovered = await discoverContainerBuildInputs(checkout);
-    assert.ok(discovered.includes("protocol/codex-app-server.ts"));
+    assert.ok(discovered.includes("protocol/agents/codex/codex-app-server.ts"));
     for (const module of [
       "process",
       "session",
@@ -466,8 +466,8 @@ test("real discovery prepares and bundles the Effect Codex server for standalone
     const measured = await assertContainerContextBudget(context);
     t.diagnostic(`Prepared context: ${measured.fileCount} files, ${measured.bytes} bytes`);
     assert.equal(
-      await readFile(join(context, "protocol/codex-app-server.ts"), "utf8"),
-      await readFile(join(checkout, "protocol/codex-app-server.ts"), "utf8"),
+      await readFile(join(context, "protocol/agents/codex/codex-app-server.ts"), "utf8"),
+      await readFile(join(checkout, "protocol/agents/codex/codex-app-server.ts"), "utf8"),
     );
     const lock = JSON.parse(
       await readFile(

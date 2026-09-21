@@ -7,7 +7,7 @@ import {
   waitForCodexSandbox,
 } from "../../agent/codex/sandbox";
 import { Clock, Context, Effect, Layer, Predicate, Result, Schema } from "effect";
-import type { CredentialGrant } from "../../../../protocol/credentials";
+import type { CredentialGrant } from "../../../../protocol/credentials/credentials";
 import { SandboxBundleMaterializer } from "../../sandbox/bundle-materializer";
 import { ContainerAuth } from "../../sandbox/auth";
 import type { SessionRuntimeCredentials } from "../../credentials/managed";

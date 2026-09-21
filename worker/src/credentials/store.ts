@@ -22,9 +22,9 @@ import {
   type CredentialKind,
   type CredentialRedactedMetadata,
   type ManagedHandleSlot,
-} from "../../../protocol/credentials";
-import { serializePiAuthProviders } from "../../../protocol/pi-auth";
-import { repositoryIdentityKey } from "../../../protocol/repository";
+} from "../../../protocol/credentials/credentials";
+import { serializePiAuthProviders } from "../../../protocol/agents/pi/pi-auth";
+import { repositoryIdentityKey } from "../../../protocol/settings/repository";
 import {
   CredentialCrypto,
   type CredentialCryptoFailure,

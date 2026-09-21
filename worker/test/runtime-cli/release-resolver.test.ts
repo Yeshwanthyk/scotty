@@ -6,7 +6,7 @@ import {
   type RuntimeCliArtifactDescriptor,
   type RuntimeCliCompatibility,
   type RuntimeCliManifest,
-} from "../../../protocol/runtime-cli-manifest";
+} from "../../../protocol/runtime/runtime-cli-manifest";
 import { Effect, Fiber, Predicate, Result } from "effect";
 import {
   HttpClient,

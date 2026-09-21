@@ -2,7 +2,7 @@ import { runtimeCliMaterializerTestLayer } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
-import type { CredentialGrant } from "../../../protocol/credentials";
+import type { CredentialGrant } from "../../../protocol/credentials/credentials";
 import { sessionRuntimeCredentials } from "../../src/credentials/managed";
 import { ContainerAuth } from "../../src/sandbox/auth";
 import { SandboxBundleMaterializer } from "../../src/sandbox/bundle-materializer";

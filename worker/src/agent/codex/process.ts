@@ -1,6 +1,6 @@
 import { runtimeCliPath } from "../../runtime-cli/paths";
 import { importCodexSavedState } from "./persistence";
-import { CloudSettingsEnvironmentSchema } from "../../../../protocol/cloud-settings";
+import { CloudSettingsEnvironmentSchema } from "../../../../protocol/settings/cloud-settings";
 import { SandboxDigestSchema } from "../../sandbox/config-contracts";
 import type { CodexSavedState } from "./persistence-format";
 import {
@@ -20,14 +20,17 @@ import {
 import { ChildProcess } from "effect/unstable/process";
 import { CodexHostError, type Cleanup } from "./errors";
 import { managedPiAccessToken, parseManagedPiAccessToken } from "../../credentials/managed";
-import { formatManagedHandle, parseManagedHandle } from "../../../../protocol/credentials";
+import {
+  formatManagedHandle,
+  parseManagedHandle,
+} from "../../../../protocol/credentials/credentials";
 import { sessionRoot } from "../../sandbox/workspace";
 import {
   CodexModelIdentifier,
   CodexReasoningEffort,
   codexModelCapability,
   supportsCodexModelSelection,
-} from "../../../../protocol/codex-model-capabilities";
+} from "../../../../protocol/agents/codex/codex-model-capabilities";
 
 const AbsolutePath = Schema.String.check(
   Schema.isPattern(/^\//u),

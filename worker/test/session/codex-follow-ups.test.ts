@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
-import { decodeSessionMessageInput } from "../../../protocol/session-steer";
+import { decodeSessionMessageInput } from "../../../protocol/session/session-steer";
 import { emptyCodexFollowUps, enqueueCodexFollowUp } from "../../src/session/codex-follow-ups";
 
 describe("Codex follow-up admission bounds", () => {

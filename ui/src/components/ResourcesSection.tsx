@@ -1,6 +1,9 @@
 import * as stylex from "@stylexjs/stylex";
 import { useState } from "react";
-import type { CloudResourceFile, CloudResourceKind } from "../../../protocol/cloud-resources";
+import type {
+  CloudResourceFile,
+  CloudResourceKind,
+} from "../../../protocol/resources/cloud-resources";
 import {
   readResource,
   removeResource,

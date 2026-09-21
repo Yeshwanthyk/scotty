@@ -5,9 +5,9 @@ import {
   decodeCloudSettingsSnapshot,
   defaultCloudSettings,
   type CloudSettings,
-} from "../../protocol/cloud-settings";
-import { decodeAgentSelection } from "../../protocol/agent-selection";
-import { isRepositoryIdentity, repositoryIdentityKey } from "../../protocol/repository";
+} from "../../protocol/settings/cloud-settings";
+import { decodeAgentSelection } from "../../protocol/agents/agent-selection";
+import { isRepositoryIdentity, repositoryIdentityKey } from "../../protocol/settings/repository";
 import { CliError, EXIT } from "./core";
 import { invalidResponse, usage } from "./pure";
 import { decodeRepositoriesResponse, decodeRepositoryResponse } from "./schemas";

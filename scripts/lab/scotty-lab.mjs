@@ -29,7 +29,7 @@ import {
   stopProcessGroup,
   terminateProcessGroup,
   waitForWorker,
-} from "../e2e/support/local-worker.mjs";
+} from "../../e2e/support/local-worker.mjs";
 
 export const LAB_DIRECTORY = path.join(ROOT, ".scotty-lab");
 export const MANIFEST_PATH = path.join(LAB_DIRECTORY, "run.json");
@@ -664,7 +664,7 @@ export async function launchWrangler(manifest, prepared) {
   const child = spawn(
     process.execPath,
     [
-      path.join(ROOT, "scripts/scotty-lab-wrangler-supervisor.mjs"),
+      path.join(ROOT, "scripts/lab/scotty-lab-wrangler-supervisor.mjs"),
       "worker/wrangler.jsonc",
       manifest.envFile,
       manifest.persistPath,

@@ -1,10 +1,13 @@
-import { RuntimeCliPinSchema, type RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import { RuntimeCliPinSchema, type RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import { Result, Schema } from "effect";
-import { decodeAgentSelection, type AgentSelection } from "../../../protocol/agent-selection";
+import {
+  decodeAgentSelection,
+  type AgentSelection,
+} from "../../../protocol/agents/agent-selection";
 import {
   CloudSettingsEnvironmentSchema,
   type CloudSettingsSnapshot,
-} from "../../../protocol/cloud-settings";
+} from "../../../protocol/settings/cloud-settings";
 import { SandboxDigestSchema } from "../sandbox/config-contracts";
 
 // A session pins this non-secret configuration at admission. Cloud edits never change it.

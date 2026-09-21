@@ -5,15 +5,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
-import packageMetadata from "../package.json" with { type: "json" };
-import { CanonicalConversationSnapshotSchema } from "../protocol/conversation.ts";
+import packageMetadata from "../../package.json" with { type: "json" };
+import { CanonicalConversationSnapshotSchema } from "../../protocol/session/conversation.ts";
 import {
   AuthorityStateSchema,
   SessionAuthoritySchema,
   StableStateSchema,
-} from "../worker/src/session-actor/authority.ts";
-import { uiSessionResponseFromActor } from "../worker/src/ui/session-view.ts";
-import capturedFailureStates from "./fixtures/codex-failure-states.json" with { type: "json" };
+} from "../../worker/src/session-actor/authority.ts";
+import { uiSessionResponseFromActor } from "../../worker/src/ui/session-view.ts";
+import capturedFailureStates from "../fixtures/codex-failure-states.json" with { type: "json" };
 import {
   LAB_VERSION,
   LabOperations,

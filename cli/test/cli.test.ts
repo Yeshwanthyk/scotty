@@ -12,11 +12,11 @@ import { BeamUpRequestSchema } from "../src/schemas";
 import { managedInstallationPath } from "../src/managed-installation-path.mjs";
 import { deploymentPlanPath } from "../src/deployment-plan";
 import { Schema } from "effect";
-import type { CloudSettings } from "../../protocol/cloud-settings";
+import type { CloudSettings } from "../../protocol/settings/cloud-settings";
 import {
   runtimeImageCompatibilityBytes,
   type RuntimeImageCompatibilityEvidence,
-} from "../../protocol/runtime-image-compatibility";
+} from "../../protocol/runtime/runtime-image-compatibility";
 
 const runtimeCompatibilityKeys = generateKeyPairSync("ed25519");
 const runtimeCompatibilityPublicKey = runtimeCompatibilityKeys.publicKey

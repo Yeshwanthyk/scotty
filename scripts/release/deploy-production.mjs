@@ -3,12 +3,12 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { isDirectRun } from "./is-direct-run.mjs";
+import { isDirectRun } from "../is-direct-run.mjs";
 import {
   FAILURE_OUTPUT_TAIL_CHARACTERS,
   redactProductionDeploymentOutput,
-} from "../cli/src/deployment-redaction.ts";
-import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
+} from "../../cli/src/deployment-redaction.ts";
+import { parseContainerControlPlaneSnapshot } from "../container-control-plane.mjs";
 export const PRODUCTION_DEPLOY_STEPS = [
   {
     name: "Check repository",
@@ -974,7 +974,7 @@ export function requireProductionContainerImageSource(environment) {
 export async function resolveProductionAccountId(environment, execute = runCommand) {
   const output = await execute(
     "bun",
-    ["scripts/prepare-production-container-image.ts", "--account"],
+    ["scripts/release/prepare-production-container-image.ts", "--account"],
     {
       env: environment,
       capture: true,
@@ -1003,7 +1003,7 @@ export async function prepareProductionContainerImage(environment, topology, exe
   const expectedAccountId = environment.SCOTTY_EXPECTED_ACCOUNT_ID?.trim();
   if (!/^[0-9a-f]{32}$/u.test(expectedAccountId ?? ""))
     throw new Error("Container image preparation requires the authorized Cloudflare account.");
-  const output = await execute("bun", ["scripts/prepare-production-container-image.ts"], {
+  const output = await execute("bun", ["scripts/release/prepare-production-container-image.ts"], {
     env: environment,
     capture: true,
     timeoutMs: 20 * 60 * 1_000,

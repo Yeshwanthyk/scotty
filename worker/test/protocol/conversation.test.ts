@@ -3,8 +3,8 @@ import { Result, Schema } from "effect";
 import {
   CanonicalConversationTurnSchema,
   decodeCanonicalConversationSnapshotSync,
-} from "../../../protocol/conversation";
-import { decodeAgentSelection } from "../../../protocol/agent-selection";
+} from "../../../protocol/session/conversation";
+import { decodeAgentSelection } from "../../../protocol/agents/agent-selection";
 
 const decodeTurn = Schema.decodeUnknownResult(CanonicalConversationTurnSchema, {
   onExcessProperty: "error",

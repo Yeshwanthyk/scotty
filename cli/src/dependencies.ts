@@ -1,6 +1,6 @@
 import { decodeCanonicalReadSnapshot, decodePiInspectSnapshot } from "./schemas";
 import { readableMessages } from "./pure";
-import type { CanonicalConversationSnapshot } from "../../protocol/conversation";
+import type { CanonicalConversationSnapshot } from "../../protocol/session/conversation";
 import type { ReadMessage } from "./pure";
 import { isAbsolute, join, resolve } from "node:path";
 import { Clock, Effect, Option, Result } from "effect";

@@ -8,7 +8,7 @@ import {
 import { Result, Schema } from "effect";
 import { CodexFollowUpSchema } from "../../src/session/codex-follow-ups";
 import { sha256Hex } from "../../src/shared/digest";
-import type { PiConsoleImage } from "../../../protocol/pi-console";
+import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 
 const decodeFollowUp = Schema.decodeUnknownResult(CodexFollowUpSchema);
 const image: PiConsoleImage = { type: "image", mimeType: "image/png", data: "aGVsbG8=" };

@@ -10,7 +10,7 @@ import {
   type RuntimeCliArtifactDescriptor,
   type RuntimeCliCompatibility,
   verifyRuntimeCliManifest,
-} from "../../../protocol/runtime-cli-manifest";
+} from "../../../protocol/runtime/runtime-cli-manifest";
 
 const GITHUB_API_ORIGIN = "https://api.github.com";
 const GITHUB_DOWNLOAD_ORIGIN = "https://github.com";

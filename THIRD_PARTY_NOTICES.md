@@ -6,7 +6,7 @@ locations are recorded in
 
 ## UsefulSoftwareCo/executor
 
-Selected Effect remediation skills and Oxlint rules in `.agents/skills` and `scripts/oxlint-plugin-scotty*` were adapted through `../ziggy-bak` from [UsefulSoftwareCo/executor](https://github.com/UsefulSoftwareCo/executor) commit `7d6fcea263772a8e26f82ea6029fa7a57a64ca78`, primarily its `.agents/skills`, `scripts/oxlint`, and related lint-rule paths. Scotty-specific runtime, clock, test, Cloudflare boundary, and beta.99 changes are local adaptations.
+Selected Effect remediation skills and Oxlint rules in `.agents/skills` and `scripts/lint/oxlint-plugin-scotty*` were adapted through `../ziggy-bak` from [UsefulSoftwareCo/executor](https://github.com/UsefulSoftwareCo/executor) commit `7d6fcea263772a8e26f82ea6029fa7a57a64ca78`, primarily its `.agents/skills`, `scripts/oxlint`, and related lint-rule paths. Scotty-specific runtime, clock, test, Cloudflare boundary, and beta.99 changes are local adaptations.
 
 MIT License
 

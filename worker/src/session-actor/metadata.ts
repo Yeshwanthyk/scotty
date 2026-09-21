@@ -1,13 +1,16 @@
-import { PiConsoleImagesSchema } from "../../../protocol/pi-console";
-import { AgentSelectionSchema } from "../../../protocol/agent-selection";
+import { PiConsoleImagesSchema } from "../../../protocol/agents/pi/pi-console";
+import { AgentSelectionSchema } from "../../../protocol/agents/agent-selection";
 import { SessionConfigurationSchema } from "./configuration";
 import { Match, Predicate, Result, Schema } from "effect";
-import { CredentialGrantSchema, type CredentialGrant } from "../../../protocol/credentials";
+import {
+  CredentialGrantSchema,
+  type CredentialGrant,
+} from "../../../protocol/credentials/credentials";
 import {
   RepositoryDefaultBranchSchema,
   RepositoryIdentitySchema,
   RepositoryTimestampSchema,
-} from "../../../protocol/repository";
+} from "../../../protocol/settings/repository";
 import { SandboxDigestSchema } from "../sandbox/config-contracts";
 import { AuthorityStateSchema, type SessionAuthority } from "./authority";
 import type { CreatePrivatePayloadReference } from "./transitions/create";

@@ -2,12 +2,12 @@ import {
   PiConsoleImagesSchema,
   PI_CONSOLE_MAX_IMAGE_BYTES,
   type PiConsoleImage,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 import { Schema } from "effect";
 import {
   CanonicalConversationQueueItemSchema,
   CONVERSATION_MAX_QUEUE_ITEMS,
-} from "../../../protocol/conversation";
+} from "../../../protocol/session/conversation";
 
 const FollowUpContentSchema = Schema.Struct({
   ...CanonicalConversationQueueItemSchema.fields,

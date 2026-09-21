@@ -50,9 +50,9 @@ const tester = new RuleTester({
 });
 const productionFile = "worker/src/session/object.ts";
 const testFile = "worker/test/session/example.test.ts";
-const toolingFile = path.resolve(import.meta.dirname, "../example.ts");
-const workerFile = (name) => path.resolve(import.meta.dirname, `../../worker/src/${name}`);
-const browserFile = (name) => path.resolve(import.meta.dirname, `../../worker/public/${name}`);
+const toolingFile = path.resolve(import.meta.dirname, "../../example.ts");
+const workerFile = (name) => path.resolve(import.meta.dirname, `../../../worker/src/${name}`);
+const browserFile = (name) => path.resolve(import.meta.dirname, `../../../worker/public/${name}`);
 
 tester.run("no-browser-rpc-path", noBrowserRpcPath, {
   valid: [
@@ -641,7 +641,7 @@ tester.run("no-try-catch-or-throw", noTryCatchOrThrow, {
 
 describe("Scotty Oxlint policy integration", () => {
   it("enables the complete non-fetch subset globally", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../..");
+    const repoRoot = path.resolve(import.meta.dirname, "../../..");
     const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
     const globalRules = [
       "no-manual-tag-check",
@@ -663,7 +663,7 @@ describe("Scotty Oxlint policy integration", () => {
   });
 
   it("covers Worker source strictly with only the three legacy exceptions", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../..");
+    const repoRoot = path.resolve(import.meta.dirname, "../../..");
     const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
     const legacyFiles = new Set([
       "worker/src/auth/request.ts",
@@ -686,7 +686,7 @@ describe("Scotty Oxlint policy integration", () => {
   });
 
   it("enables the precise strict rules and removes the imprecise rules", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../..");
+    const repoRoot = path.resolve(import.meta.dirname, "../../..");
     const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
     const strictRules = config.overrides[0].rules;
     const enabledRules = [
@@ -708,7 +708,7 @@ describe("Scotty Oxlint policy integration", () => {
   });
 
   it("keeps storage, session, CLI, and test rules at their current migration gates", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../..");
+    const repoRoot = path.resolve(import.meta.dirname, "../../..");
     const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
     const strict = config.overrides[0];
     const workerStorage = config.overrides.find(
@@ -734,7 +734,7 @@ describe("Scotty Oxlint policy integration", () => {
   });
 
   it("scopes browser quality rules to public adapters without banning browser ownership", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../..");
+    const repoRoot = path.resolve(import.meta.dirname, "../../..");
     const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
     const browser = config.overrides.find(
       (override) => override.files.length === 1 && override.files[0] === "worker/public/**/*.js",

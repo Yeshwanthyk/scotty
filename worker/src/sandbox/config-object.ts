@@ -1,7 +1,7 @@
-import type { RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import type { RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import { Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { verifyRuntimeImageCompatibility } from "../../../protocol/runtime-image-compatibility";
+import { verifyRuntimeImageCompatibility } from "../../../protocol/runtime/runtime-image-compatibility";
 import { makeRuntimeCliReleaseResolverForClient } from "../runtime-cli/release-resolver";
 import { makeRuntimeCliCacheForServices, r2RuntimeCliCacheBucket } from "../runtime-cli/cache";
 import { makeRuntimeCliSelection, RuntimeCliSelectionFailure } from "../runtime-cli/selection";
@@ -14,8 +14,8 @@ export type RuntimeCliSelectionRpcResult =
 import { DurableObject } from "cloudflare:workers";
 import { Effect, Predicate, Result } from "effect";
 import type { Bindings } from "../shared/bindings";
-import type { RepositoryRegistryEntry } from "../../../protocol/repository";
-import type { CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
+import type { RepositoryRegistryEntry } from "../../../protocol/settings/repository";
+import type { CloudSettingsSnapshot } from "../../../protocol/settings/cloud-settings";
 import type {
   SandboxActivateInput,
   SandboxConfigStatus,

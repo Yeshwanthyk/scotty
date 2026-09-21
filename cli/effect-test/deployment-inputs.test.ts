@@ -144,7 +144,7 @@ describe("standalone deployment archive", () => {
     expect(dockerfile.slice(0, packageImageStart)).not.toContain(
       "COPY worker/container/toolsets/standard.json",
     );
-    expect(sources).toContain("protocol/pi-console-shared.mjs");
+    expect(sources).toContain("protocol/agents/pi/pi-console-shared.mjs");
     expect(sources).toContain("worker/container/pi-packages");
     expect(sources).toContain("worker/container/codex-server-build/package.json");
 
@@ -159,10 +159,10 @@ describe("standalone deployment archive", () => {
     expect(staticSources).toContain("worker/container/pi-packages");
     expect(staticSources).not.toContain("tui/package.json");
     expect(staticSources).not.toContain("tui/src");
-    expect(staticSources).not.toContain("protocol/pi-console-shared.mjs");
+    expect(staticSources).not.toContain("protocol/agents/pi/pi-console-shared.mjs");
     expect(metafileSources).not.toContain("tui/src");
     expect(metafileSources).not.toContain("cli/src");
-    expect(metafileSources).toContain("protocol/pi-console-shared.mjs");
+    expect(metafileSources).toContain("protocol/agents/pi/pi-console-shared.mjs");
     expect(metafileSources).not.toContain("worker/container/codex-server-build/package.json");
     expect(metafileSources).not.toContain("worker/container/toolsets/standard.json");
 
@@ -177,7 +177,7 @@ describe("standalone deployment archive", () => {
     const files = [
       "scripts/apply-dependency-patches.mjs",
       "scripts/container-control-plane.mjs",
-      "scripts/deploy-production.mjs",
+      "scripts/release/deploy-production.mjs",
       "scripts/is-direct-run.mjs",
       "patches/@cloudflare+sandbox+0.12.9.patch",
       "patches/alchemy+2.0.0-beta.76.patch",
@@ -209,7 +209,7 @@ describe("standalone deployment archive", () => {
     expect(bundledScripts).toEqual(
       expect.arrayContaining([
         "scripts/container-control-plane.mjs",
-        "scripts/deploy-production.mjs",
+        "scripts/release/deploy-production.mjs",
         "scripts/is-direct-run.mjs",
       ]),
     );

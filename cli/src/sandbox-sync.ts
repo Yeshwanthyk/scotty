@@ -6,8 +6,8 @@ import {
   type CredentialName,
   type CredentialRepositories,
   type CredentialScope,
-} from "../../protocol/credentials";
-import type { PiAuthStore } from "../../protocol/pi-auth";
+} from "../../protocol/credentials/credentials";
+import type { PiAuthStore } from "../../protocol/agents/pi/pi-auth";
 import { CliError, EXIT } from "./core";
 import { invalidResponse } from "./pure";
 import {

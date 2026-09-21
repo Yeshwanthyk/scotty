@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import type { PiConsoleSnapshot } from "../../../protocol/pi-console";
+import type { PiConsoleSnapshot } from "../../../protocol/agents/pi/pi-console";
 import { canonicalConversationSnapshotFromPi } from "../../src/session/conversation";
 
 const baseSnapshot = {

@@ -42,7 +42,7 @@ ENV COREPACK_HOME=/opt/corepack
 
 USER root
 
-# Pinned release provenance and regeneration evidence: protocol/codex-model-capabilities.ts.
+# Pinned release provenance and regeneration evidence: protocol/agents/codex/codex-model-capabilities.ts.
 RUN set -eu; \
   mkdir -p /tmp/scotty-codex-install/home /tmp/scotty-codex-install/codex-home \
   && curl --fail --location --silent --show-error \
@@ -188,7 +188,7 @@ COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json
 COPY worker/container/scotty-pi-session.mjs /usr/local/bin/scotty-pi-session
 COPY worker/container/scotty-jsonl.mjs /usr/local/bin/scotty-jsonl.mjs
 COPY worker/container/scotty-pi-protocol.mjs /usr/local/bin/scotty-pi-protocol.mjs
-COPY protocol/pi-console-shared.mjs /usr/protocol/pi-console-shared.mjs
+COPY protocol/agents/pi/pi-console-shared.mjs /usr/protocol/agents/pi/pi-console-shared.mjs
 RUN set -eu; \
   for package_dir in /opt/scotty/pi-packages/sources/*; do \
     test -f "${package_dir}/package.json"; \

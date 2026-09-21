@@ -23,7 +23,7 @@ import {
   type RunnerProbeAck,
   type RunnerRequest,
   type RunnerResponse,
-} from "../../../protocol/runner.ts";
+} from "../../../protocol/runner/runner.ts";
 
 const MAX_RUNNER_MESSAGE_CHARACTERS = 256 * 1024;
 const DEFAULT_DISPATCH_TIMEOUT_MILLIS = 30_000;

@@ -42,7 +42,7 @@ import {
   assessContainerSettlement,
   CONTAINER_ROLLOUT_POLL_MS,
   CONTAINER_ROLLOUT_TIMEOUT_MS,
-} from "../../scripts/deploy-production.mjs";
+} from "../../scripts/release/deploy-production.mjs";
 import {
   readControlPlaneEffect,
   type ContainerControlPlaneSnapshot,

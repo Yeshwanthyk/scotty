@@ -2,7 +2,7 @@ import { Clock, Context, Data, DateTime, Effect, Layer, Option } from "effect";
 import {
   compareRepositoryRegistryEntries,
   type RepositoryRegistryEntry,
-} from "../../../protocol/repository";
+} from "../../../protocol/settings/repository";
 import {
   decodeRepoProjection,
   REPO_KV_PREFIX,

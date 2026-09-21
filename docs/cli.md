@@ -124,7 +124,7 @@ Unlike `sandbox push`, these update one catalog entry. A skill must be a directo
 tool can be a file or directory. Package identity comes from `package.json`; other names come from
 the path basename. Changes apply to new sessions.
 
-See [resource contracts](../protocol/cloud-resources.ts),
+See [resource contracts](../protocol/resources/cloud-resources.ts),
 [bundle preparation](../cli/src/sandbox-bundle-builder.ts), and
 [server resource tests](../worker/test/sandbox/cloud-resources.test.ts).
 
@@ -136,7 +136,7 @@ satisfy Scotty's runtime compatibility requirements; an arbitrary Docker image i
 substitute.
 
 Start from the [provided image definition](../worker/container/Dockerfile) and check the
-[image compatibility contract](../protocol/runtime-image-compatibility.ts). The
+[image compatibility contract](../protocol/runtime/runtime-image-compatibility.ts). The
 [roadmap](roadmap.md) separates implemented image selection from pending custom-image and
 Docker-free deployment proof.
 

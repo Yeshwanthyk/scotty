@@ -77,13 +77,13 @@ The [transition modules](../worker/src/session-actor/transitions/) implement the
 
 ## Agent runtimes
 
-[Agent selection](../protocol/agent-selection.ts) chooses Pi or Codex. Pi runs through the
+[Agent selection](../protocol/agents/agent-selection.ts) chooses Pi or Codex. Pi runs through the
 [container supervisor](../worker/container/scotty-pi-session.mjs); Codex uses the
 [app-server runtime](../worker/src/agent/codex/). The image pins their versions.
 
 The Worker proxies console traffic to the container. Session controls use snapshots and revision
 checks rather than trusting a browser's cached state. See [passive control](../worker/src/session/passive.ts)
-and the [conversation protocol](../protocol/conversation.ts).
+and the [conversation protocol](../protocol/session/conversation.ts).
 
 ## Credential isolation
 

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Match } from "effect";
-import type { RunnerFrame, RunnerResponse } from "../../protocol/runner";
+import type { RunnerFrame, RunnerResponse } from "../../protocol/runner/runner";
 
 const temporaryDirectories: string[] = [];
 

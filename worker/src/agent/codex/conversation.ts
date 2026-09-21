@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import {
   decodeCanonicalConversationSnapshot,
   type CanonicalConversationTurn,
-} from "../../../../protocol/conversation";
+} from "../../../../protocol/session/conversation";
 import type { CodexSnapshot } from "./runtime";
 
 type CodexPromptState = (typeof CodexSnapshot.Type)["prompt"];

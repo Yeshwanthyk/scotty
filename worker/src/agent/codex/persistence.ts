@@ -1,4 +1,4 @@
-import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import { CODEX_VERSION } from "../../../../protocol/agents/codex/codex-app-server";
 import { Effect, Schema } from "effect";
 import { constants } from "node:fs";
 import * as fs from "node:fs/promises";

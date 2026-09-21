@@ -4,7 +4,7 @@ import {
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER,
   PiConsoleStaleCommandSchema,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 import { PI_SESSION_PORT, PI_SESSION_TOKEN_HEADER } from "../../src/sandbox/auth";
 import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "../support/session-harness";
 import { SESSION_ACTOR_REVISION_KEY } from "../../src/session/store";

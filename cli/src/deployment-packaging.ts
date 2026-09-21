@@ -33,7 +33,7 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
   entry("scripts/apply-dependency-patches.mjs", "archive"),
   entry("scripts/cloudflare-topology-data.mjs", "archive"),
   entry("scripts/container-control-plane.mjs", "archive"),
-  entry("scripts/deploy-production.mjs", "archive"),
+  entry("scripts/release/deploy-production.mjs", "archive"),
   entry("scripts/is-direct-run.mjs", "archive"),
   entry("patches/@cloudflare+sandbox+0.12.9.patch", "archive"),
   entry("patches/alchemy+2.0.0-beta.76.patch", "archive"),

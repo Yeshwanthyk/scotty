@@ -1,7 +1,7 @@
 import {
   commandIntentDigest,
   PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER,
-} from "../../protocol/pi-console-shared.mjs";
+} from "../../protocol/agents/pi/pi-console-shared.mjs";
 
 export { commandIntentDigest };
 

@@ -5,12 +5,12 @@ import {
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_MAX_RESPONSE_BYTES,
   PiConsoleSnapshotSchema,
-} from "../../../protocol/pi-console";
-import { SessionSteerResponseSchema } from "../../../protocol/session-steer";
-import { SessionInterruptResponseSchema } from "../../../protocol/session-interrupt";
-import { CanonicalConversationSnapshotSchema } from "../../../protocol/conversation";
-import { decodeSessionMessageInput } from "../../../protocol/session-steer";
-import { CloudSettingsSnapshotSchema } from "../../../protocol/cloud-settings";
+} from "../../../protocol/agents/pi/pi-console";
+import { SessionSteerResponseSchema } from "../../../protocol/session/session-steer";
+import { SessionInterruptResponseSchema } from "../../../protocol/session/session-interrupt";
+import { CanonicalConversationSnapshotSchema } from "../../../protocol/session/conversation";
+import { decodeSessionMessageInput } from "../../../protocol/session/session-steer";
+import { CloudSettingsSnapshotSchema } from "../../../protocol/settings/cloud-settings";
 import type { Bindings } from "../shared/bindings";
 import { readBoundedJson, readBoundedUtf8Body } from "../shared/bounded-http";
 import { decodeJsonValue } from "../shared/json";

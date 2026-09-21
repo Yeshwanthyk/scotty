@@ -5,7 +5,7 @@ import {
   CodexModelCapability,
   codexModelCapabilities,
   codexModelCapability,
-} from "../../../../protocol/codex-model-capabilities";
+} from "../../../../protocol/agents/codex/codex-model-capabilities";
 import { managedPiAccessToken } from "../../../src/credentials/managed";
 
 const decode = Schema.decodeUnknownResult(CodexLaunch, { onExcessProperty: "error" });

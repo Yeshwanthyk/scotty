@@ -1,7 +1,7 @@
 import { canonicalReadSnapshot, decodeReadSnapshot } from "./dependencies";
 import { buildInfo } from "./build-info";
 import { decodeCanonicalReadSnapshot } from "./schemas";
-import { decodeAgentSelection } from "../../protocol/agent-selection";
+import { decodeAgentSelection } from "../../protocol/agents/agent-selection";
 import { isAbsolute, join, resolve } from "node:path";
 import { Clock, Console, Effect, Exit, FileSystem, Option, Predicate, Ref, Result } from "effect";
 import {
@@ -60,12 +60,15 @@ import {
 } from "./schemas";
 import { readLocalCodexAuth, readLocalPiAuth } from "./pi-auth";
 import { configureInitCloud, initCloudFailure, parseInitCloudChoices } from "./init-cloud";
-import { PI_AUTH_MAX_MATERIAL_BYTES, serializePiAuthProviders } from "../../protocol/pi-auth";
+import {
+  PI_AUTH_MAX_MATERIAL_BYTES,
+  serializePiAuthProviders,
+} from "../../protocol/agents/pi/pi-auth";
 import {
   decodeCloudSettingsSnapshot,
   type CloudSettingsSnapshot,
-} from "../../protocol/cloud-settings";
-import { isRepositoryIdentity } from "../../protocol/repository";
+} from "../../protocol/settings/cloud-settings";
+import { isRepositoryIdentity } from "../../protocol/settings/repository";
 import {
   browserUrl,
   durationSeconds,

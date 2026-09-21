@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import {
   RUNTIME_CLI_ASSET_NAME,
   type RuntimeCliArtifactDescriptor,
-} from "../../../protocol/runtime-cli-manifest";
+} from "../../../protocol/runtime/runtime-cli-manifest";
 import { Effect, Fiber, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
 import {

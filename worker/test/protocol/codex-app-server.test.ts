@@ -14,7 +14,7 @@ import {
   decodeCodexThreadStartResponse,
   decodeCodexTurnStartResponse,
   rejectCodexServerRequest,
-} from "../../../protocol/codex-app-server";
+} from "../../../protocol/agents/codex/codex-app-server";
 
 // Projection of pinned codex-rs/app-server-protocol/schema/json/ServerNotification.json
 // at 6b9826e3; compare against a fresh generated schema when updating the pin.

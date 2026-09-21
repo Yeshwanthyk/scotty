@@ -27,7 +27,7 @@ import {
   type HttpData,
   type HttpOpen,
   type RunnerFrame,
-} from "../../protocol/runner";
+} from "../../protocol/runner/runner";
 import { RunnerRuntime } from "./runner-runtime";
 
 const MAX_RUNNER_MESSAGE_CHARACTERS = 256 * 1024;

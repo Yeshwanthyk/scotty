@@ -1,4 +1,4 @@
-import type { RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import type { RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import { runtimeCliPin } from "../runtime-cli/fixtures";
 import type {
   BackupOptions,
@@ -12,14 +12,14 @@ import {
   defaultCloudSettings,
   type CloudSettingsSnapshot,
   type CloudSettingsUpdate,
-} from "../../../protocol/cloud-settings";
+} from "../../../protocol/settings/cloud-settings";
 import {
   createDeterministicTarGz,
   gunzipSandboxArchive,
   parseSandboxTar,
 } from "../../../cli/src/sandbox-archive";
-import type { RunnerOperation } from "../../../protocol/runner";
-import type { CredentialGrant } from "../../../protocol/credentials";
+import type { RunnerOperation } from "../../../protocol/runner/runner";
+import type { CredentialGrant } from "../../../protocol/credentials/credentials";
 import type { Bindings } from "../../src/shared/bindings";
 import type {
   CreateSessionInput,

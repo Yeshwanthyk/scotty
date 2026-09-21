@@ -1,5 +1,5 @@
 import { Clock, Effect, Option, Predicate, Schema } from "effect";
-import type { RunnerOperation } from "../../../protocol/runner.ts";
+import type { RunnerOperation } from "../../../protocol/runner/runner.ts";
 
 export const RunnerDesiredStateSchema = Schema.Literals(["accepting", "draining", "disabled"]);
 export type RunnerDesiredState = typeof RunnerDesiredStateSchema.Type;

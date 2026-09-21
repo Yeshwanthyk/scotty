@@ -3,7 +3,7 @@ import {
   formatManagedHandle,
   parseManagedHandle,
   type CredentialGrant,
-} from "../../../protocol/credentials";
+} from "../../../protocol/credentials/credentials";
 import { Effect, Option, Result } from "effect";
 import { isAuthorizedRequest } from "../../src/auth/request";
 import {
