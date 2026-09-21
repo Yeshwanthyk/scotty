@@ -216,6 +216,8 @@ describe("production deployment ownership", () => {
       ...Object.values(rootPackage.scripts),
       ...Object.values(workerPackage.scripts),
       read("README.md"),
+      read("docs/setup.md"),
+      read("docs/development.md"),
       read("scripts/deploy-production.mjs"),
     ].join("\n");
     assert.doesNotMatch(commands, /wrangler\s+deploy(?!\s+--dry-run)/u);
@@ -225,13 +227,14 @@ describe("production deployment ownership", () => {
       existsSync(new URL("../.github/workflows/deploy-production.yml", import.meta.url)),
       false,
     );
-    const readme = read("README.md");
-    assert.match(readme, /ARM Mac/u);
-    assert.match(readme, /exit code 139/u);
-    assert.match(readme, /rerun the same guarded command once/u);
-    assert.match(readme, /There is no automatic retry/u);
-    assert.match(readme, /npm run deploy:production -- --container/u);
-    assert.match(readme, /does not open Docker/u);
+    const setup = read("docs/setup.md");
+    assert.match(setup, /ARM Mac/u);
+    assert.match(setup, /exit code 139/u);
+    assert.match(setup, /Retry the same command once/u);
+    assert.match(setup, /If the second build fails, stop/u);
+    const development = read("docs/development.md");
+    assert.match(development, /npm run deploy:production -- --container/u);
+    assert.match(development, /does not open Docker/u);
   });
 
   it("checks, audits, deploys through Alchemy, and audits again", () => {
