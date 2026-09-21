@@ -9,7 +9,7 @@ import { describe, it } from "node:test";
 
 const execute = promisify(execFile);
 const scriptsRoot = dirname(fileURLToPath(import.meta.url));
-const guardedScripts = ["deploy-production.mjs", "container-control-plane.mjs"];
+const guardedScripts = ["release/deploy-production.mjs", "container-control-plane.mjs"];
 
 const probe = (runtime, script, args) =>
   spawnSync(runtime, [join(scriptsRoot, script), ...args], {
@@ -54,7 +54,9 @@ describe("bundled script guards", () => {
         /Container control-plane read failed: Container control-plane read requires an application ID\./u,
       );
 
-      const deploy = probe(runtime, "deploy-production.mjs", ["--safe-probe-invalid-option"]);
+      const deploy = probe(runtime, "release/deploy-production.mjs", [
+        "--safe-probe-invalid-option",
+      ]);
       assert.equal(deploy.status, 1);
       assert.match(
         deploy.stderr,
