@@ -2,7 +2,7 @@ import { canonicalReadSnapshot, decodeReadSnapshot } from "./dependencies";
 import { buildInfo } from "./build-info";
 import { decodeCanonicalReadSnapshot } from "./schemas";
 import { decodeAgentSelection } from "../../protocol/agent-selection";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { Clock, Console, Effect, Exit, FileSystem, Option, Predicate, Ref, Result } from "effect";
 import {
   Argument,
@@ -91,6 +91,12 @@ import {
   type ScottyCredentialSyncMaterial,
 } from "./sandbox-sync";
 import { buildSandboxBundle, bundleItemSummaries } from "./sandbox-bundle-builder";
+import {
+  listResources,
+  putResource,
+  removeResource,
+  validateResourceName,
+} from "./resource-management";
 import {
   BrowserLauncher,
   CliRuntime,
@@ -2245,11 +2251,94 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             `Published sandbox bundle ${result.digest} (${result.items.length} items).\n`,
           );
       }),
-  ).pipe(Command.withDescription("Publish selected local sandbox resources"));
+  ).pipe(Command.withDescription("Replace the complete sandbox resource catalog"));
 
   const sandbox = Command.make("sandbox").pipe(
-    Command.withDescription("Manage explicit sandbox resource bundles"),
+    Command.withDescription("Manage whole-catalog sandbox resource bundles"),
     Command.withSubcommands([sandboxPush]),
+  );
+
+  const resourceKinds = ["skill", "extension", "tool", "package"] as const;
+
+  const resourcesList = Command.make("list", {}, () =>
+    Effect.gen(function* () {
+      const { autoJson, options, runtime } = yield* commandContext();
+      const result = yield* listResources(yield* credentials(options));
+      if (autoJson) {
+        outputJson(runtime.stdout, result);
+        return;
+      }
+      if (result.items.length === 0) {
+        runtime.stdout("No resources.\n");
+        return;
+      }
+      for (const item of result.items)
+        runtime.stdout(`${item.kind} ${item.name} (${item.shape}, ${item.files.length} files)\n`);
+    }),
+  ).pipe(Command.withDescription("List individually managed sandbox resources"));
+
+  const resourcesPut = Command.make(
+    "put",
+    {
+      kind: Argument.choice("kind", resourceKinds).pipe(
+        Argument.withDescription("Resource kind: skill, extension, tool, or package"),
+      ),
+      localPath: Argument.string("local-path").pipe(
+        Argument.withDescription("Local resource file or directory"),
+      ),
+    },
+    ({ kind, localPath }) =>
+      Effect.gen(function* () {
+        const { autoJson, options, runtime } = yield* commandContext();
+        const result = yield* putResource(
+          yield* credentials(options),
+          kind,
+          resolve(runtime.cwd, localPath),
+        );
+        const output = {
+          kind: result.kind,
+          name: result.name,
+          revision: result.revision,
+          activeDigest: result.activeDigest,
+          appliesTo: "new_sessions" as const,
+        };
+        if (autoJson) outputJson(runtime.stdout, output);
+        else
+          runtime.stdout(
+            `Published ${output.kind} ${output.name}. Changes apply to new sessions.\n`,
+          );
+      }),
+  ).pipe(Command.withDescription("Publish or replace one sandbox resource"));
+
+  const resourcesRemove = Command.make(
+    "remove",
+    {
+      kind: Argument.choice("kind", resourceKinds).pipe(
+        Argument.withDescription("Resource kind: skill, extension, tool, or package"),
+      ),
+      name: Argument.string("name").pipe(Argument.withDescription("Resource name")),
+    },
+    ({ kind, name }) =>
+      Effect.gen(function* () {
+        const { autoJson, options, runtime } = yield* commandContext();
+        const validName = yield* validateResourceName(name);
+        const result = yield* removeResource(yield* credentials(options), kind, validName);
+        const output = {
+          kind: result.kind,
+          name: result.name,
+          revision: result.revision,
+          activeDigest: result.activeDigest,
+          appliesTo: "new_sessions" as const,
+        };
+        if (autoJson) outputJson(runtime.stdout, output);
+        else
+          runtime.stdout(`Removed ${output.kind} ${output.name}. Changes apply to new sessions.\n`);
+      }),
+  ).pipe(Command.withDescription("Remove one sandbox resource"));
+
+  const resources = Command.make("resources").pipe(
+    Command.withDescription("Manage individual sandbox resources"),
+    Command.withSubcommands([resourcesList, resourcesPut, resourcesRemove]),
   );
 
   const skillShow = Command.make(
@@ -2775,6 +2864,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       repo,
       sync,
       sandbox,
+      resources,
       skill,
       beam,
       list,

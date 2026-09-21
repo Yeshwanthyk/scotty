@@ -1,5 +1,5 @@
 import { lstat, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Effect, Option, Result, Schema } from "effect";
 import {
   SANDBOX_MAX_BUNDLE_FILES,
@@ -19,6 +19,11 @@ import {
   type SandboxFileRecord,
 } from "./sandbox-bundle";
 import { PiPackageNameSchema, SkillNameSchema, type BuiltSandboxBundle } from "./sandbox-bundle";
+import {
+  CloudResourceNameSchema,
+  type CloudResourceFile,
+  type CloudResourceKind,
+} from "../../protocol/cloud-resources";
 import {
   installPiPackageDependencies,
   type PiPackageDependencyInstaller,
@@ -50,6 +55,7 @@ const PiPackageJsonSchema = Schema.Struct({
 });
 
 const decodeSkillName = Schema.decodeUnknownOption(SkillNameSchema);
+const decodeCloudResourceName = Schema.decodeUnknownOption(CloudResourceNameSchema);
 const decodePiPackageJson = Schema.decodeUnknownResult(Schema.fromJsonString(PiPackageJsonSchema), {
   onExcessProperty: "ignore",
 });
@@ -159,6 +165,37 @@ const preparePackageItem = Effect.fnUntraced(function* (
   return yield* usePreparedPiPackage(path, needsInstall, install, (prepared) =>
     prepareItem("package", decoded.success.name, prepared, preparedPackageWalkOptions),
   );
+});
+
+export interface PreparedSandboxResource {
+  readonly name: string;
+  readonly shape: "file" | "directory";
+  readonly files: ReadonlyArray<CloudResourceFile>;
+}
+
+export const prepareSandboxResource = Effect.fnUntraced(function* (
+  kind: CloudResourceKind,
+  path: string,
+) {
+  const prepared =
+    kind === "package"
+      ? yield* preparePackageItem(path, installPiPackageDependencies)
+      : yield* prepareItem(kind, basename(path), path);
+  const name = prepared.manifest.name;
+  if (
+    Option.isNone(decodeCloudResourceName(name)) ||
+    (kind === "skill" && Option.isNone(decodeSkillName(name)))
+  )
+    return yield* sandboxSourceInvalid("Sandbox resource name is invalid", `Rejected ${name}.`);
+  return {
+    name,
+    shape: prepared.manifest.shape,
+    files: prepared.files.map((file) => ({
+      path: file.path,
+      contentBase64: Buffer.from(file.bytes).toString("base64"),
+      modeClass: file.modeClass,
+    })),
+  } satisfies PreparedSandboxResource;
 });
 
 const rootsByKind = (
