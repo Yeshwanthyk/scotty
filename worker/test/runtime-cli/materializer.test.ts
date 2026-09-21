@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { afterEach, vi } from "vitest";
-import { runtimeImageCompatibilityBytes } from "../../../protocol/runtime-image-compatibility";
+import { runtimeImageCompatibilityBytes } from "../../../protocol/runtime/runtime-image-compatibility";
 import {
   RuntimeCliMaterializer,
   runtimeCliMaterializerLayer,

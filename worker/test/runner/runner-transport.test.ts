@@ -8,7 +8,7 @@ import {
   RunnerProbeSchema,
   decodeRunnerRequestText,
   encodeRunnerFrame,
-} from "../../../protocol/runner";
+} from "../../../protocol/runner/runner";
 import {
   RunnerTransport,
   type RunnerDispatchResult,

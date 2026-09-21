@@ -2,7 +2,7 @@ import {
   RuntimeImageCompatibilityEvidenceSchema,
   verifyRuntimeImageCompatibility,
   type RuntimeImageCompatibilityEvidence,
-} from "../../protocol/runtime-image-compatibility";
+} from "../../protocol/runtime/runtime-image-compatibility";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, platform as hostPlatform, arch as hostArchitecture, tmpdir } from "node:os";
 import { dirname, join } from "node:path";

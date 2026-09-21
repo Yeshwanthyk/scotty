@@ -1,6 +1,6 @@
 import { Clock, Data, Effect, Result, Schema } from "effect";
-import type { RuntimeCliCompatibility } from "../../../protocol/runtime-cli-manifest";
-import { RuntimeCliPinSchema, type RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import type { RuntimeCliCompatibility } from "../../../protocol/runtime/runtime-cli-manifest";
+import { RuntimeCliPinSchema, type RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import type { RuntimeCliReleaseResolver } from "./release-resolver";
 import type { RuntimeCliCache } from "./cache";
 

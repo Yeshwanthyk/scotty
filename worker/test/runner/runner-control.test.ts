@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
-import type { RunnerOperation } from "../../../protocol/runner";
+import type { RunnerOperation } from "../../../protocol/runner/runner";
 import {
   makeRunnerControl,
   type RunnerConnectionState,

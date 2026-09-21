@@ -16,7 +16,7 @@ import type { CloudSettings } from "../../protocol/settings/cloud-settings";
 import {
   runtimeImageCompatibilityBytes,
   type RuntimeImageCompatibilityEvidence,
-} from "../../protocol/runtime-image-compatibility";
+} from "../../protocol/runtime/runtime-image-compatibility";
 
 const runtimeCompatibilityKeys = generateKeyPairSync("ed25519");
 const runtimeCompatibilityPublicKey = runtimeCompatibilityKeys.publicKey

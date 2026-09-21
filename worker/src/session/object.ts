@@ -1,5 +1,5 @@
 import { RuntimeCliMaterializer, runtimeCliMaterializerLayer } from "../runtime-cli/materializer";
-import { decodeRuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import { decodeRuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 import { codexFollowUpStorage } from "./store";
 import { resolveSessionConfiguration } from "../session-actor/configuration";

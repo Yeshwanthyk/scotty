@@ -1,4 +1,4 @@
-import { RuntimeImageCompatibilityEvidenceSchema } from "./protocol/runtime-image-compatibility";
+import { RuntimeImageCompatibilityEvidenceSchema } from "./protocol/runtime/runtime-image-compatibility";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";

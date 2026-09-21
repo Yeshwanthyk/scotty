@@ -1,4 +1,4 @@
-import type { RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import type { RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import { runtimeCliPin } from "../runtime-cli/fixtures";
 import type {
   BackupOptions,
@@ -18,7 +18,7 @@ import {
   gunzipSandboxArchive,
   parseSandboxTar,
 } from "../../../cli/src/sandbox-archive";
-import type { RunnerOperation } from "../../../protocol/runner";
+import type { RunnerOperation } from "../../../protocol/runner/runner";
 import type { CredentialGrant } from "../../../protocol/credentials/credentials";
 import type { Bindings } from "../../src/shared/bindings";
 import type {

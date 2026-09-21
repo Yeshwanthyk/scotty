@@ -30,7 +30,7 @@ import {
   type RunnerPhase,
   type RunnerResponse,
   type RunnerResult,
-} from "../../protocol/runner";
+} from "../../protocol/runner/runner";
 
 const OUTPUT_LIMIT = 64 * 1024;
 

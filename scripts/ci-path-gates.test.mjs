@@ -48,7 +48,7 @@ describe("PR CI path gates", () => {
         codex_native: false,
       });
     }
-    const runtimeManifest = classifyCiPaths(["protocol/runtime-cli-manifest.ts"]);
+    const runtimeManifest = classifyCiPaths(["protocol/runtime/runtime-cli-manifest.ts"]);
     assert.equal(runtimeManifest.container_image, false);
     assert.equal(runtimeManifest.codex_native, true);
     assert.equal(classifyCiPaths(["worker/src/agent/codex/process.ts"]).container_image, true);

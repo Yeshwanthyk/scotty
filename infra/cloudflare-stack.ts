@@ -3,7 +3,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import {
   verifyRuntimeImageCompatibility,
   type RuntimeImageCompatibilityEvidence,
-} from "../protocol/runtime-image-compatibility";
+} from "../protocol/runtime/runtime-image-compatibility";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Data from "effect/Data";

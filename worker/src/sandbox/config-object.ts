@@ -1,7 +1,7 @@
-import type { RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import type { RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import { Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { verifyRuntimeImageCompatibility } from "../../../protocol/runtime-image-compatibility";
+import { verifyRuntimeImageCompatibility } from "../../../protocol/runtime/runtime-image-compatibility";
 import { makeRuntimeCliReleaseResolverForClient } from "../runtime-cli/release-resolver";
 import { makeRuntimeCliCacheForServices, r2RuntimeCliCacheBucket } from "../runtime-cli/cache";
 import { makeRuntimeCliSelection, RuntimeCliSelectionFailure } from "../runtime-cli/selection";

@@ -8,7 +8,7 @@ import {
 import type { RuntimeContext } from "alchemy";
 import { Effect, Result } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { RUNNER_HTTP_PATH_PREFIX, type RunnerOperation } from "../../../protocol/runner.ts";
+import { RUNNER_HTTP_PATH_PREFIX, type RunnerOperation } from "../../../protocol/runner/runner.ts";
 import {
   makeRunnerControl,
   type RunnerControlAction,

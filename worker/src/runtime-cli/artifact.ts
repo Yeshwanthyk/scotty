@@ -1,5 +1,5 @@
 import { Data, Effect } from "effect";
-import type { RuntimeCliArtifactDescriptor } from "../../../protocol/runtime-cli-manifest";
+import type { RuntimeCliArtifactDescriptor } from "../../../protocol/runtime/runtime-cli-manifest";
 import { runtimeCliCacheObjectKey } from "./cache";
 
 export class RuntimeCliArtifactFailure extends Data.TaggedError("RuntimeCliArtifactFailure")<{

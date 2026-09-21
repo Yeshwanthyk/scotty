@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect";
 import { RuntimeCliMaterializer } from "../../src/runtime-cli/materializer";
-import type { RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import type { RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 
 export const runtimeCliPin: RuntimeCliPin = {
   descriptor: {

@@ -1,10 +1,10 @@
 import { Context, Data, Effect, Layer, Schema } from "effect";
-import type { RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import type { RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import { sameRuntimeCompatibility } from "./selection";
 import { readRuntimeCliArtifact, type RuntimeCliArtifactBucket } from "./artifact";
 import { SandboxRuntime, shellQuote } from "../sandbox/runtime";
 import { runtimeCliBin, runtimeCliExecutable } from "./paths";
-import { verifyRuntimeImageCompatibility } from "../../../protocol/runtime-image-compatibility";
+import { verifyRuntimeImageCompatibility } from "../../../protocol/runtime/runtime-image-compatibility";
 
 export class RuntimeCliMaterializationFailure extends Data.TaggedError(
   "RuntimeCliMaterializationFailure",

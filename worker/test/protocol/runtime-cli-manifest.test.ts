@@ -8,7 +8,7 @@ import {
   type RuntimeCliArtifactDescriptor,
   type RuntimeCliManifest,
   verifyRuntimeCliManifest,
-} from "../../../protocol/runtime-cli-manifest";
+} from "../../../protocol/runtime/runtime-cli-manifest";
 import { Effect } from "effect";
 import { afterEach, vi } from "vitest";
 

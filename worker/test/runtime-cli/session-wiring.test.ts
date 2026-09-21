@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { RuntimeCliMaterializationFailure } from "../../src/runtime-cli/materializer";
-import type { RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import type { RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import {
   CREATE_IDEMPOTENCY,

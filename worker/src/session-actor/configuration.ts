@@ -1,4 +1,4 @@
-import { RuntimeCliPinSchema, type RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
+import { RuntimeCliPinSchema, type RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import { Result, Schema } from "effect";
 import {
   decodeAgentSelection,

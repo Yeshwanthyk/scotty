@@ -136,7 +136,7 @@ satisfy Scotty's runtime compatibility requirements; an arbitrary Docker image i
 substitute.
 
 Start from the [provided image definition](../worker/container/Dockerfile) and check the
-[image compatibility contract](../protocol/runtime-image-compatibility.ts). The
+[image compatibility contract](../protocol/runtime/runtime-image-compatibility.ts). The
 [roadmap](roadmap.md) separates implemented image selection from pending custom-image and
 Docker-free deployment proof.
 

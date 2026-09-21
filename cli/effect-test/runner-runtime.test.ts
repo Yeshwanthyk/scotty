@@ -18,7 +18,7 @@ import {
   type RunnerOperation,
   type RunnerResponse,
   type StopRuntime,
-} from "../../protocol/runner";
+} from "../../protocol/runner/runner";
 import { makeRunnerRuntime, makeRunnerRuntimeWithCompute } from "../src/runner-runtime";
 
 const ensure = (operationId: string, sessionId = "session-a"): EnsureRuntime => ({
