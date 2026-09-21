@@ -177,7 +177,7 @@ describe("standalone deployment archive", () => {
     const files = [
       "scripts/apply-dependency-patches.mjs",
       "scripts/container-control-plane.mjs",
-      "scripts/deploy-production.mjs",
+      "scripts/release/deploy-production.mjs",
       "scripts/is-direct-run.mjs",
       "patches/@cloudflare+sandbox+0.12.9.patch",
       "patches/alchemy+2.0.0-beta.76.patch",
@@ -209,7 +209,7 @@ describe("standalone deployment archive", () => {
     expect(bundledScripts).toEqual(
       expect.arrayContaining([
         "scripts/container-control-plane.mjs",
-        "scripts/deploy-production.mjs",
+        "scripts/release/deploy-production.mjs",
         "scripts/is-direct-run.mjs",
       ]),
     );

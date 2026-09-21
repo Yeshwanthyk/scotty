@@ -1,4 +1,4 @@
-import type { ContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
+import type { ContainerControlPlaneSnapshot } from "../container-control-plane.mjs";
 
 export const CONTAINER_ROLLOUT_TIMEOUT_MS: number;
 export const CONTAINER_ROLLOUT_POLL_MS: number;

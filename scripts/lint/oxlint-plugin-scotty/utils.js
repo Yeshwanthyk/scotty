@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 export const toRepoRelative = (filename) =>
   path.relative(repoRoot, path.resolve(filename)).split(path.sep).join("/");

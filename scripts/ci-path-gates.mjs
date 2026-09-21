@@ -79,7 +79,7 @@ const STANDALONE_INPUTS = Object.freeze([
   tree("ui"),
   exact("tsconfig.json"),
   exact("cli/tsconfig.json"),
-  exact("scripts/build-cli.mjs"),
+  exact("scripts/build/build-cli.mjs"),
   exact("scripts/bundle-deployment-workers.mjs"),
   exact("scripts/prebuilt-worker-imports.mjs"),
   exact("scripts/check-cli-standalone-deploy.mjs"),

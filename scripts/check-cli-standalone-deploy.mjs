@@ -213,7 +213,7 @@ export const checkCliStandaloneDeploy = async ({
     await chmod(configPath, 0o600);
 
     if (binaryPath === undefined) {
-      const build = execute("bun", ["scripts/build-cli.mjs", binary], {
+      const build = execute("bun", ["scripts/build/build-cli.mjs", binary], {
         cwd: resolve(root),
         env: standaloneDeployEnvironment(home, scratch, environment),
       });

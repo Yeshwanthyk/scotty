@@ -17,7 +17,7 @@ describe("compiled CLI smoke", () => {
     assert.deepEqual(calls, [
       {
         command: "bun",
-        args: ["scripts/build-cli.mjs", executable],
+        args: ["scripts/build/build-cli.mjs", executable],
         options: { cwd: "/repo" },
       },
       {

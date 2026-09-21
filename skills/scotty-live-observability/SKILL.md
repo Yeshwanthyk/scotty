@@ -70,8 +70,8 @@ replacement turn. Inspect before sending another message with a new ID.
 For Pi overrides, native settings readback must precede the first prompt. Local TOML defaults do
 not establish effective settings for an existing Session.
 
-In this checkout the maintained actor and pending-create helpers live in `scripts/scotty-lab.mjs`
-and are consumed by `scripts/scotty-lab.ts`. Use their current ownership/manifest contract; do not
+In this checkout the maintained actor and pending-create helpers live in `scripts/lab/scotty-lab.mjs`
+and are consumed by `scripts/lab/scotty-lab.ts`. Use their current ownership/manifest contract; do not
 assume standalone `capture-actor.mjs` or `latest-pending-session.mjs` exists.
 
 Keep evidence safe and bounded. Never print tokens, root keys, OAuth values, credential plaintext,

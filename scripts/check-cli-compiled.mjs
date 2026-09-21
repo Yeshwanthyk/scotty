@@ -20,7 +20,7 @@ export const checkCompiledCli = async ({
   const temporaryDirectory = await makeTemporaryDirectory();
   const executable = join(temporaryDirectory, "scotty");
   try {
-    execute("bun", ["scripts/build-cli.mjs", executable], { cwd: root });
+    execute("bun", ["scripts/build/build-cli.mjs", executable], { cwd: root });
     execute(executable, ["--version"], { cwd: temporaryDirectory });
   } finally {
     await removeTemporaryDirectory(temporaryDirectory);

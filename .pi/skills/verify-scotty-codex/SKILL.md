@@ -46,7 +46,7 @@ Choose the executable and repository explicitly for another installation. Concur
 and lifecycle driving is unsafe. Independent created sessions may run concurrently if separately owned.
 After a surprise failure, retain the failure receipt, run doctor again, and isolate the failed
 session before another drive. A failed create without an ID requires the maintained exact pending
-request recovery helper in `scripts/scotty-lab.mjs`; do not guess an ID or blindly resubmit.
+request recovery helper in `scripts/lab/scotty-lab.mjs`; do not guess an ID or blindly resubmit.
 
 ## Evidence
 
