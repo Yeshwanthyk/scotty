@@ -378,7 +378,6 @@ jobs:
         env:
           SCOTTY_IMAGE_LABELS_PATH: ${{ runner.temp }}/scotty-image-labels.json
           SCOTTY_IMAGE_MANIFEST_PATH: dist/image-release/scotty-image-manifest.json
-          SCOTTY_RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.SCOTTY_RELEASE_ED25519_PRIVATE_KEY }}
           SCOTTY_PUBLIC_IMAGE_ID: ${{ steps.public-image.outputs.id }}
           SCOTTY_RELEASE_TAG: ${{ github.ref_name }}
         run: |
@@ -455,6 +454,7 @@ jobs:
         run: |
           bun scripts/make-cli-release.mjs "${GITHUB_REF_NAME}" dist/release
           bun scripts/make-runtime-cli-release.mjs "${GITHUB_REF_NAME}" dist/release
+          node scripts/make-image-release.mjs --sign-manifest dist/release/scotty-image-manifest.json
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

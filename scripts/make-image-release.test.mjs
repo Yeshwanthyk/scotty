@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync, verify } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -17,6 +18,7 @@ import {
   decodeImageLabelsJson,
   decodeImageReleaseEnvironment,
   makeImageReleaseManifest,
+  signImageReleaseManifest,
   parseDockerPushDigest,
   readImageCompatibility,
   validateImageReleaseTag,
@@ -97,6 +99,61 @@ describe("S1 image release gate", () => {
       compatibility: input.compatibility,
       provenance: { attestationUrl: input.attestationUrl },
     });
+  });
+
+  it("signs verified image metadata at release time and rejects source drift", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "scotty-image-signing-"));
+    const manifestPath = join(directory, "scotty-image-manifest.json");
+    const keys = generateKeyPairSync("ed25519");
+    const manifest = makeImageReleaseManifest(await fixture());
+    const options = {
+      manifestPath,
+      releaseTag,
+      revision,
+      privateKeyPem: keys.privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+      trustedPublicKeyBase64: keys.publicKey
+        .export({ format: "der", type: "spki" })
+        .subarray(-32)
+        .toString("base64"),
+    };
+    try {
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      const signed = await signImageReleaseManifest(options);
+      const evidence = signed.runtimeCompatibility;
+      const compatibility = evidence.compatibility;
+      const bytes = Buffer.from(
+        JSON.stringify([
+          "scotty-standard-image-runtime-compatibility-v1",
+          manifest.image.digest,
+          compatibility.bunVersion,
+          compatibility.compileTarget,
+          compatibility.cpu,
+          compatibility.libc,
+          compatibility.cloudflareSandbox.packageVersion,
+          compatibility.cloudflareSandbox.image,
+        ]),
+      );
+      assert.equal(
+        verify(null, bytes, keys.publicKey, Buffer.from(evidence.signature, "base64")),
+        true,
+      );
+      assert.deepEqual(JSON.parse(readFileSync(manifestPath, "utf8")), signed);
+      for (const invalid of [
+        { ...manifest, releaseTag: otherReleaseTag },
+        { ...manifest, image: { ...manifest.image, revision: "d".repeat(40) } },
+        { ...manifest, image: { ...manifest.image, reference: "wrong" } },
+        { ...manifest, compatibility: { ...manifest.compatibility, node: "0.0.0" } },
+      ]) {
+        const original = JSON.stringify(invalid);
+        writeFileSync(manifestPath, original);
+        await assert.rejects(signImageReleaseManifest(options));
+        assert.equal(readFileSync(manifestPath, "utf8"), original);
+      }
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      await assert.rejects(signImageReleaseManifest({ ...options, privateKeyPem: undefined }));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("rejects invalid or missing maintainer configuration", () => {

@@ -40,6 +40,34 @@ const ImageReleaseEnvironment = Schema.Struct({
   labelsPath: Schema.String.check(Schema.isMinLength(1)),
   manifestPath: Schema.String.check(Schema.isMinLength(1)),
 });
+const UnsignedImageManifest = Schema.Struct({
+  version: Schema.Literal(1),
+  releaseTag: Schema.String.check(Schema.isPattern(releaseTagPattern)),
+  image: Schema.Struct({
+    repository: Schema.String.check(Schema.isPattern(repositoryPattern)),
+    digest: Digest,
+    reference: Schema.String,
+    platform: Schema.Literal(IMAGE_PLATFORM),
+    configDigest: Digest,
+    revision: Schema.String.check(Schema.isPattern(revisionPattern)),
+  }),
+  compatibility: Schema.Struct({
+    cloudflareSandbox: Schema.Struct({ packageVersion: Schema.String, image: Schema.String }),
+    cloudflareContainers: Schema.String,
+    alchemy: Schema.String,
+    pi: Schema.String,
+    codex: Schema.String,
+    codexArchiveSha256: Schema.String,
+    node: Schema.String,
+  }),
+  provenance: Schema.Struct({
+    attestationUrl: Schema.String.check(Schema.isPattern(attestationUrlPattern)),
+  }),
+});
+const decodeUnsignedImageManifest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(UnsignedImageManifest),
+  { onExcessProperty: "error" },
+);
 export const decodeImageLabelsJson = Schema.decodeUnknownSync(Schema.fromJsonString(ImageLabels));
 export const decodeImageReleaseEnvironment = Schema.decodeUnknownSync(ImageReleaseEnvironment);
 
@@ -250,8 +278,34 @@ export const makeImageRelease = async ({
     labels,
     compatibility,
   });
-  manifest.runtimeCompatibility = signImageRuntimeCompatibility({
-    imageDigest: input.digest,
+  const output = resolve(input.manifestPath);
+  await writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644 });
+  return manifest;
+};
+
+/** Finalize only in the release signing environment, after anonymous image verification. */
+export const signImageReleaseManifest = async ({
+  manifestPath,
+  releaseTag,
+  revision,
+  privateKeyPem,
+  trustedPublicKeyBase64,
+  root = process.cwd(),
+}) => {
+  validateImageReleaseTag(releaseTag);
+  assert.match(revision, revisionPattern);
+  const manifest = decodeUnsignedImageManifest(await readFile(manifestPath, "utf8"));
+  assert.equal(manifest.releaseTag, releaseTag, "Image manifest release tag mismatch.");
+  assert.equal(manifest.image.revision, revision, "Image manifest source revision mismatch.");
+  assert.equal(manifest.image.reference, `${manifest.image.repository}@${manifest.image.digest}`);
+  const compatibility = await readImageCompatibility(root);
+  assert.deepEqual(
+    manifest.compatibility,
+    compatibility,
+    "Image compatibility differs from release source.",
+  );
+  const runtimeCompatibility = signImageRuntimeCompatibility({
+    imageDigest: manifest.image.digest,
     compatibility: {
       bunVersion: (await readFile(resolve(root, ".bun-version"), "utf8")).trim(),
       compileTarget: "bun-linux-x64-baseline",
@@ -259,11 +313,12 @@ export const makeImageRelease = async ({
       libc: "glibc",
       cloudflareSandbox: compatibility.cloudflareSandbox,
     },
-    privateKeyPem: environment.SCOTTY_RELEASE_ED25519_PRIVATE_KEY,
+    privateKeyPem,
+    trustedPublicKeyBase64,
   });
-  const output = resolve(input.manifestPath);
-  await writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644 });
-  return manifest;
+  const signed = { ...manifest, runtimeCompatibility };
+  await writeFile(manifestPath, `${JSON.stringify(signed, null, 2)}\n`, { mode: 0o644 });
+  return signed;
 };
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
@@ -272,6 +327,14 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     process.stdout.write(
       `${parseDockerPushDigest(await readFile(process.argv[3], "utf8"), process.env.GITHUB_REF_NAME)}\n`,
     );
+  } else if (process.argv[2] === "--sign-manifest") {
+    assert.ok(process.argv[3], "--sign-manifest requires a manifest path.");
+    await signImageReleaseManifest({
+      manifestPath: process.argv[3],
+      releaseTag: process.env.GITHUB_REF_NAME,
+      revision: process.env.GITHUB_SHA,
+      privateKeyPem: process.env.SCOTTY_RELEASE_ED25519_PRIVATE_KEY,
+    });
   } else {
     await makeImageRelease();
   }
