@@ -83,7 +83,7 @@ The [transition modules](../worker/src/session-actor/transitions/) implement the
 
 The Worker proxies console traffic to the container. Session controls use snapshots and revision
 checks rather than trusting a browser's cached state. See [passive control](../worker/src/session/passive.ts)
-and the [conversation protocol](../protocol/conversation.ts).
+and the [conversation protocol](../protocol/session/conversation.ts).
 
 ## Credential isolation
 

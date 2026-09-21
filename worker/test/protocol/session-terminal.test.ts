@@ -3,7 +3,7 @@ import { Option, Schema } from "effect";
 import {
   SessionTerminalRestartedSchema,
   sessionTerminalId,
-} from "../../../protocol/session-terminal";
+} from "../../../protocol/session/session-terminal";
 
 const decodeRestarted = Schema.decodeUnknownOption(SessionTerminalRestartedSchema, {
   onExcessProperty: "error",

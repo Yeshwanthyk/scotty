@@ -7,7 +7,7 @@ import { Schema } from "effect";
 import {
   CanonicalConversationQueueItemSchema,
   CONVERSATION_MAX_QUEUE_ITEMS,
-} from "../../../protocol/conversation";
+} from "../../../protocol/session/conversation";
 
 const FollowUpContentSchema = Schema.Struct({
   ...CanonicalConversationQueueItemSchema.fields,

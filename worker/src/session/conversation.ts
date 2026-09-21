@@ -5,7 +5,7 @@ import {
   type CanonicalConversationSnapshot,
   type CanonicalConversationTool,
   type CanonicalConversationTurn,
-} from "../../../protocol/conversation";
+} from "../../../protocol/session/conversation";
 import {
   PI_CONSOLE_MAX_RESPONSE_BYTES,
   PI_CONSOLE_PROXY_PREFIX,

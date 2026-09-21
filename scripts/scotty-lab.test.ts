@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
 import packageMetadata from "../package.json" with { type: "json" };
-import { CanonicalConversationSnapshotSchema } from "../protocol/conversation.ts";
+import { CanonicalConversationSnapshotSchema } from "../protocol/session/conversation.ts";
 import {
   AuthorityStateSchema,
   SessionAuthoritySchema,

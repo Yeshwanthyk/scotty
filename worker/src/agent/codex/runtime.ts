@@ -10,7 +10,7 @@ import { CODEX_VERSION, type CodexNotification } from "../../../../protocol/code
 import {
   CanonicalConversationTurnSchema,
   CanonicalConversationToolSchema,
-} from "../../../../protocol/conversation";
+} from "../../../../protocol/session/conversation";
 import { Cleanup, type CodexHostError } from "./errors";
 import { CodexLaunch } from "./process";
 import { startCodexSession } from "./session";

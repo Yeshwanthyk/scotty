@@ -3,7 +3,7 @@ import { Result, Schema } from "effect";
 import {
   CanonicalConversationTurnSchema,
   decodeCanonicalConversationSnapshotSync,
-} from "../../../protocol/conversation";
+} from "../../../protocol/session/conversation";
 import { decodeAgentSelection } from "../../../protocol/agent-selection";
 
 const decodeTurn = Schema.decodeUnknownResult(CanonicalConversationTurnSchema, {

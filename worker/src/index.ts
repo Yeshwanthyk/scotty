@@ -1,4 +1,4 @@
-import { decodeSessionMessageInput } from "../../protocol/session-steer";
+import { decodeSessionMessageInput } from "../../protocol/session/session-steer";
 import { getSandbox, proxyTerminal } from "@cloudflare/sandbox";
 import {
   decodePiConsoleCommandPromise,
@@ -11,7 +11,7 @@ import {
   SESSION_TERMINAL_PATH_SEGMENT,
   sessionTerminalId,
   type SessionTerminalRestarted,
-} from "../../protocol/session-terminal";
+} from "../../protocol/session/session-terminal";
 import { terminalShellPath } from "./sandbox/auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";

@@ -4,7 +4,7 @@ import {
   type CanonicalConversationQueueItem,
   type CanonicalConversationSnapshot,
   type CanonicalConversationTransport,
-} from "../../../protocol/conversation";
+} from "../../../protocol/session/conversation";
 
 export type ConversationTransport = CanonicalConversationTransport;
 export type ConversationSnapshot = CanonicalConversationSnapshot;

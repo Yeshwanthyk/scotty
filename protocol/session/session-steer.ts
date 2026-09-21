@@ -1,4 +1,4 @@
-import { PiConsoleImagesSchema } from "./pi-console";
+import { PiConsoleImagesSchema } from "../pi-console";
 import { Schema } from "effect";
 
 const Identifier = Schema.NonEmptyString;

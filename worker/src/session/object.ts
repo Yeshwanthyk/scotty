@@ -31,7 +31,7 @@ import {
   type PiConsoleStaleCommand,
   type PiConsoleUnavailable,
 } from "../../../protocol/pi-console";
-import { sessionTerminalId } from "../../../protocol/session-terminal";
+import { sessionTerminalId } from "../../../protocol/session/session-terminal";
 import { parseManagedHandle, type ManagedHandle } from "../../../protocol/credentials";
 import {
   Clock,

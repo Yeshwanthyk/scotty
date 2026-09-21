@@ -6,10 +6,10 @@ import {
   PI_CONSOLE_MAX_RESPONSE_BYTES,
   PiConsoleSnapshotSchema,
 } from "../../../protocol/pi-console";
-import { SessionSteerResponseSchema } from "../../../protocol/session-steer";
-import { SessionInterruptResponseSchema } from "../../../protocol/session-interrupt";
-import { CanonicalConversationSnapshotSchema } from "../../../protocol/conversation";
-import { decodeSessionMessageInput } from "../../../protocol/session-steer";
+import { SessionSteerResponseSchema } from "../../../protocol/session/session-steer";
+import { SessionInterruptResponseSchema } from "../../../protocol/session/session-interrupt";
+import { CanonicalConversationSnapshotSchema } from "../../../protocol/session/conversation";
+import { decodeSessionMessageInput } from "../../../protocol/session/session-steer";
 import { CloudSettingsSnapshotSchema } from "../../../protocol/cloud-settings";
 import type { Bindings } from "../shared/bindings";
 import { readBoundedJson, readBoundedUtf8Body } from "../shared/bounded-http";

@@ -24,10 +24,10 @@ import {
   Flag,
 } from "effect/unstable/cli";
 import { isRepositoryIdentity } from "../protocol/repository.ts";
-import { CanonicalConversationSnapshotSchema } from "../protocol/conversation.ts";
+import { CanonicalConversationSnapshotSchema } from "../protocol/session/conversation.ts";
 import { PublicHatchStatusSchema } from "../worker/src/hatch/contracts.ts";
-import { SessionSteerResponseSchema } from "../protocol/session-steer.ts";
-import { SessionInterruptResponseSchema } from "../protocol/session-interrupt.ts";
+import { SessionSteerResponseSchema } from "../protocol/session/session-steer.ts";
+import { SessionInterruptResponseSchema } from "../protocol/session/session-interrupt.ts";
 import { SessionActorDiagnosticsSchema } from "../worker/src/session-actor/diagnostics.ts";
 import { AuthorityStateSchema, StableStateSchema } from "../worker/src/session-actor/authority.ts";
 import { UiSessionResponseSchema } from "../worker/src/ui/session-view.ts";
