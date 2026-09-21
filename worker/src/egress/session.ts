@@ -10,7 +10,7 @@ import { SessionSteerResponseSchema } from "../../../protocol/session/session-st
 import { SessionInterruptResponseSchema } from "../../../protocol/session/session-interrupt";
 import { CanonicalConversationSnapshotSchema } from "../../../protocol/session/conversation";
 import { decodeSessionMessageInput } from "../../../protocol/session/session-steer";
-import { CloudSettingsSnapshotSchema } from "../../../protocol/cloud-settings";
+import { CloudSettingsSnapshotSchema } from "../../../protocol/settings/cloud-settings";
 import type { Bindings } from "../shared/bindings";
 import { readBoundedJson, readBoundedUtf8Body } from "../shared/bounded-http";
 import { decodeJsonValue } from "../shared/json";

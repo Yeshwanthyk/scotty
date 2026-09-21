@@ -23,7 +23,7 @@ import {
   Command,
   Flag,
 } from "effect/unstable/cli";
-import { isRepositoryIdentity } from "../protocol/repository.ts";
+import { isRepositoryIdentity } from "../protocol/settings/repository.ts";
 import { CanonicalConversationSnapshotSchema } from "../protocol/session/conversation.ts";
 import { PublicHatchStatusSchema } from "../worker/src/hatch/contracts.ts";
 import { SessionSteerResponseSchema } from "../protocol/session/session-steer.ts";

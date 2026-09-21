@@ -14,8 +14,8 @@ export type RuntimeCliSelectionRpcResult =
 import { DurableObject } from "cloudflare:workers";
 import { Effect, Predicate, Result } from "effect";
 import type { Bindings } from "../shared/bindings";
-import type { RepositoryRegistryEntry } from "../../../protocol/repository";
-import type { CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
+import type { RepositoryRegistryEntry } from "../../../protocol/settings/repository";
+import type { CloudSettingsSnapshot } from "../../../protocol/settings/cloud-settings";
 import type {
   SandboxActivateInput,
   SandboxConfigStatus,

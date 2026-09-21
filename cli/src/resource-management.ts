@@ -4,7 +4,7 @@ import {
   CloudResourceNameSchema,
   type CloudResourceKind,
   type CloudResourcePut,
-} from "../../protocol/cloud-resources";
+} from "../../protocol/resources/cloud-resources";
 import { invalidResponse, usage } from "./pure";
 import { SandboxBundleItemManifestSchema, SandboxDigestSchema } from "./sandbox-bundle";
 import { prepareSandboxResource } from "./sandbox-bundle-builder";

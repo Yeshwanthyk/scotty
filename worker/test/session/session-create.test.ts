@@ -2,7 +2,10 @@ import { runtimeCliPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { defaultCloudSettings, type CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
+import {
+  defaultCloudSettings,
+  type CloudSettingsSnapshot,
+} from "../../../protocol/settings/cloud-settings";
 import {
   commandIntentDigest,
   decodePiConsoleCommandPromise,

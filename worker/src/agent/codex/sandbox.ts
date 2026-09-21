@@ -4,7 +4,7 @@ import { SessionConfigurationSchema } from "../../session-actor/configuration";
 import { Clock, Data, Effect, Option, Result, Schedule, Schema } from "effect";
 import { CodexStartupFailure } from "./errors";
 import { CodexAgentSelectionSchema } from "../../../../protocol/agent-selection";
-import type { CredentialGrant } from "../../../../protocol/credentials";
+import type { CredentialGrant } from "../../../../protocol/credentials/credentials";
 import {
   githubManagedHandle,
   managedPiAccessToken,

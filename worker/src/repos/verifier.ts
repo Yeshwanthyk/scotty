@@ -1,6 +1,9 @@
 import { Context, Data, Effect, Layer, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { isRepositoryIdentity, RepositoryDefaultBranchSchema } from "../../../protocol/repository";
+import {
+  isRepositoryIdentity,
+  RepositoryDefaultBranchSchema,
+} from "../../../protocol/settings/repository";
 
 const GITHUB_API_ORIGIN = "https://api.github.com";
 const GITHUB_API_VERSION = "2022-11-28";

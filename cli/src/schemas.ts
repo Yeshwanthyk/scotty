@@ -6,7 +6,7 @@ import { SessionInterruptResponseSchema } from "../../protocol/session/session-i
 import {
   RepositoryRegistryEntrySchema,
   RepositoryRegistryRemovalResponseSchema,
-} from "../../protocol/repository";
+} from "../../protocol/settings/repository";
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);

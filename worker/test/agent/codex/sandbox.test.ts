@@ -3,7 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { vi } from "vitest";
-import type { CredentialGrant } from "../../../../protocol/credentials";
+import type { CredentialGrant } from "../../../../protocol/credentials/credentials";
 import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
 import { codexConversation } from "../../../src/agent/codex/conversation";
 import {

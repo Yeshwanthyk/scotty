@@ -2,7 +2,10 @@ import { runtimeCliPin } from "../runtime-cli/fixtures";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Predicate, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { defaultCloudSettings, type CloudSettingsSnapshot } from "../../../protocol/cloud-settings";
+import {
+  defaultCloudSettings,
+  type CloudSettingsSnapshot,
+} from "../../../protocol/settings/cloud-settings";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { EvidenceState } from "../../src/evidence/contracts";

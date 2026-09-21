@@ -5,7 +5,7 @@ import {
   type CredentialEncryptionContext,
   type EncryptedCredentialEnvelope,
 } from "./contracts";
-import type { CredentialKind } from "../../../protocol/credentials";
+import type { CredentialKind } from "../../../protocol/credentials/credentials";
 
 const encoder = new TextEncoder();
 const WRAPPING_KEY_BYTES = 32;

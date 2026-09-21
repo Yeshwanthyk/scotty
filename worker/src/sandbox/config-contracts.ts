@@ -3,7 +3,7 @@ import {
   CloudSettingsSchema,
   CloudSettingsUpdateSchema,
   type CloudSettingsUpdate,
-} from "../../../protocol/cloud-settings";
+} from "../../../protocol/settings/cloud-settings";
 
 export const SandboxDigestSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));

@@ -20,7 +20,7 @@ import {
   type CredentialRegistryStatus,
   type CredentialRegistryUpsertInput,
 } from "./contracts";
-import type { CredentialRedactedMetadata } from "../../../protocol/credentials";
+import type { CredentialRedactedMetadata } from "../../../protocol/credentials/credentials";
 
 export const CREDENTIAL_REGISTRY_OBJECT_NAME = "credential-registry";
 const toResolvedCredentialWire = (

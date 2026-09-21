@@ -64,8 +64,8 @@ import { PI_AUTH_MAX_MATERIAL_BYTES, serializePiAuthProviders } from "../../prot
 import {
   decodeCloudSettingsSnapshot,
   type CloudSettingsSnapshot,
-} from "../../protocol/cloud-settings";
-import { isRepositoryIdentity } from "../../protocol/repository";
+} from "../../protocol/settings/cloud-settings";
+import { isRepositoryIdentity } from "../../protocol/settings/repository";
 import {
   browserUrl,
   durationSeconds,

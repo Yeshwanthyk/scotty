@@ -19,8 +19,8 @@ import {
   type CredentialScope,
   type CredentialVersionRef,
   type ManagedHandle,
-} from "../../../protocol/credentials";
-import { RepositoryIdentitySchema } from "../../../protocol/repository";
+} from "../../../protocol/credentials/credentials";
+import { RepositoryIdentitySchema } from "../../../protocol/settings/repository";
 import {
   PI_AUTH_MAX_MATERIAL_BYTES,
   PiAuthStoreSchema,

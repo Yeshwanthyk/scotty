@@ -8,7 +8,7 @@ import {
   formatManagedHandle,
   isCredentialName,
   parseManagedHandle,
-} from "../../../protocol/credentials";
+} from "../../../protocol/credentials/credentials";
 import {
   CredentialRegistryGrantResultSchema,
   CredentialRegistryResolveInputSchema,

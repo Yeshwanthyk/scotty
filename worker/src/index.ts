@@ -82,7 +82,7 @@ import {
 import {
   decodeRepositoryRegistryRequest,
   type RepositoryRegistryEntry,
-} from "../../protocol/repository";
+} from "../../protocol/settings/repository";
 import { RepoVerifier, repoVerifierLayer } from "./repos/verifier";
 import {
   kvStatsProjectionStorage,
@@ -114,8 +114,8 @@ import {
   decodeCloudResourceDelete,
   decodeCloudResourcePut,
   type CloudResourceKind,
-} from "../../protocol/cloud-resources";
-import { sandboxBundleItemFilePath } from "../../protocol/sandbox-bundle";
+} from "../../protocol/resources/cloud-resources";
+import { sandboxBundleItemFilePath } from "../../protocol/resources/sandbox-bundle";
 import { type SandboxBundleManifest } from "./sandbox/config-contracts";
 import {
   SandboxBundleStore,
@@ -152,7 +152,7 @@ import {
 import {
   CLOUD_SETTINGS_MAX_BODY_BYTES,
   decodeCloudSettingsUpdate,
-} from "../../protocol/cloud-settings";
+} from "../../protocol/settings/cloud-settings";
 
 export {
   ContainerProxy,

@@ -31,7 +31,7 @@ model default or cross-profile fallback. Read the shared capability catalog rath
 another model whitelist. Existing Sessions retain their authoritative selection.
 
 Reuse the current `pi-auth` Credential Registry declaration, Session-pinned grant, and managed
-egress projection. `protocol/credentials.ts` accepts `pi-auth` and `github-cli`; it does not expose a
+egress projection. `protocol/credentials/credentials.ts` accepts `pi-auth` and `github-cli`; it does not expose a
 `codex-auth` importer. Ordinary config parsing and `beam` do not read credential source files.
 Credential synchronization must remain separately authorized and use the existing sync workflow.
 

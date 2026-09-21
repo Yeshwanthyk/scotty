@@ -3,7 +3,7 @@ import { decodeRuntimeCliPin } from "../../../protocol/runtime-cli-pin";
 import type { PiConsoleImage } from "../../../protocol/pi-console";
 import { codexFollowUpStorage } from "./store";
 import { resolveSessionConfiguration } from "../session-actor/configuration";
-import { decodeCloudSettingsSnapshot } from "../../../protocol/cloud-settings";
+import { decodeCloudSettingsSnapshot } from "../../../protocol/settings/cloud-settings";
 import {
   decodeCodexFollowUps,
   emptyCodexFollowUps,
@@ -32,7 +32,7 @@ import {
   type PiConsoleUnavailable,
 } from "../../../protocol/pi-console";
 import { sessionTerminalId } from "../../../protocol/session/session-terminal";
-import { parseManagedHandle, type ManagedHandle } from "../../../protocol/credentials";
+import { parseManagedHandle, type ManagedHandle } from "../../../protocol/credentials/credentials";
 import {
   Clock,
   Data,

@@ -1,4 +1,7 @@
-import type { CloudResourceFile, CloudResourceKind } from "../../../protocol/cloud-resources";
+import type {
+  CloudResourceFile,
+  CloudResourceKind,
+} from "../../../protocol/resources/cloud-resources";
 
 export const bytesToBase64 = (bytes: Uint8Array): string => {
   let binary = "";

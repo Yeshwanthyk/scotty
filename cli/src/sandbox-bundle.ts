@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { sandboxBundleItemDigestMaterial } from "../../protocol/sandbox-bundle";
+import { sandboxBundleItemDigestMaterial } from "../../protocol/resources/sandbox-bundle";
 import { Schema } from "effect";
 import { CliError, EXIT } from "./core";
 

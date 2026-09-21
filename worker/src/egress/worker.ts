@@ -4,7 +4,7 @@ import {
   formatManagedHandle,
   parseManagedHandle,
   type ManagedHandle,
-} from "../../../protocol/credentials";
+} from "../../../protocol/credentials/credentials";
 import type { Bindings } from "../shared/bindings";
 import { handleContainerSessionEgress, SCOTTY_INTERNAL_HOST } from "../egress/session";
 import { githubRepositoryFromUrl, parseManagedPiAccessToken } from "../credentials/managed";

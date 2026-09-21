@@ -2,13 +2,13 @@ import { PiConsoleImagesSchema } from "../../../protocol/pi-console";
 import { AgentSelectionSchema, decodeAgentSelection } from "../../../protocol/agent-selection";
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Effect, Option, Result, Schema } from "effect";
-import { CredentialGrantSchema } from "../../../protocol/credentials";
+import { CredentialGrantSchema } from "../../../protocol/credentials/credentials";
 import {
   RepositoryDefaultBranchSchema,
   RepositoryIdentitySchema,
   RepositoryTimestampSchema,
   isRepositoryIdentity,
-} from "../../../protocol/repository";
+} from "../../../protocol/settings/repository";
 import { SandboxDigestSchema } from "../sandbox/config-contracts";
 import { sha256Hex } from "../shared/digest";
 import type { CreateIdempotencyDigestMetadata } from "../session-actor/metadata";

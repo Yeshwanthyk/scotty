@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import type { SandboxConfigAuthority } from "../../src/sandbox/config-contracts";
-import { defaultCloudSettings } from "../../../protocol/cloud-settings";
+import { defaultCloudSettings } from "../../../protocol/settings/cloud-settings";
 import {
   type SandboxConfigAuthorityStorage,
   SandboxConfigStore,

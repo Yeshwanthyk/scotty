@@ -2,8 +2,11 @@ import { Effect, Result, Schema } from "effect";
 import {
   sandboxBundleItemDigestMaterial,
   sandboxBundleItemFilePath,
-} from "../../../protocol/sandbox-bundle";
-import type { CloudResourceKind, CloudResourcePut } from "../../../protocol/cloud-resources";
+} from "../../../protocol/resources/sandbox-bundle";
+import type {
+  CloudResourceKind,
+  CloudResourcePut,
+} from "../../../protocol/resources/cloud-resources";
 import { sha256BytesHex } from "../shared/digest";
 import {
   SANDBOX_MAX_BUNDLE_FILES,

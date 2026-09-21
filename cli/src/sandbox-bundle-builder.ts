@@ -23,7 +23,7 @@ import {
   CloudResourceNameSchema,
   type CloudResourceFile,
   type CloudResourceKind,
-} from "../../protocol/cloud-resources";
+} from "../../protocol/resources/cloud-resources";
 import {
   installPiPackageDependencies,
   type PiPackageDependencyInstaller,

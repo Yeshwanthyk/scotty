@@ -19,7 +19,7 @@ import {
   type CredentialRegistryCredential,
   type CredentialRegistryMaterial,
 } from "../../src/credentials/contracts";
-import { formatManagedHandle } from "../../../protocol/credentials";
+import { formatManagedHandle } from "../../../protocol/credentials/credentials";
 
 const INSTALLATION = "test-installation";
 const SESSION = "a0b1c2d3e4f5";

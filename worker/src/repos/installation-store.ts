@@ -8,7 +8,7 @@ import {
   type RepositoryRegistryAuthority,
   type RepositoryRegistryEntry,
   type RepositoryRegistryUpsertInput,
-} from "../../../protocol/repository";
+} from "../../../protocol/settings/repository";
 
 export const INSTALLATION_REPOSITORY_REGISTRY_KEY = "scotty:installation-repositories";
 

@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { CodexAgentSelectionSchema, PiAgentSelectionSchema } from "./agent-selection";
+import { CodexAgentSelectionSchema, PiAgentSelectionSchema } from "../agent-selection";
 
 const SettingEnvironmentKey = Schema.String.check(
   Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/u),

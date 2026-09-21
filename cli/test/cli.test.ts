@@ -12,7 +12,7 @@ import { BeamUpRequestSchema } from "../src/schemas";
 import { managedInstallationPath } from "../src/managed-installation-path.mjs";
 import { deploymentPlanPath } from "../src/deployment-plan";
 import { Schema } from "effect";
-import type { CloudSettings } from "../../protocol/cloud-settings";
+import type { CloudSettings } from "../../protocol/settings/cloud-settings";
 import {
   runtimeImageCompatibilityBytes,
   type RuntimeImageCompatibilityEvidence,

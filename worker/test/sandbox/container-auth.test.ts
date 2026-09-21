@@ -20,7 +20,7 @@ import {
   selectPiAuthGrant,
   sessionRuntimeCredentials,
 } from "../../src/credentials/managed";
-import type { CredentialGrant } from "../../../protocol/credentials";
+import type { CredentialGrant } from "../../../protocol/credentials/credentials";
 
 const decodeSettings = Schema.decodeUnknownSync(
   Schema.fromJsonString(

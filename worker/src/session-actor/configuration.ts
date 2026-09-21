@@ -4,7 +4,7 @@ import { decodeAgentSelection, type AgentSelection } from "../../../protocol/age
 import {
   CloudSettingsEnvironmentSchema,
   type CloudSettingsSnapshot,
-} from "../../../protocol/cloud-settings";
+} from "../../../protocol/settings/cloud-settings";
 import { SandboxDigestSchema } from "../sandbox/config-contracts";
 
 // A session pins this non-secret configuration at admission. Cloud edits never change it.
