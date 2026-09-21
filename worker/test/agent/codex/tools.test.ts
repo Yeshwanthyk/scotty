@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { Result } from "effect";
-import { decodeCodexNotification } from "../../../../protocol/codex-app-server";
+import { decodeCodexNotification } from "../../../../protocol/agents/codex/codex-app-server";
 import { makeCodexTools } from "../../../src/agent/codex/tools";
 
 const item = (status: string, output?: string) => ({

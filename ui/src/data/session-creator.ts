@@ -1,4 +1,4 @@
-import type { PiConsoleImage } from "../../../protocol/pi-console";
+import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
 export const MIN_HARD_CAP_SECONDS = 60;
 export const MAX_HARD_CAP_SECONDS = 24 * 60 * 60;

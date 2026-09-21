@@ -7,7 +7,10 @@ import { assert, describe, it } from "@effect/vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, Queue, Result, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { CODEX_VERSION, decodeCodexClientMessage } from "../../../../protocol/codex-app-server";
+import {
+  CODEX_VERSION,
+  decodeCodexClientMessage,
+} from "../../../../protocol/agents/codex/codex-app-server";
 import { codexConversation } from "../../../src/agent/codex/conversation";
 import { makeSession } from "../../../src/agent/codex/session";
 import type { CodexProcess } from "../../../src/agent/codex/process";

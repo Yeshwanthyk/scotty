@@ -3,7 +3,7 @@ import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { CircleAlert, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CloudSettings } from "../../../protocol/settings/cloud-settings";
-import { codexModelCapabilities } from "../../../protocol/codex-model-capabilities";
+import { codexModelCapabilities } from "../../../protocol/agents/codex/codex-model-capabilities";
 import { Button } from "../components/Button";
 import { SettingsShell, type SettingsPane } from "../components/SettingsShell";
 import { ResourcesSection } from "../components/ResourcesSection";

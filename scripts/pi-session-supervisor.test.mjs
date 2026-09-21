@@ -393,7 +393,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
     epoch: snapshot.epoch,
     status: "delivered",
     commandId: answerCommand.commandId,
-    commandDigest: await import("../protocol/pi-console-shared.mjs").then(
+    commandDigest: await import("../protocol/agents/pi/pi-console-shared.mjs").then(
       ({ commandIntentDigest }) =>
         commandIntentDigest({ type: "extension_ui_response", id: "ask-1", value: "A" }),
     ),

@@ -1,5 +1,8 @@
-import { PiConsoleImagesSchema } from "../../../protocol/pi-console";
-import { AgentSelectionSchema, decodeAgentSelection } from "../../../protocol/agent-selection";
+import { PiConsoleImagesSchema } from "../../../protocol/agents/pi/pi-console";
+import {
+  AgentSelectionSchema,
+  decodeAgentSelection,
+} from "../../../protocol/agents/agent-selection";
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Effect, Option, Result, Schema } from "effect";
 import { CredentialGrantSchema } from "../../../protocol/credentials/credentials";

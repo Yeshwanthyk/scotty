@@ -1,5 +1,5 @@
 import { Match, Predicate, Result, Schema } from "effect";
-import { AgentSelectionSchema } from "../../../protocol/agent-selection";
+import { AgentSelectionSchema } from "../../../protocol/agents/agent-selection";
 import type { SessionOperation, SessionView } from "../session/contracts";
 import type { SessionActorMetadata } from "../session-actor/metadata";
 import type { SessionAuthority } from "../session-actor/authority";

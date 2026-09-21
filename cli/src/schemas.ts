@@ -1,6 +1,6 @@
 import { CanonicalConversationSnapshotSchema } from "../../protocol/session/conversation";
 import { Effect, Option, Schema } from "effect";
-import { PiConsoleSnapshotSchema } from "../../protocol/pi-console";
+import { PiConsoleSnapshotSchema } from "../../protocol/agents/pi/pi-console";
 import { SessionSteerResponseSchema } from "../../protocol/session/session-steer";
 import { SessionInterruptResponseSchema } from "../../protocol/session/session-interrupt";
 import {

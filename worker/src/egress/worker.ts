@@ -8,7 +8,7 @@ import {
 import type { Bindings } from "../shared/bindings";
 import { handleContainerSessionEgress, SCOTTY_INTERNAL_HOST } from "../egress/session";
 import { githubRepositoryFromUrl, parseManagedPiAccessToken } from "../credentials/managed";
-import { parsePiAuthJsonOption } from "../../../protocol/pi-auth";
+import { parsePiAuthJsonOption } from "../../../protocol/agents/pi/pi-auth";
 
 export const ALLOWED_HOSTS = [
   "api.openai.com",

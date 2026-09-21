@@ -2,7 +2,7 @@ import { runtimeCliMaterializerTestLayer } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import type { BackupOptions, ExecResult, ProcessStatus } from "@cloudflare/sandbox";
 import { Effect, Layer, Result } from "effect";
-import { CODEX_VERSION } from "../../../protocol/codex-app-server";
+import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
 import { backupStoreLayer, type BackupCapabilities } from "../../src/backups/store";
 import { sessionRuntimeCredentials } from "../../src/credentials/managed";
 import { ContainerAuth } from "../../src/sandbox/auth";

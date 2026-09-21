@@ -4,7 +4,7 @@ import {
   CanonicalConversationTurnSchema,
   decodeCanonicalConversationSnapshotSync,
 } from "../../../protocol/session/conversation";
-import { decodeAgentSelection } from "../../../protocol/agent-selection";
+import { decodeAgentSelection } from "../../../protocol/agents/agent-selection";
 
 const decodeTurn = Schema.decodeUnknownResult(CanonicalConversationTurnSchema, {
   onExcessProperty: "error",

@@ -3,7 +3,7 @@ import {
   CodexModelIdentifier,
   CodexReasoningEffort,
   supportsCodexModelSelection,
-} from "./codex-model-capabilities";
+} from "./codex/codex-model-capabilities";
 
 export const CodexAgentSelectionSchema = Schema.Struct({
   agent: Schema.Literal("codex"),

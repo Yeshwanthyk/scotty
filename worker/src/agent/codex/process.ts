@@ -30,7 +30,7 @@ import {
   CodexReasoningEffort,
   codexModelCapability,
   supportsCodexModelSelection,
-} from "../../../../protocol/codex-model-capabilities";
+} from "../../../../protocol/agents/codex/codex-model-capabilities";
 
 const AbsolutePath = Schema.String.check(
   Schema.isPattern(/^\//u),

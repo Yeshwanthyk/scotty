@@ -4,7 +4,7 @@ import { Deferred, Effect, Fiber, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import type { CredentialGrant } from "../../../../protocol/credentials/credentials";
-import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import { CODEX_VERSION } from "../../../../protocol/agents/codex/codex-app-server";
 import { codexConversation } from "../../../src/agent/codex/conversation";
 import {
   admitCodexSandbox,

@@ -21,7 +21,7 @@ import {
   decodeCodexNotification,
   type CodexClientMessage,
   type CodexDynamicToolResponse,
-} from "../../../../protocol/codex-app-server";
+} from "../../../../protocol/agents/codex/codex-app-server";
 import { makeFramer } from "../../../src/agent/codex/framing";
 import { HatchFailure } from "../../../src/agent/codex/first-party-tools";
 import { makeSession } from "../../../src/agent/codex/session";

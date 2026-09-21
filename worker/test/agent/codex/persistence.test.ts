@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { Effect, Result } from "effect";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import { CODEX_VERSION } from "../../../../protocol/agents/codex/codex-app-server";
 import {
   readCodexSavedState,
   writeCodexSavedState,

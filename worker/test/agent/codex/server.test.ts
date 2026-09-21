@@ -39,7 +39,7 @@ import {
 } from "../../../src/agent/codex/server";
 import { consumeControlToken } from "../../../src/agent/codex/token-file";
 import { managedPiAccessToken } from "../../../src/credentials/managed";
-import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import { CODEX_VERSION } from "../../../../protocol/agents/codex/codex-app-server";
 
 const token = "a".repeat(64);
 const headers = {

@@ -8,7 +8,7 @@ import {
   readCodexSandbox,
   codexSandboxProcessId,
 } from "../../agent/codex/sandbox";
-import type { AgentSelection } from "../../../../protocol/agent-selection";
+import type { AgentSelection } from "../../../../protocol/agents/agent-selection";
 import { Clock, Context, Effect, Layer, Match, Result, Schema } from "effect";
 import { BackupStore, type BackupStoreFailure } from "../../backups/store";
 import { ContainerAuth, PI_SESSION_PROCESS_ID } from "../../sandbox/auth";

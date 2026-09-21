@@ -3,7 +3,7 @@ import {
   PI_CONSOLE_MAX_IMAGES,
   PI_CONSOLE_MAX_IMAGE_BYTES,
   type PiConsoleImage,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 
 export interface ImageAttachment {
   readonly id: string;

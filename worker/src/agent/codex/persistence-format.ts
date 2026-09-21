@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import { CODEX_VERSION } from "../../../../protocol/agents/codex/codex-app-server";
 import { CanonicalConversationTurnSchema } from "../../../../protocol/session/conversation";
 
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(256));

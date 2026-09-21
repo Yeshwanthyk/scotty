@@ -23,7 +23,7 @@ import {
   type CredentialRedactedMetadata,
   type ManagedHandleSlot,
 } from "../../../protocol/credentials/credentials";
-import { serializePiAuthProviders } from "../../../protocol/pi-auth";
+import { serializePiAuthProviders } from "../../../protocol/agents/pi/pi-auth";
 import { repositoryIdentityKey } from "../../../protocol/settings/repository";
 import {
   CredentialCrypto,

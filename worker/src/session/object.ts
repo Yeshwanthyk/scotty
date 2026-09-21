@@ -1,6 +1,6 @@
 import { RuntimeCliMaterializer, runtimeCliMaterializerLayer } from "../runtime-cli/materializer";
 import { decodeRuntimeCliPin } from "../../../protocol/runtime-cli-pin";
-import type { PiConsoleImage } from "../../../protocol/pi-console";
+import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 import { codexFollowUpStorage } from "./store";
 import { resolveSessionConfiguration } from "../session-actor/configuration";
 import { decodeCloudSettingsSnapshot } from "../../../protocol/settings/cloud-settings";
@@ -30,7 +30,7 @@ import {
   type PiConsoleCommand,
   type PiConsoleStaleCommand,
   type PiConsoleUnavailable,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 import { sessionTerminalId } from "../../../protocol/session/session-terminal";
 import { parseManagedHandle, type ManagedHandle } from "../../../protocol/credentials/credentials";
 import {

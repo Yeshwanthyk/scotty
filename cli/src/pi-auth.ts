@@ -4,7 +4,7 @@ import {
   parsePiAuthJsonOption,
   piProviderMetadata,
   type PiCredential,
-} from "../../protocol/pi-auth";
+} from "../../protocol/agents/pi/pi-auth";
 import { Effect, Option, Schema, Result } from "effect";
 import { CliError, EXIT } from "./core";
 import { CliRuntime, FileSystem, ProcessRunner } from "./services";

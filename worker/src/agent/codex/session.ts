@@ -1,4 +1,4 @@
-import type { PiConsoleImage } from "../../../../protocol/pi-console";
+import type { PiConsoleImage } from "../../../../protocol/agents/pi/pi-console";
 import { HatchFailure, renderHatchFailure } from "./first-party-tools";
 import type { CodexSavedState } from "./persistence-format";
 import { createHash } from "node:crypto";
@@ -26,7 +26,7 @@ import {
   type CodexThreadReadResult,
   type CodexThreadSettings,
   type CodexUnsupportedResponse,
-} from "../../../../protocol/codex-app-server";
+} from "../../../../protocol/agents/codex/codex-app-server";
 import { CodexHostError, type Cleanup } from "./errors";
 import { makeCodexTools } from "./tools";
 import {

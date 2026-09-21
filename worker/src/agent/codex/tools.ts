@@ -1,6 +1,6 @@
 import { Predicate } from "effect";
-import { toolDisplayText } from "../../../../protocol/tool-display-text";
-import type { CodexNotification } from "../../../../protocol/codex-app-server";
+import { toolDisplayText } from "../../../../protocol/agents/tool-display-text";
+import type { CodexNotification } from "../../../../protocol/agents/codex/codex-app-server";
 import type { CanonicalConversationTool } from "../../../../protocol/session/conversation";
 
 type CommandItemEvent = Extract<CodexNotification, { method: "item/started" | "item/completed" }>;

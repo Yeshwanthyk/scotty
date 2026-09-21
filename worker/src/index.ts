@@ -5,7 +5,7 @@ import {
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_PUBLIC_PATH_SEGMENT,
   PI_CONSOLE_PROXY_PREFIX,
-} from "../../protocol/pi-console";
+} from "../../protocol/agents/pi/pi-console";
 import {
   SESSION_TERMINAL_MAX_DIMENSION,
   SESSION_TERMINAL_PATH_SEGMENT,

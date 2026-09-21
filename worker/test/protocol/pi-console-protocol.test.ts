@@ -11,7 +11,7 @@ import {
   PI_CONSOLE_MAX_IMAGE_BYTES,
   PI_CONSOLE_MAX_IMAGES,
   PI_CONSOLE_MAX_STATUSES,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 
 const command = (intent: unknown) => ({
   epoch: "epoch-1",

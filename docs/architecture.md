@@ -77,7 +77,7 @@ The [transition modules](../worker/src/session-actor/transitions/) implement the
 
 ## Agent runtimes
 
-[Agent selection](../protocol/agent-selection.ts) chooses Pi or Codex. Pi runs through the
+[Agent selection](../protocol/agents/agent-selection.ts) chooses Pi or Codex. Pi runs through the
 [container supervisor](../worker/container/scotty-pi-session.mjs); Codex uses the
 [app-server runtime](../worker/src/agent/codex/). The image pins their versions.
 

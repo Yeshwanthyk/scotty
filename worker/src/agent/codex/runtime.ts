@@ -1,4 +1,7 @@
-import { PiConsoleImagesSchema, type PiConsoleImage } from "../../../../protocol/pi-console";
+import {
+  PiConsoleImagesSchema,
+  type PiConsoleImage,
+} from "../../../../protocol/agents/pi/pi-console";
 import {
   CodexPersistenceIdentity,
   CodexSavedHistory,
@@ -6,7 +9,10 @@ import {
 } from "./persistence-format";
 import { readCodexSavedState, writeCodexSavedState } from "./persistence";
 import { Cause, Data, Deferred, Effect, Option, Predicate, Result, Schema, Scope } from "effect";
-import { CODEX_VERSION, type CodexNotification } from "../../../../protocol/codex-app-server";
+import {
+  CODEX_VERSION,
+  type CodexNotification,
+} from "../../../../protocol/agents/codex/codex-app-server";
 import {
   CanonicalConversationTurnSchema,
   CanonicalConversationToolSchema,

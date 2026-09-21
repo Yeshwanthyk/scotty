@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateImageFiles } from "./image-attachments";
-import { PI_CONSOLE_MAX_IMAGE_BYTES } from "../../../protocol/pi-console";
+import { PI_CONSOLE_MAX_IMAGE_BYTES } from "../../../protocol/agents/pi/pi-console";
 
 const file = (name = "photo.png", type = "image/png", size = 8) =>
   new File([new Uint8Array(size)], name, { type });

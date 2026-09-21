@@ -25,7 +25,7 @@ import {
   PI_AUTH_MAX_MATERIAL_BYTES,
   PiAuthStoreSchema,
   serializePiAuthProviders,
-} from "../../../protocol/pi-auth";
+} from "../../../protocol/agents/pi/pi-auth";
 
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/u;
 const SESSION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{5,31}$/u;

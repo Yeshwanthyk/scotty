@@ -1,6 +1,9 @@
 import { RuntimeCliPinSchema, type RuntimeCliPin } from "../../../protocol/runtime-cli-pin";
 import { Result, Schema } from "effect";
-import { decodeAgentSelection, type AgentSelection } from "../../../protocol/agent-selection";
+import {
+  decodeAgentSelection,
+  type AgentSelection,
+} from "../../../protocol/agents/agent-selection";
 import {
   CloudSettingsEnvironmentSchema,
   type CloudSettingsSnapshot,

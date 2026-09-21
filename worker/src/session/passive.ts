@@ -1,4 +1,4 @@
-import type { PiConsoleImage } from "../../../protocol/pi-console";
+import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 import {
   commandIntentDigest,
   PI_CONSOLE_MAX_RESPONSE_BYTES,
@@ -9,7 +9,7 @@ import {
   PiConsoleStaleCommandSchema,
   PiConsoleUnavailableSchema,
   type PiConsoleCommand,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 import { Option, Result, Schema } from "effect";
 import { readBoundedJson } from "../shared/bounded-http";
 import { parseSteerInput, ScottyError } from "./contracts";

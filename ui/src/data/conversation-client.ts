@@ -1,4 +1,4 @@
-import type { PiConsoleImage } from "../../../protocol/pi-console";
+import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 import {
   decodeCanonicalConversationSnapshotSync,
   type CanonicalConversationQueueItem,

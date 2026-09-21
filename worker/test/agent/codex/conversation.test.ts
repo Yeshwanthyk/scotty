@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { CODEX_VERSION } from "../../../../protocol/codex-app-server";
+import { CODEX_VERSION } from "../../../../protocol/agents/codex/codex-app-server";
 import type {
   CanonicalConversationTool,
   CanonicalConversationTurn,

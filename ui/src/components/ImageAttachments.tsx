@@ -6,7 +6,7 @@ import {
   PI_CONSOLE_MAX_IMAGES,
   PI_CONSOLE_MAX_IMAGE_BYTES,
   type PiConsoleImage,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 import { Button } from "./Button";
 import { colors } from "../theme/tokens.stylex";
 import { validateImageFiles, readImageFile, type ImageAttachment } from "../data/image-attachments";

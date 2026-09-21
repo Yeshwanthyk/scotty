@@ -2,7 +2,10 @@ import { assert, describe, it } from "@effect/vitest";
 import type { OutboundHandlerContext } from "@cloudflare/containers";
 import { ContainerProxy as SandboxContainerProxy } from "@cloudflare/sandbox";
 import { vi } from "vitest";
-import { commandIntentDigest, decodePiConsoleCommandPromise } from "../../../protocol/pi-console";
+import {
+  commandIntentDigest,
+  decodePiConsoleCommandPromise,
+} from "../../../protocol/agents/pi/pi-console";
 import type { Bindings } from "../../src/shared/bindings";
 import {
   ContainerProxy,

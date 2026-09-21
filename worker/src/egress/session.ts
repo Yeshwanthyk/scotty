@@ -5,7 +5,7 @@ import {
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_MAX_RESPONSE_BYTES,
   PiConsoleSnapshotSchema,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 import { SessionSteerResponseSchema } from "../../../protocol/session/session-steer";
 import { SessionInterruptResponseSchema } from "../../../protocol/session/session-interrupt";
 import { CanonicalConversationSnapshotSchema } from "../../../protocol/session/conversation";

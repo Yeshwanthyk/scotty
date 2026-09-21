@@ -2,7 +2,7 @@ import {
   PiConsoleImagesSchema,
   PI_CONSOLE_MAX_IMAGE_BYTES,
   type PiConsoleImage,
-} from "../../../protocol/pi-console";
+} from "../../../protocol/agents/pi/pi-console";
 import { Schema } from "effect";
 import {
   CanonicalConversationQueueItemSchema,

@@ -1,5 +1,5 @@
-import { PiConsoleImagesSchema } from "../../../protocol/pi-console";
-import { AgentSelectionSchema } from "../../../protocol/agent-selection";
+import { PiConsoleImagesSchema } from "../../../protocol/agents/pi/pi-console";
+import { AgentSelectionSchema } from "../../../protocol/agents/agent-selection";
 import { SessionConfigurationSchema } from "./configuration";
 import { Match, Predicate, Result, Schema } from "effect";
 import {

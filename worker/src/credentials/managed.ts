@@ -1,5 +1,5 @@
 import { Option, Result, Schema } from "effect";
-import type { PiCredential } from "../../../protocol/pi-auth";
+import type { PiCredential } from "../../../protocol/agents/pi/pi-auth";
 import {
   CredentialGrantSchema,
   formatManagedHandle,
