@@ -70,6 +70,7 @@ function harness(
     agent: "pi" as "pi" | "codex",
     pi: { agent: "pi" as const },
     codex: { agent: "codex" as const, model: "gpt-5.6-sol", effort: "high" },
+    customInstructions: "",
     environment: {},
   };
   let settings = options.cloudSettings ?? defaultTestSettings;
@@ -460,6 +461,7 @@ describe("configuration and transport", () => {
           agent: "codex",
           pi: { agent: "pi", modelProvider: "openai-codex", model: "gpt-5.6-sol", effort: "high" },
           codex: { agent: "codex", model: "gpt-6-astra", effort: "low" },
+          customInstructions: "",
           environment: {},
         },
       },
@@ -753,6 +755,7 @@ describe("configuration and transport", () => {
             agent: "codex",
             pi: { agent: "pi" },
             codex: { agent: "codex", model: "gpt-5.6-sol", effort: "medium" },
+            customInstructions: "",
             environment: {},
           },
         });
