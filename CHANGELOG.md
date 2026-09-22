@@ -7,6 +7,26 @@ change behavior users need to know about.
 
 ## Unreleased
 
+## 0.3.24 — 2026-09-22
+
+### Added
+
+- Set custom agent instructions in web Settings for new Pi and Codex sessions.
+  Each session saves the combined Scotty base and owner instructions at creation
+  and reloads the same text after restart or resume. The editor shows installed
+  skill names and the read-only base instructions.
+  ([#266](https://github.com/Yeshwanthyk/scotty/pull/266))
+
+### Changed
+
+- Breaking settings update: this release starts a new settings authority record
+  with default settings and an empty active resource catalog. Before upgrading,
+  remove existing sessions and back up resources for re-publication. There is no
+  automatic migration. Credentials, repository registrations, and stored bundle
+  objects are retained; older settings records are not deleted.
+
+## 0.3.23 — 2026-09-21
+
 ### Added
 
 - Manage individual cloud resources from the CLI with `scotty resources list`,
