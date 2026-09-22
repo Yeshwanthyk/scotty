@@ -36,6 +36,7 @@ const CONTAINER_SOURCE_INPUTS = Object.freeze([
   exact("worker/src/shared/json.ts"),
   ...[
     "agents/agent-selection.ts",
+    "agents/agent-instructions.ts",
     "settings/cloud-settings.ts",
     "agents/codex/codex-app-server.ts",
     "agents/codex/codex-model-capabilities.ts",

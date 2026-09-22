@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
 import {
@@ -30,6 +31,7 @@ const createAuthority = (): SessionAuthority => ({
     title: "Metadata store session",
     repository: "owner/disposable",
     execution: { provider: "cloudflare", runtimeName: "runtime-metadata-store-session" },
+    ...sessionIdentityPin,
     createdAt: T0,
   },
   hardCap,
@@ -55,6 +57,7 @@ const createAuthority = (): SessionAuthority => ({
 });
 
 const input = (): SessionActorMetadataInput => ({
+  ...sessionIdentityPin,
   branch: "scotty/metadata-store-session",
   createRepositoryIfMissing: false,
   hardCap,

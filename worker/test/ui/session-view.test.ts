@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Result, Schema } from "effect";
 import type { SessionAuthority, ReadinessProof } from "../../src/session-actor/authority";
@@ -27,6 +28,7 @@ const identity = {
   title: "Session view contract",
   repository: "owner/disposable",
   execution: { provider: "cloudflare" as const, runtimeName: "runtime-session-view-test" },
+  ...sessionIdentityPin,
   createdAt: CREATED_AT,
 };
 
@@ -51,6 +53,7 @@ const readiness: ReadinessProof = {
 };
 
 const metadata: SessionActorMetadata = {
+  ...sessionIdentityPin,
   sessionId: identity.id,
   repository: identity.repository,
   branch: "scotty/session-view-contract",

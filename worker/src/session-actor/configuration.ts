@@ -1,3 +1,7 @@
+import {
+  AgentInstructionsSchema,
+  composeAgentInstructions,
+} from "../../../protocol/agents/agent-instructions";
 import { RuntimeCliPinSchema, type RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import { Result, Schema } from "effect";
 import {
@@ -15,6 +19,7 @@ export const SessionConfigurationSchema = Schema.Struct({
   runtimeCli: RuntimeCliPinSchema,
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   bundleDigest: Schema.NullOr(SandboxDigestSchema),
+  agentInstructions: AgentInstructionsSchema,
   environment: CloudSettingsEnvironmentSchema,
 });
 export type SessionConfiguration = typeof SessionConfigurationSchema.Type;
@@ -32,6 +37,7 @@ export const resolveSessionConfiguration = (
       runtimeCli,
       revision: snapshot.revision,
       bundleDigest: snapshot.activeDigest,
+      agentInstructions: composeAgentInstructions(snapshot.settings.customInstructions),
       environment: snapshot.settings.environment,
     },
   }));

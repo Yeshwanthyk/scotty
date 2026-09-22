@@ -1,4 +1,5 @@
 import { runtimeCliPin } from "../runtime-cli/fixtures";
+import { scottyBaseAgentInstructions } from "../../../protocol/agents/agent-instructions";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate, Schema } from "effect";
 import { TestClock } from "effect/testing";
@@ -111,6 +112,7 @@ describe("Sandbox actor create boundary", () => {
       runtimeCli: runtimeCliPin,
       revision: 7,
       bundleDigest,
+      agentInstructions: scottyBaseAgentInstructions,
       environment: { APP_MODE: "original" },
     });
     assert.deepStrictEqual(metadata?.configuration, authority.session.configuration);
@@ -381,6 +383,7 @@ describe("Sandbox actor create boundary", () => {
       runtimeCli: runtimeCliPin,
       revision: 5,
       bundleDigest: null,
+      agentInstructions: scottyBaseAgentInstructions,
       environment: { APP_MODE: "admitted" },
     });
     assert.isFalse(harness.events.some((event) => event.startsWith("host:exec:workspace")));

@@ -3,6 +3,7 @@ import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { CircleAlert, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CloudSettings } from "../../../protocol/settings/cloud-settings";
+import { scottyBaseAgentInstructions } from "../../../protocol/agents/agent-instructions";
 import { codexModelCapabilities } from "../../../protocol/agents/codex/codex-model-capabilities";
 import { Button } from "../components/Button";
 import { SettingsShell, type SettingsPane } from "../components/SettingsShell";
@@ -123,6 +124,42 @@ const styles = stylex.create({
     color: colors.ink,
     fontSize: "14px",
     ":focus": { borderColor: colors.focus },
+  },
+  textarea: {
+    width: "100%",
+    minHeight: "220px",
+    padding: spacing.md,
+    resize: "vertical",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colors.line,
+    borderRadius: "6px",
+    outline: 0,
+    backgroundColor: colors.control,
+    color: colors.ink,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "13px",
+    lineHeight: 1.55,
+    ":focus": { borderColor: colors.focus },
+  },
+  disclosure: {
+    paddingBlock: spacing.sm,
+    borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: colors.lineSoft,
+  },
+  instructionPreview: {
+    maxHeight: "260px",
+    margin: `${spacing.md} 0 0`,
+    padding: spacing.md,
+    overflow: "auto",
+    whiteSpace: "pre-wrap",
+    color: colors.muted,
+    backgroundColor: colors.control,
+    borderRadius: "6px",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "12px",
+    lineHeight: 1.55,
   },
   controlInput: { flex: "1 1 150px", width: "auto" },
   select: {
@@ -396,7 +433,14 @@ function SettingsRoute() {
           </div>
         )}
         {pane === "agents" && settingsReady ? (
-          <AgentSection draft={draft} owner={canEdit} onChange={updateDraft} />
+          <AgentSection
+            draft={draft}
+            owner={canEdit}
+            skillNames={
+              resources?.items.filter(({ kind }) => kind === "skill").map(({ name }) => name) ?? []
+            }
+            onChange={updateDraft}
+          />
         ) : pane === "agents" ? (
           <ErrorMessage message="Settings are unavailable until this installation is connected." />
         ) : null}
@@ -468,10 +512,12 @@ function SettingsRoute() {
 function AgentSection({
   draft,
   owner,
+  skillNames,
   onChange,
 }: {
   readonly draft: CloudSettings;
   readonly owner: boolean;
+  readonly skillNames: ReadonlyArray<string>;
   readonly onChange: (patch: Partial<CloudSettings>) => void;
 }) {
   const setPi = (patch: Partial<CloudSettings["pi"]>) =>
@@ -605,6 +651,39 @@ function AgentSection({
             </div>
           </>
         )}
+        <div {...stylex.props(styles.row)}>
+          <label htmlFor="custom-agent-instructions" {...stylex.props(styles.label)}>
+            Custom instructions
+          </label>
+          <p id="custom-agent-instructions-help" {...stylex.props(styles.help)}>
+            Markdown for new Pi and Codex sessions. Scotty combines it with the base instructions
+            once when a session is created; existing sessions keep their saved copy.
+          </p>
+          <textarea
+            id="custom-agent-instructions"
+            aria-describedby="custom-agent-instructions-help"
+            disabled={!owner}
+            value={draft.customInstructions}
+            placeholder="Add installation-specific guidance for agents…"
+            onChange={(event) => onChange({ customInstructions: event.target.value })}
+            {...stylex.props(styles.textarea)}
+          />
+          {skillNames.length === 0 ? null : (
+            <p {...stylex.props(styles.help)}>
+              Available installed skills:{" "}
+              {skillNames.map((name, index) => (
+                <span key={name}>
+                  {index === 0 ? null : ", "}
+                  <code>{name}</code>
+                </span>
+              ))}
+            </p>
+          )}
+        </div>
+        <details {...stylex.props(styles.disclosure)}>
+          <summary {...stylex.props(styles.help)}>Scotty base instructions · read-only</summary>
+          <pre {...stylex.props(styles.instructionPreview)}>{scottyBaseAgentInstructions}</pre>
+        </details>
       </div>
     </section>
   );

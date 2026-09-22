@@ -193,9 +193,7 @@ export const sessionProjectionFromActor = (
   const execution = authority.session.execution;
   const operation = sessionOperationFromActor(authority);
   return Result.succeed({
-    ...(authority.session.selection === undefined
-      ? {}
-      : { agent: authority.session.selection.agent }),
+    agent: authority.session.selection.agent,
     id: authority.session.id,
     title: authority.session.title,
     status: view.status,

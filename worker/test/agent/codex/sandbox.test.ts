@@ -14,6 +14,7 @@ import {
   startCodexSandbox,
   waitForCodexSandbox,
   type CodexSandboxIdentity,
+  type CodexSandboxStartIdentity,
 } from "../../../src/agent/codex/sandbox";
 import { sandboxRuntimeLayer } from "../../../src/sandbox/runtime";
 import { sandboxRuntimeCapabilitiesFake } from "../../support";
@@ -23,6 +24,16 @@ const identity: CodexSandboxIdentity = {
   generation: "generation-1",
   token: "a".repeat(64),
   selection: { agent: "codex", model: "gpt-5.4", effort: "high" },
+};
+const startIdentity: CodexSandboxStartIdentity = {
+  ...identity,
+  configuration: {
+    runtimeCli: runtimeCliPin,
+    revision: 3,
+    bundleDigest: "b".repeat(64),
+    agentInstructions: "pinned instructions",
+    environment: { APP_MODE: "pinned" },
+  },
 };
 const grant: CredentialGrant = {
   name: "codex",
@@ -331,18 +342,9 @@ describe("Codex Sandbox adapter", () => {
           });
         },
       });
-      const processId = yield* startCodexSandbox(
-        {
-          ...identity,
-          configuration: {
-            runtimeCli: runtimeCliPin,
-            revision: 3,
-            bundleDigest: "b".repeat(64),
-            environment: { APP_MODE: "pinned" },
-          },
-        },
-        [grant, githubGrant],
-      ).pipe(Effect.provide(layer));
+      const processId = yield* startCodexSandbox(startIdentity, [grant, githubGrant]).pipe(
+        Effect.provide(layer),
+      );
       assert.equal(processId, "scotty-codex-generation-1");
       assert.include(commands[0], "umask 077 && mkdir");
       assert.notInclude(commands[0], "mkdir -p");
@@ -381,7 +383,7 @@ describe("Codex Sandbox adapter", () => {
           [{ ...grant, expires: 0 }],
           [{ ...grant, handleSlots: [{ provider: "openai", slot: "api-key" }] as const }],
         ]) {
-          const result = yield* startCodexSandbox(identity, grants).pipe(
+          const result = yield* startCodexSandbox(startIdentity, grants).pipe(
             Effect.provide(layer),
             Effect.result,
           );
@@ -393,7 +395,7 @@ describe("Codex Sandbox adapter", () => {
 
   it.effect("rejects malformed generations before private path provisioning", () =>
     Effect.gen(function* () {
-      const result = yield* startCodexSandbox({ ...identity, generation: "../workspace" }, [
+      const result = yield* startCodexSandbox({ ...startIdentity, generation: "../workspace" }, [
         grant,
       ]).pipe(Effect.provide(sandboxRuntimeLayer(sandboxRuntimeCapabilitiesFake())), Effect.result);
       assert.isTrue(Result.isFailure(result));

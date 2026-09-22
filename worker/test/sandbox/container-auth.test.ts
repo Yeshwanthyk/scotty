@@ -1,3 +1,4 @@
+import { runtimeCliPin } from "../runtime-cli/fixtures";
 import { vi } from "vitest";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Result, Schema } from "effect";
@@ -46,6 +47,13 @@ type ProjectedPiAuth = {
   };
 };
 const SESSION_ID = "a0b1c2d3e4f5";
+const sessionConfiguration = {
+  runtimeCli: runtimeCliPin,
+  revision: 0,
+  bundleDigest: null,
+  agentInstructions: sandboxAgentsInstructions,
+  environment: {},
+};
 const grants: ReadonlyArray<CredentialGrant> = [
   {
     name: "codex",
@@ -323,7 +331,7 @@ describe("Pi session production observations", () => {
       const layer = Layer.merge(runtimeLayer, containerAuthLayer.pipe(Layer.provide(runtimeLayer)));
 
       yield* Effect.flatMap(ContainerAuth, (auth) =>
-        auth.ensurePiSession(SESSION_ID, credentials),
+        auth.ensurePiSession(SESSION_ID, credentials, { agent: "pi" }, sessionConfiguration),
       ).pipe(Effect.provide(layer));
 
       assert.strictEqual(waitCalls, 1);
@@ -367,7 +375,12 @@ describe("Pi session production observations", () => {
         const program = Effect.gen(function* () {
           const auth = yield* ContainerAuth;
           assert.strictEqual(
-            yield* auth.startPiSession(SESSION_ID, credentials),
+            yield* auth.startPiSession(
+              SESSION_ID,
+              credentials,
+              { agent: "pi" },
+              sessionConfiguration,
+            ),
             PI_SESSION_PROCESS_ID,
           );
           assert.deepStrictEqual(yield* auth.readPiSessionHealth(SESSION_ID), {
@@ -423,7 +436,7 @@ describe("Pi session production observations", () => {
       const layer = Layer.merge(runtimeLayer, containerAuthLayer.pipe(Layer.provide(runtimeLayer)));
 
       const processId = yield* Effect.flatMap(ContainerAuth, (auth) =>
-        auth.startPiSession(SESSION_ID, credentials),
+        auth.startPiSession(SESSION_ID, credentials, { agent: "pi" }, sessionConfiguration),
       ).pipe(Effect.provide(layer));
 
       assert.strictEqual(processId, PI_SESSION_PROCESS_ID);

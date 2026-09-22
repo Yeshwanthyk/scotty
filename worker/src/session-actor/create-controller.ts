@@ -247,10 +247,8 @@ const command = (
 });
 
 const metadataInput = (request: CreateControllerRequest): SessionActorMetadataInput => ({
-  ...(request.session.selection === undefined ? {} : { selection: request.session.selection }),
-  ...(request.session.configuration === undefined
-    ? {}
-    : { configuration: request.session.configuration }),
+  selection: request.session.selection,
+  configuration: request.session.configuration,
   ...(request.codexControl === undefined ? {} : { codexControl: request.codexControl }),
   branch: request.branch,
   createRepositoryIfMissing: request.createRepositoryIfMissing,

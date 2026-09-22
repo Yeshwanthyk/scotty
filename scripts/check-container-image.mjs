@@ -299,13 +299,19 @@ reservation.listen(0, "127.0.0.1");
 await once(reservation, "listening");
 const port = reservation.address().port;
 await new Promise((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
+const runtimeDir = path.join(root, "runtime");
+const agentInstructionsPath = runtimeDir + ".agent-instructions.md";
+fs.writeFileSync(agentInstructionsPath, "Follow the native image proof instructions.", {
+  mode: 0o600,
+});
 const start = {
   generation,
   port,
   tokenFile,
   launch: {
+    agentInstructionsPath,
     binary: "/opt/codex/bin/codex",
-    runtimeDir: path.join(root, "runtime"),
+    runtimeDir,
     workspace,
     environment: { APP_MODE: "pinned" },
     sandboxBundleDigest: bundleDigest,

@@ -1,4 +1,5 @@
 import { runtimeCliPath } from "../../runtime-cli/paths";
+import { AgentInstructionsSchema } from "../../../../protocol/agents/agent-instructions";
 import { importCodexSavedState } from "./persistence";
 import { CloudSettingsEnvironmentSchema } from "../../../../protocol/settings/cloud-settings";
 import { SandboxDigestSchema } from "../../sandbox/config-contracts";
@@ -50,6 +51,7 @@ const Deadline = Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 12000
 const CLOUDFLARE_CA_FILE = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 const PACKAGED_COREPACK_HOME = "/opt/corepack";
 export const CodexLaunch = Schema.Struct({
+  agentInstructionsPath: AbsolutePath,
   environment: Schema.optionalKey(CloudSettingsEnvironmentSchema),
   sandboxBundleDigest: Schema.optionalKey(SandboxDigestSchema),
   binary: AbsolutePath,
@@ -95,6 +97,13 @@ export const CodexLaunch = Schema.Struct({
   turnTimeoutMs: Schema.optionalKey(Deadline),
   stopTimeoutMs: Schema.optionalKey(Deadline),
 })
+  .check(
+    Schema.makeFilter(
+      (selection) =>
+        selection.agentInstructionsPath === `${selection.runtimeDir}.agent-instructions.md`,
+      { expected: "an agent instructions file in the private runtime directory" },
+    ),
+  )
   .check(Schema.makeFilter(supportsCodexModelSelection))
   .check(
     Schema.makeFilter(
@@ -107,6 +116,7 @@ export const CodexLaunch = Schema.Struct({
     ),
   );
 const decodeLaunch = Schema.decodeUnknownEffect(CodexLaunch, { onExcessProperty: "error" });
+const decodeAgentInstructions = Schema.decodeUnknownEffect(AgentInstructionsSchema);
 const decodePort = Schema.decodeUnknownEffect(
   Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
 );
@@ -210,6 +220,10 @@ export const launchProcess = Effect.fnUntraced(function* (
     ...selection,
   };
   const fs = yield* FileSystem.FileSystem;
+  const agentInstructions = yield* fs.readFileString(options.agentInstructionsPath).pipe(
+    Effect.flatMap(decodeAgentInstructions),
+    Effect.mapError(() => new CodexHostError({ code: "isolation_setup_failed" })),
+  );
   const homes = yield* Effect.gen(function* () {
     yield* fs.makeDirectory(options.runtimeDir, { mode: 0o700 });
     const canonical = yield* fs.realPath(options.runtimeDir);
@@ -234,6 +248,10 @@ export const launchProcess = Effect.fnUntraced(function* (
       `model = "${options.model}"\nmodel_provider = "scotty-managed"\nmodel_reasoning_effort = "${options.effort}"\n[analytics]\nenabled = false\n[model_providers.scotty-managed]\nname = "Scotty managed Codex"\nbase_url = "${baseUrl}"\nwire_api = "responses"\nenv_key = "SCOTTY_CODEX_SENTINEL"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`,
       { mode: 0o600, flag: "wx" },
     );
+    yield* fs.writeFileString(`${codexHome}/AGENTS.md`, agentInstructions, {
+      mode: 0o600,
+      flag: "wx",
+    });
     if (restored !== undefined) yield* importCodexSavedState(codexHome, restored);
     return { home, codexHome, cwd };
   }).pipe(Effect.mapError(() => new CodexHostError({ code: "isolation_setup_failed" })));

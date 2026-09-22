@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Predicate } from "effect";
 import type {
@@ -30,6 +31,7 @@ const session = {
   title: "Session one",
   repository: "owner/repository",
   execution: { provider: "cloudflare" as const, runtimeName: "runtime-name" },
+  ...sessionIdentityPin,
   createdAt: T0,
 };
 

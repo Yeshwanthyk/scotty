@@ -29,6 +29,17 @@ export const runtimeCliPin: RuntimeCliPin = {
   verifiedAt: 0,
   freshness: "github_verified",
 };
+
+export const sessionIdentityPin = {
+  selection: { agent: "pi" as const },
+  configuration: {
+    runtimeCli: runtimeCliPin,
+    revision: 0,
+    bundleDigest: null,
+    agentInstructions: "",
+    environment: {},
+  },
+};
 // Lifecycle unit tests replace installation; production materialization has its own contract tests.
 export const runtimeCliMaterializerTestLayer = Layer.succeed(RuntimeCliMaterializer)({
   materialize: () => Effect.void,

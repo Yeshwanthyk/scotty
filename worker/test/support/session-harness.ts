@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import type { RuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import { runtimeCliPin } from "../runtime-cli/fixtures";
 import type {
@@ -315,6 +316,7 @@ const fixtureIdentity = (record: SessionRecord) => ({
     record.execution.provider === "cloudflare"
       ? ({ provider: "cloudflare", runtimeName: record.id } as const)
       : ({ provider: "runner", runnerName: record.execution.runner } as const),
+  ...sessionIdentityPin,
   createdAt: record.createdAt,
 });
 
@@ -470,6 +472,7 @@ const fixtureMetadata = (record: SessionRecord): SessionActorMetadata => {
     observedAt: record.createdAt,
   };
   return {
+    ...sessionIdentityPin,
     sessionId: record.id,
     repository: record.repo,
     branch: record.branch,

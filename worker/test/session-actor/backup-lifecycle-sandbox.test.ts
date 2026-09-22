@@ -22,6 +22,7 @@ import {
 } from "../../src/session-actor/transitions/backup-lifecycle-sandbox";
 
 const attempt: BackupLifecycleAttempt = {
+  selection: { agent: "pi" },
   sessionId: "session-backup",
   attempt: "1ed4a6f4-7d9f-46b9-8a07-ef6d9c1dd64c",
   operationNonce: "operation-1",

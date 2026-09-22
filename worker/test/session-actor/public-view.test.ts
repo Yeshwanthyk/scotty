@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Result } from "effect";
 import {
@@ -29,6 +30,7 @@ const identity = {
   title: "Public session",
   repository: "owner/disposable",
   execution: { provider: "cloudflare" as const, runtimeName: "runtime-public-session" },
+  ...sessionIdentityPin,
   createdAt: CREATED_AT,
 };
 
@@ -53,6 +55,7 @@ const readiness = {
 };
 
 const metadata = (workspaceObserved = true): SessionActorMetadata => ({
+  ...sessionIdentityPin,
   sessionId: identity.id,
   repository: identity.repository,
   branch: "scotty/public-session",

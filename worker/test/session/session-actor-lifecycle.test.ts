@@ -1,4 +1,5 @@
 import { runtimeCliPin } from "../runtime-cli/fixtures";
+import { scottyBaseAgentInstructions } from "../../../protocol/agents/agent-instructions";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { Effect, Option, Predicate, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
@@ -635,6 +636,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         runtimeCli: runtimeCliPin,
         revision: 3,
         bundleDigest: null,
+        agentInstructions: scottyBaseAgentInstructions,
         environment: { APP_MODE: "pinned" },
       },
     );

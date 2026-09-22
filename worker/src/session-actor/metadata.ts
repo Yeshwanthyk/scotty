@@ -92,8 +92,8 @@ const CodexControlMetadataSchema = Schema.Struct({
   images: Schema.optionalKey(PiConsoleImagesSchema),
 });
 export const SessionActorMetadataSchema = Schema.Struct({
-  selection: Schema.optionalKey(AgentSelectionSchema),
-  configuration: Schema.optionalKey(SessionConfigurationSchema),
+  selection: AgentSelectionSchema,
+  configuration: SessionConfigurationSchema,
   codexControl: Schema.optionalKey(CodexControlMetadataSchema),
   sessionId: SafeReferenceSchema,
   repository: RepositoryIdentitySchema,
@@ -112,8 +112,8 @@ export const decodeSessionActorMetadata = Schema.decodeUnknownResult(SessionActo
 });
 
 export const SessionActorMetadataInputSchema = Schema.Struct({
-  selection: Schema.optionalKey(AgentSelectionSchema),
-  configuration: Schema.optionalKey(SessionConfigurationSchema),
+  selection: AgentSelectionSchema,
+  configuration: SessionConfigurationSchema,
   codexControl: Schema.optionalKey(CodexControlMetadataSchema),
   branch: SessionBranchSchema,
   createRepositoryIfMissing: Schema.Boolean,
@@ -236,7 +236,7 @@ export const validateSessionActorMetadata = (
     metadata.repository !== authority.session.repository ||
     JSON.stringify(metadata.selection) !== JSON.stringify(authority.session.selection) ||
     JSON.stringify(metadata.configuration) !== JSON.stringify(authority.session.configuration) ||
-    (metadata.selection?.agent === "codex") !== (metadata.codexControl !== undefined)
+    (metadata.selection.agent === "codex") !== (metadata.codexControl !== undefined)
   )
     return invalid("authority_identity_mismatch");
 
@@ -263,8 +263,8 @@ export const makeSessionActorMetadata = (
   if (create === undefined) return invalid("create_transition_required");
   const payload: MetadataCreatePayloadReference = input.payload;
   const metadata: SessionActorMetadata = {
-    ...(input.selection === undefined ? {} : { selection: input.selection }),
-    ...(input.configuration === undefined ? {} : { configuration: input.configuration }),
+    selection: input.selection,
+    configuration: input.configuration,
     ...(input.codexControl === undefined ? {} : { codexControl: input.codexControl }),
     sessionId: authority.session.id,
     repository: authority.session.repository,

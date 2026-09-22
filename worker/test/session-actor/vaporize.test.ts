@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Match, Predicate, Result } from "effect";
 import type {
@@ -29,6 +30,7 @@ const session: SessionIdentity = {
   title: "Vaporize session",
   repository: "owner/disposable",
   execution: { provider: "cloudflare", runtimeName: "runtime-vaporize-session" },
+  ...sessionIdentityPin,
   createdAt: T0,
 };
 const readiness: ReadinessProof = {
