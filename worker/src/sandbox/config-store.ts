@@ -13,7 +13,8 @@ import {
   type CloudSettingsSnapshot,
 } from "../../../protocol/settings/cloud-settings";
 
-const AUTHORITY_KEY = "scotty:sandbox-config:1";
+// The required instruction settings contract starts a new authority record; no legacy migration.
+const AUTHORITY_KEY = "scotty:sandbox-config:2";
 const RUNTIME_CLI_AUTHORITY_KEY = "scotty:runtime-cli-selection:1";
 
 export const durableRuntimeCliSelectionStorage = (
