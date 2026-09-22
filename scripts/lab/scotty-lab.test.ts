@@ -51,7 +51,57 @@ const CapturedFailureStatesSchema = Schema.Struct({
   ),
 });
 const decodeCapturedFailureStates = Schema.decodeUnknownResult(CapturedFailureStatesSchema);
-const capturedStates = decodeCapturedFailureStates(capturedFailureStates);
+const projectionFixtureConfiguration = {
+  runtimeCli: {
+    descriptor: {
+      schemaVersion: 1,
+      releaseTag: "v0.3.19",
+      artifact: {
+        name: "scotty-runtime-linux-amd64",
+        cliVersion: "0.3.19",
+        revision: "a".repeat(40),
+        target: "linux/amd64",
+        byteSize: 20,
+        sha256: "b".repeat(64),
+        installMode: "0755",
+      },
+      compatibility: {
+        bunVersion: "1.3.13",
+        compileTarget: "bun-linux-x64-baseline",
+        cpu: "x86-64-baseline",
+        libc: "glibc",
+        cloudflareSandbox: {
+          packageVersion: "0.12.9",
+          image: `docker.io/cloudflare/sandbox:0.12.9@sha256:${"c".repeat(64)}`,
+        },
+      },
+    },
+    verifiedAt: 0,
+    freshness: "github_verified",
+  },
+  revision: 0,
+  bundleDigest: null,
+  agentInstructions: "",
+  environment: {},
+};
+// Preserve the historical capture; only this projection fixture supplies the new required pin.
+// This synthetic configuration is not evidence of the captured deployment's configuration.
+const capturedStates = decodeCapturedFailureStates({
+  ...capturedFailureStates,
+  cases: capturedFailureStates.cases.map((captured) => ({
+    ...captured,
+    actor: {
+      ...captured.actor,
+      authority: {
+        ...captured.actor.authority,
+        session: {
+          ...captured.actor.authority.session,
+          configuration: projectionFixtureConfiguration,
+        },
+      },
+    },
+  })),
+});
 
 const run = (args: ReadonlyArray<string>, calls: string[]): Effect.Effect<void, unknown> =>
   runLab(args).pipe(
