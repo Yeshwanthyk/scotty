@@ -7,6 +7,18 @@ change behavior users need to know about.
 
 ## Unreleased
 
+## 0.3.26 — 2026-09-22
+
+### Fixed
+
+- Published CLI builds include the generated StyleX stylesheet, restoring the
+  intended layout and visual styling in deployed web installations.
+
+### Added
+
+- The production UI build check verifies that generated StyleX rules are present
+  in the bundled stylesheet before release.
+
 ## 0.3.25 — 2026-09-22
 
 ### Improved

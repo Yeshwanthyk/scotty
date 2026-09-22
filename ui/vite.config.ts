@@ -16,7 +16,10 @@ export default defineConfig({
     },
   },
   plugins: [
-    stylex.vite({ useCSSLayers: true }),
+    stylex.vite({
+      cssInjectionTarget: (fileName) => /(^|\/)global-[^/]+\.css$/u.test(fileName),
+      useCSSLayers: true,
+    }),
     tanstackStart({
       spa: {
         enabled: true,
