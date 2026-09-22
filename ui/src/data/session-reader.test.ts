@@ -43,7 +43,7 @@ describe("readAuthoritativeSession", () => {
     const result = await readAuthoritativeSession("abc-123", { fetch: fetchMock });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/sessions/abc-123",
-      expect.objectContaining({ credentials: "same-origin" }),
+      expect.objectContaining({ cache: "no-store", credentials: "same-origin" }),
     );
     expect(result).toMatchObject({
       ok: true,

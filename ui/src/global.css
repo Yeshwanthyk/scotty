@@ -38,6 +38,13 @@ a {
   -webkit-tap-highlight-color: transparent;
 }
 
+@supports (padding: max(0px)) {
+  body {
+    padding-right: env(safe-area-inset-right, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+  }
+}
+
 [data-scrollbar="quiet"] {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;

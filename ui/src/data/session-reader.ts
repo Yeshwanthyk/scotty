@@ -587,6 +587,7 @@ export const readAuthoritativeSession = async (
       `/api/sessions/${encodeURIComponent(sessionId)}`,
       {
         headers: { accept: "application/json" },
+        cache: "no-store",
         credentials: "same-origin",
         signal: options.signal,
       },

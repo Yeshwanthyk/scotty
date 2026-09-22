@@ -15,6 +15,7 @@ import {
   type CreateSessionFailure,
   type CreateSessionField,
 } from "../data/session-creator";
+import { useSessionCatalog } from "../data/session-catalog";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 
 const initialDraft: CreateSessionDraft = {
@@ -217,12 +218,14 @@ const isOptionsField = (field: CreateSessionField): boolean =>
 
 const repositoryChoiceLimit = (query: string): number => (query.trim() ? 8 : 5);
 
+// oxlint-disable-next-line eslint/complexity -- the form coordinates field validation, attachments, idempotent retry, and verified navigation
 export function CreateSessionForm({
   recentRepositories = [],
 }: {
   readonly recentRepositories?: ReadonlyArray<string>;
 }) {
   const navigate = useNavigate();
+  const { refreshActor } = useSessionCatalog();
   const [draft, setDraft] = useState(initialDraft);
   const [repositories, setRepositories] = useState<ReadonlyArray<string>>([]);
   const [repositoryStatus, setRepositoryStatus] = useState("Loading repositories…");
@@ -281,6 +284,7 @@ export function CreateSessionForm({
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const form = event.currentTarget;
     if (submittingRef.current || attachments.reading) return;
     const prompt = draft.prompt.trim() || (attachments.items.length ? IMAGE_ONLY_PROMPT : "");
     const parsed = buildCreateSessionPayload({
@@ -318,12 +322,19 @@ export function CreateSessionForm({
       );
       if (!result.ok) {
         setFailure(result.failure);
+        requestAnimationFrame(() =>
+          form.querySelector<HTMLButtonElement>('button[type="submit"]')?.focus(),
+        );
         return;
       }
       idempotencyKeyRef.current = undefined;
+      await refreshActor(result.session.id);
       await navigate({ to: "/s/$sessionId", params: { sessionId: result.session.id } });
     } catch {
       setFailure({ kind: "network", message: "Scotty could not be reached." });
+      requestAnimationFrame(() =>
+        form.querySelector<HTMLButtonElement>('button[type="submit"]')?.focus(),
+      );
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -541,6 +552,13 @@ export function CreateSessionForm({
                 ) : null}
                 {failure.kind === "http" && failure.hint ? <span>{failure.hint}</span> : null}
               </div>
+            ) : null}
+
+            {submitting ? (
+              <p role="status" {...stylex.props(styles.hint)}>
+                Scotty is preparing the workspace. Keep this page open while the session is
+                verified.
+              </p>
             ) : null}
 
             <footer {...stylex.props(styles.actions)}>

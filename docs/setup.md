@@ -95,7 +95,14 @@ scotty --build-info
 ```
 
 `upgrade` verifies the signed release manifest and executable hash before replacing the CLI. It
-updates the bundled agent guides, not the Worker. Main-branch pushes do not publish a release.
+updates the bundled agent guides and embedded deployment bundle, but does not change the hosted
+Worker or web UI. Main-branch pushes do not publish a release.
+
+Each signed CLI release contains the Worker and web UI built from that release's source. New
+installations receive those embedded assets during `scotty init`; init does not fetch UI files from
+`main`. Re-running init on an already configured installation does not redeploy them. To update an
+existing installation, upgrade the CLI, then follow the deployment steps below. The sandbox Docker
+image is a separate release artifact; the web UI is deployed as Worker assets.
 
 `--version` shows the release version. `--build-info` shows the build commit and whether the
 executable includes the deployment archive. Use the packaged release for deployment; compiling

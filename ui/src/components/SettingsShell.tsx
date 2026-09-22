@@ -8,7 +8,7 @@ import {
   SlidersHorizontal,
   Boxes,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import { colors, spacing } from "../theme/tokens.stylex";
 
@@ -21,13 +21,21 @@ const items = [
 ] as const;
 export type SettingsPane = (typeof items)[number]["id"];
 
+const isSettingsPane = (value: string): value is SettingsPane =>
+  items.some((item) => item.id === value);
+
 const styles = stylex.create({
   shell: {
+    height: "100dvh",
     minHeight: "100dvh",
     display: "grid",
     gridTemplateColumns: "220px minmax(0, 1fr)",
+    overflow: "hidden",
     backgroundColor: colors.space,
-    "@media (max-width: 760px)": { display: "block" },
+    "@media (max-width: 760px)": {
+      gridTemplateColumns: "minmax(0, 1fr)",
+      gridTemplateRows: "auto minmax(0, 1fr)",
+    },
   },
   rail: {
     minHeight: "100dvh",
@@ -41,12 +49,15 @@ const styles = stylex.create({
     backgroundColor: colors.shell,
     "@media (max-width: 760px)": {
       minHeight: "auto",
-      padding: `${spacing.sm} ${spacing.md}`,
+      paddingTop: `max(${spacing.sm}, env(safe-area-inset-top, 0px))`,
+      paddingRight: `max(${spacing.md}, env(safe-area-inset-right, 0px))`,
+      paddingBottom: spacing.md,
+      paddingLeft: `max(${spacing.md}, env(safe-area-inset-left, 0px))`,
       borderRight: 0,
       borderBottomWidth: "1px",
       borderBottomStyle: "solid",
       borderBottomColor: colors.line,
-      gap: spacing.sm,
+      gap: spacing.md,
     },
   },
   back: {
@@ -74,10 +85,7 @@ const styles = stylex.create({
     display: "grid",
     gap: "2px",
     "@media (max-width: 760px)": {
-      display: "flex",
-      overflowX: "auto",
-      gap: spacing.xs,
-      paddingBottom: spacing.xs,
+      display: "none",
     },
   },
   navLink: {
@@ -106,11 +114,43 @@ const styles = stylex.create({
       outlineColor: colors.focus,
       outlineOffset: "2px",
     },
-    "@media (max-width: 760px)": { minHeight: "34px", paddingInline: spacing.md },
+    "@media (max-width: 760px)": { minHeight: "44px", paddingInline: spacing.md },
   },
   navLinkActive: { backgroundColor: colors.panelRaised, color: colors.ink, fontWeight: 650 },
   navIcon: { width: "15px", height: "15px", strokeWidth: 1.8 },
-  main: { minWidth: 0, minHeight: "100dvh", overflow: "auto" },
+  mobilePicker: {
+    display: "none",
+    "@media (max-width: 760px)": {
+      display: "grid",
+      gap: spacing.xs,
+    },
+  },
+  mobilePickerLabel: {
+    color: colors.quiet,
+    fontSize: "11px",
+    fontWeight: 650,
+  },
+  mobileSelect: {
+    width: "100%",
+    minHeight: "44px",
+    paddingInline: spacing.md,
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colors.line,
+    borderRadius: "8px",
+    backgroundColor: colors.control,
+    color: colors.ink,
+    fontFamily: "inherit",
+    fontSize: "16px",
+    fontWeight: 600,
+    ":focus-visible": {
+      outlineWidth: "2px",
+      outlineStyle: "solid",
+      outlineColor: colors.focus,
+      outlineOffset: "2px",
+    },
+  },
+  main: { minWidth: 0, minHeight: 0, overflow: "auto" },
   status: {
     position: "fixed",
     right: spacing.xl,
@@ -144,6 +184,10 @@ export function SettingsShell({
   readonly active: SettingsPane;
   readonly onSelect: (pane: SettingsPane) => void;
 }) {
+  const mainRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 });
+  }, [active]);
   return (
     <div {...stylex.props(styles.shell)}>
       <aside aria-label="Settings navigation" {...stylex.props(styles.rail)}>
@@ -169,8 +213,25 @@ export function SettingsShell({
             </button>
           ))}
         </nav>
+        <label {...stylex.props(styles.mobilePicker)}>
+          <span {...stylex.props(styles.mobilePickerLabel)}>Settings section</span>
+          <select
+            aria-label="Settings section"
+            value={active}
+            onChange={(event) => {
+              if (isSettingsPane(event.currentTarget.value)) onSelect(event.currentTarget.value);
+            }}
+            {...stylex.props(styles.mobileSelect)}
+          >
+            {items.map(({ id, label }) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
       </aside>
-      <main data-scrollbar="quiet" {...stylex.props(styles.main)}>
+      <main ref={mainRef} data-scrollbar="quiet" {...stylex.props(styles.main)}>
         {children}
       </main>
       {status === undefined ? null : (

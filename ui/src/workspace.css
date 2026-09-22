@@ -361,7 +361,7 @@ html {
     transition: none;
   }
   [aria-label="Conversation"] textarea:focus {
-    min-height: 40px;
+    min-height: 96px;
   }
   [data-design="composer-attachments"],
   [data-design="compact-attachments"] {
@@ -447,12 +447,10 @@ html {
     white-space: nowrap;
   }
 }
-@container composer (max-width: 499px) {
-  html [aria-label="Conversation"] form .session-selection-label {
-    display: none;
-  }
-}
 @media (max-width: 760px) {
+  html [aria-label="Conversation"] textarea:focus {
+    min-height: 72px;
+  }
   html main:has([data-design="workspace"]) {
     position: relative;
   }
@@ -482,7 +480,7 @@ html {
   }
   html [data-design="session-header"] {
     min-height: 64px;
-    padding: 8px 0 8px 44px;
+    padding: 8px 0 8px 88px;
     gap: 8px;
   }
   html [data-design="session-title"] h1 {
@@ -503,6 +501,16 @@ html {
   }
   html [aria-label="Conversation transcript"] {
     padding: 12px 4px 20px;
+  }
+}
+@media (pointer: coarse) {
+  html input:not([type="checkbox"]):not([type="radio"]),
+  html select {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  html textarea {
+    font-size: 16px;
   }
 }
 @media (min-width: 761px) {

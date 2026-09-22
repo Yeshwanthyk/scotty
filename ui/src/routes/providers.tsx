@@ -20,24 +20,15 @@ import {
   type RunnerAction,
   type RunnerStatus,
 } from "../data/admin";
-import { readSessionList } from "../data/session-list-reader";
-import { sessionListFixtures } from "../fixtures/sessions";
 
 export const Route = createFileRoute("/providers")({
   loader: async ({ abortController }) => {
     const options = { signal: abortController.signal };
-    const [principal, sessions] = await Promise.all([
-      readCurrentPrincipal(options),
-      readSessionList({
-        fixture: sessionListFixtures,
-        fixtureFallback: import.meta.env.DEV,
-        signal: abortController.signal,
-      }),
-    ]);
+    const principal = await readCurrentPrincipal(options);
     if (!principal.ok || principal.value.role !== "owner")
-      return { principal, providers: null, runners: null, sessions };
+      return { principal, providers: null, runners: null };
     const [providers, runners] = await Promise.all([readProviders(options), readRunners(options)]);
-    return { principal, providers, runners, sessions };
+    return { principal, providers, runners };
   },
   component: ProvidersRoute,
 });
@@ -64,7 +55,7 @@ const actionsFor = (runner: RunnerStatus): ReadonlyArray<RunnerAction> => {
 };
 
 function ProvidersRoute() {
-  const { principal, providers, runners, sessions } = Route.useLoaderData();
+  const { principal, providers, runners } = Route.useLoaderData();
   const router = useRouter();
   const [busyRunner, setBusyRunner] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -85,7 +76,7 @@ function ProvidersRoute() {
   };
 
   return (
-    <AdminAppShell sessions={sessions} title="Providers">
+    <AdminAppShell title="Providers">
       <AdminPage
         title="Providers & runners"
         description="Execution availability and controls for named runner machines."

@@ -1,7 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
 import type { ReactNode } from "react";
-import type { SessionListReadResult } from "../data/session-list-reader";
-import { buildSessionRail } from "../domain/session-rail";
 import { colors, spacing } from "../theme/tokens.stylex";
 import { AppShell } from "./AppShell";
 
@@ -157,25 +155,12 @@ export function AdminPage({
 
 export function AdminAppShell({
   children,
-  sessions,
   title,
 }: {
   readonly children: ReactNode;
-  readonly sessions: SessionListReadResult;
   readonly title: string;
 }) {
-  const rail = buildSessionRail(
-    sessions.ok ? sessions.projections.map(({ session }) => session) : [],
-  );
-  return (
-    <AppShell
-      archivedSessions={rail.archivedSessions}
-      mobileTitle={title}
-      repositories={rail.repositories}
-    >
-      {children}
-    </AppShell>
-  );
+  return <AppShell mobileTitle={title}>{children}</AppShell>;
 }
 
 export function AdminSection({

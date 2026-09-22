@@ -90,4 +90,17 @@ describe("session list boundary", () => {
       ]),
     });
   });
+
+  it("bypasses browser HTTP caches", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ version: 1, sessions: [] }));
+
+    await readSessionList({ fetch: fetchMock });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
 });

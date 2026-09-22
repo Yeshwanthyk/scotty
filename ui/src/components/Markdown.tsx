@@ -1,6 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import { Marked, type MarkedToken, type Token, type Tokens } from "marked";
-import { createElement, Fragment, type ReactNode } from "react";
+import { createElement, Fragment, type ReactNode, useMemo } from "react";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { colors, spacing } from "../theme/tokens.stylex";
 import { MarkdownImage, MarkdownImageContext, type MarkdownEvidence } from "./MarkdownImage";
@@ -397,10 +397,11 @@ export function Markdown({
   readonly sessionId?: string;
   readonly evidence?: MarkdownEvidence;
 }) {
+  const blocks = useMemo(() => renderBlocks(markdown.lexer(source)), [source]);
   return (
     <MarkdownImageContext.Provider value={{ sessionId, evidence }}>
       <div data-markdown {...stylex.props(styles.root)}>
-        {renderBlocks(markdown.lexer(source))}
+        {blocks}
       </div>
     </MarkdownImageContext.Provider>
   );
