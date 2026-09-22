@@ -15,7 +15,7 @@ const readLocalStylesheet = async (href) => {
   return { href, path: assetPath, source: await readFile(assetPath, "utf8") };
 };
 
-export const verifyStylexBuild = async () => {
+const verifyStylexBuild = async () => {
   const shell = await readFile(shellPath, "utf8");
   const stylesheetHrefs = Array.from(
     shell.matchAll(/<link\b[^>]*\brel=["']stylesheet["'][^>]*\bhref=["']([^"']+)["'][^>]*>/giu),
