@@ -7,6 +7,31 @@ change behavior users need to know about.
 
 ## Unreleased
 
+## 0.3.25 — 2026-09-22
+
+### Improved
+
+- Session navigation updates after creation and lifecycle changes without a manual
+  refresh, retains the last verified list during temporary connection failures,
+  and prevents older responses from replacing newer session state.
+- Session search matches words across titles, repositories and branches, ranks
+  relevant results, and improves keyboard navigation and mobile access.
+- Mobile navigation keeps focus inside the open drawer. The conversation composer
+  expands while typing and keeps the selected agent and model visible.
+- Settings has a mobile section picker, clearer save feedback, and a resource
+  editor with clickable rows, file editing, review, and confirmed removal.
+- Terminal code loads on demand, unchanged Markdown avoids repeated parsing, and
+  conversation and Summary polling pause while the page is hidden.
+  ([#268](https://github.com/Yeshwanthyk/scotty/pull/268))
+
+### Clarified
+
+- Each CLI release embeds its web UI. `scotty init` deploys that UI for new
+  installations; existing installations use `scotty upgrade` followed by
+  `scotty deploy`. Upgrading the executable alone does not update the hosted UI.
+
+Upgrading from before 0.3.24 also includes its settings-store change below.
+
 ## 0.3.24 — 2026-09-22
 
 ### Added
