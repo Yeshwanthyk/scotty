@@ -18,11 +18,7 @@ import { AppShell } from "../components/AppShell";
 import { Button } from "../components/Button";
 import { ConversationPreview, LiveConversation } from "../components/LiveConversation";
 import { SessionWorkbench } from "../components/SessionWorkbench";
-import {
-  mutateSessionLifecycle,
-  type SessionLifecycleAction,
-  type SessionMutationResult,
-} from "../data/session-lifecycle";
+import { mutateSessionLifecycle, type SessionLifecycleAction } from "../data/session-lifecycle";
 import {
   decideConsoleEligibility,
   readAuthoritativeSession,
@@ -32,6 +28,11 @@ import {
   type SessionReadFailure,
 } from "../data/session-reader";
 import { useSessionCatalog } from "../data/session-catalog";
+import {
+  isLifecycleMessageResolved,
+  resolveLifecycleActionMessage,
+  type LifecycleControlMessage,
+} from "../domain/session-lifecycle-reconciliation";
 import { presentSession, type SessionPresentation } from "../domain/session-presentation";
 import { sessionFixtureForId } from "../fixtures/sessions";
 import { conversationFixture } from "../fixtures/conversation";
@@ -575,56 +576,15 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
   );
 }
 
-type ControlMessage = {
-  readonly kind: "error" | "reconciliation";
-  readonly sessionId: string;
-  readonly text: string;
-};
-
 interface PendingLifecycleAction {
   readonly action: SessionLifecycleAction;
   readonly sessionId: string;
 }
 
-const actionVerb = (action: SessionLifecycleAction): string =>
-  action === "checkpoint"
-    ? "save the checkpoint"
-    : action === "sleep"
-      ? "put the session to sleep"
-      : action === "resume"
-        ? "resume the session"
-        : "vaporize the session";
-
 const isGone = (result: Awaited<ReturnType<typeof readAuthoritativeSession>>): boolean =>
   result.ok &&
   result.session.authority.kind === "stable" &&
   result.session.authority.lifecycle === "gone";
-
-const expectedLifecycleFor = (action: SessionLifecycleAction): "warm" | "sleeping" | "gone" =>
-  action === "sleep" ? "sleeping" : action === "vaporize" ? "gone" : "warm";
-
-const hasExpectedLifecycle = (
-  result: Awaited<ReturnType<typeof readAuthoritativeSession>>,
-  action: SessionLifecycleAction,
-): boolean =>
-  result.ok &&
-  result.session.authority.kind === "stable" &&
-  result.session.authority.lifecycle === expectedLifecycleFor(action);
-
-const mutationErrorMessage = (
-  action: SessionLifecycleAction,
-  result: Extract<SessionMutationResult, { readonly ok: false }>,
-): string => {
-  if (result.failure.kind === "network")
-    return `Could not reach the session to ${actionVerb(action)}. Check your connection and try again.`;
-  if (result.failure.kind === "malformed-response")
-    return "The session action response could not be verified. Check the current state before trying again.";
-  if (result.failure.status === 401 || result.failure.status === 403)
-    return "You are not authorized to change this session. Sign in again and retry.";
-  if (result.failure.status === 404)
-    return "This session is no longer available. Refresh the session list.";
-  return `Could not ${actionVerb(action)}. ${result.failure.hint ?? "Check the current state and try again."}`;
-};
 
 function LifecycleControls({
   presentation,
@@ -636,7 +596,7 @@ function LifecycleControls({
   const router = useRouter();
   const { refresh, refreshActor } = useSessionCatalog();
   const [confirmingVaporizeFor, setConfirmingVaporizeFor] = useState<string | null>(null);
-  const [message, setMessage] = useState<ControlMessage | null>(null);
+  const [message, setMessage] = useState<LifecycleControlMessage | null>(null);
   const [pending, setPending] = useState<PendingLifecycleAction | null>(null);
   const requestSerial = useRef(0);
   const activeRequest = useRef<number | null>(null);
@@ -651,6 +611,17 @@ function LifecycleControls({
   const currentPending = pending?.sessionId === sessionId ? pending : null;
   const currentMessage = message?.sessionId === sessionId ? message : null;
   const confirmingVaporize = confirmingVaporizeFor === sessionId;
+  const stableLifecycle =
+    presentation.authority.kind === "stable" ? presentation.authority.lifecycle : null;
+
+  const authoritativeMessageWasResolved = isLifecycleMessageResolved(
+    currentMessage,
+    presentation.source,
+    presentation.freshness,
+    stableLifecycle,
+  );
+  if (authoritativeMessageWasResolved) setMessage(null);
+  const visibleMessage = authoritativeMessageWasResolved ? null : currentMessage;
 
   const runAction = (action: SessionLifecycleAction): void => {
     if (activeRequest.current !== null) return;
@@ -659,6 +630,7 @@ function LifecycleControls({
     setMessage(null);
     setConfirmingVaporizeFor(null);
     setPending({ action, sessionId });
+    const startedFrom = stableLifecycle;
 
     void (async () => {
       const mutation = await mutateSessionLifecycle(sessionId, action);
@@ -676,41 +648,16 @@ function LifecycleControls({
         return;
       }
 
-      if (mutation.ok && (authoritative === undefined || !authoritative.ok)) {
-        setMessage({
-          kind: "error",
+      setMessage(
+        resolveLifecycleActionMessage(
+          action,
           sessionId,
-          text: "The action completed, but the current session state could not be verified. Check again.",
-        });
-      } else if (
-        !mutation.ok &&
-        mutation.failure.kind === "http" &&
-        mutation.failure.status === 409
-      ) {
-        setMessage({
-          kind: "reconciliation",
-          sessionId,
-          text: authoritative?.ok
-            ? refreshed
-              ? "The session changed while this action was starting. The latest state is shown."
-              : "The session changed while this action was starting. Refresh to see the latest state."
-            : "The session changed while this action was starting. Refresh to see the latest state.",
-        });
-      } else if (!mutation.ok) {
-        setMessage({ kind: "error", sessionId, text: mutationErrorMessage(action, mutation) });
-      } else if (!refreshed) {
-        setMessage({
-          kind: "error",
-          sessionId,
-          text: "The action completed, but the session view could not refresh. Reload to confirm.",
-        });
-      } else if (authoritative === undefined || !hasExpectedLifecycle(authoritative, action)) {
-        setMessage({
-          kind: "reconciliation",
-          sessionId,
-          text: "The session state changed while this action was completing. The latest state is shown.",
-        });
-      }
+          startedFrom,
+          mutation,
+          authoritative,
+          refreshed,
+        ),
+      );
     })().finally(() => {
       if (requestSerial.current !== serial) return;
       activeRequest.current = null;
@@ -794,16 +741,16 @@ function LifecycleControls({
         primary={primary}
         secondary={secondary}
       />
-      {currentMessage ? (
+      {visibleMessage ? (
         <p
-          role={currentMessage.kind === "error" ? "alert" : "status"}
+          role={visibleMessage.kind === "error" ? "alert" : "status"}
           aria-live="polite"
           {...stylex.props(
             styles.actionMessage,
-            currentMessage.kind === "error" ? styles.actionError : styles.actionReconciliation,
+            visibleMessage.kind === "error" ? styles.actionError : styles.actionReconciliation,
           )}
         >
-          {currentMessage.text}
+          {visibleMessage.text}
         </p>
       ) : null}
     </div>

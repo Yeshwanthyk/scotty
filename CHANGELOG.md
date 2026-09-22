@@ -7,6 +7,14 @@ change behavior users need to know about.
 
 ## Unreleased
 
+## 0.3.27 — 2026-09-22
+
+### Fixed
+
+- Confirmed session lifecycle completion takes precedence over failed or
+  ambiguous action HTTP responses, clearing stale action errors once the
+  resulting session state is verified.
+
 ## 0.3.26 — 2026-09-22
 
 ### Fixed
