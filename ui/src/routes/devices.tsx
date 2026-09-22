@@ -24,24 +24,15 @@ import {
   type PairingGrant,
   type QrMatrix,
 } from "../data/admin";
-import { readSessionList } from "../data/session-list-reader";
-import { sessionListFixtures } from "../fixtures/sessions";
 import { colors, spacing } from "../theme/tokens.stylex";
 
 export const Route = createFileRoute("/devices")({
   loader: async ({ abortController }) => {
     const options = { signal: abortController.signal };
-    const [principal, sessions] = await Promise.all([
-      readCurrentPrincipal(options),
-      readSessionList({
-        fixture: sessionListFixtures,
-        fixtureFallback: import.meta.env.DEV,
-        signal: abortController.signal,
-      }),
-    ]);
+    const principal = await readCurrentPrincipal(options);
     const devices =
       principal.ok && principal.value.role === "owner" ? await readDevices(options) : null;
-    return { devices, principal, sessions };
+    return { devices, principal };
   },
   component: DevicesRoute,
 });
@@ -152,7 +143,7 @@ function ShareLink({ grant }: { readonly grant: PairingGrant | OwnerTransfer }) 
 }
 
 function DevicesRoute() {
-  const { devices, principal, sessions } = Route.useLoaderData();
+  const { devices, principal } = Route.useLoaderData();
   const router = useRouter();
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -228,7 +219,7 @@ function DevicesRoute() {
   };
 
   return (
-    <AdminAppShell sessions={sessions} title="Devices">
+    <AdminAppShell title="Devices">
       <AdminPage
         title="Devices"
         description="Manage browser access and choose the single primary device."

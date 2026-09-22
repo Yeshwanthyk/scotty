@@ -6,15 +6,15 @@ import {
   Ellipsis,
   MonitorSmartphone,
   Plus,
+  Search,
   Server,
   Settings2,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Ref } from "react";
 import { readCurrentPrincipal } from "../data/admin";
 import { Button } from "./Button";
 import { SessionRow, type SessionRowProps } from "./SessionRow";
-import { SessionSwitcher } from "./SessionSwitcher";
 import { colors, spacing } from "../theme/tokens.stylex";
 import scottyMark from "../../../worker/public/brand/scotty-mark-128.png?url";
 
@@ -42,6 +42,8 @@ const styles = stylex.create({
       width: "min(88vw, 320px)",
       minWidth: 0,
       transform: "translateX(-105%)",
+      visibility: "hidden",
+      pointerEvents: "none",
       boxShadow: "22px 0 60px rgb(0 0 0 / 0.45)",
       transitionProperty: "transform",
       transitionDuration: "180ms",
@@ -51,6 +53,8 @@ const styles = stylex.create({
   sidebarOpen: {
     "@media (max-width: 760px)": {
       transform: "translateX(0)",
+      visibility: "visible",
+      pointerEvents: "auto",
     },
   },
   header: {
@@ -87,8 +91,8 @@ const styles = stylex.create({
   brandActions: { position: "relative", display: "flex", alignItems: "center", gap: spacing.xs },
   menu: { position: "relative" },
   menuSummary: {
-    width: "36px",
-    height: "36px",
+    width: "40px",
+    height: "40px",
     display: "grid",
     placeItems: "center",
     borderRadius: "7px",
@@ -97,6 +101,7 @@ const styles = stylex.create({
     listStyle: "none",
     ":hover": { backgroundColor: colors.panelRaised, color: colors.ink },
     "::-webkit-details-marker": { display: "none" },
+    "@media (max-width: 760px)": { width: "44px", height: "44px" },
   },
   menuPanel: {
     position: "absolute",
@@ -209,16 +214,39 @@ const styles = stylex.create({
     "@media (max-width: 760px)": { display: "inline-flex" },
   },
   icon: { width: "14px", height: "14px", strokeWidth: 1.8 },
+  search: {
+    width: "100%",
+    height: "40px",
+    paddingInline: spacing.sm,
+    display: "grid",
+    gridTemplateColumns: "16px minmax(0, 1fr) auto",
+    alignItems: "center",
+    gap: spacing.sm,
+    borderWidth: 0,
+    borderRadius: "6px",
+    backgroundColor: "transparent",
+    color: colors.muted,
+    cursor: "pointer",
+    fontSize: "13px",
+    textAlign: "left",
+    ":hover": { backgroundColor: colors.panel, color: colors.ink },
+    "@media (max-width: 760px)": { height: "44px" },
+  },
+  shortcut: { color: colors.quiet, fontSize: "10px" },
 });
 
 export function Sidebar({
   archivedSessions = [],
+  navigationRef,
   onClose,
+  onSearch,
   open = false,
   repositories,
 }: {
   readonly archivedSessions?: ReadonlyArray<SessionRowProps>;
+  readonly navigationRef?: Ref<HTMLElement>;
   readonly onClose?: () => void;
+  readonly onSearch: (opener: HTMLElement) => void;
   readonly open?: boolean;
   readonly repositories: ReadonlyArray<RepositoryGroup>;
 }) {
@@ -239,6 +267,7 @@ export function Sidebar({
 
   return (
     <aside
+      ref={navigationRef}
       id="session-navigation"
       aria-label="Session navigation"
       {...stylex.props(styles.sidebar, open && styles.sidebarOpen)}
@@ -324,13 +353,15 @@ export function Sidebar({
             </span>
           </div>
         </div>
-        <SessionSwitcher
-          onNavigate={onClose}
-          sessions={[
-            ...repositories.flatMap((repository) => repository.sessions),
-            ...archivedSessions,
-          ]}
-        />
+        <button
+          type="button"
+          onClick={(event) => onSearch(event.currentTarget)}
+          {...stylex.props(styles.search)}
+        >
+          <Search aria-hidden {...stylex.props(styles.icon)} />
+          <span>Search sessions</span>
+          <kbd {...stylex.props(styles.shortcut)}>⌘K</kbd>
+        </button>
       </header>
       <nav aria-label="Repositories" data-scrollbar="quiet" {...stylex.props(styles.navigation)}>
         {visibleActiveSessions.length === 0 && archivedSessions.length === 0 ? (

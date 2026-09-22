@@ -31,10 +31,9 @@ import {
   type SessionModel,
   type SessionReadFailure,
 } from "../data/session-reader";
-import { readSessionList } from "../data/session-list-reader";
+import { useSessionCatalog } from "../data/session-catalog";
 import { presentSession, type SessionPresentation } from "../domain/session-presentation";
-import { buildSessionRail } from "../domain/session-rail";
-import { sessionFixtureForId, sessionListFixtures } from "../fixtures/sessions";
+import { sessionFixtureForId } from "../fixtures/sessions";
 import { conversationFixture } from "../fixtures/conversation";
 import { markdownFixture } from "../fixtures/markdown";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
@@ -42,10 +41,7 @@ import { colors, motion, spacing } from "../theme/tokens.stylex";
 interface SessionRouteReady {
   readonly state: "ready";
   readonly session: SessionModel;
-  readonly presentation: SessionPresentation;
-  readonly eligibility: ConsoleEligibility;
   readonly fixture: boolean;
-  readonly projections: ReadonlyArray<SessionModel>;
 }
 
 interface SessionRouteFailed {
@@ -59,18 +55,11 @@ type SessionRouteData = SessionRouteReady | SessionRouteFailed;
 export const Route = createFileRoute("/s/$sessionId")({
   ssr: false,
   loader: async ({ abortController, params }): Promise<SessionRouteData> => {
-    const [result, list] = await Promise.all([
-      readAuthoritativeSession(params.sessionId, {
-        fixture: sessionFixtureForId(params.sessionId),
-        fixtureFallback: import.meta.env.DEV,
-        signal: abortController.signal,
-      }),
-      readSessionList({
-        fixture: sessionListFixtures,
-        fixtureFallback: import.meta.env.DEV,
-        signal: abortController.signal,
-      }),
-    ]);
+    const result = await readAuthoritativeSession(params.sessionId, {
+      fixture: sessionFixtureForId(params.sessionId),
+      fixtureFallback: import.meta.env.DEV,
+      signal: abortController.signal,
+    });
     if (!result.ok)
       return {
         state: "failed",
@@ -78,18 +67,10 @@ export const Route = createFileRoute("/s/$sessionId")({
         conflict: result.failure.kind === "http" && result.failure.status === 409,
       };
 
-    const eligibility = decideConsoleEligibility(result.session);
     return {
       state: "ready",
       session: result.session,
-      presentation: presentSession(result.session, {
-        now: new Date(),
-        source: "actor",
-        runtimeAvailability: "checking",
-      }),
-      eligibility,
       fixture: result.session.source === "fixture",
-      projections: list.ok ? list.projections.map(({ session }) => session) : [],
     };
   },
   pendingComponent: SessionPending,
@@ -381,7 +362,7 @@ const styles = stylex.create({
 
 function SessionPending() {
   return (
-    <AppShell repositories={[]}>
+    <AppShell>
       <section
         aria-label="Checking session authority"
         aria-busy="true"
@@ -433,7 +414,7 @@ function SessionReadError({
         ? "Scotty returned a session shape this UI cannot safely use."
         : "Scotty could not reach the session authority.";
   return (
-    <AppShell repositories={[]}>
+    <AppShell>
       <section {...stylex.props(styles.pendingStage)}>
         <div role="alert" {...stylex.props(styles.bodyInner)}>
           <CircleAlert aria-hidden {...stylex.props(styles.bodyIcon, styles.errorIcon)} />
@@ -455,33 +436,64 @@ function SessionReadError({
 }
 
 function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
-  const { eligibility, fixture, presentation, session } = data;
-  const router = useRouter();
+  const { fixture } = data;
+  const { refresh: refreshCatalog, refreshActor, seedActor, verifiedActors } = useSessionCatalog();
+  const session = verifiedActors.get(data.session.id) ?? data.session;
+  const presentation = presentSession(session, {
+    now: new Date(),
+    source: "actor",
+    runtimeAvailability: "checking",
+  });
+  const eligibility = decideConsoleEligibility(session);
   const refreshLifecycle = useCallback(() => {
-    void router.invalidate();
-  }, [router]);
+    void refreshActor(session.id);
+  }, [refreshActor, session.id]);
   const transitioning = presentation.operation !== null;
   useEffect(() => {
     if (fixture || !transitioning) return;
     let active = true;
     let timer: number | undefined;
-    const refresh = async () => {
-      try {
-        await router.invalidate();
-      } catch {
-        // A transient read failure should not leave a transition frozen on screen.
+    const pollActor = async () => {
+      if (document.visibilityState !== "visible") {
+        timer = window.setTimeout(() => void pollActor(), 2_000);
+        return;
       }
-      if (active) timer = window.setTimeout(() => void refresh(), 2_000);
+      const result = await refreshActor(session.id);
+      if (!active) return;
+      if (result?.ok) {
+        if (result.session.authority.kind === "stable") {
+          await refreshCatalog();
+          return;
+        }
+      }
+      timer = window.setTimeout(() => void pollActor(), 2_000);
     };
-    timer = window.setTimeout(() => void refresh(), 2_000);
+    timer = window.setTimeout(() => void pollActor(), 2_000);
     return () => {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [fixture, router, session.id, transitioning]);
-  const rail = buildSessionRail(data.projections, { selectedActor: session });
+  }, [fixture, refreshActor, refreshCatalog, session.id, transitioning]);
+
+  useEffect(() => {
+    if (fixture) return;
+    const refreshActorOnFocus = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshActor(session.id);
+    };
+    const timer = window.setInterval(refreshActorOnFocus, 30_000);
+    window.addEventListener("focus", refreshActorOnFocus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshActorOnFocus);
+    };
+  }, [fixture, refreshActor, session.id]);
+
+  useEffect(() => {
+    if (!seedActor(data.session)) void refreshActor(data.session.id);
+  }, [data.session, refreshActor, seedActor]);
   return (
-    <AppShell archivedSessions={rail.archivedSessions} repositories={rail.repositories}>
+    <AppShell>
       <div
         data-design="session-page"
         data-session-source={fixture ? "fixture" : "actor"}
@@ -518,7 +530,11 @@ function SessionWorkspace({ data }: { readonly data: SessionRouteReady }) {
                 <dt>Agent, model, and thinking</dt>
                 <dd>{configuredSelectionLabel(session.selection)}</dd>
               </dl>
-              <LifecycleControls presentation={presentation} sessionId={session.id} />
+              <LifecycleControls
+                key={session.id}
+                presentation={presentation}
+                sessionId={session.id}
+              />
             </SessionMenu>
           </header>
 
@@ -618,6 +634,7 @@ function LifecycleControls({
   readonly sessionId: string;
 }) {
   const router = useRouter();
+  const { refresh, refreshActor } = useSessionCatalog();
   const [confirmingVaporizeFor, setConfirmingVaporizeFor] = useState<string | null>(null);
   const [message, setMessage] = useState<ControlMessage | null>(null);
   const [pending, setPending] = useState<PendingLifecycleAction | null>(null);
@@ -625,16 +642,11 @@ function LifecycleControls({
   const activeRequest = useRef<number | null>(null);
 
   useEffect(() => {
-    requestSerial.current += 1;
-    activeRequest.current = null;
-    setConfirmingVaporizeFor(null);
-    setMessage(null);
-    setPending(null);
     return () => {
       requestSerial.current += 1;
       activeRequest.current = null;
     };
-  }, [sessionId]);
+  }, []);
 
   const currentPending = pending?.sessionId === sessionId ? pending : null;
   const currentMessage = message?.sessionId === sessionId ? message : null;
@@ -650,21 +662,21 @@ function LifecycleControls({
 
     void (async () => {
       const mutation = await mutateSessionLifecycle(sessionId, action);
-      const authoritative = await readAuthoritativeSession(sessionId);
-      let invalidated = true;
+      const authoritative = await refreshActor(sessionId);
+      let refreshed = true;
       try {
-        await router.invalidate();
+        await refresh();
       } catch {
-        invalidated = false;
+        refreshed = false;
       }
 
       if (requestSerial.current !== serial) return;
-      if (action === "vaporize" && isGone(authoritative)) {
+      if (action === "vaporize" && authoritative !== undefined && isGone(authoritative)) {
         await router.navigate({ to: "/sessions" });
         return;
       }
 
-      if (mutation.ok && !authoritative.ok) {
+      if (mutation.ok && (authoritative === undefined || !authoritative.ok)) {
         setMessage({
           kind: "error",
           sessionId,
@@ -678,21 +690,21 @@ function LifecycleControls({
         setMessage({
           kind: "reconciliation",
           sessionId,
-          text: authoritative.ok
-            ? invalidated
+          text: authoritative?.ok
+            ? refreshed
               ? "The session changed while this action was starting. The latest state is shown."
               : "The session changed while this action was starting. Refresh to see the latest state."
             : "The session changed while this action was starting. Refresh to see the latest state.",
         });
       } else if (!mutation.ok) {
         setMessage({ kind: "error", sessionId, text: mutationErrorMessage(action, mutation) });
-      } else if (!invalidated) {
+      } else if (!refreshed) {
         setMessage({
           kind: "error",
           sessionId,
           text: "The action completed, but the session view could not refresh. Reload to confirm.",
         });
-      } else if (!hasExpectedLifecycle(authoritative, action)) {
+      } else if (authoritative === undefined || !hasExpectedLifecycle(authoritative, action)) {
         setMessage({
           kind: "reconciliation",
           sessionId,

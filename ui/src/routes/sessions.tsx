@@ -1,31 +1,17 @@
 import * as stylex from "@stylexjs/stylex";
-import { createFileRoute, Link, Outlet, useMatchRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useMatchRoute } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
-import { createContext, useEffect, useState } from "react";
+import { createContext } from "react";
 import { AppShell } from "../components/AppShell";
 import { Button } from "../components/Button";
 import { SessionRow, type SessionRowProps } from "../components/SessionRow";
-import { readSessionList, type SessionListReadResult } from "../data/session-list-reader";
-import { buildSessionRail } from "../domain/session-rail";
-import { sessionListFixtures } from "../fixtures/sessions";
+import { useSessionCatalog } from "../data/session-catalog";
 import { colors, spacing } from "../theme/tokens.stylex";
 import scottyHero from "../../../worker/public/brand/scotty-hero-16x9.png?url";
 
 export const RecentRepositoriesContext = createContext<ReadonlyArray<string>>([]);
 
-export const beginSessionListRead = (
-  signal: AbortSignal,
-  read: typeof readSessionList = readSessionList,
-) => ({
-  sessionList: read({
-    fixture: sessionListFixtures,
-    fixtureFallback: import.meta.env.DEV,
-    signal,
-  }),
-});
-
 export const Route = createFileRoute("/sessions")({
-  loader: ({ abortController }) => beginSessionListRead(abortController.signal),
   component: SessionsHome,
 });
 
@@ -123,48 +109,34 @@ const styles = stylex.create({
 });
 
 const landingSessions = (
-  result: SessionListReadResult | undefined,
-  rail: ReturnType<typeof buildSessionRail>,
+  sessionIds: ReadonlyArray<string>,
+  rail: ReturnType<typeof useSessionCatalog>["rail"],
 ): ReadonlyArray<SessionRowProps> => {
-  if (!result?.ok) return [];
   const rows = new Map(
     [...rail.repositories.flatMap(({ sessions }) => sessions), ...rail.archivedSessions].map(
       (row) => [row.session.id, row],
     ),
   );
-  return result.projections.flatMap(({ session }) => {
-    const row = rows.get(session.id);
+  return sessionIds.flatMap((sessionId) => {
+    const row = rows.get(sessionId);
     return row === undefined ? [] : [row];
   });
 };
 
 function SessionsHome() {
-  const { sessionList } = Route.useLoaderData();
-  const [result, setResult] = useState<SessionListReadResult>();
-  const router = useRouter();
+  const catalog = useSessionCatalog();
   const matchRoute = useMatchRoute();
   const createRouteActive = matchRoute({ to: "/sessions/create", fuzzy: false }) !== false;
-  useEffect(() => {
-    let current = true;
-    void sessionList.then((nextResult) => {
-      if (current) setResult(nextResult);
-    });
-    return () => {
-      current = false;
-    };
-  }, [sessionList]);
-  const rail = buildSessionRail(result?.ok ? result.projections.map(({ session }) => session) : []);
-  const recentRepositories = result?.ok
-    ? [...new Set(result.projections.map(({ session }) => session.display.repository))]
-    : [];
-  const recentSessions = landingSessions(result, rail).slice(0, 5);
+  const recentRepositories = [
+    ...new Set(catalog.sessions.map((session) => session.display.repository)),
+  ];
+  const recentSessions = landingSessions(
+    catalog.sessions.map((session) => session.id),
+    catalog.rail,
+  ).slice(0, 5);
   return (
     <RecentRepositoriesContext value={recentRepositories}>
-      <AppShell
-        archivedSessions={rail.archivedSessions}
-        mobileTitle={createRouteActive ? undefined : "Scotty"}
-        repositories={rail.repositories}
-      >
+      <AppShell mobileTitle={createRouteActive ? undefined : "Scotty"}>
         {createRouteActive ? (
           <Outlet />
         ) : (
@@ -176,7 +148,7 @@ function SessionsHome() {
                   <p {...stylex.props(styles.intro)}>
                     Start something new or return to a recent session.
                   </p>
-                  {result === undefined || result.ok ? (
+                  {catalog.status !== "degraded" || catalog.sessions.length > 0 ? (
                     <Link to="/sessions/create" {...stylex.props(styles.create)}>
                       <Plus aria-hidden {...stylex.props(styles.createIcon)} />
                       New session
@@ -190,26 +162,31 @@ function SessionsHome() {
                 <h2 id="recent-sessions-heading" {...stylex.props(styles.sessionsHeading)}>
                   Recent sessions
                 </h2>
-                {result === undefined ? (
+                {catalog.status === "loading" ? (
                   <p role="status" {...stylex.props(styles.stateMessage)}>
                     Loading sessions…
                   </p>
-                ) : result.ok ? (
-                  recentSessions.length ? (
+                ) : recentSessions.length ? (
+                  <>
+                    {catalog.status === "degraded" ? (
+                      <p role="status" {...stylex.props(styles.stateMessage)}>
+                        Showing the last verified session list while Scotty reconnects.
+                      </p>
+                    ) : null}
                     <div {...stylex.props(styles.sessionList)}>
                       {recentSessions.map((session) => (
                         <SessionRow key={session.session.id} {...session} variant="landing" />
                       ))}
                     </div>
-                  ) : (
-                    <p {...stylex.props(styles.stateMessage)}>
-                      No sessions yet. Start with a repository and a task.
-                    </p>
-                  )
+                  </>
+                ) : catalog.status === "ready" ? (
+                  <p {...stylex.props(styles.stateMessage)}>
+                    No sessions yet. Start with a repository and a task.
+                  </p>
                 ) : (
                   <div {...stylex.props(styles.errorActions)}>
                     <p {...stylex.props(styles.stateMessage)}>Sessions could not be loaded.</p>
-                    <Button onClick={() => void router.invalidate()}>Try again</Button>
+                    <Button onClick={() => void catalog.refresh()}>Try again</Button>
                   </div>
                 )}
               </section>

@@ -109,6 +109,13 @@ export const warmWorking = session({
   selection: { agent: "pi", modelProvider: "openai", model: "gpt-5.4", effort: "high" },
 });
 
+export const warmDemo = session({
+  id: "warm-demo-01",
+  title: "Markdown and artifact preview",
+  authority: stable("warm"),
+  selection: { agent: "pi", modelProvider: "openai", model: "gpt-5.4", effort: "high" },
+});
+
 export const sleepingRetained = session({
   id: "sleeping-retained-001",
   title: "Review the safe-sleep transition",
@@ -243,13 +250,14 @@ export const archivedSessionIds: ReadonlySet<string> = new Set(
 );
 
 export interface HomeFixture {
-  readonly id: "empty-installation" | "many-sessions" | "projection-stale";
+  readonly id: "empty-installation" | "many-sessions" | "projection-stale" | "test-app";
   readonly projections: ReadonlyArray<SessionModel>;
   readonly selectedActorRead?: SessionModel;
 }
 
 export const homeFixtures: ReadonlyArray<HomeFixture> = [
   { id: "empty-installation", projections: [] },
+  { id: "test-app", projections: [warmDemo] },
   { id: "many-sessions", projections: manySessions },
   {
     id: "projection-stale",
@@ -259,6 +267,8 @@ export const homeFixtures: ReadonlyArray<HomeFixture> = [
 ];
 
 export const sidebarSessions: ReadonlyArray<SessionModel> = [
+  warmDemo,
+  runtimeMissing,
   warmWorking,
   warmIdle,
   sleepingRetained,

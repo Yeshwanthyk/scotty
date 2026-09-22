@@ -119,6 +119,7 @@ export const readSessionList = async (
   try {
     response = await (options.fetch ?? globalThis.fetch)("/api/sessions", {
       headers: { accept: "application/json" },
+      cache: "no-store",
       credentials: "same-origin",
       signal: options.signal,
     });

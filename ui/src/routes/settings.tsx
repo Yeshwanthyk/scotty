@@ -7,7 +7,7 @@ import { scottyBaseAgentInstructions } from "../../../protocol/agents/agent-inst
 import { codexModelCapabilities } from "../../../protocol/agents/codex/codex-model-capabilities";
 import { Button } from "../components/Button";
 import { SettingsShell, type SettingsPane } from "../components/SettingsShell";
-import { ResourcesSection } from "../components/ResourcesSection";
+import { ResourcesSection, type ResourcesSectionHandle } from "../components/ResourcesSection";
 import {
   addRepository,
   readCredentials,
@@ -22,9 +22,27 @@ import {
 } from "../data/settings";
 import { readCurrentPrincipal, type CurrentPrincipal } from "../data/admin";
 import { colors, spacing } from "../theme/tokens.stylex";
+import {
+  settingsPreviewCredentials,
+  settingsPreviewPrincipal,
+  settingsPreviewRepositories,
+  settingsPreviewResources,
+  settingsPreviewSnapshot,
+} from "../fixtures/settings";
+import { isSettingsPreview } from "../data/settings-preview";
 
 export const Route = createFileRoute("/settings")({
-  loader: ({ abortController }) => {
+  loader: ({ abortController, location }) => {
+    const preview = isSettingsPreview(location.searchStr, import.meta.env.DEV);
+    if (preview)
+      return Promise.resolve({
+        preview,
+        principal: settingsPreviewPrincipal,
+        settings: { ok: true, value: settingsPreviewSnapshot } as const,
+        repositories: { ok: true, value: settingsPreviewRepositories } as const,
+        resources: { ok: true, value: settingsPreviewResources } as const,
+        credentials: { ok: true, value: settingsPreviewCredentials } as const,
+      });
     const options = { signal: abortController.signal };
     return Promise.all([
       readCurrentPrincipal(options),
@@ -32,6 +50,7 @@ export const Route = createFileRoute("/settings")({
       readRepositories(options),
       readResources(options),
     ]).then(async ([principal, settings, repositories, resources]) => ({
+      preview,
       principal,
       settings,
       repositories,
@@ -47,7 +66,7 @@ export const Route = createFileRoute("/settings")({
 
 const styles = stylex.create({
   page: {
-    width: "min(680px, 100%)",
+    width: "min(760px, 100%)",
     marginInline: "auto",
     padding: "48px clamp(24px, 5vw, 64px) 72px",
     display: "grid",
@@ -59,7 +78,10 @@ const styles = stylex.create({
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: spacing.xl,
-    paddingBottom: spacing.md,
+    paddingBottom: spacing.xl,
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colors.line,
     "@media (max-width: 600px)": { display: "grid", gap: spacing.md },
   },
   title: {
@@ -85,6 +107,17 @@ const styles = stylex.create({
     fontSize: "11px",
     whiteSpace: "nowrap",
   },
+  previewBadge: {
+    minHeight: "26px",
+    paddingInline: spacing.sm,
+    display: "inline-flex",
+    alignItems: "center",
+    borderRadius: "6px",
+    backgroundColor: "rgb(207 99 63 / 0.14)",
+    color: colors.warning,
+    fontSize: "12px",
+    fontWeight: 620,
+  },
   dot: { width: "6px", height: "6px", borderRadius: "50%", backgroundColor: colors.success },
   section: { display: "grid", gap: spacing.xl },
   form: {
@@ -96,6 +129,10 @@ const styles = stylex.create({
     gridTemplateColumns: "1fr",
     alignItems: "start",
     gap: spacing.sm,
+    paddingBottom: spacing.lg,
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colors.lineSoft,
     "@media (max-width: 600px)": {
       gridTemplateColumns: "1fr",
       alignItems: "stretch",
@@ -113,7 +150,7 @@ const styles = stylex.create({
   },
   input: {
     width: "100%",
-    minHeight: "42px",
+    minHeight: "44px",
     paddingInline: spacing.md,
     borderWidth: "1px",
     borderStyle: "solid",
@@ -123,6 +160,7 @@ const styles = stylex.create({
     backgroundColor: colors.control,
     color: colors.ink,
     fontSize: "14px",
+    "@media (max-width: 760px)": { fontSize: "16px" },
     ":focus": { borderColor: colors.focus },
   },
   textarea: {
@@ -163,7 +201,7 @@ const styles = stylex.create({
   },
   controlInput: { flex: "1 1 150px", width: "auto" },
   select: {
-    minHeight: "42px",
+    minHeight: "44px",
     paddingInline: spacing.md,
     borderWidth: "1px",
     borderStyle: "solid",
@@ -173,10 +211,11 @@ const styles = stylex.create({
     backgroundColor: colors.control,
     color: colors.ink,
     fontSize: "14px",
+    "@media (max-width: 760px)": { fontSize: "16px" },
     ":focus": { borderColor: colors.focus },
   },
   choice: {
-    minHeight: "36px",
+    minHeight: "44px",
     paddingInline: spacing.md,
     borderWidth: "1px",
     borderStyle: "solid",
@@ -198,11 +237,18 @@ const styles = stylex.create({
     display: "grid",
     gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 40px",
     gap: spacing.sm,
-    "@media (max-width: 600px)": { gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) 40px" },
+    "@media (max-width: 480px)": {
+      gridTemplateColumns: "minmax(0, 1fr) 44px",
+      gridTemplateAreas: '"key remove" "value remove"',
+    },
   },
-  envValue: {},
+  envHeader: { "@media (max-width: 480px)": { display: "none" } },
+  envKey: { "@media (max-width: 480px)": { gridArea: "key" } },
+  envValue: { "@media (max-width: 480px)": { gridArea: "value" } },
+  envRemove: { "@media (max-width: 480px)": { gridArea: "remove", alignSelf: "stretch" } },
   smallButton: {
-    minHeight: "36px",
+    minWidth: "40px",
+    minHeight: "40px",
     paddingInline: spacing.sm,
     borderWidth: 0,
     borderStyle: "solid",
@@ -219,6 +265,7 @@ const styles = stylex.create({
       outlineOffset: "2px",
     },
     ":hover": { backgroundColor: colors.panelRaised, color: colors.ink },
+    "@media (max-width: 760px)": { minWidth: "44px", minHeight: "44px" },
   },
   table: { borderTopWidth: "1px", borderTopStyle: "solid", borderTopColor: colors.line },
   repoRow: {
@@ -275,24 +322,56 @@ const styles = stylex.create({
   },
   icon: { width: "15px", height: "15px", flexShrink: 0, strokeWidth: 1.8 },
   actions: {
+    position: "sticky",
+    bottom: 0,
+    zIndex: 4,
+    marginInline: `-${spacing.lg}`,
+    paddingTop: spacing.md,
+    paddingRight: spacing.lg,
+    paddingBottom: `max(${spacing.md}, env(safe-area-inset-bottom))`,
+    paddingLeft: spacing.lg,
     display: "flex",
     alignItems: "center",
     gap: spacing.md,
-    paddingTop: spacing.lg,
+    backgroundColor: colors.shell,
     borderTopWidth: "1px",
     borderTopStyle: "solid",
     borderTopColor: colors.line,
   },
+  unavailable: {
+    paddingBlock: spacing.xxl,
+    display: "grid",
+    gap: spacing.lg,
+    borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: colors.line,
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: colors.line,
+  },
+  unavailableTitle: { margin: 0, color: colors.ink, fontSize: "16px", fontWeight: 680 },
+  unavailableCopy: {
+    maxWidth: "62ch",
+    margin: 0,
+    color: colors.muted,
+    fontSize: "14px",
+    lineHeight: 1.55,
+  },
 });
 
-// oxlint-disable-next-line eslint/complexity -- one route coordinates the five focused panes and their local drafts
 function SettingsRoute() {
+  return <SettingsEditor />;
+}
+
+// oxlint-disable-next-line eslint/complexity -- one editor coordinates the five focused panes and their local drafts
+function SettingsEditor() {
   const {
     principal,
     settings: initialSettings,
     repositories: initialRepositories,
     resources: initialResources,
     credentials,
+    preview,
   } = Route.useLoaderData();
   const router = useRouter();
   const [snapshot, setSnapshot] = useState(initialSettings.ok ? initialSettings.value : null);
@@ -315,6 +394,8 @@ function SettingsRoute() {
   });
   const [repositoryError, setRepositoryError] = useState<string | null>(null);
   const [resourceError, setResourceError] = useState<string | null>(null);
+  const [resourceEditorOpen, setResourceEditorOpen] = useState(false);
+  const resourcesRef = useRef<ResourcesSectionHandle>(null);
   const draftTouched = useRef(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [error, setError] = useState<string | null>(
@@ -329,7 +410,8 @@ function SettingsRoute() {
       setDraftEpoch((value) => value + 1);
     }
     if (initialResources.ok) setResources(initialResources.value);
-  }, [initialSettings, initialResources]);
+  }, [initialResources, initialSettings]);
+
   const owner = principal.ok && principal.value.role === "owner";
   const canEdit = owner && saveState !== "saving";
   const settingsReady = snapshot !== null && draft !== null;
@@ -348,6 +430,15 @@ function SettingsRoute() {
     if (!canEdit || !environmentValid || snapshot === null || draft === null) return;
     setSaveState("saving");
     setError(null);
+    if (preview) {
+      const next = { ...snapshot, revision: snapshot.revision + 1, settings: draft };
+      setSnapshot(next);
+      setDraft(next.settings);
+      draftTouched.current = false;
+      setSaveState("saved");
+      window.setTimeout(() => setSaveState("idle"), 1800);
+      return;
+    }
     void updateCloudSettings({ expectedRevision: snapshot.revision, settings: draft })
       .then((result) => {
         if (!result.ok) {
@@ -377,6 +468,17 @@ function SettingsRoute() {
       });
   };
   const reload = (): void => {
+    if (preview) {
+      draftTouched.current = false;
+      setSnapshot(settingsPreviewSnapshot);
+      setDraft(settingsPreviewSnapshot.settings);
+      setRepositories([...settingsPreviewRepositories]);
+      setResources(settingsPreviewResources);
+      setEnvironmentValid(true);
+      setError(null);
+      setDraftEpoch((value) => value + 1);
+      return;
+    }
     void Promise.all([readCloudSettings(), readResources()]).then(([settings, nextResources]) => {
       if (settings.ok) {
         draftTouched.current = false;
@@ -404,6 +506,7 @@ function SettingsRoute() {
     resources: "Skills & resources",
     connections: "Connections",
   };
+  const installationUnavailable = !preview && (!principal.ok || !settingsReady);
   return (
     <SettingsShell
       active={pane}
@@ -413,18 +516,31 @@ function SettingsRoute() {
       <div {...stylex.props(styles.page)}>
         <header {...stylex.props(styles.header)}>
           <div>
+            {preview ? <span {...stylex.props(styles.previewBadge)}>Local preview</span> : null}
             <h1 {...stylex.props(styles.title)}>{titles[pane]}</h1>
             <p {...stylex.props(styles.intro)}>{descriptions[pane]}</p>
           </div>
+          {!installationUnavailable && pane === "resources" && !resourceEditorOpen ? (
+            <Button
+              variant="primary"
+              disabled={!canEdit}
+              onClick={() => resourcesRef.current?.startNew()}
+            >
+              <Plus aria-hidden size={15} />
+              Add resource
+            </Button>
+          ) : null}
         </header>
-        {!principal.ok ? (
-          <ErrorMessage message={principal.failure.message} />
-        ) : principal.value.role === "standard" ? (
+        {installationUnavailable ? (
+          <UnavailableSettings onRetry={() => void router.invalidate()} />
+        ) : !principal.ok ? null : principal.value.role === "standard" ? (
           <div {...stylex.props(styles.callout)}>
             You can view installation settings. The primary device manages changes.
           </div>
         ) : null}
-        {error === null || (pane !== "agents" && pane !== "environment") ? null : (
+        {installationUnavailable ||
+        error === null ||
+        (pane !== "agents" && pane !== "environment") ? null : (
           <div>
             <ErrorMessage message={error} />
             <Button variant="quiet" onClick={reload}>
@@ -432,7 +548,7 @@ function SettingsRoute() {
             </Button>
           </div>
         )}
-        {pane === "agents" && settingsReady ? (
+        {!installationUnavailable && pane === "agents" && settingsReady ? (
           <AgentSection
             draft={draft}
             owner={canEdit}
@@ -441,19 +557,18 @@ function SettingsRoute() {
             }
             onChange={updateDraft}
           />
-        ) : pane === "agents" ? (
-          <ErrorMessage message="Settings are unavailable until this installation is connected." />
         ) : null}
-        <div hidden={pane !== "repositories"}>
+        <div hidden={installationUnavailable || pane !== "repositories"}>
           {repositoryError !== null && <ErrorMessage message={repositoryError} />}
           <RepositoriesSection
             owner={canEdit}
+            preview={preview}
             repositories={repositories}
             onChange={(next) => setRepositories([...next])}
             onError={setRepositoryError}
           />
         </div>
-        <div hidden={pane !== "environment"}>
+        <div hidden={installationUnavailable || pane !== "environment"}>
           <EnvironmentSection
             draft={draft}
             owner={canEdit}
@@ -465,10 +580,12 @@ function SettingsRoute() {
             onChange={(environment) => updateDraft({ environment })}
           />
         </div>
-        <div hidden={pane !== "resources"}>
+        <div hidden={installationUnavailable || pane !== "resources"}>
           {resourceError !== null && <ErrorMessage message={resourceError} />}
           <ResourcesSection
+            ref={resourcesRef}
             owner={canEdit}
+            preview={preview}
             snapshot={resources}
             onChange={(next) => {
               setResources(next);
@@ -479,28 +596,33 @@ function SettingsRoute() {
               );
             }}
             onError={setResourceError}
+            onEditingChange={setResourceEditorOpen}
             onReload={reload}
           />
         </div>
-        <div hidden={pane !== "connections"}>
+        <div hidden={installationUnavailable || pane !== "connections"}>
           <ConnectionsSection
             principal={principal}
             credentials={credentials}
-            onRefresh={() => router.invalidate()}
+            preview={preview}
+            onRefresh={() => (preview ? Promise.resolve() : router.invalidate())}
           />
         </div>
-        {(pane === "agents" || pane === "environment") && (
+        {!installationUnavailable && (dirty || saveState !== "idle") && (
           <div {...stylex.props(styles.actions)}>
             {!environmentValid && (
               <span {...stylex.props(styles.help)}>Finish each environment key to save.</span>
             )}
             <span style={{ flex: 1 }} />
+            <span {...stylex.props(styles.help)}>
+              {saveState === "saved" ? "Changes saved" : "Unsaved changes"}
+            </span>
             <Button
               variant="primary"
               disabled={!canEdit || !settingsReady || !environmentValid || !dirty}
               onClick={save}
             >
-              {saveState === "saving" ? "Saving…" : "Save"}
+              {saveState === "saving" ? "Saving…" : "Save changes"}
             </Button>
           </div>
         )}
@@ -525,7 +647,7 @@ function AgentSection({
   const setCodex = (patch: Partial<CloudSettings["codex"]>) =>
     onChange({ codex: { ...draft.codex, ...patch } });
   return (
-    <section id="agents" {...stylex.props(styles.section)}>
+    <section id="settings-agents" {...stylex.props(styles.section)}>
       <div {...stylex.props(styles.form)}>
         <div {...stylex.props(styles.row)}>
           <span {...stylex.props(styles.label)}>Agent</span>
@@ -691,11 +813,13 @@ function AgentSection({
 
 function RepositoriesSection({
   owner,
+  preview,
   repositories,
   onChange,
   onError,
 }: {
   readonly owner: boolean;
+  readonly preview: boolean;
   readonly repositories: ReadonlyArray<{
     repo: string;
     defaultBranch: string;
@@ -718,6 +842,14 @@ function RepositoriesSection({
     if (!owner || busy || repo.trim() === "") return;
     setBusy(true);
     onError(null);
+    if (preview) {
+      const now = new Date().toISOString();
+      const value = { repo: repo.trim(), defaultBranch: "main", addedAt: now, lastUsedAt: now };
+      onChange([value, ...repositories.filter((entry) => entry.repo !== value.repo)]);
+      setRepo("");
+      setBusy(false);
+      return;
+    }
     void addRepository(repo.trim())
       .then((result) => {
         if (!result.ok) onError(result.failure.message);
@@ -735,6 +867,11 @@ function RepositoriesSection({
     if (!owner || busy) return;
     setBusy(true);
     onError(null);
+    if (preview) {
+      onChange(repositories.filter((entry) => entry.repo !== value));
+      setBusy(false);
+      return;
+    }
     void removeRepository(value)
       .then((result) => {
         if (!result.ok) onError(result.failure.message);
@@ -744,7 +881,7 @@ function RepositoriesSection({
       .finally(() => setBusy(false));
   };
   return (
-    <section id="repositories" {...stylex.props(styles.section)}>
+    <section id="settings-repositories" {...stylex.props(styles.section)}>
       <div {...stylex.props(styles.form)}>
         <div {...stylex.props(styles.controls)}>
           <input
@@ -821,13 +958,13 @@ function EnvironmentSection({
     if (valid) onChange(Object.fromEntries(next.map(({ key, value }) => [key, value])));
   };
   return (
-    <section id="environment" {...stylex.props(styles.section)}>
+    <section id="settings-environment" {...stylex.props(styles.section)}>
       <p {...stylex.props(styles.help)}>
         Values are plain text. Scotty runtime and credential keys are reserved.
       </p>
       <div {...stylex.props(styles.form)}>
         <div {...stylex.props(styles.envList)}>
-          <div {...stylex.props(styles.envRow)}>
+          <div {...stylex.props(styles.envRow, styles.envHeader)}>
             <span {...stylex.props(styles.label)}>Key</span>
             <span {...stylex.props(styles.label)}>Value</span>
             <span />
@@ -846,7 +983,7 @@ function EnvironmentSection({
                     ),
                   )
                 }
-                {...stylex.props(styles.input)}
+                {...stylex.props(styles.input, styles.envKey)}
               />
               <input
                 aria-label={`Environment value ${index + 1}`}
@@ -867,7 +1004,7 @@ function EnvironmentSection({
                 aria-label={`Remove ${key}`}
                 disabled={!owner}
                 onClick={() => publish(entries.filter((entry) => entry.id !== id))}
-                {...stylex.props(styles.smallButton)}
+                {...stylex.props(styles.smallButton, styles.envRemove)}
               >
                 <Trash2 aria-hidden {...stylex.props(styles.icon)} />
               </button>
@@ -899,10 +1036,12 @@ function EnvironmentSection({
 function ConnectionsSection({
   principal,
   credentials,
+  preview,
   onRefresh,
 }: {
   readonly principal: SettingsResult<CurrentPrincipal>;
   readonly credentials: SettingsResult<ReadonlyArray<CredentialStatus>>;
+  readonly preview: boolean;
   readonly onRefresh: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
@@ -912,6 +1051,11 @@ function ConnectionsSection({
     if (busy !== null) return;
     setBusy(credential.name);
     setError(null);
+    if (preview) {
+      await onRefresh();
+      setBusy(null);
+      return;
+    }
     try {
       const result = await useGithubTokenPermissions(credential);
       if (!result.ok) setError(result.failure.message);
@@ -925,7 +1069,7 @@ function ConnectionsSection({
     }
   };
   return (
-    <section id="connections" {...stylex.props(styles.section)}>
+    <section id="settings-connections" {...stylex.props(styles.section)}>
       <div {...stylex.props(styles.form)}>
         <div {...stylex.props(styles.row)}>
           <span {...stylex.props(styles.label)}>Browser access</span>
@@ -999,5 +1143,32 @@ function ErrorMessage({ message }: { readonly message: string }) {
       <CircleAlert aria-hidden {...stylex.props(styles.icon)} />
       {message}
     </div>
+  );
+}
+
+function UnavailableSettings({ onRetry }: { readonly onRetry: () => void }) {
+  return (
+    <section aria-labelledby="settings-unavailable" {...stylex.props(styles.unavailable)}>
+      <div>
+        <h2 id="settings-unavailable" {...stylex.props(styles.unavailableTitle)}>
+          Installation settings are unavailable
+        </h2>
+        <p {...stylex.props(styles.unavailableCopy)}>
+          Scotty could not verify this installation’s settings authority. Reconnect and try again;
+          no settings have been changed.
+        </p>
+      </div>
+      <div {...stylex.props(styles.controls)}>
+        <Button onClick={onRetry} variant="primary">
+          <RefreshCw aria-hidden {...stylex.props(styles.icon)} />
+          Try again
+        </Button>
+        {import.meta.env.DEV ? (
+          <Button onClick={() => window.location.assign("/settings?preview=1")} variant="quiet">
+            Open local preview
+          </Button>
+        ) : null}
+      </div>
+    </section>
   );
 }

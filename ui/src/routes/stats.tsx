@@ -12,19 +12,9 @@ import {
 } from "../components/AdminPage";
 import { Button } from "../components/Button";
 import { readStats } from "../data/admin";
-import { readSessionList } from "../data/session-list-reader";
-import { sessionListFixtures } from "../fixtures/sessions";
 
 export const Route = createFileRoute("/stats")({
-  loader: ({ abortController }) =>
-    Promise.all([
-      readStats({ signal: abortController.signal }),
-      readSessionList({
-        fixture: sessionListFixtures,
-        fixtureFallback: import.meta.env.DEV,
-        signal: abortController.signal,
-      }),
-    ]).then(([stats, sessions]) => ({ sessions, stats })),
+  loader: ({ abortController }) => readStats({ signal: abortController.signal }),
   component: StatsRoute,
 });
 
@@ -34,10 +24,10 @@ const dateLabel = (value: string | null): string => {
 };
 
 function StatsRoute() {
-  const { sessions, stats } = Route.useLoaderData();
+  const stats = Route.useLoaderData();
   const router = useRouter();
   return (
-    <AdminAppShell sessions={sessions} title="Stats">
+    <AdminAppShell title="Stats">
       <AdminPage
         title="Stats"
         description={

@@ -23,6 +23,7 @@ import {
 } from "../data/conversation-client";
 import { readEvidence, type EvidenceSummary } from "../data/session-workbench";
 import { activeConversationTurn, type ConversationTurn } from "../domain/conversation";
+import { startVisibilityPolling } from "../data/visibility-polling";
 import { colors, motion, spacing } from "../theme/tokens.stylex";
 import { SessionSelectionLabel } from "./SessionSelection";
 import { Button } from "./Button";
@@ -318,9 +319,6 @@ function useConversationConnection(
   >(undefined);
 
   useEffect(() => {
-    let stopped = false;
-    let timer: number | undefined;
-    let controller: AbortController | undefined;
     let lastSnapshot =
       verifiedSnapshot.current?.sessionId === sessionId
         ? verifiedSnapshot.current.snapshot
@@ -340,16 +338,14 @@ function useConversationConnection(
       return;
     }
 
-    const poll = async (): Promise<void> => {
-      controller = new AbortController();
-      const result = await readConversation(sessionId, { signal: controller.signal });
-      if (stopped) return;
+    const polling = startVisibilityPolling(document, async (signal) => {
+      const result = await readConversation(sessionId, { signal });
+      if (signal.aborted) return undefined;
       if (result.ok) {
         lastSnapshot = result.snapshot;
         verifiedSnapshot.current = { sessionId, snapshot: result.snapshot };
         setConnection({ kind: "ready", snapshot: result.snapshot, connection: "connected" });
-        timer = window.setTimeout(() => void poll(), conversationPollDelay(result.snapshot));
-        return;
+        return conversationPollDelay(result.snapshot);
       }
       if (isConversationLifecycleMismatch(result.failure)) {
         setConnection(
@@ -363,7 +359,7 @@ function useConversationConnection(
               },
         );
         onLifecycleMismatch();
-        return;
+        return undefined;
       }
       if (lastSnapshot === undefined)
         setConnection({ kind: "unavailable", failure: result.failure });
@@ -374,16 +370,11 @@ function useConversationConnection(
           connection: "reconnecting",
           detail: failureMessage(result.failure),
         });
-      timer = window.setTimeout(() => void poll(), RETRY_POLL_MS);
-    };
+      return RETRY_POLL_MS;
+    });
 
     if (lastSnapshot === undefined) setConnection({ kind: "loading" });
-    void poll();
-    return () => {
-      stopped = true;
-      controller?.abort();
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
+    return polling.stop;
   }, [onLifecycleMismatch, refreshGeneration, runtimeAvailable, sessionId]);
 
   return {
@@ -578,39 +569,36 @@ function useConversationEvidence(
   }>({ sessionId, revision, state: { kind: "loading", sessionId } });
 
   useEffect(() => {
-    const controller = new AbortController();
     if (revision.length === 0) {
       setLoaded({
         sessionId,
         revision,
         state: { kind: "ready", sessionId, evidence: [] },
       });
-      return () => controller.abort();
+      return;
     }
     setLoaded({ sessionId, revision, state: { kind: "loading", sessionId } });
-    let retryTimer: number | undefined;
-    void refreshConversationEvidence(
-      sessionId,
-      controller.signal,
-      (evidence) =>
-        setLoaded({
-          sessionId,
-          revision,
-          state: { kind: "ready", sessionId, evidence },
-        }),
-      (retry) => {
+    const polling = startVisibilityPolling(document, async (signal) => {
+      try {
+        const evidence = await readEvidence(sessionId, signal);
+        if (!signal.aborted)
+          setLoaded({
+            sessionId,
+            revision,
+            state: { kind: "ready", sessionId, evidence },
+          });
+        return undefined;
+      } catch {
+        if (signal.aborted) return undefined;
         setLoaded({
           sessionId,
           revision,
           state: { kind: "error", sessionId, message: "Retrying screenshot details…" },
         });
-        retryTimer = window.setTimeout(() => void retry(), RETRY_POLL_MS);
-      },
-    );
-    return () => {
-      controller.abort();
-      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
-    };
+        return RETRY_POLL_MS;
+      }
+    });
+    return polling.stop;
   }, [revision, sessionId]);
 
   return loaded.sessionId === sessionId && loaded.revision === revision
