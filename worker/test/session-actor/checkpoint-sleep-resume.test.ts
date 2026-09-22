@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
 import type {
@@ -39,6 +40,7 @@ const session: SessionIdentity = {
   title: "Lifecycle session",
   repository: "owner/disposable",
   execution: { provider: "cloudflare", runtimeName: "runtime-lifecycle-session" },
+  ...sessionIdentityPin,
   createdAt: T0,
 };
 

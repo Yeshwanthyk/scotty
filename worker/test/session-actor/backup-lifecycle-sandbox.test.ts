@@ -1,4 +1,4 @@
-import { runtimeCliMaterializerTestLayer } from "../runtime-cli/fixtures";
+import { runtimeCliMaterializerTestLayer, sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import type { BackupOptions, ExecResult, ProcessStatus } from "@cloudflare/sandbox";
 import { Effect, Layer, Result } from "effect";
@@ -22,6 +22,8 @@ import {
 } from "../../src/session-actor/transitions/backup-lifecycle-sandbox";
 
 const attempt: BackupLifecycleAttempt = {
+  configuration: sessionIdentityPin.configuration,
+  selection: { agent: "pi" },
   sessionId: "session-backup",
   attempt: "1ed4a6f4-7d9f-46b9-8a07-ef6d9c1dd64c",
   operationNonce: "operation-1",

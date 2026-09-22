@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate, Result } from "effect";
 import type { AcceptedDecision, Decision } from "../../src/session-actor/decision";
@@ -17,6 +18,7 @@ const session = {
   title: "Race",
   repository: "owner/repository",
   execution: { provider: "cloudflare" as const, runtimeName: "runtime-race" },
+  ...sessionIdentityPin,
   createdAt: T0,
 };
 

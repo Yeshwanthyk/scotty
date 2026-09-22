@@ -13,7 +13,8 @@ import {
   type CloudSettingsSnapshot,
 } from "../../../protocol/settings/cloud-settings";
 
-const AUTHORITY_KEY = "scotty:sandbox-config:1";
+// The required instruction settings contract starts a new authority record; no legacy migration.
+const AUTHORITY_KEY = "scotty:sandbox-config:2";
 const RUNTIME_CLI_AUTHORITY_KEY = "scotty:runtime-cli-selection:1";
 
 export const durableRuntimeCliSelectionStorage = (
@@ -122,10 +123,7 @@ const makeSandboxConfigStore = (
     if (value === undefined) return Result.succeed(emptyAuthority());
     const decoded = decodeAuthority(value);
     return Result.isSuccess(decoded)
-      ? Result.succeed({
-          ...decoded.success,
-          settings: decoded.success.settings ?? defaultCloudSettings,
-        })
+      ? Result.succeed(decoded.success)
       : Result.fail(invalidAuthority());
   };
 
@@ -136,7 +134,7 @@ const makeSandboxConfigStore = (
   const toSettings = (authority: SandboxConfigAuthority): CloudSettingsSnapshot => ({
     revision: authority.revision,
     activeDigest: authority.activeDigest,
-    settings: authority.settings ?? defaultCloudSettings,
+    settings: authority.settings,
   });
   const sameSettings = (left: unknown, right: unknown): boolean =>
     JSON.stringify(left) === JSON.stringify(right);

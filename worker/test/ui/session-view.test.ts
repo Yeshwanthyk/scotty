@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Result, Schema } from "effect";
 import type { SessionAuthority, ReadinessProof } from "../../src/session-actor/authority";
@@ -27,6 +28,7 @@ const identity = {
   title: "Session view contract",
   repository: "owner/disposable",
   execution: { provider: "cloudflare" as const, runtimeName: "runtime-session-view-test" },
+  ...sessionIdentityPin,
   createdAt: CREATED_AT,
 };
 
@@ -51,6 +53,7 @@ const readiness: ReadinessProof = {
 };
 
 const metadata: SessionActorMetadata = {
+  ...sessionIdentityPin,
   sessionId: identity.id,
   repository: identity.repository,
   branch: "scotty/session-view-contract",
@@ -204,6 +207,7 @@ describe("UI session authority response", () => {
       "display",
       "identity",
       "runtime",
+      "selection",
       "times",
     ]);
     assert.strictEqual(response.version, 1);
@@ -293,8 +297,14 @@ describe("UI session authority response", () => {
 
     assert.isTrue(Result.isSuccess(result));
     if (Result.isFailure(result)) return;
+    const { selection, ...projectedSession } = uiSessionResponseFromActor(
+      warmAuthority(),
+      metadata,
+      NOW,
+    ).session;
+    assert.deepStrictEqual(selection, identity.selection);
     assert.deepStrictEqual(result.success.sessions[0], {
-      ...uiSessionResponseFromActor(warmAuthority(), metadata, NOW).session,
+      ...projectedSession,
       projection: { projectedAt: UPDATED_AT },
     });
     assert.deepStrictEqual(result.success.sessions[1].authority, {

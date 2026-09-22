@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { CodexAgentSelectionSchema, PiAgentSelectionSchema } from "../agents/agent-selection";
+import { CustomAgentInstructionsSchema } from "../agents/agent-instructions";
 
 const SettingEnvironmentKey = Schema.String.check(
   Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/u),
@@ -32,6 +33,7 @@ export const CloudSettingsSchema = Schema.Struct({
   agent: Schema.Literals(["pi", "codex"]),
   pi: PiAgentSelectionSchema,
   codex: CodexAgentSelectionSchema,
+  customInstructions: CustomAgentInstructionsSchema,
   environment: CloudSettingsEnvironmentSchema,
 });
 export type CloudSettings = typeof CloudSettingsSchema.Type;
@@ -49,7 +51,10 @@ export const CloudSettingsUpdateSchema = Schema.Struct({
   settings: CloudSettingsSchema,
 });
 export type CloudSettingsUpdate = typeof CloudSettingsUpdateSchema.Type;
-export const CLOUD_SETTINGS_MAX_BODY_BYTES = 64 * 1024;
+// The SandboxConfig DO stores current and idempotency-replay settings together in one value.
+// 512 KiB leaves nearly 1 MiB of headroom beneath Cloudflare's 2 MiB key-plus-value limit
+// after that duplication, JSON encoding, environment settings, and authority metadata.
+export const CLOUD_SETTINGS_MAX_BODY_BYTES = 512 * 1024;
 export const decodeCloudSettingsUpdate = Schema.decodeUnknownResult(CloudSettingsUpdateSchema, {
   onExcessProperty: "error",
 });
@@ -58,6 +63,7 @@ export const defaultCloudSettings: CloudSettings = {
   agent: "pi",
   pi: { agent: "pi" },
   codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
+  customInstructions: "",
   environment: {},
 };
 

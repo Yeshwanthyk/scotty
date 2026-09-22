@@ -88,7 +88,7 @@ export const SandboxConfigAuthoritySchema = Schema.Struct({
   revision: NonNegativeIntSchema,
   activeDigest: Schema.NullOr(SandboxDigestSchema),
   lastSync: Schema.NullOr(SandboxConfigLastSyncSchema),
-  settings: Schema.optionalKey(CloudSettingsSchema),
+  settings: CloudSettingsSchema,
   lastSettingsUpdate: Schema.optionalKey(
     Schema.Struct({
       idempotencyKey: Schema.NonEmptyString,

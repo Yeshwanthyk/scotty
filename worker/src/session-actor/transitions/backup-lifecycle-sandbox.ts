@@ -84,7 +84,7 @@ export interface BackupLifecycleAttempt {
     readonly threadId: string;
     readonly initialTurnId: string;
   };
-  readonly selection?: AgentSelection;
+  readonly selection: AgentSelection;
   readonly sessionId: string;
   readonly attempt: string;
   readonly operationNonce: string;
@@ -290,7 +290,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const quiescePi = Effect.fnUntraced(function* (
       input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
     ) {
-      if (input.selection?.agent === "codex") {
+      if (input.selection.agent === "codex") {
         if (input.codex === undefined)
           return yield* boundaryFailure(
             "rejected_before_admission",
@@ -489,8 +489,10 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const startSupervisor = Effect.fnUntraced(function* (
       input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
     ) {
+      if (input.configuration === undefined)
+        return yield* boundaryFailure("rejected_before_admission", "resume_configuration_missing");
       yield* runtimeCli
-        .materialize(input.sessionId, input.configuration?.runtimeCli)
+        .materialize(input.sessionId, input.configuration.runtimeCli)
         .pipe(
           Effect.mapError((error) =>
             boundaryFailure(
@@ -501,11 +503,10 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
             ),
           ),
         );
-      if (input.configuration !== undefined)
-        yield* runtime
-          .setEnvVars(input.configuration.environment)
-          .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "resume_environment_failed")));
-      if (input.selection?.agent === "codex") {
+      yield* runtime
+        .setEnvVars(input.configuration.environment)
+        .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "resume_environment_failed")));
+      if (input.selection.agent === "codex") {
         if (input.codex === undefined)
           return yield* boundaryFailure(
             "rejected_before_admission",
@@ -527,7 +528,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
             generation: input.runtimeGeneration,
             selection: input.selection,
             token: input.codex.token,
-            ...(input.configuration === undefined ? {} : { configuration: input.configuration }),
+            configuration: input.configuration,
           },
           input.credentials.grants,
           { threadId: input.codex.threadId, initialTurnId: input.codex.initialTurnId },
@@ -542,12 +543,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
           Effect.mapError((error) => mapRuntimeFailure(error, "supervisor_stop_outcome_unknown")),
         );
       return yield* auth
-        .startPiSession(
-          input.sessionId,
-          input.credentials,
-          input.selection?.agent === "pi" ? input.selection : undefined,
-          input.configuration,
-        )
+        .startPiSession(input.sessionId, input.credentials, input.selection, input.configuration)
         .pipe(
           Effect.mapError((error) => mapRuntimeFailure(error, "supervisor_start_outcome_unknown")),
         );
@@ -561,7 +557,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     ) {
       if (input.runtime.runtimeGeneration !== input.runtimeGeneration)
         return yield* boundaryFailure("rejected_before_admission", "runtime_generation_mismatch");
-      if (input.selection?.agent === "codex") {
+      if (input.selection.agent === "codex") {
         if (input.codex === undefined)
           return yield* boundaryFailure(
             "rejected_before_admission",
@@ -627,7 +623,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
           "rejected_before_admission",
           "transport_proof_fence_mismatch",
         );
-      if (input.selection?.agent === "codex") {
+      if (input.selection.agent === "codex") {
         if (input.codex === undefined)
           return yield* boundaryFailure(
             "rejected_before_admission",
@@ -802,7 +798,7 @@ const codexAttempt = Effect.fnUntraced(function* (
   attempt: BackupLifecycleAttempt,
   expected: BackupIdentity["codex"],
 ) {
-  if (attempt.selection?.agent !== "codex") return attempt;
+  if (attempt.selection.agent !== "codex") return attempt;
   if (expected === undefined)
     return yield* boundaryFailure("rejected_before_admission", "codex_restore_identity_missing");
   const metadata = yield* metadataStore

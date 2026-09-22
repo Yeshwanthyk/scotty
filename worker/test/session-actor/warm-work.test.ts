@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Predicate, Result } from "effect";
 import { sessionActorLayer } from "../../src/session-actor/actor";
@@ -50,6 +51,7 @@ const warm: SessionAuthority = {
     title: "Warm work",
     repository: "owner/disposable",
     execution: { provider: "cloudflare", runtimeName: "warm-work-session" },
+    ...sessionIdentityPin,
     createdAt: T0,
   },
   state: {

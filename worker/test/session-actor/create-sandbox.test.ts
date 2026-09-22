@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { runtimeCliMaterializerTestLayer } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Predicate, Result } from "effect";
@@ -84,6 +85,7 @@ const authority = (
     title: "Create session",
     repository: "owner/disposable",
     execution: { provider: "cloudflare", runtimeName: runtimeProof.providerRuntimeId },
+    ...sessionIdentityPin,
     createdAt: T0,
   },
   hardCap,
@@ -105,6 +107,8 @@ const context = (
 };
 
 const metadata = (current: SessionAuthority): SessionActorMetadata => ({
+  selection: current.session.selection,
+  configuration: current.session.configuration,
   sessionId: current.session.id,
   repository: current.session.repository,
   branch: "scotty/session-create",

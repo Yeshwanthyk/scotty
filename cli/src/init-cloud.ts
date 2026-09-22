@@ -59,6 +59,7 @@ export const parseInitCloudChoices = Effect.fnUntraced(function* (input: InitClo
     agent,
     pi: agent === "pi" ? selection.success : defaultCloudSettings.pi,
     codex: agent === "codex" ? selection.success : defaultCloudSettings.codex,
+    customInstructions: defaultCloudSettings.customInstructions,
     environment,
   };
   const validated = decodeCloudSettings(settings);

@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
@@ -22,6 +23,7 @@ const session = {
   title: "Atomicity",
   repository: "owner/repository",
   execution: { provider: "cloudflare" as const, runtimeName: "runtime-atomicity" },
+  ...sessionIdentityPin,
   createdAt: T0,
 };
 

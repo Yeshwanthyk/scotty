@@ -174,9 +174,7 @@ const uiSessionFromActor = (
     Predicate.isTagged(authority.state.stable, "Warm");
   return {
     identity: { id: authority.session.id },
-    ...(authority.session.selection === undefined
-      ? {}
-      : { selection: authority.session.selection }),
+    selection: authority.session.selection,
     authority: authorityView(authority),
     runtime: {
       provider,

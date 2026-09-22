@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Predicate } from "effect";
 import { actorAlarmSchedulerLayer } from "../../src/session-actor/alarm";
@@ -27,6 +28,7 @@ const session: SessionIdentity = {
   title: "Create session",
   repository: "owner/disposable",
   execution: { provider: "cloudflare", runtimeName: "runtime-create-session" },
+  ...sessionIdentityPin,
   createdAt: T0,
 };
 

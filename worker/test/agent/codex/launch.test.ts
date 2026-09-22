@@ -15,6 +15,7 @@ const decodeCapability = Schema.decodeUnknownResult(CodexModelCapability, {
 const selection = {
   binary: "/usr/local/bin/codex",
   runtimeDir: "/runtime/codex-generation",
+  agentInstructionsPath: "/runtime/codex-generation.agent-instructions.md",
   workspace: "/workspace/session",
   model: "gpt-5.4",
   effort: "high",

@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect, Fiber, Layer, Predicate, Result } from "effect";
@@ -109,6 +110,7 @@ const failedAuthority = (): SessionAuthority => ({
     title: "Recovery test",
     repository: "owner/repository",
     execution: { provider: "cloudflare", runtimeName: runtimeFence.providerRuntimeId },
+    ...sessionIdentityPin,
     createdAt: T0,
   },
   hardCap: { durationSeconds: 14_400, deadlineAt: DEADLINE, generation: "hard-cap-1" },

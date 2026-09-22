@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Match, Predicate, Result, Schema } from "effect";
 import {
@@ -39,6 +40,7 @@ const session = {
   title: "Restart",
   repository: "owner/repository",
   execution: { provider: "cloudflare" as const, runtimeName: "runtime-restart" },
+  ...sessionIdentityPin,
   createdAt: T0,
 };
 const readiness: ReadinessProof = {

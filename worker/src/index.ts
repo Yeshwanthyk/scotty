@@ -535,7 +535,8 @@ app.put("/api/settings", async (c) => {
   requireAuthScope(c.get("auth"), "access:write");
   requireJsonContentType(c.req.raw);
   const bodyText = await readBoundedUtf8Body(c.req.raw, CLOUD_SETTINGS_MAX_BODY_BYTES);
-  if (bodyText === undefined) throw badRequest("Settings request body exceeds the size limit");
+  if (bodyText === undefined)
+    throw badRequest("Settings request body exceeds the 512 KiB storage-safe limit");
   const body = decodeJsonValue(bodyText);
   if (Option.isNone(body)) throw badRequest("Settings request must be valid JSON");
   const decoded = decodeCloudSettingsUpdate(body.value);

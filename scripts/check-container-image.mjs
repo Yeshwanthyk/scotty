@@ -299,13 +299,19 @@ reservation.listen(0, "127.0.0.1");
 await once(reservation, "listening");
 const port = reservation.address().port;
 await new Promise((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
+const runtimeDir = path.join(root, "runtime");
+const agentInstructionsPath = runtimeDir + ".agent-instructions.md";
+fs.writeFileSync(agentInstructionsPath, "Follow the native image proof instructions.", {
+  mode: 0o600,
+});
 const start = {
   generation,
   port,
   tokenFile,
   launch: {
+    agentInstructionsPath,
     binary: "/opt/codex/bin/codex",
-    runtimeDir: path.join(root, "runtime"),
+    runtimeDir,
     workspace,
     environment: { APP_MODE: "pinned" },
     sandboxBundleDigest: bundleDigest,
@@ -850,6 +856,7 @@ export const checkContainerImage = async ({
 
 // Serialized into the network-isolated image smoke and reused against the prepared bundle.
 export const codexFixtureLaunch = (binary, runtimeDir, workspace) => ({
+  agentInstructionsPath: `${runtimeDir}.agent-instructions.md`,
   binary,
   runtimeDir,
   workspace,
@@ -938,6 +945,7 @@ const proveInstalledServer = async (makeLaunch, fakeSource, failAfterReady = fal
       reservation.close((error) => (error ? reject(error) : resolveClose())),
     );
     const launch = makeLaunch(binary, join(root, "runtime"), workspace);
+    await fs.writeFile(launch.agentInstructionsPath, "Fixture instructions", { mode: 0o600 });
     sentinel = launch.credential.sentinel;
     child = spawn(
       resolve("scotty-codex-server"),

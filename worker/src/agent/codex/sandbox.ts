@@ -35,6 +35,12 @@ const CodexSandboxIdentitySchema = Schema.Struct({
 });
 export type CodexSandboxIdentity = typeof CodexSandboxIdentitySchema.Type;
 const decodeIdentity = Schema.decodeUnknownEffect(CodexSandboxIdentitySchema);
+const CodexSandboxStartIdentitySchema = Schema.Struct({
+  ...CodexSandboxIdentitySchema.fields,
+  configuration: SessionConfigurationSchema,
+});
+export type CodexSandboxStartIdentity = typeof CodexSandboxStartIdentitySchema.Type;
+const decodeStartIdentity = Schema.decodeUnknownEffect(CodexSandboxStartIdentitySchema);
 const decodeAdmission = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexAdmission), {
   onExcessProperty: "error",
 });
@@ -160,11 +166,11 @@ export const waitForCodexSandbox = Effect.fnUntraced(function* (
 });
 
 export const startCodexSandbox = Effect.fnUntraced(function* (
-  input: CodexSandboxIdentity,
+  input: CodexSandboxStartIdentity,
   grants: ReadonlyArray<CredentialGrant>,
   restore?: typeof CodexPersistenceIdentity.Type,
 ) {
-  const identity = yield* decodeIdentity(input).pipe(
+  const identity = yield* decodeStartIdentity(input).pipe(
     Effect.mapError(
       () =>
         new SandboxRuntimeFailure({ reason: "nonzero_exit", message: "Codex identity is invalid" }),
@@ -186,28 +192,30 @@ export const startCodexSandbox = Effect.fnUntraced(function* (
       message: "Codex requires one current managed access grant",
     });
   const root = `/tmp/scotty-codex-${identity.generation}`;
+  const runtimeDir = `${root}/runtime`;
+  const agentInstructionsPath = `${runtimeDir}.agent-instructions.md`;
   // A fresh private parent is exclusive to this generation. Never recycle it on ambiguous launch.
   yield* runtime.execChecked(`umask 077 && mkdir ${shellQuote(root)}`);
   yield* runtime.writeFile(`${root}/control.token`, identity.token);
-  yield* runtime.execChecked(`chmod 600 ${shellQuote(`${root}/control.token`)}`);
+  yield* runtime.writeFile(agentInstructionsPath, identity.configuration.agentInstructions);
+  yield* runtime.execChecked(
+    `chmod 600 ${shellQuote(`${root}/control.token`)} ${shellQuote(agentInstructionsPath)}`,
+  );
   const start = {
     generation: identity.generation,
     port: CODEX_SANDBOX_PORT,
     ...(restore === undefined ? {} : { restore }),
     tokenFile: `${root}/control.token`,
     launch: {
-      ...(identity.configuration === undefined
+      agentInstructionsPath,
+      environment: identity.configuration.environment,
+      ...(identity.configuration.bundleDigest === null
         ? {}
         : {
-            environment: identity.configuration.environment,
-            ...(identity.configuration.bundleDigest === null
-              ? {}
-              : {
-                  sandboxBundleDigest: identity.configuration.bundleDigest,
-                }),
+            sandboxBundleDigest: identity.configuration.bundleDigest,
           }),
       binary: "/usr/local/bin/codex",
-      runtimeDir: `${root}/runtime`,
+      runtimeDir,
       workspace: sessionRoot(identity.sessionId),
       sessionId: identity.sessionId,
       ...(githubHandle === undefined ? {} : { githubHandle }),

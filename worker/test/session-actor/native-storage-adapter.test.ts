@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Predicate, Result } from "effect";
 import type { AcceptedDecision, Decision } from "../../src/session-actor/decision";
@@ -44,6 +45,7 @@ const initialDecision = (): AcceptedDecision =>
         title: "Native storage",
         repository: "owner/repository",
         execution: { provider: "cloudflare", runtimeName: "runtime-native-storage" },
+        ...sessionIdentityPin,
         createdAt: T0,
       },
       hardCap,
@@ -136,6 +138,7 @@ describe("native Durable Object session actor storage adapter", () => {
       native as unknown as DurableObjectStorage,
     );
     const value: SessionActorMetadata = {
+      ...sessionIdentityPin,
       sessionId: "session-native-storage",
       repository: "owner/repository",
       branch: "scotty/session-native-storage",

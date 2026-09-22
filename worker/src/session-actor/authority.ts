@@ -25,8 +25,8 @@ export const ExecutionBindingSchema = Schema.Union([
   Schema.Struct({ provider: Schema.Literal("runner"), runnerName: Schema.String }),
 ]);
 export const SessionIdentitySchema = Schema.Struct({
-  selection: Schema.optionalKey(AgentSelectionSchema),
-  configuration: Schema.optionalKey(SessionConfigurationSchema),
+  selection: AgentSelectionSchema,
+  configuration: SessionConfigurationSchema,
   id: Schema.String,
   title: Schema.String,
   repository: Schema.String,

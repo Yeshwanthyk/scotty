@@ -229,6 +229,7 @@ const fixture = Effect.fnUntraced(function* (mode: SessionFixtureMode = "normal"
       cwd: "/isolated/workspace",
     },
     options: {
+      agentInstructionsPath: "/isolated.agent-instructions.md",
       binary: "/isolated/codex",
       runtimeDir: "/isolated",
       workspace: "/isolated/workspace",

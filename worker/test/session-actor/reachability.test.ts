@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Match, Predicate, Result } from "effect";
 import type {
@@ -31,6 +32,7 @@ const session = {
   title: "Reachable session",
   repository: "owner/repository",
   execution: { provider: "cloudflare" as const, runtimeName: "runtime-name" },
+  ...sessionIdentityPin,
   createdAt: T0,
 };
 const ready: ReadinessProof = {

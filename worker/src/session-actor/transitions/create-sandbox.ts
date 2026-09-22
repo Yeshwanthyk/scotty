@@ -289,7 +289,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
             failure("unknown_after_admission", "codex_metadata_unavailable", observedAt),
           ),
         );
-      if (selection?.agent !== "codex" || metadata?.codexControl === undefined)
+      if (selection.agent !== "codex" || metadata?.codexControl === undefined)
         return yield* failure(
           "rejected_before_admission",
           "codex_selection_unavailable",
@@ -299,11 +299,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         sessionId: context.authority.session.id,
         generation,
         selection,
-        ...(context.authority.session.configuration === undefined
-          ? {}
-          : {
-              configuration: context.authority.session.configuration,
-            }),
+        configuration: context.authority.session.configuration,
         token: metadata.codexControl.token,
         initialPrompt: metadata.codexControl.initialPrompt,
         images: metadata.codexControl.images,
@@ -417,7 +413,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         runtimeCli
           .materialize(
             context.authority.session.id,
-            context.authority.session.configuration?.runtimeCli,
+            context.authority.session.configuration.runtimeCli,
           )
           .pipe(
             Effect.mapError((error) =>
@@ -477,7 +473,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         items: materialized.items,
         bundleRoot: materialized.bundleRoot,
       };
-      if (context.authority.session.selection?.agent !== "codex") {
+      if (context.authority.session.selection.agent !== "codex") {
         yield* beforeTransitionDeadline(
           context,
           "create_runtime_seed_timeout",
@@ -505,8 +501,8 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         );
       }
       const proof = yield* runtimeProof(runtime, context, input.runtimeGeneration);
-      const environment = context.authority.session.configuration?.environment;
-      if (environment !== undefined && Object.keys(environment).length > 0)
+      const environment = context.authority.session.configuration.environment;
+      if (Object.keys(environment).length > 0)
         yield* beforeTransitionDeadline(
           context,
           "create_environment_timeout",
@@ -571,10 +567,11 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const startSupervisor = Effect.fnUntraced(function* (context: CreateProviderContext) {
       const input = yield* resolveInput(boundary, context);
       const observedAt = yield* timestamp;
+      const configuration = context.authority.session.configuration;
       const processId = yield* beforeTransitionDeadline(
         context,
         "create_supervisor_start_timeout",
-        context.authority.session.selection?.agent === "codex"
+        context.authority.session.selection.agent === "codex"
           ? Effect.flatMap(codexIdentity(context, input.runtimeGeneration), (identity) =>
               startCodexSandbox(identity, input.grants),
             ).pipe(Effect.provideService(SandboxRuntime, runtime))
@@ -582,7 +579,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
               context.authority.session.id,
               input.credentials,
               context.authority.session.selection,
-              context.authority.session.configuration,
+              configuration,
             ),
       ).pipe(
         Effect.mapError((error) =>
@@ -602,7 +599,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const confirmSupervisorReady = Effect.fnUntraced(function* (context: CreateProviderContext) {
       const observedAt = yield* timestamp;
       const runtimeProofValue = yield* currentRuntime(context, observedAt);
-      if (context.authority.session.selection?.agent === "codex") {
+      if (context.authority.session.selection.agent === "codex") {
         const identity = yield* codexIdentity(context, runtimeProofValue.runtimeGeneration);
         const snapshot = yield* waitForCodexSandbox(identity).pipe(
           Effect.provideService(SandboxRuntime, runtime),
@@ -666,7 +663,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
           "create_supervisor_proof_missing",
           observedAt,
         );
-      if (context.authority.session.selection?.agent === "codex") {
+      if (context.authority.session.selection.agent === "codex") {
         const identity = yield* codexIdentity(context, runtimeProofValue.runtimeGeneration);
         const admitted = yield* admitCodexSandbox(
           identity,
@@ -789,7 +786,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       }
       if (context.transition.phase === "SupervisorStarting") {
         const observedAt = yield* timestamp;
-        if (context.authority.session.selection?.agent === "codex") {
+        if (context.authority.session.selection.agent === "codex") {
           const input = yield* resolveInput(boundary, context);
           const identity = yield* codexIdentity(context, input.runtimeGeneration);
           yield* readCodexSandbox(identity).pipe(

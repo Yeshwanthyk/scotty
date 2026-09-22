@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Predicate, Result } from "effect";
 import { SessionActor, type ActorHandleResult } from "../../src/session-actor/actor";
@@ -47,6 +48,7 @@ const warm: SessionAuthority = {
     title: "Lifecycle session",
     repository: "owner/disposable",
     execution: { provider: "cloudflare", runtimeName: "lifecycle-session" },
+    ...sessionIdentityPin,
     createdAt: T0,
   },
   state: {

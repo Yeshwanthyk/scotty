@@ -45,6 +45,7 @@ const fixture = Effect.fnUntraced(function* (
       cwd: "/workspace",
     },
     options: {
+      agentInstructionsPath: "/runtime.agent-instructions.md",
       binary: "/codex",
       runtimeDir: "/runtime",
       workspace: "/workspace",

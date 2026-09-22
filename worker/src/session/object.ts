@@ -1259,8 +1259,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
             )
               return yield* rejectBoundary("create_private_payload_fence_mismatch");
 
-            if (authority.session.configuration === undefined)
-              return yield* rejectBoundary("create_configuration_pin_missing");
             const bundleDigest = authority.session.configuration.bundleDigest;
 
             const registry = env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
@@ -3162,7 +3160,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly preparePiSessionAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const state = yield* this.readActorSessionStateProgram();
-    if (state.authority.session.selection?.agent === "codex")
+    if (state.authority.session.selection.agent === "codex")
       return yield* badRequest("Codex does not expose Pi session callbacks");
     const record = yield* this.requireRecordProgram();
     if (record.status !== "warm")
@@ -3191,6 +3189,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       record.id,
       sessionRuntimeCredentials(grant.grants),
       state.authority.session.selection,
+      state.authority.session.configuration,
     );
   });
 
@@ -3443,7 +3442,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const now = yield* Clock.currentTimeMillis;
     const nowIso = new Date(now).toISOString();
     const request: CreateControllerRequest = {
-      ...(pinned.selection?.agent === "codex"
+      ...(pinned.selection.agent === "codex"
         ? {
             codexControl: {
               token: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
@@ -3458,8 +3457,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
         id,
         title: input.title,
         repository: input.repo,
-        ...(pinned.selection === undefined ? {} : { selection: pinned.selection }),
-        ...(pinned.configuration === undefined ? {} : { configuration: pinned.configuration }),
+        selection: pinned.selection,
+        configuration: pinned.configuration,
         execution: { provider: "cloudflare", runtimeName: id },
         createdAt: nowIso,
       },
@@ -4011,7 +4010,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           : this.rawContainer.running
             ? ("running" as const)
             : ("stopped" as const);
-      const agent = state.authority.session.selection?.agent ?? "pi";
+      const agent = state.authority.session.selection.agent;
       const agentRuntimeState =
         runtime !== "running" || record.status !== "warm" || record.operation !== null
           ? runtime === "stopped"
@@ -4085,7 +4084,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const before = yield* this.readActorSessionStateProgram();
     const authority = before.authority;
     if (
-      authority.session.selection?.agent !== "codex" ||
+      authority.session.selection.agent !== "codex" ||
       !AuthorityStateSchema.guards.Stable(authority.state) ||
       !StableStateSchema.guards.Warm(authority.state.stable)
     )
@@ -5218,7 +5217,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const relayWithCurrentAuthority = async (): Promise<Response> => {
       const authority = await this.readPassiveConsoleAuthority();
       if (authority instanceof Response) return authority;
-      if (authority.authority.session.selection?.agent === "codex")
+      if (authority.authority.session.selection.agent === "codex")
         return Response.json({ error: "codex_operation_unsupported" }, { status: 409 });
       if (command && command.expectedSessionRevision !== authority.revision)
         return this.stalePassiveConsoleCommand(command, authority.revision);
@@ -5797,7 +5796,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       Effect.gen({ self: this }, function* () {
         const state = yield* this.readActorSessionStateProgram();
         const selection = state.authority.session.selection;
-        if (selection?.agent !== "codex") return null;
+        if (selection.agent !== "codex") return null;
         const authority = state.authority;
         const readiness = codexConversationReadiness(authority);
         if (readiness === null)
@@ -5888,7 +5887,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           }
           if (
             !StableStateSchema.guards.Warm(authority.state.stable) ||
-            authority.session.selection?.agent !== "codex"
+            authority.session.selection.agent !== "codex"
           )
             return;
           const readiness = authority.state.stable.readiness;
@@ -5967,7 +5966,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             const state = yield* this.readActorSessionStateProgram();
             sessionId = state.authority.session.id;
             const selection = state.authority.session.selection;
-            if (selection?.agent !== "codex") return null;
+            if (selection.agent !== "codex") return null;
             const authority = state.authority;
             if (
               !AuthorityStateSchema.guards.Stable(authority.state) ||
@@ -6129,7 +6128,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             const state = yield* this.readActorSessionStateProgram();
             sessionId = state.authority.session.id;
             const selection = state.authority.session.selection;
-            if (selection?.agent !== "codex") return null;
+            if (selection.agent !== "codex") return null;
             const authority = state.authority;
             if (input.sessionRevision !== authority.revision)
               return Response.json(

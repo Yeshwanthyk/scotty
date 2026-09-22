@@ -1,3 +1,4 @@
+import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Predicate, Result } from "effect";
 import { SessionActor, type ActorHandleResult } from "../../src/session-actor/actor";
@@ -35,6 +36,7 @@ const session: SessionIdentity = {
   title: "Create controller session",
   repository: "owner/disposable",
   execution: { provider: "cloudflare", runtimeName: "runtime-create-controller" },
+  ...sessionIdentityPin,
   createdAt: T0,
 };
 
@@ -176,6 +178,7 @@ const actorResult = (authority: SessionAuthority): ActorHandleResult => ({
 
 const metadata = (value: CreateControllerRequest = request()): SessionActorMetadata => {
   const made = makeSessionActorMetadata(acceptedAdmission(value).nextAuthority, {
+    ...sessionIdentityPin,
     branch: value.branch,
     createRepositoryIfMissing: value.createRepositoryIfMissing,
     hardCap: value.hardCap,
