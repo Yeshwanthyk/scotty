@@ -856,6 +856,7 @@ export const checkContainerImage = async ({
 
 // Serialized into the network-isolated image smoke and reused against the prepared bundle.
 export const codexFixtureLaunch = (binary, runtimeDir, workspace) => ({
+  agentInstructionsPath: `${runtimeDir}.agent-instructions.md`,
   binary,
   runtimeDir,
   workspace,
@@ -944,6 +945,7 @@ const proveInstalledServer = async (makeLaunch, fakeSource, failAfterReady = fal
       reservation.close((error) => (error ? reject(error) : resolveClose())),
     );
     const launch = makeLaunch(binary, join(root, "runtime"), workspace);
+    await fs.writeFile(launch.agentInstructionsPath, "Fixture instructions", { mode: 0o600 });
     sentinel = launch.credential.sentinel;
     child = spawn(
       resolve("scotty-codex-server"),

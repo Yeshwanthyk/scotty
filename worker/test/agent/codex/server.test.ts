@@ -114,6 +114,7 @@ describe("Codex supervisor startup diagnostics", () => {
           launch: {
             binary: "/missing/codex",
             runtimeDir: `${root}/runtime`,
+            agentInstructionsPath: `${root}/runtime.agent-instructions.md`,
             workspace,
             model: "gpt-5.4",
             effort: "high",
@@ -307,12 +308,16 @@ createInterface({input:process.stdin}).on('line', (line) => {
 `,
         { mode: 0o700 },
       );
+      yield* fs.writeFileString(`${root}/runtime.agent-instructions.md`, "Fixture instructions", {
+        mode: 0o600,
+      });
       const runtime = yield* startCodexRuntime(
         {
           generation: "generation-1",
           launch: {
             binary,
             runtimeDir: `${root}/runtime`,
+            agentInstructionsPath: `${root}/runtime.agent-instructions.md`,
             workspace,
             model: "gpt-5.4",
             effort: "high",

@@ -207,6 +207,7 @@ describe("UI session authority response", () => {
       "display",
       "identity",
       "runtime",
+      "selection",
       "times",
     ]);
     assert.strictEqual(response.version, 1);
@@ -296,8 +297,14 @@ describe("UI session authority response", () => {
 
     assert.isTrue(Result.isSuccess(result));
     if (Result.isFailure(result)) return;
+    const { selection, ...projectedSession } = uiSessionResponseFromActor(
+      warmAuthority(),
+      metadata,
+      NOW,
+    ).session;
+    assert.deepStrictEqual(selection, identity.selection);
     assert.deepStrictEqual(result.success.sessions[0], {
-      ...uiSessionResponseFromActor(warmAuthority(), metadata, NOW).session,
+      ...projectedSession,
       projection: { projectedAt: UPDATED_AT },
     });
     assert.deepStrictEqual(result.success.sessions[1].authority, {

@@ -1000,6 +1000,7 @@ describe("real Hono boundary", () => {
       pi: { agent: "pi" },
       codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
       environment: { APP_MODE: "test" },
+      customInstructions: "",
     } as const;
     sandboxConfig.updateSettings.mockResolvedValueOnce({
       ok: true,

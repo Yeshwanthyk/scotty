@@ -98,7 +98,7 @@ const credential = {
 };
 const selection = (options) => {
   const { upstreamPort: _upstreamPort, ...launch } = options;
-  return launch;
+  return { ...launch, agentInstructionsPath: `${launch.runtimeDir}.agent-instructions.md` };
 };
 const args = (options) => [JSON.stringify(selection(options)), String(options.upstreamPort)];
 const passiveFirstPartyTools = {
@@ -119,6 +119,9 @@ NodeRuntime.runMain(program(process.argv.slice(2,3)).pipe(Effect.provideService(
 );
 // Test-only Promise facade; production owns no Promise supervisor or hidden runtime.
 async function startCodexSession(options, firstPartyTools, observeEvent) {
+  await writeFile(selection(options).agentInstructionsPath, "Fixture instructions", {
+    mode: 0o600,
+  });
   await mkdir(options.workspace, { recursive: true });
   const scope = await Effect.runPromise(Scope.make());
   const run = (effect) => Effect.runPromise(effect);
@@ -290,6 +293,9 @@ input.on('line', line=>{
     stopTimeoutMs: 100,
     ...overrides,
   };
+  await writeFile(selection(options).agentInstructionsPath, "Fixture instructions", {
+    mode: 0o600,
+  });
   await mkdir(options.workspace, { recursive: true });
   let host;
   t.after(async () => {
@@ -938,6 +944,7 @@ test(
     const launch = {
       binary: native,
       runtimeDir: join(stage, "native-recovery-first"),
+      agentInstructionsPath: join(stage, "native-recovery-first.agent-instructions.md"),
       workspace,
       model: "gpt-5.4",
       effort: "high",
@@ -945,6 +952,7 @@ test(
       credential,
       requestTimeoutMs: 2000,
     };
+    await writeFile(launch.agentInstructionsPath, "Fixture instructions", { mode: 0o600 });
     const firstScope = await Effect.runPromise(Scope.make());
     scopes.push(firstScope);
     const host = await scoped(
@@ -1014,6 +1022,11 @@ test(
         return { text: "scotty-hatch:resumed-proof", success: true };
       },
     };
+    await writeFile(
+      join(stage, "native-recovery-next.agent-instructions.md"),
+      "Fixture instructions",
+      { mode: 0o600 },
+    );
     const resumed = await scoped(
       nextScope,
       startCodexRuntime(
@@ -1022,6 +1035,7 @@ test(
           launch: {
             ...launch,
             runtimeDir: join(stage, "native-recovery-next"),
+            agentInstructionsPath: join(stage, "native-recovery-next.agent-instructions.md"),
             resumeThreadId: saved.threadId,
           },
           restore: saved,
@@ -1513,6 +1527,11 @@ test(
       await new Promise((done) => server.close(done));
     });
     await mkdir(join(stage, "executable-workspace"));
+    await writeFile(
+      join(stage, "native-executable-write.agent-instructions.md"),
+      "Fixture instructions",
+      { mode: 0o600 },
+    );
     child = spawn(
       process.execPath,
       [

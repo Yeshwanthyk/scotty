@@ -350,6 +350,10 @@ describe("Codex Sandbox adapter", () => {
       assert.notInclude(commands[0], "mkdir -p");
       assert.deepEqual(files, [
         { path: "/tmp/scotty-codex-generation-1/control.token", content: identity.token },
+        {
+          path: "/tmp/scotty-codex-generation-1/runtime.agent-instructions.md",
+          content: startIdentity.configuration.agentInstructions,
+        },
       ]);
       assert.include(commands[1], "chmod 600");
       assert.include(launch, "/usr/local/bin/scotty-codex-server");
