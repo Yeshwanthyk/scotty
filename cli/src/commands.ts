@@ -43,6 +43,9 @@ import {
   decodePiInspectSnapshot,
   decodeInterruptResponse,
   decodeOperationResponse,
+  decodePendingLifecycleResponse,
+  decodeLifecyclePollResponse,
+  decodeLifecycleActorResult,
   decodeRepositoriesResponse,
   decodeRepositoryRemovalResponse,
   decodeRepositoryResponse,
@@ -117,7 +120,7 @@ import {
 import { runRunnerSupervisor } from "./runner-link";
 import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { setupRunner } from "./runner-setup";
-import { requestJson } from "./transport";
+import { apiRequest, decodeJson, requestJson, type ApiRequestTarget } from "./transport";
 import {
   makeDeployUi,
   makeInitUi,
@@ -482,6 +485,121 @@ const parserUsage = (error: EffectCliError.ShowHelp): CliError => {
 };
 
 type SetExitCode = (code: ExitCode) => Effect.Effect<void>;
+
+const hasConfirmedBackup = (backup: {
+  readonly currentBackupId: string | null;
+  readonly confirmed?: { readonly backupId: string; readonly confirmedAt: string | null } | null;
+}): boolean =>
+  backup.currentBackupId !== null &&
+  backup.confirmed?.backupId === backup.currentBackupId &&
+  backup.confirmed.confirmedAt !== null;
+
+const pollPendingLifecycle = Effect.fnUntraced(function* (
+  auth: ApiRequestTarget,
+  command: "checkpoint" | "resume",
+  sessionId: string,
+  raw: unknown,
+) {
+  const pending = decodePendingLifecycleResponse(raw);
+  const expectedKind = command === "checkpoint" ? "snapshot" : "resume";
+  if (
+    Option.isNone(pending) ||
+    pending.value.id !== sessionId ||
+    pending.value.operation.kind !== expectedKind
+  )
+    return yield* invalidResponse("Server returned an invalid pending lifecycle result");
+  const deadline = Date.parse(pending.value.operation.deadlineAt) + 30_000;
+  if (!Number.isFinite(deadline)) return yield* invalidResponse();
+  while ((yield* Clock.currentTimeMillis) < deadline) {
+    yield* Effect.sleep("2 seconds");
+    const polled = decodeLifecyclePollResponse(
+      yield* requestJson(auth, `/api/sessions/${encodeURIComponent(sessionId)}`),
+    );
+    if (Option.isNone(polled) || polled.value.session.identity.id !== sessionId)
+      return yield* invalidResponse("Server returned an invalid session inspection result");
+    const current = polled.value.session;
+    if (current.authority.kind === "transitioning") {
+      if (current.authority.action !== command)
+        return yield* new CliError(
+          "wrong_state",
+          `Session ${command} was replaced by another operation`,
+          "Inspect the current session state before retrying.",
+          EXIT.WRONG_STATE,
+        );
+      continue;
+    }
+    if (current.authority.lifecycle === "failed")
+      return yield* new CliError(
+        "upstream",
+        `Session ${command} failed`,
+        "Inspect Worker observability for the redacted upstream failure",
+        EXIT.GENERIC,
+      );
+    if (current.authority.lifecycle !== "warm")
+      return yield* new CliError(
+        "wrong_state",
+        `Session ${command} ended in ${current.authority.lifecycle}`,
+        "Inspect the current session state before retrying.",
+        EXIT.WRONG_STATE,
+      );
+    const actor = decodeLifecycleActorResult(
+      yield* requestJson(auth, `/api/sessions/${encodeURIComponent(sessionId)}/actor`),
+    );
+    if (Option.isNone(actor) || actor.value.authority.session.id !== sessionId)
+      return yield* invalidResponse("Server returned an invalid session authority result");
+    if (
+      !actor.value.journal.some(
+        (event) =>
+          event.eventType === "completed" &&
+          event.transitionKind === (command === "checkpoint" ? "Checkpoint" : "Resume") &&
+          event.transitionNonce === pending.value.operation.nonce,
+      )
+    )
+      return yield* new CliError(
+        "wrong_state",
+        `Session ${command} completion could not be verified`,
+        "Inspect the current session state before retrying.",
+        EXIT.WRONG_STATE,
+      );
+    const backup = actor.value.authority.state.stable.backups;
+    if (command === "checkpoint" && !hasConfirmedBackup(backup))
+      return yield* invalidResponse("Session checkpoint backup is not confirmed");
+    return {
+      pending: false as const,
+      value: {
+        id: sessionId,
+        status: "warm",
+        branch: current.display.branch,
+        url: pending.value.url,
+        backupId: backup.currentBackupId,
+      },
+    };
+  }
+  return { pending: true as const };
+});
+
+const lifecycleOperationOutput = Effect.fnUntraced(function* (
+  raw: unknown,
+  sessionId: string,
+  host: string,
+) {
+  const decoded = decodeOperationResponse(raw);
+  if (Option.isNone(decoded)) return yield* invalidResponse();
+  const url = optionalString(decoded.value.url);
+  const branch = optionalString(decoded.value.branch);
+  const backupId = optionalString(decoded.value.backupId);
+  const sanitizedUrl = url
+    ? yield* Effect.fromResult(sanitizeUrl(url, host, sessionId))
+    : undefined;
+  const result: SessionOperationOutput = {
+    id: optionalString(decoded.value.id) ?? sessionId,
+    status: decoded.value.status,
+    ...(sanitizedUrl === undefined ? {} : { url: sanitizedUrl }),
+    ...(branch === undefined ? {} : { branch }),
+    ...(backupId === undefined ? {} : { backupId }),
+  };
+  return result;
+});
 
 export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const version = GlobalFlag.action({
@@ -2825,7 +2943,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       resume: 11 * 60_000,
       vaporize: MUTATION_REQUEST_TIMEOUT_MS,
     }[command];
-    const raw = yield* requestJson(auth, path, { method }, { timeoutMs });
+    const response = yield* apiRequest(auth, path, { method }, { timeoutMs });
+    let raw = yield* decodeJson(response.bytes);
     if (command === "vaporize") {
       const decoded = decodeVaporizeResponse(raw);
       if (Option.isNone(decoded) || decoded.value.id !== sessionId)
@@ -2840,22 +2959,18 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       else runtime.stdout(humanResult({ command: "vaporize", value: result }));
       return;
     }
-    const decoded = decodeOperationResponse(raw);
-    if (Option.isNone(decoded)) return yield* invalidResponse();
-    const operationId = optionalString(decoded.value.id) ?? sessionId;
-    const url = optionalString(decoded.value.url);
-    const branch = optionalString(decoded.value.branch);
-    const backupId = optionalString(decoded.value.backupId);
-    const sanitizedUrl = url
-      ? yield* Effect.fromResult(sanitizeUrl(url, auth.host, sessionId))
-      : undefined;
-    const result: SessionOperationOutput = {
-      id: operationId,
-      status: decoded.value.status,
-      ...(sanitizedUrl === undefined ? {} : { url: sanitizedUrl }),
-      ...(branch === undefined ? {} : { branch }),
-      ...(backupId === undefined ? {} : { backupId }),
-    };
+    if (response.response.status === 202) {
+      const settled = yield* pollPendingLifecycle(auth, command, sessionId, raw);
+      if (settled.pending) {
+        const pendingResult = { id: sessionId, status: "pending", pending: true as const };
+        if (autoJson) outputJson(runtime.stdout, pendingResult);
+        else runtime.stdout(humanResult({ command, value: pendingResult }));
+        yield* setExitCode(EXIT.GENERIC);
+        return;
+      }
+      raw = settled.value;
+    }
+    const result = yield* lifecycleOperationOutput(raw, sessionId, auth.host);
     if (autoJson) outputJson(runtime.stdout, result);
     else runtime.stdout(humanResult({ command, value: result }));
   });

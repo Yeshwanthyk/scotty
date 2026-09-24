@@ -1192,13 +1192,10 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.strictEqual(committed.revision, before.revision + 1);
     const backupCalls = harness.events.filter((event) => event === "host:createBackup").length;
 
-    const retry = await harness.sandbox.checkpointScottySession().then(
-      () => undefined,
-      (error: unknown) => error,
-    );
+    const retry = await harness.sandbox.checkpointScottySession();
 
-    assert.ok(retry instanceof ScottyError);
-    assert.strictEqual(retry.code, "upstream");
+    assert.isTrue("pending" in retry && retry.pending);
+    assert.strictEqual(retry.operation?.kind, "snapshot");
     const recovering = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
     assert.ok(recovering !== undefined && Predicate.isTagged(recovering.state, "Transitioning"));
     assert.strictEqual(recovering.state.transition.mode, "reconciling");
@@ -1213,6 +1210,26 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.strictEqual(
       harness.events.filter((event) => event === "host:createBackup").length,
       backupCalls,
+    );
+  });
+
+  it("returns pending for a reconciling Sleep with its alarm armed", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    harness.injectFailure("actorAlarmScheduleOnce");
+    const first = await harness.sandbox.sleepScottySession().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    assert.instanceOf(first, ScottyError);
+    const retry = await harness.sandbox.sleepScottySession();
+    assert.isTrue("pending" in retry && retry.pending);
+    assert.strictEqual(retry.operation?.kind, "sleep");
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(authority !== undefined && Predicate.isTagged(authority.state, "Transitioning"));
+    assert.strictEqual(retry.operation?.deadlineAt, authority.state.transition.deadlineAt);
+    assert.isTrue(
+      harness.schedules.some((schedule) => schedule.callback === "sessionActorDeadline"),
     );
   });
 
@@ -2111,17 +2128,17 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
 
       restoreStarted = true;
       const resume = harness.sandbox.resumeScottySession().then(
-        () => undefined,
+        (value) => value,
         (error: unknown) => error,
       );
       yield* Effect.promise(() => restoreHealthEntered.promise);
       yield* Effect.yieldNow;
       yield* clock.adjust("30 seconds");
-      const failure = yield* Effect.promise(() => resume);
+      const result = yield* Effect.promise(() => resume);
 
-      assert.ok(failure instanceof ScottyError);
-      if (!(failure instanceof ScottyError)) return;
-      assert.strictEqual(failure.code, "upstream");
+      assert.isFalse(result instanceof ScottyError);
+      assert.ok(typeof result === "object" && result !== null && "pending" in result);
+      assert.strictEqual(result.pending, true);
       assert.isBelow(healthCalls, 200);
       assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
       const hatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
@@ -2408,14 +2425,16 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
       );
       healthFails = true;
       const checkpoint = harness.sandbox.checkpointScottySession().then(
-        () => undefined,
+        (value) => value,
         (error: unknown) => error,
       );
       yield* Effect.promise(() => restoreHealthEntered.promise);
       yield* Effect.yieldNow;
       yield* clock.adjust("30 seconds");
-      const failure = yield* Effect.promise(() => checkpoint);
-      assert.isDefined(failure);
+      const result = yield* Effect.promise(() => checkpoint);
+      assert.isFalse(result instanceof ScottyError);
+      assert.ok(typeof result === "object" && result !== null && "pending" in result);
+      assert.strictEqual(result.pending, true);
       const failedHatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
       assert.strictEqual(failedHatch?.desiredStatus, "open");
       assert.strictEqual(failedHatch?.observedStatus, "failed");

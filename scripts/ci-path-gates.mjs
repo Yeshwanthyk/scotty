@@ -45,6 +45,7 @@ const CONTAINER_SOURCE_INPUTS = Object.freeze([
     "agents/codex/codex-app-server.ts",
     "agents/codex/codex-model-capabilities.ts",
     "session/conversation.ts",
+    "session/lifecycle-response.ts",
     "credentials/credentials.ts",
     "agents/pi/pi-console-shared.mjs",
     "agents/pi/pi-console.ts",

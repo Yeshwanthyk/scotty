@@ -4321,6 +4321,139 @@ describe("commands and schemas", () => {
     }
   });
 
+  test("polls a pending lifecycle response until the session succeeds", async () => {
+    const calls: string[] = [];
+    const h = harness({
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const path = new URL(request.url).pathname;
+        calls.push(`${request.method} ${path}`);
+        if (request.method === "POST")
+          return Response.json(
+            {
+              id: "s1",
+              status: "warm",
+              pending: true,
+              operation: {
+                kind: "snapshot",
+                nonce: "checkpoint-1",
+                deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+            { status: 202 },
+          );
+        if (path.endsWith("/actor"))
+          return Response.json({
+            journal: [
+              {
+                eventType: "completed",
+                transitionKind: "Checkpoint",
+                transitionNonce: "checkpoint-1",
+              },
+            ],
+            authority: {
+              session: { id: "s1" },
+              state: {
+                _tag: "Stable",
+                stable: {
+                  _tag: "Warm",
+                  backups: {
+                    currentBackupId: "backup-1",
+                    confirmed: { backupId: "backup-1", confirmedAt: "2026-09-24T00:00:00Z" },
+                  },
+                },
+              },
+            },
+          });
+        return Response.json({
+          version: 1,
+          session: {
+            identity: { id: "s1" },
+            authority: { kind: "stable", lifecycle: "warm" },
+            display: { branch: null },
+          },
+        });
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(calls).toEqual([
+      "POST /api/sessions/s1/checkpoint",
+      "GET /api/sessions/s1",
+      "GET /api/sessions/s1/actor",
+    ]);
+    expect(h.json()).toEqual({ id: "s1", status: "warm", backupId: "backup-1" });
+  });
+
+  test("polls a pending lifecycle response and reports a failed session", async () => {
+    const h = harness({
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (request.method === "POST")
+          return Response.json(
+            {
+              id: "s1",
+              status: "sleeping",
+              pending: true,
+              operation: {
+                kind: "resume",
+                nonce: "resume-1",
+                deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+            { status: 202 },
+          );
+        return Response.json({
+          version: 1,
+          session: {
+            identity: { id: "s1" },
+            authority: { kind: "stable", lifecycle: "failed" },
+            display: { branch: null },
+          },
+        });
+      },
+    });
+    expect(await main(["resume", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
+    expect(h.stdout.join("")).toBe("");
+    expect(h.error()).toEqual({
+      error: {
+        code: "upstream",
+        message: "Session resume failed",
+        hint: "Inspect Worker observability for the redacted upstream failure",
+      },
+    });
+  });
+
+  test("reports pending with the existing generic exit when the transition deadline has passed", async () => {
+    const requests: string[] = [];
+    const h = harness({
+      fetch: async (input, init) => {
+        requests.push(new Request(input, init).method);
+        return Response.json(
+          {
+            id: "s1",
+            status: "warm",
+            pending: true,
+            operation: {
+              kind: "snapshot",
+              nonce: "checkpoint-1",
+              deadlineAt: new Date(Date.now() - 31_000).toISOString(),
+            },
+          },
+          { status: 202 },
+        );
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
+    expect(requests).toEqual(["POST"]);
+    expect(h.json()).toEqual({ id: "s1", status: "pending", pending: true });
+  });
+
   test("operation optionals omit nulls and missing response IDs use the requested ID", async () => {
     for (const [args, reply, expected] of [
       [

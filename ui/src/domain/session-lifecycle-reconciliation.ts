@@ -87,7 +87,13 @@ export const resolveLifecycleActionMessage = (
   refreshed: boolean,
 ): LifecycleControlMessage | null => {
   if (authoritativeReachedLifecycleTarget(authoritative, action, startedFrom)) return null;
-  if (mutation.ok && refreshed && hasExpectedLifecycle(authoritative, action)) return null;
+  if (
+    mutation.ok &&
+    !("pending" in mutation) &&
+    refreshed &&
+    hasExpectedLifecycle(authoritative, action)
+  )
+    return null;
 
   const message = (
     kind: LifecycleControlMessage["kind"],
@@ -109,6 +115,13 @@ export const resolveLifecycleActionMessage = (
         : "The session changed while this action was starting. Refresh to see the latest state.",
     );
   if (!mutation.ok) return message("error", mutationErrorMessage(action, mutation));
+  if ("pending" in mutation)
+    return message(
+      "reconciliation",
+      refreshed
+        ? "The session action is still running. The latest state is shown."
+        : "The session action is still running. Refresh to see the latest state.",
+    );
   if (!refreshed)
     return message(
       "error",

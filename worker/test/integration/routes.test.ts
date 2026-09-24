@@ -2677,6 +2677,27 @@ describe("real Hono boundary", () => {
     }
   });
 
+  it("returns the unchanged session view plus pending for lifecycle transitions", async () => {
+    const view = {
+      id: "a0b1c2d3e4f5",
+      status: "warm",
+      operation: {
+        kind: "snapshot",
+        nonce: "checkpoint-1",
+        startedAt: "2026-09-24T00:00:00.000Z",
+        deadlineAt: "2026-09-24T00:05:00.000Z",
+      },
+    };
+    sandbox.checkpointScottySession.mockResolvedValueOnce({ ...view, pending: true });
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/checkpoint",
+      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ ...view, pending: true });
+  });
+
   it("serves a sessions:read client a passive Pi snapshot without forwarding credentials or waking Pi", async () => {
     auth.authenticate.mockResolvedValueOnce({
       ok: true,

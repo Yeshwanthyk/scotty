@@ -43,6 +43,23 @@ describe("session lifecycle boundary", () => {
     ).toBe(undefined);
   });
 
+  it("accepts a matching 202 transition as pending", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      Response.json(
+        {
+          id: "session-1",
+          status: "warm",
+          pending: true,
+          operation: { kind: "sleep", deadlineAt: "2026-09-24T00:10:00.000Z" },
+        },
+        { status: 202 },
+      ),
+    );
+    await expect(
+      mutateSessionLifecycle("session-1", "sleep", { fetch: fetchMock }),
+    ).resolves.toEqual({ ok: true, pending: true });
+  });
+
   it("classifies typed 409 responses for reconciliation", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

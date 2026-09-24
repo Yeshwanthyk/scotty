@@ -35,4 +35,4 @@ The pages assume these same-origin endpoints:
 
 - `GET /api/sessions` returns either an array of session projections or `{ "sessions": [...] }` with `id` and `status` fields.
 - `GET /api/stats` returns retained workspace creation counts grouped by repository identity and joined to current warm or sleeping session projections.
-- `POST /api/sessions/:id/resume` starts restore/resume and returns a successful HTTP status when accepted.
+- `POST /api/sessions/:id/checkpoint`, `/sleep`, and `/resume` return the unchanged session view with HTTP 200 only after the target state is stable. While the same transition is still running, they return HTTP 202 with that view plus `pending: true`; its `operation.deadlineAt` gives clients the polling deadline. A failed transition keeps the existing error response.

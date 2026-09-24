@@ -193,6 +193,7 @@ import {
   type SessionProjection as SessionListProjection,
   type SessionRecord,
   type SessionView,
+  type PendingSessionView,
   SESSION_KV_PREFIX,
 } from "./contracts";
 import {
@@ -3783,12 +3784,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }
       const snapshot = recovered.provenSnapshot;
       const authority = snapshot.authority;
-      if (authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state))
-        return yield* this.upstreamError(
-          `Session ${kind.toLowerCase()} outcome is being reconciled`,
-          authority.state.transition.phase,
-          authority.session.id,
-        );
       if (
         authority !== undefined &&
         AuthorityStateSchema.guards.Stable(authority.state) &&
@@ -3800,15 +3795,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           authority.session.id,
         );
       const state = yield* this.actorSessionStateFromSnapshotProgram(snapshot);
-      yield* Effect.tryPromise({
-        try: () =>
-          this.env.SESSIONS.put(
-            `${SESSION_KV_PREFIX}${state.projection.id}`,
-            JSON.stringify(state.projection),
-          ),
-        catch: () => undefined,
-      }).pipe(Effect.ignore);
-      return state.view;
+      return yield* this.lifecycleResponseFromActorStateProgram(kind, state);
     }
     const now = yield* Clock.currentTimeMillis;
     const baseRequest = {
@@ -3870,12 +3857,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     yield* this.publishActorSessionProjectionBestEffortProgram();
-    if (Predicate.isTagged(outcome, "Reconciling"))
-      return yield* this.upstreamError(
-        `Session ${kind.toLowerCase()} outcome is being reconciled`,
-        outcome.phase,
-        outcome.authority.session.id,
-      );
     if (Predicate.isTagged(outcome, "Failed"))
       return yield* this.upstreamError(
         `Session ${kind.toLowerCase()} failed`,
@@ -3883,15 +3864,49 @@ export class Sandbox extends BaseSandbox<Bindings> {
         outcome.authority.session.id,
       );
     const publicState = yield* this.readActorSessionStateProgram();
+    return yield* this.lifecycleResponseFromActorStateProgram(kind, publicState);
+  });
+
+  private readonly lifecycleResponseFromActorStateProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    kind: LifecycleCommandKind,
+    state: {
+      readonly authority: SessionAuthority;
+      readonly projection: SessionListProjection;
+      readonly view: SessionView;
+    },
+  ) {
+    const authority = state.authority;
+    if (AuthorityStateSchema.guards.Transitioning(authority.state)) {
+      if (!Predicate.isTagged(authority.state.transition, kind))
+        return yield* wrongState(state.view.status, kind.toLowerCase());
+      return { ...state.view, pending: true as const };
+    }
+    if (StableStateSchema.guards.Failed(authority.state.stable))
+      return yield* this.upstreamError(
+        `Session ${kind.toLowerCase()} failed`,
+        authority.state.stable.code,
+        authority.session.id,
+      );
+    const stable = authority.state.stable;
+    const reachedTarget =
+      kind === "Sleep"
+        ? StableStateSchema.guards.Sleeping(stable)
+        : StableStateSchema.guards.Warm(stable) &&
+          (kind === "Resume" ||
+            (stable.backups.currentBackupId !== null &&
+              stable.backups.confirmed?.backupId === stable.backups.currentBackupId &&
+              stable.backups.confirmed.confirmedAt !== null));
+    if (!reachedTarget) return yield* wrongState(state.view.status, kind.toLowerCase());
     yield* Effect.tryPromise({
       try: () =>
         this.env.SESSIONS.put(
-          `${SESSION_KV_PREFIX}${publicState.projection.id}`,
-          JSON.stringify(publicState.projection),
+          `${SESSION_KV_PREFIX}${state.projection.id}`,
+          JSON.stringify(state.projection),
         ),
       catch: () => undefined,
     }).pipe(Effect.ignore);
-    return publicState.view;
+    return state.view;
   });
 
   private readonly admitWarmWorkProgram = Effect.fnUntraced(function* (
@@ -6407,15 +6422,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
-  async checkpointScottySession(): Promise<SessionView> {
+  async checkpointScottySession(): Promise<SessionView | PendingSessionView> {
     return this.#run(this.actorLifecycleProgram("Checkpoint"));
   }
 
-  async sleepScottySession(): Promise<SessionView> {
+  async sleepScottySession(): Promise<SessionView | PendingSessionView> {
     return this.#run(this.actorLifecycleProgram("Sleep"));
   }
 
-  async resumeScottySession(): Promise<SessionView> {
+  async resumeScottySession(): Promise<SessionView | PendingSessionView> {
     await this.#run(
       Effect.gen({ self: this }, function* () {
         if ((yield* this.readSidecarFollowUpsProgram()).pending.length > 0)

@@ -291,6 +291,7 @@ describe("session actor public projection", () => {
         kind: "snapshot",
         nonce: "checkpoint-nonce",
         startedAt: UPDATED_AT,
+        deadlineAt: HARD_CAP_AT,
         mode: "reconciling",
         phase: "Syncing",
       },

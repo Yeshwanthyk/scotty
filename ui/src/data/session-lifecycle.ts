@@ -17,6 +17,7 @@ export interface SessionMutationSuccess {
 
 export type SessionMutationResult =
   | { readonly ok: true; readonly value: SessionMutationSuccess }
+  | { readonly ok: true; readonly pending: true }
   | {
       readonly ok: false;
       readonly failure: SessionReadFailure;
@@ -113,6 +114,20 @@ export const mutateSessionLifecycle = async (
 
   const body = await readJson(response);
   if (!response.ok) return httpResult(decodeSessionHttpFailure(response.status, body));
+  if (response.status === 202) {
+    const expectedKind = action === "checkpoint" ? "snapshot" : action;
+    if (
+      action === "vaporize" ||
+      !isJsonObject(body) ||
+      body.pending !== true ||
+      body.id !== sessionId ||
+      !isJsonObject(body.operation) ||
+      body.operation.kind !== expectedKind ||
+      typeof body.operation.deadlineAt !== "string"
+    )
+      return malformedResult();
+    return { ok: true, pending: true };
+  }
 
   const value = decodeSessionMutationSuccess(body, sessionId, action);
   return value === undefined ? malformedResult() : { ok: true, value };

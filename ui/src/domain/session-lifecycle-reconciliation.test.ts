@@ -107,6 +107,19 @@ describe("session lifecycle action reconciliation", () => {
     ).toMatchObject({ kind: "error" });
   });
 
+  it("describes a 202 lifecycle response as still running", () => {
+    expect(
+      resolveLifecycleActionMessage(
+        "sleep",
+        warmIdle.id,
+        "warm",
+        { ok: true, pending: true },
+        authoritative("warm"),
+        true,
+      ),
+    ).toMatchObject({ kind: "reconciliation", text: expect.stringContaining("still running") });
+  });
+
   it("does not suppress a failed resume that started warm or a stable actor failure", () => {
     expect(hasReachedLifecycleTarget("resume", "warm", "warm")).toBe(false);
     expect(hasReachedLifecycleTarget("resume", "sleeping", "failed")).toBe(false);
