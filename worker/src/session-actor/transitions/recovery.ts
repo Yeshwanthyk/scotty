@@ -9,6 +9,7 @@ import type {
   Transition,
 } from "../authority";
 import { AuthorityStateSchema, StableStateSchema, TransitionSchema } from "../authority";
+import { confirmedBackup } from "../backup";
 import { accept, reject } from "../control";
 import type { Decision, JournalEvent } from "../decision";
 import type { SessionActorInput } from "../input";
@@ -62,7 +63,7 @@ const journal = (
   };
 };
 
-const confirmedBackup = (
+const recoveryBackupIdentity = (
   backup: BackupIdentity | null,
   ownedBackupIds: ReadonlyArray<string>,
   currentBackupId: string | null,
@@ -86,26 +87,30 @@ const confirmedBackup = (
 };
 
 const fromBackupProof = (proof: BackupProof) =>
-  confirmedBackup(proof.confirmed ?? proof.prepared, proof.ownedBackupIds, proof.currentBackupId);
+  recoveryBackupIdentity(confirmedBackup(proof), proof.ownedBackupIds, proof.currentBackupId);
 
 const recoveryBackup = (authority: SessionAuthority) => {
   if (AuthorityStateSchema.guards.Stable(authority.state)) {
     const stable = authority.state.stable;
     if (StableStateSchema.guards.Warm(stable)) return fromBackupProof(stable.backups);
     if (StableStateSchema.guards.Sleeping(stable))
-      return confirmedBackup(stable.backup, stable.ownedBackupIds, stable.backup.backupId);
+      return recoveryBackupIdentity(stable.backup, stable.ownedBackupIds, stable.backup.backupId);
     if (StableStateSchema.guards.Failed(stable))
-      return confirmedBackup(stable.backup, stable.ownedBackupIds, stable.backup?.backupId ?? null);
-    return confirmedBackup(null, [], null);
+      return recoveryBackupIdentity(
+        stable.backup,
+        stable.ownedBackupIds,
+        stable.backup?.backupId ?? null,
+      );
+    return recoveryBackupIdentity(null, [], null);
   }
   return Match.valueTags(authority.state.transition, {
-    Create: () => confirmedBackup(null, [], null),
+    Create: () => recoveryBackupIdentity(null, [], null),
     Checkpoint: ({ proof }) => fromBackupProof(proof.backup),
     Sleep: ({ proof }) => fromBackupProof(proof.backup),
     Resume: ({ proof }) =>
-      confirmedBackup(proof.backup, proof.ownedBackupIds, proof.backup.backupId),
+      recoveryBackupIdentity(proof.backup, proof.ownedBackupIds, proof.backup.backupId),
     WarmWork: ({ proof }) => fromBackupProof(proof.backups),
-    Vaporize: () => confirmedBackup(null, [], null),
+    Vaporize: () => recoveryBackupIdentity(null, [], null),
   });
 };
 

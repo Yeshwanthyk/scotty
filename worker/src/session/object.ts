@@ -1,3 +1,4 @@
+import { confirmedBackup } from "../session-actor/backup";
 import { RuntimeCliMaterializer, runtimeCliMaterializerLayer } from "../runtime-cli/materializer";
 import { decodeRuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
@@ -6492,10 +6493,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
           AuthorityStateSchema.guards.Stable(authority.state) &&
           StableStateSchema.guards.Warm(authority.state.stable)
         ) {
-          const backup = authority.state.stable.backups.confirmed;
+          const backup = confirmedBackup(authority.state.stable.backups);
           if (
-            backup?.confirmedAt !== null &&
-            backup?.confirmedAt !== undefined &&
+            backup !== null &&
+            backup.confirmedAt !== null &&
             Date.parse(backup.confirmedAt) >= Date.parse(fence.value.midpointAt)
           )
             return;

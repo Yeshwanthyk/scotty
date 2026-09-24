@@ -11,8 +11,13 @@ import type { AcceptedDecision, Decision, EffectIntent } from "../../src/session
 import type { CommittedProviderEffectIntent } from "../../src/session-actor/effects";
 import type { SessionActorInput } from "../../src/session-actor/input";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
+import { confirmedBackup } from "../../src/session-actor/backup";
 import { decide } from "../../src/session-actor/reducer";
 import { transitionKind } from "../../src/session-actor/transition";
+import {
+  executeCreateTransition,
+  type CreateTransitionProviderShape,
+} from "../../src/session-actor/transitions/create";
 import {
   CheckpointProviderFailure,
   type CheckpointProviderResult,
@@ -84,15 +89,46 @@ const warm = (): SessionAuthority => ({
   },
 });
 
+const oldBackup: BackupIdentity = { ...backup, backupId: "legacy-backup" };
+const legacyWarm = (): SessionAuthority => ({
+  ...warm(),
+  state: {
+    _tag: "Stable",
+    stable: {
+      _tag: "Warm",
+      readiness,
+      backups: {
+        ownedBackupIds: [oldBackup.backupId],
+        prepared: oldBackup,
+        currentBackupId: oldBackup.backupId,
+      },
+      activity: null,
+    },
+  },
+});
+
+const createCommand = (): SessionActorInput => ({
+  _tag: "CreateCommand",
+  expectedRevision: 0,
+  correlationId: "create-correlation",
+  nonce: "create-nonce",
+  attempt: "create-attempt",
+  timestamp: T0,
+  deadlineAt: DEADLINE,
+  session,
+  hardCap,
+});
+
 const command = (
   tag: "CheckpointCommand" | "SleepCommand" | "ResumeCommand",
   expectedRevision: number,
+  attempt = backup.backupId,
 ): SessionActorInput => {
   const fields = {
     expectedRevision,
     correlationId: `${tag}-correlation`,
     nonce: `${tag}-nonce`,
-    attempt: backup.backupId,
+    attempt,
     timestamp: T0,
     deadlineAt: DEADLINE,
   };
@@ -194,7 +230,9 @@ const checkpointProvider = (): CheckpointTransitionProviderShape => ({
 
 const stop = { requestedAt: T1, observedAt: T2, runtimeGeneration: runtime.runtimeGeneration };
 
-const sleepProvider = (): SleepTransitionProviderShape => ({
+const sleepProvider = (
+  overrides: Partial<SleepTransitionProviderShape> = {},
+): SleepTransitionProviderShape => ({
   quiescePi: () =>
     Effect.succeed({
       _tag: "PiQuiesced",
@@ -246,6 +284,7 @@ const sleepProvider = (): SleepTransitionProviderShape => ({
       observedAt: T2,
       resultCode: "runtime_stop_reconciled",
     }),
+  ...overrides,
 });
 
 const resumedRuntime = { ...runtime, runtimeGeneration: "runtime-generation-2" };
@@ -316,7 +355,256 @@ const resumeProvider = (
   ...overrides,
 });
 
+const createProvider = (): CreateTransitionProviderShape => ({
+  lookupPayload: () => Effect.succeed({ reference: "private-create-payload" }),
+  prepareWorkspace: () =>
+    Effect.succeed({
+      _tag: "WorkspacePrepared",
+      workspaceId: "workspace-1",
+      observedAt: T1,
+      resultCode: "workspace_prepared",
+    }),
+  materializeRuntime: () =>
+    Effect.succeed({
+      _tag: "RuntimeMaterialized",
+      runtime,
+      observedAt: T1,
+      resultCode: "runtime_materialized",
+    }),
+  confirmRuntimeReady: () =>
+    Effect.succeed({
+      _tag: "RuntimeReadyConfirmed",
+      runtime,
+      observedAt: T1,
+      resultCode: "runtime_ready",
+    }),
+  startSupervisor: () =>
+    Effect.succeed({
+      _tag: "SupervisorStarted",
+      processId: supervisor.processId,
+      observedAt: T1,
+      resultCode: "supervisor_started",
+    }),
+  confirmSupervisorReady: () =>
+    Effect.succeed({
+      _tag: "SupervisorReadyConfirmed",
+      supervisor,
+      observedAt: T1,
+      resultCode: "supervisor_ready",
+    }),
+  verifyTransport: () =>
+    Effect.succeed({
+      _tag: "TransportVerified",
+      transport,
+      observedAt: T1,
+      resultCode: "transport_verified",
+    }),
+  reconcile: () =>
+    Effect.succeed({
+      _tag: "TransportVerified",
+      transport,
+      observedAt: T1,
+      resultCode: "transport_reconciled",
+    }),
+});
+
 describe("checkpoint, sleep, and resume transition executors", () => {
+  it("finds the midpoint backup in a legacy Warm proof without confirmed", () => {
+    const authority = legacyWarm();
+    assert.ok(Predicate.isTagged(authority.state, "Stable"));
+    assert.ok(Predicate.isTagged(authority.state.stable, "Warm"));
+    assert.deepStrictEqual(confirmedBackup(authority.state.stable.backups), oldBackup);
+    assert.strictEqual(
+      confirmedBackup({
+        ...authority.state.stable.backups,
+        currentBackupId: "another-backup",
+      }),
+      null,
+    );
+  });
+
+  it.effect(
+    "sleeps from legacy Warm without confirmed and preserves the old backup until confirmation",
+    () =>
+      Effect.gen(function* () {
+        let decision = accepted(decide(legacyWarm(), command("SleepCommand", 1)));
+        const progressed: SessionAuthority[] = [];
+        for (let index = 0; index < 7; index += 1) {
+          const input = yield* executeSleepTransition(sleepProvider(), committed(decision));
+          decision = accepted(decide(decision.nextAuthority, input));
+          progressed.push(decision.nextAuthority);
+        }
+        const prepared = progressed[2];
+        assert.ok(prepared !== undefined);
+        assert.ok(Predicate.isTagged(prepared.state, "Transitioning"));
+        const transition = prepared.state.transition;
+        assert.ok(Predicate.isTagged(transition, "Sleep"));
+        assert.strictEqual(transition.phase, "BackupPrepared");
+        assert.strictEqual(transition.proof.backup.currentBackupId, oldBackup.backupId);
+        assert.deepStrictEqual(transition.proof.backup.confirmed, oldBackup);
+        assert.strictEqual(transition.proof.backup.prepared?.confirmedAt, null);
+        assert.ok(Predicate.isTagged(decision.nextAuthority.state, "Stable"));
+        assert.ok(Predicate.isTagged(decision.nextAuthority.state.stable, "Sleeping"));
+        assert.deepStrictEqual(decision.nextAuthority.state.stable.backup, backup);
+        assert.deepStrictEqual(decision.nextAuthority.state.stable.stop, stop);
+      }),
+  );
+
+  it.effect(
+    "accepts a recovered confirmed BackupPrepared observation while Sleep is reconciling",
+    () =>
+      Effect.gen(function* () {
+        let decision = accepted(decide(legacyWarm(), command("SleepCommand", 1)));
+        for (let index = 0; index < 2; index += 1) {
+          decision = accepted(
+            decide(
+              decision.nextAuthority,
+              yield* executeSleepTransition(sleepProvider(), committed(decision)),
+            ),
+          );
+        }
+        const effect = committed(decision);
+        assert.ok(Predicate.isTagged(effect.authority.state, "Transitioning"));
+        assert.ok(Predicate.isTagged(effect.authority.state.transition, "Sleep"));
+        assert.strictEqual(effect.authority.state.transition.phase, "Syncing");
+        const reconciling: CommittedProviderEffectIntent = {
+          ...effect,
+          authority: {
+            ...effect.authority,
+            state: {
+              _tag: "Transitioning",
+              transition: { ...effect.authority.state.transition, mode: "reconciling" },
+            },
+          },
+          intent: { ...effect.intent, _tag: "ReconcileTransition" },
+        };
+        const input = yield* executeSleepTransition(
+          sleepProvider({
+            reconcile: () =>
+              Effect.succeed({
+                _tag: "BackupPrepared",
+                backup,
+                observedAt: T2,
+                resultCode: "backup_prepared_recovered",
+              }),
+          }),
+          reconciling,
+        );
+        const progressed = accepted(decide(reconciling.authority, input));
+        assert.ok(Predicate.isTagged(progressed.nextAuthority.state, "Transitioning"));
+        assert.ok(Predicate.isTagged(progressed.nextAuthority.state.transition, "Sleep"));
+        assert.strictEqual(progressed.nextAuthority.state.transition.phase, "BackupPrepared");
+        assert.deepStrictEqual(
+          progressed.nextAuthority.state.transition.proof.backup.confirmed,
+          oldBackup,
+        );
+        assert.deepStrictEqual(
+          progressed.nextAuthority.state.transition.proof.backup.prepared,
+          backup,
+        );
+      }),
+  );
+
+  it.effect("runs create, sleep, resume, and sleep through to Sleeping", () =>
+    Effect.gen(function* () {
+      let decision = accepted(decide(undefined, createCommand()));
+      for (let index = 0; index < 7; index += 1) {
+        decision = accepted(
+          decide(
+            decision.nextAuthority,
+            yield* executeCreateTransition(createProvider(), committed(decision)),
+          ),
+        );
+      }
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state, "Stable"));
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state.stable, "Warm"));
+
+      decision = accepted(
+        decide(decision.nextAuthority, command("SleepCommand", decision.nextAuthority.revision)),
+      );
+      for (let index = 0; index < 7; index += 1) {
+        decision = accepted(
+          decide(
+            decision.nextAuthority,
+            yield* executeSleepTransition(sleepProvider(), committed(decision)),
+          ),
+        );
+      }
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state, "Stable"));
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state.stable, "Sleeping"));
+
+      decision = accepted(
+        decide(decision.nextAuthority, command("ResumeCommand", decision.nextAuthority.revision)),
+      );
+      for (let index = 0; index < 6; index += 1) {
+        decision = accepted(
+          decide(
+            decision.nextAuthority,
+            yield* executeResumeTransition(resumeProvider(), committed(decision)),
+          ),
+        );
+      }
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state, "Stable"));
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state.stable, "Warm"));
+      assert.deepStrictEqual(decision.nextAuthority.state.stable.backups.confirmed, backup);
+
+      const nextBackup: BackupIdentity = {
+        ...backup,
+        backupId: "second-sleep-backup",
+        sourceRuntimeGeneration: resumedRuntime.runtimeGeneration,
+      };
+      const nextStop = { ...stop, runtimeGeneration: resumedRuntime.runtimeGeneration };
+      const secondSleepProvider = sleepProvider({
+        prepareBackup: () =>
+          Effect.succeed({
+            _tag: "BackupPrepared",
+            backup: { ...nextBackup, confirmedAt: null },
+            observedAt: T1,
+            resultCode: "backup_prepared",
+          }),
+        confirmBackup: () =>
+          Effect.succeed({
+            _tag: "BackupConfirmed",
+            backup: nextBackup,
+            observedAt: T2,
+            resultCode: "backup_confirmed",
+          }),
+        observeRuntimeStopped: () =>
+          Effect.succeed({
+            _tag: "RuntimeStopped",
+            stop: nextStop,
+            observedAt: T2,
+            resultCode: "runtime_stopped",
+          }),
+        confirmRuntimeStopped: () =>
+          Effect.succeed({
+            _tag: "RuntimeStopConfirmed",
+            stop: nextStop,
+            observedAt: T2,
+            resultCode: "runtime_stop_confirmed",
+          }),
+      });
+      decision = accepted(
+        decide(
+          decision.nextAuthority,
+          command("SleepCommand", decision.nextAuthority.revision, nextBackup.backupId),
+        ),
+      );
+      for (let index = 0; index < 7; index += 1) {
+        decision = accepted(
+          decide(
+            decision.nextAuthority,
+            yield* executeSleepTransition(secondSleepProvider, committed(decision)),
+          ),
+        );
+      }
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state, "Stable"));
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state.stable, "Sleeping"));
+      assert.deepStrictEqual(decision.nextAuthority.state.stable.backup, nextBackup);
+      assert.deepStrictEqual(decision.nextAuthority.state.stable.stop, nextStop);
+    }),
+  );
+
   it.effect("checkpoints through prepared then confirmed backup before returning Warm", () =>
     Effect.gen(function* () {
       let decision = accepted(decide(warm(), command("CheckpointCommand", 1)));

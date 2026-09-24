@@ -240,6 +240,7 @@ const applyResult = (
                 ...transition.proof,
                 backup: {
                   ...transition.proof.backup,
+                  confirmed: transition.proof.backup.confirmed ?? transition.proof.backup.prepared,
                   prepared: value.backup,
                   ownedBackupIds: [
                     ...new Set([...transition.proof.backup.ownedBackupIds, value.backup.backupId]),
