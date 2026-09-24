@@ -582,6 +582,7 @@ export interface HarnessOptions {
   readonly actorRequestRecoveryBeforeResume?: SandboxEffectOptions["actorRequestRecoveryBeforeResume"];
   readonly clock?: SandboxEffectOptions["clock"];
   readonly commandGate?: (command: string) => Promise<void> | undefined;
+  readonly createBackupGate?: () => Promise<void> | undefined;
   readonly restoreBackupGate?: () => Promise<void> | undefined;
   readonly commandStdout?: (command: string) => string | undefined;
   readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
@@ -1745,6 +1746,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     createBackup: {
       value: async (_backupOptions: BackupOptions): Promise<DirectoryBackup> => {
         events.push("host:createBackup");
+        await options.createBackupGate?.();
         return makeResumeBackup();
       },
     },

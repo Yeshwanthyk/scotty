@@ -13,8 +13,8 @@ import type {
   SidecarAgentSelection,
 } from "../../../../protocol/agents/agent-selection";
 import { isSidecarSelection } from "../../../../protocol/agents/agents";
-import { Clock, Context, Effect, Layer, Match, Result, Schema } from "effect";
-import { BackupStore, type BackupStoreFailure } from "../../backups/store";
+import { Clock, Context, Duration, Effect, Layer, Match, Predicate, Result, Schema } from "effect";
+import { BackupStore } from "../../backups/store";
 import { ContainerAuth, PI_SESSION_PROCESS_ID } from "../../sandbox/auth";
 import {
   sessionRuntimeCredentials,
@@ -54,6 +54,8 @@ import {
 
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const BACKUP_MARKER_MAX_BYTES = 4_096;
+const BACKUP_DEADLINE_MARGIN_MS = 30_000;
+const BACKUP_MIN_TIMEOUT_MS = 5_000;
 
 const RuntimeStateSchema = Schema.Struct({
   status: Schema.Literals(["running", "healthy", "stopping", "stopped", "stopped_with_code"]),
@@ -91,6 +93,7 @@ export interface BackupLifecycleAttempt {
   readonly selection: AgentSelection;
   readonly sessionId: string;
   readonly attempt: string;
+  readonly deadlineAt: string;
   readonly operationNonce: string;
   readonly runtimeGeneration: string;
   readonly transitionFence: {
@@ -205,10 +208,14 @@ const mapRuntimeFailure = (
     safeResultCode,
   );
 
-const mapBackupMutationFailure = (
-  _error: BackupStoreFailure,
-  safeResultCode: string,
-): BackupLifecycleSandboxFailure => boundaryFailure("unknown_after_admission", safeResultCode);
+const backupTimeout = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
+  const deadlineMillis = Date.parse(input.deadlineAt);
+  if (!Number.isFinite(deadlineMillis)) return Duration.millis(BACKUP_MIN_TIMEOUT_MS);
+  const remainingMillis = deadlineMillis - (yield* Clock.currentTimeMillis);
+  return Duration.millis(
+    Math.max(BACKUP_MIN_TIMEOUT_MS, remainingMillis - BACKUP_DEADLINE_MARGIN_MS),
+  );
+});
 
 const timestamp = Effect.map(Clock.currentTimeMillis, (now) => new Date(now).toISOString());
 
@@ -361,17 +368,25 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const prepareBackup = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
       const preparedAt = yield* timestamp;
       const handle = yield* backups
-        .create({
-          dir: sessionRoot(input.sessionId),
-          backupId: input.attempt,
-          name: sandboxBackupAttemptName(input),
-          ttl: BACKUP_TTL_SECONDS,
-          localBucket: true,
-          compression: { format: "zstd" },
-        })
+        .create(
+          {
+            dir: sessionRoot(input.sessionId),
+            backupId: input.attempt,
+            name: sandboxBackupAttemptName(input),
+            ttl: BACKUP_TTL_SECONDS,
+            localBucket: true,
+            compression: { format: "zstd" },
+          },
+          yield* backupTimeout(input),
+        )
         .pipe(
           Effect.mapError((error) =>
-            mapBackupMutationFailure(error, "backup_create_outcome_unknown"),
+            boundaryFailure(
+              "unknown_after_admission",
+              Predicate.isTagged(error, "BackupStoreTimeout")
+                ? "backup_create_timeout"
+                : "backup_create_outcome_unknown",
+            ),
           ),
         );
       return {
@@ -391,10 +406,15 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
       handle: DirectoryBackup,
     ) {
       yield* backups
-        .restore(handle)
+        .restore(handle, yield* backupTimeout(input))
         .pipe(
           Effect.mapError((error) =>
-            mapBackupMutationFailure(error, "backup_confirmation_outcome_unknown"),
+            boundaryFailure(
+              "unknown_after_admission",
+              Predicate.isTagged(error, "BackupStoreTimeout")
+                ? "backup_restore_timeout"
+                : "backup_confirmation_outcome_unknown",
+            ),
           ),
         );
       yield* readAndVerifyMarker(runtime, input);
@@ -450,10 +470,15 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
         localBucket: true,
       };
       yield* backups
-        .restore(handle)
+        .restore(handle, yield* backupTimeout(input))
         .pipe(
           Effect.mapError((error) =>
-            mapBackupMutationFailure(error, "backup_restore_outcome_unknown"),
+            boundaryFailure(
+              "unknown_after_admission",
+              Predicate.isTagged(error, "BackupStoreTimeout")
+                ? "backup_restore_timeout"
+                : "backup_restore_outcome_unknown",
+            ),
           ),
         );
       yield* readAndVerifyMarker(runtime, {
@@ -726,6 +751,7 @@ const checkpointAttempt = (context: CheckpointProviderContext): BackupLifecycleA
   sessionId: context.authority.session.id,
   selection: context.authority.session.selection,
   attempt: context.transition.attempt,
+  deadlineAt: context.transition.deadlineAt,
   operationNonce: context.transition.nonce,
   runtimeGeneration: context.transition.proof.readiness.runtime.runtimeGeneration,
   transitionFence: {
@@ -739,6 +765,7 @@ const baseSleepAttempt = (context: SleepProviderContext): BackupLifecycleAttempt
   sessionId: context.authority.session.id,
   selection: context.authority.session.selection,
   attempt: context.transition.attempt,
+  deadlineAt: context.transition.deadlineAt,
   operationNonce: context.transition.nonce,
   runtimeGeneration: context.transition.proof.readiness.runtime.runtimeGeneration,
   transitionFence: {
@@ -756,6 +783,7 @@ const baseResumeAttempt = (
   selection: context.authority.session.selection,
   configuration: context.authority.session.configuration,
   attempt: context.transition.attempt,
+  deadlineAt: context.transition.deadlineAt,
   operationNonce: context.transition.nonce,
   runtimeGeneration,
   transitionFence: {

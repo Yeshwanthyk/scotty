@@ -1,7 +1,8 @@
 import { runtimeCliMaterializerTestLayer, sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import type { BackupOptions, ExecResult, ProcessStatus } from "@cloudflare/sandbox";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Fiber, Layer, Result } from "effect";
+import { TestClock } from "effect/testing";
 import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
 import { backupStoreLayer, type BackupCapabilities } from "../../src/backups/store";
 import { sessionRuntimeCredentials } from "../../src/credentials/managed";
@@ -26,6 +27,7 @@ const attempt: BackupLifecycleAttempt = {
   selection: { agent: "pi" },
   sessionId: "session-backup",
   attempt: "1ed4a6f4-7d9f-46b9-8a07-ef6d9c1dd64c",
+  deadlineAt: "2026-09-01T00:05:00.000Z",
   operationNonce: "operation-1",
   runtimeGeneration: "runtime-generation-1",
   transitionFence: { revision: 1, mode: "executing", phase: "RuntimeReady" },
@@ -124,6 +126,81 @@ const failure = <A>(
 };
 
 describe("BackupLifecycleSandbox", () => {
+  const budgets: ReadonlyArray<readonly [number | "invalid-date", number]> = [
+    [90_000, 60_000],
+    [10_000, 5_000],
+    ["invalid-date", 5_000],
+  ];
+  for (const [remaining, timeout] of budgets) {
+    it.effect(`uses a bounded timeout for a hanging create (${remaining})`, () =>
+      Effect.gen(function* () {
+        const now = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(now);
+        const fiber = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(
+              provider.prepareBackup({
+                ...attempt,
+                deadlineAt:
+                  remaining === "invalid-date"
+                    ? remaining
+                    : new Date(now + remaining).toISOString(),
+              }),
+            ),
+          ),
+          { backups: backupCapabilities({ createBackup: () => new Promise(() => {}) }) },
+        ).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(timeout - 1);
+        assert.isUndefined(fiber.pollUnsafe());
+        yield* TestClock.adjust(1);
+        assert.deepStrictEqual(
+          failure(yield* Fiber.join(fiber)),
+          new BackupLifecycleSandboxFailure({
+            outcome: "unknown_after_admission",
+            safeResultCode: "backup_create_timeout",
+          }),
+        );
+      }),
+    );
+  }
+
+  it.effect("classifies a hanging restore as an unknown provider outcome", () =>
+    Effect.gen(function* () {
+      const now = Date.parse("2026-09-01T00:00:00.000Z");
+      yield* TestClock.setTime(now);
+      const fiber = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          Effect.result(
+            provider.restoreCurrentBackup({
+              ...attempt,
+              deadlineAt: new Date(now + 10_000).toISOString(),
+              backup: {
+                backupId: backup.id,
+                preparedAt: "2026-09-01T00:00:00.000Z",
+                confirmedAt: "2026-09-01T00:00:01.000Z",
+                sourceRuntimeGeneration: attempt.runtimeGeneration,
+              },
+              ownedBackupIds: [backup.id],
+            }),
+          ),
+        ),
+        { backups: backupCapabilities({ restoreBackup: () => new Promise(() => {}) }) },
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(4_999);
+      assert.isUndefined(fiber.pollUnsafe());
+      yield* TestClock.adjust(1);
+      assert.deepStrictEqual(
+        failure(yield* Fiber.join(fiber)),
+        new BackupLifecycleSandboxFailure({
+          outcome: "unknown_after_admission",
+          safeResultCode: "backup_restore_timeout",
+        }),
+      );
+    }),
+  );
+
   it.effect("classifies a decisively exited restored Codex supervisor", () =>
     Effect.gen(function* () {
       const result = yield* withProvider(

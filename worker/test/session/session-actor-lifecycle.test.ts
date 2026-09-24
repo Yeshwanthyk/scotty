@@ -466,7 +466,7 @@ describe("absolute Container alarms", () => {
     );
   }
 
-  it.effect("leaves an overdue transition alone while its nonce is mutating", () =>
+  it.effect("leaves a pending transition alone while its nonce is mutating", () =>
     Effect.gen(function* () {
       const clock = yield* TestClock.make();
       yield* clock.setTime(Date.parse("2026-09-03T00:00:00.999Z"));
@@ -491,7 +491,7 @@ describe("absolute Container alarms", () => {
         yield* Effect.yieldNow;
       const active = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
       assert.ok(active !== undefined && Predicate.isTagged(active.state, "Transitioning"));
-      yield* clock.setTime(Date.parse(active.state.transition.deadlineAt) + 1);
+      yield* clock.setTime(Date.parse(active.state.transition.deadlineAt) - 30_001);
       yield* Effect.promise(() => harness.sandbox.getScottySession());
       const afterRead = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
       assert.ok(afterRead !== undefined && Predicate.isTagged(afterRead.state, "Transitioning"));
@@ -1006,6 +1006,54 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         harness.events.filter((event) => event === "host:restoreBackup").length,
         2,
       );
+    }),
+  );
+
+  it.effect("moves Sleep Syncing to reconciling when backup creation times out", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
+      const releaseBackup = deferred<void>();
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          createBackupGate: () => releaseBackup.promise,
+          restoreBackupGate: () => releaseBackup.promise,
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      const sleep = harness.sandbox.sleepScottySession().then(
+        () => undefined,
+        () => undefined,
+      );
+      while (!harness.events.includes("host:createBackup")) yield* Effect.yieldNow;
+      const syncing = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(syncing !== undefined && Predicate.isTagged(syncing.state, "Transitioning"));
+      assert.ok(Predicate.isTagged(syncing.state.transition, "Sleep"));
+      assert.strictEqual(syncing.state.transition.phase, "Syncing");
+      assert.include(
+        syncing.state.transition.proof.backup.ownedBackupIds,
+        syncing.state.transition.attempt,
+      );
+      const remaining =
+        Date.parse(syncing.state.transition.deadlineAt) - (yield* clock.currentTimeMillis);
+      const timeout = Math.max(5_000, remaining - 30_000);
+      yield* clock.adjust(timeout);
+      const reconciling = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        reconciling !== undefined && Predicate.isTagged(reconciling.state, "Transitioning"),
+      );
+      assert.ok(Predicate.isTagged(reconciling.state.transition, "Sleep"));
+      assert.strictEqual(reconciling.state.transition.phase, "Syncing");
+      assert.strictEqual(reconciling.state.transition.mode, "reconciling");
+      assert.include(
+        reconciling.state.transition.proof.backup.ownedBackupIds,
+        reconciling.state.transition.attempt,
+      );
+      releaseBackup.resolve();
+      yield* Effect.promise(() => sleep);
     }),
   );
 
