@@ -67,9 +67,10 @@ export const DEPLOYMENT_PACKAGING = Object.freeze({
   cliSourceTrees: CLI_SOURCE_TREES,
 });
 
-// Discover the native Codex server and its complete bundled source graph.
+// Discover the native sidecar servers and their complete bundled source graphs.
 export const CONTAINER_BUILD_ENTRYPOINTS = Object.freeze([
   "worker/src/agent/codex/server.ts",
+  "worker/src/agent/claude/server.ts",
 ] as const);
 
 export const CONTAINER_CONTEXT_BUDGET = Object.freeze({

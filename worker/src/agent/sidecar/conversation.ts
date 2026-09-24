@@ -3,14 +3,12 @@ import {
   decodeCanonicalConversationSnapshot,
   type CanonicalConversationTurn,
 } from "../../../../protocol/session/conversation";
-import type { CodexSnapshot } from "./runtime";
-
-type CodexPromptState = (typeof CodexSnapshot.Type)["prompt"];
+import type { SidecarPromptState, SidecarSnapshot } from "./protocol";
 
 const projectFailedTurn = (
   turn: CanonicalConversationTurn,
   state: CanonicalConversationTurn["state"],
-  prompt: CodexPromptState,
+  prompt: SidecarPromptState,
   fallbackId: string,
   activitySummary: string | undefined,
 ): CanonicalConversationTurn => {
@@ -26,13 +24,13 @@ const projectFailedTurn = (
   };
 };
 
-const runtimeFailureSummary = (snapshot: typeof CodexSnapshot.Type) =>
+const runtimeFailureSummary = (snapshot: SidecarSnapshot) =>
   snapshot.failure === null
     ? undefined
     : `Runtime failure: ${snapshot.failure}${snapshot.failureDiagnostic === undefined ? "" : ` (${snapshot.failureDiagnostic})`}`;
 
-export const codexConversation = Effect.fnUntraced(function* (
-  snapshot: typeof CodexSnapshot.Type,
+export const sidecarConversation = Effect.fnUntraced(function* (
+  snapshot: SidecarSnapshot,
   input: {
     readonly prompt: string;
     readonly turnId: string;
@@ -43,9 +41,6 @@ export const codexConversation = Effect.fnUntraced(function* (
   },
 ) {
   const prompt = snapshot.prompt;
-  const user = input.prompt;
-  const text = prompt.status === "terminal" ? prompt.text : "";
-  const assistant = text;
   const terminal = prompt.status === "terminal";
   const state = terminal
     ? prompt.outcome === "interrupted"
@@ -58,8 +53,8 @@ export const codexConversation = Effect.fnUntraced(function* (
   const fallbackTurn: CanonicalConversationTurn = {
     id: input.turnId,
     state,
-    user,
-    assistant,
+    user: input.prompt,
+    assistant: prompt.status === "terminal" ? prompt.text : "",
     tools: snapshot.tools ?? [],
   };
   const turns =
@@ -94,7 +89,7 @@ export const codexConversation = Effect.fnUntraced(function* (
     queue: { steer: [], followUp: input.followUp ?? [] },
     truncated: {
       turns: snapshot.turnsTruncated === true,
-      values: snapshot.toolsTruncated === true || user !== input.prompt || assistant !== text,
+      values: snapshot.toolsTruncated === true,
     },
   });
 });

@@ -367,6 +367,7 @@ describe("pass-through policy", () => {
       const passThroughHosts = ALLOWED_HOSTS.filter(
         (host) =>
           ![
+            "api.anthropic.com",
             "api.openai.com",
             "chatgpt.com",
             "github.com",

@@ -331,8 +331,8 @@ let errors = "";
 child.stderr.on("data", bytes => { errors += bytes; });
 child.stdout.on("data", bytes => { errors += bytes; });
 const headers = {
-  "x-scotty-codex-token": token,
-  "x-scotty-codex-generation": generation,
+  "x-scotty-sidecar-token": token,
+  "x-scotty-sidecar-generation": generation,
 };
 const request = (route, options = {}) => fetch("http://127.0.0.1:" + port + route, {
   headers,
@@ -367,11 +367,9 @@ try {
   assert.ok(ready.threadId.length > 0);
   assert.equal(ready.ready, true);
   assert.equal(ready.failure, null);
+  assert.equal(ready.agent, "codex");
   assert.equal(ready.settings.model, "gpt-5.2");
-  assert.equal(ready.settings.modelProvider, "scotty-managed");
   assert.equal(ready.settings.effort, "high");
-  assert.equal(ready.settings.approvalPolicy, "never");
-  assert.equal(ready.settings.sandbox, "dangerFullAccess");
   assert.equal(ready.settings.workspace, workspace);
   assert.equal(ready.prompt.status, "idle");
   captureNativePid();
@@ -383,7 +381,7 @@ try {
   assert.equal(fs.readlinkSync(path.join(codexHome, "skills")), path.dirname(skillDirectory));
   assert.equal(fs.existsSync(tokenFile), false, "Codex server must consume its token file");
   assert.equal((await request("/health", {
-    headers: { ...headers, "x-scotty-codex-token": "b".repeat(64) },
+    headers: { ...headers, "x-scotty-sidecar-token": "b".repeat(64) },
   })).status, 401);
   const state = await (await request("/snapshot")).json();
   assert.equal(state.threadId, ready.threadId);
@@ -768,8 +766,8 @@ try {
 
 export const CODEX_SERVER_BUNDLE_SMOKE = `
 import { strict as assert } from "node:assert";
-import { serverProgram, runServer } from "./scotty-codex-server.mjs";
-assert.equal(typeof serverProgram, "function");
+import { codexServer, runServer } from "./scotty-codex-server.mjs";
+assert.equal(codexServer.agent, "codex");
 assert.equal(typeof runServer, "function");
 `;
 
@@ -786,6 +784,33 @@ export const containerImageCodexPackagingArgs = (plan) =>
         "node --check scotty-codex-server",
         `node --input-type=module -e '${CODEX_SERVER_BUNDLE_SMOKE.replaceAll("'", "'\\''")}'`,
         `node --input-type=module -e '${CODEX_SERVER_PROOF.replaceAll("'", "'\\''")}'`,
+      ].join(" && "),
+    ],
+    ["--network=none"],
+  );
+
+export const CLAUDE_SERVER_BUNDLE_SMOKE = `
+import { strict as assert } from "node:assert";
+import { createRequire } from "node:module";
+import { claudeServer, runServer } from "/opt/scotty-claude/scotty-claude-server.mjs";
+assert.equal(claudeServer.agent, "claude");
+assert.equal(typeof runServer, "function");
+const require = createRequire("/opt/scotty-claude/scotty-claude-server.mjs");
+assert.equal(require("/opt/scotty-claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json").version, "0.3.281");
+require.resolve("@anthropic-ai/claude-agent-sdk-linux-x64/claude");
+`;
+
+export const containerImageClaudePackagingArgs = (plan) =>
+  containerImageRunArgs(
+    plan,
+    "sh",
+    [
+      "-c",
+      [
+        "set -eu",
+        "test -x /usr/local/bin/scotty-claude-server",
+        "node --check /usr/local/bin/scotty-claude-server",
+        `node --input-type=module -e '${CLAUDE_SERVER_BUNDLE_SMOKE.replaceAll("'", "'\\''")}'`,
       ].join(" && "),
     ],
     ["--network=none"],
@@ -838,6 +863,7 @@ export const checkContainerImage = async ({
   docker("docker", containerImageCodexVersionArgs(plan));
   docker("docker", containerImageNativeCodexAdapterArgs(plan));
   docker("docker", containerImageCodexPackagingArgs(plan));
+  docker("docker", containerImageClaudePackagingArgs(plan));
   docker("docker", containerImageToolchainWorkflowArgs(plan));
   docker("docker", containerImageCorepackTransportArgs(plan));
   docker("docker", containerImageCorepackBootstrapArgs(plan));
@@ -967,8 +993,8 @@ const proveInstalledServer = async (makeLaunch, fakeSource, failAfterReady = fal
       output += bytes;
     });
     const headers = {
-      "x-scotty-codex-token": token,
-      "x-scotty-codex-generation": "prepared-generation",
+      "x-scotty-sidecar-token": token,
+      "x-scotty-sidecar-generation": "prepared-generation",
     };
     const request = (path, options = {}) =>
       fetch(`http://127.0.0.1:${port}${path}`, {
@@ -996,25 +1022,25 @@ const proveInstalledServer = async (makeLaunch, fakeSource, failAfterReady = fal
     assert.equal(health.ready, true);
     nativePid = Number(await fs.readFile(join(root, "fixture-child.pid"), "utf8"));
     assert.ok(Number.isSafeInteger(nativePid) && nativePid > 0);
-    assert.equal(health.settings.modelProvider, "scotty-managed");
     assert.equal(health.settings.model, "gpt-5.2");
     assert.equal(health.settings.effort, "high");
-    assert.equal(health.settings.approvalPolicy, "never");
-    assert.equal(health.settings.sandbox, "dangerFullAccess");
     assert.equal(health.prompt.status, "idle");
     await assert.rejects(fs.stat(tokenFile), { code: "ENOENT" });
     if (failAfterReady) throw new Error("intentional installed-server probe failure");
     assert.equal(
       (
         await request("/health", {
-          headers: { ...headers, "x-scotty-codex-token": "b".repeat(64) },
+          headers: { ...headers, "x-scotty-sidecar-token": "b".repeat(64) },
         })
       ).status,
       401,
     );
     assert.equal(
-      (await request("/health", { headers: { ...headers, "x-scotty-codex-generation": "stale" } }))
-        .status,
+      (
+        await request("/health", {
+          headers: { ...headers, "x-scotty-sidecar-generation": "stale" },
+        })
+      ).status,
       409,
     );
     const prompt = () =>

@@ -12,6 +12,7 @@ import { parsePiAuthJsonOption } from "../../../protocol/agents/pi/pi-auth";
 
 export const ALLOWED_HOSTS = [
   "api.openai.com",
+  "api.anthropic.com",
   "chatgpt.com",
   "github.com",
   "api.github.com",
@@ -103,6 +104,21 @@ export const proxyOpenAIProgram = Effect.fnUntraced(function* (request: Request)
   if (selected === null) return forbidden();
   const headers = sanitizedHeaders(request.headers);
   headers.set("authorization", `Bearer ${selected.token}`);
+  return yield* forward(request, url, headers);
+});
+
+export const proxyAnthropicProgram = Effect.fnUntraced(function* (request: Request) {
+  const url = exactDestination(request, "api.anthropic.com");
+  if (url === undefined) return forbidden();
+  const handle = parseManagedHandle(bearerValue(request.headers.get("authorization")));
+  if (Option.isNone(handle) || handle.value.provider !== "anthropic") return forbidden();
+  const credential = yield* EgressCredential;
+  const resolved = yield* credential.resolve(formatManagedHandle(handle.value));
+  if (resolved === null) return forbidden();
+  const token = Redacted.value(resolved);
+  Redacted.wipeUnsafe(resolved);
+  const headers = sanitizedHeaders(request.headers);
+  headers.set("authorization", `Bearer ${token}`);
   return yield* forward(request, url, headers);
 });
 
@@ -236,6 +252,8 @@ export function makeOutboundByHost(nativeFetch: typeof globalThis.fetch) {
   ) => runEgress(program, env, context, nativeFetch);
   const openAI = (request: Request, env: Bindings, context: EgressContext) =>
     run(proxyOpenAIProgram(request), env, context);
+  const anthropic = (request: Request, env: Bindings, context: EgressContext) =>
+    run(proxyAnthropicProgram(request), env, context);
   const chatGpt = (request: Request, env: Bindings, context: EgressContext) =>
     run(proxyChatGptProgram(request), env, context);
   const gitHub = (request: Request, env: Bindings, context: EgressContext) =>
@@ -246,6 +264,7 @@ export function makeOutboundByHost(nativeFetch: typeof globalThis.fetch) {
     handleContainerSessionEgress(request, env, context);
   return {
     "api.openai.com": openAI,
+    "api.anthropic.com": anthropic,
     "chatgpt.com": chatGpt,
     "github.com": gitHub,
     "api.github.com": gitHub,

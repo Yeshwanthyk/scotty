@@ -9,9 +9,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
-  readScottyCodexConversation: vi.fn().mockResolvedValue(null),
-  steerScottyCodexSession: vi.fn().mockResolvedValue(null),
-  interruptScottyCodexSession: vi.fn().mockResolvedValue(null),
+  readScottySidecarConversation: vi.fn().mockResolvedValue(null),
+  steerScottySidecarSession: vi.fn().mockResolvedValue(null),
+  interruptScottySidecarSession: vi.fn().mockResolvedValue(null),
   getScottyActorDiagnostics: vi.fn(),
   getScottySession: vi.fn(),
   getScottyDeploymentReadiness: vi.fn(),
@@ -526,8 +526,8 @@ describe("real Hono boundary", () => {
       reason: "sleeping_checkpointed",
     });
     sandbox.preparePiSessionAccess.mockResolvedValue(undefined);
-    sandbox.steerScottyCodexSession.mockResolvedValue(null);
-    sandbox.interruptScottyCodexSession.mockResolvedValue(null);
+    sandbox.steerScottySidecarSession.mockResolvedValue(null);
+    sandbox.interruptScottySidecarSession.mockResolvedValue(null);
     sandbox.prepareTerminalAccess.mockResolvedValue(undefined);
     sandbox.restartScottyTerminal.mockResolvedValue(undefined);
     proxyTerminal.mockResolvedValue(new Response("terminal-proxy"));
@@ -638,6 +638,7 @@ describe("real Hono boundary", () => {
           agent: "pi",
           pi: { agent: "pi" },
           codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
+          claude: { agent: "claude", model: "opus", effort: "high" },
           environment: {},
         },
       },
@@ -991,6 +992,7 @@ describe("real Hono boundary", () => {
         agent: "pi",
         pi: { agent: "pi" },
         codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
+        claude: { agent: "claude", model: "opus", effort: "high" },
         environment: {},
       },
     });
@@ -999,6 +1001,7 @@ describe("real Hono boundary", () => {
       agent: "pi",
       pi: { agent: "pi" },
       codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
+      claude: { agent: "claude", model: "opus", effort: "high" },
       environment: { APP_MODE: "test" },
       customInstructions: "",
     } as const;
@@ -1565,10 +1568,10 @@ describe("real Hono boundary", () => {
           expect(port).toBe(43_118);
           const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
           const metadata = harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata);
-          if (authority === undefined || metadata?.codexControl === undefined)
+          if (authority === undefined || metadata?.sidecarControl === undefined)
             throw new RouteTestFailure("missing authority");
-          expect(request.headers.get("x-scotty-codex-token")).toBe(metadata.codexControl.token);
-          const generation = request.headers.get("x-scotty-codex-generation");
+          expect(request.headers.get("x-scotty-sidecar-token")).toBe(metadata.sidecarControl.token);
+          const generation = request.headers.get("x-scotty-sidecar-generation");
           expect(generation).toMatch(/^[a-zA-Z0-9_-]+$/u);
           if (new URL(request.url).pathname === "/prompt") {
             promptRequests += 1;
@@ -1591,14 +1594,12 @@ describe("real Hono boundary", () => {
             generation,
             threadId: "thread-1",
             ...(saved ? { turns: [savedTurn] } : {}),
+            agent: "codex",
             version: CODEX_VERSION,
             settings: {
               model: "gpt-5.4",
               effort: "high",
               workspace: `/workspace/${authority.session.id}`,
-              modelProvider: "scotty-managed",
-              approvalPolicy: "never",
-              sandbox: "dangerFullAccess",
             },
             ready: true,
             failure: null,
@@ -1753,7 +1754,7 @@ describe("real Hono boundary", () => {
           _tag: "Stable",
           stable: {
             _tag: "Sleeping",
-            backup: { codex: { threadId: "thread-1", initialTurnId: "turn-1" } },
+            backup: { sidecar: { threadId: "thread-1", initialTurnId: "turn-1" } },
           },
         },
       });
@@ -1819,7 +1820,7 @@ describe("real Hono boundary", () => {
         const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
         if (authority === undefined) throw new RouteTestFailure("missing authority");
         const pathname = new URL(request.url).pathname;
-        const generation = request.headers.get("x-scotty-codex-generation");
+        const generation = request.headers.get("x-scotty-sidecar-generation");
         if (pathname === "/prompt") {
           admitted = true;
           return Response.json(
@@ -1836,14 +1837,12 @@ describe("real Hono boundary", () => {
         return Response.json({
           generation,
           threadId: "thread-message",
+          agent: "codex",
           version: CODEX_VERSION,
           settings: {
             model: "gpt-5.4",
             effort: "high",
             workspace: `/workspace/${authority.session.id}`,
-            modelProvider: "scotty-managed",
-            approvalPolicy: "never",
-            sandbox: "dangerFullAccess",
           },
           ready: true,
           failure: null,
@@ -1936,7 +1935,7 @@ describe("real Hono boundary", () => {
         containerFetch: async (request) => {
           const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
           if (authority === undefined) throw new RouteTestFailure("missing authority");
-          const generation = request.headers.get("x-scotty-codex-generation");
+          const generation = request.headers.get("x-scotty-sidecar-generation");
           if (new URL(request.url).pathname === "/prompt") {
             admitted = true;
             return Response.json(
@@ -1947,14 +1946,12 @@ describe("real Hono boundary", () => {
           const snapshot = {
             generation,
             threadId: "thread-fence",
+            agent: "codex",
             version: CODEX_VERSION,
             settings: {
               model: "gpt-5.4",
               effort: "high",
               workspace: `/workspace/${authority.session.id}`,
-              modelProvider: "scotty-managed",
-              approvalPolicy: "never",
-              sandbox: "dangerFullAccess",
             },
             ready: true,
             failure: null,
@@ -3052,7 +3049,7 @@ describe("real Hono boundary", () => {
         const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
         if (authority === undefined) throw new RouteTestFailure("missing authority");
         const path = new URL(request.url).pathname;
-        const generation = request.headers.get("x-scotty-codex-generation");
+        const generation = request.headers.get("x-scotty-sidecar-generation");
         if (path === "/prompt" || path === "/message") {
           posted.push({ path, body: await request.json() });
           admitted = true;
@@ -3064,14 +3061,12 @@ describe("real Hono boundary", () => {
         return Response.json({
           generation,
           threadId: "thread-image",
+          agent: "codex",
           version: CODEX_VERSION,
           settings: {
             model: "gpt-5.4",
             effort: "high",
             workspace: `/workspace/${authority.session.id}`,
-            modelProvider: "scotty-managed",
-            approvalPolicy: "never",
-            sandbox: "dangerFullAccess",
           },
           ready: true,
           failure: null,
@@ -3119,7 +3114,7 @@ describe("real Hono boundary", () => {
   });
 
   it("returns Codex follow-up and active-steer admissions with their native turn mode", async () => {
-    sandbox.steerScottyCodexSession
+    sandbox.steerScottySidecarSession
       .mockResolvedValueOnce(
         Response.json(
           {
@@ -3176,14 +3171,14 @@ describe("real Hono boundary", () => {
       turnId: "turn-active",
       sessionRevision: 8,
     });
-    expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(
+    expect(sandbox.steerScottySidecarSession).toHaveBeenNthCalledWith(
       1,
       "continue",
       undefined,
       undefined,
       undefined,
     );
-    expect(sandbox.steerScottyCodexSession).toHaveBeenNthCalledWith(
+    expect(sandbox.steerScottySidecarSession).toHaveBeenNthCalledWith(
       2,
       "continue",
       undefined,
@@ -3193,7 +3188,7 @@ describe("real Hono boundary", () => {
   });
 
   it("returns a fenced Codex interrupt result without treating completion as accepted", async () => {
-    sandbox.interruptScottyCodexSession
+    sandbox.interruptScottySidecarSession
       .mockResolvedValueOnce(
         Response.json(
           {
@@ -3246,7 +3241,7 @@ describe("real Hono boundary", () => {
       reason: "turn_already_terminal",
       retryable: false,
     });
-    expect(sandbox.interruptScottyCodexSession).toHaveBeenNthCalledWith(1, {
+    expect(sandbox.interruptScottySidecarSession).toHaveBeenNthCalledWith(1, {
       turnId: "turn-active",
       sessionRevision: 8,
     });

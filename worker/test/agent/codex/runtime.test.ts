@@ -2,7 +2,6 @@ import * as fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { readCodexSavedState } from "../../../src/agent/codex/persistence";
-import type { CodexSavedHistory } from "../../../src/agent/codex/persistence-format";
 import { assert, describe, it } from "@effect/vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, Queue, Result, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
@@ -11,17 +10,19 @@ import {
   CODEX_VERSION,
   decodeCodexClientMessage,
 } from "../../../../protocol/agents/codex/codex-app-server";
-import { codexConversation } from "../../../src/agent/codex/conversation";
+import { sidecarConversation } from "../../../src/agent/sidecar/conversation";
+import type { SidecarSavedHistory } from "../../../src/agent/sidecar/protocol";
+import { readSidecarSnapshot } from "../../../src/agent/sidecar/runtime";
 import { makeSession } from "../../../src/agent/codex/session";
 import type { CodexProcess } from "../../../src/agent/codex/process";
-import { makeCodexRuntime, readCodexSnapshot } from "../../../src/agent/codex/runtime";
+import { makeCodexRuntime } from "../../../src/agent/codex/runtime";
 
 const fixture = Effect.fnUntraced(function* (
   accept = true,
   expiresAt = Number.MAX_SAFE_INTEGER,
   steerMode: "accepted" | "lost" | "delayed" = "accepted",
   interruptStatus: "interrupted" | "completed" = "interrupted",
-  persistence?: { homes?: CodexProcess["homes"]; history?: typeof CodexSavedHistory.Type },
+  persistence?: { homes?: CodexProcess["homes"]; history?: typeof SidecarSavedHistory.Type },
 ) {
   const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
   const exited = yield* Deferred.make<void>();
@@ -210,7 +211,6 @@ describe("Codex generation bridge over production session adapter", () => {
     () =>
       Effect.gen(function* () {
         const f = yield* fixture();
-        assert.equal((yield* f.runtime.snapshot).settings.sandbox, "dangerFullAccess");
         const admitted = yield* f.runtime.admit(command);
         assert.deepEqual(admitted, {
           generation: "generation-1",
@@ -231,7 +231,7 @@ describe("Codex generation bridge over production session adapter", () => {
           text: "synthetic answer",
         });
         assert.deepEqual(
-          yield* readCodexSnapshot(JSON.stringify(snapshot), {
+          yield* readSidecarSnapshot(JSON.stringify(snapshot), {
             generation: "generation-1",
             threadId: "thread",
           }),
@@ -630,7 +630,7 @@ describe("Codex generation bridge over production session adapter", () => {
         });
         yield* f.complete();
         yield* TestClock.adjust(1);
-        const proof = yield* readCodexSnapshot(JSON.stringify(yield* f.runtime.snapshot), {
+        const proof = yield* readSidecarSnapshot(JSON.stringify(yield* f.runtime.snapshot), {
           generation: "generation-1",
           threadId: "thread",
           turnId: "turn",
@@ -638,7 +638,10 @@ describe("Codex generation bridge over production session adapter", () => {
         assert.equal(proof.prompt.status, "terminal");
         assert.equal(f.prompts(), 1);
         const stale = yield* Effect.result(
-          readCodexSnapshot(JSON.stringify(proof), { generation: "generation-1", turnId: "other" }),
+          readSidecarSnapshot(JSON.stringify(proof), {
+            generation: "generation-1",
+            turnId: "other",
+          }),
         );
         assert.ok(Result.isFailure(stale));
         assert.equal(stale.failure.code, "wrong_turn");
@@ -720,11 +723,6 @@ describe("Codex generation bridge over production session adapter", () => {
       for (const [body, expected, code] of [
         ["not-json", { generation: "generation-1" }, "invalid_snapshot"],
         [" ".repeat(524289), { generation: "generation-1" }, "invalid_snapshot"],
-        [
-          JSON.stringify({ ...snapshot, settings: { ...snapshot.settings, sandbox: "readOnly" } }),
-          { generation: "generation-1" },
-          "invalid_snapshot",
-        ],
         [JSON.stringify(snapshot), { generation: "other" }, "stale_generation"],
         [
           JSON.stringify(snapshot),
@@ -732,7 +730,7 @@ describe("Codex generation bridge over production session adapter", () => {
           "wrong_thread",
         ],
       ] as const) {
-        const result = yield* Effect.result(readCodexSnapshot(body, expected));
+        const result = yield* Effect.result(readSidecarSnapshot(body, expected));
         assert.ok(Result.isFailure(result));
         assert.equal(result.failure.code, code);
       }
@@ -762,12 +760,12 @@ it.effect("carries native command evidence through the fenced snapshot and canon
     yield* f.complete();
     yield* TestClock.adjust(1);
     const snapshot = yield* f.runtime.snapshot;
-    const decoded = yield* readCodexSnapshot(JSON.stringify(snapshot), {
+    const decoded = yield* readSidecarSnapshot(JSON.stringify(snapshot), {
       generation: "generation-1",
       threadId: "thread",
       turnId: "turn",
     });
-    const conversation = yield* codexConversation(decoded, {
+    const conversation = yield* sidecarConversation(decoded, {
       prompt: "hello",
       turnId: "turn",
       revision: 1,
@@ -1101,7 +1099,7 @@ describe("Codex automatic saved history", () => {
     "hydrates canonical history and prior message receipts without replaying the initial prompt",
     () =>
       Effect.gen(function* () {
-        const history: typeof CodexSavedHistory.Type = {
+        const history: typeof SidecarSavedHistory.Type = {
           threadId: "thread",
           initialTurnId: "first",
           prompt: { status: "terminal", turnId: "second", outcome: "completed", text: "answer" },

@@ -1,3 +1,4 @@
+import { AgentIdSchema } from "../../../protocol/agents/agents";
 import { PiConsoleImagesSchema } from "../../../protocol/agents/pi/pi-console";
 import {
   AgentSelectionSchema,
@@ -216,7 +217,7 @@ export const decodeSessionRecordResult = Schema.decodeUnknownResult(SessionRecor
 });
 
 export const SessionProjectionSchema = Schema.Struct({
-  agent: Schema.optionalKey(Schema.Literals(["pi", "codex"])),
+  agent: Schema.optionalKey(AgentIdSchema),
   id: Schema.String,
   title: Schema.String,
   status: SessionStatusSchema,

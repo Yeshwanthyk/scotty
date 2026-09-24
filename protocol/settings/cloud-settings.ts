@@ -1,5 +1,10 @@
-import { Schema } from "effect";
-import { CodexAgentSelectionSchema, PiAgentSelectionSchema } from "../agents/agent-selection";
+import { Effect, Schema } from "effect";
+import {
+  ClaudeAgentSelectionSchema,
+  CodexAgentSelectionSchema,
+  PiAgentSelectionSchema,
+} from "../agents/agent-selection";
+import { AgentIdSchema } from "../agents/agents";
 import { CustomAgentInstructionsSchema } from "../agents/agent-instructions";
 
 const SettingEnvironmentKey = Schema.String.check(
@@ -14,7 +19,7 @@ const SettingEnvironmentValue = Schema.String.check(
   ),
 );
 const RESERVED_ENVIRONMENT_KEY_PATTERN =
-  /^(?:SCOTTY_|CODEX_|GH_|GITHUB_|HOME$|PATH$|PI_CODING_AGENT_DIR$|GIT_CONFIG_GLOBAL$|GIT_TERMINAL_PROMPT$|NODE_OPTIONS$|TERM$|LANG$|LC_ALL$|TMPDIR$|USER$|SHELL$|TZ$|OPENAI_API_KEY$|OPENAI_BASE_URL$|PI_AUTH_JSON$|CREDENTIAL_WRAPPING_KEY$|LD_PRELOAD$|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$)/u;
+  /^(?:SCOTTY_|CODEX_|CLAUDE_|ANTHROPIC_|GH_|GITHUB_|HOME$|PATH$|PI_CODING_AGENT_DIR$|GIT_CONFIG_GLOBAL$|GIT_TERMINAL_PROMPT$|NODE_OPTIONS$|TERM$|LANG$|LC_ALL$|TMPDIR$|USER$|SHELL$|TZ$|OPENAI_API_KEY$|OPENAI_BASE_URL$|PI_AUTH_JSON$|CREDENTIAL_WRAPPING_KEY$|LD_PRELOAD$|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$)/u;
 
 export const CloudSettingsEnvironmentSchema = Schema.Record(
   SettingEnvironmentKey,
@@ -29,10 +34,16 @@ export const CloudSettingsEnvironmentSchema = Schema.Record(
   ),
 );
 
+const defaultClaudeSelection = { agent: "claude", model: "opus", effort: "high" } as const;
+
 export const CloudSettingsSchema = Schema.Struct({
-  agent: Schema.Literals(["pi", "codex"]),
+  agent: AgentIdSchema,
   pi: PiAgentSelectionSchema,
   codex: CodexAgentSelectionSchema,
+  // Installations created before Claude Code have no stored profile.
+  claude: ClaudeAgentSelectionSchema.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(defaultClaudeSelection)),
+  ),
   customInstructions: CustomAgentInstructionsSchema,
   environment: CloudSettingsEnvironmentSchema,
 });
@@ -63,6 +74,7 @@ export const defaultCloudSettings: CloudSettings = {
   agent: "pi",
   pi: { agent: "pi" },
   codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
+  claude: defaultClaudeSelection,
   customInstructions: "",
   environment: {},
 };

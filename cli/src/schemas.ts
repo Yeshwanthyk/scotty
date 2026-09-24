@@ -1,3 +1,4 @@
+import { AgentIdSchema } from "../../protocol/agents/agents";
 import { CanonicalConversationSnapshotSchema } from "../../protocol/session/conversation";
 import { Effect, Option, Schema } from "effect";
 import { PiConsoleSnapshotSchema } from "../../protocol/agents/pi/pi-console";
@@ -92,7 +93,7 @@ export const UpResponseSchema = Schema.Struct({
   status: Schema.NonEmptyString,
 });
 const BeamUpRequestFields = {
-  agent: Schema.optionalKey(Schema.Literals(["pi", "codex"])),
+  agent: Schema.optionalKey(AgentIdSchema),
   modelProvider: Schema.optionalKey(Schema.String),
   model: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),

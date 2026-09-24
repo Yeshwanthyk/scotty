@@ -12,6 +12,7 @@ import {
   containerImageCorepackBootstrapArgs,
   containerImageCorepackTransportArgs,
   containerImageLanguagePackageDownloadArgs,
+  containerImageClaudePackagingArgs,
   containerImageCodexPackagingArgs,
   containerImageCodexVersionArgs,
   containerImageBuildArgs,
@@ -92,6 +93,20 @@ describe("final container image gate", () => {
       '#!/usr/bin/env node\nimport { runServer } from "./scotty-codex-server.mjs";\n\nrunServer(process.argv.slice(2));\n',
     );
     assert.ok(
+      dockerfile.includes(
+        "RUN bun build worker/src/agent/claude/server.ts --target=node --format=esm --external @anthropic-ai/claude-agent-sdk --outfile=/opt/scotty-claude/scotty-claude-server.mjs",
+      ),
+    );
+    assert.ok(
+      dockerfile.includes(
+        "COPY worker/container/scotty-claude-server.mjs /usr/local/bin/scotty-claude-server",
+      ),
+    );
+    assert.equal(
+      read("worker/container/scotty-claude-server.mjs"),
+      '#!/usr/bin/env node\nimport { runServer } from "/opt/scotty-claude/scotty-claude-server.mjs";\n\nrunServer(process.argv.slice(2));\n',
+    );
+    assert.ok(
       containerImageCodexPackagingArgs(containerImagePlan())
         .join(" ")
         .includes("prepared-generation"),
@@ -152,6 +167,7 @@ describe("final container image gate", () => {
       { command: "docker", args: containerImageCodexVersionArgs(plan) },
       { command: "docker", args: containerImageNativeCodexAdapterArgs(plan) },
       { command: "docker", args: containerImageCodexPackagingArgs(plan) },
+      { command: "docker", args: containerImageClaudePackagingArgs(plan) },
       { command: "docker", args: containerImageToolchainWorkflowArgs(plan) },
       { command: "docker", args: containerImageCorepackTransportArgs(plan) },
       { command: "docker", args: containerImageCorepackBootstrapArgs(plan) },
@@ -242,11 +258,10 @@ describe("final container image gate", () => {
     assert.match(nativeCodex, /\/opt\/codex\/bin\/codex/u);
     assert.match(nativeCodex, /\/health/u);
     assert.match(nativeCodex, /\/snapshot/u);
-    assert.match(nativeCodex, /x-scotty-codex-token/u);
+    assert.match(nativeCodex, /x-scotty-sidecar-token/u);
     assert.match(nativeCodex, /wrong|repeat\(64\)/u);
     assert.match(nativeCodex, /settings\.effort/u);
-    assert.match(nativeCodex, /approvalPolicy/u);
-    assert.match(nativeCodex, /dangerFullAccess/u);
+    assert.match(nativeCodex, /ready\.agent, "codex"/u);
     assert.match(nativeCodex, /APP_MODE=pinned/u);
     assert.match(nativeCodex, /skills\/list/u);
     assert.match(nativeCodex, /cloud-example/u);

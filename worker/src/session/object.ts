@@ -1,24 +1,25 @@
 import { RuntimeCliMaterializer, runtimeCliMaterializerLayer } from "../runtime-cli/materializer";
 import { decodeRuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
-import { codexFollowUpStorage } from "./store";
+import { sidecarFollowUpStorage } from "./store";
 import { resolveSessionConfiguration } from "../session-actor/configuration";
 import { decodeCloudSettingsSnapshot } from "../../../protocol/settings/cloud-settings";
 import {
-  decodeCodexFollowUps,
-  emptyCodexFollowUps,
-  enqueueCodexFollowUp,
-  confirmCodexFollowUp,
-} from "./codex-follow-ups";
+  decodeSidecarFollowUps,
+  emptySidecarFollowUps,
+  enqueueSidecarFollowUp,
+  confirmSidecarFollowUp,
+} from "./sidecar-follow-ups";
 import {
   codexSandboxHome,
-  interruptCodexSandbox,
-  readCodexSandbox,
-  sendCodexSandboxMessage,
-} from "../agent/codex/sandbox";
+  interruptSidecarSandbox,
+  readSidecarSandbox,
+  sendSidecarSandboxMessage,
+} from "../agent/sidecar/client";
 import { parseCodexRolloutListing } from "../agent/codex/rollout-export";
-import type { CodexSnapshot } from "../agent/codex/runtime";
-import { codexConversation } from "../agent/codex/conversation";
+import type { SidecarSnapshot } from "../agent/sidecar/protocol";
+import { sidecarConversation } from "../agent/sidecar/conversation";
+import { agentDescriptors, isSidecarSelection } from "../../../protocol/agents/agents";
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
 import {
   decodePiConsoleCommandPromise,
@@ -153,7 +154,7 @@ import {
   credentialKindForHandle,
   decodeSessionCredentialAccessResult,
   githubManagedHandle,
-  selectPiAuthGrant,
+  hasAgentCredential,
   sessionRuntimeCredentials,
 } from "../credentials/managed";
 import { readBoundedUtf8Body } from "../shared/bounded-http";
@@ -337,15 +338,15 @@ const sameRuntimeProof = (
   left.runtimeGeneration === right.runtimeGeneration &&
   left.containerIncarnation === right.containerIncarnation;
 
-const codexSnapshotHasInitialTurn = (
-  snapshot: Pick<typeof CodexSnapshot.Type, "prompt" | "turns">,
+const sidecarSnapshotHasInitialTurn = (
+  snapshot: Pick<typeof SidecarSnapshot.Type, "prompt" | "turns">,
   turnId: string,
 ): boolean => {
   if (snapshot.turns !== undefined) return snapshot.turns.some((turn) => turn.id === turnId);
   return "turnId" in snapshot.prompt && snapshot.prompt.turnId === turnId;
 };
 
-const sameCodexAuthorityProof = (
+const sameSidecarAuthorityProof = (
   current: SessionAuthority | undefined,
   observed: SessionAuthority,
   readiness: ReadinessProof,
@@ -368,7 +369,7 @@ const sameCodexAuthorityProof = (
 
 // Evidence and Hatch lease the warm runtime without replacing its readiness.
 // This is read-only: message admission retains the Stable/Warm authority fence above.
-const codexConversationReadiness = (authority: SessionAuthority): ReadinessProof | null => {
+const sidecarConversationReadiness = (authority: SessionAuthority): ReadinessProof | null => {
   if (AuthorityStateSchema.guards.Stable(authority.state))
     return StableStateSchema.guards.Warm(authority.state.stable)
       ? authority.state.stable.readiness
@@ -380,7 +381,7 @@ const codexConversationReadiness = (authority: SessionAuthority): ReadinessProof
     : null;
 };
 
-const sameCodexConversationAuthorityProof = (
+const sameSidecarConversationAuthorityProof = (
   current: SessionAuthority | undefined,
   observed: SessionAuthority,
   readiness: ReadinessProof,
@@ -392,7 +393,7 @@ const sameCodexConversationAuthorityProof = (
     current.session.id !== observed.session.id
   )
     return false;
-  const currentReadiness = codexConversationReadiness(current);
+  const currentReadiness = sidecarConversationReadiness(current);
   return (
     currentReadiness !== null &&
     sameRuntimeProof(currentReadiness.runtime, readiness.runtime) &&
@@ -772,13 +773,13 @@ export const SANDBOX_TEST_EXPOSE_EVIDENCE = Symbol("scotty.test.exposeEvidence")
 export const SANDBOX_TEST_COMPLETE_EVIDENCE_STEP = Symbol("scotty.test.completeEvidenceStep");
 export const SANDBOX_TEST_FINALIZE_EVIDENCE = Symbol("scotty.test.finalizeEvidence");
 
-const codexQueueTransitionKeepsRuntime = (
+const sidecarQueueTransitionKeepsRuntime = (
   transition: import("../session-actor/authority").Transition,
 ): boolean =>
   Predicate.isTagged(transition, "WarmWork") || Predicate.isTagged(transition, "Resume");
 
 type HostOperation =
-  | "codexQueue"
+  | "sidecarQueue"
   | "destroy"
   | "expose"
   | "getExposedPorts"
@@ -1009,7 +1010,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly hatchRequestForwarder: (request: Request) => Promise<Response>;
   private readonly rawContainer: DurableObjectState["container"];
   private readonly sessionControlGate: SessionControlGate;
-  private readonly codexFollowUps: ReturnType<typeof codexFollowUpStorage>;
+  private readonly sidecarFollowUps: ReturnType<typeof sidecarFollowUpStorage>;
   private readonly terminalSessionControl: TerminalSessionControl;
   private readonly evidenceEnabled: boolean;
   private readonly localE2E: boolean;
@@ -1073,7 +1074,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       options.hatchRequestForwarder ?? ((request) => this.forwardSandboxPreviewRequest(request));
     this.sessionControlGate = makeSessionControlGate();
     // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires DO-owned follow-up storage
-    this.codexFollowUps = codexFollowUpStorage(ctx.storage);
+    this.sidecarFollowUps = sidecarFollowUpStorage(ctx.storage);
     const terminalSessionControl = options.terminalSessionControl ?? {
       delete: (terminalId: string) => this.deleteSession(terminalId).then(() => undefined),
     };
@@ -1278,12 +1279,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
             });
             if (!issued.ok) return yield* rejectBoundary("create_credential_grant_rejected");
             const decoded = decodeCredentialRegistryGrantResult(issued.value);
-            if (
-              Result.isFailure(decoded) ||
-              decoded.success.sessionId !== authority.session.id ||
-              Result.isFailure(selectPiAuthGrant(decoded.success.grants))
-            )
+            if (Result.isFailure(decoded) || decoded.success.sessionId !== authority.session.id)
               return yield* rejectBoundary("create_credential_grant_invalid");
+            if (!hasAgentCredential(authority.session.selection.agent, decoded.success.grants))
+              return yield* rejectBoundary("create_credential_missing");
             const githubHandle = githubManagedHandle(decoded.success.grants);
             if (githubHandle === undefined)
               return yield* rejectBoundary("create_credential_grant_invalid");
@@ -1543,7 +1542,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 if (!released.ok || !released.value.released)
                   return yield* vaporizeUnknown("credential_release_unconfirmed")();
               }
-              yield* hostEffect("codexQueue", () => this.codexFollowUps.clear());
+              yield* hostEffect("sidecarQueue", () => this.sidecarFollowUps.clear());
               yield* metadataStore.deleteForVaporize(authority);
               return yield* vaporizeResult("GrantsReleased", "owned_authority_released");
             }).pipe(Effect.catch(vaporizeUnknown("owned_authority_release_unknown"))),
@@ -1551,7 +1550,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
             Effect.gen({ self: this }, function* () {
               const metadata = yield* metadataStore.read(authority);
               if (metadata !== undefined) return yield* vaporizeUnknown("metadata_still_present")();
-              if ((yield* hostEffect("codexQueue", () => this.codexFollowUps.read())) !== undefined)
+              if (
+                (yield* hostEffect("sidecarQueue", () => this.sidecarFollowUps.read())) !==
+                undefined
+              )
                 return yield* vaporizeUnknown("follow_ups_still_present")();
               yield* projection.remove(authority.session.id);
               return yield* vaporizeResult("AbsenceConfirmed", "owned_state_absent_confirmed");
@@ -3160,8 +3162,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly preparePiSessionAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const state = yield* this.readActorSessionStateProgram();
-    if (state.authority.session.selection.agent === "codex")
-      return yield* badRequest("Codex does not expose Pi session callbacks");
+    if (isSidecarSelection(state.authority.session.selection))
+      return yield* badRequest("Only Pi sessions expose Pi session callbacks");
     const record = yield* this.requireRecordProgram();
     if (record.status !== "warm")
       return yield* wrongState(
@@ -3442,9 +3444,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const now = yield* Clock.currentTimeMillis;
     const nowIso = new Date(now).toISOString();
     const request: CreateControllerRequest = {
-      ...(pinned.selection.agent === "codex"
+      ...(isSidecarSelection(pinned.selection)
         ? {
-            codexControl: {
+            sidecarControl: {
               token: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
                 byte.toString(16).padStart(2, "0"),
               ).join(""),
@@ -4016,7 +4018,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ? runtime === "stopped"
             ? ("not_running" as const)
             : ("unknown" as const)
-          : agent === "codex"
+          : agentDescriptors[agent].runtime === "sidecar"
             ? ("unknown" as const)
             : yield* Effect.tryPromise({
                 try: () =>
@@ -5217,7 +5219,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const relayWithCurrentAuthority = async (): Promise<Response> => {
       const authority = await this.readPassiveConsoleAuthority();
       if (authority instanceof Response) return authority;
-      if (authority.authority.session.selection.agent === "codex")
+      if (isSidecarSelection(authority.authority.session.selection))
         return Response.json({ error: "codex_operation_unsupported" }, { status: 409 });
       if (command && command.expectedSessionRevision !== authority.revision)
         return this.stalePassiveConsoleCommand(command, authority.revision);
@@ -5791,24 +5793,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return plaintext;
   });
 
-  async readScottyCodexConversation() {
+  async readScottySidecarConversation() {
     return this.#run(
       Effect.gen({ self: this }, function* () {
         const state = yield* this.readActorSessionStateProgram();
         const selection = state.authority.session.selection;
-        if (selection.agent !== "codex") return null;
+        if (!isSidecarSelection(selection)) return null;
         const authority = state.authority;
-        const readiness = codexConversationReadiness(authority);
+        const readiness = sidecarConversationReadiness(authority);
         if (readiness === null)
-          return yield* conflict("Codex conversation requires an admitted warm session");
-        const control = state.metadata.codexControl;
+          return yield* conflict("Agent conversation requires an admitted warm session");
+        const control = state.metadata.sidecarControl;
         if (control === undefined)
-          return yield* this.upstreamError("Codex control metadata is unavailable", undefined);
+          return yield* this.upstreamError("Agent control metadata is unavailable", undefined);
         const runtime = yield* SandboxRuntime;
         const incarnation = yield* runtime.getContainerIncarnationId();
         if (incarnation !== readiness.runtime.containerIncarnation)
-          return yield* conflict("Codex runtime generation is no longer current");
-        const snapshot = yield* readCodexSandbox(
+          return yield* conflict("Agent runtime generation is no longer current");
+        const snapshot = yield* readSidecarSandbox(
           {
             sessionId: authority.session.id,
             generation: readiness.runtime.runtimeGeneration,
@@ -5817,21 +5819,23 @@ export class Sandbox extends BaseSandbox<Bindings> {
           },
           readiness.supervisor.supervisorEpoch,
         ).pipe(
-          Effect.mapError(() => this.upstreamError("Codex snapshot is unavailable", undefined)),
+          Effect.mapError(() => this.upstreamError("Agent snapshot is unavailable", undefined)),
         );
-        if (!codexSnapshotHasInitialTurn(snapshot, readiness.transport.transportId))
-          return yield* conflict("Codex admitted turn does not match Session authority");
+        if (!sidecarSnapshotHasInitialTurn(snapshot, readiness.transport.transportId))
+          return yield* conflict("Agent admitted turn does not match Session authority");
         const currentIncarnation = yield* runtime
           .getContainerIncarnationId()
           .pipe(
-            Effect.mapError(() => conflict("Session changed while reading Codex conversation")),
+            Effect.mapError(() => conflict("Session changed while reading agent conversation")),
           );
         const store = yield* ActorStore;
         const current = (yield* store.read).authority;
-        if (!sameCodexConversationAuthorityProof(current, authority, readiness, currentIncarnation))
-          return yield* conflict("Session changed while reading Codex conversation");
-        const queue = yield* this.readCodexFollowUpsProgram();
-        return yield* codexConversation(snapshot, {
+        if (
+          !sameSidecarConversationAuthorityProof(current, authority, readiness, currentIncarnation)
+        )
+          return yield* conflict("Session changed while reading agent conversation");
+        const queue = yield* this.readSidecarFollowUpsProgram();
+        return yield* sidecarConversation(snapshot, {
           prompt: control.initialPrompt,
           turnId: readiness.transport.transportId,
           revision: authority.revision,
@@ -5842,52 +5846,52 @@ export class Sandbox extends BaseSandbox<Bindings> {
             text,
           })),
         }).pipe(
-          Effect.mapError(() => this.upstreamError("Codex conversation is invalid", undefined)),
+          Effect.mapError(() => this.upstreamError("Agent conversation is invalid", undefined)),
         );
       }),
     );
   }
 
-  private readonly readCodexFollowUpsProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const stored = yield* hostEffect("codexQueue", () => this.codexFollowUps.read());
-    if (stored === undefined) return emptyCodexFollowUps();
-    return yield* decodeCodexFollowUps(stored).pipe(
-      Effect.mapError(() => this.upstreamError("Codex follow-up queue is invalid", undefined)),
+  private readonly readSidecarFollowUpsProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const stored = yield* hostEffect("sidecarQueue", () => this.sidecarFollowUps.read());
+    if (stored === undefined) return emptySidecarFollowUps();
+    return yield* decodeSidecarFollowUps(stored).pipe(
+      Effect.mapError(() => this.upstreamError("Agent follow-up queue is invalid", undefined)),
     );
   });
 
-  private readonly scheduleCodexFollowUpsProgram = Effect.fnUntraced(function* (this: Sandbox) {
+  private readonly scheduleSidecarFollowUpsProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const now = yield* Clock.currentTimeMillis;
     const schedules = yield* hostEffect("schedule", () =>
-      this.listSchedules("drainCodexFollowUps"),
+      this.listSchedules("drainSidecarFollowUps"),
     );
     if (schedules.some((schedule) => schedule.time * 1000 > now)) return;
     yield* hostEffect("schedule", () =>
-      this.schedule(new Date(now + 5_000), "drainCodexFollowUps", {}),
+      this.schedule(new Date(now + 5_000), "drainSidecarFollowUps", {}),
     );
   });
 
-  async drainCodexFollowUps(): Promise<void> {
+  async drainSidecarFollowUps(): Promise<void> {
     return this.sessionControlGate.run(() =>
       this.#run(
         Effect.gen({ self: this }, function* () {
-          let queue = yield* this.readCodexFollowUpsProgram();
+          let queue = yield* this.readSidecarFollowUpsProgram();
           const item = queue.pending[0];
           if (item === undefined) return;
           const authority = (yield* (yield* ActorStore).read).authority;
           if (authority === undefined) return;
           if (AuthorityStateSchema.guards.Transitioning(authority.state)) {
-            if (codexQueueTransitionKeepsRuntime(authority.state.transition))
-              yield* this.scheduleCodexFollowUpsProgram();
+            if (sidecarQueueTransitionKeepsRuntime(authority.state.transition))
+              yield* this.scheduleSidecarFollowUpsProgram();
             return;
           }
           if (StableStateSchema.guards.Gone(authority.state.stable)) {
-            yield* hostEffect("codexQueue", () => this.codexFollowUps.clear());
+            yield* hostEffect("sidecarQueue", () => this.sidecarFollowUps.clear());
             return;
           }
           if (
             !StableStateSchema.guards.Warm(authority.state.stable) ||
-            authority.session.selection.agent !== "codex"
+            !isSidecarSelection(authority.session.selection)
           )
             return;
           const readiness = authority.state.stable.readiness;
@@ -5900,9 +5904,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
             item.attempt !== undefined &&
             item.attempt.generation !== readiness.runtime.runtimeGeneration;
           // Arm recovery before observing or dispatching: provider timeouts retain the same item and ID.
-          yield* this.scheduleCodexFollowUpsProgram();
+          yield* this.scheduleSidecarFollowUpsProgram();
           const state = yield* this.readActorSessionStateProgram();
-          const control = state.metadata.codexControl;
+          const control = state.metadata.sidecarControl;
           if (control === undefined) return;
           const runtime = yield* SandboxRuntime;
           const incarnation = yield* runtime.getContainerIncarnationId();
@@ -5913,8 +5917,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
             selection: authority.session.selection,
             token: control.token,
           };
-          const before = yield* readCodexSandbox(identity, readiness.supervisor.supervisorEpoch);
-          if (!codexSnapshotHasInitialTurn(before, readiness.transport.transportId)) return;
+          const before = yield* readSidecarSandbox(identity, readiness.supervisor.supervisorEpoch);
+          if (!sidecarSnapshotHasInitialTurn(before, readiness.transport.transportId)) return;
           if (item.attempt === undefined && before.prompt.status !== "terminal") return;
           if (item.attempt === undefined) {
             queue = {
@@ -5931,9 +5935,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
                   : entry,
               ),
             };
-            yield* hostEffect("codexQueue", () => this.codexFollowUps.write(queue));
+            yield* hostEffect("sidecarQueue", () => this.sidecarFollowUps.write(queue));
           }
-          yield* sendCodexSandboxMessage(
+          yield* sendSidecarSandboxMessage(
             identity,
             readiness.supervisor.supervisorEpoch,
             item.text,
@@ -5943,16 +5947,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
           );
           const currentIncarnation = yield* runtime.getContainerIncarnationId();
           const current = (yield* (yield* ActorStore).read).authority;
-          if (!sameCodexAuthorityProof(current, authority, readiness, currentIncarnation)) return;
-          yield* hostEffect("codexQueue", () =>
-            this.codexFollowUps.write(confirmCodexFollowUp(queue, item.id)),
+          if (!sameSidecarAuthorityProof(current, authority, readiness, currentIncarnation)) return;
+          yield* hostEffect("sidecarQueue", () =>
+            this.sidecarFollowUps.write(confirmSidecarFollowUp(queue, item.id)),
           );
         }),
       ),
     );
   }
 
-  async steerScottyCodexSession(
+  async steerScottySidecarSession(
     message: string,
     clientUserMessageId?: string,
     deliverAs?: "followUp",
@@ -5966,21 +5970,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
             const state = yield* this.readActorSessionStateProgram();
             sessionId = state.authority.session.id;
             const selection = state.authority.session.selection;
-            if (selection.agent !== "codex") return null;
+            if (!isSidecarSelection(selection)) return null;
             const authority = state.authority;
             if (
               !AuthorityStateSchema.guards.Stable(authority.state) ||
               !StableStateSchema.guards.Warm(authority.state.stable)
             )
-              return yield* conflict("Codex message requires an admitted warm session");
+              return yield* conflict("Agent message requires an admitted warm session");
             const readiness = authority.state.stable.readiness;
-            const control = state.metadata.codexControl;
+            const control = state.metadata.sidecarControl;
             if (control === undefined)
-              return yield* this.upstreamError("Codex control metadata is unavailable", undefined);
+              return yield* this.upstreamError("Agent control metadata is unavailable", undefined);
             if (deliverAs === "followUp") {
               if (clientUserMessageId === undefined)
                 return yield* badRequest("Queued follow-up requires an idempotency-key");
-              const queue = yield* this.readCodexFollowUpsProgram();
+              const queue = yield* this.readSidecarFollowUpsProgram();
               const imageDigest = !images?.length
                 ? undefined
                 : yield* Effect.tryPromise({
@@ -5988,7 +5992,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
                     catch: () =>
                       this.upstreamError("Image identity could not be computed", undefined),
                   });
-              const result = enqueueCodexFollowUp(queue, {
+              const result = enqueueSidecarFollowUp(queue, {
                 id: clientUserMessageId,
                 text: message,
                 ...(imageDigest === undefined ? {} : { images, imageDigest }),
@@ -5999,8 +6003,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 return yield* conflict(
                   "The follow-up queue is full. Wait for queued messages to send before adding more images.",
                 );
-              yield* this.scheduleCodexFollowUpsProgram();
-              yield* hostEffect("codexQueue", () => this.codexFollowUps.write(result.queue));
+              yield* this.scheduleSidecarFollowUpsProgram();
+              yield* hostEffect("sidecarQueue", () => this.sidecarFollowUps.write(result.queue));
               return Response.json(
                 {
                   id: authority.session.id,
@@ -6015,8 +6019,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
             const runtime = yield* SandboxRuntime;
             const incarnation = yield* runtime.getContainerIncarnationId();
             if (incarnation !== readiness.runtime.containerIncarnation)
-              return yield* conflict("Codex runtime generation is no longer current");
-            const before = yield* readCodexSandbox(
+              return yield* conflict("Agent runtime generation is no longer current");
+            const before = yield* readSidecarSandbox(
               {
                 sessionId: authority.session.id,
                 generation: readiness.runtime.runtimeGeneration,
@@ -6025,10 +6029,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
               },
               readiness.supervisor.supervisorEpoch,
             ).pipe(
-              Effect.mapError(() => this.upstreamError("Codex snapshot is unavailable", undefined)),
+              Effect.mapError(() => this.upstreamError("Agent snapshot is unavailable", undefined)),
             );
-            if (!codexSnapshotHasInitialTurn(before, readiness.transport.transportId))
-              return yield* conflict("Codex admitted turn does not match Session authority");
+            if (!sidecarSnapshotHasInitialTurn(before, readiness.transport.transportId))
+              return yield* conflict("Agent admitted turn does not match Session authority");
             if (before.prompt.status !== "running" && before.prompt.status !== "terminal")
               return Response.json(
                 {
@@ -6039,7 +6043,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 },
                 { status: 409, headers: { "cache-control": "no-store" } },
               );
-            const admitted = yield* sendCodexSandboxMessage(
+            const admitted = yield* sendSidecarSandboxMessage(
               {
                 sessionId: authority.session.id,
                 generation: readiness.runtime.runtimeGeneration,
@@ -6053,9 +6057,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
               images,
             ).pipe(
               Effect.mapError((error) =>
-                Predicate.isTagged(error, "CodexMessageAdmissionUnknown")
+                Predicate.isTagged(error, "SidecarMessageAdmissionUnknown")
                   ? error
-                  : new ScottyError("upstream", "Codex message admission is unknown", {
+                  : new ScottyError("upstream", "Agent message admission is unknown", {
                       httpStatus: 502,
                       exitCode: 1,
                       hint: "Inspect Worker observability before retrying the same message.",
@@ -6065,10 +6069,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
             const currentIncarnation = yield* runtime
               .getContainerIncarnationId()
               .pipe(
-                Effect.mapError(() => conflict("Session changed while admitting Codex message")),
+                Effect.mapError(() => conflict("Session changed while admitting agent message")),
               );
             const current = (yield* (yield* ActorStore).read).authority;
-            if (!sameCodexAuthorityProof(current, authority, readiness, currentIncarnation))
+            if (!sameSidecarAuthorityProof(current, authority, readiness, currentIncarnation))
               return Response.json(
                 {
                   id: authority.session.id,
@@ -6099,7 +6103,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return scottyErrorResponse(result.failure);
     if (sessionId === undefined)
       return scottyErrorResponse(
-        new ScottyError("upstream", "Codex message admission is unknown", {
+        new ScottyError("upstream", "Agent message admission is unknown", {
           httpStatus: 502,
           exitCode: 1,
           hint: "Inspect Worker observability before retrying the same message.",
@@ -6116,7 +6120,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
-  async interruptScottyCodexSession(input: {
+  async interruptScottySidecarSession(input: {
     readonly turnId?: string;
     readonly sessionRevision: number;
   }): Promise<Response | null> {
@@ -6128,7 +6132,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             const state = yield* this.readActorSessionStateProgram();
             sessionId = state.authority.session.id;
             const selection = state.authority.session.selection;
-            if (selection.agent !== "codex") return null;
+            if (!isSidecarSelection(selection)) return null;
             const authority = state.authority;
             if (input.sessionRevision !== authority.revision)
               return Response.json(
@@ -6146,7 +6150,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
               !AuthorityStateSchema.guards.Stable(authority.state) ||
               !StableStateSchema.guards.Warm(authority.state.stable)
             )
-              return yield* conflict("Codex interrupt requires an admitted warm session");
+              return yield* conflict("Agent interrupt requires an admitted warm session");
             if (input.turnId === undefined)
               return Response.json(
                 {
@@ -6158,27 +6162,27 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 { status: 409, headers: { "cache-control": "no-store" } },
               );
             const readiness = authority.state.stable.readiness;
-            const control = state.metadata.codexControl;
+            const control = state.metadata.sidecarControl;
             if (control === undefined)
-              return yield* this.upstreamError("Codex control metadata is unavailable", undefined);
+              return yield* this.upstreamError("Agent control metadata is unavailable", undefined);
             const runtime = yield* SandboxRuntime;
             const incarnation = yield* runtime.getContainerIncarnationId();
             if (incarnation !== readiness.runtime.containerIncarnation)
-              return yield* conflict("Codex runtime generation is no longer current");
+              return yield* conflict("Agent runtime generation is no longer current");
             const identity = {
               sessionId: authority.session.id,
               generation: readiness.runtime.runtimeGeneration,
               selection,
               token: control.token,
             };
-            const before = yield* readCodexSandbox(
+            const before = yield* readSidecarSandbox(
               identity,
               readiness.supervisor.supervisorEpoch,
             ).pipe(
-              Effect.mapError(() => this.upstreamError("Codex snapshot is unavailable", undefined)),
+              Effect.mapError(() => this.upstreamError("Agent snapshot is unavailable", undefined)),
             );
-            if (!codexSnapshotHasInitialTurn(before, readiness.transport.transportId))
-              return yield* conflict("Codex admitted turn does not match Session authority");
+            if (!sidecarSnapshotHasInitialTurn(before, readiness.transport.transportId))
+              return yield* conflict("Agent admitted turn does not match Session authority");
             if (before.prompt.status !== "running" || before.prompt.turnId !== input.turnId)
               return Response.json(
                 {
@@ -6189,15 +6193,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 },
                 { status: 409, headers: { "cache-control": "no-store" } },
               );
-            const interrupted = yield* interruptCodexSandbox(
+            const interrupted = yield* interruptSidecarSandbox(
               identity,
               readiness.supervisor.supervisorEpoch,
               input.turnId,
             ).pipe(
               Effect.mapError((error) =>
-                Predicate.isTagged(error, "CodexInterruptAdmissionUnknown")
+                Predicate.isTagged(error, "SidecarInterruptAdmissionUnknown")
                   ? error
-                  : new ScottyError("upstream", "Codex interrupt outcome is unknown", {
+                  : new ScottyError("upstream", "Agent interrupt outcome is unknown", {
                       httpStatus: 502,
                       exitCode: 1,
                       hint: "Inspect Worker observability before retrying the interrupt.",
@@ -6217,10 +6221,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
             const currentIncarnation = yield* runtime
               .getContainerIncarnationId()
               .pipe(
-                Effect.mapError(() => conflict("Session changed while interrupting Codex turn")),
+                Effect.mapError(() => conflict("Session changed while interrupting agent turn")),
               );
             const current = (yield* (yield* ActorStore).read).authority;
-            if (!sameCodexAuthorityProof(current, authority, readiness, currentIncarnation))
+            if (!sameSidecarAuthorityProof(current, authority, readiness, currentIncarnation))
               return Response.json(
                 {
                   id: authority.session.id,
@@ -6250,7 +6254,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return scottyErrorResponse(result.failure);
     if (sessionId === undefined)
       return scottyErrorResponse(
-        new ScottyError("upstream", "Codex interrupt outcome is unknown", {
+        new ScottyError("upstream", "Agent interrupt outcome is unknown", {
           httpStatus: 502,
           exitCode: 1,
           hint: "Inspect Worker observability before retrying the interrupt.",
@@ -6278,8 +6282,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   async resumeScottySession(): Promise<SessionView> {
     await this.#run(
       Effect.gen({ self: this }, function* () {
-        if ((yield* this.readCodexFollowUpsProgram()).pending.length > 0)
-          yield* this.scheduleCodexFollowUpsProgram();
+        if ((yield* this.readSidecarFollowUpsProgram()).pending.length > 0)
+          yield* this.scheduleSidecarFollowUpsProgram();
       }),
     );
     return this.#run(this.actorLifecycleProgram("Resume"));

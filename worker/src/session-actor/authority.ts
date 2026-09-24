@@ -72,7 +72,7 @@ export const ReadinessProgressSchema = Schema.Struct({
 export type ReadinessProgress = typeof ReadinessProgressSchema.Type;
 
 export const BackupIdentitySchema = Schema.Struct({
-  codex: Schema.optionalKey(
+  sidecar: Schema.optionalKey(
     Schema.Struct({ threadId: SafeIdentifierSchema, initialTurnId: SafeIdentifierSchema }),
   ),
   backupId: Schema.String,

@@ -11,7 +11,6 @@ import {
   credentialStoreLayer,
   type CredentialRegistryFailure,
   selectGithubCliCredential,
-  selectPiAuthCredential,
   type CredentialRegistryStorage,
 } from "../../src/credentials/store";
 import {
@@ -140,27 +139,6 @@ describe("CredentialStore", () => {
       Result.fail("ambiguous"),
     );
     assert.deepStrictEqual(selectGithubCliCredential([], "owner/repo"), Result.fail("missing"));
-  });
-
-  it("selects at most one applicable Pi credential", () => {
-    const credential = (name: string): CredentialRegistryCredential => ({
-      name,
-      kind: "pi-auth",
-      scope: "global",
-      currentVersionRef: "version-a",
-    });
-    assert.strictEqual(
-      Result.match(selectPiAuthCredential([credential("openai")]), {
-        onFailure: () => "selection-failed",
-        onSuccess: ({ name }) => name,
-      }),
-      "openai",
-    );
-    assert.deepStrictEqual(selectPiAuthCredential([]), Result.fail("missing"));
-    assert.deepStrictEqual(
-      selectPiAuthCredential([credential("openai"), credential("alternate")]),
-      Result.fail("ambiguous"),
-    );
   });
 
   it.effect("pins encrypted versions and garbage-collects old versions after release", () =>

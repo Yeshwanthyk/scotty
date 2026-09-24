@@ -1,7 +1,8 @@
+import { AgentIdSchema } from "../../protocol/agents/agents";
 import { canonicalReadSnapshot, decodeReadSnapshot } from "./dependencies";
 import { buildInfo } from "./build-info";
 import { decodeCanonicalReadSnapshot } from "./schemas";
-import { decodeAgentSelection } from "../../protocol/agents/agent-selection";
+import { type AgentId, decodeAgentSelection } from "../../protocol/agents/agent-selection";
 import { isAbsolute, join, resolve } from "node:path";
 import { Clock, Console, Effect, Exit, FileSystem, Option, Predicate, Ref, Result } from "effect";
 import {
@@ -133,7 +134,7 @@ import {
 
 const beamAgentSelection = Effect.fnUntraced(function* (
   target: import("./transport").ApiRequestTarget,
-  agent: Option.Option<"pi" | "codex">,
+  agent: Option.Option<AgentId>,
   modelProvider: Option.Option<string>,
   model: Option.Option<string>,
   effort: Option.Option<string>,
@@ -157,7 +158,7 @@ const beamAgentSelection = Effect.fnUntraced(function* (
   });
   if (Result.isFailure(selection))
     return yield* usage(
-      "Codex requires a supported model and effort from flags or cloud settings; --model-provider is Pi-only; overrides must be valid model settings",
+      "Codex and Claude require a supported model and effort from flags or cloud settings; --model-provider is Pi-only; overrides must be valid model settings",
     );
   return Option.isSome(agent) || selectedAgent !== "pi" || Object.keys(selection.success).length > 1
     ? selection.success
@@ -304,6 +305,7 @@ const localCredentialMaterials = Effect.fnUntraced(function* (input: {
   readonly cwd: string;
   readonly piAuth?: string;
   readonly codexAuth?: string;
+  readonly claudeTokenFile?: string;
   readonly githubTokenFile?: string;
   readonly githubCli: boolean;
 }) {
@@ -341,6 +343,17 @@ const localCredentialMaterials = Effect.fnUntraced(function* (input: {
       providers: local.providerStore,
     });
   }
+  if (input.claudeTokenFile !== undefined) {
+    const token = (yield* readPrivateCredentialText(path(input.claudeTokenFile))).trim();
+    if (!/^sk-ant-oat01-[A-Za-z0-9_-]{16,1024}$/u.test(token))
+      return yield* new CliError(
+        "credential_registry_sync_invalid",
+        "Claude credential is not a Claude Code setup token",
+        "Run claude setup-token, save the token to a private file, and retry scotty sync.",
+        EXIT.USAGE,
+      );
+    credentials.push({ name: "claude", kind: "anthropic-auth", scope: "global", token });
+  }
   if (input.githubTokenFile !== undefined || input.githubCli) {
     const token =
       input.githubTokenFile === undefined
@@ -361,7 +374,7 @@ const localCredentialMaterials = Effect.fnUntraced(function* (input: {
   if (credentials.length === 0)
     return yield* usage(
       "sync requires a credential source",
-      "Pass --pi-auth, --codex-auth, --github-token-file, or --github.",
+      "Pass --pi-auth, --codex-auth, --claude-token-file, --github-token-file, or --github.",
     );
   return credentials;
 });
@@ -744,9 +757,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDefault(false),
         Flag.withDescription("Confirm the displayed installation"),
       ),
-      agent: Flag.choice("agent", ["pi", "codex"]).pipe(
+      agent: Flag.choice("agent", AgentIdSchema.literals).pipe(
         Flag.optional,
-        Flag.withDescription("Default agent (pi or codex)"),
+        Flag.withDescription("Default agent (pi, codex, or claude)"),
       ),
       modelProvider: Flag.string("model-provider").pipe(
         Flag.optional,
@@ -773,6 +786,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Private Codex auth.json source"),
       ),
+      claudeTokenFile: Flag.string("claude-token-file").pipe(
+        Flag.optional,
+        Flag.withDescription("Private Claude Code setup-token source"),
+      ),
       githubTokenFile: Flag.string("github-token-file").pipe(
         Flag.optional,
         Flag.withDescription("Private GitHub token source"),
@@ -797,6 +814,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       environment,
       piAuth,
       codexAuth,
+      claudeTokenFile,
       githubTokenFile,
       github,
     }) =>
@@ -888,6 +906,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               cwd: runtime.cwd,
               piAuth: Option.getOrUndefined(piAuth),
               codexAuth: Option.getOrUndefined(codexAuth),
+              claudeTokenFile: Option.getOrUndefined(claudeTokenFile),
               githubTokenFile: Option.getOrUndefined(githubTokenFile),
               githubCli: github,
             };
@@ -895,19 +914,25 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               const answer = (label: string): string | undefined =>
                 runtime.prompt(label)?.trim() || undefined;
               const selected =
-                setupInput.agent ?? answer("Default agent [pi/codex, default pi]: ") ?? "pi";
-              if (selected !== "pi" && selected !== "codex")
-                return yield* usage("Default agent must be pi or codex");
+                setupInput.agent ?? answer("Default agent [pi/codex/claude, default pi]: ") ?? "pi";
+              if (selected !== "pi" && selected !== "codex" && selected !== "claude")
+                return yield* usage("Default agent must be pi, codex, or claude");
               setupInput.agent = selected;
               if (selected === "pi") {
                 setupInput.modelProvider ??= answer("Pi model provider [agent default]: ");
                 setupInput.model ??= answer("Pi model [agent default]: ");
                 setupInput.effort ??= answer("Pi reasoning effort [agent default]: ");
                 credentialSources.piAuth ??= answer("Private Pi auth.json path [skip]: ");
-              } else {
+              } else if (selected === "codex") {
                 setupInput.model ??= answer("Codex model [gpt-5.6-sol]: ") ?? "gpt-5.6-sol";
                 setupInput.effort ??= answer("Codex effort [high]: ") ?? "high";
                 credentialSources.codexAuth ??= answer("Private Codex auth.json path [skip]: ");
+              } else {
+                setupInput.model ??= answer("Claude model [opus]: ") ?? "opus";
+                setupInput.effort ??= answer("Claude effort [high]: ") ?? "high";
+                credentialSources.claudeTokenFile ??= answer(
+                  "Private Claude setup-token file path [skip]: ",
+                );
               }
               setupInput.repos ??= answer(
                 "GitHub repositories, comma-separated OWNER/NAME [skip]: ",
@@ -927,6 +952,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const hasCredentialSources =
               credentialSources.piAuth !== undefined ||
               credentialSources.codexAuth !== undefined ||
+              credentialSources.claudeTokenFile !== undefined ||
               credentialSources.githubTokenFile !== undefined ||
               credentialSources.githubCli;
             const localCredentials = hasCredentialSources
@@ -1775,7 +1801,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       provider: Flag.choice("provider", ["cloudflare"] as const).pipe(
         Flag.withDescription("Execution provider"),
       ),
-      agent: Flag.choice("agent", ["pi", "codex"]).pipe(
+      agent: Flag.choice("agent", AgentIdSchema.literals).pipe(
         Flag.optional,
         Flag.withDescription("Agent override; otherwise use the cloud default"),
       ),
@@ -2171,6 +2197,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Codex auth.json path"),
       ),
+      claudeTokenFile: Flag.string("claude-token-file").pipe(
+        Flag.optional,
+        Flag.withDescription("Private file containing a Claude Code setup token"),
+      ),
       githubTokenFile: Flag.string("github-token-file").pipe(
         Flag.optional,
         Flag.withDescription("Private file containing a GitHub token"),
@@ -2180,7 +2210,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Read the GitHub CLI credential from gh auth token"),
       ),
     },
-    ({ codexAuth, github, githubTokenFile, piAuth }) =>
+    ({ claudeTokenFile, codexAuth, github, githubTokenFile, piAuth }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         const target = yield* credentials(options);
@@ -2191,6 +2221,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             cwd: runtime.cwd,
             piAuth: Option.getOrUndefined(piAuth),
             codexAuth: Option.getOrUndefined(codexAuth),
+            claudeTokenFile: Option.getOrUndefined(claudeTokenFile),
             githubTokenFile: Option.getOrUndefined(githubTokenFile),
             githubCli: github,
           }),

@@ -21,10 +21,12 @@ const GATE_OWNERS = Object.freeze([
   exact("scripts/ci-path-gates.test.mjs"),
 ]);
 
-// Current native Codex server metafile closure. Protocol leaves stay exact so
+// Current native sidecar server (Codex, Claude Code) metafile closure. Protocol leaves stay exact so
 // unrelated CLI/runtime protocol changes do not rebuild the image.
 const CONTAINER_SOURCE_INPUTS = Object.freeze([
+  tree("worker/src/agent/claude"),
   tree("worker/src/agent/codex"),
+  tree("worker/src/agent/sidecar"),
   exact("worker/src/credentials/managed.ts"),
   exact("worker/src/runtime-cli/paths.ts"),
   exact("worker/src/sandbox/config-contracts.ts"),
@@ -36,6 +38,8 @@ const CONTAINER_SOURCE_INPUTS = Object.freeze([
   exact("worker/src/shared/json.ts"),
   ...[
     "agents/agent-selection.ts",
+    "agents/agents.ts",
+    "agents/claude/claude-model-capabilities.ts",
     "agents/agent-instructions.ts",
     "settings/cloud-settings.ts",
     "agents/codex/codex-app-server.ts",

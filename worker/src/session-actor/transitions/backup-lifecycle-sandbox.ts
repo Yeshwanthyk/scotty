@@ -1,14 +1,18 @@
 import { RuntimeCliMaterializer } from "../../runtime-cli/materializer";
 import {
-  startCodexSandbox,
-  saveCodexSandbox,
-  stopSavedCodexSandbox,
-  waitForCodexSandbox,
-  CODEX_RESUME_READINESS_TIMEOUT_MILLIS,
-  readCodexSandbox,
-  codexSandboxProcessId,
-} from "../../agent/codex/sandbox";
-import type { AgentSelection } from "../../../../protocol/agents/agent-selection";
+  startSidecarSandbox,
+  saveSidecarSandbox,
+  stopSavedSidecarSandbox,
+  waitForSidecarSandbox,
+  SIDECAR_RESUME_READINESS_TIMEOUT_MILLIS,
+  readSidecarSandbox,
+  sidecarProcessId,
+} from "../../agent/sidecar/client";
+import type {
+  AgentSelection,
+  SidecarAgentSelection,
+} from "../../../../protocol/agents/agent-selection";
+import { isSidecarSelection } from "../../../../protocol/agents/agents";
 import { Clock, Context, Effect, Layer, Match, Result, Schema } from "effect";
 import { BackupStore, type BackupStoreFailure } from "../../backups/store";
 import { ContainerAuth, PI_SESSION_PROCESS_ID } from "../../sandbox/auth";
@@ -79,7 +83,7 @@ export class BackupLifecycleSandboxFailure extends Schema.TaggedError<BackupLife
 
 export interface BackupLifecycleAttempt {
   readonly configuration?: import("../configuration").SessionConfiguration;
-  readonly codex?: {
+  readonly sidecar?: {
     readonly token: string;
     readonly threadId: string;
     readonly initialTurnId: string;
@@ -208,6 +212,29 @@ const mapBackupMutationFailure = (
 
 const timestamp = Effect.map(Clock.currentTimeMillis, (now) => new Date(now).toISOString());
 
+/** Sidecar control identity and restore fence carried by this attempt. */
+const sidecarTarget = Effect.fnUntraced(function* (
+  input: BackupLifecycleAttempt,
+  selection: SidecarAgentSelection,
+) {
+  if (input.sidecar === undefined)
+    return yield* boundaryFailure("rejected_before_admission", "sidecar_restore_identity_missing");
+  const { token, threadId, initialTurnId } = input.sidecar;
+  return {
+    identity: {
+      sessionId: input.sessionId,
+      generation: input.runtimeGeneration,
+      selection,
+      token,
+    },
+    restore: { threadId, initialTurnId },
+  };
+});
+const sidecarBackupIdentity = (input: BackupLifecycleAttempt) =>
+  input.sidecar === undefined
+    ? {}
+    : { sidecar: { threadId: input.sidecar.threadId, initialTurnId: input.sidecar.initialTurnId } };
+
 const markerPath = (sessionId: string): string =>
   `${sessionRoot(sessionId)}/.scotty/backup-attempt.json`;
 
@@ -290,23 +317,11 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const quiescePi = Effect.fnUntraced(function* (
       input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
     ) {
-      if (input.selection.agent === "codex") {
-        if (input.codex === undefined)
-          return yield* boundaryFailure(
-            "rejected_before_admission",
-            "codex_restore_identity_missing",
-          );
-        yield* saveCodexSandbox(
-          {
-            sessionId: input.sessionId,
-            generation: input.runtimeGeneration,
-            selection: input.selection,
-            token: input.codex.token,
-          },
-          input.codex,
-        ).pipe(
+      if (isSidecarSelection(input.selection)) {
+        const sidecar = yield* sidecarTarget(input, input.selection);
+        yield* saveSidecarSandbox(sidecar.identity, sidecar.restore).pipe(
           Effect.provideService(SandboxRuntime, runtime),
-          Effect.mapError((error) => mapRuntimeFailure(error, "codex_save_outcome_unknown")),
+          Effect.mapError((error) => mapRuntimeFailure(error, "sidecar_save_outcome_unknown")),
         );
         return;
       }
@@ -362,11 +377,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
       return {
         handle,
         identity: {
-          ...(input.codex === undefined
-            ? {}
-            : {
-                codex: { threadId: input.codex.threadId, initialTurnId: input.codex.initialTurnId },
-              }),
+          ...sidecarBackupIdentity(input),
           backupId: handle.id,
           preparedAt,
           confirmedAt: null,
@@ -414,11 +425,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
         localBucket: true,
       });
       return {
-        ...(input.codex === undefined
-          ? {}
-          : {
-              codex: { threadId: input.codex.threadId, initialTurnId: input.codex.initialTurnId },
-            }),
+        ...sidecarBackupIdentity(input),
         backupId: input.attempt,
         preparedAt: yield* timestamp,
         confirmedAt: yield* timestamp,
@@ -506,35 +513,20 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
       yield* runtime
         .setEnvVars(input.configuration.environment)
         .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "resume_environment_failed")));
-      if (input.selection.agent === "codex") {
-        if (input.codex === undefined)
-          return yield* boundaryFailure(
-            "rejected_before_admission",
-            "codex_restore_identity_missing",
-          );
+      if (isSidecarSelection(input.selection)) {
+        const sidecar = yield* sidecarTarget(input, input.selection);
         if (input.transitionFence.phase === "BackupConfirmed")
-          yield* stopSavedCodexSandbox({
-            sessionId: input.sessionId,
-            generation: input.runtimeGeneration,
-            selection: input.selection,
-            token: input.codex.token,
-          }).pipe(
+          yield* stopSavedSidecarSandbox(sidecar.identity).pipe(
             Effect.provideService(SandboxRuntime, runtime),
-            Effect.mapError((error) => mapRuntimeFailure(error, "codex_server_stop_unobserved")),
+            Effect.mapError((error) => mapRuntimeFailure(error, "sidecar_server_stop_unobserved")),
           );
-        return yield* startCodexSandbox(
-          {
-            sessionId: input.sessionId,
-            generation: input.runtimeGeneration,
-            selection: input.selection,
-            token: input.codex.token,
-            configuration: input.configuration,
-          },
+        return yield* startSidecarSandbox(
+          { ...sidecar.identity, configuration: input.configuration },
           input.credentials.grants,
-          { threadId: input.codex.threadId, initialTurnId: input.codex.initialTurnId },
+          sidecar.restore,
         ).pipe(
           Effect.provideService(SandboxRuntime, runtime),
-          Effect.mapError((error) => mapRuntimeFailure(error, "codex_resume_outcome_unknown")),
+          Effect.mapError((error) => mapRuntimeFailure(error, "sidecar_resume_outcome_unknown")),
         );
       }
       yield* auth
@@ -557,38 +549,29 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     ) {
       if (input.runtime.runtimeGeneration !== input.runtimeGeneration)
         return yield* boundaryFailure("rejected_before_admission", "runtime_generation_mismatch");
-      if (input.selection.agent === "codex") {
-        if (input.codex === undefined)
-          return yield* boundaryFailure(
-            "rejected_before_admission",
-            "codex_restore_identity_missing",
-          );
-        const snapshot = yield* waitForCodexSandbox(
-          {
-            sessionId: input.sessionId,
-            generation: input.runtimeGeneration,
-            selection: input.selection,
-            token: input.codex.token,
-          },
-          input.readinessTimeoutMillis ?? CODEX_RESUME_READINESS_TIMEOUT_MILLIS,
+      if (isSidecarSelection(input.selection)) {
+        const sidecar = yield* sidecarTarget(input, input.selection);
+        const snapshot = yield* waitForSidecarSandbox(
+          sidecar.identity,
+          input.readinessTimeoutMillis ?? SIDECAR_RESUME_READINESS_TIMEOUT_MILLIS,
         ).pipe(
           Effect.provideService(SandboxRuntime, runtime),
           Effect.mapError((error) =>
             mapRuntimeFailure(
               error,
               error.reason === "nonzero_exit"
-                ? "codex_resume_supervisor_exited"
-                : "codex_resume_readiness_unknown",
+                ? "sidecar_resume_supervisor_exited"
+                : "sidecar_resume_readiness_unknown",
             ),
           ),
         );
-        if (snapshot.threadId !== input.codex.threadId)
+        if (snapshot.threadId !== sidecar.restore.threadId)
           return yield* boundaryFailure(
             "rejected_before_admission",
-            "codex_resume_thread_mismatch",
+            "sidecar_resume_thread_mismatch",
           );
         return {
-          processId: codexSandboxProcessId(input.runtimeGeneration),
+          processId: sidecarProcessId(input.selection.agent, input.runtimeGeneration),
           supervisorEpoch: snapshot.threadId,
           runtimeGeneration: input.runtimeGeneration,
           containerIncarnation: input.runtime.containerIncarnation,
@@ -623,39 +606,29 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
           "rejected_before_admission",
           "transport_proof_fence_mismatch",
         );
-      if (input.selection.agent === "codex") {
-        if (input.codex === undefined)
-          return yield* boundaryFailure(
-            "rejected_before_admission",
-            "codex_restore_identity_missing",
-          );
-        const snapshot = yield* readCodexSandbox(
-          {
-            sessionId: input.sessionId,
-            generation: input.runtimeGeneration,
-            selection: input.selection,
-            token: input.codex.token,
-          },
-          input.codex.threadId,
-        ).pipe(
+      if (isSidecarSelection(input.selection)) {
+        const sidecar = yield* sidecarTarget(input, input.selection);
+        const { threadId, initialTurnId } = sidecar.restore;
+        const snapshot = yield* readSidecarSandbox(sidecar.identity, threadId).pipe(
           Effect.provideService(SandboxRuntime, runtime),
-          Effect.mapError((error) => mapRuntimeFailure(error, "codex_resume_transport_unknown")),
+          Effect.mapError((error) => mapRuntimeFailure(error, "sidecar_resume_transport_unknown")),
         );
         if (
           !snapshot.ready ||
           snapshot.failure !== null ||
           snapshot.prompt.status !== "terminal" ||
-          snapshot.turns?.[0]?.id !== input.codex.initialTurnId ||
-          input.supervisor.supervisorEpoch !== input.codex.threadId ||
-          input.supervisor.processId !== codexSandboxProcessId(input.runtimeGeneration)
+          snapshot.turns?.[0]?.id !== initialTurnId ||
+          input.supervisor.supervisorEpoch !== threadId ||
+          input.supervisor.processId !==
+            sidecarProcessId(input.selection.agent, input.runtimeGeneration)
         )
           return yield* boundaryFailure(
             "rejected_before_admission",
-            "codex_resume_history_mismatch",
+            "sidecar_resume_history_mismatch",
           );
         return {
-          transportId: input.codex.initialTurnId,
-          supervisorEpoch: input.codex.threadId,
+          transportId: initialTurnId,
+          supervisorEpoch: threadId,
           runtimeGeneration: input.runtimeGeneration,
           containerIncarnation: input.runtime.containerIncarnation,
         };
@@ -792,36 +765,36 @@ const baseResumeAttempt = (
   },
 });
 
-const codexAttempt = Effect.fnUntraced(function* (
+const sidecarAttempt = Effect.fnUntraced(function* (
   metadataStore: SessionActorMetadataStore["Service"],
   authority: SleepProviderContext["authority"],
   attempt: BackupLifecycleAttempt,
-  expected: BackupIdentity["codex"],
+  expected: BackupIdentity["sidecar"],
 ) {
-  if (attempt.selection.agent !== "codex") return attempt;
+  if (!isSidecarSelection(attempt.selection)) return attempt;
   if (expected === undefined)
-    return yield* boundaryFailure("rejected_before_admission", "codex_restore_identity_missing");
+    return yield* boundaryFailure("rejected_before_admission", "sidecar_restore_identity_missing");
   const metadata = yield* metadataStore
     .read(authority)
     .pipe(
       Effect.mapError(() =>
-        boundaryFailure("rejected_before_admission", "codex_metadata_unavailable"),
+        boundaryFailure("rejected_before_admission", "sidecar_metadata_unavailable"),
       ),
     );
-  if (metadata?.codexControl === undefined)
-    return yield* boundaryFailure("rejected_before_admission", "codex_metadata_unavailable");
-  return { ...attempt, codex: { ...expected, token: metadata.codexControl.token } };
+  if (metadata?.sidecarControl === undefined)
+    return yield* boundaryFailure("rejected_before_admission", "sidecar_metadata_unavailable");
+  return { ...attempt, sidecar: { ...expected, token: metadata.sidecarControl.token } };
 });
 const sleepAttempt = (context: SleepProviderContext, store: SessionActorMetadataStore["Service"]) =>
-  codexAttempt(store, context.authority, baseSleepAttempt(context), {
+  sidecarAttempt(store, context.authority, baseSleepAttempt(context), {
     threadId: context.transition.proof.readiness.supervisor.supervisorEpoch,
     initialTurnId: context.transition.proof.readiness.transport.transportId,
   }).pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
-const checkpointCodexAttempt = (
+const checkpointSidecarAttempt = (
   context: CheckpointProviderContext,
   store: SessionActorMetadataStore["Service"],
 ) =>
-  codexAttempt(
+  sidecarAttempt(
     store,
     context.authority,
     {
@@ -838,11 +811,11 @@ const resumeAttempt = (
   generation: string,
   store: SessionActorMetadataStore["Service"],
 ) =>
-  codexAttempt(
+  sidecarAttempt(
     store,
     context.authority,
     baseResumeAttempt(context, generation),
-    context.transition.proof.backup.codex,
+    context.transition.proof.backup.sidecar,
   ).pipe(Effect.catchTag("BackupLifecycleSandboxFailure", resumeFailure));
 
 const resumedRuntimeGeneration = (context: ResumeProviderContext): string =>
@@ -923,7 +896,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
         Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure),
       );
       yield* sandbox
-        .quiescePi({ ...(yield* checkpointCodexAttempt(context, metadataStore)), credentials })
+        .quiescePi({ ...(yield* checkpointSidecarAttempt(context, metadataStore)), credentials })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
       const observedAt = yield* providerTimestamp();
       return {
@@ -936,7 +909,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
 
     const syncWorkspace = Effect.fnUntraced(function* (context: CheckpointProviderContext) {
       yield* sandbox
-        .syncWorkspace(yield* checkpointCodexAttempt(context, metadataStore))
+        .syncWorkspace(yield* checkpointSidecarAttempt(context, metadataStore))
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
       return {
         _tag: "WorkspaceSynced" as const,
@@ -947,7 +920,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
 
     const prepareBackup = Effect.fnUntraced(function* (context: CheckpointProviderContext) {
       const prepared = yield* sandbox
-        .prepareBackup(yield* checkpointCodexAttempt(context, metadataStore))
+        .prepareBackup(yield* checkpointSidecarAttempt(context, metadataStore))
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
       return {
         _tag: "BackupPrepared" as const,
@@ -968,7 +941,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
           ? prepared
           : yield* sandbox
               .confirmBackup({
-                ...(yield* checkpointCodexAttempt(context, metadataStore)),
+                ...(yield* checkpointSidecarAttempt(context, metadataStore)),
                 prepared,
               })
               .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
@@ -986,7 +959,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
       );
       yield* sandbox
         .startSupervisor({
-          ...(yield* checkpointCodexAttempt(context, metadataStore)),
+          ...(yield* checkpointSidecarAttempt(context, metadataStore)),
           credentials,
         })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
@@ -998,7 +971,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
     });
 
     const confirmTransportReady = Effect.fnUntraced(function* (context: CheckpointProviderContext) {
-      const attemptInput = yield* checkpointCodexAttempt(context, metadataStore);
+      const attemptInput = yield* checkpointSidecarAttempt(context, metadataStore);
       const runtime = context.transition.proof.readiness.runtime;
       const supervisor = yield* sandbox
         .confirmSupervisorReady({ ...attemptInput, runtime })
@@ -1019,7 +992,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
       const readiness = context.transition.proof.readiness;
       const transport = yield* sandbox
         .verifyTransport({
-          ...(yield* checkpointCodexAttempt(context, metadataStore)),
+          ...(yield* checkpointSidecarAttempt(context, metadataStore)),
           runtime: readiness.runtime,
           supervisor: readiness.supervisor,
         })
@@ -1038,7 +1011,7 @@ export const checkpointSandboxTransitionProviderLayer: Layer.Layer<
       return yield* Match.value(context.transition.phase).pipe(
         Match.when("Syncing", () =>
           Effect.gen(function* () {
-            const attempt = yield* checkpointCodexAttempt(context, metadataStore);
+            const attempt = yield* checkpointSidecarAttempt(context, metadataStore);
             const backup = yield* sandbox
               .observePreparedBackup(attempt)
               .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", checkpointFailure));
@@ -1321,7 +1294,7 @@ export const resumeSandboxTransitionProviderLayer: Layer.Layer<
           runtime,
           readinessTimeoutMillis: Math.max(
             0,
-            Math.min(remaining, CODEX_RESUME_READINESS_TIMEOUT_MILLIS),
+            Math.min(remaining, SIDECAR_RESUME_READINESS_TIMEOUT_MILLIS),
           ),
         })
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", resumeFailure));

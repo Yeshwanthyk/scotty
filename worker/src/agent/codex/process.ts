@@ -1,4 +1,5 @@
-import { runtimeCliPath } from "../../runtime-cli/paths";
+import { sidecarChildEnvironment } from "../sidecar/environment";
+import { SidecarAbsolutePath } from "../sidecar/protocol";
 import { AgentInstructionsSchema } from "../../../../protocol/agents/agent-instructions";
 import { importCodexSavedState } from "./persistence";
 import { CloudSettingsEnvironmentSchema } from "../../../../protocol/settings/cloud-settings";
@@ -25,7 +26,6 @@ import {
   formatManagedHandle,
   parseManagedHandle,
 } from "../../../../protocol/credentials/credentials";
-import { sessionRoot } from "../../sandbox/workspace";
 import {
   CodexModelIdentifier,
   CodexReasoningEffort,
@@ -33,13 +33,6 @@ import {
   supportsCodexModelSelection,
 } from "../../../../protocol/agents/codex/codex-model-capabilities";
 
-const AbsolutePath = Schema.String.check(
-  Schema.isPattern(/^\//u),
-  Schema.makeFilter(
-    (value) => !value.includes("\0") && !value.includes("\r") && !value.includes("\n"),
-  ),
-  Schema.isMaxLength(4096),
-);
 const ThreadId = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(256),
@@ -48,15 +41,13 @@ const ThreadId = Schema.String.check(
   ),
 );
 const Deadline = Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 120000 }));
-const CLOUDFLARE_CA_FILE = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
-const PACKAGED_COREPACK_HOME = "/opt/corepack";
 export const CodexLaunch = Schema.Struct({
-  agentInstructionsPath: AbsolutePath,
+  agentInstructionsPath: SidecarAbsolutePath,
   environment: Schema.optionalKey(CloudSettingsEnvironmentSchema),
   sandboxBundleDigest: Schema.optionalKey(SandboxDigestSchema),
-  binary: AbsolutePath,
-  runtimeDir: AbsolutePath,
-  workspace: AbsolutePath,
+  binary: SidecarAbsolutePath,
+  runtimeDir: SidecarAbsolutePath,
+  workspace: SidecarAbsolutePath,
   sessionId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u))),
   githubHandle: Schema.optionalKey(
     Schema.String.check(
@@ -259,16 +250,7 @@ export const launchProcess = Effect.fnUntraced(function* (
     yield* verifyCodeModeHost(options.binary, homes.home, options.requestTimeoutMs).pipe(
       Effect.mapError(() => new CodexHostError({ code: "spawn_failed" })),
     );
-  const caFile = yield* Effect.result(fs.stat(CLOUDFLARE_CA_FILE));
-  const trustedCaReadable =
-    Result.isSuccess(caFile) &&
-    caFile.success.type === "File" &&
-    Result.isSuccess(yield* Effect.result(fs.access(CLOUDFLARE_CA_FILE, { readable: true })));
-  const corepackHome = yield* Effect.result(fs.stat(PACKAGED_COREPACK_HOME));
-  const packagedCorepackReadable =
-    Result.isSuccess(corepackHome) &&
-    corepackHome.success.type === "Directory" &&
-    Result.isSuccess(yield* Effect.result(fs.access(PACKAGED_COREPACK_HOME, { readable: true })));
+  const baseEnvironment = yield* sidecarChildEnvironment({ ...options, home: homes.home });
   const resourceScope = yield* Scope.make();
   yield* Effect.addFinalizer(() => Scope.close(resourceScope, Exit.void));
   const child = yield* ChildProcess.make(options.binary, ["app-server", "--listen", "stdio://"], {
@@ -278,25 +260,8 @@ export const launchProcess = Effect.fnUntraced(function* (
     forceKillAfter: options.stopTimeoutMs,
     stdin: { stream: "pipe", endOnDone: true },
     env: {
-      ...options.environment,
-      HOME: homes.home,
+      ...baseEnvironment,
       CODEX_HOME: homes.codexHome,
-      TMPDIR: homes.home,
-      // Match the image tool directories without inheriting ambient credentials.
-      PATH:
-        options.sessionId === undefined
-          ? "/usr/local/bin:/usr/bin:/bin"
-          : runtimeCliPath(options.sessionId),
-      ...(trustedCaReadable ? { NODE_EXTRA_CA_CERTS: CLOUDFLARE_CA_FILE } : {}),
-      ...(packagedCorepackReadable ? { COREPACK_HOME: PACKAGED_COREPACK_HOME } : {}),
-      ...(options.sessionId === undefined ? {} : { SCOTTY_SESSION_ID: options.sessionId }),
-      ...(options.githubHandle === undefined || options.sessionId === undefined
-        ? {}
-        : {
-            GH_TOKEN: options.githubHandle,
-            GIT_CONFIG_GLOBAL: `${sessionRoot(options.sessionId)}/.pi-agent/gitconfig`,
-            GIT_TERMINAL_PROMPT: "0",
-          }),
       SCOTTY_CODEX_SENTINEL: options.credential.sentinel,
       ...(port === undefined
         ? {}

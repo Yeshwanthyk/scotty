@@ -85,7 +85,7 @@ async function harnessForArchive(changeRevision = false) {
   harness.memory.values.set(sessionHarnessKeys.actorMetadata, {
     ...metadata,
     selection,
-    codexControl: { token: "c".repeat(64), initialPrompt: "Investigate the failing build" },
+    sidecarControl: { token: "c".repeat(64), initialPrompt: "Investigate the failing build" },
   });
   return { harness, tar };
 }

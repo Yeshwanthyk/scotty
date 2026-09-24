@@ -1,5 +1,6 @@
 import { PiConsoleImagesSchema } from "../../../protocol/agents/pi/pi-console";
 import { AgentSelectionSchema } from "../../../protocol/agents/agent-selection";
+import { isSidecarSelection } from "../../../protocol/agents/agents";
 import { SessionConfigurationSchema } from "./configuration";
 import { Match, Predicate, Result, Schema } from "effect";
 import {
@@ -86,7 +87,7 @@ const CreateResourceObservationsSchema = Schema.Struct({
   credentialGrants: Schema.NullOr(CredentialGrantCreateObservationSchema),
 });
 
-const CodexControlMetadataSchema = Schema.Struct({
+const SidecarControlMetadataSchema = Schema.Struct({
   token: Sha256DigestSchema,
   initialPrompt: InitialPromptSchema,
   images: Schema.optionalKey(PiConsoleImagesSchema),
@@ -94,7 +95,7 @@ const CodexControlMetadataSchema = Schema.Struct({
 export const SessionActorMetadataSchema = Schema.Struct({
   selection: AgentSelectionSchema,
   configuration: SessionConfigurationSchema,
-  codexControl: Schema.optionalKey(CodexControlMetadataSchema),
+  sidecarControl: Schema.optionalKey(SidecarControlMetadataSchema),
   sessionId: SafeReferenceSchema,
   repository: RepositoryIdentitySchema,
   branch: SessionBranchSchema,
@@ -114,7 +115,7 @@ export const decodeSessionActorMetadata = Schema.decodeUnknownResult(SessionActo
 export const SessionActorMetadataInputSchema = Schema.Struct({
   selection: AgentSelectionSchema,
   configuration: SessionConfigurationSchema,
-  codexControl: Schema.optionalKey(CodexControlMetadataSchema),
+  sidecarControl: Schema.optionalKey(SidecarControlMetadataSchema),
   branch: SessionBranchSchema,
   createRepositoryIfMissing: Schema.Boolean,
   hardCap: HardCapMetadataSchema,
@@ -236,7 +237,7 @@ export const validateSessionActorMetadata = (
     metadata.repository !== authority.session.repository ||
     JSON.stringify(metadata.selection) !== JSON.stringify(authority.session.selection) ||
     JSON.stringify(metadata.configuration) !== JSON.stringify(authority.session.configuration) ||
-    (metadata.selection.agent === "codex") !== (metadata.codexControl !== undefined)
+    isSidecarSelection(metadata.selection) !== (metadata.sidecarControl !== undefined)
   )
     return invalid("authority_identity_mismatch");
 
@@ -265,7 +266,7 @@ export const makeSessionActorMetadata = (
   const metadata: SessionActorMetadata = {
     selection: input.selection,
     configuration: input.configuration,
-    ...(input.codexControl === undefined ? {} : { codexControl: input.codexControl }),
+    ...(input.sidecarControl === undefined ? {} : { sidecarControl: input.sidecarControl }),
     sessionId: authority.session.id,
     repository: authority.session.repository,
     branch: input.branch,
@@ -352,7 +353,7 @@ const sameImmutableConfiguration = (
   current.sessionId === next.sessionId &&
   JSON.stringify(current.selection) === JSON.stringify(next.selection) &&
   JSON.stringify(current.configuration) === JSON.stringify(next.configuration) &&
-  JSON.stringify(current.codexControl) === JSON.stringify(next.codexControl) &&
+  JSON.stringify(current.sidecarControl) === JSON.stringify(next.sidecarControl) &&
   current.repository === next.repository &&
   current.branch === next.branch &&
   current.createRepositoryIfMissing === next.createRepositoryIfMissing &&

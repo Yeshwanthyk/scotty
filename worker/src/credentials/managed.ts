@@ -1,7 +1,11 @@
 import { Option, Result, Schema } from "effect";
 import type { PiCredential } from "../../../protocol/agents/pi/pi-auth";
+import type { AgentId } from "../../../protocol/agents/agent-selection";
+import { agentProvider, type ModelCredentialProvider } from "../../../protocol/agents/agents";
 import {
   CredentialGrantSchema,
+  CredentialKindSchema,
+  credentialHandleSlots,
   formatManagedHandle,
   isManagedHandle,
   parseManagedHandle,
@@ -101,6 +105,20 @@ export const piApiKeyHandle = (grants: ReadonlyArray<CredentialGrant>): string |
 export const piAccessHandle = (grants: ReadonlyArray<CredentialGrant>): string | undefined =>
   piManagedHandle(grants, "openai-codex", "access");
 
+export const anthropicAccessHandle = (grants: ReadonlyArray<CredentialGrant>): string | undefined =>
+  grantHandle(grants, "anthropic-auth", "anthropic", "access");
+
+const modelCredentialKind = {
+  openai: "pi-auth",
+  anthropic: "anthropic-auth",
+} as const satisfies { readonly [Provider in ModelCredentialProvider]: CredentialKind };
+
+/** Whether the Session grants include the model credential the agent runs on. */
+export const hasAgentCredential = (
+  agent: AgentId,
+  grants: ReadonlyArray<CredentialGrant>,
+): boolean => grants.some(({ kind }) => kind === modelCredentialKind[agentProvider(agent)]);
+
 export const piAuthJson = (credentials: SessionRuntimeCredentials): string => {
   const projected: Partial<Record<ManagedPiProvider, PiCredential>> = {};
   if (credentials.piProviders.includes("openai")) {
@@ -186,8 +204,12 @@ export const githubRepositoryFromUrl = (url: URL): string | undefined => {
   return repository !== undefined && isRepositoryIdentity(repository) ? repository : undefined;
 };
 
-export const credentialKindForHandle = (handle: ManagedHandle): CredentialKind =>
-  handle.provider === "github" && handle.slot === "git-https" ? "github-cli" : "pi-auth";
+export const credentialKindForHandle = (handle: ManagedHandle): CredentialKind | undefined =>
+  CredentialKindSchema.literals.find((kind) =>
+    credentialHandleSlots[kind].some(
+      ({ provider, slot }) => provider === handle.provider && slot === handle.slot,
+    ),
+  );
 
 export const credentialGrantHasHandle = (grant: CredentialGrant, handle: ManagedHandle): boolean =>
   grant.name === handle.name &&

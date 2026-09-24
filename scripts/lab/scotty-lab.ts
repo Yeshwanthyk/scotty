@@ -1307,8 +1307,8 @@ export const codexCheckpointProof = (
     backup.confirmedAt === null ||
     backup.backupId === previousBackup?.backupId ||
     backup.sourceRuntimeGeneration !== prior.runtime.runtimeGeneration ||
-    backup.codex?.threadId !== prior.supervisor.supervisorEpoch ||
-    backup.codex?.initialTurnId !== prior.transport.transportId ||
+    backup.sidecar?.threadId !== prior.supervisor.supervisorEpoch ||
+    backup.sidecar?.initialTurnId !== prior.transport.transportId ||
     restored.supervisor.supervisorEpoch !== prior.supervisor.supervisorEpoch ||
     restored.runtime.runtimeGeneration !== prior.runtime.runtimeGeneration ||
     state.stable.backups.currentBackupId !== backup.backupId ||

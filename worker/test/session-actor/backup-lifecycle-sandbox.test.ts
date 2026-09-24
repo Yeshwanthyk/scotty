@@ -132,7 +132,7 @@ describe("BackupLifecycleSandbox", () => {
             ...attempt,
             sessionId: "a0b1c2d3e4f5",
             selection: { agent: "codex", model: "gpt-5.4", effort: "high" },
-            codex: { token: "a".repeat(64), threadId: "thread-1", initialTurnId: "turn-1" },
+            sidecar: { token: "a".repeat(64), threadId: "thread-1", initialTurnId: "turn-1" },
             runtime: {
               providerRuntimeId: "a0b1c2d3e4f5",
               runtimeGeneration: attempt.runtimeGeneration,
@@ -155,7 +155,7 @@ describe("BackupLifecycleSandbox", () => {
       ).pipe(Effect.result);
       assert.ok(Result.isFailure(result));
       assert.equal(result.failure.outcome, "rejected_before_admission");
-      assert.equal(result.failure.safeResultCode, "codex_resume_supervisor_exited");
+      assert.equal(result.failure.safeResultCode, "sidecar_resume_supervisor_exited");
     }),
   );
 
@@ -480,9 +480,10 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
     ...attempt,
     sessionId: "a0b1c2d3e4f5",
     selection: { agent: "codex", model: "gpt-5.4", effort: "high" },
-    codex: { token: "a".repeat(64), threadId: "native-thread", initialTurnId: "first-turn" },
+    sidecar: { token: "a".repeat(64), threadId: "native-thread", initialTurnId: "first-turn" },
   };
   const snapshot = {
+    agent: "codex",
     generation: codex.runtimeGeneration,
     threadId: "native-thread",
     version: CODEX_VERSION,
@@ -490,9 +491,6 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
       model: "gpt-5.4",
       effort: "high",
       workspace: "/workspace/a0b1c2d3e4f5",
-      modelProvider: "scotty-managed",
-      approvalPolicy: "never",
-      sandbox: "dangerFullAccess",
     },
     ready: true,
     failure: null,
@@ -536,7 +534,7 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
             yield* provider.quiescePi({ ...codex, credentials: sessionRuntimeCredentials([]) });
             yield* provider.syncWorkspace(codex);
             const prepared = yield* provider.prepareBackup(codex);
-            assert.deepStrictEqual(prepared.identity.codex, {
+            assert.deepStrictEqual(prepared.identity.sidecar, {
               threadId: "native-thread",
               initialTurnId: "first-turn",
             });
@@ -655,8 +653,8 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
             assert.equal(path, "/save");
             return Response.json({
               generation: codex.runtimeGeneration,
-              threadId: codex.codex?.threadId,
-              initialTurnId: codex.codex?.initialTurnId,
+              threadId: codex.sidecar?.threadId,
+              initialTurnId: codex.sidecar?.initialTurnId,
             });
           },
           getProcess: async () =>
@@ -753,7 +751,7 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
           }),
         },
       );
-      assert.equal(failure(result).safeResultCode, "codex_server_stop_unobserved");
+      assert.equal(failure(result).safeResultCode, "sidecar_server_stop_unobserved");
       assert.deepStrictEqual(commands, []);
     }),
   );
@@ -774,7 +772,7 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
           }),
         },
       );
-      assert.equal(failure(saved).safeResultCode, "codex_save_outcome_unknown");
+      assert.equal(failure(saved).safeResultCode, "sidecar_save_outcome_unknown");
       const transport = yield* withProvider(
         Effect.flatMap(BackupLifecycleSandbox, (provider) =>
           provider.verifyTransport({
@@ -794,7 +792,7 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
           }),
         },
       );
-      assert.equal(failure(transport).safeResultCode, "codex_resume_history_mismatch");
+      assert.equal(failure(transport).safeResultCode, "sidecar_resume_history_mismatch");
     }),
   );
 });

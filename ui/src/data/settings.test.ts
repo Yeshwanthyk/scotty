@@ -13,6 +13,7 @@ const settings = {
   agent: "pi" as const,
   pi: { agent: "pi" as const, modelProvider: "openai", model: "gpt-5.4", effort: "high" as const },
   codex: { agent: "codex" as const, model: "gpt-5.6-sol", effort: "high" as const },
+  claude: { agent: "claude" as const, model: "opus", effort: "high" as const },
   customInstructions: "",
   environment: { APP_ENV: "staging" },
 };

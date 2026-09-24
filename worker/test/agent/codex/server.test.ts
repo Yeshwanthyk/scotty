@@ -22,36 +22,37 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { CodexHostError, CodexStartupFailure } from "../../../src/agent/codex/errors";
+import { CodexHostError } from "../../../src/agent/codex/errors";
+import { makeCodexRuntime, startCodexRuntime } from "../../../src/agent/codex/runtime";
+import { codexServer } from "../../../src/agent/codex/server";
 import {
-  CODEX_CONTROL_TOKEN_HEADER,
-  CODEX_CONTROL_GENERATION_HEADER,
-  CodexAdmission,
-  CodexBridgeError,
-  makeCodexRuntime,
-  startCodexRuntime,
-  readCodexSnapshot,
-} from "../../../src/agent/codex/runtime";
+  SIDECAR_CONTROL_TOKEN_HEADER,
+  SIDECAR_CONTROL_GENERATION_HEADER,
+  SidecarAdmission,
+  SidecarBridgeError,
+  SidecarStartupFailure,
+} from "../../../src/agent/sidecar/protocol";
+import { readSidecarSnapshot } from "../../../src/agent/sidecar/runtime";
 import {
-  makeCodexControl,
-  serveCodexControl,
-  serverProgram,
-} from "../../../src/agent/codex/server";
-import { consumeControlToken } from "../../../src/agent/codex/token-file";
+  makeSidecarControl,
+  serveSidecarControl,
+  sidecarServerProgram,
+} from "../../../src/agent/sidecar/server";
+import { consumeControlToken } from "../../../src/agent/sidecar/token-file";
 import { managedPiAccessToken } from "../../../src/credentials/managed";
 import { CODEX_VERSION } from "../../../../protocol/agents/codex/codex-app-server";
 
 const token = "a".repeat(64);
 const headers = {
-  [CODEX_CONTROL_TOKEN_HEADER]: token,
-  [CODEX_CONTROL_GENERATION_HEADER]: "generation-1",
+  [SIDECAR_CONTROL_TOKEN_HEADER]: token,
+  [SIDECAR_CONTROL_GENERATION_HEADER]: "generation-1",
 };
-const decodeAdmission = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexAdmission));
+const decodeAdmission = Schema.decodeUnknownEffect(Schema.fromJsonString(SidecarAdmission));
 const decodeError = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ error: Schema.String, outcome: Schema.String })),
 );
 const decodeStartupFailure = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(CodexStartupFailure),
+  Schema.fromJsonString(SidecarStartupFailure),
   { onExcessProperty: "error" },
 );
 
@@ -70,7 +71,8 @@ describe("Codex supervisor startup diagnostics", () => {
     assert.equal(child.status, 1);
     assert.equal(child.stderr.includes(secret), false);
     assert.deepEqual(JSON.parse(child.stderr.trim()), {
-      event: "codex_startup_failed",
+      event: "sidecar_startup_failed",
+      agent: "codex",
       stage: "input",
       code: "invalid_request",
     });
@@ -83,12 +85,13 @@ describe("Codex supervisor startup diagnostics", () => {
         (spy) => Effect.sync(() => spy.mockRestore()),
       );
       const secret = "private_token_do_not_log";
-      const exit = yield* serverProgram([secret]).pipe(Effect.exit);
+      const exit = yield* sidecarServerProgram(codexServer)([secret]).pipe(Effect.exit);
       assert.ok(Exit.isFailure(exit));
       assert.equal(log.mock.calls.length, 1);
       assert.equal(JSON.stringify(log.mock.calls).includes(secret), false);
       assert.deepEqual(yield* decodeStartupFailure(log.mock.calls[0]?.[0]), {
-        event: "codex_startup_failed",
+        event: "sidecar_startup_failed",
+        agent: "codex",
         stage: "input",
         code: "invalid_request",
       });
@@ -106,7 +109,7 @@ describe("Codex supervisor startup diagnostics", () => {
         (spy) => Effect.sync(() => spy.mockRestore()),
       );
       const secret = "private_token_do_not_log";
-      const exit = yield* serverProgram([
+      const exit = yield* sidecarServerProgram(codexServer)([
         JSON.stringify({
           generation: "generation-1",
           tokenFile: `${root}/${secret}`,
@@ -129,7 +132,8 @@ describe("Codex supervisor startup diagnostics", () => {
       assert.equal(log.mock.calls.length, 1);
       assert.equal(JSON.stringify(log.mock.calls).includes(secret), false);
       assert.deepEqual(yield* decodeStartupFailure(log.mock.calls[0]?.[0]), {
-        event: "codex_startup_failed",
+        event: "sidecar_startup_failed",
+        agent: "codex",
         stage: "token",
         code: "token_file",
         generation: "generation-1",
@@ -251,7 +255,7 @@ const exchange = Effect.fnUntraced(function* (
 
 const listening = Effect.fnUntraced(function* () {
   const f = yield* fixture();
-  const address = yield* serveCodexControl(f.runtime, token, 0);
+  const address = yield* serveSidecarControl(f.runtime, token, 0);
   assert.ok(Predicate.isTagged(address, "TcpAddress"));
   return { ...f, port: address.port };
 });
@@ -333,7 +337,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
           execute: async () => ({ text: "synthetic tool result", success: true }),
         },
       );
-      const address = yield* serveCodexControl(runtime, token, 0);
+      const address = yield* serveSidecarControl(runtime, token, 0);
       assert.ok(Predicate.isTagged(address, "TcpAddress"));
       assert.equal((yield* exchange(address.port, "GET", "/health")).status, 200);
       const admission = yield* exchange(
@@ -344,7 +348,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
       );
       assert.equal(admission.status, 202);
       const response = yield* exchange(address.port, "GET", "/snapshot");
-      const snapshot = yield* readCodexSnapshot(response.text, {
+      const snapshot = yield* readSidecarSnapshot(response.text, {
         generation: "generation-1",
         threadId: "thread",
         turnId: "turn",
@@ -369,12 +373,12 @@ createInterface({input:process.stdin}).on('line', (line) => {
         const f = yield* listening();
         const health = yield* exchange(f.port, "GET", "/health");
         assert.equal(health.status, 200);
-        const proof = yield* readCodexSnapshot(health.text, { generation: "generation-1" });
+        const proof = yield* readSidecarSnapshot(health.text, { generation: "generation-1" });
         assert.equal(proof.threadId, "thread");
         for (const bad of [
-          { ...headers, [CODEX_CONTROL_TOKEN_HEADER]: "b".repeat(64) },
-          { ...headers, [CODEX_CONTROL_TOKEN_HEADER]: "short" },
-          { ...headers, [CODEX_CONTROL_GENERATION_HEADER]: "old" },
+          { ...headers, [SIDECAR_CONTROL_TOKEN_HEADER]: "b".repeat(64) },
+          { ...headers, [SIDECAR_CONTROL_TOKEN_HEADER]: "short" },
+          { ...headers, [SIDECAR_CONTROL_GENERATION_HEADER]: "old" },
         ]) {
           const response = yield* exchange(
             f.port,
@@ -401,7 +405,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
         });
         const running = yield* exchange(f.port, "GET", "/snapshot");
         assert.equal(
-          (yield* readCodexSnapshot(running.text, { generation: "generation-1" })).prompt.status,
+          (yield* readSidecarSnapshot(running.text, { generation: "generation-1" })).prompt.status,
           "running",
         );
         const steered = yield* exchange(
@@ -434,8 +438,10 @@ createInterface({input:process.stdin}).on('line', (line) => {
         yield* TestClock.adjust(1);
         const read = yield* exchange(f.port, "GET", "/snapshot");
         assert.deepEqual(
-          (yield* readCodexSnapshot(read.text, { generation: "generation-1", threadId: "thread" }))
-            .prompt,
+          (yield* readSidecarSnapshot(read.text, {
+            generation: "generation-1",
+            threadId: "thread",
+          })).prompt,
           { status: "terminal", turnId: "turn", outcome: "completed", text: "synthetic answer" },
         );
         const absentReceipt = yield* exchange(
@@ -469,7 +475,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
         for (const path of ["/health", "/snapshot", "/prompt", "/message", "/interrupt", "/stop"]) {
           const response = yield* exchange(f.port, "GET", path, undefined, {
             ...headers,
-            [CODEX_CONTROL_TOKEN_HEADER]: "",
+            [SIDECAR_CONTROL_TOKEN_HEADER]: "",
           });
           assert.equal(response.status, 401);
         }
@@ -532,7 +538,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
       yield* TestClock.adjust(1);
       assert.equal((yield* exchange(f.port, "GET", "/health")).status, 503);
       const response = yield* exchange(f.port, "GET", "/snapshot");
-      const proof = yield* readCodexSnapshot(response.text, { generation: "generation-1" });
+      const proof = yield* readSidecarSnapshot(response.text, { generation: "generation-1" });
       assert.equal(proof.failure, "unexpected_exit");
       assert.equal(proof.prompt.status, "failed");
       assert.equal(proof.cleanup?.cleanup, "ambiguous");
@@ -542,11 +548,11 @@ createInterface({input:process.stdin}).on('line', (line) => {
   it.effect("maps invalid snapshot to a bounded typed error without leaking raw input", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
-      const control = yield* makeCodexControl(
+      const control = yield* makeSidecarControl(
         {
           ...f.runtime,
           snapshot: Effect.fail(
-            new CodexBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" }),
+            new SidecarBridgeError({ code: "invalid_snapshot", outcome: "ambiguous" }),
           ),
         },
         token,
@@ -564,7 +570,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
   it.effect("retains serialized snapshot text beyond the former response cap", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
-      const control = yield* makeCodexControl(
+      const control = yield* makeSidecarControl(
         {
           ...f.runtime,
           snapshot: f.runtime.snapshot.pipe(
@@ -589,7 +595,7 @@ createInterface({input:process.stdin}).on('line', (line) => {
       );
       assert.equal(response.status, 200);
       const body = yield* Effect.promise(() => HttpServerResponse.toWeb(response).text());
-      const snapshot = yield* readCodexSnapshot(body, { generation: "generation-1" });
+      const snapshot = yield* readSidecarSnapshot(body, { generation: "generation-1" });
       assert.equal(snapshot.prompt.status, "terminal");
       assert.ok(body.length > 600000);
     }),
@@ -600,7 +606,10 @@ createInterface({input:process.stdin}).on('line', (line) => {
     () =>
       Effect.gen(function* () {
         const f = yield* fixture();
-        const control = yield* makeCodexControl({ ...f.runtime, admit: () => Effect.never }, token);
+        const control = yield* makeSidecarControl(
+          { ...f.runtime, admit: () => Effect.never },
+          token,
+        );
         const responseFiber = yield* control.pipe(
           Effect.provideService(
             HttpServerRequest.HttpServerRequest,
@@ -669,7 +678,7 @@ it.effect(
           return identity;
         }),
       );
-      const control = yield* makeCodexControl({ ...f.runtime, save }, token);
+      const control = yield* makeSidecarControl({ ...f.runtime, save }, token);
       const request = control.pipe(
         Effect.provideService(
           HttpServerRequest.HttpServerRequest,

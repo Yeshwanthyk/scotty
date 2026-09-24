@@ -248,7 +248,7 @@ describe("Effect Scotty lab command grammar", () => {
       preparedAt: "2026-09-14T00:00:00.000Z",
       confirmedAt: "2026-09-14T00:00:01.000Z",
       sourceRuntimeGeneration: state.stable.readiness.runtime.runtimeGeneration,
-      codex: {
+      sidecar: {
         threadId: state.stable.readiness.supervisor.supervisorEpoch,
         initialTurnId: state.stable.readiness.transport.transportId,
       },
@@ -287,7 +287,7 @@ describe("Effect Scotty lab command grammar", () => {
     };
     assert.deepEqual(codexCheckpointProof(before, after), {
       backupId: backup.backupId,
-      threadId: backup.codex.threadId,
+      threadId: backup.sidecar.threadId,
     });
     assert.isUndefined(codexCheckpointProof(before, before));
     assert.isUndefined(codexCheckpointProof(after, after));
