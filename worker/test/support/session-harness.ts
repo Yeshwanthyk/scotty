@@ -574,6 +574,7 @@ export type HarnessFailureStage =
   | "workspacePrepare";
 
 export interface HarnessOptions {
+  readonly agentTurnActivity?: SandboxEffectOptions["agentTurnActivity"];
   readonly readRuntimeCli?: () => RuntimeCliPin;
   readonly runtimeCliMaterializer?: SandboxEffectOptions["runtimeCliMaterializer"];
   readonly readCloudSettings?: () => CloudSettingsSnapshot;
@@ -1171,7 +1172,15 @@ const makeHarnessExec =
     if (archive !== undefined) return archive;
     applyHarnessFilesystemCommand(command, context.runtimeFiles);
     const configured = context.options.commandStdout?.(command);
-    return harnessSuccessfulExec(command, configured ?? (stage === "downSha" ? "deadbeef\n" : ""));
+    return harnessSuccessfulExec(
+      command,
+      configured ??
+        (command.includes("scotty_workspace_writer_sweep")
+          ? '{"found":0,"killed":0,"survivors":0}\n'
+          : stage === "downSha"
+            ? "deadbeef\n"
+            : ""),
+    );
   };
 
 export async function createSessionHarness(options: HarnessOptions = {}): Promise<SessionHarness> {
@@ -1606,6 +1615,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   } as unknown as Bindings;
 
   const sandbox = new Sandbox(ctx, env, {
+    agentTurnActivity: options.agentTurnActivity,
     actorRequestRecoveryAfterResume: options.actorRequestRecoveryAfterResume,
     actorRequestRecoveryBeforeResume: options.actorRequestRecoveryBeforeResume,
     clock: options.clock,

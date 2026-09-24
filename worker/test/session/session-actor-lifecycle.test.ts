@@ -22,6 +22,7 @@ import { HatchStore, hatchStoreLayer } from "../../src/hatch/store";
 import { sha256Hex } from "../../src/shared/digest";
 import { ScottyError } from "../../src/session/contracts";
 import { absoluteAlarmDate } from "../../src/session/absolute-alarm-time";
+import { AgentTurnActivity } from "../../src/session/agent-activity";
 import {
   CREATE_IDEMPOTENCY,
   CREATE_INPUT,
@@ -504,6 +505,86 @@ describe("absolute Container alarms", () => {
 });
 
 describe("Sandbox actor checkpoint, sleep, and resume", () => {
+  it.effect("waits for an active agent turn and sleeps when the agent is idle", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
+      let active = true;
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          agentTurnActivity: AgentTurnActivity.of({
+            isTurnActive: () => Effect.succeed(active),
+          }),
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      const drain = harness.schedules.find(
+        (schedule) => schedule.callback === "sessionActorHardCapDrain",
+      );
+      assert.isDefined(drain);
+      const fence = decodeDrainFence(drain.payload);
+      assert.isTrue(Option.isSome(fence));
+      if (Option.isNone(fence)) return;
+      yield* clock.setTime(Date.parse(fence.value.drainAt));
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      const waiting = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        waiting !== undefined &&
+          Predicate.isTagged(waiting.state, "Stable") &&
+          Predicate.isTagged(waiting.state.stable, "Warm"),
+      );
+      assert.strictEqual(harness.events.filter((event) => event === "host:createBackup").length, 0);
+      assert.strictEqual(
+        harness.schedules
+          .filter((schedule) => schedule.callback === "sessionActorHardCapDrain")
+          .at(-1)?.when,
+        5,
+      );
+
+      active = false;
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      const sleeping = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        sleeping !== undefined &&
+          Predicate.isTagged(sleeping.state, "Stable") &&
+          Predicate.isTagged(sleeping.state.stable, "Sleeping"),
+      );
+      assert.strictEqual(harness.events.filter((event) => event === "host:createBackup").length, 1);
+    }),
+  );
+
+  it("fails Sleep conclusively when workspace writers survive and leaves Checkpoint untouched", async () => {
+    const harness = await createSessionHarness({
+      commandStdout: (command) =>
+        command.includes("scotty_workspace_writer_sweep")
+          ? '{"found":1,"killed":0,"survivors":1}\n'
+          : undefined,
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.checkpointScottySession();
+    assert.isFalse(
+      harness.commands.some((command) => command.includes("scotty_workspace_writer_sweep")),
+    );
+
+    await harness.sandbox.sleepScottySession().then(
+      () => undefined,
+      () => undefined,
+    );
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      authority !== undefined &&
+        Predicate.isTagged(authority.state, "Stable") &&
+        Predicate.isTagged(authority.state.stable, "Failed"),
+    );
+    assert.strictEqual(authority.state.stable.code, "workspace_writers_survived");
+    assert.isTrue(
+      harness.commands.some((command) => command.includes("scotty_workspace_writer_sweep")),
+    );
+  });
+
   it("arms the strict final payload before the derived drain and stops create when drain arming fails", async () => {
     const harness = await createSessionHarness();
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);

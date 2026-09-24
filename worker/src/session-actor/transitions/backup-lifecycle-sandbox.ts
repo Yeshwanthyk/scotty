@@ -20,8 +20,9 @@ import {
   sessionRuntimeCredentials,
   type SessionRuntimeCredentials,
 } from "../../credentials/managed";
-import { SandboxRuntime, type SandboxRuntimeFailure } from "../../sandbox/runtime";
+import { SandboxRuntime, shellQuote, type SandboxRuntimeFailure } from "../../sandbox/runtime";
 import { sessionRoot } from "../../sandbox/workspace";
+import { workspaceWriterSweepScript, workspaceWriterSweepSurvived } from "./workspace-writer-sweep";
 import type { DirectoryBackup } from "../../session/contracts";
 import type {
   BackupIdentity,
@@ -140,6 +141,9 @@ interface BackupLifecycleSandboxShape {
     input: BackupLifecycleAttempt & { readonly credentials: SessionRuntimeCredentials },
   ) => Effect.Effect<void, BackupLifecycleSandboxFailure>;
   readonly syncWorkspace: (
+    input: BackupLifecycleAttempt,
+  ) => Effect.Effect<void, BackupLifecycleSandboxFailure>;
+  readonly sweepWorkspaceWriters: (
     input: BackupLifecycleAttempt,
   ) => Effect.Effect<void, BackupLifecycleSandboxFailure>;
   readonly prepareBackup: (
@@ -363,6 +367,27 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
       yield* runtime
         .execChecked("sync", { timeout: 30_000 })
         .pipe(Effect.mapError((error) => mapRuntimeFailure(error, "workspace_sync_failed")));
+    });
+
+    const sweepWorkspaceWriters = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
+      const command = `bash -c ${shellQuote(workspaceWriterSweepScript)} scotty-sweep ${shellQuote(sessionRoot(input.sessionId))}`;
+      const result = yield* runtime.execChecked(command, { timeout: 15_000 }).pipe(
+        Effect.mapError(() =>
+          boundaryFailure("unknown_after_admission", "workspace_writer_sweep_outcome_unknown"),
+        ),
+        Effect.timeoutOrElse({
+          duration: "16 seconds",
+          orElse: () =>
+            Effect.fail(
+              boundaryFailure("unknown_after_admission", "workspace_writer_sweep_outcome_unknown"),
+            ),
+        }),
+      );
+      const survived = workspaceWriterSweepSurvived(result.stdout);
+      if (survived === "invalid")
+        return yield* boundaryFailure("unknown_after_admission", "workspace_writer_sweep_invalid");
+      if (survived)
+        return yield* boundaryFailure("rejected_before_admission", "workspace_writers_survived");
     });
 
     const prepareBackup = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
@@ -676,6 +701,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     return BackupLifecycleSandbox.of({
       quiescePi,
       syncWorkspace,
+      sweepWorkspaceWriters,
       prepareBackup,
       confirmBackup,
       observePreparedBackup,
@@ -1106,6 +1132,10 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
     });
 
     const syncWorkspace = Effect.fnUntraced(function* (context: SleepProviderContext) {
+      // Checkpoint intentionally skips this sweep: terminals and previews may stay live there.
+      yield* sandbox
+        .sweepWorkspaceWriters(yield* sleepAttempt(context, metadataStore))
+        .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
       yield* sandbox
         .syncWorkspace(yield* sleepAttempt(context, metadataStore))
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));

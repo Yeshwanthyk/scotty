@@ -4,6 +4,7 @@ import { decodeRuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 import { sidecarFollowUpStorage } from "./store";
 import { absoluteAlarmDate } from "./absolute-alarm-time";
+import { AgentTurnActivity, drainDecision } from "./agent-activity";
 import { resolveSessionConfiguration } from "../session-actor/configuration";
 import { decodeCloudSettingsSnapshot } from "../../../protocol/settings/cloud-settings";
 import {
@@ -324,6 +325,11 @@ import {
 } from "../changes/git";
 import { parseChangedPath, type ChangedFilePatch, type ChangedFiles } from "../changes/contracts";
 
+const decodePiTurnActivity = Schema.decodeUnknownResult(
+  Schema.fromJsonString(Schema.Struct({ state: Schema.Struct({ isStreaming: Schema.Boolean }) })),
+  { onExcessProperty: "ignore" },
+);
+
 const sameRuntimeProof = (
   left: {
     readonly providerRuntimeId: string;
@@ -545,6 +551,7 @@ export const decodeSandboxFileStream = (
 
 type SandboxServices =
   | ActorStore
+  | AgentTurnActivity
   | ArtifactStore
   | BackupStore
   | ContainerEvidenceRecorder
@@ -752,6 +759,7 @@ export interface TerminalSessionControl {
 }
 
 export interface SandboxEffectOptions {
+  readonly agentTurnActivity?: AgentTurnActivity["Service"];
   readonly runtimeCliMaterializer?: RuntimeCliMaterializer["Service"];
   readonly actorRequestRecoveryAfterResume?: () => Promise<void>;
   readonly actorRequestRecoveryBeforeResume?: () => Promise<void>;
@@ -1110,6 +1118,47 @@ export class Sandbox extends BaseSandbox<Bindings> {
         ctx.storage,
         this.sessionControlGate,
       ),
+    );
+    const agentTurnActivity = Layer.succeed(AgentTurnActivity)(
+      options.agentTurnActivity ??
+        AgentTurnActivity.of({
+          isTurnActive: (authority) =>
+            Effect.gen(function* () {
+              if (isSidecarSelection(authority.session.selection)) {
+                const readiness = sidecarConversationReadiness(authority);
+                if (readiness === null) return "unknown" as const;
+                const metadataStore = yield* SessionActorMetadataStore;
+                const metadata = yield* metadataStore.read(authority);
+                const control = metadata?.sidecarControl;
+                if (control === undefined) return "unknown" as const;
+                const snapshot = yield* readSidecarSandbox(
+                  {
+                    sessionId: authority.session.id,
+                    generation: readiness.runtime.runtimeGeneration,
+                    selection: authority.session.selection,
+                    token: control.token,
+                  },
+                  readiness.supervisor.supervisorEpoch,
+                );
+                return (
+                  snapshot.prompt.status === "admitting" || snapshot.prompt.status === "running"
+                );
+              }
+              const runtime = yield* SandboxRuntime;
+              const response = yield* runtime.fetchPortBody(
+                "/snapshot",
+                43_117,
+                "GET",
+                PI_CONSOLE_MAX_RESPONSE_BYTES,
+              );
+              if (response.status !== 200) return "unknown" as const;
+              const decoded = decodePiTurnActivity(response.body);
+              return Result.isSuccess(decoded) ? decoded.success.state.isStreaming : "unknown";
+            }).pipe(
+              Effect.catch(() => Effect.succeed("unknown" as const)),
+              Effect.provide(Layer.merge(actorMetadata, runtime)),
+            ),
+        }),
     );
     const evidence = evidenceStoreLayer(auxiliaryStorage);
     const hatch = hatchStoreLayer(
@@ -1625,6 +1674,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
     this.layer = Layer.mergeAll(
       actorStore,
+      agentTurnActivity,
       actorMetadata,
       actor,
       createController,
@@ -6560,6 +6610,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
         if (yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(authority))) return;
         if (!isMatchingHardCapDrain(authority, fence.value)) return;
         if (isTerminalDrainAuthority(authority) || isVaporizingAuthority(authority)) return;
+
+        if (isWarmAuthority(authority)) {
+          const activity = yield* (yield* AgentTurnActivity).isTurnActive(authority);
+          if (drainDecision(now, drainMillis, deadlineMillis, activity) === "wait") {
+            yield* Effect.tryPromise({
+              try: () =>
+                this.schedule(5, "sessionActorHardCapDrain", fence.value).then(() => undefined),
+              catch: () =>
+                new CreateControllerBoundaryFailure({
+                  boundary: "hard_cap",
+                  code: "schedule_outcome_unknown",
+                }),
+            });
+            return;
+          }
+        }
 
         if (
           isWarmAuthority(authority) ||
