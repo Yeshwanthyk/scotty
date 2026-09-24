@@ -380,18 +380,23 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
     const sweepWorkspaceWriters = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
       const command = `bash -c ${shellQuote(workspaceWriterSweepScript)} scotty-sweep ${shellQuote(sessionRoot(input.sessionId))}`;
       const timeout = Math.min(15_000, yield* remainingBudget(input));
-      if (timeout <= 0)
+      if (timeout < BACKUP_MIN_TIMEOUT_MS)
         return yield* boundaryFailure(
           "rejected_before_admission",
-          "workspace_writer_sweep_timeout",
+          "workspace_writer_sweep_budget_exhausted",
         );
-      const result = yield* runtime
-        .execChecked(command, { timeout })
-        .pipe(
-          Effect.mapError(() =>
-            boundaryFailure("unknown_after_admission", "workspace_writer_sweep_outcome_unknown"),
-          ),
-        );
+      const result = yield* runtime.execChecked(command, { timeout }).pipe(
+        Effect.mapError(() =>
+          boundaryFailure("unknown_after_admission", "workspace_writer_sweep_outcome_unknown"),
+        ),
+        Effect.timeoutOrElse({
+          duration: timeout + 1_000,
+          orElse: () =>
+            Effect.fail(
+              boundaryFailure("unknown_after_admission", "workspace_writer_sweep_timeout"),
+            ),
+        }),
+      );
       const survived = workspaceWriterSweepSurvived(result.stdout);
       if (survived === "invalid")
         return yield* boundaryFailure("unknown_after_admission", "workspace_writer_sweep_invalid");

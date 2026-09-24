@@ -574,6 +574,7 @@ export type HarnessFailureStage =
   | "workspacePrepare";
 
 export interface HarnessOptions {
+  readonly onSessionProjectionPut?: (key: string, value: unknown) => Promise<void>;
   readonly agentTurnActivity?: SandboxEffectOptions["agentTurnActivity"];
   readonly readRuntimeCli?: () => RuntimeCliPin;
   readonly runtimeCliMaterializer?: SandboxEffectOptions["runtimeCliMaterializer"];
@@ -735,6 +736,20 @@ class HarnessStorage {
   readonly sql = {
     exec: (query: string, ...bindings: ReadonlyArray<unknown>) => {
       const [callback, time] = bindings;
+      if (query === "SELECT time, payload FROM container_schedules WHERE callback = ?")
+        return this.schedules.flatMap((schedule) =>
+          schedule.callback === callback
+            ? [
+                {
+                  time:
+                    schedule.when instanceof Date
+                      ? Math.floor(schedule.when.getTime() / 1_000)
+                      : schedule.when,
+                  payload: JSON.stringify(schedule.payload),
+                },
+              ]
+            : [],
+        );
       if (query === "SELECT id FROM container_schedules WHERE callback = ? LIMIT 1")
         return this.schedules.flatMap((schedule, index) =>
           schedule.callback === callback ? [{ id: `schedule-${index}` }] : [],
@@ -1312,6 +1327,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       events.push(
         `projection:${isStatusProjection(decoded) ? (decoded.status ?? "unknown") : "unknown"}`,
       );
+      await options.onSessionProjectionPut?.(key, decoded);
     },
     delete: async (key: string): Promise<void> => {
       if (failures.has("projectionDelete"))
@@ -1949,17 +1965,17 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: async (callback: string) =>
         schedules
           .filter((schedule) => schedule.callback === callback)
-          .map((schedule, index) => {
-            if (!(schedule.when instanceof Date))
-              throw injectedHarnessFailure("retention schedule must use an absolute time");
-            return {
-              taskId: `schedule-${index}`,
-              callback: schedule.callback,
-              payload: schedule.payload,
-              type: "scheduled" as const,
-              time: Math.floor(schedule.when.getTime() / 1_000),
-            };
-          }),
+          .slice(0, 1)
+          .map((schedule, index) => ({
+            taskId: `schedule-${index}`,
+            callback: schedule.callback,
+            payload: schedule.payload,
+            type: schedule.when instanceof Date ? ("scheduled" as const) : ("delayed" as const),
+            time:
+              schedule.when instanceof Date
+                ? Math.floor(schedule.when.getTime() / 1_000)
+                : schedule.when,
+          })),
     },
     deleteSchedules: {
       value: (callback: string): void => {

@@ -6,6 +6,21 @@ import {
   type SessionLifecycle,
   type SessionReadFailure,
 } from "./session-reader";
+import { Option, Schema } from "effect";
+import { LifecyclePendingMarkerSchema } from "../../../protocol/session/lifecycle-response";
+
+const SessionViewSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  status: Schema.Literals(["warm", "sleeping", "failed", "gone"]),
+  operation: Schema.Struct({
+    kind: Schema.Literals(["snapshot", "sleep", "resume"]),
+    nonce: Schema.NonEmptyString,
+    deadlineAt: Schema.NonEmptyString,
+  }),
+});
+const decodePendingSessionView = Schema.decodeUnknownOption(
+  Schema.Struct({ ...SessionViewSchema.fields, ...LifecyclePendingMarkerSchema.fields }),
+);
 
 export type SessionLifecycleAction = "checkpoint" | "sleep" | "resume" | "vaporize";
 
@@ -116,14 +131,13 @@ export const mutateSessionLifecycle = async (
   if (!response.ok) return httpResult(decodeSessionHttpFailure(response.status, body));
   if (response.status === 202) {
     const expectedKind = action === "checkpoint" ? "snapshot" : action;
+    const pending = decodePendingSessionView(body);
     if (
       action === "vaporize" ||
-      !isJsonObject(body) ||
-      body.pending !== true ||
-      body.id !== sessionId ||
-      !isJsonObject(body.operation) ||
-      body.operation.kind !== expectedKind ||
-      typeof body.operation.deadlineAt !== "string"
+      Option.isNone(pending) ||
+      pending.value.id !== sessionId ||
+      pending.value.operation?.kind !== expectedKind ||
+      typeof pending.value.operation?.deadlineAt !== "string"
     )
       return malformedResult();
     return { ok: true, pending: true };

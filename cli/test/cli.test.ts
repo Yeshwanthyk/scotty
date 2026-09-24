@@ -4359,7 +4359,8 @@ describe("commands and schemas", () => {
                   _tag: "Warm",
                   backups: {
                     currentBackupId: "backup-1",
-                    confirmed: { backupId: "backup-1", confirmedAt: "2026-09-24T00:00:00Z" },
+                    confirmed: null,
+                    prepared: { backupId: "backup-1", confirmedAt: "2026-09-24T00:00:00Z" },
                   },
                 },
               },
@@ -4384,6 +4385,51 @@ describe("commands and schemas", () => {
       "GET /api/sessions/s1/actor",
     ]);
     expect(h.json()).toEqual({ id: "s1", status: "warm", backupId: "backup-1" });
+  });
+
+  test("reports the original lifecycle success after a newer transition starts", async () => {
+    const h = harness({
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (request.method === "POST")
+          return Response.json(
+            {
+              id: "s1",
+              status: "warm",
+              pending: true,
+              operation: {
+                kind: "snapshot",
+                nonce: "checkpoint-1",
+                deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+            { status: 202 },
+          );
+        if (new URL(request.url).pathname.endsWith("/actor"))
+          return Response.json({
+            journal: [
+              {
+                eventType: "completed",
+                transitionKind: "Checkpoint",
+                transitionNonce: "checkpoint-1",
+              },
+            ],
+            authority: { session: { id: "s1" }, state: { _tag: "Transitioning" } },
+          });
+        return Response.json({
+          version: 1,
+          session: {
+            identity: { id: "s1" },
+            authority: { kind: "transitioning", action: "sleep" },
+            display: { branch: "scotty/s1" },
+          },
+        });
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(h.json()).toEqual({ id: "s1", status: "warm", branch: "scotty/s1" });
   });
 
   test("polls a pending lifecycle response and reports a failed session", async () => {
@@ -4427,11 +4473,28 @@ describe("commands and schemas", () => {
     });
   });
 
-  test("reports pending with the existing generic exit when the transition deadline has passed", async () => {
+  test("polls an overdue transition through network and 503 failures", async () => {
     const requests: string[] = [];
     const h = harness({
       fetch: async (input, init) => {
-        requests.push(new Request(input, init).method);
+        const method = new Request(input, init).method;
+        requests.push(method);
+        if (method === "GET" && requests.length === 2)
+          return Promise.reject(new Error("network outage"));
+        if (method === "GET" && requests.length === 3)
+          return Response.json(
+            { error: { code: "upstream", message: "temporary" } },
+            { status: 503 },
+          );
+        if (method === "GET")
+          return Response.json({
+            version: 1,
+            session: {
+              identity: { id: "s1" },
+              authority: { kind: "stable", lifecycle: "failed" },
+              display: { branch: null },
+            },
+          });
         return Response.json(
           {
             id: "s1",
@@ -4450,8 +4513,40 @@ describe("commands and schemas", () => {
     expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
       EXIT.GENERIC,
     );
-    expect(requests).toEqual(["POST"]);
-    expect(h.json()).toEqual({ id: "s1", status: "pending", pending: true });
+    expect(requests).toEqual(["POST", "GET", "GET", "GET"]);
+    expect(h.error().error.code).toBe("upstream");
+  }, 10_000);
+
+  test("fails a pending lifecycle poll immediately on authorization rejection", async () => {
+    const methods: string[] = [];
+    const h = harness({
+      fetch: async (input, init) => {
+        const method = new Request(input, init).method;
+        methods.push(method);
+        return method === "POST"
+          ? Response.json(
+              {
+                id: "s1",
+                status: "warm",
+                pending: true,
+                operation: {
+                  kind: "snapshot",
+                  nonce: "checkpoint-1",
+                  deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+                },
+              },
+              { status: 202 },
+            )
+          : Response.json(
+              { error: { code: "unauthorized", message: "Unauthorized" } },
+              { status: 401 },
+            );
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.AUTH,
+    );
+    expect(methods).toEqual(["POST", "GET"]);
   });
 
   test("operation optionals omit nulls and missing response IDs use the requested ID", async () => {

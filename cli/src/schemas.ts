@@ -185,10 +185,22 @@ export const LifecycleActorResultSchema = Schema.Struct({
               }),
             ),
           ),
+          prepared: Schema.optionalKey(
+            Schema.NullOr(
+              Schema.Struct({
+                backupId: Schema.NonEmptyString,
+                confirmedAt: Schema.NullOr(Schema.NonEmptyString),
+              }),
+            ),
+          ),
         }),
       }),
     }),
   }),
+});
+export const LifecycleActorJournalResultSchema = Schema.Struct({
+  journal: LifecycleActorResultSchema.fields.journal,
+  authority: Schema.Struct({ session: Schema.Struct({ id: Schema.NonEmptyString }) }),
 });
 const SessionLifecycleSchema = Schema.Literals(["warm", "sleeping", "failed", "gone"]);
 const SessionActionSchema = Schema.Literals([
@@ -340,6 +352,9 @@ export const decodePendingLifecycleResponse = Schema.decodeUnknownOption(
 );
 export const decodeLifecyclePollResponse = Schema.decodeUnknownOption(LifecyclePollResponseSchema);
 export const decodeLifecycleActorResult = Schema.decodeUnknownOption(LifecycleActorResultSchema);
+export const decodeLifecycleActorJournalResult = Schema.decodeUnknownOption(
+  LifecycleActorJournalResultSchema,
+);
 export const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema, {
   onExcessProperty: "error",
 });

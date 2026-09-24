@@ -46,6 +46,7 @@ import {
   decodePendingLifecycleResponse,
   decodeLifecyclePollResponse,
   decodeLifecycleActorResult,
+  decodeLifecycleActorJournalResult,
   decodeRepositoriesResponse,
   decodeRepositoryRemovalResponse,
   decodeRepositoryResponse,
@@ -489,10 +490,53 @@ type SetExitCode = (code: ExitCode) => Effect.Effect<void>;
 const hasConfirmedBackup = (backup: {
   readonly currentBackupId: string | null;
   readonly confirmed?: { readonly backupId: string; readonly confirmedAt: string | null } | null;
+  readonly prepared?: { readonly backupId: string; readonly confirmedAt: string | null } | null;
 }): boolean =>
   backup.currentBackupId !== null &&
-  backup.confirmed?.backupId === backup.currentBackupId &&
-  backup.confirmed.confirmedAt !== null;
+  (backup.confirmed ?? backup.prepared)?.backupId === backup.currentBackupId &&
+  (backup.confirmed ?? backup.prepared)?.confirmedAt !== null;
+
+const pollLifecycleInspection = Effect.fnUntraced(function* (
+  auth: ApiRequestTarget,
+  sessionId: string,
+) {
+  const response = yield* Effect.result(
+    apiRequest(
+      auth,
+      `/api/sessions/${encodeURIComponent(sessionId)}`,
+      {},
+      {
+        acceptedStatuses: Array.from({ length: 100 }, (_, index) => index + 500),
+      },
+    ),
+  );
+  if (Result.isFailure(response)) {
+    if (response.failure.code === "network_error" || response.failure.code === "timeout")
+      return Option.none<unknown>();
+    return yield* Effect.fail(response.failure);
+  }
+  if (response.success.response.status >= 500) return Option.none<unknown>();
+  return Option.some(yield* decodeJson(response.success.bytes));
+});
+
+const originalLifecycleNonceCompleted = Effect.fnUntraced(function* (
+  auth: ApiRequestTarget,
+  sessionId: string,
+  command: "checkpoint" | "resume",
+  nonce: string,
+) {
+  const actor = decodeLifecycleActorJournalResult(
+    yield* requestJson(auth, `/api/sessions/${encodeURIComponent(sessionId)}/actor`),
+  );
+  if (Option.isNone(actor) || actor.value.authority.session.id !== sessionId)
+    return yield* invalidResponse("Server returned an invalid session authority result");
+  return actor.value.journal.some(
+    (event) =>
+      event.eventType === "completed" &&
+      event.transitionKind === (command === "checkpoint" ? "Checkpoint" : "Resume") &&
+      event.transitionNonce === nonce,
+  );
+});
 
 const pollPendingLifecycle = Effect.fnUntraced(function* (
   auth: ApiRequestTarget,
@@ -508,24 +552,47 @@ const pollPendingLifecycle = Effect.fnUntraced(function* (
     pending.value.operation.kind !== expectedKind
   )
     return yield* invalidResponse("Server returned an invalid pending lifecycle result");
-  const deadline = Date.parse(pending.value.operation.deadlineAt) + 30_000;
-  if (!Number.isFinite(deadline)) return yield* invalidResponse();
+  const transitionDeadline = Date.parse(pending.value.operation.deadlineAt);
+  if (!Number.isFinite(transitionDeadline)) return yield* invalidResponse();
+  const deadline = Math.max(
+    transitionDeadline + 30_000,
+    (yield* Clock.currentTimeMillis) + 120_000,
+  );
   while ((yield* Clock.currentTimeMillis) < deadline) {
     yield* Effect.sleep("2 seconds");
-    const polled = decodeLifecyclePollResponse(
-      yield* requestJson(auth, `/api/sessions/${encodeURIComponent(sessionId)}`),
-    );
+    const inspection = yield* pollLifecycleInspection(auth, sessionId);
+    if (Option.isNone(inspection)) continue;
+    const polled = decodeLifecyclePollResponse(inspection.value);
     if (Option.isNone(polled) || polled.value.session.identity.id !== sessionId)
       return yield* invalidResponse("Server returned an invalid session inspection result");
     const current = polled.value.session;
     if (current.authority.kind === "transitioning") {
-      if (current.authority.action !== command)
+      if (current.authority.action !== command) {
+        if (
+          yield* originalLifecycleNonceCompleted(
+            auth,
+            sessionId,
+            command,
+            pending.value.operation.nonce,
+          )
+        )
+          return {
+            pending: false as const,
+            value: {
+              id: sessionId,
+              status: "warm",
+              branch: current.display.branch,
+              url: pending.value.url,
+              backupId: pending.value.backupId,
+            },
+          };
         return yield* new CliError(
           "wrong_state",
           `Session ${command} was replaced by another operation`,
           "Inspect the current session state before retrying.",
           EXIT.WRONG_STATE,
         );
+      }
       continue;
     }
     if (current.authority.lifecycle === "failed")

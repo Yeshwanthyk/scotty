@@ -126,6 +126,39 @@ const failure = <A>(
 };
 
 describe("BackupLifecycleSandbox", () => {
+  it.effect("rejects a sweep with less than the minimum budget before exec", () =>
+    Effect.gen(function* () {
+      const now = Date.parse("2026-09-01T00:00:00.000Z");
+      yield* TestClock.setTime(now);
+      let execCalls = 0;
+      const result = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          Effect.result(
+            provider.sweepWorkspaceWriters({
+              ...attempt,
+              deadlineAt: new Date(now + 34_999).toISOString(),
+            }),
+          ),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            exec: async (command) => {
+              execCalls += 1;
+              return success(command);
+            },
+          }),
+        },
+      );
+      assert.deepStrictEqual(
+        failure(result),
+        new BackupLifecycleSandboxFailure({
+          outcome: "rejected_before_admission",
+          safeResultCode: "workspace_writer_sweep_budget_exhausted",
+        }),
+      );
+      assert.strictEqual(execCalls, 0);
+    }),
+  );
   it.effect("classifies surviving writers as unknown after the sweep was admitted", () =>
     Effect.gen(function* () {
       const now = Date.parse("2026-09-01T00:00:00.000Z");
@@ -187,6 +220,35 @@ describe("BackupLifecycleSandbox", () => {
       }),
     );
   }
+
+  it.effect("times out a sweep whose sandbox exec never returns", () =>
+    Effect.gen(function* () {
+      const now = Date.parse("2026-09-01T00:00:00.000Z");
+      yield* TestClock.setTime(now);
+      const fiber = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          Effect.result(
+            provider.sweepWorkspaceWriters({
+              ...attempt,
+              deadlineAt: new Date(now + 90_000).toISOString(),
+            }),
+          ),
+        ),
+        { runtime: runtimeCapabilities({ exec: () => new Promise(() => undefined) }) },
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(15_999);
+      assert.isUndefined(fiber.pollUnsafe());
+      yield* TestClock.adjust(1);
+      assert.deepStrictEqual(
+        failure(yield* Fiber.join(fiber)),
+        new BackupLifecycleSandboxFailure({
+          outcome: "unknown_after_admission",
+          safeResultCode: "workspace_writer_sweep_timeout",
+        }),
+      );
+    }),
+  );
 
   const budgets: ReadonlyArray<readonly [number, number]> = [[90_000, 60_000]];
   for (const [remaining, timeout] of budgets) {

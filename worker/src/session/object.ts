@@ -46,6 +46,7 @@ import { parseManagedHandle, type ManagedHandle } from "../../../protocol/creden
 import {
   Clock,
   Data,
+  Duration,
   Effect,
   Layer,
   Option,
@@ -581,6 +582,14 @@ const CreateHardCapFenceSchema = Schema.Struct({
 const decodeCreateHardCapFence = Schema.decodeUnknownOption(CreateHardCapFenceSchema, {
   onExcessProperty: "error",
 });
+const decodeContainerScheduleRows = Schema.decodeUnknownSync(
+  Schema.Array(
+    Schema.Struct({
+      time: Schema.Number,
+      payload: Schema.fromJsonString(Schema.Unknown),
+    }),
+  ),
+);
 const decodeContainerCreateError = Schema.decodeUnknownOption(
   Schema.Struct({
     _tag: Schema.Literal("ScottyError"),
@@ -2747,8 +2756,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     afterMillis?: number,
   ) {
-    const schedules = yield* Effect.tryPromise({
-      try: () => this.listSchedules<EvidenceRetentionPayload>("expireRetainedEvidence"),
+    const schedules = yield* Effect.try({
+      try: () => this.allSchedulesForCallback("expireRetainedEvidence"),
       catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
     });
     return schedules.some(
@@ -2760,8 +2769,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     expiresAt: string,
   ) {
-    const schedules = yield* Effect.tryPromise({
-      try: () => this.listSchedules<EvidenceRetentionPayload>("expireRetainedEvidence"),
+    const schedules = yield* Effect.try({
+      try: () => this.allSchedulesForCallback("expireRetainedEvidence"),
       catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
     });
     return schedules.some((schedule) => matchesPersistedAlarmSecond(schedule.time, expiresAt));
@@ -3311,6 +3320,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const transition = authority.state.transition;
     if (!Predicate.isTagged(transition, expectedKind))
       return { _tag: "Contended" as const, snapshot: before } satisfies ActorRequestRecovery;
+    if ((yield* Clock.currentTimeMillis) >= Date.parse(transition.deadlineAt))
+      return { _tag: "Contended" as const, snapshot: before } satisfies ActorRequestRecovery;
     yield* Effect.promise(() => this.actorRequestRecoveryBeforeResume());
     const afterResume = this.actorRequestRecoveryAfterResume;
     const recovered = yield* this.withExclusiveActorMutation(
@@ -3318,6 +3329,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       Effect.gen(function* () {
         const actor = yield* SessionActor;
         const now = yield* Clock.currentTimeMillis;
+        if (now >= Date.parse(transition.deadlineAt))
+          return { _tag: "Contended" as const, snapshot: yield* store.read };
         const timestamp = new Date(now).toISOString();
         const correlationId = crypto.randomUUID();
         yield* actor.resume({
@@ -3329,25 +3342,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
             attempt: transition.attempt,
             expectedPhase: transition.phase,
           },
-          ...(now >= Date.parse(transition.deadlineAt)
-            ? {
-                fence: {
-                  kind: "deadline" as const,
-                  alarmId: actorAlarmId(
-                    "deadline",
-                    transition.nonce,
-                    transition.attempt,
-                    transition.deadlineAt,
-                  ),
-                  revision: authority.revision,
-                  transitionNonce: transition.nonce,
-                  attempt: transition.attempt,
-                  expectedPhase: transition.phase,
-                  expectedDeadlineAt: transition.deadlineAt,
-                  correlationId,
-                },
-              }
-            : {}),
         });
         yield* Effect.promise(() => afterResume());
         const snapshot = yield* store.read;
@@ -3361,10 +3355,63 @@ export class Sandbox extends BaseSandbox<Bindings> {
       : recovered;
   });
 
+  // @cloudflare/containers 0.3.7 listSchedules uses LIMIT 1, so dedup reads every row of its
+  // container_schedules table directly.
+  private readonly allSchedulesForCallback = (callback: string) =>
+    decodeContainerScheduleRows([
+      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: reads the pinned Container scheduler table that Container.listSchedules truncates to one row
+      ...this.ctx.storage.sql.exec(
+        "SELECT time, payload FROM container_schedules WHERE callback = ?",
+        callback,
+      ),
+    ]);
+
   private readonly dispatchOverdueTransitionProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const store = yield* ActorStore;
     const authority = (yield* store.read).authority;
     const now = yield* Clock.currentTimeMillis;
+    if (
+      authority !== undefined &&
+      AuthorityStateSchema.guards.Stable(authority.state) &&
+      StableStateSchema.guards.Warm(authority.state.stable)
+    ) {
+      const hardCap = authority.hardCap;
+      const expired = now >= Date.parse(hardCap.deadlineAt);
+      const drainAt = hardCapDrainAt(hardCap.deadlineAt, hardCap.durationSeconds);
+      if (expired || now >= Date.parse(drainAt)) {
+        const callback = expired ? "sessionActorHardCap" : "sessionActorHardCapDrain";
+        const payload = {
+          sessionId: authority.session.id,
+          generation: hardCap.generation,
+          deadlineAt: hardCap.deadlineAt,
+          ...(expired ? {} : { drainAt }),
+        };
+        const schedules = yield* Effect.try({
+          try: () => this.allSchedulesForCallback(callback),
+          catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
+        });
+        if (
+          !schedules.some((schedule) => {
+            const decoded = expired
+              ? decodeCreateHardCapFence(schedule.payload)
+              : decodeCreateHardCapDrainFence(schedule.payload);
+            return (
+              Option.isSome(decoded) &&
+              decoded.value.sessionId === payload.sessionId &&
+              decoded.value.generation === payload.generation &&
+              decoded.value.deadlineAt === payload.deadlineAt &&
+              (expired || ("drainAt" in decoded.value && decoded.value.drainAt === drainAt))
+            );
+          })
+        )
+          yield* Effect.tryPromise({
+            try: () =>
+              this.schedule(absoluteAlarmDate(now), callback, payload).then(() => undefined),
+            catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
+          });
+      }
+      return;
+    }
     if (
       authority === undefined ||
       !AuthorityStateSchema.guards.Transitioning(authority.state) ||
@@ -3373,8 +3420,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return;
     const transition = authority.state.transition;
     const due = absoluteAlarmDate(now);
-    const schedules = yield* Effect.tryPromise({
-      try: () => this.listSchedules<unknown>("sessionActorDeadline"),
+    const schedules = yield* Effect.try({
+      try: () => this.allSchedulesForCallback("sessionActorDeadline"),
       catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
     });
     if (
@@ -3717,6 +3764,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (!Predicate.isTagged(recovered, "NotNeeded")) {
       if (Predicate.isTagged(recovered, "Contended")) {
         const authority = recovered.snapshot.authority;
+        if (authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state)) {
+          const state = yield* this.actorSessionStateFromSnapshotProgram(recovered.snapshot);
+          return yield* this.lifecycleResponseFromActorStateProgram(kind, state);
+        }
         if (
           authority !== undefined &&
           AuthorityStateSchema.guards.Stable(authority.state) &&
@@ -3807,7 +3858,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         outcome.code,
         outcome.authority.session.id,
       );
-    const publicState = yield* this.readActorSessionStateProgram();
+    const store = yield* ActorStore;
+    const publicState = yield* this.actorSessionStateFromSnapshotProgram({
+      ...(yield* store.read),
+      authority: outcome.authority,
+    });
     return yield* this.lifecycleResponseFromActorStateProgram(kind, publicState);
   });
 
@@ -6414,13 +6469,33 @@ export class Sandbox extends BaseSandbox<Bindings> {
     callback: string,
     payload: unknown,
   ) {
-    yield* Effect.tryPromise({
-      try: () => this.schedule(absoluteAlarmDate(instant), callback, payload).then(() => undefined),
-      catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
-    }).pipe(
-      Effect.retry({
-        schedule: Schedule.spaced("1 second"),
+    yield* this.retryAlarmScheduleProgram(
+      Effect.tryPromise({
+        try: () =>
+          this.schedule(absoluteAlarmDate(instant), callback, payload).then(() => undefined),
+        catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
       }),
+      callback,
+    );
+  });
+
+  private readonly retryAlarmScheduleProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    operation: Effect.Effect<void, HostOperationFailure | CreateControllerBoundaryFailure>,
+    callback: string,
+  ) {
+    yield* operation.pipe(
+      Effect.retry({
+        schedule: Schedule.max([
+          Schedule.exponential("250 millis").pipe(
+            Schedule.modifyDelay(({ duration }) =>
+              Effect.succeed(Duration.min(duration, Duration.seconds(5))),
+            ),
+          ),
+          Schedule.during("60 seconds"),
+        ]),
+      }),
+      Effect.catch(() => Effect.logError(`Failed to schedule ${callback} within 60 seconds`)),
     );
   });
 
@@ -6441,11 +6516,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }
         const store = yield* ActorStore;
         const actor = yield* SessionActor;
-        yield* actor.resume({
-          timestamp: new Date(now).toISOString(),
-          correlationId: currentFence.correlationId,
-          fence: currentFence,
-        });
+        const admitted = yield* this.withExclusiveActorMutation(
+          currentFence.transitionNonce,
+          actor
+            .resume({
+              timestamp: new Date(now).toISOString(),
+              correlationId: currentFence.correlationId,
+              fence: currentFence,
+            })
+            .pipe(Effect.as(true)),
+        );
+        if (admitted === undefined) return;
         const after = yield* store.read;
         if (
           after.authority !== undefined &&
@@ -6474,7 +6555,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
               boundary: "hard_cap",
               code: "schedule_outcome_unknown",
             }),
-        }).pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }));
+        });
+        const scheduleBoundedSuccessor = this.retryAlarmScheduleProgram(
+          scheduleSuccessor,
+          "sessionActorHardCap",
+        );
         const actor = yield* SessionActor;
         const now = yield* Clock.currentTimeMillis;
         if (now < Date.parse(fence.value.deadlineAt)) {
@@ -6495,7 +6580,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             timestamp: new Date(now).toISOString(),
           }),
         );
-        if (Result.isFailure(handled)) return yield* scheduleSuccessor;
+        if (Result.isFailure(handled)) return yield* scheduleBoundedSuccessor;
         yield* this.publishActorSessionProjectionBestEffortProgram();
 
         const store = yield* ActorStore;
@@ -6508,7 +6593,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
               correlationId: crypto.randomUUID(),
             }),
           );
-          if (Result.isFailure(resumed)) return yield* scheduleSuccessor;
+          if (Result.isFailure(resumed)) return yield* scheduleBoundedSuccessor;
           yield* this.publishActorSessionProjectionBestEffortProgram();
           after = yield* store.read;
           if (yield* Effect.sync(() => this.cancelAllSessionSchedulesIfGone(after.authority)))
@@ -6518,7 +6603,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             AuthorityStateSchema.guards.Transitioning(after.authority.state) &&
             TransitionSchema.guards.Vaporize(after.authority.state.transition)
           )
-            return yield* scheduleSuccessor;
+            return yield* scheduleBoundedSuccessor;
         }
         const authority = after.authority;
         if (
@@ -6532,7 +6617,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           return;
         const recovery = yield* RecoverySandbox;
         const destroyed = yield* Effect.result(recovery.destroyFailedRuntime(authority));
-        if (Result.isFailure(destroyed)) yield* scheduleSuccessor;
+        if (Result.isFailure(destroyed)) yield* scheduleBoundedSuccessor;
       }),
     );
   }
@@ -6550,7 +6635,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
               boundary: "hard_cap",
               code: "schedule_outcome_unknown",
             }),
-        }).pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }));
+        });
+        const scheduleBoundedSuccessor = this.retryAlarmScheduleProgram(
+          scheduleSuccessor,
+          "sessionActorHardCapDrain",
+        );
         const now = yield* Clock.currentTimeMillis;
         const drainMillis = Date.parse(fence.value.drainAt);
         const deadlineMillis = Date.parse(fence.value.deadlineAt);
@@ -6579,7 +6668,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         if (isWarmAuthority(authority)) {
           const activity = yield* (yield* AgentTurnActivity).isTurnActive(authority);
           if (drainDecision(now, drainMillis, deadlineMillis, activity) === "wait") {
-            yield* scheduleSuccessor;
+            yield* scheduleBoundedSuccessor;
             return;
           }
         }
@@ -6599,7 +6688,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
         const retryAt = (yield* Clock.currentTimeMillis) + 5_000;
         if (retryAt >= deadlineMillis) return;
-        yield* scheduleSuccessor;
+        yield* scheduleBoundedSuccessor;
       }),
     );
   }
