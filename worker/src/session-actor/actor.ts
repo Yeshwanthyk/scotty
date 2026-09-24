@@ -193,7 +193,7 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
               const transition = transitionOf(observationAuthority);
               const current = matchesExecutedAuthority(snapshot.authority, observationAuthority);
               if (transition !== undefined)
-                yield* Effect.logWarning(
+                yield* (current ? Effect.logError : Effect.logWarning)(
                   `Rejected provider observation: kind=${transitionKind(transition)} phase=${transition.phase} reason=${lastDecision.code} authority=${current ? "current" : "stale"}`,
                 );
               if (recoverObservationCommit && current) {

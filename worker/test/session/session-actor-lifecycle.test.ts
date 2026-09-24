@@ -21,7 +21,10 @@ import {
 import { HatchStore, hatchStoreLayer } from "../../src/hatch/store";
 import { sha256Hex } from "../../src/shared/digest";
 import { ScottyError } from "../../src/session/contracts";
-import { absoluteAlarmDate } from "../../src/session/absolute-alarm-time";
+import {
+  absoluteAlarmDate,
+  matchesPersistedAlarmSecond,
+} from "../../src/session/absolute-alarm-time";
 import { AgentTurnActivity } from "../../src/session/agent-activity";
 import {
   CREATE_IDEMPOTENCY,
@@ -197,6 +200,13 @@ const makeHatchHealthContainerFetch =
   };
 
 describe("absolute Container alarms", () => {
+  it("recognizes retention successors persisted before and after second rounding changed", () => {
+    const expiresAt = "2026-09-03T00:00:00.999Z";
+    const legacySecond = Math.floor(Date.parse(expiresAt) / 1_000);
+    assert.isTrue(matchesPersistedAlarmSecond(legacySecond, expiresAt));
+    assert.isTrue(matchesPersistedAlarmSecond(legacySecond + 1, expiresAt));
+    assert.isFalse(matchesPersistedAlarmSecond(legacySecond + 2, expiresAt));
+  });
   it("rounds fractional instants up and preserves exact seconds", () => {
     assert.strictEqual(
       absoluteAlarmDate("2026-09-03T00:00:00.001Z").toISOString(),
@@ -382,7 +392,7 @@ describe("absolute Container alarms", () => {
     }),
   );
 
-  it.effect("surfaces rearm failure after bounded retries", () =>
+  it.effect("retries a transient deadline rearm failure", () =>
     Effect.gen(function* () {
       const clock = yield* TestClock.make();
       yield* clock.setTime(Date.parse("2026-09-03T00:00:00.999Z"));
@@ -399,24 +409,18 @@ describe("absolute Container alarms", () => {
       );
       const target = makeLegacyDeadlineRow(harness);
       const floor = Math.floor(Date.parse(target) / 1_000) * 1_000;
-      harness.injectFailure("actorAlarmSchedule");
+      harness.injectFailure("actorAlarmScheduleOnce");
       yield* clock.setTime(floor);
-      const firing = fireContainerAlarm(harness, "sessionActorDeadline", floor).then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        yield* Effect.yieldNow;
-        yield* clock.adjust("1 second");
-      }
-      const failure = yield* Effect.promise(() => firing);
-      assert.isDefined(failure);
-      assert.isFalse(
+      const firing = fireContainerAlarm(harness, "sessionActorDeadline", floor);
+      yield* Effect.yieldNow;
+      yield* clock.adjust("1 second");
+      yield* Effect.promise(() => firing);
+      assert.isTrue(
         harness.schedules.some(
           (row) =>
             row.callback === "sessionActorDeadline" &&
             row.when instanceof Date &&
-            row.when.getTime() === Date.parse(target),
+            row.when.getTime() === absoluteAlarmDate(target).getTime(),
         ),
       );
     }),
@@ -428,7 +432,7 @@ describe("absolute Container alarms", () => {
     "lifecycle",
   ];
   for (const request of overdueRequests) {
-    it.effect(`settles an overdue transition with no alarm on ${request} request`, () =>
+    it.effect(`schedules one overdue transition alarm on repeated ${request} requests`, () =>
       Effect.gen(function* () {
         const clock = yield* TestClock.make();
         yield* clock.setTime(Date.parse("2026-09-03T00:00:00.999Z"));
@@ -445,17 +449,35 @@ describe("absolute Container alarms", () => {
         );
         const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
         assert.ok(authority !== undefined && Predicate.isTagged(authority.state, "Transitioning"));
+        const deadlineCount = harness.schedules.filter(
+          (schedule) => schedule.callback === "sessionActorDeadline",
+        ).length;
         yield* clock.setTime(Date.parse(authority.state.transition.deadlineAt) + 1);
-        if (request === "session") yield* Effect.promise(() => harness.sandbox.getScottySession());
-        if (request === "diagnostics")
-          yield* Effect.promise(() => harness.sandbox.getScottyActorDiagnostics());
-        if (request === "lifecycle")
-          yield* Effect.promise(() =>
-            harness.sandbox.sleepScottySession().then(
-              () => undefined,
-              () => undefined,
-            ),
-          );
+        const requestSession = () =>
+          request === "session"
+            ? harness.sandbox.getScottySession().then(() => undefined)
+            : request === "diagnostics"
+              ? harness.sandbox.getScottyActorDiagnostics().then(() => undefined)
+              : harness.sandbox.sleepScottySession().then(
+                  () => undefined,
+                  () => undefined,
+                );
+        yield* Effect.promise(requestSession);
+        yield* Effect.promise(requestSession);
+        const pending = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+        assert.ok(pending !== undefined && Predicate.isTagged(pending.state, "Transitioning"));
+        const deadlines = harness.schedules.filter(
+          (schedule) => schedule.callback === "sessionActorDeadline",
+        );
+        assert.lengthOf(deadlines, deadlineCount + 1);
+        const due = deadlines.at(-1);
+        assert.isDefined(due);
+        const dueAt = due.when;
+        assert.instanceOf(dueAt, Date);
+        yield* clock.setTime(dueAt.getTime());
+        yield* Effect.promise(() =>
+          fireContainerAlarm(harness, "sessionActorDeadline", dueAt.getTime()),
+        );
         const settled = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
         assert.ok(
           settled !== undefined &&
@@ -556,7 +578,58 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     }),
   );
 
-  it("fails Sleep conclusively when workspace writers survive and leaves Checkpoint untouched", async () => {
+  it.effect("sleeps at forceAt even while the agent turn is active", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          agentTurnActivity: AgentTurnActivity.of({ isTurnActive: () => Effect.succeed(true) }),
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      const drain = harness.schedules.find(
+        (schedule) => schedule.callback === "sessionActorHardCapDrain",
+      );
+      assert.isDefined(drain);
+      const fence = decodeDrainFence(drain.payload);
+      assert.isTrue(Option.isSome(fence));
+      if (Option.isNone(fence)) return;
+      yield* clock.setTime(Date.parse(fence.value.drainAt));
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      const waiting = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        waiting !== undefined &&
+          Predicate.isTagged(waiting.state, "Stable") &&
+          Predicate.isTagged(waiting.state.stable, "Warm"),
+      );
+      assert.strictEqual(
+        harness.schedules
+          .filter((schedule) => schedule.callback === "sessionActorHardCapDrain")
+          .at(-1)?.when,
+        5,
+      );
+      const forceAt =
+        Date.parse(fence.value.deadlineAt) -
+        Math.min(
+          5 * 60_000,
+          (Date.parse(fence.value.deadlineAt) - Date.parse(fence.value.drainAt)) / 2,
+        );
+      yield* clock.setTime(forceAt);
+      yield* Effect.promise(() => harness.sandbox.sessionActorHardCapDrain(drain.payload));
+      const sleeping = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        sleeping !== undefined &&
+          Predicate.isTagged(sleeping.state, "Stable") &&
+          Predicate.isTagged(sleeping.state.stable, "Sleeping"),
+      );
+    }),
+  );
+
+  it("reconciles Sleep when workspace writers survive and leaves Checkpoint untouched", async () => {
     const harness = await createSessionHarness({
       commandStdout: (command) =>
         command.includes("scotty_workspace_writer_sweep")
@@ -576,10 +649,10 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
     assert.ok(
       authority !== undefined &&
-        Predicate.isTagged(authority.state, "Stable") &&
-        Predicate.isTagged(authority.state.stable, "Failed"),
+        Predicate.isTagged(authority.state, "Transitioning") &&
+        Predicate.isTagged(authority.state.transition, "Sleep"),
     );
-    assert.strictEqual(authority.state.stable.code, "workspace_writers_survived");
+    assert.strictEqual(authority.state.transition.mode, "reconciling");
     assert.isTrue(
       harness.commands.some((command) => command.includes("scotty_workspace_writer_sweep")),
     );

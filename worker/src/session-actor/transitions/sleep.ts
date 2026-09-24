@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, Match, Predicate, Schema } from "effect";
+import { confirmedBackup } from "../backup";
 import {
   AuthorityStateSchema,
   type BackupIdentity,
@@ -240,7 +241,7 @@ const applyResult = (
                 ...transition.proof,
                 backup: {
                   ...transition.proof.backup,
-                  confirmed: transition.proof.backup.confirmed ?? transition.proof.backup.prepared,
+                  confirmed: confirmedBackup(transition.proof.backup),
                   prepared: value.backup,
                   ownedBackupIds: [
                     ...new Set([...transition.proof.backup.ownedBackupIds, value.backup.backupId]),

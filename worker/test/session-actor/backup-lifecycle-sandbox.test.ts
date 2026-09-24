@@ -126,11 +126,69 @@ const failure = <A>(
 };
 
 describe("BackupLifecycleSandbox", () => {
-  const budgets: ReadonlyArray<readonly [number | "invalid-date", number]> = [
-    [90_000, 60_000],
-    [10_000, 5_000],
-    ["invalid-date", 5_000],
-  ];
+  it.effect("classifies surviving writers as unknown after the sweep was admitted", () =>
+    Effect.gen(function* () {
+      const now = Date.parse("2026-09-01T00:00:00.000Z");
+      yield* TestClock.setTime(now);
+      const result = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          Effect.result(
+            provider.sweepWorkspaceWriters({
+              ...attempt,
+              deadlineAt: new Date(now + 90_000).toISOString(),
+            }),
+          ),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            exec: async (command) => ({
+              ...success(command),
+              stdout: '{"found":1,"killed":0,"survivors":1}\n',
+            }),
+          }),
+        },
+      );
+      assert.deepStrictEqual(
+        failure(result),
+        new BackupLifecycleSandboxFailure({
+          outcome: "unknown_after_admission",
+          safeResultCode: "workspace_writers_survived",
+        }),
+      );
+    }),
+  );
+
+  for (const [remaining, expectedTimeout] of [
+    [90_000, 15_000],
+    [40_000, 10_000],
+  ] as const) {
+    it.effect(`bounds the writer sweep by the remaining budget (${remaining})`, () =>
+      Effect.gen(function* () {
+        const now = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(now);
+        let observedTimeout: number | undefined;
+        yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            provider.sweepWorkspaceWriters({
+              ...attempt,
+              deadlineAt: new Date(now + remaining).toISOString(),
+            }),
+          ),
+          {
+            runtime: runtimeCapabilities({
+              exec: async (command, options) => {
+                observedTimeout = options?.timeout;
+                return { ...success(command), stdout: '{"found":0,"killed":0,"survivors":0}\n' };
+              },
+            }),
+          },
+        );
+        assert.strictEqual(observedTimeout, expectedTimeout);
+      }),
+    );
+  }
+
+  const budgets: ReadonlyArray<readonly [number, number]> = [[90_000, 60_000]];
   for (const [remaining, timeout] of budgets) {
     it.effect(`uses a bounded timeout for a hanging create (${remaining})`, () =>
       Effect.gen(function* () {
@@ -141,10 +199,7 @@ describe("BackupLifecycleSandbox", () => {
             Effect.result(
               provider.prepareBackup({
                 ...attempt,
-                deadlineAt:
-                  remaining === "invalid-date"
-                    ? remaining
-                    : new Date(now + remaining).toISOString(),
+                deadlineAt: new Date(now + remaining).toISOString(),
               }),
             ),
           ),
@@ -165,6 +220,86 @@ describe("BackupLifecycleSandbox", () => {
     );
   }
 
+  for (const remaining of [10_000, "invalid-date"] as const) {
+    it.effect(`rejects create before admission when the budget is too short (${remaining})`, () =>
+      Effect.gen(function* () {
+        const now = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(now);
+        let admitted = false;
+        const result = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(
+              provider.prepareBackup({
+                ...attempt,
+                deadlineAt:
+                  remaining === "invalid-date"
+                    ? remaining
+                    : new Date(now + remaining).toISOString(),
+              }),
+            ),
+          ),
+          {
+            backups: backupCapabilities({
+              createBackup: async () => {
+                admitted = true;
+                return backup;
+              },
+            }),
+          },
+        );
+        assert.isFalse(admitted);
+        assert.deepStrictEqual(
+          failure(result),
+          new BackupLifecycleSandboxFailure({
+            outcome: "rejected_before_admission",
+            safeResultCode: "backup_create_timeout",
+          }),
+        );
+      }),
+    );
+  }
+
+  it.effect("rejects restore before admission when the budget is too short", () =>
+    Effect.gen(function* () {
+      const now = Date.parse("2026-09-01T00:00:00.000Z");
+      yield* TestClock.setTime(now);
+      let admitted = false;
+      const result = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          Effect.result(
+            provider.restoreCurrentBackup({
+              ...attempt,
+              deadlineAt: new Date(now + 10_000).toISOString(),
+              backup: {
+                backupId: backup.id,
+                preparedAt: attempt.deadlineAt,
+                confirmedAt: attempt.deadlineAt,
+                sourceRuntimeGeneration: attempt.runtimeGeneration,
+              },
+              ownedBackupIds: [backup.id],
+            }),
+          ),
+        ),
+        {
+          backups: backupCapabilities({
+            restoreBackup: async (value) => {
+              admitted = true;
+              return { success: true, id: value.id, dir: value.dir };
+            },
+          }),
+        },
+      );
+      assert.isFalse(admitted);
+      assert.deepStrictEqual(
+        failure(result),
+        new BackupLifecycleSandboxFailure({
+          outcome: "rejected_before_admission",
+          safeResultCode: "backup_restore_timeout",
+        }),
+      );
+    }),
+  );
+
   it.effect("classifies a hanging restore as an unknown provider outcome", () =>
     Effect.gen(function* () {
       const now = Date.parse("2026-09-01T00:00:00.000Z");
@@ -174,7 +309,7 @@ describe("BackupLifecycleSandbox", () => {
           Effect.result(
             provider.restoreCurrentBackup({
               ...attempt,
-              deadlineAt: new Date(now + 10_000).toISOString(),
+              deadlineAt: new Date(now + 35_000).toISOString(),
               backup: {
                 backupId: backup.id,
                 preparedAt: "2026-09-01T00:00:00.000Z",

@@ -6,10 +6,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   decodeWorkspaceWriterSweep,
+  workspaceWriterSweepSurvived,
   workspaceWriterSweepScript,
 } from "../../src/session-actor/transitions/workspace-writer-sweep";
 
 describe("workspace writer sweep", () => {
+  it("reports surviving writers from a decoded result on every platform", () => {
+    assert.strictEqual(
+      workspaceWriterSweepSurvived('{"found":2,"killed":1,"survivors":1}\n'),
+      true,
+    );
+    assert.strictEqual(
+      workspaceWriterSweepSurvived('{"found":2,"killed":2,"survivors":0}\n'),
+      false,
+    );
+  });
   it("decodes one strict result line", () => {
     const good = decodeWorkspaceWriterSweep('{"found":2,"killed":2,"survivors":0}');
     assert.isTrue(Result.isSuccess(good));

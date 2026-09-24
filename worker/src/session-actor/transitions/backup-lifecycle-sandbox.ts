@@ -212,13 +212,21 @@ const mapRuntimeFailure = (
     safeResultCode,
   );
 
-const backupTimeout = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
+const remainingBudget = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
   const deadlineMillis = Date.parse(input.deadlineAt);
-  if (!Number.isFinite(deadlineMillis)) return Duration.millis(BACKUP_MIN_TIMEOUT_MS);
+  if (!Number.isFinite(deadlineMillis)) return 0;
   const remainingMillis = deadlineMillis - (yield* Clock.currentTimeMillis);
-  return Duration.millis(
-    Math.max(BACKUP_MIN_TIMEOUT_MS, remainingMillis - BACKUP_DEADLINE_MARGIN_MS),
-  );
+  return Math.max(0, remainingMillis - BACKUP_DEADLINE_MARGIN_MS);
+});
+
+const backupTimeout = Effect.fnUntraced(function* (
+  input: BackupLifecycleAttempt,
+  code: "backup_create_timeout" | "backup_restore_timeout",
+) {
+  const budget = yield* remainingBudget(input);
+  if (budget < BACKUP_MIN_TIMEOUT_MS)
+    return yield* boundaryFailure("rejected_before_admission", code);
+  return Duration.millis(budget);
 });
 
 const timestamp = Effect.map(Clock.currentTimeMillis, (now) => new Date(now).toISOString());
@@ -371,26 +379,28 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
 
     const sweepWorkspaceWriters = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
       const command = `bash -c ${shellQuote(workspaceWriterSweepScript)} scotty-sweep ${shellQuote(sessionRoot(input.sessionId))}`;
-      const result = yield* runtime.execChecked(command, { timeout: 15_000 }).pipe(
-        Effect.mapError(() =>
-          boundaryFailure("unknown_after_admission", "workspace_writer_sweep_outcome_unknown"),
-        ),
-        Effect.timeoutOrElse({
-          duration: "16 seconds",
-          orElse: () =>
-            Effect.fail(
-              boundaryFailure("unknown_after_admission", "workspace_writer_sweep_outcome_unknown"),
-            ),
-        }),
-      );
+      const timeout = Math.min(15_000, yield* remainingBudget(input));
+      if (timeout <= 0)
+        return yield* boundaryFailure(
+          "rejected_before_admission",
+          "workspace_writer_sweep_timeout",
+        );
+      const result = yield* runtime
+        .execChecked(command, { timeout })
+        .pipe(
+          Effect.mapError(() =>
+            boundaryFailure("unknown_after_admission", "workspace_writer_sweep_outcome_unknown"),
+          ),
+        );
       const survived = workspaceWriterSweepSurvived(result.stdout);
       if (survived === "invalid")
         return yield* boundaryFailure("unknown_after_admission", "workspace_writer_sweep_invalid");
       if (survived)
-        return yield* boundaryFailure("rejected_before_admission", "workspace_writers_survived");
+        return yield* boundaryFailure("unknown_after_admission", "workspace_writers_survived");
     });
 
     const prepareBackup = Effect.fnUntraced(function* (input: BackupLifecycleAttempt) {
+      const timeout = yield* backupTimeout(input, "backup_create_timeout");
       const preparedAt = yield* timestamp;
       const handle = yield* backups
         .create(
@@ -402,7 +412,7 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
             localBucket: true,
             compression: { format: "zstd" },
           },
-          yield* backupTimeout(input),
+          timeout,
         )
         .pipe(
           Effect.mapError((error) =>
@@ -430,8 +440,9 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
       input: BackupLifecycleAttempt,
       handle: DirectoryBackup,
     ) {
+      const timeout = yield* backupTimeout(input, "backup_restore_timeout");
       yield* backups
-        .restore(handle, yield* backupTimeout(input))
+        .restore(handle, timeout)
         .pipe(
           Effect.mapError((error) =>
             boundaryFailure(
@@ -494,8 +505,9 @@ export const backupLifecycleSandboxLayer: Layer.Layer<
         dir: sessionRoot(input.sessionId),
         localBucket: true,
       };
+      const timeout = yield* backupTimeout(input, "backup_restore_timeout");
       yield* backups
-        .restore(handle, yield* backupTimeout(input))
+        .restore(handle, timeout)
         .pipe(
           Effect.mapError((error) =>
             boundaryFailure(
@@ -1133,11 +1145,12 @@ export const sleepSandboxTransitionProviderLayer: Layer.Layer<
 
     const syncWorkspace = Effect.fnUntraced(function* (context: SleepProviderContext) {
       // Checkpoint intentionally skips this sweep: terminals and previews may stay live there.
+      const attempt = yield* sleepAttempt(context, metadataStore);
       yield* sandbox
-        .sweepWorkspaceWriters(yield* sleepAttempt(context, metadataStore))
+        .sweepWorkspaceWriters(attempt)
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
       yield* sandbox
-        .syncWorkspace(yield* sleepAttempt(context, metadataStore))
+        .syncWorkspace(attempt)
         .pipe(Effect.catchTag("BackupLifecycleSandboxFailure", sleepFailure));
       return {
         _tag: "WorkspaceSynced" as const,

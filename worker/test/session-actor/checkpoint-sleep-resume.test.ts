@@ -409,6 +409,41 @@ const createProvider = (): CreateTransitionProviderShape => ({
 });
 
 describe("checkpoint, sleep, and resume transition executors", () => {
+  it.effect("does not promote an unconfirmed Warm backup when Sleep prepares another", () =>
+    Effect.gen(function* () {
+      const initial = warm();
+      assert.ok(Predicate.isTagged(initial.state, "Stable"));
+      assert.ok(Predicate.isTagged(initial.state.stable, "Warm"));
+      const authority: SessionAuthority = {
+        ...initial,
+        state: {
+          _tag: "Stable",
+          stable: {
+            ...initial.state.stable,
+            backups: {
+              ownedBackupIds: [oldBackup.backupId],
+              prepared: { ...oldBackup, confirmedAt: null },
+              confirmed: null,
+              currentBackupId: null,
+            },
+          },
+        },
+      };
+      let decision = accepted(decide(authority, command("SleepCommand", authority.revision)));
+      for (let index = 0; index < 3; index += 1)
+        decision = accepted(
+          decide(
+            decision.nextAuthority,
+            yield* executeSleepTransition(sleepProvider(), committed(decision)),
+          ),
+        );
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state, "Transitioning"));
+      assert.ok(Predicate.isTagged(decision.nextAuthority.state.transition, "Sleep"));
+      assert.strictEqual(decision.nextAuthority.state.transition.phase, "BackupPrepared");
+      assert.strictEqual(decision.nextAuthority.state.transition.proof.backup.confirmed, null);
+    }),
+  );
+
   it("finds the midpoint backup in a legacy Warm proof without confirmed", () => {
     const authority = legacyWarm();
     assert.ok(Predicate.isTagged(authority.state, "Stable"));
