@@ -8,6 +8,7 @@ import {
   type CloudSettingsSnapshot,
 } from "../../../protocol/settings/cloud-settings";
 import type { SessionAuthority } from "../../src/session-actor/authority";
+import { actorAlarmId } from "../../src/session-actor/alarm";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { EvidenceState } from "../../src/evidence/contracts";
 import {
@@ -20,6 +21,7 @@ import {
 import { HatchStore, hatchStoreLayer } from "../../src/hatch/store";
 import { sha256Hex } from "../../src/shared/digest";
 import { ScottyError } from "../../src/session/contracts";
+import { absoluteAlarmDate } from "../../src/session/absolute-alarm-time";
 import {
   CREATE_IDEMPOTENCY,
   CREATE_INPUT,
@@ -88,6 +90,97 @@ const deferred = <A>() => {
   return { promise, resolve };
 };
 
+type AbsoluteCallback =
+  | "sessionActorDeadline"
+  | "sessionActorHardCap"
+  | "sessionActorHardCapDrain"
+  | "sessionActorCheckpointMidpoint"
+  | "expireEvidenceJob"
+  | "expireRetainedEvidence";
+const decodeEvidenceDeadline = Schema.decodeUnknownSync(
+  Schema.Struct({ nonce: Schema.String, deadlineAt: Schema.String }),
+);
+const decodeAbsoluteAlarmPayload = Schema.decodeUnknownSync(
+  Schema.Struct({
+    deadlineAt: Schema.String,
+    drainAt: Schema.optionalKey(Schema.String),
+    midpointAt: Schema.optionalKey(Schema.String),
+  }),
+);
+const decodeOptionalAlarmKind = Schema.decodeUnknownSync(
+  Schema.Struct({ kind: Schema.optionalKey(Schema.String) }),
+);
+
+// Container stores Date schedules as floor(seconds), fires due rows, then deletes the fired row.
+const fireContainerAlarm = async (
+  harness: SessionHarness,
+  callback: AbsoluteCallback,
+  atMillis: number,
+): Promise<void> => {
+  const row = harness.schedules.findLast((schedule) => schedule.callback === callback);
+  assert.isDefined(row);
+  assert.instanceOf(row.when, Date);
+  assert.isAtMost(Math.floor(row.when.getTime() / 1_000) * 1_000, atMillis);
+  try {
+    if (callback === "sessionActorDeadline")
+      await harness.sandbox.sessionActorDeadline(row.payload);
+    else if (callback === "sessionActorHardCap")
+      await harness.sandbox.sessionActorHardCap(row.payload);
+    else if (callback === "sessionActorHardCapDrain")
+      await harness.sandbox.sessionActorHardCapDrain(row.payload);
+    else if (callback === "sessionActorCheckpointMidpoint")
+      await harness.sandbox.sessionActorCheckpointMidpoint(row.payload);
+    else if (callback === "expireEvidenceJob")
+      await harness.sandbox.expireEvidenceJob(decodeEvidenceDeadline(row.payload));
+    else await harness.sandbox.expireRetainedEvidence(row.payload);
+  } finally {
+    const index = harness.schedules.indexOf(row);
+    if (index >= 0) harness.schedules.splice(index, 1);
+  }
+};
+
+const makeLegacyDeadlineRow = (harness: SessionHarness): string => {
+  const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+  assert.ok(authority !== undefined && Predicate.isTagged(authority.state, "Transitioning"));
+  const transition = authority.state.transition;
+  harness.schedules.push({
+    when: new Date(transition.deadlineAt),
+    callback: "sessionActorDeadline",
+    payload: {
+      alarmId: actorAlarmId(
+        "deadline",
+        transition.nonce,
+        transition.attempt,
+        transition.deadlineAt,
+      ),
+      revision: authority.revision,
+      transitionNonce: transition.nonce,
+      attempt: transition.attempt,
+      expectedPhase: transition.phase,
+      expectedDeadlineAt: transition.deadlineAt,
+      correlationId: crypto.randomUUID(),
+    },
+  });
+  return transition.deadlineAt;
+};
+
+const makeLegacyAbsoluteRow = (harness: SessionHarness, callback: AbsoluteCallback) => {
+  const index = harness.schedules.findIndex((schedule) => schedule.callback === callback);
+  assert.isAtLeast(index, 0);
+  const row = harness.schedules[index];
+  assert.isDefined(row);
+  const payload = decodeAbsoluteAlarmPayload(row.payload);
+  const deadline =
+    callback === "sessionActorHardCapDrain"
+      ? payload.drainAt
+      : callback === "sessionActorCheckpointMidpoint"
+        ? payload.midpointAt
+        : payload.deadlineAt;
+  assert.isDefined(deadline);
+  harness.schedules.splice(index, 1, { ...row, when: new Date(deadline) });
+  return deadline;
+};
+
 const makeHatchHealthContainerFetch =
   (nextHealthStatus: () => number): NonNullable<HarnessOptions["containerFetch"]> =>
   async (request, port) => {
@@ -101,6 +194,314 @@ const makeHatchHealthContainerFetch =
     const status = nextHealthStatus();
     return new Response(status >= 200 && status <= 399 ? "healthy" : "unhealthy", { status });
   };
+
+describe("absolute Container alarms", () => {
+  it("rounds fractional instants up and preserves exact seconds", () => {
+    assert.strictEqual(
+      absoluteAlarmDate("2026-09-03T00:00:00.001Z").toISOString(),
+      "2026-09-03T00:00:01.000Z",
+    );
+    assert.strictEqual(
+      absoluteAlarmDate("2026-09-03T00:00:00.999Z").toISOString(),
+      "2026-09-03T00:00:01.000Z",
+    );
+    assert.strictEqual(
+      absoluteAlarmDate("2026-09-03T00:00:01.000Z").toISOString(),
+      "2026-09-03T00:00:01.000Z",
+    );
+  });
+
+  it.effect("rearms an early legacy deadline fence and settles the transition on time", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.999Z"));
+      const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      harness.injectFailure("actorAlarmScheduleOnce");
+      const failed = yield* Effect.promise(() =>
+        harness.sandbox.checkpointScottySession().then(
+          () => undefined,
+          (error: unknown) => error,
+        ),
+      );
+      assert.instanceOf(failed, ScottyError);
+      const deadlineAt = makeLegacyDeadlineRow(harness);
+      const floor = Math.floor(Date.parse(deadlineAt) / 1_000) * 1_000;
+      yield* clock.setTime(floor);
+      yield* Effect.promise(() => fireContainerAlarm(harness, "sessionActorDeadline", floor));
+      const transitioning = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        transitioning !== undefined && Predicate.isTagged(transitioning.state, "Transitioning"),
+      );
+      const rearmed = harness.schedules.findLast((row) => row.callback === "sessionActorDeadline");
+      assert.instanceOf(rearmed?.when, Date);
+      assert.strictEqual(rearmed.when.getTime(), absoluteAlarmDate(deadlineAt).getTime());
+      assert.strictEqual(decodeOptionalAlarmKind(rearmed.payload).kind, undefined);
+
+      const firedAt = rearmed.when.getTime();
+      yield* clock.setTime(firedAt);
+      yield* Effect.promise(() => fireContainerAlarm(harness, "sessionActorDeadline", firedAt));
+      const settled = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        settled !== undefined &&
+          Predicate.isTagged(settled.state, "Stable") &&
+          Predicate.isTagged(settled.state.stable, "Failed"),
+      );
+      assert.strictEqual(settled.state.stable.code, "transition_deadline_elapsed");
+    }),
+  );
+
+  for (const earlyBy of [999, 1]) {
+    it.effect(`rearms a final hard cap fired ${earlyBy} ms early`, () =>
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make();
+        yield* clock.setTime(
+          Date.parse(`2026-09-03T00:00:00.${String(1_000 - earlyBy).padStart(3, "0")}Z`),
+        );
+        const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+        yield* Effect.promise(() =>
+          harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+        );
+        const deadlineAt = makeLegacyAbsoluteRow(harness, "sessionActorHardCap");
+        const floor = Math.floor(Date.parse(deadlineAt) / 1_000) * 1_000;
+        yield* clock.setTime(floor);
+        yield* Effect.promise(() => fireContainerAlarm(harness, "sessionActorHardCap", floor));
+        const rearmed = harness.schedules.findLast((row) => row.callback === "sessionActorHardCap");
+        assert.instanceOf(rearmed?.when, Date);
+        assert.strictEqual(rearmed.when.getTime(), absoluteAlarmDate(deadlineAt).getTime());
+        const firedAt = rearmed.when.getTime();
+        yield* clock.setTime(firedAt);
+        yield* Effect.promise(() => fireContainerAlarm(harness, "sessionActorHardCap", firedAt));
+        const settled = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+        assert.ok(
+          settled !== undefined &&
+            Predicate.isTagged(settled.state, "Stable") &&
+            Predicate.isTagged(settled.state.stable, "Failed"),
+        );
+        assert.strictEqual(settled.state.stable.code, "hard_cap_elapsed");
+      }),
+    );
+  }
+
+  const earlyCallbacks: ReadonlyArray<AbsoluteCallback> = [
+    "sessionActorHardCapDrain",
+    "sessionActorCheckpointMidpoint",
+  ];
+  for (const callback of earlyCallbacks) {
+    it.effect(`rearms an early ${callback} alarm`, () =>
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make();
+        yield* clock.setTime(Date.parse("2026-09-03T00:00:00.999Z"));
+        const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+        yield* Effect.promise(() =>
+          harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+        );
+        const target = makeLegacyAbsoluteRow(harness, callback);
+        const floor = Math.floor(Date.parse(target) / 1_000) * 1_000;
+        yield* clock.setTime(floor);
+        yield* Effect.promise(() => fireContainerAlarm(harness, callback, floor));
+        const rearmed = harness.schedules.findLast((row) => row.callback === callback);
+        assert.instanceOf(rearmed?.when, Date);
+        assert.strictEqual(rearmed.when.getTime(), absoluteAlarmDate(target).getTime());
+      }),
+    );
+  }
+
+  it.effect("rearms an early Evidence job expiry", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.999Z"));
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          evidenceEnabled: true,
+          rawPiContainerRunning: true,
+          piSessionRunning: true,
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      const active = yield* Effect.promise(() =>
+        harness.sandbox.acceptScottyEvidenceJob({
+          port: 4_173,
+          viewport: { width: 1_280, height: 720 },
+          capture: { screenshots: "after-each-step", video: false },
+          steps: [
+            {
+              name: "Open",
+              action: { kind: "goto", path: "/" },
+              expect: [{ kind: "urlPath", expected: "/" }],
+            },
+          ],
+        }),
+      );
+      const index = harness.schedules.findIndex((row) => row.callback === "expireEvidenceJob");
+      assert.isAtLeast(index, 0);
+      const row = harness.schedules[index];
+      assert.isDefined(row);
+      const payload = decodeEvidenceDeadline(row.payload);
+      harness.schedules.splice(index, 1, { ...row, when: new Date(payload.deadlineAt) });
+      const floor = Math.floor(Date.parse(payload.deadlineAt) / 1_000) * 1_000;
+      yield* clock.setTime(floor);
+      yield* Effect.promise(() => fireContainerAlarm(harness, "expireEvidenceJob", floor));
+      assert.strictEqual(
+        harness.read<EvidenceState>(sessionHarnessKeys.evidence)?.activeJob?.operationNonce,
+        active.operationNonce,
+      );
+      const rearmed = harness.schedules.findLast(
+        (schedule) => schedule.callback === "expireEvidenceJob",
+      );
+      assert.instanceOf(rearmed?.when, Date);
+      assert.strictEqual(rearmed.when.getTime(), absoluteAlarmDate(payload.deadlineAt).getTime());
+    }),
+  );
+
+  it.effect("rearms an early retained Evidence expiry", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      const expiresAt = "2026-09-03T00:00:00.999Z";
+      const floor = Math.floor(Date.parse(expiresAt) / 1_000) * 1_000;
+      yield* clock.setTime(floor);
+      const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+      harness.schedules.push({
+        when: new Date(expiresAt),
+        callback: "expireRetainedEvidence",
+        payload: { expiresAt },
+      });
+      yield* Effect.promise(() => fireContainerAlarm(harness, "expireRetainedEvidence", floor));
+      const rearmed = harness.schedules.findLast(
+        (schedule) => schedule.callback === "expireRetainedEvidence",
+      );
+      assert.instanceOf(rearmed?.when, Date);
+      assert.strictEqual(rearmed.when.getTime(), absoluteAlarmDate(expiresAt).getTime());
+      assert.deepStrictEqual(rearmed.payload, { expiresAt });
+    }),
+  );
+
+  it.effect("surfaces rearm failure after bounded retries", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.999Z"));
+      const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      harness.injectFailure("actorAlarmScheduleOnce");
+      yield* Effect.promise(() =>
+        harness.sandbox.checkpointScottySession().then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
+      const target = makeLegacyDeadlineRow(harness);
+      const floor = Math.floor(Date.parse(target) / 1_000) * 1_000;
+      harness.injectFailure("actorAlarmSchedule");
+      yield* clock.setTime(floor);
+      const firing = fireContainerAlarm(harness, "sessionActorDeadline", floor).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        yield* Effect.yieldNow;
+        yield* clock.adjust("1 second");
+      }
+      const failure = yield* Effect.promise(() => firing);
+      assert.isDefined(failure);
+      assert.isFalse(
+        harness.schedules.some(
+          (row) =>
+            row.callback === "sessionActorDeadline" &&
+            row.when instanceof Date &&
+            row.when.getTime() === Date.parse(target),
+        ),
+      );
+    }),
+  );
+
+  const overdueRequests: ReadonlyArray<"session" | "diagnostics" | "lifecycle"> = [
+    "session",
+    "diagnostics",
+    "lifecycle",
+  ];
+  for (const request of overdueRequests) {
+    it.effect(`settles an overdue transition with no alarm on ${request} request`, () =>
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make();
+        yield* clock.setTime(Date.parse("2026-09-03T00:00:00.999Z"));
+        const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+        yield* Effect.promise(() =>
+          harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+        );
+        harness.injectFailure("actorAlarmScheduleOnce");
+        yield* Effect.promise(() =>
+          harness.sandbox.checkpointScottySession().then(
+            () => undefined,
+            () => undefined,
+          ),
+        );
+        const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+        assert.ok(authority !== undefined && Predicate.isTagged(authority.state, "Transitioning"));
+        yield* clock.setTime(Date.parse(authority.state.transition.deadlineAt) + 1);
+        if (request === "session") yield* Effect.promise(() => harness.sandbox.getScottySession());
+        if (request === "diagnostics")
+          yield* Effect.promise(() => harness.sandbox.getScottyActorDiagnostics());
+        if (request === "lifecycle")
+          yield* Effect.promise(() =>
+            harness.sandbox.sleepScottySession().then(
+              () => undefined,
+              () => undefined,
+            ),
+          );
+        const settled = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+        assert.ok(
+          settled !== undefined &&
+            Predicate.isTagged(settled.state, "Stable") &&
+            Predicate.isTagged(settled.state.stable, "Failed"),
+        );
+        assert.strictEqual(settled.state.stable.code, "transition_deadline_elapsed");
+      }),
+    );
+  }
+
+  it.effect("leaves an overdue transition alone while its nonce is mutating", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.999Z"));
+      const restoreGate = deferred<void>();
+      let blockRestore = false;
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          restoreBackupGate: () => (blockRestore ? restoreGate.promise : undefined),
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      yield* Effect.promise(() => harness.sandbox.sleepScottySession());
+      blockRestore = true;
+      const resuming = harness.sandbox.resumeScottySession().then(
+        () => undefined,
+        () => undefined,
+      );
+      while (harness.events.filter((event) => event === "host:restoreBackup").length < 2)
+        yield* Effect.yieldNow;
+      const active = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(active !== undefined && Predicate.isTagged(active.state, "Transitioning"));
+      yield* clock.setTime(Date.parse(active.state.transition.deadlineAt) + 1);
+      yield* Effect.promise(() => harness.sandbox.getScottySession());
+      const afterRead = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(afterRead !== undefined && Predicate.isTagged(afterRead.state, "Transitioning"));
+      assert.strictEqual(afterRead.state.transition.nonce, active.state.transition.nonce);
+      assert.strictEqual(afterRead.revision, active.revision);
+      restoreGate.resolve();
+      yield* Effect.promise(() => resuming);
+    }),
+  );
+});
 
 describe("Sandbox actor checkpoint, sleep, and resume", () => {
   it("arms the strict final payload before the derived drain and stops create when drain arming fails", async () => {
@@ -127,7 +528,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     if (!(finalWhen instanceof Date)) return;
     assert.strictEqual(
       drainPayload.value.drainAt,
-      new Date(finalWhen.getTime() - 10 * 60_000).toISOString(),
+      new Date(Date.parse(authority.hardCap.deadlineAt) - 10 * 60_000).toISOString(),
     );
     assert.isBelow(
       harness.events.indexOf("schedule:sessionActorHardCap"),

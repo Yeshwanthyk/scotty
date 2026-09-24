@@ -3,6 +3,7 @@ import { RuntimeCliMaterializer, runtimeCliMaterializerLayer } from "../runtime-
 import { decodeRuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 import { sidecarFollowUpStorage } from "./store";
+import { absoluteAlarmDate } from "./absolute-alarm-time";
 import { resolveSessionConfiguration } from "../session-actor/configuration";
 import { decodeCloudSettingsSnapshot } from "../../../protocol/settings/cloud-settings";
 import {
@@ -1385,7 +1386,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       Effect.tryPromise({
         try: () =>
           this.schedule(
-            fence.kind === "reconcile" ? 5 : new Date(fence.expectedDeadlineAt),
+            fence.kind === "reconcile" ? 5 : absoluteAlarmDate(fence.expectedDeadlineAt),
             "sessionActorDeadline",
             fence,
           ),
@@ -1590,7 +1591,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
         };
         const schedule = (at: string, callback: string, payload: unknown) =>
           Effect.tryPromise({
-            try: () => this.schedule(new Date(at), callback, payload).then(() => undefined),
+            try: () =>
+              this.schedule(absoluteAlarmDate(at), callback, payload).then(() => undefined),
             catch: () =>
               new CreateControllerBoundaryFailure({
                 boundary: "hard_cap",
@@ -2337,7 +2339,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }
         const scheduled = yield* Effect.result(
           hostEffect("schedule", () =>
-            this.schedule(new Date(deadlineAt), "expireEvidenceJob", {
+            this.schedule(absoluteAlarmDate(deadlineAt), "expireEvidenceJob", {
               nonce: operationNonce,
               deadlineAt,
             } satisfies EvidenceDeadlinePayload),
@@ -2640,6 +2642,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
       state.activeJob.deadlineAt !== payload.deadlineAt
     )
       return;
+    const now = yield* Clock.currentTimeMillis;
+    if (now < Date.parse(payload.deadlineAt)) {
+      yield* this.rearmAbsoluteAlarmProgram(payload.deadlineAt, "expireEvidenceJob", payload);
+      return;
+    }
     const cleaned = yield* Effect.result(
       this.cleanupEvidencePreviewProgram(payload.nonce, "deadline"),
     );
@@ -2677,7 +2684,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const scheduled = yield* Effect.result(
       hostEffect("schedule", () =>
-        this.schedule(new Date(expiresAt), "expireRetainedEvidence", {
+        this.schedule(absoluteAlarmDate(expiresAt), "expireRetainedEvidence", {
           expiresAt,
         } satisfies EvidenceRetentionPayload),
       ),
@@ -2750,7 +2757,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       try: () => this.listSchedules<EvidenceRetentionPayload>("expireRetainedEvidence"),
       catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
     });
-    const expectedTime = Math.floor(Date.parse(expiresAt) / 1_000);
+    const expectedTime = absoluteAlarmDate(expiresAt).getTime() / 1_000;
     return schedules.some((schedule) => schedule.time === expectedTime);
   });
 
@@ -2786,6 +2793,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const decoded = decodeEvidenceRetentionPayload(payload);
     if (Option.isNone(decoded) || !Number.isFinite(Date.parse(decoded.value.expiresAt))) return;
+    const now = yield* Clock.currentTimeMillis;
+    if (now < Date.parse(decoded.value.expiresAt)) {
+      yield* this.rearmAbsoluteAlarmProgram(
+        decoded.value.expiresAt,
+        "expireRetainedEvidence",
+        decoded.value,
+      );
+      return;
+    }
     const evidence = yield* EvidenceStore;
     // The pinned Container host deletes the executing row after this callback returns. Insert its
     // sole future successor first; interruption before insertion leaves the current alarm retryable.
@@ -3339,6 +3355,70 @@ export class Sandbox extends BaseSandbox<Bindings> {
       : recovered;
   });
 
+  private readonly dispatchOverdueTransitionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const store = yield* ActorStore;
+    const before = yield* store.read;
+    const authority = before.authority;
+    const now = yield* Clock.currentTimeMillis;
+    if (
+      authority === undefined ||
+      !AuthorityStateSchema.guards.Transitioning(authority.state) ||
+      now < Date.parse(authority.state.transition.deadlineAt)
+    )
+      return;
+    const nonce = authority.state.transition.nonce;
+    yield* this.withExclusiveActorMutation(
+      nonce,
+      Effect.gen({ self: this }, function* () {
+        const current = yield* store.read;
+        const owner = current.authority;
+        const timestampMillis = yield* Clock.currentTimeMillis;
+        if (
+          owner === undefined ||
+          !AuthorityStateSchema.guards.Transitioning(owner.state) ||
+          owner.state.transition.nonce !== nonce ||
+          timestampMillis < Date.parse(owner.state.transition.deadlineAt)
+        )
+          return;
+        const transition = owner.state.transition;
+        const correlationId = crypto.randomUUID();
+        const actor = yield* SessionActor;
+        yield* actor.resume({
+          timestamp: new Date(timestampMillis).toISOString(),
+          correlationId,
+          expectedTransition: {
+            revision: owner.revision,
+            transitionNonce: nonce,
+            attempt: transition.attempt,
+            expectedPhase: transition.phase,
+          },
+          fence: {
+            kind: "deadline",
+            alarmId: actorAlarmId("deadline", nonce, transition.attempt, transition.deadlineAt),
+            revision: owner.revision,
+            transitionNonce: nonce,
+            attempt: transition.attempt,
+            expectedPhase: transition.phase,
+            expectedDeadlineAt: transition.deadlineAt,
+            correlationId,
+          },
+        });
+        const after = yield* store.read;
+        if (
+          after.authority !== undefined &&
+          AuthorityStateSchema.guards.Stable(after.authority.state) &&
+          !StableStateSchema.guards.Gone(after.authority.state.stable)
+        ) {
+          const metadataStore = yield* SessionActorMetadataStore;
+          yield* metadataStore.scrubSettledCreate(after.authority);
+        }
+        const publicState = yield* this.actorSessionStateFromSnapshotProgram(after);
+        yield* this.publishSessionProjectionBestEffortProgram(publicState.projection);
+        yield* this.cancelSessionSchedulesAfterGoneProgram();
+      }),
+    );
+  });
+
   private readonly withExclusiveActorMutation = <A, E, R>(
     nonce: string,
     effect: Effect.Effect<A, E, R>,
@@ -3380,6 +3460,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     id: string,
     idempotency?: CreateIdempotencyDigestMetadata,
   ) {
+    yield* this.dispatchOverdueTransitionProgram().pipe(Effect.ignore({ log: "Warn" }));
     if (input.provider === "runner")
       return yield* new ScottyError(
         "bad_request",
@@ -3567,6 +3648,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly actorVaporizeProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    yield* this.dispatchOverdueTransitionProgram().pipe(Effect.ignore({ log: "Warn" }));
     const store = yield* ActorStore;
     const actor = yield* SessionActor;
     const before = yield* store.read;
@@ -3629,6 +3711,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     kind: LifecycleCommandKind,
   ) {
+    yield* this.dispatchOverdueTransitionProgram().pipe(Effect.ignore({ log: "Warn" }));
     const current = yield* this.readActorSessionStateProgram();
     const controller = yield* LifecycleController;
     const recovered = yield* this.recoverTransitioningActorForRequestProgram(kind).pipe(
@@ -3958,6 +4041,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly getScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    yield* this.dispatchOverdueTransitionProgram().pipe(Effect.ignore({ log: "Warn" }));
     const store = yield* ActorStore;
     const metadataStore = yield* SessionActorMetadataStore;
     const snapshot = yield* store.read.pipe(
@@ -3992,6 +4076,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly getScottyActorDiagnosticsProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    yield* this.dispatchOverdueTransitionProgram().pipe(Effect.ignore({ log: "Warn" }));
     const diagnostics = yield* Effect.tryPromise({
       try: () =>
         // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: authenticated diagnostics read the actor's immutable authority journal without mutating it
@@ -5868,7 +5953,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     if (schedules.some((schedule) => schedule.time * 1000 > now)) return;
     yield* hostEffect("schedule", () =>
-      this.schedule(new Date(now + 5_000), "drainSidecarFollowUps", {}),
+      this.schedule(absoluteAlarmDate(now + 5_000), "drainSidecarFollowUps", {}),
     );
   });
 
@@ -6317,6 +6402,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.resolveCredentialForProxyProgram(decoded.success));
   }
 
+  private readonly rearmAbsoluteAlarmProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    instant: string,
+    callback: string,
+    payload: unknown,
+  ) {
+    yield* Effect.tryPromise({
+      try: () => this.schedule(absoluteAlarmDate(instant), callback, payload).then(() => undefined),
+      catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
+    }).pipe(
+      Effect.retry({
+        schedule: Schedule.max([Schedule.spaced("1 second"), Schedule.recurs(3)]),
+      }),
+    );
+  });
+
   async sessionActorDeadline(payload: unknown): Promise<void> {
     const fence = decodeActorAlarmFence(payload);
     if (Option.isNone(fence)) return;
@@ -6324,6 +6425,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(
       Effect.gen({ self: this }, function* () {
         const now = yield* Clock.currentTimeMillis;
+        if (currentFence.kind === "deadline" && now < Date.parse(currentFence.expectedDeadlineAt)) {
+          yield* this.rearmAbsoluteAlarmProgram(
+            currentFence.expectedDeadlineAt,
+            "sessionActorDeadline",
+            fence.value,
+          );
+          return;
+        }
         const store = yield* ActorStore;
         const actor = yield* SessionActor;
         yield* actor.resume({
@@ -6362,6 +6471,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }).pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }));
         const actor = yield* SessionActor;
         const now = yield* Clock.currentTimeMillis;
+        if (now < Date.parse(fence.value.deadlineAt)) {
+          yield* this.rearmAbsoluteAlarmProgram(
+            fence.value.deadlineAt,
+            "sessionActorHardCap",
+            fence.value,
+          );
+          return;
+        }
         const handled = yield* Effect.result(
           actor.handle({
             _tag: "HardCapDeadlineAlarm",
@@ -6425,10 +6542,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
         if (
           !Number.isFinite(drainMillis) ||
           !Number.isFinite(deadlineMillis) ||
-          now < drainMillis ||
           now >= deadlineMillis
         )
           return;
+        if (now < drainMillis) {
+          yield* this.rearmAbsoluteAlarmProgram(
+            fence.value.drainAt,
+            "sessionActorHardCapDrain",
+            fence.value,
+          );
+          return;
+        }
 
         const store = yield* ActorStore;
         const before = yield* store.read;
@@ -6480,7 +6604,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
           authority.hardCap.deadlineAt !== fence.value.deadlineAt ||
           hardCapMidpointAt(authority.hardCap.deadlineAt, authority.hardCap.durationSeconds) !==
             fence.value.midpointAt ||
-          now < Date.parse(fence.value.midpointAt) ||
           now >=
             Date.parse(
               hardCapDrainAt(authority.hardCap.deadlineAt, authority.hardCap.durationSeconds),
@@ -6489,6 +6612,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
           isVaporizingAuthority(authority)
         )
           return;
+        if (now < Date.parse(fence.value.midpointAt)) {
+          yield* this.rearmAbsoluteAlarmProgram(
+            fence.value.midpointAt,
+            "sessionActorCheckpointMidpoint",
+            fence.value,
+          );
+          return;
+        }
         if (
           AuthorityStateSchema.guards.Stable(authority.state) &&
           StableStateSchema.guards.Warm(authority.state.stable)
