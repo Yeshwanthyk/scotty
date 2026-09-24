@@ -7,6 +7,20 @@ change behavior users need to know about.
 
 ## Unreleased
 
+## 0.3.28 — 2026-09-24
+
+### Added
+
+- Claude Code is available as a cloud agent next to Pi and Codex. Add a Claude
+  credential with `scotty sync --claude-token-file <path>` and pick the agent and
+  its model in settings or with `--agent claude`.
+
+### Changed
+
+- Model credentials are independent per provider. An installation can hold an
+  OpenAI credential, a Claude credential, or both; a session needs only the
+  credential for its own agent.
+
 ## 0.3.27 — 2026-09-22
 
 ### Fixed
