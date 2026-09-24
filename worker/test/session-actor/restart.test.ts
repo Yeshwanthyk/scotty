@@ -875,6 +875,51 @@ describe("session actor restart", () => {
     hardCap,
   });
 
+  const warmPort = () => {
+    const warm: SessionAuthority = {
+      session,
+      hardCap,
+      revision: 1,
+      state: {
+        _tag: "Stable",
+        stable: {
+          _tag: "Warm",
+          readiness,
+          backups,
+          activity: null,
+        },
+      },
+    };
+    return actorPort(undefined, false, {
+      authority: warm,
+      revision: 1,
+      journalSequence: 1,
+      journalTail: {
+        sequence: 1,
+        revision: 1,
+        timestamp: T0,
+        correlationId: "correlation-warm",
+        transitionNonce: null,
+        eventType: "completed",
+        transitionKind: null,
+        transitionPhase: null,
+        resultCode: "warm",
+        causeSequence: null,
+        causeAttempt: null,
+      },
+    });
+  };
+
+  const warmCommand = (tag: "SleepCommand" | "VaporizeCommand"): SessionActorInput => ({
+    _tag: tag,
+    expectedRevision: 1,
+    correlationId: `correlation-${tag}`,
+    nonce: `nonce-${tag}`,
+    attempt: `attempt-${tag}`,
+    timestamp: T0,
+    deadlineAt: DEADLINE,
+  });
+
   const actorPort = (
     cutTransaction: number | undefined,
     afterCommit: boolean,
@@ -900,7 +945,7 @@ describe("session actor restart", () => {
         return cut ? Promise.reject(new Error("cut")) : Promise.resolve(plan.outcome);
       },
     };
-    return { port, snapshot: () => raw };
+    return { port, snapshot: () => raw, replace: (next: RawActorStorageSnapshot) => (raw = next) };
   };
 
   const staleObservation = (committed: CommittedProviderEffectIntent): SessionActorInput => {
@@ -938,6 +983,7 @@ describe("session actor restart", () => {
     ) => Effect.Effect<SessionActorInput, ProviderEffectBoundaryFailure>,
     arm: (fence: ActorAlarmFence) => Effect.Effect<void, ActorAlarmOutcomeUnknown> = () =>
       Effect.void,
+    input: SessionActorInput = createCommand(),
   ) => {
     const runner = actorEffectRunnerLayer.pipe(
       Layer.provide(
@@ -945,7 +991,7 @@ describe("session actor restart", () => {
       ),
     );
     const actor = sessionActorLayer.pipe(Layer.provide(Layer.merge(actorStoreLayer(port), runner)));
-    return Effect.flatMap(SessionActor, (service) => service.handle(createCommand())).pipe(
+    return Effect.flatMap(SessionActor, (service) => service.handle(input)).pipe(
       Effect.provide(actor),
     );
   };
@@ -995,7 +1041,7 @@ describe("session actor restart", () => {
     }),
   );
 
-  it.effect("rereads an after-commit ambiguity before dispatching committed intents", () =>
+  it.effect("recovers a rejected observation after confirming an ambiguous intent commit", () =>
     Effect.gen(function* () {
       const memory = actorPort(1, true);
       let providerCalls = 0;
@@ -1004,9 +1050,153 @@ describe("session actor restart", () => {
         return Effect.succeed(staleObservation(committed));
       });
       assert.strictEqual(providerCalls, 1);
-      assert.ok(Predicate.isTagged(result.decision, "Rejected"));
-      assert.deepInclude(result.decision, { code: "stale_nonce" });
-      assert.strictEqual(memory.snapshot().revision, 1);
+      assert.ok(Predicate.isTagged(result.decision, "Accepted"));
+      assert.strictEqual(result.committed.length, 2);
+      assert.strictEqual(result.committed[1]?.journalEvent.resultCode, "observation_rejected");
+      assert.strictEqual(memory.snapshot().revision, 2);
+    }),
+  );
+
+  it.effect("reconciles an executing Sleep when its provider observation is rejected", () =>
+    Effect.gen(function* () {
+      const memory = warmPort();
+      const alarms: ActorAlarmFence[] = [];
+      const result = yield* runActor(
+        memory.port,
+        (committed) => Effect.succeed(staleObservation(committed)),
+        (fence) => {
+          alarms.push(fence);
+          return Effect.void;
+        },
+        warmCommand("SleepCommand"),
+      );
+      assert.strictEqual(result.committed.length, 2);
+      assert.deepInclude(result.committed[1]?.journalEvent, {
+        eventType: "provider_reconciling",
+        resultCode: "observation_rejected",
+      });
+      const retained = result.committed[1]?.authority;
+      assert.ok(
+        retained !== undefined && AuthorityStateSchema.guards.Transitioning(retained.state),
+      );
+      assert.strictEqual(retained.state.transition.mode, "reconciling");
+      assert.deepStrictEqual(
+        alarms.map((fence) => fence.kind),
+        ["deadline", "reconcile"],
+      );
+    }),
+  );
+
+  it.effect("fails a reconciling Sleep if its outcome remains unknown", () =>
+    Effect.gen(function* () {
+      const memory = warmPort();
+      const first = yield* runActor(
+        memory.port,
+        (committed) => Effect.succeed(staleObservation(committed)),
+        () => Effect.void,
+        warmCommand("SleepCommand"),
+      );
+      const reconciling = first.committed[1]?.authority;
+      assert.ok(
+        reconciling !== undefined && AuthorityStateSchema.guards.Transitioning(reconciling.state),
+      );
+      const second = yield* runActor(
+        memory.port,
+        (committed) => Effect.succeed(staleObservation(committed)),
+        () => Effect.void,
+        {
+          _tag: "UnknownProviderOutcome",
+          revision: reconciling.revision,
+          transitionNonce: reconciling.state.transition.nonce,
+          attempt: reconciling.state.transition.attempt,
+          expectedPhase: reconciling.state.transition.phase,
+          timestamp: T1,
+          correlationId: "correlation-reconcile-unknown",
+          expectedProviderRuntimeId: readiness.runtime.providerRuntimeId,
+          resultCode: "observation_rejected",
+        },
+      );
+      assert.strictEqual(second.committed.length, 1);
+      assert.deepInclude(second.committed[0]?.journalEvent, {
+        eventType: "completed",
+        resultCode: "reconciliation_outcome_unknown",
+      });
+      const failed = second.committed[0]?.authority;
+      assert.ok(failed !== undefined && AuthorityStateSchema.guards.Stable(failed.state));
+      assert.ok(StableStateSchema.guards.Failed(failed.state.stable));
+      assert.strictEqual(failed.state.stable.code, "reconciliation_outcome_unknown");
+    }),
+  );
+
+  it.effect("keeps Vaporize reconciling after a rejected provider observation", () =>
+    Effect.gen(function* () {
+      const memory = warmPort();
+      const first = yield* runActor(
+        memory.port,
+        (committed) => Effect.succeed(staleObservation(committed)),
+        () => Effect.void,
+        warmCommand("VaporizeCommand"),
+      );
+      const reconciling = first.committed[1]?.authority;
+      assert.ok(
+        reconciling !== undefined && AuthorityStateSchema.guards.Transitioning(reconciling.state),
+      );
+      assert.strictEqual(reconciling.state.transition.mode, "reconciling");
+      const second = yield* runActor(
+        memory.port,
+        (committed) => Effect.succeed(staleObservation(committed)),
+        () => Effect.void,
+        {
+          _tag: "UnknownProviderOutcome",
+          revision: reconciling.revision,
+          transitionNonce: reconciling.state.transition.nonce,
+          attempt: reconciling.state.transition.attempt,
+          expectedPhase: reconciling.state.transition.phase,
+          timestamp: T1,
+          correlationId: "correlation-vaporize-unknown",
+          expectedProviderRuntimeId: null,
+          resultCode: "observation_rejected",
+        },
+      );
+      const retained = second.committed[0]?.authority;
+      assert.ok(
+        retained !== undefined && AuthorityStateSchema.guards.Transitioning(retained.state),
+      );
+      assert.strictEqual(retained.state.transition.mode, "reconciling");
+      assert.strictEqual(second.committed[0]?.journalEvent.resultCode, "observation_rejected");
+    }),
+  );
+
+  it.effect("returns a stale rejected observation without committing recovery", () =>
+    Effect.gen(function* () {
+      const memory = warmPort();
+      const result = yield* runActor(
+        memory.port,
+        (committed) => {
+          const nextRevision = committed.authority.revision + 1;
+          memory.replace({
+            ...memory.snapshot(),
+            authority: { ...committed.authority, revision: nextRevision },
+            revision: nextRevision,
+            journalSequence: nextRevision,
+            journalTail: {
+              ...committed.journalEvent,
+              sequence: nextRevision,
+              revision: nextRevision,
+              timestamp: T1,
+              correlationId: "correlation-concurrent",
+              resultCode: "concurrent_advance",
+              causeSequence: committed.authority.revision,
+            },
+          });
+          return Effect.succeed(staleObservation(committed));
+        },
+        () => Effect.void,
+        warmCommand("SleepCommand"),
+      );
+      assert.deepStrictEqual(result.decision, { _tag: "Rejected", code: "duplicate" });
+      assert.strictEqual(result.committed.length, 1);
+      assert.strictEqual(memory.snapshot().revision, 3);
     }),
   );
 
