@@ -7,6 +7,15 @@ change behavior users need to know about.
 
 ## Unreleased
 
+## 0.3.30 — 2026-09-24
+
+### Fixed
+
+- Creating a session no longer fails with a runtime CLI lookup error when
+  GitHub rate-limits release lookups. Scotty uses the last verified runtime CLI
+  and reuses a recent verification for 10 minutes instead of checking GitHub on
+  every session start.
+
 ## 0.3.29 — 2026-09-24
 
 ### Changed
