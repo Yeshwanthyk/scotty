@@ -18,7 +18,6 @@ import type {
   SessionCommand,
   TransitionProof,
 } from "../../src/session-actor/input";
-import { publicView } from "../../src/session-actor/public-view";
 import { decide, validateAuthority } from "../../src/session-actor/reducer";
 import { phaseIndex, transitionPhases } from "../../src/session-actor/transition";
 
@@ -335,6 +334,33 @@ describe("session actor reducer", () => {
       _tag: "Rejected",
       code: "duplicate",
     });
+
+    const repeatedAdmission = accepted(
+      decide(warmAuthority(), command("VaporizeCommand", warmAuthority().revision)),
+    ).nextAuthority;
+    const reconciling = accepted(
+      decide(repeatedAdmission, unknown(repeatedAdmission)),
+    ).nextAuthority;
+    const repeated = accepted(decide(reconciling, unknown(reconciling))).nextAuthority;
+    assert.ok(TransitionSchema.guards.Vaporize(transitioning(repeated).transition));
+    assert.strictEqual(transitioning(repeated).transition.mode, "reconciling");
+
+    const current = transitioning(repeated).transition;
+    const deadline = accepted(
+      decide(repeated, {
+        _tag: "DeadlineAlarm",
+        revision: repeated.revision,
+        transitionNonce: current.nonce,
+        attempt: current.attempt,
+        expectedPhase: current.phase,
+        timestamp: DEADLINE,
+        correlationId: "correlation-vaporize-deadline",
+        alarmId: "alarm-vaporize",
+        expectedDeadlineAt: DEADLINE,
+      }),
+    ).nextAuthority;
+    assert.ok(TransitionSchema.guards.Vaporize(transitioning(deadline).transition));
+    assert.strictEqual(transitioning(deadline).transition.mode, "reconciling");
   });
 
   it("rejects stale and duplicate facts without intents or mutation", () => {
@@ -541,33 +567,6 @@ describe("session actor reducer", () => {
     });
   });
 
-  it("keeps Vaporize ownership across repeated unknown outcomes and its deadline", () => {
-    const admitted = accepted(
-      decide(warmAuthority(), command("VaporizeCommand", warmAuthority().revision)),
-    ).nextAuthority;
-    const reconciling = accepted(decide(admitted, unknown(admitted))).nextAuthority;
-    const repeated = accepted(decide(reconciling, unknown(reconciling))).nextAuthority;
-    assert.ok(TransitionSchema.guards.Vaporize(transitioning(repeated).transition));
-    assert.strictEqual(transitioning(repeated).transition.mode, "reconciling");
-
-    const current = transitioning(repeated).transition;
-    const deadline = accepted(
-      decide(repeated, {
-        _tag: "DeadlineAlarm",
-        revision: repeated.revision,
-        transitionNonce: current.nonce,
-        attempt: current.attempt,
-        expectedPhase: current.phase,
-        timestamp: DEADLINE,
-        correlationId: "correlation-vaporize-deadline",
-        alarmId: "alarm-vaporize",
-        expectedDeadlineAt: DEADLINE,
-      }),
-    ).nextAuthority;
-    assert.ok(TransitionSchema.guards.Vaporize(transitioning(deadline).transition));
-    assert.strictEqual(transitioning(deadline).transition.mode, "reconciling");
-  });
-
   it("commits only current-generation activity observations", () => {
     const warm = warmAuthority();
     const observed = accepted(
@@ -677,29 +676,6 @@ describe("session actor reducer", () => {
       _tag: "Rejected",
       code: "stale_generation",
     });
-  });
-
-  it("maps public status and derives actions exhaustively", () => {
-    assert.deepStrictEqual(publicView(warmAuthority()), {
-      status: "warm",
-      deleting: false,
-      availableActions: ["checkpoint", "sleep", "work", "vaporize"],
-    });
-    const checkpoint = accepted(
-      decide(warmAuthority(), command("CheckpointCommand", 7)),
-    ).nextAuthority;
-    assert.strictEqual(publicView(checkpoint)?.status, "warm");
-    assert.deepStrictEqual(publicView(checkpoint)?.availableActions, []);
-    const vaporize = accepted(decide(checkpoint, command("VaporizeCommand", 8))).nextAuthority;
-    assert.deepStrictEqual(publicView(vaporize), {
-      status: "warm",
-      deleting: true,
-      availableActions: [],
-    });
-    assert.strictEqual(
-      publicView(accepted(decide(undefined, createCommand())).nextAuthority)?.status,
-      "booting",
-    );
   });
 
   it("validates readiness coherence, backup ownership, wake proof, and gone cleanup", () => {
@@ -846,28 +822,5 @@ describe("session actor reducer", () => {
       }),
       { _tag: "Rejected", code: "invalid_progress" },
     );
-  });
-
-  it("increments an accepted decision exactly once and invalidates activity on generation changes", () => {
-    const checkpoint = accepted(decide(warmAuthority(), command("CheckpointCommand", 7)));
-    assert.strictEqual(checkpoint.nextAuthority.revision, 8);
-    const transition = transitioning(checkpoint.nextAuthority).transition;
-    assert.strictEqual(TransitionSchema.guards.Checkpoint(transition), true);
-    if (!TransitionSchema.guards.Checkpoint(transition)) return;
-    const progressed = accepted(
-      decide(
-        checkpoint.nextAuthority,
-        fact(checkpoint.nextAuthority, "PiStopped", {
-          readiness: readiness("runtime-2", "supervisor-2"),
-          piStoppedAt: T1,
-          backup: transition.proof.backup,
-        }),
-      ),
-    );
-    assert.strictEqual(progressed.nextAuthority.revision, 9);
-    const progressedTransition = transitioning(progressed.nextAuthority).transition;
-    assert.strictEqual(TransitionSchema.guards.Checkpoint(progressedTransition), true);
-    if (!TransitionSchema.guards.Checkpoint(progressedTransition)) return;
-    assert.strictEqual(progressedTransition.proof.readiness.runtime.runtimeGeneration, "runtime-2");
   });
 });

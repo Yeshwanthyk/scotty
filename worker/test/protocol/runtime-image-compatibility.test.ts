@@ -37,36 +37,24 @@ const fixture = () => {
 };
 afterEach(() => vi.unstubAllGlobals());
 describe("signed standard-image runtime compatibility", () => {
-  it.effect("release signer agrees with deployment and Worker verification", () =>
+  it.effect("verifies signed runtime identity and rejects incompatible evidence", () =>
     Effect.gen(function* () {
       const evidence = fixture();
       assert.deepEqual(yield* verifyRuntimeImageCompatibility(evidence, digest), evidence);
-    }),
-  );
-  it.effect("changing immutable image identity invalidates previous evidence", () =>
-    Effect.gen(function* () {
-      const evidence = fixture();
       const error = yield* verifyRuntimeImageCompatibility(
         evidence,
         `sha256:${"b".repeat(64)}`,
       ).pipe(Effect.flip);
       assert.equal(error.reason, "unsupported_image");
-    }),
-  );
-  it.effect("changing the signed runtime tuple is rejected", () =>
-    Effect.gen(function* () {
-      const evidence = fixture();
-      const error = yield* verifyRuntimeImageCompatibility(
+      const tupleError = yield* verifyRuntimeImageCompatibility(
         { ...evidence, compatibility: { ...evidence.compatibility, bunVersion: "9.0.0" } },
         digest,
       ).pipe(Effect.flip);
-      assert.equal(error.reason, "invalid_evidence");
-    }),
-  );
-  it.effect("an arbitrary/custom image digest is not evidence of runtime compatibility", () =>
-    Effect.gen(function* () {
-      const error = yield* verifyRuntimeImageCompatibility(undefined, digest).pipe(Effect.flip);
-      assert.equal(error.reason, "unsupported_image");
+      assert.equal(tupleError.reason, "invalid_evidence");
+      const missingError = yield* verifyRuntimeImageCompatibility(undefined, digest).pipe(
+        Effect.flip,
+      );
+      assert.equal(missingError.reason, "unsupported_image");
     }),
   );
 });

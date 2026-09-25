@@ -1,8 +1,8 @@
 import { runtimeCliPin } from "../runtime-cli/fixtures";
 import { scottyBaseAgentInstructions } from "../../../protocol/agents/agent-instructions";
 import { assert, describe, expect, it } from "@effect/vitest";
-import { vi } from "vitest";
 import { Effect, Option, Predicate, Result, Schema } from "effect";
+import { vi } from "vitest";
 import { TestClock } from "effect/testing";
 import {
   defaultCloudSettings,
@@ -572,29 +572,6 @@ describe("absolute Container alarms", () => {
 });
 
 describe("Sandbox actor checkpoint, sleep, and resume", () => {
-  it.effect("rearms a lost final hard cap once on repeated Warm reads", () =>
-    Effect.gen(function* () {
-      const clock = yield* TestClock.make();
-      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
-      const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
-      yield* Effect.promise(() =>
-        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
-      );
-      const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
-      assert.isDefined(authority);
-      for (let index = harness.schedules.length - 1; index >= 0; index -= 1)
-        if (harness.schedules[index]?.callback === "sessionActorHardCap")
-          harness.schedules.splice(index, 1);
-      yield* clock.setTime(Date.parse(authority.hardCap.deadlineAt) + 1);
-      yield* Effect.promise(() => harness.sandbox.getScottySession());
-      yield* Effect.promise(() => harness.sandbox.getScottySession());
-      assert.lengthOf(
-        harness.schedules.filter((schedule) => schedule.callback === "sessionActorHardCap"),
-        1,
-      );
-    }),
-  );
-
   it.effect("stops retrying a failed drain successor after the bounded window", () =>
     Effect.gen(function* () {
       const clock = yield* TestClock.make();
@@ -639,6 +616,29 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
       );
     }),
   );
+  it.effect("rearms a lost final hard cap once on repeated Warm reads", () =>
+    Effect.gen(function* () {
+      const clock = yield* TestClock.make();
+      yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
+      const harness = yield* Effect.promise(() => createSessionHarness({ clock }));
+      yield* Effect.promise(() =>
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+      const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.isDefined(authority);
+      for (let index = harness.schedules.length - 1; index >= 0; index -= 1)
+        if (harness.schedules[index]?.callback === "sessionActorHardCap")
+          harness.schedules.splice(index, 1);
+      yield* clock.setTime(Date.parse(authority.hardCap.deadlineAt) + 1);
+      yield* Effect.promise(() => harness.sandbox.getScottySession());
+      yield* Effect.promise(() => harness.sandbox.getScottySession());
+      assert.lengthOf(
+        harness.schedules.filter((schedule) => schedule.callback === "sessionActorHardCap"),
+        1,
+      );
+    }),
+  );
+
   it.effect("waits for an active agent turn and sleeps when the agent is idle", () =>
     Effect.gen(function* () {
       const clock = yield* TestClock.make();

@@ -153,29 +153,26 @@ describe("RecoverySandbox", () => {
     }),
   );
 
-  it.effect(
-    "accepts the native onStop callback as a stopped fact without guessing runtime state",
-    () =>
-      Effect.gen(function* () {
-        let stateReads = 0;
-        const input = yield* withRecovery(
-          Effect.flatMap(RecoverySandbox, (recovery) =>
-            recovery.observeRuntimeStoppedCallback(runtimeFence),
-          ),
-          {
-            runtime: runtimeCapabilities({
-              getState: async () => {
-                stateReads += 1;
-                return { status: "running" };
-              },
-            }),
-          },
-        );
-
-        assert.strictEqual(input.lifecycle, "stopped");
-        assert.strictEqual(input.runtime, null);
-        assert.strictEqual(stateReads, 0);
-      }),
+  it.effect("treats runtime callbacks as authoritative without guessing state", () =>
+    Effect.gen(function* () {
+      let stateReads = 0;
+      const stopped = yield* withRecovery(
+        Effect.flatMap(RecoverySandbox, (recovery) =>
+          recovery.observeRuntimeStoppedCallback(runtimeFence),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            getState: async () => {
+              stateReads += 1;
+              return { status: "running" };
+            },
+          }),
+        },
+      );
+      assert.strictEqual(stopped.lifecycle, "stopped");
+      assert.strictEqual(stopped.runtime, null);
+      assert.strictEqual(stateReads, 0);
+    }),
   );
 
   it.effect("reports supervisor absence only from a decisive process or health observation", () =>

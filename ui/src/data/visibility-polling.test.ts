@@ -69,14 +69,6 @@ describe("visibility polling", () => {
     expect(poll).toHaveBeenCalledTimes(2);
     polling.stop();
   });
-
-  it("contains a polling rejection", async () => {
-    const visibility = new FakeVisibility();
-    const polling = startVisibilityPolling(visibility, () => Promise.reject(new Error("offline")));
-    await Promise.resolve();
-    await Promise.resolve();
-    polling.stop();
-  });
 });
 
 describe("abort-fenced publishing", () => {

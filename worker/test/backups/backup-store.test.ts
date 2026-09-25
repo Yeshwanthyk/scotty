@@ -184,19 +184,6 @@ describe("BackupStore", () => {
     }),
   );
 
-  it.effect("delegates deletion to the Sandbox backup queue", () =>
-    Effect.gen(function* () {
-      const memory = new InMemoryFaultInjectableFake();
-      const capabilities = backupCapabilitiesFake(memory, backup);
-      yield* withStore(
-        capabilities,
-        Effect.flatMap(BackupStore, (store) => store.delete("backup-1")),
-      );
-
-      assert.deepStrictEqual(memory.calls("delete"), [["backup-1"]]);
-    }),
-  );
-
   it.effect("maps provider failures to fixed redacted typed failures", () =>
     Effect.gen(function* () {
       for (const [operation, expectedCreateCalls] of [

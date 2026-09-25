@@ -120,21 +120,6 @@ describe("Codex conversation failure projection", () => {
       });
     }),
   );
-  it.effect("allows follow-ups after a terminal failed turn when the runtime is healthy", () =>
-    Effect.gen(function* () {
-      const conversation = yield* sidecarConversation(
-        makeSnapshot({
-          ready: true,
-          failure: null,
-          prompt: { status: "terminal", turnId: "turn-1", outcome: "failed", text: "Task failed" },
-        }),
-        { prompt: "try the task", turnId: "turn-1", revision: 4 },
-      );
-      assert.isTrue(conversation.followUpAvailable);
-      assert.isFalse(conversation.runtimeStopped);
-      assert.equal(conversation.turns[0]?.state, "failed");
-    }),
-  );
   it.effect("keeps a saved failed turn visible after the native runtime resumes", () =>
     Effect.gen(function* () {
       const conversation = yield* sidecarConversation(

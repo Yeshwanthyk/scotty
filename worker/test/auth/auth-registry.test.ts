@@ -154,31 +154,6 @@ describe("AuthRegistry ownership authority", () => {
     }),
   );
 
-  it.effect("rejects non-current authority records", () =>
-    Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
-      const storage = new MemoryAuthAuthorityStorage({
-        clients: [],
-        pairings: [],
-      });
-
-      const result = yield* withRegistry(
-        storage,
-        Effect.flatMap(AuthRegistry, (registry) =>
-          registry.issueRecoveryGrant({
-            credential: { id: "aaaaaaaaaaaa", secret: secret("r") },
-            ttlMillis: FIVE_MINUTES,
-          }),
-        ).pipe(Effect.result),
-      );
-      assert.deepInclude(failure(result), { reason: "invalid_authority" });
-      assert.deepStrictEqual(storage.snapshot(), {
-        clients: [],
-        pairings: [],
-      });
-    }),
-  );
-
   it.effect(
     "renews the owner inside the final seven days and retains an expired owner record",
     () =>
@@ -747,6 +722,19 @@ describe("AuthRegistry ownership authority", () => {
   it.effect("fails closed for malformed current authority", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
+      const nonCurrent = new MemoryAuthAuthorityStorage({ clients: [], pairings: [] });
+      const nonCurrentResult = yield* withRegistry(
+        nonCurrent,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.issueRecoveryGrant({
+            credential: { id: "aaaaaaaaaaaa", secret: secret("r") },
+            ttlMillis: FIVE_MINUTES,
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(nonCurrentResult), { reason: "invalid_authority" });
+      assert.deepStrictEqual(nonCurrent.snapshot(), { clients: [], pairings: [] });
+
       const storage = new MemoryAuthAuthorityStorage({
         ownership: {
           state: "claimed",

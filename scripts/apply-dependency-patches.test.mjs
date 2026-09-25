@@ -23,6 +23,12 @@ describe("dependency patch verification", () => {
     ]);
     assert.doesNotThrow(() => assertPatchInventory());
     assert.doesNotThrow(() => verifyDependencyPatches({ mode: "check" }));
+    const checked = spawnSync(process.execPath, [script, "--check"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(checked.status, 0, checked.stderr);
+    assert.match(checked.stdout, /Verified patches\/alchemy/u);
   });
 
   it("detects unapplied and unclean patches without mutating", () => {
@@ -55,14 +61,5 @@ describe("dependency patch verification", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  });
-
-  it("exposes --check on the shared first-party command", () => {
-    const checked = spawnSync(process.execPath, [script, "--check"], {
-      cwd: root,
-      encoding: "utf8",
-    });
-    assert.equal(checked.status, 0, checked.stderr);
-    assert.match(checked.stdout, /Verified patches\/alchemy/u);
   });
 });

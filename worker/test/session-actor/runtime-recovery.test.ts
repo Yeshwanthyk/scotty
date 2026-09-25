@@ -115,6 +115,29 @@ const hardCapInput = (
 });
 
 describe("session actor runtime recovery", () => {
+  it("preserves a sleeping session when its matching hard-cap alarm arrives", () => {
+    const sleeping: SessionAuthority = {
+      session,
+      hardCap: hardCap(),
+      revision: 12,
+      state: {
+        _tag: "Stable",
+        stable: {
+          _tag: "Sleeping",
+          backup,
+          ownedBackupIds: [backup.backupId],
+          stop: { requestedAt: T0, observedAt: T1, runtimeGeneration: "runtime-1" },
+          wakeSource: { backupId: backup.backupId, confirmedAt: T1 },
+        },
+      },
+    };
+
+    assert.deepStrictEqual(decide(sleeping, hardCapInput()), {
+      _tag: "Rejected",
+      code: "duplicate",
+    });
+  });
+
   it("commits a matching runtime stop as an actionable failure before cleanup", () => {
     const result = accepted(decide(warm(), runtimeInput()));
     assert.strictEqual(result.journalEvent.eventType, "availability_lost");
@@ -365,30 +388,7 @@ describe("session actor runtime recovery", () => {
     assert.strictEqual(elapsed.nextAuthority.state.stable.code, "hard_cap_elapsed");
   });
 
-  it("preserves a sleeping session when its matching hard-cap alarm arrives", () => {
-    const sleeping: SessionAuthority = {
-      session,
-      hardCap: hardCap(),
-      revision: 12,
-      state: {
-        _tag: "Stable",
-        stable: {
-          _tag: "Sleeping",
-          backup,
-          ownedBackupIds: [backup.backupId],
-          stop: { requestedAt: T0, observedAt: T1, runtimeGeneration: "runtime-1" },
-          wakeSource: { backupId: backup.backupId, confirmedAt: T1 },
-        },
-      },
-    };
-
-    assert.deepStrictEqual(decide(sleeping, hardCapInput()), {
-      _tag: "Rejected",
-      code: "duplicate",
-    });
-  });
-
-  it("keeps the last confirmed backup when availability is lost while a replacement is prepared", () => {
+  it("retains backup ownership across hard-cap transition variants", () => {
     const candidate = {
       backupId: "backup-2",
       preparedAt: T1,
@@ -431,87 +431,89 @@ describe("session actor runtime recovery", () => {
       backup.backupId,
       candidate.backupId,
     ]);
-  });
-
-  it("keeps the verified checkpoint actionable when final Sleep stalls before backup creation", () => {
-    const sleeping: SessionAuthority = {
-      ...warm(),
-      state: {
-        _tag: "Transitioning",
-        transition: {
-          _tag: "Sleep",
-          nonce: "final-sleep",
-          origin: "Warm",
-          attempt: "final-attempt",
-          startedAt: T1,
-          lastProgressAt: T1,
-          deadlineAt: CAP,
-          mode: "reconciling",
-          phase: "Syncing",
-          proof: {
-            readiness,
-            piStoppedAt: T1,
-            backup: {
-              ownedBackupIds: [backup.backupId, "final-attempt"],
-              prepared: backup,
-              currentBackupId: backup.backupId,
-              confirmed: backup,
-            },
-            stopRequestedAt: null,
-            stop: null,
-          },
-        },
-      },
-    };
-    const elapsed = accepted(decide(sleeping, hardCapInput())).nextAuthority;
-    assert.ok(AuthorityStateSchema.guards.Stable(elapsed.state));
-    assert.ok(StableStateSchema.guards.Failed(elapsed.state.stable));
-    assert.strictEqual(elapsed.state.stable.actionable, true);
-    assert.strictEqual(elapsed.state.stable.backup?.backupId, backup.backupId);
-    assert.strictEqual(elapsed.state.stable.wakeSource?.confirmedAt, T1);
-    assert.deepStrictEqual(elapsed.state.stable.ownedBackupIds, [backup.backupId, "final-attempt"]);
-  });
-
-  it("retains cleanup ownership when a first backup is unconfirmed at the hard cap", () => {
-    const candidate = {
-      backupId: "backup-first",
-      preparedAt: T1,
-      confirmedAt: null,
-      sourceRuntimeGeneration: "runtime-1",
-    };
-    const checkpoint: SessionAuthority = {
-      ...warm(),
-      state: {
-        _tag: "Transitioning",
-        transition: {
-          _tag: "Checkpoint",
-          nonce: "checkpoint-nonce",
-          origin: "Warm",
-          attempt: "checkpoint-attempt",
-          startedAt: T0,
-          lastProgressAt: T1,
-          deadlineAt: CAP,
-          mode: "reconciling",
-          phase: "BackupPrepared",
-          proof: {
-            readiness,
-            piStoppedAt: T1,
-            backup: {
-              ownedBackupIds: [candidate.backupId],
-              prepared: candidate,
-              currentBackupId: null,
-              confirmed: null,
+    {
+      const sleeping: SessionAuthority = {
+        ...warm(),
+        state: {
+          _tag: "Transitioning",
+          transition: {
+            _tag: "Sleep",
+            nonce: "final-sleep",
+            origin: "Warm",
+            attempt: "final-attempt",
+            startedAt: T1,
+            lastProgressAt: T1,
+            deadlineAt: CAP,
+            mode: "reconciling",
+            phase: "Syncing",
+            proof: {
+              readiness,
+              piStoppedAt: T1,
+              backup: {
+                ownedBackupIds: [backup.backupId, "final-attempt"],
+                prepared: backup,
+                currentBackupId: backup.backupId,
+                confirmed: backup,
+              },
+              stopRequestedAt: null,
+              stop: null,
             },
           },
         },
-      },
-    };
-    const elapsed = accepted(decide(checkpoint, hardCapInput())).nextAuthority;
-    assert.ok(AuthorityStateSchema.guards.Stable(elapsed.state));
-    assert.ok(StableStateSchema.guards.Failed(elapsed.state.stable));
-    assert.strictEqual(elapsed.state.stable.actionable, false);
-    assert.strictEqual(elapsed.state.stable.backup, null);
-    assert.deepStrictEqual(elapsed.state.stable.ownedBackupIds, [candidate.backupId]);
+      };
+      const elapsed = accepted(decide(sleeping, hardCapInput())).nextAuthority;
+      assert.ok(AuthorityStateSchema.guards.Stable(elapsed.state));
+      assert.ok(StableStateSchema.guards.Failed(elapsed.state.stable));
+      assert.strictEqual(elapsed.state.stable.actionable, true);
+      assert.strictEqual(elapsed.state.stable.backup?.backupId, backup.backupId);
+      assert.strictEqual(elapsed.state.stable.wakeSource?.confirmedAt, T1);
+      assert.deepStrictEqual(elapsed.state.stable.ownedBackupIds, [
+        backup.backupId,
+        "final-attempt",
+      ]);
+    }
+
+    {
+      const candidate = {
+        backupId: "backup-first",
+        preparedAt: T1,
+        confirmedAt: null,
+        sourceRuntimeGeneration: "runtime-1",
+      };
+      const checkpoint: SessionAuthority = {
+        ...warm(),
+        state: {
+          _tag: "Transitioning",
+          transition: {
+            _tag: "Checkpoint",
+            nonce: "checkpoint-nonce",
+            origin: "Warm",
+            attempt: "checkpoint-attempt",
+            startedAt: T0,
+            lastProgressAt: T1,
+            deadlineAt: CAP,
+            mode: "reconciling",
+            phase: "BackupPrepared",
+            proof: {
+              readiness,
+              piStoppedAt: T1,
+              backup: {
+                ownedBackupIds: [candidate.backupId],
+                prepared: candidate,
+                currentBackupId: null,
+                confirmed: null,
+              },
+            },
+          },
+        },
+      };
+      const elapsed = accepted(decide(checkpoint, hardCapInput())).nextAuthority;
+      assert.ok(AuthorityStateSchema.guards.Stable(elapsed.state));
+      assert.ok(StableStateSchema.guards.Failed(elapsed.state.stable));
+      assert.strictEqual(elapsed.state.stable.actionable, false);
+      assert.strictEqual(elapsed.state.stable.backup, null);
+      assert.deepStrictEqual(elapsed.state.stable.ownedBackupIds, [candidate.backupId]);
+    }
   });
 
   it("atomically activates a pre-armed next hard cap only on resume admission", () => {

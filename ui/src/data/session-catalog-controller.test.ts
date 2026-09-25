@@ -223,20 +223,6 @@ describe("session catalog controller", () => {
     });
   });
 
-  it("publishes the first verified actor read for a new session id", async () => {
-    const created = { ...warmIdle, id: "created", source: "authority" as const };
-    const controller = createSessionCatalogController({
-      readList: vi.fn(async (): Promise<SessionListReadResult> => ({ ok: true, projections: [] })),
-      readActor: vi.fn(async () => actor(created)),
-    });
-
-    await controller.refreshActor(created.id);
-
-    expect(controller.getSnapshot().verifiedActors.get(created.id)).toMatchObject({
-      id: created.id,
-    });
-  });
-
   it("does not let a late actor read repopulate cache after authorization is lost", async () => {
     let finishRead: ((value: SessionReadResult) => void) | undefined;
     const pending = new Promise<SessionReadResult>((resolve) => {

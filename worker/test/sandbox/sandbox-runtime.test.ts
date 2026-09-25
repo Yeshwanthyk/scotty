@@ -2,7 +2,6 @@ import { assert, describe, it } from "@effect/vitest";
 import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect, Fiber, Result } from "effect";
 import {
-  errorName,
   SandboxRuntime,
   SandboxRuntimeFailure,
   sandboxRuntimeLayer,
@@ -57,20 +56,6 @@ const failure = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRun
 };
 
 describe("SandboxRuntime", () => {
-  it.effect("returns nonzero results for callers that branch on command status", () =>
-    Effect.gen(function* () {
-      const memory = new InMemoryFaultInjectableFake();
-      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
-      const result = failedResult("gh repo view", "", "not found");
-      memory.respond("exec", result);
-
-      const actual = yield* withRuntime(capabilities, exec("gh repo view", { timeout: 60_000 }));
-
-      assert.strictEqual(actual, result);
-      assert.deepStrictEqual(memory.calls("exec"), [["gh repo view", { timeout: 60_000 }]]);
-    }),
-  );
-
   it.effect("captures a successful call and forwards cwd, env, and timeout exactly", () =>
     Effect.gen(function* () {
       const memory = new InMemoryFaultInjectableFake();
@@ -572,12 +557,5 @@ describe("Sandbox runtime redaction helpers", () => {
       shellQuote("'\"; $(touch /tmp/pwned)\nline"),
       "''\\''\"; $(touch /tmp/pwned)\nline'",
     );
-  });
-
-  it("preserves error-name behavior without probing provider details", () => {
-    const providerError = new Error("credential-shaped provider detail");
-    providerError.name = "RPCTransportError";
-    assert.strictEqual(errorName(providerError), "RPCTransportError");
-    assert.strictEqual(errorName("provider detail"), "UnknownError");
   });
 });

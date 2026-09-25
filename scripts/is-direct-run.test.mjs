@@ -44,17 +44,6 @@ describe("isDirectRun", () => {
     });
   });
 
-  it("does not run an imported Node module", async () => {
-    await withFixture(async ({ entry }) => {
-      const imported = await execute(process.execPath, [
-        "--input-type=module",
-        "--eval",
-        `await import(${JSON.stringify(pathToFileURL(entry).href)})`,
-      ]);
-      assert.equal(imported.stdout, "");
-    });
-  });
-
   it("returns false for virtual, missing, and non-file module URLs", () => {
     assert.equal(isDirectRun("file:///$bunfs/root/scripts/task.mjs", process.execPath), false);
     assert.equal(
@@ -65,8 +54,15 @@ describe("isDirectRun", () => {
     assert.equal(isDirectRun(import.meta.url, undefined), false);
   });
 
-  it("does not self-run from a Bun compiled module", async () => {
+  it("does not run imported or Bun-compiled modules", async () => {
     await withFixture(async ({ root, entry }) => {
+      const imported = await execute(process.execPath, [
+        "--input-type=module",
+        "--eval",
+        `await import(${JSON.stringify(pathToFileURL(entry).href)})`,
+      ]);
+      assert.equal(imported.stdout, "");
+
       await copyFile(
         new URL("./is-direct-run.mjs", import.meta.url),
         join(root, "is-direct-run.mjs"),

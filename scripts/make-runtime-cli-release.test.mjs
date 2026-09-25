@@ -65,6 +65,10 @@ describe("S2b runtime CLI release", () => {
         cloudflareSandbox,
       },
     });
+    assert.equal(
+      payload({ byteSize: 128 * 1024 * 1024 + 1 }).artifact.byteSize,
+      128 * 1024 * 1024 + 1,
+    );
   });
 
   it("authenticates every contract field under a runtime-specific signing context", () => {
@@ -144,11 +148,6 @@ describe("S2b runtime CLI release", () => {
     ]) {
       assert.throws(() => payload(patch));
     }
-  });
-
-  it("accepts safe-integer sizes above the former managed CLI cap", () => {
-    const byteSize = 128 * 1024 * 1024 + 1;
-    assert.equal(payload({ byteSize }).artifact.byteSize, byteSize);
   });
 
   it("validates the complete payload again at the public signing entry", () => {

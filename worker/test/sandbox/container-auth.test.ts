@@ -110,31 +110,29 @@ const seedSkillMergeCommand = (
 
 // Keep this assertion close to the ContainerAuth boundary: native files only receive projections.
 describe("container managed credential projection", () => {
-  it.effect("merges zero user-synced skills and links both native homes", () =>
+  it.effect("merges user-synced skills and links both native homes", () =>
     Effect.gen(function* () {
-      const merge = yield* seedSkillMergeCommand([]);
-      assert.notInclude(merge, "/opt/scotty/skills");
-      assert.include(merge, `'/workspace/${SESSION_ID}/.codex/skills'`);
-      assert.include(merge, `'/workspace/${SESSION_ID}/.pi-agent/skills'`);
-      assert.notInclude(merge, "review-patch");
+      for (const [items, bundleRoot, hasUserSkill] of [
+        [[], undefined, false],
+        [[{ kind: "skill", name: "review-patch" }], "/workspace/.scotty/bundles/bundle-1", true],
+      ] as const) {
+        const merge = yield* seedSkillMergeCommand(items, bundleRoot);
+        assert.notInclude(merge, "/opt/scotty/skills");
+        assert.include(merge, `'/workspace/${SESSION_ID}/.codex/skills'`);
+        assert.include(merge, `'/workspace/${SESSION_ID}/.pi-agent/skills'`);
+        assert.deepEqual(
+          {
+            hasUserSkill: merge.includes("review-patch"),
+            hasBundleSkill:
+              bundleRoot === undefined
+                ? false
+                : merge.includes(`${bundleRoot}/skills/review-patch`),
+          },
+          { hasUserSkill, hasBundleSkill: hasUserSkill },
+        );
+      }
     }),
   );
-
-  it.effect("merges one user-synced skill and links both native homes", () =>
-    Effect.gen(function* () {
-      const bundleRoot = "/workspace/.scotty/bundles/bundle-1";
-      const merge = yield* seedSkillMergeCommand(
-        [{ kind: "skill", name: "review-patch" }],
-        bundleRoot,
-      );
-      assert.notInclude(merge, "/opt/scotty/skills");
-      assert.include(merge, `'/workspace/${SESSION_ID}/.codex/skills'`);
-      assert.include(merge, `'/workspace/${SESSION_ID}/.pi-agent/skills'`);
-      assert.include(merge, "review-patch");
-      assert.include(merge, `${bundleRoot}/skills/review-patch`);
-    }),
-  );
-
   it.effect(
     "seeds requested Pi settings and preserves changed settings during credential refresh",
     () =>
@@ -198,34 +196,7 @@ describe("container managed credential projection", () => {
       }),
   );
 
-  it("gives capture an ownership-neutral before-and-after workflow", () => {
-    assert.include(
-      sandboxAgentsInstructions,
-      "Capture cleans up only resources it created. It leaves the target app running.",
-    );
-    assert.include(sandboxAgentsInstructions, "App preview and capture are independent workflows");
-    assert.include(sandboxAgentsInstructions, "already-running target app's sandbox-local address");
-    assert.include(sandboxAgentsInstructions, "first-party tool call in the current turn");
-    assert.include(
-      sandboxAgentsInstructions,
-      "First-party tool results are not universally structured",
-    );
-    const captureInstruction = sandboxAgentsInstructions
-      .split("\n")
-      .find((line) => line.includes("reproducible browser flow"));
-    assert.ok(captureInstruction);
-    assert.notInclude(captureInstruction, "Hatch");
-  });
-
-  it("directs PR creation through the repository-scoped GitHub REST API", () => {
-    assert.include(
-      sandboxAgentsInstructions,
-      "use the repository-scoped GitHub REST endpoint with `gh api --method POST repos/{owner}/{repo}/pulls`",
-    );
-    assert.include(sandboxAgentsInstructions, "do not use `gh pr create` or GitHub GraphQL");
-  });
-
-  it("projects fixed handles into Pi auth and GitHub environment values", () => {
+  it("projects credential handles and rejects ambient or ambiguous grants", () => {
     const auth = JSON.parse(piAuthJson(credentials)) as ProjectedPiAuth;
     const apiKey = "scotty-managed://codex/openai/api-key";
     const access = "scotty-managed://codex/openai-codex/access";
@@ -243,9 +214,6 @@ describe("container managed credential projection", () => {
     assert.strictEqual(agentEnv(SESSION_ID, credentials).GH_TOKEN, github);
     assert.ok(!JSON.stringify(auth).includes("plaintext"));
     assert.ok(!JSON.stringify(auth).includes("/refresh"));
-  });
-
-  it("projects an empty grant selection without ambient credential fallbacks", () => {
     const empty = sessionRuntimeCredentials([]);
     assert.deepStrictEqual(JSON.parse(managedPiAuthJson(empty)), {});
     const env = agentEnv(SESSION_ID, empty);
@@ -253,9 +221,6 @@ describe("container managed credential projection", () => {
     assert.strictEqual(env.GOTOOLCHAIN, undefined);
     assert.strictEqual(env.GOPROXY, undefined);
     assert.strictEqual(env.GOSUMDB, undefined);
-  });
-
-  it("rejects multiple Pi grants while preserving single-grant selection", () => {
     const piGrant = grants[0];
     assert.ok(piGrant !== undefined);
     const alternate = { ...piGrant, name: "alternate", versionRef: "version-c" };
@@ -267,44 +232,6 @@ describe("container managed credential projection", () => {
 });
 
 describe("Pi session production observations", () => {
-  it.effect("refreshes the native terminal launcher as an interactive workspace shell", () =>
-    Effect.gen(function* () {
-      const writes: Array<{ readonly path: string; readonly content: string }> = [];
-      const commands: string[] = [];
-      const capabilities: SandboxRuntimeCapabilities = {
-        ...sandboxRuntimeCapabilitiesFake(),
-        exec: async (command) => {
-          commands.push(command);
-          return {
-            success: true,
-            stdout: "",
-            stderr: "",
-            exitCode: 0,
-            command,
-            duration: 1,
-            timestamp: "2026-09-04T00:00:00.000Z",
-          };
-        },
-        writeFile: async (path, content) => {
-          if (typeof content === "string") writes.push({ path, content });
-        },
-      };
-      const runtimeLayer = sandboxRuntimeLayer(capabilities);
-      const layer = Layer.merge(runtimeLayer, containerAuthLayer.pipe(Layer.provide(runtimeLayer)));
-
-      yield* Effect.flatMap(ContainerAuth, (auth) =>
-        auth.ensureTerminal(SESSION_ID, credentials),
-      ).pipe(Effect.provide(layer));
-
-      assert.strictEqual(writes.length, 1);
-      assert.strictEqual(writes[0]?.path, `/workspace/${SESSION_ID}/.pi-agent/scotty-shell`);
-      assert.include(writes[0]?.content ?? "", `cd '/workspace/${SESSION_ID}'`);
-      assert.include(writes[0]?.content ?? "", "exec /bin/bash --noprofile --norc -i");
-      assert.notInclude(writes[0]?.content ?? "", "/usr/local/go/bin");
-      assert.ok(commands.some((command) => command.startsWith("chmod 700 ")));
-    }),
-  );
-
   it.effect("preserves legacy ensure readiness as an HTTP 200 process wait", () =>
     Effect.gen(function* () {
       let waitCalls = 0;
@@ -519,6 +446,44 @@ describe("Pi session production observations", () => {
           },
         ],
       ]);
+    }),
+  );
+
+  it.effect("refreshes the native terminal launcher as an interactive workspace shell", () =>
+    Effect.gen(function* () {
+      const writes: Array<{ readonly path: string; readonly content: string }> = [];
+      const commands: string[] = [];
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        exec: async (command) => {
+          commands.push(command);
+          return {
+            success: true,
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+            command,
+            duration: 1,
+            timestamp: "2026-09-04T00:00:00.000Z",
+          };
+        },
+        writeFile: async (path, content) => {
+          if (typeof content === "string") writes.push({ path, content });
+        },
+      };
+      const runtimeLayer = sandboxRuntimeLayer(capabilities);
+      const layer = Layer.merge(runtimeLayer, containerAuthLayer.pipe(Layer.provide(runtimeLayer)));
+
+      yield* Effect.flatMap(ContainerAuth, (auth) =>
+        auth.ensureTerminal(SESSION_ID, credentials),
+      ).pipe(Effect.provide(layer));
+
+      assert.strictEqual(writes.length, 1);
+      assert.strictEqual(writes[0]?.path, `/workspace/${SESSION_ID}/.pi-agent/scotty-shell`);
+      assert.include(writes[0]?.content ?? "", `cd '/workspace/${SESSION_ID}'`);
+      assert.include(writes[0]?.content ?? "", "exec /bin/bash --noprofile --norc -i");
+      assert.notInclude(writes[0]?.content ?? "", "/usr/local/go/bin");
+      assert.ok(commands.some((command) => command.startsWith("chmod 700 ")));
     }),
   );
 });

@@ -8,10 +8,8 @@ import { stripVTControlCharacters } from "node:util";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import { AuthError } from "alchemy/Auth";
 import { EXIT, main, VERSION, type CliDependencies } from "../scotty";
-import { BeamUpRequestSchema } from "../src/schemas";
 import { managedInstallationPath } from "../src/managed-installation-path.mjs";
 import { deploymentPlanPath } from "../src/deployment-plan";
-import { Schema } from "effect";
 import type { CloudSettings } from "../../protocol/settings/cloud-settings";
 import {
   runtimeImageCompatibilityBytes,
@@ -164,8 +162,6 @@ async function planDeployment(h: ReturnType<typeof harness>): Promise<void> {
   h.stdout.length = 0;
   h.stderr.length = 0;
 }
-
-const decodeBeamUpRequest = Schema.decodeUnknownSync(BeamUpRequestSchema);
 
 const pendingUpPath = (home: string, host: string, body: unknown): string => {
   const fingerprint = createHash("sha256")
@@ -422,6 +418,9 @@ describe("configuration and transport", () => {
       effort: "high",
       provider: "cloudflare",
     });
+    expect(body).not.toHaveProperty("newRepo");
+    expect(await main([...beamArgs(), "--new-repo"], h.deps)).toBe(EXIT.OK);
+    expect(body).toMatchObject({ newRepo: true });
     for (const flags of [
       ["--agent", "codex", "--model", "gpt-5.4", "--effort", "ultra"],
       ["--agent", "pi", "--effort", "ultra"],
@@ -642,44 +641,6 @@ describe("configuration and transport", () => {
     ).toBe(EXIT.OK);
     expect(h.stdout.join("")).toBe("s1  warm  scotty/s1\nhttps://worker.example/s/s1\n");
     expect(opened).toBe("https://worker.example/s/s1");
-  });
-
-  test("beam forwards --new-repo and defaults the request field to false", async () => {
-    let body: typeof BeamUpRequestSchema.Type | undefined;
-    const h = harness({
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        body = decodeBeamUpRequest(await request.json());
-        return Response.json({
-          id: "s1",
-          title: "Fix build",
-          url: "https://worker.example/s/s1",
-          branch: "scotty/s1",
-          provider: "cloudflare",
-          status: "warm",
-        });
-      },
-    });
-    expect(
-      await main(
-        [
-          "beam",
-          "fix it",
-          "--title",
-          "Fix build",
-          "--repo",
-          "owner/project",
-          "--provider",
-          "cloudflare",
-          "--new-repo",
-          "--detach",
-          "--host",
-          "https://worker.example",
-        ],
-        h.deps,
-      ),
-    ).toBe(EXIT.OK);
-    expect(body?.newRepo).toBe(true);
   });
 
   test("beam rejects URL-normalizing repository path segments", async () => {
@@ -4858,7 +4819,7 @@ describe("commands and schemas", () => {
     expect(userInfo.stderr.join("")).not.toContain("url-secret");
   });
 
-  test("non-TTY vaporize never prompts and sends DELETE", async () => {
+  test("non-TTY vaporize sends DELETE and validates exact completion", async () => {
     let method = "";
     const h = harness({
       fetch: async (_input, init) => {
@@ -4873,9 +4834,6 @@ describe("commands and schemas", () => {
     expect(h.prompts()).toBe(0);
     expect(h.json()).toEqual({ id: "s1", status: "gone" });
     expect(h.stdout.join("")).not.toContain("must-not-leak");
-  });
-
-  test("vaporize requires the exact requested ID and literal gone status", async () => {
     for (const reply of [
       { id: "different", status: "gone" },
       { id: "s1", status: "sleeping" },

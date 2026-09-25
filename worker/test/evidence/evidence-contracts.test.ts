@@ -81,13 +81,10 @@ const activeState = {
 };
 
 describe("evidence contracts", () => {
-  it("decodes the bounded declarative job without retaining excess input", () => {
+  it("decodes only bounded declarative jobs without retaining excess input", () => {
     const decoded = decodeBrowserEvidenceJob(unversionedJob);
     assert.ok(Option.isSome(decoded));
     assert.deepStrictEqual(decoded.value.steps[0], step);
-  });
-
-  it("rejects versioned, excess, and otherwise invalid job shapes", () => {
     for (const input of [
       { ...unversionedJob, version: 1 },
       { ...unversionedJob, version: 2 },
@@ -164,6 +161,7 @@ describe("evidence contracts", () => {
         decodeEvidenceStateResult({ ...empty, retainedBytes: -1, previewCookie: "secret" }),
       ),
     );
+    assert.notProperty(publicEvidenceSummaryProjection(internalSummary), "diagnostic");
   });
 
   it("projects a Showcase only from matched passing before and recorded after runs", () => {
@@ -235,11 +233,6 @@ describe("evidence contracts", () => {
     assert.isUndefined(
       evidenceShowcaseProjection("abcdef123456", before, { ...after, video: undefined }),
     );
-  });
-
-  it("explicitly omits internal diagnostics from the public summary projection", () => {
-    const projected = publicEvidenceSummaryProjection(internalSummary);
-    assert.notProperty(projected, "diagnostic");
   });
 
   it("rejects duplicate or overcommitted persisted permit accounting", () => {

@@ -217,38 +217,49 @@ const runProvider = <A, E>(
   );
 
 describe("Cloudflare create transition provider", () => {
-  it.effect("uses public runtime state and container incarnation with the actor generation", () =>
+  it.effect("requires decisive runtime state and container incarnation proof", () =>
     Effect.gen(function* () {
-      const capabilities: SandboxRuntimeCapabilities = {
-        ...sandboxRuntimeCapabilitiesFake(),
-        getState: () => Promise.resolve({ status: "running", lastChange: 1 }),
-        getContainerIncarnationId: () => Promise.resolve("placement-1"),
-      };
-      const result = yield* runProvider(capabilities, (provider) =>
-        provider.confirmRuntimeReady(context("RuntimeReady")),
+      const running = yield* runProvider(
+        {
+          ...sandboxRuntimeCapabilitiesFake(),
+          getState: () => Promise.resolve({ status: "running", lastChange: 1 }),
+          getContainerIncarnationId: () => Promise.resolve("placement-1"),
+        },
+        (provider) => provider.confirmRuntimeReady(context("RuntimeReady")),
       );
+      assert.ok(Predicate.isTagged(running, "RuntimeReadyConfirmed"));
+      assert.deepStrictEqual(running.runtime, runtimeProof);
 
-      assert.ok(Predicate.isTagged(result, "RuntimeReadyConfirmed"));
-      assert.deepStrictEqual(result.runtime, runtimeProof);
-    }),
-  );
-
-  it.effect("keeps a missing production container incarnation unknown", () =>
-    Effect.gen(function* () {
-      const capabilities: SandboxRuntimeCapabilities = {
-        ...sandboxRuntimeCapabilitiesFake(),
-        getState: () => Promise.resolve({ status: "running", lastChange: 1 }),
-        getContainerIncarnationId: () => Promise.resolve(null),
-      };
-      const result = yield* Effect.result(
-        runProvider(capabilities, (provider) =>
-          provider.confirmRuntimeReady(context("RuntimeReady")),
+      const missingPlacement = yield* Effect.result(
+        runProvider(
+          {
+            ...sandboxRuntimeCapabilitiesFake(),
+            getState: () => Promise.resolve({ status: "running", lastChange: 1 }),
+            getContainerIncarnationId: () => Promise.resolve(null),
+          },
+          (provider) => provider.confirmRuntimeReady(context("RuntimeReady")),
         ),
       );
+      assert.ok(Result.isFailure(missingPlacement));
+      assert.strictEqual(missingPlacement.failure.outcome, "unknown_after_admission");
+      assert.strictEqual(
+        missingPlacement.failure.safeResultCode,
+        "create_container_incarnation_unobserved",
+      );
 
-      assert.ok(Result.isFailure(result));
-      assert.strictEqual(result.failure.outcome, "unknown_after_admission");
-      assert.strictEqual(result.failure.safeResultCode, "create_container_incarnation_unobserved");
+      const rejectedState = yield* Effect.result(
+        runProvider(
+          {
+            ...sandboxRuntimeCapabilitiesFake(),
+            getState: () => Promise.reject(new Error("provider response lost")),
+            getContainerIncarnationId: () => Promise.resolve("placement-1"),
+          },
+          (provider) => provider.confirmRuntimeReady(context("RuntimeReady")),
+        ),
+      );
+      assert.ok(Result.isFailure(rejectedState));
+      assert.strictEqual(rejectedState.failure.outcome, "unknown_after_admission");
+      assert.strictEqual(rejectedState.failure.safeResultCode, "create_runtime_state_unknown");
     }),
   );
 
@@ -307,25 +318,6 @@ describe("Cloudflare create transition provider", () => {
       assert.strictEqual(transport.transport.supervisorEpoch, "epoch-1");
       assert.strictEqual(transport.transport.runtimeGeneration, runtimeProof.runtimeGeneration);
       assert.strictEqual(transport.transport.containerIncarnation, "placement-1");
-    }),
-  );
-
-  it.effect("reports a rejected state read as unknown without inventing readiness", () =>
-    Effect.gen(function* () {
-      const capabilities: SandboxRuntimeCapabilities = {
-        ...sandboxRuntimeCapabilitiesFake(),
-        getState: () => Promise.reject(new Error("provider response lost")),
-        getContainerIncarnationId: () => Promise.resolve("placement-1"),
-      };
-      const result = yield* Effect.result(
-        runProvider(capabilities, (provider) =>
-          provider.confirmRuntimeReady(context("RuntimeReady")),
-        ),
-      );
-
-      assert.ok(Result.isFailure(result));
-      assert.strictEqual(result.failure.outcome, "unknown_after_admission");
-      assert.strictEqual(result.failure.safeResultCode, "create_runtime_state_unknown");
     }),
   );
 

@@ -73,6 +73,7 @@ describe("conversation client boundary", () => {
     expect(new TextEncoder().encode(turns[100]?.assistant).byteLength).toBeGreaterThan(16 * 1024);
     expect(decodeConversationSnapshot(fullSnapshot)?.turns[100]?.tools).toHaveLength(53);
   });
+
   it("strictly decodes the canonical conversation projection", () => {
     expect(decodeConversationSnapshot(snapshot)).toEqual(snapshot);
     expect(decodeConversationSnapshot({ ...snapshot, privateState: true })).toBeUndefined();
@@ -405,19 +406,15 @@ describe("queued follow-up public intent", () => {
     ).toBeUndefined();
   });
 
-  it("preserves the explicit runtime stopped signal and rejects malformed values", () => {
+  it("decodes optional runtime and admission state without changing older snapshots", () => {
     expect(decodeConversationSnapshot({ ...snapshot, runtimeStopped: true })).toMatchObject({
       runtimeStopped: true,
     });
     expect(decodeConversationSnapshot({ ...snapshot, runtimeStopped: "yes" })).toBeUndefined();
-  });
-  it("advertises Codex queue capability and preserves blocked delivery state", () => {
     expect(
       decodeConversationSnapshot({ ...snapshot, followUpAvailable: true, followUpBlocked: true }),
     ).toMatchObject({ followUpAvailable: true, followUpBlocked: true });
     expect(decodeConversationSnapshot({ ...snapshot, followUpAvailable: "yes" })).toBeUndefined();
-  });
-  it("accepts the optional message admission gate without changing older snapshots", () => {
     expect(decodeConversationSnapshot(snapshot)?.messageAdmissionAvailable).toBeUndefined();
     expect(
       decodeConversationSnapshot({ ...snapshot, messageAdmissionAvailable: false }),

@@ -6,7 +6,7 @@ import { validateSandboxArchive } from "../../src/sandbox/archive";
 const base64 = (text: string): string => btoa(text);
 
 describe("cloud resource publishing", () => {
-  it.effect("publishes a skill as a validated immutable bundle", () =>
+  it.effect("publishes validated bundles and rejects unsafe resources", () =>
     Effect.gen(function* () {
       const resource = yield* Effect.promise(() =>
         validateResourceFiles("skill", "example", {
@@ -27,11 +27,6 @@ describe("cloud resource publishing", () => {
         validated.success.manifest.items.map(({ kind, name }) => ({ kind, name })),
         [{ kind: "skill", name: "example" }],
       );
-    }),
-  );
-
-  it.effect("rejects unsafe files and unprepared dependency packages", () =>
-    Effect.gen(function* () {
       const unsafe = yield* Effect.promise(() =>
         validateResourceFiles("skill", "example", {
           expectedRevision: 0,

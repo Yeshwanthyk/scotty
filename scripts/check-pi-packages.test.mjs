@@ -94,9 +94,6 @@ test("Pi package pins require exactly the supported package set", () => {
       /packages must be exactly scotty-browser-test/u,
     );
   });
-});
-
-test("Pi package pins reject removed package names", () => {
   withIndexFixture((fixture) => {
     const manifest = readManifest(fixture);
     manifest.firstParty[0].name = FORBIDDEN_PI_PACKAGE_NAMES[0];

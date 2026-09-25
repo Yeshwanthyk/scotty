@@ -204,14 +204,8 @@ describe("native Durable Object session actor storage adapter", () => {
       journalTail: plan.write.appendJournal,
       evidence: { state: "collecting" },
     });
-  });
 
-  it("deletes evidence in the same transaction as the next authority commit", async () => {
-    const native = new FakeDurableObjectStorage();
-    const port = actorStorage(native);
-    await port.transaction(() => commitPlan({ _tag: "Put", value: { state: "ready" } }));
     const deletion = commitPlan({ _tag: "Delete" }, 2);
-
     assert.deepStrictEqual(await port.transaction(() => deletion), { _tag: "Committed" });
     assert.strictEqual(native.inspect(EVIDENCE_RECORD_KEY), undefined);
     assert.strictEqual(native.inspect(SESSION_ACTOR_REVISION_KEY), 2);

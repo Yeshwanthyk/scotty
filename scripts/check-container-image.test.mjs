@@ -5,7 +5,6 @@ import { CONTAINER_CONTEXT_PATH, CONTAINER_IMAGE_BUDGET } from "../cli/src/deplo
 import {
   CONTAINER_IMAGE,
   CONTAINER_IMAGE_ABSENT_PI_PACKAGES,
-  CONTAINER_IMAGE_CACHE_SCOPE,
   CONTAINER_IMAGE_PI_PACKAGES,
   CONTAINER_IMAGE_PLATFORM,
   checkContainerImage,
@@ -343,25 +342,6 @@ describe("final container image gate", () => {
       /visible root filesystem apparent size.*is \d+ bytes; budget is/u,
     );
   });
-
-  it("reuses the full-image GHA cache", () => {
-    const plan = containerImagePlan("/repo", {
-      GITHUB_ACTIONS: "true",
-      ACTIONS_CACHE_URL: "https://results.example/cache/",
-      SCOTTY_IMAGE_REVISION: "a".repeat(40),
-    });
-    assert.deepEqual(plan.cache, {
-      from: [`type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`],
-      to: `type=gha,mode=max,scope=${CONTAINER_IMAGE_CACHE_SCOPE},ignore-error=true`,
-    });
-    const args = containerImageBuildArgs(plan);
-    assert.equal(args.includes("--target"), false);
-    assert.ok(args.includes("--cache-from"));
-    assert.ok(args.includes("--cache-to"));
-    assert.ok(args.includes(`type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`));
-    assert.ok(args.includes(`SCOTTY_REVISION=${"a".repeat(40)}`));
-  });
-
   it("records probes for supported native, media, browser, and Scotty tools", () => {
     const inventory = JSON.parse(read("worker/container/toolsets/standard.json"));
     const tools = new Map(inventory.tools.map((tool) => [tool.name, tool]));

@@ -27,10 +27,7 @@ describe("compiled CLI smoke", () => {
       },
     ]);
     assert.deepEqual(removed, ["/tmp/scotty-cli-compiled-random"]);
-  });
-
-  it("cleans up when a compiled-artifact probe fails", async () => {
-    const removed = [];
+    removed.length = 0;
     await assert.rejects(
       checkCompiledCli({
         makeTemporaryDirectory: async () => "/tmp/scotty-cli-compiled-failure",

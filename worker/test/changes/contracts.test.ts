@@ -14,7 +14,7 @@ const renamed = (code: string, path: string, oldPath: string): string =>
   `2 ${code} N... 100644 100644 100644 ${hash} ${hash} R100 ${path}\0${oldPath}\0`;
 
 describe("changed-files boundary", () => {
-  it("parses branch additions, deletions, and renames with NUL-delimited paths", () => {
+  it("parses NUL-delimited branch changes and hostile paths without line splitting", () => {
     const path = "src/odd\tname\n.ts";
     assert.deepStrictEqual(
       parseGitNameStatus(`R100\0src/old.ts\0${path}\0A\0new.ts\0D\0gone.ts\0`),
@@ -25,9 +25,6 @@ describe("changed-files boundary", () => {
       ],
     );
     assert.deepStrictEqual(parseGitNameStatus("R100\0src/old.ts\0"), []);
-  });
-
-  it("parses hostile paths and rename records without shell or line splitting", () => {
     const hostile = "--output;$(touch nope)\nname.txt";
     const parsed = parseGitStatus(
       `${renamed("R.", "src/new name.ts", "src/old name.ts")}? ${hostile}\0`,

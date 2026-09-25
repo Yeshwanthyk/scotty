@@ -671,6 +671,129 @@ describe("real Hono boundary", () => {
     credentialRegistry.statuses.mockResolvedValue({ ok: true, value: [] });
   });
 
+  it("preserves 200 pass-through output for ordinary session command routes", async () => {
+    const cases = [
+      {
+        method: "GET",
+        path: "/api/sessions/a0b1c2d3e4f5",
+        mock: sandbox.getScottySession,
+        output: sessionResponse(),
+      },
+      {
+        method: "POST",
+        path: "/api/sessions/a0b1c2d3e4f5/checkpoint",
+        mock: sandbox.checkpointScottySession,
+        output: { id: "a0b1c2d3e4f5", status: "warm", backupId: "backup-1" },
+      },
+      {
+        method: "POST",
+        path: "/api/sessions/a0b1c2d3e4f5/sleep",
+        mock: sandbox.sleepScottySession,
+        output: { id: "a0b1c2d3e4f5", status: "sleeping", backupId: "backup-1" },
+      },
+    ] as const;
+    for (const entry of cases) {
+      entry.mock.mockResolvedValueOnce(entry.output);
+      const response = await app.request(
+        entry.path,
+        { method: entry.method, headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual(entry.output);
+    }
+  });
+
+  it("serves a JSON not-found response for Cloudflare sub-asset routes", async () => {
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/assets/app.js?v=7",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "not_found", message: "Route not found" },
+    });
+  });
+
+  it("does not expose the legacy PTY API", async () => {
+    for (const request of [
+      new Request("http://localhost/api/sessions/a0b1c2d3e4f5/pty-ticket", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+      new Request("http://localhost/api/sessions/a0b1c2d3e4f5/pty?client=123456abcdef", {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+      new Request("http://localhost/api/sessions/a0b1c2d3e4f5/pty/123456abcdef", {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+    ]) {
+      const response = await app.request(request, undefined, env());
+      expect(response.status).toBe(404);
+    }
+  });
+
+  it("does not expose the removed browser RPC surface", async () => {
+    for (const [path, method] of [
+      ["/s/a0b1c2d3e4f5/rpc/snapshot", "GET"],
+      ["/s/a0b1c2d3e4f5/rpc/events", "GET"],
+      ["/s/a0b1c2d3e4f5/rpc/command", "POST"],
+    ] as const) {
+      const response = await app.request(
+        path,
+        {
+          method,
+          headers: {
+            cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+            "content-type": "application/json",
+            origin: "http://localhost",
+            "sec-fetch-site": "same-origin",
+          },
+        },
+        env(),
+      );
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "not_found", message: "Route not found" },
+      });
+    }
+    expect(sandbox.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not expose a source-control publishing route", async () => {
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/pr",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      },
+      env(),
+    );
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "not_found",
+        message: "Route not found",
+      },
+    });
+  });
+
+  it("does not expose full credential replacement", async () => {
+    const response = await app.request(
+      "/api/credentials/sync",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ credentials: [] }),
+      },
+      env(),
+    );
+    expect(response.status).toBe(404);
+    expect(credentialRegistry.upsert).not.toHaveBeenCalled();
+  });
+
   it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
     const read = await app.request(
       "/api/sessions/a0b1c2d3e4f5/hatch",
@@ -1109,20 +1232,6 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(invalid.status).toBe(400);
-  });
-
-  it("does not expose full credential replacement", async () => {
-    const response = await app.request(
-      "/api/credentials/sync",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ credentials: [] }),
-      },
-      env(),
-    );
-    expect(response.status).toBe(404);
-    expect(credentialRegistry.upsert).not.toHaveBeenCalled();
   });
 
   it("reports providers separately from dynamically named runners", async () => {
@@ -2584,24 +2693,6 @@ describe("real Hono boundary", () => {
     expect(sandbox.getScottyChangedFilePatch).not.toHaveBeenCalled();
   });
 
-  it("does not expose a source-control publishing route", async () => {
-    const response = await app.request(
-      "/api/sessions/a0b1c2d3e4f5/pr",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-      },
-      env(),
-    );
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: "not_found",
-        message: "Route not found",
-      },
-    });
-  });
-
   it("preserves beam-down streaming status, headers, and filename", async () => {
     sandbox.prepareDownArchive.mockResolvedValue({
       path: "/tmp/scotty-a0b1c2d3e4f5.tar",
@@ -2642,39 +2733,6 @@ describe("real Hono boundary", () => {
     expect(await response.text()).toBe("native archive");
     expect(sandbox.prepareDownArchive).not.toHaveBeenCalled();
     expect(sandbox.readScottyArchiveStream).not.toHaveBeenCalled();
-  });
-
-  it("preserves 200 pass-through output for ordinary session command routes", async () => {
-    const cases = [
-      {
-        method: "GET",
-        path: "/api/sessions/a0b1c2d3e4f5",
-        mock: sandbox.getScottySession,
-        output: sessionResponse(),
-      },
-      {
-        method: "POST",
-        path: "/api/sessions/a0b1c2d3e4f5/checkpoint",
-        mock: sandbox.checkpointScottySession,
-        output: { id: "a0b1c2d3e4f5", status: "warm", backupId: "backup-1" },
-      },
-      {
-        method: "POST",
-        path: "/api/sessions/a0b1c2d3e4f5/sleep",
-        mock: sandbox.sleepScottySession,
-        output: { id: "a0b1c2d3e4f5", status: "sleeping", backupId: "backup-1" },
-      },
-    ] as const;
-    for (const entry of cases) {
-      entry.mock.mockResolvedValueOnce(entry.output);
-      const response = await app.request(
-        entry.path,
-        { method: entry.method, headers: { authorization: `Bearer ${TOKEN}` } },
-        env(),
-      );
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual(entry.output);
-    }
   });
 
   it("returns the unchanged session view plus pending for lifecycle transitions", async () => {
@@ -4776,34 +4834,6 @@ describe("real Hono boundary", () => {
     expect((await app.request(path, { headers }, testEnv)).status).toBe(409);
   });
 
-  it("serves the application shell for non-warm sessions so they can be resumed", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("sleeping"));
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5",
-      {
-        headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` },
-        redirect: "manual",
-      },
-      env(),
-    );
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain("<title>Scotty</title>");
-    expect(sandbox.getScottySession).not.toHaveBeenCalled();
-    expect(sandbox.fetch).not.toHaveBeenCalled();
-  });
-
-  it("serves a JSON not-found response for Cloudflare sub-asset routes", async () => {
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5/assets/app.js?v=7",
-      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      env(),
-    );
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({
-      error: { code: "not_found", message: "Route not found" },
-    });
-  });
-
   it("requires a WebSocket upgrade for Cloudflare terminal connections", async () => {
     const response = await app.request(
       "/s/a0b1c2d3e4f5/terminal",
@@ -4974,33 +5004,6 @@ describe("real Hono boundary", () => {
     expect(sandbox.restartScottyTerminal).toHaveBeenCalledOnce();
   });
 
-  it("does not expose the removed browser RPC surface", async () => {
-    for (const [path, method] of [
-      ["/s/a0b1c2d3e4f5/rpc/snapshot", "GET"],
-      ["/s/a0b1c2d3e4f5/rpc/events", "GET"],
-      ["/s/a0b1c2d3e4f5/rpc/command", "POST"],
-    ] as const) {
-      const response = await app.request(
-        path,
-        {
-          method,
-          headers: {
-            cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-            "content-type": "application/json",
-            origin: "http://localhost",
-            "sec-fetch-site": "same-origin",
-          },
-        },
-        env(),
-      );
-      expect(response.status).toBe(404);
-      await expect(response.json()).resolves.toEqual({
-        error: { code: "not_found", message: "Route not found" },
-      });
-    }
-    expect(sandbox.fetch).not.toHaveBeenCalled();
-  });
-
   it("routes console reads only through the passive sandbox boundary", async () => {
     sandbox.fetch.mockImplementationOnce(async (request: Request) => {
       expect(new URL(request.url).pathname).toBe("/_scotty/pi-console/snapshot");
@@ -5153,20 +5156,6 @@ describe("real Hono boundary", () => {
     expect(proxyTerminal).not.toHaveBeenCalled();
   });
 
-  it("serves the same application shell for runner session roots", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce(sessionResponse("warm", "runner"));
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5",
-      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      env(),
-    );
-
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain("<title>Scotty</title>");
-    expect(sandbox.getScottySession).not.toHaveBeenCalled();
-    expect(sandbox.fetch).not.toHaveBeenCalled();
-  });
-
   it("serves the application shell before the selected actor is read", async () => {
     sandbox.getScottySession.mockRejectedValueOnce(
       new ScottyError("not_found", "Session unknown was not found", {
@@ -5184,20 +5173,6 @@ describe("real Hono boundary", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("<title>Scotty</title>");
     expect(sandbox.getScottySession).not.toHaveBeenCalled();
-  });
-
-  it("returns not found for session application subpaths", async () => {
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5/assets/app.js?v=7",
-      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      env(),
-    );
-
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({
-      error: { code: "not_found", message: "Route not found" },
-    });
-    expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
   it("serves every critical auth page with the external-script CSP and no-store", async () => {
@@ -5274,25 +5249,6 @@ describe("real Hono boundary", () => {
     );
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/sessions");
-  });
-
-  it("does not expose the legacy PTY API", async () => {
-    for (const request of [
-      new Request("http://localhost/api/sessions/a0b1c2d3e4f5/pty-ticket", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}` },
-      }),
-      new Request("http://localhost/api/sessions/a0b1c2d3e4f5/pty?client=123456abcdef", {
-        headers: { authorization: `Bearer ${TOKEN}` },
-      }),
-      new Request("http://localhost/api/sessions/a0b1c2d3e4f5/pty/123456abcdef", {
-        method: "DELETE",
-        headers: { authorization: `Bearer ${TOKEN}` },
-      }),
-    ]) {
-      const response = await app.request(request, undefined, env());
-      expect(response.status).toBe(404);
-    }
   });
 
   it("rejects invalid ids before creating a Durable Object stub", async () => {

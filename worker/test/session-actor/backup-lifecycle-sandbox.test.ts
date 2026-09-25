@@ -126,6 +126,42 @@ const failure = <A>(
 };
 
 describe("BackupLifecycleSandbox", () => {
+  it.effect("restores an owned source backup into a distinct resume runtime generation", () =>
+    Effect.gen(function* () {
+      const sourceRuntimeGeneration = "warm-runtime-generation";
+      const restored = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          provider.restoreCurrentBackup({
+            ...attempt,
+            attempt: "e14136de-111f-4f6b-bf71-7cfbe7794544",
+            operationNonce: "resume-operation",
+            runtimeGeneration: "resume-runtime-generation",
+            backup: {
+              backupId: backup.id,
+              preparedAt: "2026-09-01T00:00:00.000Z",
+              confirmedAt: "2026-09-01T00:00:01.000Z",
+              sourceRuntimeGeneration,
+            },
+            ownedBackupIds: [backup.id],
+          }),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            readFileStream: async () =>
+              stream(
+                `${JSON.stringify({
+                  sessionId: attempt.sessionId,
+                  attempt: "8a650fe2-bc8b-42fc-a163-7df0eb28ae18",
+                  runtimeGeneration: sourceRuntimeGeneration,
+                })}\n`,
+              ),
+          }),
+        },
+      );
+      assert.strictEqual(restored, undefined);
+    }),
+  );
+
   it.effect("rejects a sweep with less than the minimum budget before exec", () =>
     Effect.gen(function* () {
       const now = Date.parse("2026-09-01T00:00:00.000Z");
@@ -157,6 +193,91 @@ describe("BackupLifecycleSandbox", () => {
         }),
       );
       assert.strictEqual(execCalls, 0);
+
+      {
+        const now = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(now);
+        let admitted = false;
+        const createResult = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(
+              provider.prepareBackup({
+                ...attempt,
+                deadlineAt: new Date(now + 10_000).toISOString(),
+              }),
+            ),
+          ),
+          {
+            backups: backupCapabilities({
+              createBackup: async () => {
+                admitted = true;
+                return backup;
+              },
+            }),
+          },
+        );
+        assert.isFalse(admitted);
+        assert.deepStrictEqual(
+          failure(createResult),
+          new BackupLifecycleSandboxFailure({
+            outcome: "rejected_before_admission",
+            safeResultCode: "backup_create_timeout",
+          }),
+        );
+
+        const invalidResult = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(provider.prepareBackup({ ...attempt, deadlineAt: "invalid-date" })),
+          ),
+          { backups: backupCapabilities({ createBackup: () => Promise.resolve(backup) }) },
+        );
+        assert.deepStrictEqual(
+          failure(invalidResult),
+          new BackupLifecycleSandboxFailure({
+            outcome: "rejected_before_admission",
+            safeResultCode: "backup_create_timeout",
+          }),
+        );
+      }
+
+      {
+        const now = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(now);
+        let admitted = false;
+        const restoreResult = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(
+              provider.restoreCurrentBackup({
+                ...attempt,
+                deadlineAt: new Date(now + 10_000).toISOString(),
+                backup: {
+                  backupId: backup.id,
+                  preparedAt: attempt.deadlineAt,
+                  confirmedAt: attempt.deadlineAt,
+                  sourceRuntimeGeneration: attempt.runtimeGeneration,
+                },
+                ownedBackupIds: [backup.id],
+              }),
+            ),
+          ),
+          {
+            backups: backupCapabilities({
+              restoreBackup: async (value) => {
+                admitted = true;
+                return { success: true, id: value.id, dir: value.dir };
+              },
+            }),
+          },
+        );
+        assert.isFalse(admitted);
+        assert.deepStrictEqual(
+          failure(restoreResult),
+          new BackupLifecycleSandboxFailure({
+            outcome: "rejected_before_admission",
+            safeResultCode: "backup_restore_timeout",
+          }),
+        );
+      }
     }),
   );
   it.effect("classifies surviving writers as unknown after the sweep was admitted", () =>
@@ -247,154 +368,67 @@ describe("BackupLifecycleSandbox", () => {
           safeResultCode: "workspace_writer_sweep_timeout",
         }),
       );
-    }),
-  );
 
-  const budgets: ReadonlyArray<readonly [number, number]> = [[90_000, 60_000]];
-  for (const [remaining, timeout] of budgets) {
-    it.effect(`uses a bounded timeout for a hanging create (${remaining})`, () =>
-      Effect.gen(function* () {
-        const now = Date.parse("2026-09-01T00:00:00.000Z");
-        yield* TestClock.setTime(now);
-        const fiber = yield* withProvider(
+      {
+        const createNow = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(createNow);
+        const createFiber = yield* withProvider(
           Effect.flatMap(BackupLifecycleSandbox, (provider) =>
             Effect.result(
               provider.prepareBackup({
                 ...attempt,
-                deadlineAt: new Date(now + remaining).toISOString(),
+                deadlineAt: new Date(createNow + 90_000).toISOString(),
               }),
             ),
           ),
           { backups: backupCapabilities({ createBackup: () => new Promise(() => {}) }) },
         ).pipe(Effect.forkChild);
         yield* Effect.yieldNow;
-        yield* TestClock.adjust(timeout - 1);
-        assert.isUndefined(fiber.pollUnsafe());
+        yield* TestClock.adjust(59_999);
+        assert.isUndefined(createFiber.pollUnsafe());
         yield* TestClock.adjust(1);
         assert.deepStrictEqual(
-          failure(yield* Fiber.join(fiber)),
+          failure(yield* Fiber.join(createFiber)),
           new BackupLifecycleSandboxFailure({
             outcome: "unknown_after_admission",
             safeResultCode: "backup_create_timeout",
           }),
         );
-      }),
-    );
-  }
+      }
 
-  for (const remaining of [10_000, "invalid-date"] as const) {
-    it.effect(`rejects create before admission when the budget is too short (${remaining})`, () =>
-      Effect.gen(function* () {
-        const now = Date.parse("2026-09-01T00:00:00.000Z");
-        yield* TestClock.setTime(now);
-        let admitted = false;
-        const result = yield* withProvider(
+      {
+        const restoreNow = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(restoreNow);
+        const restoreFiber = yield* withProvider(
           Effect.flatMap(BackupLifecycleSandbox, (provider) =>
             Effect.result(
-              provider.prepareBackup({
+              provider.restoreCurrentBackup({
                 ...attempt,
-                deadlineAt:
-                  remaining === "invalid-date"
-                    ? remaining
-                    : new Date(now + remaining).toISOString(),
+                deadlineAt: new Date(restoreNow + 35_000).toISOString(),
+                backup: {
+                  backupId: backup.id,
+                  preparedAt: "2026-09-01T00:00:00.000Z",
+                  confirmedAt: "2026-09-01T00:00:01.000Z",
+                  sourceRuntimeGeneration: attempt.runtimeGeneration,
+                },
+                ownedBackupIds: [backup.id],
               }),
             ),
           ),
-          {
-            backups: backupCapabilities({
-              createBackup: async () => {
-                admitted = true;
-                return backup;
-              },
-            }),
-          },
-        );
-        assert.isFalse(admitted);
+          { backups: backupCapabilities({ restoreBackup: () => new Promise(() => {}) }) },
+        ).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(4_999);
+        assert.isUndefined(restoreFiber.pollUnsafe());
+        yield* TestClock.adjust(1);
         assert.deepStrictEqual(
-          failure(result),
+          failure(yield* Fiber.join(restoreFiber)),
           new BackupLifecycleSandboxFailure({
-            outcome: "rejected_before_admission",
-            safeResultCode: "backup_create_timeout",
+            outcome: "unknown_after_admission",
+            safeResultCode: "backup_restore_timeout",
           }),
         );
-      }),
-    );
-  }
-
-  it.effect("rejects restore before admission when the budget is too short", () =>
-    Effect.gen(function* () {
-      const now = Date.parse("2026-09-01T00:00:00.000Z");
-      yield* TestClock.setTime(now);
-      let admitted = false;
-      const result = yield* withProvider(
-        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
-          Effect.result(
-            provider.restoreCurrentBackup({
-              ...attempt,
-              deadlineAt: new Date(now + 10_000).toISOString(),
-              backup: {
-                backupId: backup.id,
-                preparedAt: attempt.deadlineAt,
-                confirmedAt: attempt.deadlineAt,
-                sourceRuntimeGeneration: attempt.runtimeGeneration,
-              },
-              ownedBackupIds: [backup.id],
-            }),
-          ),
-        ),
-        {
-          backups: backupCapabilities({
-            restoreBackup: async (value) => {
-              admitted = true;
-              return { success: true, id: value.id, dir: value.dir };
-            },
-          }),
-        },
-      );
-      assert.isFalse(admitted);
-      assert.deepStrictEqual(
-        failure(result),
-        new BackupLifecycleSandboxFailure({
-          outcome: "rejected_before_admission",
-          safeResultCode: "backup_restore_timeout",
-        }),
-      );
-    }),
-  );
-
-  it.effect("classifies a hanging restore as an unknown provider outcome", () =>
-    Effect.gen(function* () {
-      const now = Date.parse("2026-09-01T00:00:00.000Z");
-      yield* TestClock.setTime(now);
-      const fiber = yield* withProvider(
-        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
-          Effect.result(
-            provider.restoreCurrentBackup({
-              ...attempt,
-              deadlineAt: new Date(now + 35_000).toISOString(),
-              backup: {
-                backupId: backup.id,
-                preparedAt: "2026-09-01T00:00:00.000Z",
-                confirmedAt: "2026-09-01T00:00:01.000Z",
-                sourceRuntimeGeneration: attempt.runtimeGeneration,
-              },
-              ownedBackupIds: [backup.id],
-            }),
-          ),
-        ),
-        { backups: backupCapabilities({ restoreBackup: () => new Promise(() => {}) }) },
-      ).pipe(Effect.forkChild);
-      yield* Effect.yieldNow;
-      yield* TestClock.adjust(4_999);
-      assert.isUndefined(fiber.pollUnsafe());
-      yield* TestClock.adjust(1);
-      assert.deepStrictEqual(
-        failure(yield* Fiber.join(fiber)),
-        new BackupLifecycleSandboxFailure({
-          outcome: "unknown_after_admission",
-          safeResultCode: "backup_restore_timeout",
-        }),
-      );
+      }
     }),
   );
 
@@ -603,42 +637,6 @@ describe("BackupLifecycleSandbox", () => {
       }),
   );
 
-  it.effect("restores an owned source backup into a distinct resume runtime generation", () =>
-    Effect.gen(function* () {
-      const sourceRuntimeGeneration = "warm-runtime-generation";
-      const restored = yield* withProvider(
-        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
-          provider.restoreCurrentBackup({
-            ...attempt,
-            attempt: "e14136de-111f-4f6b-bf71-7cfbe7794544",
-            operationNonce: "resume-operation",
-            runtimeGeneration: "resume-runtime-generation",
-            backup: {
-              backupId: backup.id,
-              preparedAt: "2026-09-01T00:00:00.000Z",
-              confirmedAt: "2026-09-01T00:00:01.000Z",
-              sourceRuntimeGeneration,
-            },
-            ownedBackupIds: [backup.id],
-          }),
-        ),
-        {
-          runtime: runtimeCapabilities({
-            readFileStream: async () =>
-              stream(
-                `${JSON.stringify({
-                  sessionId: attempt.sessionId,
-                  attempt: "8a650fe2-bc8b-42fc-a163-7df0eb28ae18",
-                  runtimeGeneration: sourceRuntimeGeneration,
-                })}\n`,
-              ),
-          }),
-        },
-      );
-      assert.strictEqual(restored, undefined);
-    }),
-  );
-
   it.effect("reconciles an ambiguous runtime stop only from observed stopped state", () =>
     Effect.gen(function* () {
       const requestedAt = "2026-09-01T00:00:00.000Z";
@@ -677,31 +675,23 @@ describe("BackupLifecycleSandbox", () => {
           safeResultCode: "sandbox_runtime_stop_outcome_unknown",
         }),
       );
+      let stateReads = 0;
+      const resolved = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          provider.requestRuntimeStop({ ...attempt, requestedAt }),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            getState: async () => {
+              stateReads += 1;
+              return { status: "stopping" };
+            },
+          }),
+        },
+      );
+      assert.strictEqual(resolved, requestedAt);
+      assert.strictEqual(stateReads, 0);
     }),
-  );
-
-  it.effect(
-    "accepts a resolved runtime stop request without requiring immediate stopped state",
-    () =>
-      Effect.gen(function* () {
-        let stateReads = 0;
-        const requestedAt = "2026-09-01T00:00:00.000Z";
-        const accepted = yield* withProvider(
-          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
-            provider.requestRuntimeStop({ ...attempt, requestedAt }),
-          ),
-          {
-            runtime: runtimeCapabilities({
-              getState: async () => {
-                stateReads += 1;
-                return { status: "stopping" };
-              },
-            }),
-          },
-        );
-        assert.strictEqual(accepted, requestedAt);
-        assert.strictEqual(stateReads, 0);
-      }),
   );
 
   it.effect("reconciles an ambiguous Pi stop only from process absence", () =>

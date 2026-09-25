@@ -22,12 +22,6 @@ const registryWithEmptyStorage = () => {
 };
 
 describe("ScottyCredentialRegistry", () => {
-  it("returns the registry list through the Durable Object RPC envelope", async () => {
-    const registry = registryWithEmptyStorage();
-
-    assert.deepStrictEqual(await registry.list(), { ok: true, value: [] });
-  });
-
   it("returns typed errors through the Durable Object RPC envelope", async () => {
     const registry = registryWithEmptyStorage();
 

@@ -37,7 +37,7 @@ const failureReason = (result: Result.Result<unknown, RepoVerifierFailure>): Rep
   });
 
 describe("RepoVerifier", () => {
-  it.effect("accepts an authenticated 200 with a valid default branch", () =>
+  it.effect("classifies authenticated repository existence and builds the request", () =>
     Effect.gen(function* () {
       let request: HttpClientRequest.HttpClientRequest | undefined;
       const result = yield* runWith(
@@ -50,17 +50,12 @@ describe("RepoVerifier", () => {
       assert.deepStrictEqual(result, { exists: true, defaultBranch: "trunk" });
       assert.strictEqual(request?.url, "https://api.github.com/repos/owner/project");
       assert.strictEqual(request?.headers.authorization, `Bearer ${TOKEN}`);
-    }),
-  );
-
-  it.effect("returns missing only for an authenticated 404", () =>
-    Effect.gen(function* () {
       let authorization: string | undefined;
-      const result = yield* runWith(new Response(null, { status: 404 }), (request) => {
+      const missing = yield* runWith(new Response(null, { status: 404 }), (request) => {
         authorization = request.headers.authorization;
       });
 
-      assert.deepStrictEqual(result, { exists: false });
+      assert.deepStrictEqual(missing, { exists: false });
       assert.strictEqual(authorization, `Bearer ${TOKEN}`);
     }),
   );
@@ -99,13 +94,21 @@ describe("RepoVerifier", () => {
 
   it.effect("redacts transport and malformed response failures", () =>
     Effect.gen(function* () {
-      const transport = yield* Effect.result(runWith("transport"));
-      assert.strictEqual(failureReason(transport).reason, "transport");
-      assert.notInclude(JSON.stringify(failureReason(transport)), TOKEN);
-
-      const malformed = yield* Effect.result(runWith(new Response("{not-json", { status: 200 })));
-      assert.strictEqual(failureReason(malformed).reason, "malformed_response");
-      assert.notInclude(JSON.stringify(failureReason(malformed)), TOKEN);
+      for (const [response, reason] of [
+        ["transport", "transport"],
+        [new Response("{not-json", { status: 200 }), "malformed_response"],
+      ] as const) {
+        const result = yield* Effect.result(runWith(response));
+        assert.strictEqual(failureReason(result).reason, reason);
+        assert.notInclude(JSON.stringify(failureReason(result)), TOKEN);
+      }
+      const missingCredential = yield* Effect.result(
+        runWith(Response.json({ default_branch: "main" }), undefined, REPO, ""),
+      );
+      const credentialError = failureReason(missingCredential);
+      assert.strictEqual(credentialError.reason, "missing_credential");
+      assert.strictEqual(credentialError.status, undefined);
+      assert.notInclude(JSON.stringify(credentialError), TOKEN);
     }),
   );
 
@@ -136,16 +139,4 @@ describe("RepoVerifier", () => {
       }),
     );
   }
-
-  it.effect("classifies an empty GitHub credential as a typed verifier failure", () =>
-    Effect.gen(function* () {
-      const result = yield* Effect.result(
-        runWith(Response.json({ default_branch: "main" }), undefined, REPO, ""),
-      );
-      const error = failureReason(result);
-      assert.strictEqual(error.reason, "missing_credential");
-      assert.strictEqual(error.status, undefined);
-      assert.notInclude(JSON.stringify(error), TOKEN);
-    }),
-  );
 });

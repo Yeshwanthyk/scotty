@@ -39,7 +39,7 @@ const session = (overrides = {}) => ({
 });
 
 describe("Container reconciliation", () => {
-  it("decodes the canonical public session envelope into audit rows", () => {
+  it("decodes the canonical envelope and anchors its countdown", () => {
     assert.deepEqual(
       decodeSessionInventory(
         {
@@ -59,9 +59,6 @@ describe("Container reconciliation", () => {
       [session({ hardCapAt: "2026-07-23T05:00:00.000Z" })],
     );
     assert.equal(decodeSessionInventory({ version: 1, sessions: [{}] }), undefined);
-  });
-
-  it("anchors a canonical countdown at the response observation time", () => {
     const observedAt = Date.parse("2026-07-23T04:00:00.000Z");
     const sessions = decodeSessionInventory(
       {
@@ -244,19 +241,16 @@ describe("Container reconciliation", () => {
       projectedSessions: 1,
     });
     assert.equal(report.application.summaryInstances, 7);
-  });
-
-  it("accepts a ready application with no active sessions or instances", () => {
-    const report = reconcileContainerInventory({
+    const readyReport = reconcileContainerInventory({
       applicationName: APPLICATION_NAME,
       applications: [application({ state: "ready" })],
       instances: [instance({ name: "old-session", state: "inactive" })],
       sessions: [session({ status: "sleeping" })],
       now: NOW,
     });
-    assert.equal(report.ok, true);
-    assert.equal(report.application.state, "ready");
-    assert.deepEqual(report.counts, {
+    assert.equal(readyReport.ok, true);
+    assert.equal(readyReport.application.state, "ready");
+    assert.deepEqual(readyReport.counts, {
       managedApplications: 1,
       activeInstances: 0,
       inactiveIdentityRows: 1,

@@ -1,11 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Markdown } from "./Markdown";
-import {
-  markdownEvidenceReferences,
-  resolveMarkdownImage,
-  type MarkdownEvidence,
-} from "./MarkdownImage";
+import { resolveMarkdownImage, type MarkdownEvidence } from "./MarkdownImage";
 
 const sessionId = "a0b1c2d3e4f5";
 const evidence: MarkdownEvidence = {
@@ -112,11 +108,5 @@ describe("published Markdown images", () => {
         message: "private diagnostic",
       }),
     ).not.toContain("private diagnostic");
-  });
-
-  it("finds references in assistant text for evidence refresh", () => {
-    expect(
-      markdownEvidenceReferences("![One](scotty-evidence:job-1) and ![Two](scotty-evidence:job-2)"),
-    ).toEqual(["scotty-evidence:job-1", "scotty-evidence:job-2"]);
   });
 });

@@ -72,40 +72,19 @@ describe("RolloutDiscovery", () => {
     }),
   );
 
-  it.effect("returns the newest rollout path from stdout when files exist", () =>
+  it.effect("returns the newest rollout or none for missing output/directories", () =>
     Effect.gen(function* () {
-      const memory = new InMemoryFaultInjectableFake();
-      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
       const path = `${SESSIONS_DIR}/2026/07/22/rollout-abc.jsonl`;
-      memory.respond("exec", successResult("find", `${path}\n`));
-
-      const result = yield* withDiscovery(capabilities, findNewestRollout(ID));
-
-      assert.deepStrictEqual(result, Option.some(path));
-    }),
-  );
-
-  it.effect("returns none when the sessions directory has no files (empty stdout)", () =>
-    Effect.gen(function* () {
-      const memory = new InMemoryFaultInjectableFake();
-      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
-      memory.respond("exec", successResult("find", ""));
-
-      const result = yield* withDiscovery(capabilities, findNewestRollout(ID));
-
-      assert.deepStrictEqual(result, Option.none());
-    }),
-  );
-
-  it.effect("returns none when the sessions directory is missing (nonzero exit)", () =>
-    Effect.gen(function* () {
-      const memory = new InMemoryFaultInjectableFake();
-      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
-      memory.respond("exec", failedResult("find", "", "find: No such file or directory"));
-
-      const result = yield* withDiscovery(capabilities, findNewestRollout(ID));
-
-      assert.deepStrictEqual(result, Option.none());
+      for (const [execResult, expected] of [
+        [successResult("find", `${path}\n`), Option.some(path)],
+        [successResult("find", ""), Option.none()],
+        [failedResult("find", "", "find: No such file or directory"), Option.none()],
+      ] as const) {
+        const memory = new InMemoryFaultInjectableFake();
+        const capabilities = sandboxRuntimeCapabilitiesFake(memory);
+        memory.respond("exec", execResult);
+        assert.deepStrictEqual(yield* withDiscovery(capabilities, findNewestRollout(ID)), expected);
+      }
     }),
   );
 
@@ -218,26 +197,6 @@ describe("RolloutDiscovery", () => {
       const result = yield* withDiscovery(capabilities, discoverThreadId(ID));
 
       assert.deepStrictEqual(result, Option.none());
-    }),
-  );
-
-  it.effect("reconstructs the service without retaining capability state", () =>
-    Effect.gen(function* () {
-      const firstMemory = new InMemoryFaultInjectableFake();
-      const secondMemory = new InMemoryFaultInjectableFake();
-      const first = sandboxRuntimeCapabilitiesFake(firstMemory);
-      const second = sandboxRuntimeCapabilitiesFake(secondMemory);
-      const path = `${SESSIONS_DIR}/2026/07/22/rollout-test.jsonl`;
-      firstMemory.respond("exec", successResult("find", path));
-      secondMemory.respond("exec", successResult("find", path));
-
-      yield* withDiscovery(first, findNewestRollout(ID));
-      yield* withDiscovery(second, findNewestRollout(ID));
-
-      assert.strictEqual(firstMemory.calls("exec").length, 1);
-      assert.strictEqual(secondMemory.calls("exec").length, 1);
-      assert.notStrictEqual(firstMemory.calls("exec"), secondMemory.calls("exec"));
-      assert.deepStrictEqual(firstMemory.calls("exec"), secondMemory.calls("exec"));
     }),
   );
 

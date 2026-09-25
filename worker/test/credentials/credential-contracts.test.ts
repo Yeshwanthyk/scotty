@@ -63,7 +63,7 @@ const failure = <A>(result: Result.Result<A, CredentialCryptoFailure>): Credenti
 };
 
 describe("credential protocol contracts", () => {
-  it("accepts only strict names and the pi-auth global declaration vocabulary", () => {
+  it("validates credential protocol names, handles, and bounded envelopes", () => {
     for (const name of ["openai", "openai-codex", "a1"]) {
       assert.ok(Option.isSome(decodeCredentialNameOption(name)));
       assert.isTrue(isCredentialName(name));
@@ -90,9 +90,6 @@ describe("credential protocol contracts", () => {
     );
     assert.ok(Option.isNone(decodeCredentialDeclarationsOption({ "bad/name": declaration })));
     assert.ok(Option.isNone(decodeCredentialDeclarationsOption({ OPENAI: declaration })));
-  });
-
-  it("formats managed handles canonically and rejects lookalikes", () => {
     const handle = { name: NAME, provider: "openai-codex", slot: "access" } as const;
     const formatted = formatManagedHandle(handle);
     assert.strictEqual(formatted, "scotty-managed://openai/openai-codex/access");
@@ -106,9 +103,6 @@ describe("credential protocol contracts", () => {
     ]) {
       assert.ok(Option.isNone(parseManagedHandle(value)));
     }
-  });
-
-  it("keeps registry envelopes and RPC contracts bounded and non-secret", () => {
     const envelope = {
       kind: "pi-auth",
       iv: bytesToBase64Url(new Uint8Array(CREDENTIAL_ENVELOPE_IV_BYTES)),

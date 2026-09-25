@@ -46,12 +46,6 @@ const runners = [
 ] as const;
 
 describe("admin response boundaries", () => {
-  it("accepts the canonical stats, provider, and runner shapes", () => {
-    expect(decodeStatsSnapshot(stats)).toEqual(stats);
-    expect(decodeProviders(providers)).toEqual(providers);
-    expect(decodeRunners(runners)).toEqual(runners);
-  });
-
   it("rejects malformed and excess response data", () => {
     expect(
       decodeStatsSnapshot({

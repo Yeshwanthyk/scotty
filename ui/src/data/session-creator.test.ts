@@ -107,6 +107,15 @@ describe("create session boundary", () => {
     );
     const request = fetchMock.mock.calls[0]?.[1];
     expect(JSON.parse(String(request?.body))).toEqual(payload);
+    const images = [{ type: "image", mimeType: "image/jpeg", data: "aGVsbG8=" }] as const;
+    const imageFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(success));
+    await expect(
+      createSession(
+        { ...payload, images },
+        { fetch: imageFetch, idempotencyKey: "create-with-image", origin },
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    expect(JSON.parse(String(imageFetch.mock.calls[0]?.[1]?.body))).toMatchObject({ images });
   });
 
   it("rejects redirects, excess fields, and mismatched response ids", () => {
@@ -171,21 +180,4 @@ describe("create session boundary", () => {
       },
     });
   });
-});
-
-it("includes images in the initial session request", async () => {
-  const images = [{ type: "image", mimeType: "image/jpeg", data: "aGVsbG8=" }] as const;
-  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(success));
-  const payload = {
-    title: "Image task",
-    repo: "owner/project",
-    prompt: "Review this",
-    provider: "cloudflare",
-    images,
-  } as const;
-  expect((await createSession(payload, { origin, fetch: fetchMock })).ok).toBe(true);
-  expect(fetchMock).toHaveBeenCalledWith(
-    "/api/sessions",
-    expect.objectContaining({ body: JSON.stringify(payload) }),
-  );
 });

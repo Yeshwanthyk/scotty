@@ -88,11 +88,8 @@ describe("standalone deployment clean-room proof", () => {
     );
     assert.equal(result.diagnostic.operation, "uninstall");
     assert.equal(existsSync(runCwd), false);
-  });
-
-  it("accepts an existing release binary without rebuilding it", async () => {
     let binary;
-    const result = await checkCliStandaloneDeploy({
+    const existing = await checkCliStandaloneDeploy({
       root: "/checkout",
       binaryPath: process.execPath,
       execute: (command, args, options) => {
@@ -103,7 +100,7 @@ describe("standalone deployment clean-room proof", () => {
       },
     });
     assert.equal(binary, process.execPath);
-    assert.equal(result.binary, process.execPath);
+    assert.equal(existing.binary, process.execPath);
   });
 
   it("passes through only the environment needed by the isolated process", () => {
@@ -183,9 +180,6 @@ describe("standalone deployment clean-room proof", () => {
         }),
       /terminated by SIGKILL/u,
     );
-  });
-
-  it("rejects packaging and checkout signatures from output or diagnostics", () => {
     for (const text of [
       "Embedded deployment archive is missing prebuilt worker bundles",
       "Prebuilt runner worker retains stack placeholders",

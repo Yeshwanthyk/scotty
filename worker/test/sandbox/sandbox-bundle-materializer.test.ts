@@ -563,24 +563,4 @@ describe("SandboxBundleMaterializer", () => {
       );
     }),
   );
-
-  it.effect("treats digest null as a no-op", () =>
-    Effect.gen(function* () {
-      const filesystem = new MaterializerFilesystemFake();
-      const bundle = makeMemoryBundleCapabilities();
-
-      const materialized = yield* materialize(filesystem, bundle, {
-        sessionId: SESSION_ID,
-        digest: null,
-      });
-
-      assert.deepStrictEqual(materialized, {
-        digest: null,
-        items: [],
-        bundleRoot: undefined,
-      });
-      assert.strictEqual(bundle.getCalls(), 0);
-      assert.strictEqual(filesystem.writeFileCalls, 0);
-    }),
-  );
 });

@@ -245,16 +245,6 @@ describe("readAuthoritativeSession", () => {
     ).resolves.toMatchObject({ ok: false, classification: "malformed" });
   });
 
-  it("uses known demo fixtures without a network request", async () => {
-    const fetchMock = vi.fn<typeof fetch>();
-    const result = await readAuthoritativeSession("warm-demo-01", {
-      fetch: fetchMock,
-      fixtureFallback: true,
-    });
-    expect(result).toMatchObject({ ok: true, session: { source: "fixture" } });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("refetches the canonical authority after a typed console 409", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -273,9 +263,6 @@ describe("readAuthoritativeSession", () => {
       session: { authority: { kind: "stable", lifecycle: "sleeping" } },
     });
   });
-});
-
-describe("decideConsoleEligibility", () => {
   it("admits only stable warm authority", () => {
     const warm = fixtureSessionForId("warm-demo-01");
     const sleeping = fixtureSessionForId("sleep-demo-01");

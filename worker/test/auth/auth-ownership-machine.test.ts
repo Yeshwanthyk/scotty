@@ -159,45 +159,31 @@ describe("owner authority state machine", () => {
     expect(checkedTransitions).toBeGreaterThan(100);
   });
 
-  it("rejects target substitution; removing target binding lets another client redeem", () => {
-    const state: OwnershipState = {
-      owner: "a",
+  it("rejects target substitution, stale epochs, and revoked-owner mutations", () => {
+    const transfer = {
+      owner: "a" as const,
       epoch: 1,
-      active: ["a", "b", "c"],
-      transfer: { source: "a", target: "b", epoch: 1 },
-    };
+      active: ["a", "b", "c"] as const,
+      transfer: { source: "a" as const, target: "b" as const, epoch: 1 },
+    } satisfies OwnershipState;
+    expect(transition(transfer, { type: "accept", actor: "c" })).toBeUndefined();
 
-    expect(transition(state, { type: "accept", actor: "c" })).toBeUndefined();
-    const mutantOwner = state.active.includes("c") ? "c" : state.owner;
-    expect(mutantOwner).not.toBe(state.transfer?.target);
-  });
-
-  it("rejects stale epochs; removing the guard revives a transfer after ownership cycles", () => {
-    const cycled: OwnershipState = {
-      owner: "a",
+    const cycled = {
+      owner: "a" as const,
       epoch: 3,
-      active: ["a", "b"],
-      transfer: { source: "a", target: "b", epoch: 1 },
-    };
-
+      active: ["a", "b"] as const,
+      transfer: { source: "a" as const, target: "b" as const, epoch: 1 },
+    } satisfies OwnershipState;
     expect(transition(cycled, { type: "accept", actor: "b" })).toBeUndefined();
-    const mutantWouldAccept =
-      cycled.owner === cycled.transfer?.source && cycled.active.includes(cycled.transfer.target);
-    expect(mutantWouldAccept).toBe(true);
-  });
 
-  it("rechecks the actor in the mutation transaction; a revoked owner cannot commit a queued command", () => {
-    const admitted: OwnershipState = {
-      owner: "a",
+    const admitted = {
+      owner: "a" as const,
       epoch: 1,
-      active: ["a", "b"],
-    };
+      active: ["a", "b"] as const,
+    } satisfies OwnershipState;
     const recovered = transition(admitted, { type: "recover", target: "b" });
     expect(recovered).toBeDefined();
     if (!recovered) throw new TypeError("Expected recovery transition");
-
     expect(transition(recovered, { type: "owner-mutation", actor: "a" })).toBeUndefined();
-    const mutantWouldCommit = admitted.owner === "a";
-    expect(mutantWouldCommit).toBe(true);
   });
 });

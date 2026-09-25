@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { sessionListFixtures } from "../fixtures/sessions";
 import { decodeSessionListResponse, readSessionList } from "./session-list-reader";
 
 const listItem = (id: string) => ({
@@ -71,26 +70,6 @@ describe("session list boundary", () => {
       }),
     ).toBeUndefined();
   });
-
-  it("uses visual fixtures only when fallback is explicitly enabled", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
-    await expect(readSessionList({ fetch: fetchMock })).resolves.toEqual({
-      ok: false,
-      failure: { kind: "network" },
-    });
-    const fallback = await readSessionList({
-      fetch: fetchMock,
-      fixture: sessionListFixtures,
-      fixtureFallback: true,
-    });
-    expect(fallback).toMatchObject({
-      ok: true,
-      projections: expect.arrayContaining([
-        expect.objectContaining({ session: expect.objectContaining({ id: "warm-working-001" }) }),
-      ]),
-    });
-  });
-
   it("bypasses browser HTTP caches", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

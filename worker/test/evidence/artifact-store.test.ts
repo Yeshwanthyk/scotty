@@ -224,41 +224,6 @@ describe("ArtifactStore", () => {
     }),
   );
 
-  it.effect("retries one missing R2 put and publishes its exact receipt", () =>
-    Effect.gen(function* () {
-      const test = makeMemoryCapabilities();
-      let attempts = 0;
-      let signalFirstHead: (() => void) | undefined;
-      const firstHead = new Promise<void>((resolve) => {
-        signalFirstHead = resolve;
-      });
-      const capabilities: ArtifactStoreCapabilities = {
-        ...test.capabilities,
-        put: (key, bytes, metadata) => {
-          attempts += 1;
-          return attempts === 1
-            ? Promise.reject(new Error("put: Unspecified error (0)"))
-            : test.capabilities.put(key, bytes, metadata);
-        },
-        head: (key) => {
-          signalFirstHead?.();
-          signalFirstHead = undefined;
-          return test.capabilities.head(key);
-        },
-      };
-      const fiber = yield* putFrame(capabilities).pipe(
-        Effect.forkChild({ startImmediately: true }),
-      );
-      yield* Effect.promise(() => firstHead);
-      yield* TestClock.adjust(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
-      const artifact = yield* Fiber.join(fiber);
-
-      assert.strictEqual(artifact.status, "available");
-      assert.strictEqual(attempts, 2);
-      assert.strictEqual(test.headCalls(), 1);
-    }),
-  );
-
   it.effect("recovers a transient R2 put on the final bounded attempt", () =>
     Effect.gen(function* () {
       const test = makeMemoryCapabilities();
@@ -347,7 +312,7 @@ describe("ArtifactStore", () => {
     }),
   );
 
-  it.effect("rejects mismatched successful put metadata without issuing a head", () =>
+  it.effect("rejects storage metadata and byte-integrity changes before publishing", () =>
     Effect.gen(function* () {
       const test = makeMemoryCapabilities();
       const capabilities: ArtifactStoreCapabilities = {
@@ -362,21 +327,16 @@ describe("ArtifactStore", () => {
       assert.deepInclude(failure(result), { operation: "put", reason: "metadata_mismatch" });
       assert.strictEqual(test.putCalls(), 1);
       assert.strictEqual(test.headCalls(), 0);
-    }),
-  );
-
-  it.effect("rejects bytes changed after manifest hashing before storage", () =>
-    Effect.gen(function* () {
-      const test = makeMemoryCapabilities();
-      const prepared = yield* prepareFrame(test.capabilities);
+      const changedTest = makeMemoryCapabilities();
+      const prepared = yield* prepareFrame(changedTest.capabilities);
       prepared.bytes[0] = 0;
-      const result = yield* Effect.result(
+      const changed = yield* Effect.result(
         Effect.flatMap(ArtifactStore, (store) => store.writeFrame(prepared)).pipe(
-          Effect.provide(artifactStoreLayer(test.capabilities)),
+          Effect.provide(artifactStoreLayer(changedTest.capabilities)),
         ),
       );
-      assert.deepInclude(failure(result), { operation: "validate", reason: "invalid_state" });
-      assert.strictEqual(test.putCalls(), 0);
+      assert.deepInclude(failure(changed), { operation: "validate", reason: "invalid_state" });
+      assert.strictEqual(changedTest.putCalls(), 0);
     }),
   );
 
@@ -400,15 +360,29 @@ describe("ArtifactStore", () => {
     }),
   );
 
-  it.effect("rejects invalid screenshot bytes before storage", () =>
+  it.effect("rejects invalid screenshot and recording bytes before storage", () =>
     Effect.gen(function* () {
       const test = makeMemoryCapabilities();
-      const result = yield* Effect.result(
+      const invalidPng = yield* Effect.result(
         prepareFrame(test.capabilities, Uint8Array.from([1, 2, 3])),
       );
-      assert.deepInclude(failure(result), { operation: "validate", reason: "invalid_png" });
+      assert.deepInclude(failure(invalidPng), { operation: "validate", reason: "invalid_png" });
       assert.strictEqual(test.putCalls(), 0);
       assert.strictEqual(test.objects.size, 0);
+      const invalidWebm = yield* Effect.result(
+        Effect.flatMap(ArtifactStore, (store) =>
+          store.prepareVideo({
+            sessionId: "a0b1c2d3e4f5",
+            jobId: "job-1",
+            artifactId: "recording",
+            bytes: Uint8Array.from([1, 2, 3, 4]),
+            capturedAt: "2026-08-06T12:00:02.000Z",
+            offsetMillis: 2_000,
+          }),
+        ).pipe(Effect.provide(artifactStoreLayer(test.capabilities))),
+      );
+      assert.deepInclude(failure(invalidWebm), { operation: "validate", reason: "invalid_webm" });
+      assert.strictEqual(test.putCalls(), 0);
     }),
   );
 
@@ -441,26 +415,6 @@ describe("ArtifactStore", () => {
       ).pipe(Effect.provide(artifactStoreLayer(test.capabilities)));
       assert.strictEqual(opened.mediaType, "video/webm");
       assert.strictEqual(opened.bytes, WEBM.byteLength);
-    }),
-  );
-
-  it.effect("rejects invalid WebM bytes before storage", () =>
-    Effect.gen(function* () {
-      const test = makeMemoryCapabilities();
-      const result = yield* Effect.result(
-        Effect.flatMap(ArtifactStore, (store) =>
-          store.prepareVideo({
-            sessionId: "a0b1c2d3e4f5",
-            jobId: "job-1",
-            artifactId: "recording",
-            bytes: Uint8Array.from([1, 2, 3, 4]),
-            capturedAt: "2026-08-06T12:00:02.000Z",
-            offsetMillis: 2_000,
-          }),
-        ).pipe(Effect.provide(artifactStoreLayer(test.capabilities))),
-      );
-      assert.deepInclude(failure(result), { operation: "validate", reason: "invalid_webm" });
-      assert.strictEqual(test.putCalls(), 0);
     }),
   );
 });

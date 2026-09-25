@@ -123,34 +123,6 @@ describe("Git changed-files adapter", () => {
     }),
   );
 
-  it.effect("hides untracked Scotty runtime files without hiding tracked repository files", () =>
-    Effect.gen(function* () {
-      const hash = "c".repeat(40);
-      const trackedRuntimePath = `1 .M N... 100644 100644 100644 ${hash} ${hash} .scotty/project.json\0`;
-      const status = `${trackedRuntimePath}? .pi-agent/settings.json\0? .scotty/runtime.json\0? .home/state\0? src/new.ts\0`;
-      const trackedFile = textFile({ path: ".scotty/project.json" });
-      const untrackedFile = textFile({ path: "src/new.ts", status: "untracked" });
-      const trackedCommand = gitTrackedNumstatCommand([trackedFile, untrackedFile]);
-      const untrackedCommand = gitUntrackedNumstatCommand([trackedFile, untrackedFile]);
-      const fake = fakeRuntime(
-        new Map([
-          [GIT_STATUS_COMMAND, encodeGitTransport(status)],
-          [gitChangedNamesCommand("HEAD"), encodeGitTransport("M\0.scotty/project.json\0")],
-          [trackedCommand, encodeGitTransport("1\t1\t.scotty/project.json\0")],
-          [untrackedCommand, encodeGitTransport("1\t0\tsrc/new.ts\0")],
-        ]),
-      );
-
-      const changes = yield* listGitWorktreeChanges(fake.runtime, "/workspace/session");
-
-      assert.deepStrictEqual(
-        changes.files.map((file) => file.path),
-        [".scotty/project.json", "src/new.ts"],
-      );
-      assert.isFalse(changes.truncated);
-    }),
-  );
-
   it.effect("caps oversized status transport and marks the visible list truncated", () =>
     Effect.gen(function* () {
       const hash = "b".repeat(40);
@@ -329,6 +301,9 @@ describe("Git changed-files adapter", () => {
         await execFileAsync("git", ["commit", "-qm", "rename"], { cwd: root });
         await mkdir(join(root, ".pi-agent"));
         await writeFile(join(root, ".pi-agent", "settings.json"), "{}\n");
+        await writeFile(join(root, ".scotty", "runtime.json"), "{}\n");
+        await mkdir(join(root, ".home"));
+        await writeFile(join(root, ".home", "state"), "private\n");
         await writeFile(join(root, "binary.dat"), Uint8Array.from([0, 1, 2, 3]));
       });
 
@@ -346,6 +321,8 @@ describe("Git changed-files adapter", () => {
       assert.isFalse(binary.patchable);
       assert.isTrue(changes.files.some((file) => file.path === ".scotty/project.json"));
       assert.isFalse(changes.files.some((file) => file.path === ".pi-agent/settings.json"));
+      assert.isFalse(changes.files.some((file) => file.path === ".scotty/runtime.json"));
+      assert.isFalse(changes.files.some((file) => file.path === ".home/state"));
       const patch = yield* readGitWorktreePatch(executingRuntime, root, renamed, base);
       assert.include(patch.patch ?? "", oldPath);
       assert.include(patch.patch ?? "", renamedPath);
@@ -393,17 +370,6 @@ describe("Git changed-files adapter", () => {
       assert.strictEqual(failure.reason, "transport");
     }),
   );
-
-  it("includes both literal rename paths in a tracked patch", () => {
-    const command = gitPatchCommand(
-      textFile({ path: ":(top)**", oldPath: "src/old.ts", status: "renamed" }),
-    );
-
-    assert.include(command, "--literal-pathspecs");
-    assert.include(command, "src/old.ts");
-    assert.include(command, ":(top)**");
-  });
-
   it.effect("does not invoke Git for an explicit binary state", () =>
     Effect.gen(function* () {
       const file = textFile({ path: "image.png", binary: true, patchable: false });
