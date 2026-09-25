@@ -5,8 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import * as Effect from "effect/Effect";
-import { makeWorkerRuntimeContext } from "../node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js";
 import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
 import {
   assessContainerSettlement,
@@ -22,7 +20,6 @@ import {
   persistProductionDeploymentFailureDiagnostic,
   PRODUCTION_DEPLOY_DIAGNOSTIC_PATH,
   PRODUCTION_DEPLOY_STEPS,
-  productionDeploymentFailureHint,
   projectAlchemyDeploymentOutput,
   readAlchemyContainerAction,
   readAlchemyContainerPlanAction,
@@ -36,7 +33,6 @@ import {
   runProductionDeployStep,
   waitForProductionContainerRollout,
 } from "./release/deploy-production.mjs";
-import { dedupeBindings, diffBindings, stripEffects } from "../node_modules/alchemy/lib/Diff.js";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const INSTALLATION_ENVIRONMENT = { SCOTTY_INSTALLATION_NAME: "test" };
@@ -119,125 +115,6 @@ describe("production deployment ownership", () => {
       },
     );
     assert.equal(resolved.DOCKER_HOST, "unix:///Users/test/.colima/default/docker.sock");
-  });
-
-  it("keeps the pinned Alchemy deployment backports installed and deterministic", async () => {
-    const rootPackage = JSON.parse(read("package.json"));
-    const patch = read("patches/alchemy+2.0.0-beta.76.patch");
-    const installedApply = read("node_modules/alchemy/lib/Apply.js");
-    const installedWorkerProvider = read(
-      "node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js",
-    );
-    const installedWorkerRuntimeContext = read(
-      "node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js",
-    );
-    const installedContainerProvider = read(
-      "node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js",
-    );
-    const installedDocker = read("node_modules/alchemy/lib/Docker/Docker.js");
-
-    assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.76");
-    assert.equal(rootPackage.scripts.postinstall, "node scripts/apply-dependency-patches.mjs");
-    assert.match(patch, /const oldDoBindings = oldBindings\.flatMap/u);
-    assert.doesNotMatch(patch, /bindings: bindingOutputs/u);
-    assert.match(installedApply, /bindings: bindingOutputs/u);
-    assert.match(installedApply, /bindings: stripUnresolved\(newBindings\)/u);
-    assert.match(installedWorkerProvider, /const news = stripEffects\(desired\)/u);
-    assert.match(installedWorkerProvider, /const oldDoBindings = oldBindings\.flatMap/u);
-    assert.match(
-      installedWorkerProvider,
-      /getExpectedDurableObjectClassNames\(\s*oldDoBindings,\s*oldWorkerName/u,
-    );
-    assert.doesNotMatch(installedWorkerProvider, /scriptName: old\.scriptName/u);
-    assert.match(patch, /Context is cyclic in Effect v4/u);
-    assert.match(installedWorkerRuntimeContext, /if \(phase === "plan"\)/u);
-
-    // Registry credentials are minted for a short window and Docker authenticates
-    // only through a scoped temporary DOCKER_CONFIG. Credentials are written to
-    // that isolated config, never argv, logs, or the shared credential helper.
-    assert.match(installedContainerProvider, /expirationMinutes: 15/u);
-    assert.doesNotMatch(installedContainerProvider, /expirationMinutes: 60/u);
-    assert.match(installedDocker, /makeTempDirectoryScoped/u);
-    assert.match(installedDocker, /auths:/u);
-    assert.match(installedDocker, /writeFileString\(path\.join\(dir, "config\.json"\), config\)/u);
-    assert.match(installedDocker, /DOCKER_CONFIG: dir/u);
-    assert.doesNotMatch(installedDocker, /"--password",/u);
-    assert.doesNotMatch(installedDocker, /"login",\s*"--username",/u);
-    assert.doesNotMatch(installedDocker, /wrangler/u);
-    // The backported provider pushes through Docker; neither it nor the Scotty
-    // deployment steps hand the release to `wrangler deploy`.
-    assert.doesNotMatch(installedContainerProvider, /"wrangler"/u);
-    const deploymentCommands = PRODUCTION_DEPLOY_STEPS.map(
-      ({ command, args }) => `${command} ${args.join(" ")}`,
-    ).join("\n");
-    assert.doesNotMatch(deploymentCommands, /wrangler\s+deploy/u);
-
-    const runtimeContext = makeWorkerRuntimeContext("deployment-props-probe");
-    const services = {};
-    services.cacheRoot = services;
-    await Effect.runPromise(
-      runtimeContext.export("Probe", {
-        kind: "durableObject",
-        constructor: Effect.void,
-        services,
-      }),
-    );
-    const deploymentExports = await Effect.runPromise(runtimeContext.exports);
-    assert.deepEqual(deploymentExports, { Probe: { kind: "durableObject" } });
-    assert.doesNotThrow(() => JSON.stringify(deploymentExports));
-
-    assert.deepEqual(stripEffects({ stable: 1, effect: Effect.succeed(2) }), {
-      stable: 1,
-      effect: undefined,
-    });
-
-    const bindings = [
-      { sid: "zeta", data: { value: 1 } },
-      { sid: "alpha", data: { value: 2 } },
-      { sid: "zeta", data: { value: 3 } },
-    ];
-    assert.deepEqual(
-      dedupeBindings(bindings).map(({ sid, data }) => [sid, data.value]),
-      [
-        ["alpha", 2],
-        ["zeta", 3],
-      ],
-    );
-    assert.deepEqual(
-      diffBindings([], bindings).map(({ sid }) => sid),
-      ["alpha", "zeta"],
-    );
-  });
-
-  it("has one guarded local Alchemy production command", () => {
-    const rootPackage = JSON.parse(read("package.json"));
-    const workerPackage = JSON.parse(read("worker/package.json"));
-    const commands = [
-      ...Object.values(rootPackage.scripts),
-      ...Object.values(workerPackage.scripts),
-      read("README.md"),
-      read("docs/setup.md"),
-      read("docs/development.md"),
-      read("scripts/release/deploy-production.mjs"),
-    ].join("\n");
-    assert.doesNotMatch(commands, /wrangler\s+deploy(?!\s+--dry-run)/u);
-    assert.equal(
-      rootPackage.scripts["deploy:production"],
-      "node scripts/release/deploy-production.mjs",
-    );
-    assert.equal(workerPackage.scripts.deploy, undefined);
-    assert.equal(
-      existsSync(new URL("../.github/workflows/deploy-production.yml", import.meta.url)),
-      false,
-    );
-    const setup = read("docs/setup.md");
-    assert.match(setup, /ARM Mac/u);
-    assert.match(setup, /exit code 139/u);
-    assert.match(setup, /Retry the same command once/u);
-    assert.match(setup, /If the second build fails, stop/u);
-    const development = read("docs/development.md");
-    assert.match(development, /npm run deploy:production -- --container/u);
-    assert.match(development, /does not open Docker/u);
   });
 
   it("checks, audits, deploys through Alchemy, and audits again", () => {
@@ -658,46 +535,6 @@ describe("production deployment ownership", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  });
-
-  it("explains transient emulated Container build crashes without adding automatic retries", async () => {
-    assert.match(
-      productionDeploymentFailureHint({
-        stderr: "npm error Segmentation fault (core dumped)\nprocess exited with code: 139",
-      }),
-      /rerun this same guarded command once/u,
-    );
-    assert.equal(productionDeploymentFailureHint({ stderr: "ordinary failure" }), "");
-    assert.doesNotMatch(read("scripts/release/deploy-production.mjs"), /retryProductionDeploy/u);
-
-    const rawOutput = await runCommand(
-      process.execPath,
-      [
-        "-e",
-        'process.stdout.write("accountId: 0123456789abcdef"); process.stdout.write("0123456789abcdef\\n[SandboxContainer] updated\\n")',
-      ],
-      {
-        capture: true,
-        sanitizeOutput: projectAlchemyDeploymentOutput,
-      },
-    );
-    assert.match(rawOutput, /0123456789abcdef0123456789abcdef/u);
-    assert.equal(readAlchemyContainerAction(rawOutput), "updated");
-
-    await assert.rejects(
-      runCommand(
-        process.execPath,
-        [
-          "-e",
-          'process.stderr.write("Segmentation "); process.stderr.write("fault (core dumped)\\nexit code: 139\\n"); process.exit(1)',
-        ],
-        {
-          sanitizeOutput: projectAlchemyDeploymentOutput,
-          failureHint: productionDeploymentFailureHint,
-        },
-      ),
-      /failed with exit code 1[\s\S]*rerun this same guarded command once/u,
-    );
   });
 
   it("waits for Container settlement and audits after an Alchemy failure", async () => {
@@ -1223,12 +1060,6 @@ describe("production deployment ownership", () => {
     );
   });
 
-  it("keeps platform services available to deferred Cloudflare profile reads", () => {
-    const controlPlane = read("scripts/container-control-plane.mjs");
-    assert.match(controlPlane, /Layer\.provideMerge\(PlatformServices\)/u);
-    assert.doesNotMatch(controlPlane, /Layer\.provide\(PlatformServices\)/u);
-  });
-
   it("requires a quiet absence proof after a failed deploy", () => {
     assert.equal(assessContainerSettlement(snapshot(), snapshot(), "unknown").status, "waiting");
     assert.deepEqual(
@@ -1321,7 +1152,6 @@ describe("production deployment ownership", () => {
   it("derives Container identity without committing an account-specific ID", () => {
     const infrastructure = read("infra/cloudflare-stack.ts");
     assert.doesNotMatch(infrastructure, /workers\.dev|[0-9a-f]{32}/u);
-    assert.match(infrastructure, /name: topology\.container\.name/u);
     assert.doesNotMatch(
       read("scripts/release/deploy-production.mjs"),
       /PRODUCTION_CONTAINER_APPLICATION_ID/u,

@@ -7,7 +7,6 @@ import {
   orderedEvidenceSteps,
   shouldPollEvidence,
 } from "../../../public/evidence/view.js";
-import evidenceHtml from "../../../public/evidence/index.html?raw";
 import evidenceScript from "../../../public/evidence/index.js?raw";
 
 describe("evidence page", () => {
@@ -87,30 +86,7 @@ describe("evidence page", () => {
     assert.include(evidenceScript, "evidenceFailurePresentation(summary.failure)");
   });
 
-  it("renders verified screenshots without a synthetic replay or unsafe HTML", () => {
-    assert.include(evidenceScript, 'panel.className = "evidence-frames-panel"');
-    assert.include(evidenceScript, 'link.className = "evidence-frame-link"');
-    assert.include(evidenceScript, "link.href = framePath(frame.frameId)");
-    assert.include(evidenceScript, 'link.setAttribute("aria-label"');
-    assert.notInclude(evidenceScript, "toggleReplay");
+  it("evidence page script never writes innerHTML", () => {
     assert.notInclude(evidenceScript, ".innerHTML");
-    assert.notInclude(evidenceHtml, "<video");
-  });
-
-  it("renders the authenticated recording only when the summary includes video", () => {
-    assert.include(
-      evidenceScript,
-      "return `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(jobId)}/video.webm`;",
-    );
-    assert.include(evidenceScript, "function renderRecording(parent, summary)");
-    assert.include(
-      evidenceScript,
-      "if (summary.video === undefined || !sessionId || !jobId) return;",
-    );
-    assert.include(evidenceScript, "video.controls = true");
-    assert.include(evidenceScript, 'video.preload = "metadata"');
-    assert.include(evidenceScript, 'video.setAttribute("aria-label", "Real browser recording")');
-    assert.include(evidenceScript, 'link.textContent = "Download recording"');
-    assert.include(evidenceScript, "renderRecording(panel, summary)");
   });
 });

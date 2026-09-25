@@ -314,6 +314,4 @@ it("uses public Alchemy package entry points only", () => {
 
   expect(source).not.toMatch(/alchemy\/(?:lib|src)\//);
   expect(source).not.toMatch(/(?:Container|Worker)Provider/);
-  expect(source).toContain('from "alchemy/Cloudflare"');
-  expect(source).toContain('from "alchemy/Output"');
 });

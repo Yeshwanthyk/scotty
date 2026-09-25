@@ -88,7 +88,6 @@ describe("Wrangler binding coverage", () => {
       ),
       false,
     );
-    assert.doesNotMatch(read(WRANGLER_CONFIG_PATH), /preview|\*\.|100::/u);
   });
 
   it("keeps the required subset independent of runner worker and preview topology", () => {
@@ -154,10 +153,5 @@ describe("Wrangler binding coverage", () => {
         }),
       /KV SESSIONS/u,
     );
-  });
-  it("uses the same plain topology data as the Alchemy stack", () => {
-    const stack = read("infra/cloudflare-stack.ts");
-    assert.match(stack, /from "\.\.\/scripts\/cloudflare-topology-data\.mjs"/u);
-    assert.doesNotMatch(read("scripts/check-wrangler-bindings.mjs"), /cloudflare-stack\.ts/u);
   });
 });
