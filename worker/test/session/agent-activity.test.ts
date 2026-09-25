@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { drainDecision } from "../../src/session/agent-activity";
+import { drainDecision, HARD_CAP_SLEEP_RESERVE_MS } from "../../src/session/agent-activity";
 
 describe("hard-cap drain decision", () => {
   const drainAt = 0;
@@ -21,7 +21,20 @@ describe("hard-cap drain decision", () => {
   });
 
   it("uses half the drain window when it is shorter than ten minutes", () => {
-    assert.strictEqual(drainDecision(19_999, 0, 40_000, true), "wait");
-    assert.strictEqual(drainDecision(20_000, 0, 40_000, true), "sleep");
+    const deadline = 8 * 60_000;
+    assert.strictEqual(drainDecision(4 * 60_000 - 1, 0, deadline, true), "wait");
+    assert.strictEqual(drainDecision(4 * 60_000, 0, deadline, true), "sleep");
+  });
+
+  it("reserves backup time before the deadline on short caps", () => {
+    // 5-minute cap: drainAt = deadline - 150s; a busy turn previously waited until deadline - 75s.
+    const deadline = 5 * 60_000;
+    const drainAt = deadline - 150_000;
+    assert.strictEqual(drainDecision(drainAt, drainAt, deadline, true), "sleep");
+    // 10-minute cap: drain window is 5m, so the reserve (not half the window) sets forceAt.
+    const longer = 10 * 60_000;
+    const forceAt = longer - HARD_CAP_SLEEP_RESERVE_MS;
+    assert.strictEqual(drainDecision(forceAt - 1, 5 * 60_000, longer, true), "wait");
+    assert.strictEqual(drainDecision(forceAt, 5 * 60_000, longer, true), "sleep");
   });
 });
