@@ -218,7 +218,7 @@ const decodeDeploymentReadinessJson = Schema.decodeUnknownOption(
 );
 
 export type DeploymentReadinessFetcher = (
-  input: RequestInfo | URL,
+  input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
 
@@ -276,7 +276,9 @@ export type ContainerControlPlaneReader<R = never> = (input: {
   readonly applicationId: string;
 }) => Effect.Effect<ContainerControlPlaneSnapshot, unknown, R>;
 
-export const isContainerPlanChanged = (plan: Plan.Plan): boolean => {
+export const isContainerPlanChanged = (plan: {
+  readonly resources: Readonly<Record<string, { readonly action: string }>>;
+}): boolean => {
   const containerNode = plan.resources["SandboxContainer"];
   return containerNode !== undefined && containerNode.action !== "noop";
 };
@@ -364,8 +366,7 @@ export const waitForContainerRollout = Effect.fnUntraced(function* <R = never>(
     readonly reportProgress?: (message: string) => void;
   } = {},
 ) {
-  const read = (options.readControlPlane ??
-    defaultReadControlPlane) as ContainerControlPlaneReader<R>;
+  const read = options.readControlPlane ?? defaultReadControlPlane;
   const timeoutMs = options.timeoutMs ?? CONTAINER_ROLLOUT_TIMEOUT_MS;
   const pollMs = options.pollMs ?? CONTAINER_ROLLOUT_POLL_MS;
   const containerAction = options.containerAction ?? "updated";
@@ -564,11 +565,7 @@ const cloudflareApiLive = () => {
   return Layer.fromBuild((memoMap, scope) =>
     Layer.buildWithMemoMap(live, memoMap, scope).pipe(
       Effect.map((services) =>
-        Context.add(
-          services,
-          DistilledCredentials,
-          Context.get(services as Context.Context<DistilledCredentials>, DistilledCredentials),
-        ),
+        Context.add(services, DistilledCredentials, Context.get(services, DistilledCredentials)),
       ),
     ),
   );

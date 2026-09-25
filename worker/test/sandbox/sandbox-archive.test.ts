@@ -126,7 +126,8 @@ describe("worker sandbox archive validation", () => {
       assert.ok(Result.isFailure(duplicateResult));
       assert.match(duplicateResult.failure.message, /duplicate bundle/u);
 
-      const record = item.files[0]!;
+      const record = item.files[0];
+      assert.isDefined(record);
       const duplicatePathItem = {
         ...item,
         shape: "directory" as const,

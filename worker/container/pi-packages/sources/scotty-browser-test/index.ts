@@ -271,7 +271,7 @@ async function readBoundedResponse(response: Response): Promise<string | undefin
 
 function parseJson(text: string): unknown {
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(text);
   } catch {
     return undefined;
   }

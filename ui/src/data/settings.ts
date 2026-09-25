@@ -60,6 +60,10 @@ const exactKeys = (value: UnknownObject, keys: readonly string[]): boolean => {
 };
 
 const stringValue = (value: unknown): value is string => typeof value === "string";
+const isCredentialKind = (value: unknown): value is CredentialStatus["kind"] =>
+  value === "pi-auth" || value === "github-cli";
+const isCredentialScope = (value: unknown): value is CredentialStatus["scope"] =>
+  value === "global" || value === "repository";
 
 const decodeSettingsOption = Schema.decodeUnknownOption(CloudSettingsSchema, {
   onExcessProperty: "error",
@@ -72,27 +76,23 @@ export const decodeCloudSettingsSnapshot = (value: unknown): CloudSettingsSnapsh
   return Result.isSuccess(decoded) ? decoded.success : undefined;
 };
 
-const decodeRepository = (value: unknown): RepositoryRegistryEntry | undefined => {
-  if (
-    !isRecord(value) ||
-    !exactKeys(value, ["repo", "defaultBranch", "addedAt", "lastUsedAt"]) ||
-    !stringValue(value.repo) ||
-    !stringValue(value.defaultBranch) ||
-    !stringValue(value.addedAt) ||
-    !stringValue(value.lastUsedAt) ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value.addedAt) ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value.lastUsedAt)
-  )
-    return undefined;
-  return value as RepositoryRegistryEntry;
-};
+const isRepository = (value: unknown): value is RepositoryRegistryEntry =>
+  isRecord(value) &&
+  exactKeys(value, ["repo", "defaultBranch", "addedAt", "lastUsedAt"]) &&
+  stringValue(value.repo) &&
+  stringValue(value.defaultBranch) &&
+  stringValue(value.addedAt) &&
+  stringValue(value.lastUsedAt) &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value.addedAt) &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value.lastUsedAt);
+
+const decodeRepository = (value: unknown): RepositoryRegistryEntry | undefined =>
+  isRepository(value) ? value : undefined;
 
 const decodeRepositories = (value: unknown): ReadonlyArray<RepositoryRegistryEntry> | undefined => {
   if (!Array.isArray(value)) return undefined;
   const entries = value.map(decodeRepository);
-  return entries.some((entry) => entry === undefined)
-    ? undefined
-    : (entries as RepositoryRegistryEntry[]);
+  return entries.every((entry) => entry !== undefined) ? entries : undefined;
 };
 
 const decodeCredentials = (value: unknown): ReadonlyArray<CredentialStatus> | undefined => {
@@ -111,8 +111,8 @@ const decodeCredentials = (value: unknown): ReadonlyArray<CredentialStatus> | un
         ...(item.expires === undefined ? [] : ["expires"]),
       ]) ||
       !stringValue(item.name) ||
-      !["pi-auth", "github-cli"].includes(String(item.kind)) ||
-      !["global", "repository"].includes(String(item.scope)) ||
+      !isCredentialKind(item.kind) ||
+      !isCredentialScope(item.scope) ||
       typeof item.configured !== "boolean" ||
       !stringValue(item.versionRef)
     )
@@ -129,8 +129,8 @@ const decodeCredentials = (value: unknown): ReadonlyArray<CredentialStatus> | un
       return undefined;
     statuses.push({
       name: item.name,
-      kind: item.kind as CredentialStatus["kind"],
-      scope: item.scope as CredentialStatus["scope"],
+      kind: item.kind,
+      scope: item.scope,
       configured: item.configured,
       versionRef: item.versionRef,
       ...(item.repositories === undefined ? {} : { repositories: item.repositories }),

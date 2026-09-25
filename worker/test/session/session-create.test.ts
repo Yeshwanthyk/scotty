@@ -28,6 +28,13 @@ import {
   sessionHarnessKeys,
 } from "../support/session-harness";
 
+const decodeDeadlineSchedulePayload = Schema.decodeUnknownSync(
+  Schema.Struct({
+    expectedPhase: Schema.optional(Schema.Unknown),
+    revision: Schema.optional(Schema.Unknown),
+  }),
+);
+
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
   operation.then(
     () => undefined,
@@ -37,11 +44,6 @@ const rejection = (operation: Promise<unknown>): Promise<unknown> =>
 const decodeSteerResult = Schema.decodeUnknownPromise(
   Schema.Struct({ id: Schema.String, status: Schema.String }),
 );
-
-interface DeadlineSchedulePayload {
-  readonly expectedPhase?: unknown;
-  readonly revision?: unknown;
-}
 
 const relaySnapshot = (): PiConsoleRelaySnapshot => ({
   epoch: `pi-${SESSION_ID}`,
@@ -204,7 +206,7 @@ describe("Sandbox actor create boundary", () => {
     );
     assert.deepStrictEqual(
       deadlineSchedules.map((schedule) => {
-        const payload = schedule.payload as DeadlineSchedulePayload;
+        const payload = decodeDeadlineSchedulePayload(schedule.payload);
         return payload.expectedPhase;
       }),
       [
@@ -219,7 +221,7 @@ describe("Sandbox actor create boundary", () => {
     );
     assert.deepStrictEqual(
       deadlineSchedules.map((schedule) => {
-        const payload = schedule.payload as DeadlineSchedulePayload;
+        const payload = decodeDeadlineSchedulePayload(schedule.payload);
         return payload.revision;
       }),
       [1, 2, 3, 4, 5, 6, 7],

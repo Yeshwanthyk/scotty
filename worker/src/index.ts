@@ -14,6 +14,7 @@ import {
 } from "../../protocol/session/session-terminal";
 import { terminalShellPath } from "./sandbox/auth";
 import { Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./shared/bindings";
 import { readBoundedBytes, readBoundedUtf8Body } from "./shared/bounded-http";
@@ -210,6 +211,13 @@ const WorkerErrorSchema = Schema.Struct({
   hint: Schema.optionalKey(Schema.String),
 });
 const decodeWorkerError = Schema.decodeUnknownOption(WorkerErrorSchema);
+const isContentfulStatus = (status: number): status is ContentfulStatusCode =>
+  Number.isInteger(status) &&
+  status >= 200 &&
+  status <= 599 &&
+  status !== 204 &&
+  status !== 205 &&
+  status !== 304;
 app.onError((error, c) => {
   const normalized = normalizeError(error);
   return c.json(
@@ -220,7 +228,7 @@ app.onError((error, c) => {
         hint: normalized.hint,
       },
     },
-    normalized.httpStatus as 400 | 401 | 404 | 409 | 500 | 502,
+    isContentfulStatus(normalized.httpStatus) ? normalized.httpStatus : 500,
   );
 });
 
@@ -565,7 +573,7 @@ async function readActiveResources(env: Bindings) {
     return {
       ...status,
       manifest: emptyResourceManifest,
-      members: [] as ReadonlyArray<import("./sandbox/archive").ParsedTarMember>,
+      members: [] satisfies ReadonlyArray<import("./sandbox/archive").ParsedTarMember>,
     };
   const digest = status.activeDigest;
   const result = await Effect.runPromise(

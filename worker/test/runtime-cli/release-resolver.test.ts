@@ -18,11 +18,7 @@ import { TestClock } from "effect/testing";
 import { afterEach, vi } from "vitest";
 import {
   makeRuntimeCliReleaseResolverForClient,
-  type RuntimeCliReleaseIntegrityError,
-  type RuntimeCliReleaseLookupError,
   type RuntimeCliReleaseResolverError,
-  type RuntimeCliReleaseSearchTruncatedError,
-  type RuntimeCliReleaseSignatureError,
 } from "../../src/runtime-cli/release-resolver";
 
 const MANIFEST_NAME = "scotty-runtime-manifest.json";
@@ -189,25 +185,29 @@ const failure = (
 const integrityFailure = (result: Result.Result<unknown, RuntimeCliReleaseResolverError>) => {
   const error = failure(result);
   assert.isTrue(Predicate.isTagged("RuntimeCliReleaseIntegrityError")(error));
-  return error as RuntimeCliReleaseIntegrityError;
+  if (Predicate.isTagged(error, "RuntimeCliReleaseIntegrityError")) return error;
+  return assert.fail("expected integrity error");
 };
 
 const signatureFailure = (result: Result.Result<unknown, RuntimeCliReleaseResolverError>) => {
   const error = failure(result);
   assert.isTrue(Predicate.isTagged("RuntimeCliReleaseSignatureError")(error));
-  return error as RuntimeCliReleaseSignatureError;
+  if (Predicate.isTagged(error, "RuntimeCliReleaseSignatureError")) return error;
+  return assert.fail("expected signature error");
 };
 
 const lookupFailure = (result: Result.Result<unknown, RuntimeCliReleaseResolverError>) => {
   const error = failure(result);
   assert.isTrue(Predicate.isTagged("RuntimeCliReleaseLookupError")(error));
-  return error as RuntimeCliReleaseLookupError;
+  if (Predicate.isTagged(error, "RuntimeCliReleaseLookupError")) return error;
+  return assert.fail("expected lookup error");
 };
 
 const truncatedFailure = (result: Result.Result<unknown, RuntimeCliReleaseResolverError>) => {
   const error = failure(result);
   assert.isTrue(Predicate.isTagged("RuntimeCliReleaseSearchTruncatedError")(error));
-  return error as RuntimeCliReleaseSearchTruncatedError;
+  if (Predicate.isTagged(error, "RuntimeCliReleaseSearchTruncatedError")) return error;
+  return assert.fail("expected truncated search error");
 };
 
 afterEach(() => vi.unstubAllGlobals());

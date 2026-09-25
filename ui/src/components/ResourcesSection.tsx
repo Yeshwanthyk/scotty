@@ -1,10 +1,12 @@
 import * as stylex from "@stylexjs/stylex";
+import { Schema } from "effect";
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { ChevronRight, FileCode2, MoreHorizontal, Plus, Upload } from "lucide-react";
 import type {
   CloudResourceFile,
   CloudResourceKind,
 } from "../../../protocol/resources/cloud-resources";
+import { CloudResourceKindSchema } from "../../../protocol/resources/cloud-resources";
 import {
   readResource,
   removeResource,
@@ -14,6 +16,8 @@ import {
 import { Button } from "./Button";
 import { colors, spacing } from "../theme/tokens.stylex";
 import { bytesToBase64 as toBase64, prepareBrowserResourceFiles } from "../data/resource-files";
+
+const isCloudResourceKind = Schema.is(CloudResourceKindSchema);
 
 const styles = stylex.create({
   section: { display: "grid", gap: spacing.xxl },
@@ -596,7 +600,8 @@ export const ResourcesSection = forwardRef<ResourcesSectionHandle, ResourcesSect
                     disabled={!owner || busy}
                     value={kind}
                     onChange={(event) => {
-                      const next = event.target.value as CloudResourceKind;
+                      const next = event.target.value;
+                      if (!isCloudResourceKind(next)) return;
                       setKind(next);
                       setShape(next === "skill" || next === "package" ? "directory" : "file");
                       setFiles([]);

@@ -394,7 +394,7 @@ export const r2ArtifactStoreCapabilities = (bucket: R2Bucket): ArtifactStoreCapa
         ? undefined
         : {
             ...r2Metadata(object),
-            body: object.body as ReadableStream<Uint8Array>,
+            body: object.body,
           },
     ),
   delete: (key) => bucket.delete(key),

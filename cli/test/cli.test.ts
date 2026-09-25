@@ -64,8 +64,8 @@ function harness(
   const stderr: string[] = [];
   let prompts = 0;
   let settingsRevision = 0;
-  const defaultTestSettings = {
-    agent: "pi" as "pi" | "codex",
+  const defaultTestSettings: CloudSettings = {
+    agent: "pi",
     pi: { agent: "pi" as const },
     codex: { agent: "codex" as const, model: "gpt-5.6-sol", effort: "high" },
     claude: { agent: "claude" as const, model: "opus", effort: "high" },

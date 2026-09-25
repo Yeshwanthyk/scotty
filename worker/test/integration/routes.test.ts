@@ -6,6 +6,15 @@ import {
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  nativeBindings,
+  nativeFetcher,
+  nativeKvNamespace,
+  nativeR2Bucket,
+  nativeR2JsonValue,
+  nativeR2Object,
+  nativeSandboxNamespace,
+} from "../support/native-host";
 
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
@@ -225,8 +234,7 @@ function sandboxBundleBucket(): R2Bucket {
       readonly customMetadata: Record<string, string>;
     }
   >();
-  // lint-allow-double-cast: boundary: focused-test-r2-adapter
-  return {
+  return nativeR2Bucket({
     put: async (
       key: string,
       value: ArrayBuffer | ArrayBufferView | Blob | ReadableStream | string | null,
@@ -248,7 +256,7 @@ function sandboxBundleBucket(): R2Bucket {
             : (options?.httpMetadata?.contentType ?? ""),
         customMetadata: { ...options?.customMetadata },
       });
-      return {
+      return nativeR2Object({
         key: String(key),
         version: "1",
         size: value.byteLength,
@@ -265,12 +273,12 @@ function sandboxBundleBucket(): R2Bucket {
         customMetadata: { ...options?.customMetadata },
         storageClass: "Standard",
         writeHttpMetadata: () => undefined,
-      } as R2Object;
+      });
     },
     head: async (key: string) => {
       const stored = objects.get(String(key));
       if (stored === undefined) return null;
-      return {
+      return nativeR2Object({
         key: String(key),
         version: "1",
         size: stored.size,
@@ -282,12 +290,12 @@ function sandboxBundleBucket(): R2Bucket {
         customMetadata: stored.customMetadata,
         storageClass: "Standard",
         writeHttpMetadata: () => undefined,
-      } as R2Object;
+      });
     },
     get: async () => null,
     delete: async () => undefined,
     list: async () => ({ objects: [], truncated: false, delimitedPrefixes: [] }),
-  } as unknown as R2Bucket;
+  });
 }
 
 function emptySessionsNamespace(values = new Map<string, unknown>()): KVNamespace {
@@ -295,7 +303,7 @@ function emptySessionsNamespace(values = new Map<string, unknown>()): KVNamespac
     const value = values.get(name);
     return value === undefined ? null : typeof value === "string" ? value : JSON.stringify(value);
   };
-  return {
+  return nativeKvNamespace({
     list: async () => ({
       keys: [...values.keys()].map((name) => ({
         name,
@@ -314,7 +322,7 @@ function emptySessionsNamespace(values = new Map<string, unknown>()): KVNamespac
     put: async (_name: string, _value: string | ArrayBuffer | ArrayBufferView | ReadableStream) =>
       undefined,
     delete: async (_name: string) => undefined,
-  } as KVNamespace;
+  });
 }
 
 function env(
@@ -333,20 +341,20 @@ function env(
       throw new RouteTestFailure("ASSETS.connect isn't used by route tests");
     },
   };
-  return {
+  return nativeBindings({
     SCOTTY_TOKEN: TOKEN,
     CREDENTIALS: credentialRegistryNamespace(),
     ASSETS: assets,
     AUTH: authNamespace(),
     RUNNER_REGISTRY: runnerRegistryNamespace(),
     RUNNERS: { getByName: runner.getByName },
-    SANDBOX: {} as DurableObjectNamespace<import("../../src/session/object").Sandbox>,
+    SANDBOX: nativeSandboxNamespace({}),
     SESSIONS: emptySessionsNamespace(),
-    BACKUP_BUCKET: {} as R2Bucket,
-    ARTIFACT_BUCKET: options.artifactBucket ?? ({} as R2Bucket),
+    BACKUP_BUCKET: nativeR2Bucket({}),
+    ARTIFACT_BUCKET: options.artifactBucket ?? nativeR2Bucket({}),
     SANDBOX_BUNDLE_BUCKET: sandboxBundleBucket(),
     SANDBOX_CONFIG: sandboxConfigNamespace(),
-  } as Bindings;
+  });
 }
 
 function useRealSandbox(harness: SessionHarness): void {
@@ -392,14 +400,14 @@ const evidenceArtifactBucket = (jobId: string, sha256: string): R2Bucket => {
       arrayBuffer: () => Promise.resolve(evidencePng.buffer.slice(0)),
       bytes: () => Promise.resolve(Uint8Array.from(evidencePng)),
       text: () => Promise.resolve(""),
-      json: <T>() => Promise.resolve({} as T),
+      json: <T>() => Promise.resolve(nativeR2JsonValue<T>({})),
       blob: () => Promise.resolve(new Blob([evidencePng], { type: "image/png" })),
     };
   };
   const bucket = {
     get: async (key: string) => objectFor(key),
   };
-  return bucket as R2Bucket;
+  return nativeR2Bucket(bucket);
 };
 
 const evidenceAssets = (): Fetcher => ({
@@ -452,10 +460,10 @@ const evidenceVideoBucket = (jobId: string, sha256: string): R2Bucket => {
     arrayBuffer: () => Promise.resolve(evidenceWebm.buffer.slice(0)),
     bytes: () => Promise.resolve(Uint8Array.from(evidenceWebm)),
     text: () => Promise.resolve(""),
-    json: <T>() => Promise.resolve({} as T),
+    json: <T>() => Promise.resolve(nativeR2JsonValue<T>({})),
     blob: () => Promise.resolve(new Blob([evidenceWebm], { type: "video/webm" })),
   };
-  return { get: async (candidate: string) => (candidate === key ? object : null) } as R2Bucket;
+  return nativeR2Bucket({ get: async (candidate: string) => (candidate === key ? object : null) });
 };
 
 const projection = {
@@ -1283,14 +1291,14 @@ describe("real Hono boundary", () => {
         recoverable: true,
       },
     };
-    const sessions = {
+    const sessions = nativeKvNamespace({
       list: async () => ({
         keys: [{ name: `session:${assignedProjection.id}` }],
         list_complete: true,
         cacheStatus: null,
       }),
       get: async (_name: string) => assignedProjection,
-    } as KVNamespace;
+    });
     const assigned = await app.request(
       "/api/runners",
       { headers: { authorization: `Bearer ${TOKEN}` } },
@@ -1554,14 +1562,14 @@ describe("real Hono boundary", () => {
       projectedAt: "2026-07-27T12:00:00.000Z",
       sandboxBundle: { digest: null },
     };
-    const sessions = {
+    const sessions = nativeKvNamespace({
       list: async () => ({
         keys: [{ name: `session:${assignedProjection.id}` }],
         list_complete: true,
         cacheStatus: null,
       }),
       get: async (_name: string) => JSON.stringify(assignedProjection),
-    } as KVNamespace;
+    });
     vi.clearAllMocks();
     const conflict = await app.request(
       "/api/runners/test-runner",
@@ -2536,7 +2544,7 @@ describe("real Hono boundary", () => {
     useRealSandbox(harness);
     const values = new Map<string, string>();
     let rejectMarker = true;
-    const sessions = {
+    const sessions = nativeKvNamespace({
       ...emptySessionsNamespace(),
       put: async (key: string, value: string) => {
         if (key.startsWith("stats:workspace-created:") && rejectMarker) {
@@ -2545,7 +2553,7 @@ describe("real Hono boundary", () => {
         }
         values.set(key, value);
       },
-    } as KVNamespace;
+    });
     const request = {
       method: "POST",
       headers: {
@@ -3609,14 +3617,14 @@ describe("real Hono boundary", () => {
       [`session:${projection.id}`, projection],
       ["session:malformed", { ...projection, id: "malformed", backupId: 123 }],
     ]);
-    const sessions = {
+    const sessions = nativeKvNamespace({
       list: async () => ({
         keys: [{ name: `session:${projection.id}` }, { name: "session:malformed" }],
         list_complete: true,
         cacheStatus: null,
       }),
       get: async (name: string) => values.get(name) ?? null,
-    } as KVNamespace;
+    });
     const response = await app.request(
       "/api/sessions",
       { headers: { authorization: `Bearer ${TOKEN}` } },
@@ -3666,7 +3674,7 @@ describe("real Hono boundary", () => {
       ["session:a0b1c2d3e4f5", { ...projection, id: "a0b1c2d3e4f5", status: "warm" }],
       ["session:b0b1c2d3e4f5", { ...projection, id: "b0b1c2d3e4f5", status: "sleeping" }],
     ]);
-    const sessions = {
+    const sessions = nativeKvNamespace({
       ...emptySessionsNamespace(),
       list: async (options?: { readonly prefix?: string }) => ({
         keys: [...values.keys()]
@@ -3676,7 +3684,7 @@ describe("real Hono boundary", () => {
         cacheStatus: null,
       }),
       get: async (name: string) => values.get(name) ?? null,
-    } as KVNamespace;
+    });
 
     const unauthorized = await app.request("/api/stats", undefined, {
       ...env(),
@@ -3754,7 +3762,7 @@ describe("real Hono boundary", () => {
     const deleteKey = vi.fn(async (name: string) => {
       values.delete(name);
     });
-    const sessions = {
+    const sessions = nativeKvNamespace({
       ...emptySessionsNamespace(values),
       list: async () => ({
         keys: [...values.keys()].map((name) => ({ name })),
@@ -3763,7 +3771,7 @@ describe("real Hono boundary", () => {
       }),
       put,
       delete: deleteKey,
-    } as KVNamespace;
+    });
 
     const response = await app.request(
       "/api/repos",
@@ -3870,7 +3878,7 @@ describe("real Hono boundary", () => {
       error: { reason: "storage", message: "Repository authority unavailable" },
     });
     const deleteKey = vi.fn(async (_name: string) => undefined);
-    const sessions = {
+    const sessions = nativeKvNamespace({
       ...emptySessionsNamespace(),
       list: async () => ({
         keys: [{ name: "repo:owner/project" }],
@@ -3878,7 +3886,7 @@ describe("real Hono boundary", () => {
         cacheStatus: null,
       }),
       delete: deleteKey,
-    } as KVNamespace;
+    });
 
     const response = await app.request(
       "/api/repos/owner/project",
@@ -3890,9 +3898,9 @@ describe("real Hono boundary", () => {
   });
 
   it("preserves the generic internal response for provider-level KV list failure", async () => {
-    const sessions = {
+    const sessions = nativeKvNamespace({
       list: async () => Promise.reject("list failed"),
-    } as KVNamespace;
+    });
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const response = await app.request(
       "/api/sessions",
@@ -4387,7 +4395,7 @@ describe("real Hono boundary", () => {
 
   it("serves the secure locked page for unauthenticated browser entry routes", async () => {
     const assetPaths: string[] = [];
-    const assets = {
+    const assets = nativeFetcher({
       fetch: async (request: Request) => {
         assetPaths.push(new URL(request.url).pathname);
         return new Response("<!doctype html><title>Browser access locked · Scotty</title>", {
@@ -4397,7 +4405,7 @@ describe("real Hono boundary", () => {
       connect: () => {
         throw new RouteTestFailure("ASSETS.connect isn't used by route tests");
       },
-    } as Fetcher;
+    });
 
     for (const path of ["/", "/sessions"]) {
       const response = await app.request(path, undefined, env({ assets }));
@@ -4414,7 +4422,7 @@ describe("real Hono boundary", () => {
 
   it("serves the application shell for authenticated product routes", async () => {
     const assetPaths: string[] = [];
-    const assets = {
+    const assets = nativeFetcher({
       fetch: async (request: Request) => {
         assetPaths.push(new URL(request.url).pathname);
         return new Response("<!doctype html><title>Scotty</title>", {
@@ -4424,7 +4432,7 @@ describe("real Hono boundary", () => {
       connect: () => {
         throw new RouteTestFailure("ASSETS.connect isn't used by route tests");
       },
-    } as Fetcher;
+    });
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
@@ -4505,7 +4513,7 @@ describe("real Hono boundary", () => {
     const assetPaths: string[] = [];
     const shell =
       '<!doctype html><link rel="stylesheet" href="/assets/app.css"><script src="/assets/app.js"></script>';
-    const assets = {
+    const assets = nativeFetcher({
       fetch: async (request: Request) => {
         const path = new URL(request.url).pathname;
         assetPaths.push(path);
@@ -4516,7 +4524,7 @@ describe("real Hono boundary", () => {
       connect: () => {
         throw new RouteTestFailure("ASSETS.connect isn't used by route tests");
       },
-    } as Fetcher;
+    });
     const bindings = env({ assets });
     const response = await app.request(
       "/sessions",

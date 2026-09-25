@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Layer, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import {
   ArtifactStore,
@@ -15,6 +15,7 @@ import {
   EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
   EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
   decodeEvidenceStateResult,
+  EvidenceStateSchema,
   type BrowserEvidenceJob,
   type EvidenceArtifact,
   type EvidenceJobSummary,
@@ -33,6 +34,7 @@ import { makeSessionRecord } from "../support";
 
 const NOW = Date.parse("2026-08-06T12:00:00.000Z");
 const SESSION_ID = "a0b1c2d3e4f5";
+const decodeEvidenceState = Schema.decodeUnknownSync(EvidenceStateSchema);
 const PNG = Uint8Array.from([
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
 ]);
@@ -146,7 +148,7 @@ const makeAuthorityStorage = (initialEvidence?: unknown) => {
   return {
     storage,
     readRecord: () => structuredClone(record),
-    readEvidence: () => structuredClone(evidence) as EvidenceState | undefined,
+    readEvidence: () => (evidence === undefined ? undefined : decodeEvidenceState(evidence)),
     commitEvidence: (next: EvidenceState) => {
       evidence = structuredClone(next);
     },

@@ -16,6 +16,11 @@ import {
   SESSION_ACTOR_METADATA_KEY,
   SESSION_ACTOR_REVISION_KEY,
 } from "../../src/session/store";
+import {
+  nativeDurableObjectStorage,
+  nativeDurableObjectTransaction,
+  nativeStorageValue,
+} from "../support/native-host";
 
 const T0 = "2026-03-01T00:00:00.000Z";
 const DEADLINE = "2026-03-01T01:00:00.000Z";
@@ -91,7 +96,7 @@ class FakeDurableObjectStorage {
   }
 
   get<T>(key: string): Promise<T | undefined> {
-    return Promise.resolve(this.values.get(key) as T | undefined);
+    return Promise.resolve(nativeStorageValue<T | undefined>(this.values.get(key)));
   }
 
   entries(): ReadonlyArray<readonly [string, unknown]> {
@@ -107,7 +112,7 @@ class FakeDurableObjectStorage {
     const draft = new Map(this.values);
     const transaction = {
       get: <T>(key: string): Promise<T | undefined> =>
-        Promise.resolve(draft.get(key) as T | undefined),
+        Promise.resolve(nativeStorageValue<T | undefined>(draft.get(key))),
       put: (key: string, value: unknown): Promise<void> => {
         this.calls.puts += 1;
         draft.set(key, value);
@@ -118,25 +123,20 @@ class FakeDurableObjectStorage {
         return Promise.resolve(draft.delete(key));
       },
     };
-    // oxlint-disable-next-line scotty/no-double-cast -- boundary: this fake supplies exactly the native transaction capabilities used by the adapter
-    const result = await operation(transaction as unknown as DurableObjectTransaction);
+    const result = await operation(nativeDurableObjectTransaction(transaction));
     this.values = draft;
     return result;
   }
 }
 
 const actorStorage = (storage: FakeDurableObjectStorage) => {
-  // oxlint-disable-next-line scotty/no-double-cast -- boundary: this fake supplies exactly the native storage capabilities used by the adapter
-  return durableObjectSessionActorStorage(storage as unknown as DurableObjectStorage);
+  return durableObjectSessionActorStorage(nativeDurableObjectStorage(storage));
 };
 
 describe("native Durable Object session actor storage adapter", () => {
   it("stores private companion metadata only when its transaction decides to write", async () => {
     const native = new FakeDurableObjectStorage();
-    const port = durableObjectSessionActorMetadataStorage(
-      // oxlint-disable-next-line scotty/no-double-cast -- boundary: this fake supplies exactly the native storage capabilities used by the adapter
-      native as unknown as DurableObjectStorage,
-    );
+    const port = durableObjectSessionActorMetadataStorage(nativeDurableObjectStorage(native));
     const value: SessionActorMetadata = {
       ...sessionIdentityPin,
       sessionId: "session-native-storage",

@@ -163,8 +163,7 @@ const uploadSandboxBundle = Effect.fnUntraced(function* (
         "if-match": String(expectedRevision),
         "idempotency-key": crypto.randomUUID(),
       },
-      // lint-allow-double-cast: boundary: fetch BodyInit typings reject Uint8Array<ArrayBufferLike> views that Bun and Workers accept at runtime
-      body: built.archive as unknown as BodyInit,
+      body: new Uint8Array(built.archive),
     }),
   );
   const json = yield* decodeJson(bytes);

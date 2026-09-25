@@ -290,13 +290,15 @@ function egressCredentialLayer(
   context: EgressContext,
 ): Layer.Layer<EgressCredential> {
   const stub = credentialStub(env, context);
-  const rpc = <A>(operation: () => Promise<A>): Effect.Effect<A, EgressFailure> =>
+  const rpc = <A>(
+    operation: (stub: NonNullable<ReturnType<typeof credentialStub>>) => Promise<A>,
+  ): Effect.Effect<A, EgressFailure> =>
     stub === undefined
       ? Effect.fail(
           new EgressFailure({ reason: "credential", message: "Credential registry unavailable" }),
         )
       : Effect.tryPromise({
-          try: operation,
+          try: () => operation(stub),
           catch: () =>
             new EgressFailure({
               reason: "credential",
@@ -310,8 +312,8 @@ function egressCredentialLayer(
   return Layer.succeed(EgressCredential)(
     EgressCredential.of({
       resolve: (handle, repository) =>
-        rpc(() =>
-          stub!.resolveCredentialForProxy({
+        rpc((credentialStub) =>
+          credentialStub.resolveCredentialForProxy({
             handle,
             ...(repository === undefined ? {} : { repository }),
           }),

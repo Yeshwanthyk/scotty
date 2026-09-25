@@ -27,7 +27,8 @@ import type {
 
 const failed = <A, E>(result: Result.Result<A, E>): E => {
   assert.isTrue(Result.isFailure(result));
-  return (result as Result.Failure<E>).failure;
+  if (Result.isFailure(result)) return result.failure;
+  return assert.fail("expected failure");
 };
 
 const makeSnapshot = (
@@ -93,26 +94,17 @@ const makeRollout = (
   },
 });
 
-const makeSyntheticPlan = (resources: Record<string, "create" | "update" | "noop">): Plan.Plan => ({
-  resources: Object.fromEntries(
-    Object.entries(resources).map(([id, action]) => [
-      id,
-      {
-        action,
-        bindings: [],
-        downstream: [],
-        props: {},
-        provider: {} as never,
-        mode: undefined,
-        resource: {} as never,
-        state: {} as never,
-      },
-    ]),
-  ),
+/** Scotty's quiet Alchemy CLI ignores the plan it is handed. */
+const emptyPlan: Plan.Plan = {
+  resources: {},
   actions: {},
   deletions: {},
   actionDeletions: {},
   output: {},
+};
+
+const planActions = (resources: Record<string, "create" | "update" | "noop">) => ({
+  resources: Object.fromEntries(Object.entries(resources).map(([id, action]) => [id, { action }])),
 });
 
 describe("installation container rollout settlement", () => {
@@ -122,7 +114,7 @@ describe("installation container rollout settlement", () => {
       const receipt = { succeeded: new Set<string>() };
       return Effect.gen(function* () {
         const cli = yield* AlchemyCli;
-        const session = yield* cli.startApplySession(makeSyntheticPlan({ Worker: "update" }));
+        const session = yield* cli.startApplySession(emptyPlan);
         yield* session.emit({
           kind: "status-change",
           id: "Worker",
@@ -152,16 +144,18 @@ describe("installation container rollout settlement", () => {
   );
 
   it.effect("classifies a Container no-op only from its exact provider note", () => {
-    const receipt = {
+    const receipt: {
+      succeeded: Set<string>;
+      containerName: string;
+      containerAction: "updated" | "noop";
+    } = {
       succeeded: new Set<string>(),
       containerName: "scotty-test-sandbox",
-      containerAction: "updated" as "updated" | "noop",
+      containerAction: "updated",
     };
     return Effect.gen(function* () {
       const cli = yield* AlchemyCli;
-      const session = yield* cli.startApplySession(
-        makeSyntheticPlan({ SandboxContainer: "update" }),
-      );
+      const session = yield* cli.startApplySession(emptyPlan);
       yield* session.emit({
         kind: "annotate",
         id: "Worker",
@@ -538,23 +532,23 @@ describe("installation container rollout settlement", () => {
   );
 
   it("detects container plan changes correctly", () => {
-    const noopPlan = makeSyntheticPlan({
+    const noopPlan = planActions({
       SandboxContainer: "noop",
       MonolithWorker: "update",
     });
     assert.isFalse(isContainerPlanChanged(noopPlan));
 
-    const absentPlan = makeSyntheticPlan({
+    const absentPlan = planActions({
       MonolithWorker: "update",
     });
     assert.isFalse(isContainerPlanChanged(absentPlan));
 
-    const updatePlan = makeSyntheticPlan({
+    const updatePlan = planActions({
       SandboxContainer: "update",
     });
     assert.isTrue(isContainerPlanChanged(updatePlan));
 
-    const createPlan = makeSyntheticPlan({
+    const createPlan = planActions({
       SandboxContainer: "create",
     });
     assert.isTrue(isContainerPlanChanged(createPlan));

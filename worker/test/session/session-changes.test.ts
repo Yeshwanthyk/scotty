@@ -1,4 +1,5 @@
 import { assert, describe, expect, it } from "vitest";
+import { Schema } from "effect";
 import {
   GIT_STATUS_COMMAND,
   gitChangedNamesCommand,
@@ -11,11 +12,14 @@ import type { ChangedFile } from "../../src/changes/contracts";
 import {
   AuthorityStateSchema,
   StableStateSchema,
-  type SessionAuthority,
+  SessionAuthoritySchema,
 } from "../../src/session-actor/reducer/authority";
-import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
+import { LifecycleJournalEventSchema } from "../../src/session-actor/journal";
 import { createSessionHarness, sessionHarnessKeys } from "../support/session-harness";
 import { InMemoryFaultInjectableFake, makeSessionRecord } from "../support";
+
+const decodeSessionAuthority = Schema.decodeUnknownSync(SessionAuthoritySchema);
+const decodeJournalEvent = Schema.decodeUnknownSync(LifecycleJournalEventSchema);
 
 const hash = "a".repeat(40);
 const statusFor = (path: string): string =>
@@ -40,10 +44,8 @@ const changedFile = (path: string): ChangedFile => ({
 });
 
 const advanceActorRevision = (memory: InMemoryFaultInjectableFake, revision: number): void => {
-  const authority = memory.values.get(sessionHarnessKeys.actorAuthority) as SessionAuthority;
-  const journalTail = memory.values.get(
-    sessionHarnessKeys.actorJournalTail,
-  ) as LifecycleJournalEvent;
+  const authority = decodeSessionAuthority(memory.values.get(sessionHarnessKeys.actorAuthority));
+  const journalTail = decodeJournalEvent(memory.values.get(sessionHarnessKeys.actorJournalTail));
   memory.values.set(sessionHarnessKeys.actorAuthority, { ...authority, revision });
   memory.values.set(sessionHarnessKeys.actorRevision, revision);
   memory.values.set(sessionHarnessKeys.actorJournalSequence, revision);
@@ -59,7 +61,7 @@ const changeActorRuntimeGeneration = (
   revision: number,
 ): void => {
   advanceActorRevision(memory, revision);
-  const authority = memory.values.get(sessionHarnessKeys.actorAuthority) as SessionAuthority;
+  const authority = decodeSessionAuthority(memory.values.get(sessionHarnessKeys.actorAuthority));
   assert.ok(AuthorityStateSchema.guards.Stable(authority.state));
   assert.ok(StableStateSchema.guards.Warm(authority.state.stable));
   const stable = authority.state.stable;

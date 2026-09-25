@@ -1,8 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import {
-  type RunnerAuthority,
+  RunnerAuthoritySchema,
   type RunnerAuthorityStorage,
   RunnerRegistry,
   runnerRegistryLayer,
@@ -11,6 +11,7 @@ import {
 const NOW = Date.parse("2026-07-29T16:00:00.000Z");
 const FIRST_CREDENTIAL = `scotty_runner_${"a".repeat(43)}`;
 const SECOND_CREDENTIAL = `scotty_runner_${"b".repeat(43)}`;
+const decodeRunnerAuthority = Schema.decodeUnknownSync(RunnerAuthoritySchema);
 
 const makeStorage = (initial?: unknown) => {
   let authority = initial;
@@ -51,7 +52,7 @@ describe("runner registry", () => {
           updatedAt: "2026-07-29T16:00:00.000Z",
         },
       });
-      const persisted = storage.snapshot() as RunnerAuthority;
+      const persisted = decodeRunnerAuthority(storage.snapshot());
       assert.notInclude(JSON.stringify(persisted), FIRST_CREDENTIAL);
       assert.match(persisted.runners[0]?.credentialDigest ?? "", /^[a-f0-9]{64}$/u);
 
