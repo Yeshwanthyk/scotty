@@ -157,7 +157,7 @@ describe("ContainerEvidenceRecorder", () => {
     }),
   );
 
-  it.effect("rejects a manifest path outside the Worker-generated directory before reading", () =>
+  it.effect("rejects unsafe or malformed manifests and still cleans up", () =>
     Effect.gen(function* () {
       const events: string[] = [];
       const result = yield* Effect.result(
@@ -195,21 +195,16 @@ describe("ContainerEvidenceRecorder", () => {
         new ContainerEvidenceRecorderError({ operation: "manifest", reason: "ambiguous" }),
       );
       assert.deepStrictEqual(events, ["mkdir", "write-job", "run", "cleanup"]);
-    }),
-  );
-
-  it.effect("rejects malformed output and still cleans the generated directory", () =>
-    Effect.gen(function* () {
-      const events: string[] = [];
-      const result = yield* Effect.result(
-        record(makeCapabilities(events, { manifest: () => ({ version: 999 }) })),
+      const malformedEvents: string[] = [];
+      const malformedResult = yield* Effect.result(
+        record(makeCapabilities(malformedEvents, { manifest: () => ({ version: 999 }) })),
       );
 
       assert.deepStrictEqual(
-        failure(result),
+        failure(malformedResult),
         new ContainerEvidenceRecorderError({ operation: "manifest", reason: "ambiguous" }),
       );
-      assert.deepStrictEqual(events, ["mkdir", "write-job", "run", "cleanup"]);
+      assert.deepStrictEqual(malformedEvents, ["mkdir", "write-job", "run", "cleanup"]);
     }),
   );
 

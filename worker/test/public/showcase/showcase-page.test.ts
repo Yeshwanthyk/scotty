@@ -73,7 +73,7 @@ describe("Showcase video review", () => {
     assert.strictEqual(formatShowcaseDuration(3_725), "1:02:05");
   });
 
-  it("keeps playback failures local to the recording and offers recovery", () => {
+  it("keeps playback failures local and uses semantic media controls", () => {
     assert.deepStrictEqual(showcaseVideoState("error"), {
       label: "Recording unavailable",
       detail: "The browser recording could not be played right now.",
@@ -82,6 +82,11 @@ describe("Showcase video review", () => {
     assert.include(showcaseScript, 'retryVideo.textContent = "Retry recording"');
     assert.include(showcaseScript, 'link.textContent = "Download recording"');
     assert.include(showcaseScript, 'videoSection.className = "showcase-video-section"');
+    assert.include(showcaseScript, "video.controls = true");
+    assert.include(showcaseScript, 'video.preload = "metadata"');
+    assert.include(showcaseScript, 'video.addEventListener("loadedmetadata"');
+    assert.include(showcaseHtml, 'aria-live="polite"');
+    assert.include(showcaseScript, 'slices.className = "showcase-slices"');
   });
 
   it("maps supported API signals to distinct, actionable page copy", () => {
@@ -107,13 +112,5 @@ describe("Showcase video review", () => {
       detail: "Scotty received an invalid Showcase payload. Try again or return to Evidence.",
       retry: true,
     });
-  });
-
-  it("uses semantic media controls and preserves comparison markup", () => {
-    assert.include(showcaseScript, "video.controls = true");
-    assert.include(showcaseScript, 'video.preload = "metadata"');
-    assert.include(showcaseScript, 'video.addEventListener("loadedmetadata"');
-    assert.include(showcaseHtml, 'aria-live="polite"');
-    assert.include(showcaseScript, 'slices.className = "showcase-slices"');
   });
 });

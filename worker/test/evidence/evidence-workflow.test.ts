@@ -233,7 +233,7 @@ describe("Container evidence workflow", () => {
     }),
   );
 
-  it.effect("publishes a non-video PNG after the local recorder closes", () =>
+  it.effect("publishes screenshots and video only after the local recorder closes", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const state = emptyState();
@@ -251,30 +251,26 @@ describe("Container evidence workflow", () => {
       assert.isBelow(state.events.indexOf("recorder:closed"), state.events.indexOf("step:0"));
       assert.notInclude(state.events, "preview:expose");
       assert.notInclude(state.events, "video:publish");
-    }),
-  );
 
-  it.effect("publishes WebM only for a successful video recording", () =>
-    Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
-      const state = emptyState();
+      const videoState = emptyState();
       const job = {
         ...defaultJob,
         capture: { screenshots: "after-each-step", video: true },
       } satisfies BrowserEvidenceJob;
-      const result = yield* execute(job, state, () =>
+      const videoResult = yield* execute(job, videoState, () =>
         Effect.succeed(successfulRecording({ video: WEBM })),
       );
 
-      assert.deepInclude(result, { status: "succeeded", frameCount: 1, video: true });
-      assert.deepStrictEqual(state.videoPublication?.bytes, WEBM);
+      assert.deepInclude(videoResult, { status: "succeeded", frameCount: 1, video: true });
+      assert.deepStrictEqual(videoState.videoPublication?.bytes, WEBM);
       assert.isBelow(
-        state.events.indexOf("recorder:closed"),
-        state.events.indexOf("video:publish"),
+        videoState.events.indexOf("recorder:closed"),
+        videoState.events.indexOf("video:publish"),
       );
       assert.isBelow(
-        state.events.indexOf("video:publish"),
-        state.events.indexOf("terminal:succeeded"),
+        videoState.events.indexOf("video:publish"),
+        videoState.events.indexOf("terminal:succeeded"),
       );
     }),
   );

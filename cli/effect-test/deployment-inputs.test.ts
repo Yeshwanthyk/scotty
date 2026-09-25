@@ -255,7 +255,9 @@ describe("standalone deployment archive", () => {
     expect(finalRun).toContain("! -type l -perm /222");
     expect(finalRun).toContain("python git gh shellcheck");
     expect(finalRun).not.toMatch(/\bgo(?:fmt)?\b/u);
-    expect(finalRun).toContain("pi codex scotty-codex-server scotty-pi-session");
+    expect(finalRun).toContain(
+      "pi codex scotty-codex-server scotty-claude-server scotty-pi-session",
+    );
     expect(finalRun).toContain(
       'test "$(stat -c \'%a\' /usr/local/bin/scotty-codex-server)" = "755"',
     );

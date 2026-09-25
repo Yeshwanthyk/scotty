@@ -263,7 +263,7 @@ describe("session actor metadata store", () => {
     }),
   );
 
-  it.effect("rejects stale observation fences without mutating metadata", () =>
+  it.effect("rejects observations without matching companion metadata", () =>
     Effect.gen(function* () {
       const port = fakeStorage();
       const store = makeSessionActorMetadataStore(port);
@@ -282,6 +282,21 @@ describe("session actor metadata store", () => {
       assert.ok(Predicate.isTagged(failure, "SessionActorMetadataViolation"));
       assert.equal(failure.code, "create_observation_fence_mismatch");
       assert.equal(port.writeCount(), 1);
+
+      const missingStore = makeSessionActorMetadataStore(fakeStorage());
+      const missing = yield* Effect.flip(
+        missingStore.recordObservation(createAuthority(), {
+          _tag: "Bundle",
+          value: {
+            attempt: "create-attempt-1",
+            payloadReference: "private-payload-reference-1",
+            observedAt: T1,
+            digest: "a".repeat(64),
+          },
+        }),
+      );
+      assert.ok(missing instanceof MetadataStoreConflict);
+      assert.equal(missing.code, "metadata_missing");
     }),
   );
 
@@ -300,30 +315,25 @@ describe("session actor metadata store", () => {
       const replay = yield* store.scrubSettledCreate(stableAuthority());
       assert.ok(Predicate.isTagged(replay, "PrivateInputAlreadyScrubbed"));
       assert.equal(port.writeCount(), 2);
-    }),
-  );
 
-  it.effect("recovers a reconciling Create's private input during Vaporize", () =>
-    Effect.gen(function* () {
-      const port = fakeStorage();
-      const store = makeSessionActorMetadataStore(port);
-      yield* store.admitCreate(createAuthority(), input());
-
-      const before = yield* Effect.flip(store.read(vaporizingAuthority()));
+      const vaporPort = fakeStorage();
+      const vaporStore = makeSessionActorMetadataStore(vaporPort);
+      yield* vaporStore.admitCreate(createAuthority(), input());
+      const before = yield* Effect.flip(vaporStore.read(vaporizingAuthority()));
       assert.ok(Predicate.isTagged(before, "SessionActorMetadataViolation"));
       assert.equal(before.code, "private_create_input_not_scrubbed");
 
-      const scrubbed = yield* store.scrubVaporizingCreate(vaporizingAuthority());
-      assert.ok(Predicate.isTagged(scrubbed, "PrivateInputScrubbed"));
-      assert.strictEqual(scrubbed.metadata.privateCreateInput, null);
-      assert.strictEqual((yield* store.read(vaporizingAuthority()))?.privateCreateInput, null);
+      const vaporScrubbed = yield* vaporStore.scrubVaporizingCreate(vaporizingAuthority());
+      assert.ok(Predicate.isTagged(vaporScrubbed, "PrivateInputScrubbed"));
+      assert.strictEqual(vaporScrubbed.metadata.privateCreateInput, null);
+      assert.strictEqual((yield* vaporStore.read(vaporizingAuthority()))?.privateCreateInput, null);
 
-      const replay = yield* store.scrubVaporizingCreate(vaporizingAuthority());
-      assert.ok(Predicate.isTagged(replay, "PrivateInputAlreadyScrubbed"));
-      yield* store.deleteForVaporize(vaporizingAuthority());
-      const deletedReplay = yield* store.scrubVaporizingCreate(vaporizingAuthority());
+      const vaporReplay = yield* vaporStore.scrubVaporizingCreate(vaporizingAuthority());
+      assert.ok(Predicate.isTagged(vaporReplay, "PrivateInputAlreadyScrubbed"));
+      yield* vaporStore.deleteForVaporize(vaporizingAuthority());
+      const deletedReplay = yield* vaporStore.scrubVaporizingCreate(vaporizingAuthority());
       assert.ok(Predicate.isTagged(deletedReplay, "AlreadyDeletedForVaporize"));
-      assert.equal(port.writeCount(), 3);
+      assert.equal(vaporPort.writeCount(), 3);
     }),
   );
 
@@ -340,25 +350,6 @@ describe("session actor metadata store", () => {
 
       const observed = yield* store.read(createAuthority());
       assert.equal(observed?.sessionId, "metadata-store-session");
-    }),
-  );
-
-  it.effect("fails an observation when companion metadata is absent", () =>
-    Effect.gen(function* () {
-      const store = makeSessionActorMetadataStore(fakeStorage());
-      const failure = yield* Effect.flip(
-        store.recordObservation(createAuthority(), {
-          _tag: "Bundle",
-          value: {
-            attempt: "create-attempt-1",
-            payloadReference: "private-payload-reference-1",
-            observedAt: T1,
-            digest: "a".repeat(64),
-          },
-        }),
-      );
-      assert.ok(failure instanceof MetadataStoreConflict);
-      assert.equal(failure.code, "metadata_missing");
     }),
   );
 });

@@ -74,6 +74,9 @@ export const sessionOperationFromActor = (authority: SessionAuthority): SessionO
     kind,
     nonce: transition.nonce,
     startedAt: transition.startedAt,
+    ...(kind === "snapshot" || kind === "sleep" || kind === "resume"
+      ? { deadlineAt: transition.deadlineAt }
+      : {}),
     mode: transition.mode,
     phase: transition.phase,
     ...(kind === "create" ? { createPhase: "runtime" as const } : {}),

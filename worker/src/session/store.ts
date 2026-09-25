@@ -1,5 +1,5 @@
 import { readChunkedJson, writeChunkedJson, deleteChunkedJson } from "./chunked-storage";
-import type { CodexFollowUps } from "./codex-follow-ups";
+import type { SidecarFollowUps } from "./sidecar-follow-ups";
 import { Data, Predicate, Result } from "effect";
 import {
   AuthorityStateSchema,
@@ -319,12 +319,12 @@ export const durableObjectSessionActorMetadataStorage = (
     ),
 });
 
-export const codexFollowUpStorage = (storage: DurableObjectStorage) => ({
+export const sidecarFollowUpStorage = (storage: DurableObjectStorage) => ({
   clear: () =>
     storage.transaction((transaction) => deleteChunkedJson(transaction, "scotty:codex-follow-ups")),
   read: () =>
     storage.transaction((transaction) => readChunkedJson(transaction, "scotty:codex-follow-ups")),
-  write: (queue: CodexFollowUps) =>
+  write: (queue: SidecarFollowUps) =>
     storage.transaction((transaction) =>
       writeChunkedJson(transaction, "scotty:codex-follow-ups", queue),
     ),

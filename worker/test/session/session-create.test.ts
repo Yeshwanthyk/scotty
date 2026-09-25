@@ -482,7 +482,7 @@ describe("Sandbox actor create boundary", () => {
     );
   });
 
-  it.effect("settles an expired reconciling create without reconciling provider success", () =>
+  it.effect("lets the alarm settle an expired reconciling create without provider success", () =>
     Effect.gen(function* () {
       const clock = yield* TestClock.make();
       yield* clock.setTime(Date.parse("2026-09-03T00:00:00.000Z"));
@@ -513,6 +513,15 @@ describe("Sandbox actor create boundary", () => {
 
       assert.ok(replay instanceof ScottyError);
       assert.strictEqual(replay.code, "upstream");
+      const stillPending = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+      assert.ok(
+        stillPending !== undefined && AuthorityStateSchema.guards.Transitioning(stillPending.state),
+      );
+      const alarm = harness.schedules.findLast(
+        (schedule) => schedule.callback === "sessionActorDeadline",
+      );
+      assert.isDefined(alarm);
+      yield* Effect.promise(() => harness.sandbox.sessionActorDeadline(alarm.payload));
       const expired = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
       assert.ok(expired !== undefined && AuthorityStateSchema.guards.Stable(expired.state));
       assert.ok(Predicate.isTagged(expired.state.stable, "Failed"));

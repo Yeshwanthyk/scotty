@@ -1,5 +1,5 @@
 import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
-import { CodexSnapshot } from "../../src/agent/codex/runtime";
+import { SidecarSnapshot } from "../../src/agent/sidecar/protocol";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { SessionAuthority } from "../../src/session-actor/authority";
@@ -24,9 +24,10 @@ const CODEX_THREAD = "runtime-1";
 const CODEX_TURN = "transport-runtime-1";
 const CODEX_INCARNATION = "container-runtime-1";
 
-type CodexPrompt = (typeof CodexSnapshot.Type)["prompt"];
+type CodexPrompt = (typeof SidecarSnapshot.Type)["prompt"];
 
-const codexSnapshot = (prompt: CodexPrompt): typeof CodexSnapshot.Type => ({
+const codexSnapshot = (prompt: CodexPrompt): typeof SidecarSnapshot.Type => ({
+  agent: "codex",
   generation: CODEX_GENERATION,
   threadId: CODEX_THREAD,
   version: CODEX_VERSION,
@@ -34,9 +35,6 @@ const codexSnapshot = (prompt: CodexPrompt): typeof CodexSnapshot.Type => ({
     model: CODEX_SELECTION.model,
     effort: CODEX_SELECTION.effort,
     workspace: `/workspace/${SESSION_ID}`,
-    modelProvider: "scotty-managed",
-    approvalPolicy: "never",
-    sandbox: "dangerFullAccess",
   },
   ready: true,
   failure: null,
@@ -44,9 +42,9 @@ const codexSnapshot = (prompt: CodexPrompt): typeof CodexSnapshot.Type => ({
   cleanup: null,
 });
 
-const runningSnapshot = (): typeof CodexSnapshot.Type =>
+const runningSnapshot = (): typeof SidecarSnapshot.Type =>
   codexSnapshot({ status: "running", turnId: CODEX_TURN });
-const interruptedSnapshot = (): typeof CodexSnapshot.Type =>
+const interruptedSnapshot = (): typeof SidecarSnapshot.Type =>
   codexSnapshot({
     status: "terminal",
     turnId: CODEX_TURN,
@@ -76,7 +74,7 @@ const makeCodexHarness = async (
   harness.memory.values.set(sessionHarnessKeys.actorMetadata, {
     ...metadata,
     selection: CODEX_SELECTION,
-    codexControl: { token: CODEX_TOKEN, initialPrompt: "Investigate the failing build" },
+    sidecarControl: { token: CODEX_TOKEN, initialPrompt: "Investigate the failing build" },
   });
   return harness;
 };
@@ -104,7 +102,7 @@ describe("Sandbox Codex interrupt authority", () => {
       throw new Error("stale interrupt must not reach Codex");
     });
 
-    const response = await harness.sandbox.interruptScottyCodexSession({
+    const response = await harness.sandbox.interruptScottySidecarSession({
       turnId: CODEX_TURN,
       sessionRevision: 2,
     });
@@ -128,14 +126,14 @@ describe("Sandbox Codex interrupt authority", () => {
       throw new Error("incarnation mismatch must not reach Codex");
     }, "container-runtime-2");
 
-    const response = await harness.sandbox.interruptScottyCodexSession({
+    const response = await harness.sandbox.interruptScottySidecarSession({
       turnId: CODEX_TURN,
       sessionRevision: 1,
     });
 
     expect(response?.status).toBe(409);
     await expect(response?.json()).resolves.toMatchObject({
-      error: { code: "conflict", message: "Codex runtime generation is no longer current" },
+      error: { code: "conflict", message: "Agent runtime generation is no longer current" },
     });
     expect(requests).toHaveLength(0);
   });
@@ -166,7 +164,7 @@ describe("Sandbox Codex interrupt authority", () => {
       throw new Error(`unexpected Codex path: ${pathname}`);
     });
 
-    const response = await harness.sandbox.interruptScottyCodexSession({
+    const response = await harness.sandbox.interruptScottySidecarSession({
       turnId: CODEX_TURN,
       sessionRevision: 1,
     });

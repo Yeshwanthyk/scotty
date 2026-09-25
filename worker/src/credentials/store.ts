@@ -17,6 +17,7 @@ import {
   type EncryptedCredentialEnvelope,
 } from "./contracts";
 import {
+  credentialHandleSlots,
   parseManagedHandle,
   type CredentialGrant,
   type CredentialKind,
@@ -130,16 +131,8 @@ export const credentialStoreLayer = (
 
 export type GithubCliCredentialSelectionFailure = "missing" | "ambiguous";
 
-export type PiAuthCredentialSelectionFailure = "missing" | "ambiguous";
-
-/** Selects the only Pi credential that can apply to a Session. */
-export const selectPiAuthCredential = (
-  credentials: ReadonlyArray<CredentialRegistryCredential>,
-): Result.Result<CredentialRegistryCredential, PiAuthCredentialSelectionFailure> => {
-  const piCredentials = credentials.filter(({ kind }) => kind === "pi-auth");
-  if (piCredentials.length === 1) return Result.succeed(piCredentials[0]);
-  return Result.fail(piCredentials.length === 0 ? "missing" : "ambiguous");
-};
+/** Model credentials are global; a Session receives at most one of each kind. */
+const MODEL_CREDENTIAL_KINDS = ["pi-auth", "anthropic-auth"] as const;
 
 /**
  * Selects one GitHub credential without exposing plaintext: one exact match wins; otherwise
@@ -292,14 +285,6 @@ const makeCredentialStore = (
       : Result.succeed(values as ReadonlyArray<CredentialRegistryStatus>);
   });
 
-  const handleSlots = (kind: CredentialKind): CredentialGrant["handleSlots"] =>
-    kind === "pi-auth"
-      ? ([
-          { provider: "openai", slot: "api-key" },
-          { provider: "openai-codex", slot: "access" },
-        ] as const)
-      : ([{ provider: "github", slot: "git-https" }] as const);
-
   const projectGrant = (grant: CredentialRegistryAuthority["grants"][number]): CredentialGrant => {
     const { issuedAt: _issuedAt, sessionId: _sessionId, ...projection } = grant;
     return projection;
@@ -365,22 +350,13 @@ const makeCredentialStore = (
         });
 
       const repository = decoded.success.repository;
-      const piCredentials = authority.credentials.filter(({ kind }) => kind === "pi-auth");
-      const selectedPi =
-        piCredentials.length === 0 ? undefined : selectPiAuthCredential(piCredentials);
-      if (selectedPi !== undefined && Result.isFailure(selectedPi))
+      const ambiguous = MODEL_CREDENTIAL_KINDS.find(
+        (kind) => authority.credentials.filter((credential) => credential.kind === kind).length > 1,
+      );
+      if (ambiguous !== undefined)
         return Result.fail(
-          failure(
-            selectedPi.failure === "ambiguous" ? "credential_ambiguous" : "credential_missing",
-            selectedPi.failure === "ambiguous"
-              ? "Pi credential declaration is ambiguous"
-              : "Pi credential is not declared",
-          ),
+          failure("credential_ambiguous", `${ambiguous} credential declaration is ambiguous`),
         );
-      const selectedPiName =
-        selectedPi === undefined || Result.isFailure(selectedPi)
-          ? undefined
-          : selectedPi.success.name;
       const githubCredentials = authority.credentials.filter(({ kind }) => kind === "github-cli");
       const selectedGithub =
         githubCredentials.length === 0
@@ -400,7 +376,6 @@ const makeCredentialStore = (
           ? undefined
           : selectedGithub.success.name;
       const grants = authority.credentials.flatMap((credential) => {
-        if (credential.kind === "pi-auth" && credential.name !== selectedPiName) return [];
         if (credential.kind === "github-cli" && credential.name !== selectedGithubName) return [];
         const inScope =
           credential.kind === "github-cli" ||
@@ -423,7 +398,7 @@ const makeCredentialStore = (
             name: credential.name,
             kind: credential.kind,
             versionRef: credential.currentVersionRef,
-            handleSlots: handleSlots(credential.kind),
+            handleSlots: credentialHandleSlots[credential.kind],
             ...(version.expires === undefined ? {} : { expires: version.expires }),
             issuedAt: new Date(now).toISOString(),
           },
@@ -787,10 +762,9 @@ const sameGrantSet = (
   left.every((grant) => right.some((candidate) => sameGrant(grant, candidate)));
 
 const validHandleSlot = (kind: CredentialKind, slot: ManagedHandleSlot): boolean =>
-  kind === "pi-auth"
-    ? (slot.provider === "openai" && slot.slot === "api-key") ||
-      (slot.provider === "openai-codex" && slot.slot === "access")
-    : slot.provider === "github" && slot.slot === "git-https";
+  credentialHandleSlots[kind].some(
+    (candidate) => candidate.provider === slot.provider && candidate.slot === slot.slot,
+  );
 const validIssuedSessions = (authority: CredentialRegistryAuthority): boolean => {
   const sessions = authority.issuedSessions ?? [];
   return new Set(sessions).size === sessions.length;

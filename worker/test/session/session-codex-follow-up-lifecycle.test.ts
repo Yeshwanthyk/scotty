@@ -1,6 +1,6 @@
-import type { CodexFollowUps } from "../../src/session/codex-follow-ups";
+import type { SidecarFollowUps } from "../../src/session/sidecar-follow-ups";
 import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
-import { CodexSnapshot } from "../../src/agent/codex/runtime";
+import { SidecarSnapshot } from "../../src/agent/sidecar/protocol";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import {
@@ -26,9 +26,10 @@ const CODEX_THREAD = "runtime-1";
 const CODEX_TURN = "transport-runtime-1";
 const CODEX_INCARNATION = "container-runtime-1";
 
-type CodexPrompt = (typeof CodexSnapshot.Type)["prompt"];
+type CodexPrompt = (typeof SidecarSnapshot.Type)["prompt"];
 
-const codexSnapshot = (prompt: CodexPrompt): typeof CodexSnapshot.Type => ({
+const codexSnapshot = (prompt: CodexPrompt): typeof SidecarSnapshot.Type => ({
+  agent: "codex",
   generation: CODEX_GENERATION,
   threadId: CODEX_THREAD,
   version: CODEX_VERSION,
@@ -36,9 +37,6 @@ const codexSnapshot = (prompt: CodexPrompt): typeof CodexSnapshot.Type => ({
     model: CODEX_SELECTION.model,
     effort: CODEX_SELECTION.effort,
     workspace: `/workspace/${SESSION_ID}`,
-    modelProvider: "scotty-managed",
-    approvalPolicy: "never",
-    sandbox: "dangerFullAccess",
   },
   ready: true,
   failure: null,
@@ -46,9 +44,9 @@ const codexSnapshot = (prompt: CodexPrompt): typeof CodexSnapshot.Type => ({
   cleanup: null,
 });
 
-const runningSnapshot = (): typeof CodexSnapshot.Type =>
+const runningSnapshot = (): typeof SidecarSnapshot.Type =>
   codexSnapshot({ status: "running", turnId: CODEX_TURN });
-const interruptedSnapshot = (): typeof CodexSnapshot.Type =>
+const interruptedSnapshot = (): typeof SidecarSnapshot.Type =>
   codexSnapshot({
     status: "terminal",
     turnId: CODEX_TURN,
@@ -80,7 +78,7 @@ const makeCodexHarness = async (
   harness.memory.values.set(sessionHarnessKeys.actorMetadata, {
     ...metadata,
     selection: CODEX_SELECTION,
-    codexControl: { token: CODEX_TOKEN, initialPrompt: "Investigate the failing build" },
+    sidecarControl: { token: CODEX_TOKEN, initialPrompt: "Investigate the failing build" },
   });
   return harness;
 };
@@ -116,22 +114,22 @@ describe("Codex follow-up lifecycle ownership", () => {
       }
       return Response.json(interrupted ? interruptedSnapshot() : runningSnapshot());
     });
-    const accepted = await harness.sandbox.steerScottyCodexSession(
+    const accepted = await harness.sandbox.steerScottySidecarSession(
       "Run after interruption",
       "after-interrupt",
       "followUp",
     );
     assert.equal(accepted?.status, 202);
-    const response = await harness.sandbox.interruptScottyCodexSession({
+    const response = await harness.sandbox.interruptScottySidecarSession({
       turnId: CODEX_TURN,
       sessionRevision: 1,
     });
     assert.equal(response?.status, 202);
-    assert.deepStrictEqual(harness.read<CodexFollowUps>(queueKey)?.pending, [
+    assert.deepStrictEqual(harness.read<SidecarFollowUps>(queueKey)?.pending, [
       { id: "after-interrupt", text: "Run after interruption" },
     ]);
-    assert.ok(harness.schedules.some((schedule) => schedule.callback === "drainCodexFollowUps"));
-    await harness.sandbox.drainCodexFollowUps();
+    assert.ok(harness.schedules.some((schedule) => schedule.callback === "drainSidecarFollowUps"));
+    await harness.sandbox.drainSidecarFollowUps();
     assert.equal(delivered, 1);
     assert.deepStrictEqual(messages, [
       {
@@ -141,7 +139,7 @@ describe("Codex follow-up lifecycle ownership", () => {
         clientUserMessageId: "after-interrupt",
       },
     ]);
-    assert.deepStrictEqual(harness.read<CodexFollowUps>(queueKey)?.pending, []);
+    assert.deepStrictEqual(harness.read<SidecarFollowUps>(queueKey)?.pending, []);
   });
 
   it("clears pending and receipt authority on vaporize and stale callbacks cannot revive work", async () => {
@@ -150,13 +148,13 @@ describe("Codex follow-up lifecycle ownership", () => {
       if (new URL(request.url).pathname === "/message") posts++;
       return Response.json(runningSnapshot());
     });
-    await harness.sandbox.steerScottyCodexSession("Must not revive", "gone-item", "followUp");
+    await harness.sandbox.steerScottySidecarSession("Must not revive", "gone-item", "followUp");
     assert.isDefined(harness.read(queueKey));
     const result = await harness.sandbox.vaporizeScottySession();
     assert.equal(result.status, "gone");
     assert.isUndefined(harness.read(queueKey));
     const afterGone = harness.schedules.length;
-    await harness.sandbox.drainCodexFollowUps();
+    await harness.sandbox.drainSidecarFollowUps();
     assert.equal(posts, 0);
     assert.equal(harness.schedules.length, afterGone);
     assert.isUndefined(harness.read(queueKey));
@@ -201,17 +199,17 @@ describe("Codex follow-up lifecycle ownership", () => {
         ),
       );
       yield* Effect.promise(() =>
-        harness.sandbox.steerScottyCodexSession("After resume", "sleep-item", "followUp"),
+        harness.sandbox.steerScottySidecarSession("After resume", "sleep-item", "followUp"),
       );
       const result = yield* Effect.promise(() => harness.sandbox.sleepScottySession());
       assert.equal(result.status, "sleeping");
       assert.equal(saves, 1);
-      assert.deepStrictEqual(harness.read<CodexFollowUps>(queueKey)?.pending, [
+      assert.deepStrictEqual(harness.read<SidecarFollowUps>(queueKey)?.pending, [
         { id: "sleep-item", text: "After resume" },
       ]);
-      yield* Effect.promise(() => harness.sandbox.drainCodexFollowUps());
+      yield* Effect.promise(() => harness.sandbox.drainSidecarFollowUps());
       assert.equal(posts, 0);
-      assert.deepStrictEqual(harness.read<CodexFollowUps>(queueKey)?.pending, [
+      assert.deepStrictEqual(harness.read<SidecarFollowUps>(queueKey)?.pending, [
         { id: "sleep-item", text: "After resume" },
       ]);
     }),
@@ -249,7 +247,7 @@ describe("Codex follow-up lifecycle ownership", () => {
         ],
         receipts: [],
       });
-      const outcome = await harness.sandbox.drainCodexFollowUps().then(
+      const outcome = await harness.sandbox.drainSidecarFollowUps().then(
         () => "confirmed",
         () => "unknown",
       );
@@ -263,7 +261,7 @@ describe("Codex follow-up lifecycle ownership", () => {
           reconcileOnly: true,
         },
       ]);
-      const queue = harness.read<CodexFollowUps>(queueKey);
+      const queue = harness.read<SidecarFollowUps>(queueKey);
       assert.deepStrictEqual(
         queue?.pending.map(({ id }) => id),
         receiptFound ? [] : ["old-attempt"],

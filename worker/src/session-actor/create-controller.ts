@@ -31,7 +31,7 @@ import { decide, validateAuthority } from "./reducer";
 import { ActorStore, type ActorStoreReadError } from "./store";
 
 export interface CreateControllerRequest {
-  readonly codexControl?: SessionActorMetadataInput["codexControl"];
+  readonly sidecarControl?: SessionActorMetadataInput["sidecarControl"];
   readonly session: SessionIdentity;
   readonly branch: string;
   readonly createRepositoryIfMissing: boolean;
@@ -249,7 +249,7 @@ const command = (
 const metadataInput = (request: CreateControllerRequest): SessionActorMetadataInput => ({
   selection: request.session.selection,
   configuration: request.session.configuration,
-  ...(request.codexControl === undefined ? {} : { codexControl: request.codexControl }),
+  ...(request.sidecarControl === undefined ? {} : { sidecarControl: request.sidecarControl }),
   branch: request.branch,
   createRepositoryIfMissing: request.createRepositoryIfMissing,
   hardCap: request.hardCap,

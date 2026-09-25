@@ -1,3 +1,4 @@
+import type { AgentId } from "../../protocol/agents/agent-selection";
 import { isDeepStrictEqual } from "node:util";
 import { Effect, Option, Result, Schema } from "effect";
 import {
@@ -14,7 +15,7 @@ import { decodeRepositoriesResponse, decodeRepositoryResponse } from "./schemas"
 import { requestJson } from "./transport";
 
 export interface InitCloudChoices {
-  readonly agent?: "pi" | "codex";
+  readonly agent?: AgentId;
   readonly modelProvider?: string;
   readonly model?: string;
   readonly effort?: string;
@@ -43,23 +44,19 @@ export const parseInitCloudChoices = Effect.fnUntraced(function* (input: InitClo
   }
   const agent = input.agent ?? "pi";
   const selection = decodeAgentSelection({
-    agent,
-    ...(agent === "codex"
-      ? { model: defaultCloudSettings.codex.model, effort: defaultCloudSettings.codex.effort }
-      : {}),
+    ...defaultCloudSettings[agent],
     ...(input.modelProvider === undefined ? {} : { modelProvider: input.modelProvider }),
     ...(input.model === undefined ? {} : { model: input.model }),
     ...(input.effort === undefined ? {} : { effort: input.effort }),
   });
   if (Result.isFailure(selection))
     return yield* usage(
-      "Invalid agent model settings; Codex requires a supported model and effort",
+      "Invalid agent model settings; Codex and Claude require a supported model and effort",
     );
   const settings = {
+    ...defaultCloudSettings,
     agent,
-    pi: agent === "pi" ? selection.success : defaultCloudSettings.pi,
-    codex: agent === "codex" ? selection.success : defaultCloudSettings.codex,
-    customInstructions: defaultCloudSettings.customInstructions,
+    [agent]: selection.success,
     environment,
   };
   const validated = decodeCloudSettings(settings);

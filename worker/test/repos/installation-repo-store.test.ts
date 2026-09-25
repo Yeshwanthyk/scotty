@@ -153,6 +153,26 @@ describe("InstallationRepoStore", () => {
       );
       assert.ok(Result.isFailure(removeResult));
       assert.strictEqual(valid.writes.length, 0);
+
+      const invalidTime = makeStorage({
+        entries: [
+          {
+            repo: "owner/repo",
+            defaultBranch: "main",
+            addedAt: "2026-08-15T12:00:01.000Z",
+            lastUsedAt: "2026-08-15T12:00:00.000Z",
+          },
+        ],
+      });
+      const invalidTimeResult = yield* Effect.result(
+        withStore(
+          invalidTime.storage,
+          Effect.flatMap(InstallationRepoStore, (store) => store.list),
+        ),
+      );
+      assert.ok(Result.isFailure(invalidTimeResult));
+      assert.strictEqual(failureReason(invalidTimeResult), "invalid_authority");
+      assert.strictEqual(invalidTime.writes.length, 0);
     }),
   );
 
@@ -209,30 +229,6 @@ describe("InstallationRepoStore", () => {
         ],
       });
       assert.strictEqual(fake.writes.length, 0);
-    }),
-  );
-
-  it.effect("rejects an authority whose usage time predates its added time", () =>
-    Effect.gen(function* () {
-      const corrupt = makeStorage({
-        entries: [
-          {
-            repo: "owner/repo",
-            defaultBranch: "main",
-            addedAt: "2026-08-15T12:00:01.000Z",
-            lastUsedAt: "2026-08-15T12:00:00.000Z",
-          },
-        ],
-      });
-      const result = yield* Effect.result(
-        withStore(
-          corrupt.storage,
-          Effect.flatMap(InstallationRepoStore, (store) => store.list),
-        ),
-      );
-      assert.ok(Result.isFailure(result));
-      assert.strictEqual(failureReason(result), "invalid_authority");
-      assert.strictEqual(corrupt.writes.length, 0);
     }),
   );
 

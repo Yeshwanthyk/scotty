@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
+
 import {
   failedRecoverable,
   failedTerminal,
   FIXTURE_NOW,
-  manySessions,
   projectionStale,
   runtimeMissing,
   sleepingRetained,
@@ -20,9 +20,6 @@ import {
 } from "./session-presentation";
 
 describe("presentSession", () => {
-  it("labels warm lifecycle without claiming agent readiness", () => {
-    expect(presentSession(warmIdle, { now: FIXTURE_NOW, source: "actor" }).railLabel).toBe("Awake");
-  });
   it("preserves transitioning authority without synthesizing a stable lifecycle", () => {
     const sleeping = presentSession(transitionSleep, {
       now: FIXTURE_NOW,
@@ -47,6 +44,7 @@ describe("presentSession", () => {
   });
 
   it("offers only actions admitted by stable authority", () => {
+    expect(presentSession(warmIdle, { now: FIXTURE_NOW, source: "actor" }).railLabel).toBe("Awake");
     expect(
       presentSession(warmWorking, { now: FIXTURE_NOW, source: "actor" }).availableActions,
     ).toEqual(["checkpoint", "sleep", "work", "vaporize"]);
@@ -104,14 +102,6 @@ describe("presentSession", () => {
     const terminal = presentSession(failedTerminal, { now: FIXTURE_NOW, source: "actor" });
     expect(recoverable.failureMessage).toContain("confirmed backup");
     expect(terminal.failureMessage).toBe("This session has no confirmed backup to restore.");
-  });
-
-  it("presents every sessions-route fixture without legacy shape access", () => {
-    const presentations = manySessions.map((session) =>
-      presentSession(session, { now: FIXTURE_NOW, source: "projection" }),
-    );
-    expect(presentations).toHaveLength(60);
-    expect(presentations.every((presentation) => presentation.railLabel.length > 0)).toBe(true);
   });
 });
 

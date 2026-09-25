@@ -2,15 +2,16 @@ import { Effect, Schema } from "effect";
 import { constants } from "node:fs";
 import { lstat, open, realpath, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { CodexBridgeError, CodexControlToken } from "./runtime";
+import { SidecarBridgeError, SidecarControlToken } from "./protocol";
 
-const decodeToken = Schema.decodeUnknownEffect(CodexControlToken);
+const decodeToken = Schema.decodeUnknownEffect(SidecarControlToken);
+const rejected = () => new SidecarBridgeError({ code: "token_file", outcome: "rejected" });
 // boundary: Effect FileSystem.OpenFlag cannot express O_NOFOLLOW or O_NONBLOCK.
 export const consumeControlToken = Effect.fnUntraced(function* (path: string, workspace: string) {
   const attempt = <A>(operation: () => Promise<A>) =>
     Effect.tryPromise({
       try: operation,
-      catch: () => new CodexBridgeError({ code: "token_file", outcome: "rejected" }),
+      catch: rejected,
     });
   const parent = yield* attempt(() => realpath(dirname(path)));
   const cwd = yield* attempt(() => realpath(workspace));
@@ -21,7 +22,7 @@ export const consumeControlToken = Effect.fnUntraced(function* (path: string, wo
     (parentInfo.mode & 0o077) !== 0 ||
     parentInfo.uid !== process.getuid?.()
   )
-    return yield* new CodexBridgeError({ code: "token_file", outcome: "rejected" });
+    return yield* rejected();
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const file = yield* Effect.acquireRelease(
@@ -35,17 +36,15 @@ export const consumeControlToken = Effect.fnUntraced(function* (path: string, wo
         info.uid !== process.getuid?.() ||
         info.size !== 64
       )
-        return yield* new CodexBridgeError({ code: "token_file", outcome: "rejected" });
+        return yield* rejected();
       const buffer = new Uint8Array(65);
       const read = yield* attempt(() => file.read(buffer, 0, buffer.length, 0));
-      if (read.bytesRead !== 64)
-        return yield* new CodexBridgeError({ code: "token_file", outcome: "rejected" });
+      if (read.bytesRead !== 64) return yield* rejected();
       const token = yield* decodeToken(new TextDecoder().decode(buffer.subarray(0, 64))).pipe(
-        Effect.mapError(() => new CodexBridgeError({ code: "token_file", outcome: "rejected" })),
+        Effect.mapError(rejected),
       );
       const linked = yield* attempt(() => lstat(path));
-      if (linked.dev !== info.dev || linked.ino !== info.ino)
-        return yield* new CodexBridgeError({ code: "token_file", outcome: "rejected" });
+      if (linked.dev !== info.dev || linked.ino !== info.ino) return yield* rejected();
       yield* attempt(() => unlink(path));
       return token;
     }),

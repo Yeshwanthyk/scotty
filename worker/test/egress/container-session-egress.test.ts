@@ -982,8 +982,8 @@ describe("source Sandbox orchestration authority", () => {
         await bothPeerLookups;
         return target.sandbox.getScottySession();
       },
-      steerScottyCodexSession: (message: string, key: string, deliverAs: "followUp") =>
-        target.sandbox.steerScottyCodexSession(message, key, deliverAs),
+      steerScottySidecarSession: (message: string, key: string, deliverAs: "followUp") =>
+        target.sandbox.steerScottySidecarSession(message, key, deliverAs),
     });
     let first: Awaited<ReturnType<typeof createSessionHarness>>;
     let second: Awaited<ReturnType<typeof createSessionHarness>>;
@@ -1011,7 +1011,7 @@ describe("source Sandbox orchestration authority", () => {
       harness.memory.values.set(sessionHarnessKeys.actorMetadata, {
         ...metadata,
         selection,
-        codexControl: { token: "c".repeat(64), initialPrompt: "Investigate" },
+        sidecarControl: { token: "c".repeat(64), initialPrompt: "Investigate" },
       });
     }
 

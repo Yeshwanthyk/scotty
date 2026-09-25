@@ -257,7 +257,7 @@ const resourceLabels = {
   extension: "Pi extension",
 } satisfies Record<CloudResourceKind, string>;
 const compatibilityLabels = {
-  skill: "Pi + Codex",
+  skill: "All agents",
   package: "Pi",
   tool: "Pi",
   extension: "Pi",
@@ -583,7 +583,7 @@ export const ResourcesSection = forwardRef<ResourcesSectionHandle, ResourcesSect
                   1. Choose a type
                 </h3>
                 <p {...stylex.props(styles.help)}>
-                  Skills work with Pi and Codex. The other resource types are loaded by Pi.
+                  Skills work with every agent. The other resource types are loaded by Pi.
                 </p>
               </div>
               <div {...stylex.props(styles.fields)}>
@@ -603,7 +603,7 @@ export const ResourcesSection = forwardRef<ResourcesSectionHandle, ResourcesSect
                     }}
                     {...stylex.props(styles.input)}
                   >
-                    <option value="skill">Skill · Pi + Codex</option>
+                    <option value="skill">Skill · All agents</option>
                     <option value="package">Prepared Pi package</option>
                     <option value="tool">Pi tool</option>
                     <option value="extension">Pi extension</option>

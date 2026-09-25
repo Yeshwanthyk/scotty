@@ -1,11 +1,13 @@
 import { RuntimeCliMaterializer } from "../../runtime-cli/materializer";
 import {
-  admitCodexSandbox,
-  codexSandboxProcessId,
-  readCodexSandbox,
-  startCodexSandbox,
-  waitForCodexSandbox,
-} from "../../agent/codex/sandbox";
+  admitSidecarSandbox,
+  readSidecarSandbox,
+  sidecarProcessId,
+  startSidecarSandbox,
+  waitForSidecarSandbox,
+} from "../../agent/sidecar/client";
+import type { SidecarAgentSelection } from "../../../../protocol/agents/agent-selection";
+import { isSidecarSelection } from "../../../../protocol/agents/agents";
 import { Clock, Context, Effect, Layer, Predicate, Result, Schema } from "effect";
 import type { CredentialGrant } from "../../../../protocol/credentials/credentials";
 import { SandboxBundleMaterializer } from "../../sandbox/bundle-materializer";
@@ -276,23 +278,23 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const runtimeCli = yield* RuntimeCliMaterializer;
     const auth = yield* ContainerAuth;
     const runtime = yield* SandboxRuntime;
-    const codexIdentity = Effect.fnUntraced(function* (
+    const sidecarIdentity = Effect.fnUntraced(function* (
       context: CreateProviderContext,
+      selection: SidecarAgentSelection,
       generation: string,
     ) {
       const observedAt = yield* timestamp;
-      const selection = context.authority.session.selection;
       const metadata = yield* metadataStore
         .read(context.authority)
         .pipe(
           Effect.mapError(() =>
-            failure("unknown_after_admission", "codex_metadata_unavailable", observedAt),
+            failure("unknown_after_admission", "sidecar_metadata_unavailable", observedAt),
           ),
         );
-      if (selection.agent !== "codex" || metadata?.codexControl === undefined)
+      if (metadata?.sidecarControl === undefined)
         return yield* failure(
           "rejected_before_admission",
-          "codex_selection_unavailable",
+          "sidecar_control_unavailable",
           observedAt,
         );
       return {
@@ -300,9 +302,9 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         generation,
         selection,
         configuration: context.authority.session.configuration,
-        token: metadata.codexControl.token,
-        initialPrompt: metadata.codexControl.initialPrompt,
-        images: metadata.codexControl.images,
+        token: metadata.sidecarControl.token,
+        initialPrompt: metadata.sidecarControl.initialPrompt,
+        images: metadata.sidecarControl.images,
       };
     });
 
@@ -473,7 +475,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         items: materialized.items,
         bundleRoot: materialized.bundleRoot,
       };
-      if (context.authority.session.selection.agent !== "codex") {
+      if (!isSidecarSelection(context.authority.session.selection)) {
         yield* beforeTransitionDeadline(
           context,
           "create_runtime_seed_timeout",
@@ -567,20 +569,16 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const startSupervisor = Effect.fnUntraced(function* (context: CreateProviderContext) {
       const input = yield* resolveInput(boundary, context);
       const observedAt = yield* timestamp;
-      const configuration = context.authority.session.configuration;
+      const { id, selection, configuration } = context.authority.session;
       const processId = yield* beforeTransitionDeadline(
         context,
         "create_supervisor_start_timeout",
-        context.authority.session.selection.agent === "codex"
-          ? Effect.flatMap(codexIdentity(context, input.runtimeGeneration), (identity) =>
-              startCodexSandbox(identity, input.grants),
+        isSidecarSelection(selection)
+          ? Effect.flatMap(
+              sidecarIdentity(context, selection, input.runtimeGeneration),
+              (identity) => startSidecarSandbox(identity, input.grants),
             ).pipe(Effect.provideService(SandboxRuntime, runtime))
-          : auth.startPiSession(
-              context.authority.session.id,
-              input.credentials,
-              context.authority.session.selection,
-              configuration,
-            ),
+          : auth.startPiSession(id, input.credentials, selection, configuration),
       ).pipe(
         Effect.mapError((error) =>
           Predicate.isTagged(error, "CreateProviderFailure")
@@ -599,24 +597,29 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     const confirmSupervisorReady = Effect.fnUntraced(function* (context: CreateProviderContext) {
       const observedAt = yield* timestamp;
       const runtimeProofValue = yield* currentRuntime(context, observedAt);
-      if (context.authority.session.selection.agent === "codex") {
-        const identity = yield* codexIdentity(context, runtimeProofValue.runtimeGeneration);
-        const snapshot = yield* waitForCodexSandbox(identity).pipe(
+      const selection = context.authority.session.selection;
+      if (isSidecarSelection(selection)) {
+        const identity = yield* sidecarIdentity(
+          context,
+          selection,
+          runtimeProofValue.runtimeGeneration,
+        );
+        const snapshot = yield* waitForSidecarSandbox(identity).pipe(
           Effect.provideService(SandboxRuntime, runtime),
           Effect.mapError((error) =>
-            mapRuntimeFailure(error, "codex_readiness_unknown", observedAt),
+            mapRuntimeFailure(error, `${selection.agent}_readiness_unknown`, observedAt),
           ),
         );
         return {
           _tag: "SupervisorReadyConfirmed" as const,
           supervisor: {
-            processId: codexSandboxProcessId(identity.generation),
+            processId: sidecarProcessId(selection.agent, identity.generation),
             supervisorEpoch: snapshot.threadId,
             runtimeGeneration: identity.generation,
             containerIncarnation: runtimeProofValue.containerIncarnation,
           },
           observedAt,
-          resultCode: "codex_supervisor_ready",
+          resultCode: `${selection.agent}_supervisor_ready`,
         };
       }
       yield* beforeTransitionDeadline(
@@ -663,9 +666,14 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
           "create_supervisor_proof_missing",
           observedAt,
         );
-      if (context.authority.session.selection.agent === "codex") {
-        const identity = yield* codexIdentity(context, runtimeProofValue.runtimeGeneration);
-        const admitted = yield* admitCodexSandbox(
+      const selection = context.authority.session.selection;
+      if (isSidecarSelection(selection)) {
+        const identity = yield* sidecarIdentity(
+          context,
+          selection,
+          runtimeProofValue.runtimeGeneration,
+        );
+        const admitted = yield* admitSidecarSandbox(
           identity,
           supervisor.supervisorEpoch,
           identity.initialPrompt,
@@ -674,7 +682,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
         ).pipe(
           Effect.provideService(SandboxRuntime, runtime),
           Effect.mapError((error) =>
-            mapRuntimeFailure(error, "codex_admission_unknown", observedAt),
+            mapRuntimeFailure(error, `${selection.agent}_admission_unknown`, observedAt),
           ),
         );
         return {
@@ -686,7 +694,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
             containerIncarnation: runtimeProofValue.containerIncarnation,
           },
           observedAt,
-          resultCode: "codex_prompt_admitted",
+          resultCode: `${selection.agent}_prompt_admitted`,
         };
       }
       const snapshot = yield* auth
@@ -786,20 +794,25 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
       }
       if (context.transition.phase === "SupervisorStarting") {
         const observedAt = yield* timestamp;
-        if (context.authority.session.selection.agent === "codex") {
+        const selection = context.authority.session.selection;
+        if (isSidecarSelection(selection)) {
           const input = yield* resolveInput(boundary, context);
-          const identity = yield* codexIdentity(context, input.runtimeGeneration);
-          yield* readCodexSandbox(identity).pipe(
+          const identity = yield* sidecarIdentity(context, selection, input.runtimeGeneration);
+          yield* readSidecarSandbox(identity).pipe(
             Effect.provideService(SandboxRuntime, runtime),
             Effect.mapError((error) =>
-              mapRuntimeFailure(error, "codex_start_reconciliation_unknown", observedAt),
+              mapRuntimeFailure(
+                error,
+                `${selection.agent}_start_reconciliation_unknown`,
+                observedAt,
+              ),
             ),
           );
           return {
             _tag: "SupervisorStarted" as const,
-            processId: codexSandboxProcessId(identity.generation),
+            processId: sidecarProcessId(selection.agent, identity.generation),
             observedAt,
-            resultCode: "codex_start_reconciled",
+            resultCode: `${selection.agent}_start_reconciled`,
           };
         }
         const health = yield* auth

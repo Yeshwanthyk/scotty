@@ -1,16 +1,16 @@
 import { assert, describe, it } from "@effect/vitest";
 import { createSessionIdempotency, parseCreateInput } from "../../src/session/contracts";
 import {
-  confirmCodexFollowUp,
-  emptyCodexFollowUps,
-  enqueueCodexFollowUp,
-} from "../../src/session/codex-follow-ups";
+  confirmSidecarFollowUp,
+  emptySidecarFollowUps,
+  enqueueSidecarFollowUp,
+} from "../../src/session/sidecar-follow-ups";
 import { Result, Schema } from "effect";
-import { CodexFollowUpSchema } from "../../src/session/codex-follow-ups";
+import { SidecarFollowUpSchema } from "../../src/session/sidecar-follow-ups";
 import { sha256Hex } from "../../src/shared/digest";
 import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
 
-const decodeFollowUp = Schema.decodeUnknownResult(CodexFollowUpSchema);
+const decodeFollowUp = Schema.decodeUnknownResult(SidecarFollowUpSchema);
 const image: PiConsoleImage = { type: "image", mimeType: "image/png", data: "aGVsbG8=" };
 const input = {
   title: "Image task",
@@ -57,10 +57,10 @@ describe("session image admission", () => {
     };
     const changedImages = [{ ...image, data: "d29ybGQ=" }];
     const changedDigest = await sha256Hex(JSON.stringify(changedImages));
-    const admitted = enqueueCodexFollowUp(emptyCodexFollowUps(), item);
+    const admitted = enqueueSidecarFollowUp(emptySidecarFollowUps(), item);
     assert.equal(admitted.status, "queued");
     assert.deepEqual(admitted.queue.pending[0]?.images, [image]);
-    const confirmed = confirmCodexFollowUp(admitted.queue, item.id);
+    const confirmed = confirmSidecarFollowUp(admitted.queue, item.id);
     assert.deepEqual(confirmed.pending, []);
     assert.deepEqual(confirmed.receipts[0], {
       id: item.id,
@@ -69,14 +69,17 @@ describe("session image admission", () => {
     });
     assert.notInclude(JSON.stringify(confirmed), image.data);
     for (const queue of [admitted.queue, confirmed]) {
-      assert.equal(enqueueCodexFollowUp(queue, item).status, "replay");
+      assert.equal(enqueueSidecarFollowUp(queue, item).status, "replay");
       assert.equal(
-        enqueueCodexFollowUp(queue, { ...item, images: changedImages, imageDigest: changedDigest })
-          .status,
+        enqueueSidecarFollowUp(queue, {
+          ...item,
+          images: changedImages,
+          imageDigest: changedDigest,
+        }).status,
         "conflict",
       );
       assert.equal(
-        enqueueCodexFollowUp(queue, { id: item.id, text: item.text }).status,
+        enqueueSidecarFollowUp(queue, { id: item.id, text: item.text }).status,
         "conflict",
       );
     }
@@ -89,14 +92,14 @@ describe("session image admission", () => {
   });
   it("bounds queued image bytes without dropping already admitted content", () => {
     const images = [{ ...image, data: "a".repeat(4 * 1024 * 1024) }];
-    const first = enqueueCodexFollowUp(emptyCodexFollowUps(), {
+    const first = enqueueSidecarFollowUp(emptySidecarFollowUps(), {
       id: "first",
       text: "First",
       imageDigest: "a".repeat(64),
       images,
     });
     assert.equal(first.status, "queued");
-    const second = enqueueCodexFollowUp(first.queue, {
+    const second = enqueueSidecarFollowUp(first.queue, {
       id: "second",
       text: "Second",
       images,
@@ -105,9 +108,9 @@ describe("session image admission", () => {
     assert.equal(second.status, "full");
     assert.strictEqual(second.queue, first.queue);
     assert.equal(second.queue.pending.length, 1);
-    const confirmed = confirmCodexFollowUp(first.queue, "first");
+    const confirmed = confirmSidecarFollowUp(first.queue, "first");
     assert.equal(
-      enqueueCodexFollowUp(confirmed, {
+      enqueueSidecarFollowUp(confirmed, {
         id: "second",
         text: "Second",
         images,

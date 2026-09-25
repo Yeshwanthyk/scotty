@@ -406,7 +406,7 @@ describe("EvidenceStore", () => {
     }),
   );
 
-  it.effect("consumes a claimed permit when the same forwarding claim is replayed", () =>
+  it.effect("rejects replayed preview claims and evidence steps after one commit", () =>
     Effect.gen(function* () {
       const authority = makeAuthorityStorage();
       const artifacts = makeArtifactCapabilities();
@@ -442,17 +442,6 @@ describe("EvidenceStore", () => {
         consumedRequestMillis: EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
         permits: [],
       });
-    }),
-  );
-
-  it.effect("rejects a replayed step after committing it exactly once", () =>
-    Effect.gen(function* () {
-      const authority = makeAuthorityStorage();
-      const artifacts = makeArtifactCapabilities();
-      const testLayers = layers(authority.storage, artifacts.capabilities);
-      yield* TestClock.setTime(NOW);
-      yield* accept(authority, testLayers);
-      const store = yield* Effect.provide(EvidenceStore, testLayers);
       const publication = {
         index: 0,
         startedAt: "2026-08-06T12:00:00.100Z",

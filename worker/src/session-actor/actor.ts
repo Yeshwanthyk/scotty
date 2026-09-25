@@ -134,6 +134,7 @@ const dispatchDeadline = (
 const unknownObservationCommit = (
   authority: SessionAuthority,
   input: SessionActorInput,
+  resultCode = "observation_commit_unknown",
 ): SessionActorInput | undefined => {
   if (!AuthorityStateSchema.guards.Transitioning(authority.state)) return undefined;
   const transition = authority.state.transition;
@@ -146,8 +147,24 @@ const unknownObservationCommit = (
     timestamp: input.timestamp,
     correlationId: input.correlationId,
     expectedProviderRuntimeId: providerRuntimeId(authority),
-    resultCode: "observation_commit_unknown",
+    resultCode,
   };
+};
+
+const matchesExecutedAuthority = (
+  current: SessionAuthority | undefined,
+  executed: SessionAuthority,
+): boolean => {
+  if (current === undefined || current.revision !== executed.revision) return false;
+  const currentTransition = transitionOf(current);
+  const executedTransition = transitionOf(executed);
+  return (
+    currentTransition !== undefined &&
+    executedTransition !== undefined &&
+    currentTransition.nonce === executedTransition.nonce &&
+    currentTransition.attempt === executedTransition.attempt &&
+    currentTransition.phase === executedTransition.phase
+  );
 };
 
 export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | ActorEffectRunner> =
@@ -165,13 +182,37 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
         let input = initialInput;
         let evidence = initialEvidence;
         let recoverObservationCommit = false;
+        let observationAuthority: SessionAuthority | undefined;
         let lastDecision: Decision;
 
         while (true) {
           const snapshot = yield* store.read;
           lastDecision = decide(snapshot.authority, input);
-          if (Predicate.isTagged(lastDecision, "Rejected"))
+          if (Predicate.isTagged(lastDecision, "Rejected")) {
+            if (observationAuthority !== undefined) {
+              const transition = transitionOf(observationAuthority);
+              const current = matchesExecutedAuthority(snapshot.authority, observationAuthority);
+              if (transition !== undefined)
+                yield* (current ? Effect.logError : Effect.logWarning)(
+                  `Rejected provider observation: kind=${transitionKind(transition)} phase=${transition.phase} reason=${lastDecision.code} authority=${current ? "current" : "stale"}`,
+                );
+              if (recoverObservationCommit && current) {
+                const unknown = unknownObservationCommit(
+                  observationAuthority,
+                  input,
+                  "observation_rejected",
+                );
+                if (unknown !== undefined) {
+                  input = unknown;
+                  evidence = { _tag: "Keep" };
+                  recoverObservationCommit = false;
+                  observationAuthority = undefined;
+                  continue;
+                }
+              }
+            }
             return { decision: lastDecision, committed };
+          }
 
           const request = commitRequest(
             lastDecision,
@@ -211,6 +252,7 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
           committed.push(persisted);
           evidence = { _tag: "Keep" };
           recoverObservationCommit = false;
+          observationAuthority = undefined;
 
           let observation: SessionActorInput | undefined;
           for (const intent of persisted.effectIntents) {
@@ -223,6 +265,7 @@ export const sessionActorLayer: Layer.Layer<SessionActor, never, ActorStore | Ac
               observation = result.input;
               evidence = evidenceMutationForObservation(persisted.authority, result.input);
               recoverObservationCommit = Predicate.isTagged(intent, "ExecutePhase");
+              observationAuthority = persisted.authority;
             }
           }
           if (observation === undefined) return { decision: lastDecision, committed };

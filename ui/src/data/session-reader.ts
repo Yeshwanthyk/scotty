@@ -1,4 +1,8 @@
-import type { AgentSelection } from "../../../protocol/agents/agent-selection";
+import { Result } from "effect";
+import {
+  decodeAgentSelection,
+  type AgentSelection,
+} from "../../../protocol/agents/agent-selection";
 
 export const SESSION_WIRE_VERSION = 1 as const;
 
@@ -199,82 +203,9 @@ const identityFrom = (value: JsonValue | undefined): string | undefined =>
     ? value.id
     : undefined;
 
-type PiEffort = NonNullable<Extract<SessionSelection, { agent: "pi" }>["effort"]>;
-type CodexEffort = Extract<SessionSelection, { agent: "codex" }>["effort"];
-
-const piEffortFrom = (value: JsonValue | undefined): PiEffort | undefined =>
-  value === "off" ||
-  value === "minimal" ||
-  value === "low" ||
-  value === "medium" ||
-  value === "high" ||
-  value === "xhigh" ||
-  value === "max"
-    ? value
-    : undefined;
-
-const codexEffortFrom = (value: JsonValue | undefined): CodexEffort | undefined =>
-  value === "low" ||
-  value === "medium" ||
-  value === "high" ||
-  value === "xhigh" ||
-  value === "max" ||
-  value === "ultra"
-    ? value
-    : undefined;
-
-const codexEffortsByModel: Readonly<Record<string, ReadonlySet<CodexEffort>>> = {
-  "gpt-6-astra": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
-  "gpt-5.6-sol": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
-  "gpt-5.6-terra": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
-  "gpt-5.6-luna": new Set(["low", "medium", "high", "xhigh", "max"]),
-  "gpt-daybreak-blue-latest": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
-  "gpt-daybreak-red-latest": new Set(["low", "medium", "high", "xhigh", "max", "ultra"]),
-  "gpt-5.5": new Set(["low", "medium", "high", "xhigh"]),
-  "gpt-5.4": new Set(["low", "medium", "high", "xhigh"]),
-  "gpt-5.4-mini": new Set(["low", "medium", "high", "xhigh"]),
-  "gpt-5.2": new Set(["low", "medium", "high", "xhigh"]),
-  "codex-auto-review": new Set(["low", "medium", "high", "xhigh", "max"]),
-};
-
-const isModelSetting = (value: JsonValue | undefined): value is string =>
-  typeof value === "string" && value.length <= 200 && /^[^\s\p{Cc}]+$/u.test(value);
-
-const piSelectionFrom = (value: JsonObject): SessionSelection | undefined => {
-  const effort = value.effort === undefined ? undefined : piEffortFrom(value.effort);
-  if (
-    !hasOnlyKeys(value, ["agent", "modelProvider", "model", "effort"]) ||
-    (value.modelProvider !== undefined && !isModelSetting(value.modelProvider)) ||
-    (value.model !== undefined && !isModelSetting(value.model)) ||
-    (value.effort !== undefined && effort === undefined)
-  )
-    return undefined;
-  return {
-    agent: "pi",
-    ...(typeof value.modelProvider === "string" ? { modelProvider: value.modelProvider } : {}),
-    ...(typeof value.model === "string" ? { model: value.model } : {}),
-    ...(effort === undefined ? {} : { effort }),
-  };
-};
-
-const codexSelectionFrom = (value: JsonObject): SessionSelection | undefined => {
-  const effort = codexEffortFrom(value.effort);
-  if (
-    value.agent !== "codex" ||
-    !hasOnlyKeys(value, ["agent", "model", "effort"]) ||
-    typeof value.model !== "string" ||
-    !/^[a-z0-9][a-z0-9._-]*$/u.test(value.model) ||
-    value.model.length > 128 ||
-    effort === undefined ||
-    codexEffortsByModel[value.model]?.has(effort) !== true
-  )
-    return undefined;
-  return { agent: "codex", model: value.model, effort };
-};
-
 const selectionFrom = (value: JsonValue | undefined): SessionSelection | undefined => {
-  if (!isJsonObject(value)) return undefined;
-  return value.agent === "pi" ? piSelectionFrom(value) : codexSelectionFrom(value);
+  const decoded = decodeAgentSelection(value);
+  return Result.isSuccess(decoded) ? decoded.success : undefined;
 };
 
 const runtimeFrom = (value: JsonValue | undefined): SessionModel["runtime"] | undefined => {

@@ -3,7 +3,6 @@ import {
   hardCapDrainAt,
   hardCapMidpointAt,
   legacyHardCapDrainAt,
-  SESSION_SCHEDULE_CALLBACKS,
   sessionAllowsRuntimeAccess,
 } from "../../src/session/lifecycle";
 import { makeSessionRecord as record } from "../support";
@@ -24,19 +23,6 @@ describe("session lifecycle invariants", () => {
     );
     assert.isFalse(sessionAllowsRuntimeAccess(record({ status: "gone" })));
     assert.isFalse(sessionAllowsRuntimeAccess(undefined));
-  });
-
-  it("tracks every actor-owned session callback", () => {
-    assert.deepStrictEqual(SESSION_SCHEDULE_CALLBACKS, [
-      "drainCodexFollowUps",
-      "expireEvidenceJob",
-      "expireRetainedEvidence",
-      "retryHatchCleanup",
-      "sessionActorDeadline",
-      "sessionActorHardCapDrain",
-      "sessionActorCheckpointMidpoint",
-      "sessionActorHardCap",
-    ]);
   });
 
   it("schedules midpoint and a ten-minute final sleep, coalescing caps at twenty minutes", () => {

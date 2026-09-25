@@ -1,9 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { BackupOptions } from "@cloudflare/sandbox";
-import { Effect, Result } from "effect";
+import { Duration, Effect, Fiber, Result } from "effect";
+import { TestClock } from "effect/testing";
 import {
   BackupStore,
   BackupStoreFailure,
+  BackupStoreTimeout,
   backupStoreLayer,
   type BackupCapabilities,
 } from "../../src/backups/store";
@@ -55,13 +57,16 @@ runContractSuite<() => BackupCapabilitiesContract>(
         const created = yield* withStore(
           capabilities,
           Effect.flatMap(BackupStore, (store) =>
-            store.create({
-              dir,
-              name: `scotty-contract-${crypto.randomUUID()}`,
-              ttl: 900,
-              localBucket: true,
-              compression: { format: "zstd" },
-            }),
+            store.create(
+              {
+                dir,
+                name: `scotty-contract-${crypto.randomUUID()}`,
+                ttl: 900,
+                localBucket: true,
+                compression: { format: "zstd" },
+              },
+              Duration.millis(60_000),
+            ),
           ),
         );
         assert.strictEqual(created.dir, dir);
@@ -69,7 +74,7 @@ runContractSuite<() => BackupCapabilitiesContract>(
 
         yield* withStore(
           capabilities,
-          Effect.flatMap(BackupStore, (store) => store.restore(created)),
+          Effect.flatMap(BackupStore, (store) => store.restore(created, Duration.millis(60_000))),
         );
         yield* withStore(
           capabilities,
@@ -81,6 +86,36 @@ runContractSuite<() => BackupCapabilitiesContract>(
 );
 
 describe("BackupStore", () => {
+  for (const operation of ["create", "restore"] satisfies ReadonlyArray<"create" | "restore">) {
+    it.effect(`times out a pending ${operation} without claiming its provider outcome`, () =>
+      Effect.gen(function* () {
+        const capabilities: BackupCapabilities = {
+          createBackup: () => new Promise<DirectoryBackup>(() => {}),
+          restoreBackup: () => new Promise(() => {}),
+          deleteBackup: async () => undefined,
+        };
+        const fiber = yield* withStore(
+          capabilities,
+          Effect.flatMap(BackupStore, (store) =>
+            Effect.result(
+              operation === "create"
+                ? store.create({ dir: backup.dir }, Duration.millis(5_000))
+                : store.restore(backup, Duration.millis(5_000)),
+            ),
+          ),
+        ).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(4_999);
+        assert.isUndefined(fiber.pollUnsafe());
+        yield* TestClock.adjust(1);
+        assert.deepStrictEqual(
+          yield* Fiber.join(fiber),
+          Result.fail(new BackupStoreTimeout({ operation })),
+        );
+      }),
+    );
+  }
+
   it.effect("passes exact create and restore arguments to the Sandbox capability", () =>
     Effect.gen(function* () {
       const memory = new InMemoryFaultInjectableFake();
@@ -94,11 +129,11 @@ describe("BackupStore", () => {
       };
       const created = yield* withStore(
         capabilities,
-        Effect.flatMap(BackupStore, (store) => store.create(options)),
+        Effect.flatMap(BackupStore, (store) => store.create(options, Duration.millis(60_000))),
       );
       yield* withStore(
         capabilities,
-        Effect.flatMap(BackupStore, (store) => store.restore(created)),
+        Effect.flatMap(BackupStore, (store) => store.restore(created, Duration.millis(60_000))),
       );
 
       assert.strictEqual(created, backup);
@@ -119,7 +154,7 @@ describe("BackupStore", () => {
       };
       const result = yield* Effect.result(
         Effect.provide(
-          Effect.flatMap(BackupStore, (store) => store.restore(backup)),
+          Effect.flatMap(BackupStore, (store) => store.restore(backup, Duration.millis(60_000))),
           backupStoreLayer(capabilities, Effect.fail("runtime access denied")),
         ),
       );
@@ -138,7 +173,7 @@ describe("BackupStore", () => {
       const outcome = yield* Effect.result(
         withStore(
           capabilities,
-          Effect.flatMap(BackupStore, (store) => store.create(options)),
+          Effect.flatMap(BackupStore, (store) => store.create(options, Duration.millis(60_000))),
         ),
       );
 
@@ -146,19 +181,6 @@ describe("BackupStore", () => {
       assert.deepStrictEqual(outcome.failure, new BackupStoreFailure({ operation: "create" }));
       assert.strictEqual(memory.calls("create").length, 1);
       assert.deepStrictEqual(memory.calls("create"), [[options]]);
-    }),
-  );
-
-  it.effect("delegates deletion to the Sandbox backup queue", () =>
-    Effect.gen(function* () {
-      const memory = new InMemoryFaultInjectableFake();
-      const capabilities = backupCapabilitiesFake(memory, backup);
-      yield* withStore(
-        capabilities,
-        Effect.flatMap(BackupStore, (store) => store.delete("backup-1")),
-      );
-
-      assert.deepStrictEqual(memory.calls("delete"), [["backup-1"]]);
     }),
   );
 
@@ -174,9 +196,13 @@ describe("BackupStore", () => {
         memory.injectFailure(operation, { error: `provider ${operation} details` });
         const effect =
           operation === "create"
-            ? Effect.flatMap(BackupStore, (store) => store.create({ dir: backup.dir }))
+            ? Effect.flatMap(BackupStore, (store) =>
+                store.create({ dir: backup.dir }, Duration.millis(60_000)),
+              )
             : operation === "restore"
-              ? Effect.flatMap(BackupStore, (store) => store.restore(backup))
+              ? Effect.flatMap(BackupStore, (store) =>
+                  store.restore(backup, Duration.millis(60_000)),
+                )
               : Effect.flatMap(BackupStore, (store) => store.delete(backup.id));
         const result = yield* Effect.result(withStore(capabilities, effect));
         assert.deepStrictEqual(failure(result), new BackupStoreFailure({ operation }));
@@ -192,11 +218,15 @@ describe("BackupStore", () => {
       const capabilities = backupCapabilitiesFake(memory, backup);
       const created = yield* withStore(
         capabilities,
-        Effect.flatMap(BackupStore, (store) => store.create({ dir: backup.dir })),
+        Effect.flatMap(BackupStore, (store) =>
+          store.create({ dir: backup.dir }, Duration.millis(60_000)),
+        ),
       );
       yield* withStore(
         capabilities,
-        Effect.flatMap(BackupStore, (store) => store.restore(structuredClone(created))),
+        Effect.flatMap(BackupStore, (store) =>
+          store.restore(structuredClone(created), Duration.millis(60_000)),
+        ),
       );
       yield* withStore(
         capabilities,

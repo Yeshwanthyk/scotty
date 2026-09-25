@@ -23,7 +23,7 @@ const withProjection = <A, E>(
   Effect.provide(effect, repoProjectionLayer(repoProjectionStorageFake(memory)));
 
 describe("RepoProjection", () => {
-  it.effect("upserts one repository key with Clock time", () =>
+  it.effect("upserts one repository key with Clock time and detects stale authority", () =>
     Effect.gen(function* () {
       const storage = new InMemoryFaultInjectableFake();
       yield* TestClock.setTime(NOW);
@@ -44,6 +44,25 @@ describe("RepoProjection", () => {
         defaultBranch: "trunk",
         lastUsedAt: "2026-07-23T12:34:57.000Z",
       });
+
+      const entry = {
+        repo: "owner/repo",
+        defaultBranch: "trunk",
+        addedAt: "2026-07-23T12:00:00.000Z",
+        lastUsedAt: "2026-07-23T12:34:56.000Z",
+      };
+      yield* withProjection(storage, projectRepoEntryBestEffort(entry));
+      const putsBefore = storage.calls("put").length;
+      const deletesBefore = storage.calls("delete").length;
+      assert.isTrue(yield* withProjection(storage, repoProjectionMatches([entry])));
+      assert.strictEqual(storage.calls("put").length, putsBefore);
+      assert.strictEqual(storage.calls("delete").length, deletesBefore);
+      assert.isFalse(
+        yield* withProjection(
+          storage,
+          repoProjectionMatches([{ ...entry, defaultBranch: "main" }]),
+        ),
+      );
     }),
   );
 
@@ -165,31 +184,6 @@ describe("RepoProjection", () => {
           lastUsedAt: "2026-07-23T12:34:56.000Z",
         },
       ]);
-    }),
-  );
-
-  it.effect("matches the authority without writes and detects stale values", () =>
-    Effect.gen(function* () {
-      const storage = new InMemoryFaultInjectableFake();
-      const entry = {
-        repo: "owner/repo",
-        defaultBranch: "main",
-        addedAt: "2026-07-23T12:00:00.000Z",
-        lastUsedAt: "2026-07-23T12:34:56.000Z",
-      };
-      yield* withProjection(storage, projectRepoEntryBestEffort(entry));
-      const putsBefore = storage.calls("put").length;
-      const deletesBefore = storage.calls("delete").length;
-      const matches = yield* withProjection(storage, repoProjectionMatches([entry]));
-      assert.isTrue(matches);
-      assert.strictEqual(storage.calls("put").length, putsBefore);
-      assert.strictEqual(storage.calls("delete").length, deletesBefore);
-
-      const stale = yield* withProjection(
-        storage,
-        repoProjectionMatches([{ ...entry, defaultBranch: "trunk" }]),
-      );
-      assert.isFalse(stale);
     }),
   );
 

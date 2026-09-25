@@ -6,7 +6,6 @@ import {
   CLEAN_ROOM_RUNTIME_ARTIFACT,
   checkCliCleanRoom,
   cleanRoomBuildArgs,
-  cleanRoomCliPlan,
   cleanRoomVerifyArgs,
 } from "./check-cli-clean-room.mjs";
 
@@ -34,10 +33,6 @@ describe("clean-room runtime CLI gate", () => {
     assert.match(verify, /test ! -e \/usr\/local\/bin\/scotty/u);
     assert.match(verify, /scotty-runtime --version/u);
     assert.match(verify, /embeddedDeployment/u);
-  });
-
-  it("does not rebuild the container image to prove the runtime CLI", () => {
-    const plan = cleanRoomCliPlan(root);
     assert.deepEqual(cleanRoomBuildArgs(plan), ["scripts/build-runtime-cli.mjs", plan.artifact]);
     assert.equal(cleanRoomVerifyArgs(plan).includes("buildx"), false);
     assert.equal(cleanRoomVerifyArgs(plan).includes("--volume"), true);

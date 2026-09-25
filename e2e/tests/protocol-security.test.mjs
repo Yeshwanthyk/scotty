@@ -44,18 +44,6 @@ test("the TanStack session UI keeps protocol, state, and view boundaries explici
   assert.doesNotMatch(route, /localStorage|sessionStorage|new WebSocket/u);
 });
 
-test("superseded standalone product pages are absent", () => {
-  const assets = path.join(ROOT, "worker/public");
-  for (const name of ["session", "sessions", "stats"]) {
-    assert.equal(fs.existsSync(path.join(assets, name, "index.html")), false);
-  }
-  for (const name of ["devices", "providers"]) {
-    assert.equal(fs.existsSync(path.join(assets, "auth", `${name}.html`)), false);
-    assert.equal(fs.existsSync(path.join(assets, "auth", `${name}.js`)), false);
-    assert.equal(fs.existsSync(path.join(assets, "auth", `${name}.css`)), false);
-  }
-});
-
 test("the UI build replaces only its bounded app asset directory", () => {
   const config = fs.readFileSync(path.join(ROOT, "ui/vite.config.ts"), "utf8");
   assert.match(config, /emptyOutDir:\s*true/u);

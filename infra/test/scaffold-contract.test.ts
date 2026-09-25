@@ -42,6 +42,7 @@ describe("pinned Task 4 contracts", () => {
       typebox: "1.3.7",
     });
     expect(workerPackage.devDependencies).toEqual({
+      "@anthropic-ai/claude-agent-sdk": "0.3.281",
       "@earendil-works/pi-coding-agent": "0.84.0",
     });
   });

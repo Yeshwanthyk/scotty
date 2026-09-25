@@ -1,8 +1,10 @@
+import { AgentIdSchema } from "../../protocol/agents/agents";
 import { CanonicalConversationSnapshotSchema } from "../../protocol/session/conversation";
 import { Effect, Option, Schema } from "effect";
 import { PiConsoleSnapshotSchema } from "../../protocol/agents/pi/pi-console";
 import { SessionSteerResponseSchema } from "../../protocol/session/session-steer";
 import { SessionInterruptResponseSchema } from "../../protocol/session/session-interrupt";
+import { LifecyclePendingMarkerSchema } from "../../protocol/session/lifecycle-response";
 import {
   RepositoryRegistryEntrySchema,
   RepositoryRegistryRemovalResponseSchema,
@@ -92,7 +94,7 @@ export const UpResponseSchema = Schema.Struct({
   status: Schema.NonEmptyString,
 });
 const BeamUpRequestFields = {
-  agent: Schema.optionalKey(Schema.Literals(["pi", "codex"])),
+  agent: Schema.optionalKey(AgentIdSchema),
   modelProvider: Schema.optionalKey(Schema.String),
   model: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
@@ -130,6 +132,75 @@ export const OperationResponseSchema = Schema.Struct({
   branch: Schema.optionalKey(Schema.Unknown),
   backupId: Schema.optionalKey(Schema.Unknown),
   status: Schema.NonEmptyString,
+});
+const LifecycleOperationSchema = Schema.Struct({
+  kind: Schema.Literals(["snapshot", "sleep", "resume"]),
+  nonce: Schema.NonEmptyString,
+  deadlineAt: Schema.NonEmptyString,
+});
+export const PendingLifecycleResponseSchema = Schema.Struct({
+  ...OperationResponseSchema.fields,
+  ...LifecyclePendingMarkerSchema.fields,
+  id: Schema.NonEmptyString,
+  operation: LifecycleOperationSchema,
+});
+export const LifecyclePollResponseSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  session: Schema.Struct({
+    identity: Schema.Struct({ id: Schema.NonEmptyString }),
+    authority: Schema.Union([
+      Schema.Struct({
+        kind: Schema.Literal("transitioning"),
+        action: Schema.NonEmptyString,
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("stable"),
+        lifecycle: Schema.Literals(["warm", "sleeping", "failed", "gone"]),
+      }),
+    ]),
+    display: Schema.Struct({ branch: Schema.NullOr(Schema.NonEmptyString) }),
+  }),
+});
+export const LifecycleActorResultSchema = Schema.Struct({
+  journal: Schema.Array(
+    Schema.Struct({
+      eventType: Schema.NonEmptyString,
+      transitionKind: Schema.NullOr(Schema.NonEmptyString),
+      transitionNonce: Schema.NullOr(Schema.NonEmptyString),
+    }),
+  ),
+  authority: Schema.Struct({
+    session: Schema.Struct({ id: Schema.NonEmptyString }),
+    state: Schema.Struct({
+      _tag: Schema.Literal("Stable"),
+      stable: Schema.Struct({
+        _tag: Schema.Literal("Warm"),
+        backups: Schema.Struct({
+          currentBackupId: Schema.NullOr(Schema.NonEmptyString),
+          confirmed: Schema.optionalKey(
+            Schema.NullOr(
+              Schema.Struct({
+                backupId: Schema.NonEmptyString,
+                confirmedAt: Schema.NullOr(Schema.NonEmptyString),
+              }),
+            ),
+          ),
+          prepared: Schema.optionalKey(
+            Schema.NullOr(
+              Schema.Struct({
+                backupId: Schema.NonEmptyString,
+                confirmedAt: Schema.NullOr(Schema.NonEmptyString),
+              }),
+            ),
+          ),
+        }),
+      }),
+    }),
+  }),
+});
+export const LifecycleActorJournalResultSchema = Schema.Struct({
+  journal: LifecycleActorResultSchema.fields.journal,
+  authority: Schema.Struct({ session: Schema.Struct({ id: Schema.NonEmptyString }) }),
 });
 const SessionLifecycleSchema = Schema.Literals(["warm", "sleeping", "failed", "gone"]);
 const SessionActionSchema = Schema.Literals([
@@ -276,6 +347,14 @@ export const decodeInitJournalJson = (input: unknown): Option.Option<InitJournal
 export const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);
 export const decodeRecoveryGrantResponse = Schema.decodeUnknownOption(RecoveryGrantResponseSchema);
 export const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);
+export const decodePendingLifecycleResponse = Schema.decodeUnknownOption(
+  PendingLifecycleResponseSchema,
+);
+export const decodeLifecyclePollResponse = Schema.decodeUnknownOption(LifecyclePollResponseSchema);
+export const decodeLifecycleActorResult = Schema.decodeUnknownOption(LifecycleActorResultSchema);
+export const decodeLifecycleActorJournalResult = Schema.decodeUnknownOption(
+  LifecycleActorJournalResultSchema,
+);
 export const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema, {
   onExcessProperty: "error",
 });

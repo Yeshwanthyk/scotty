@@ -109,6 +109,13 @@ const CredentialRegistryGithubTokenSchema = Schema.String.check(
   }),
 );
 
+/** Long-lived Claude Code OAuth token from `claude setup-token`. */
+const CredentialRegistryAnthropicTokenSchema = Schema.String.check(
+  Schema.isPattern(/^sk-ant-oat01-[A-Za-z0-9_-]{16,1024}$/u, {
+    expected: "a Claude Code setup token",
+  }),
+);
+
 export const CredentialRegistryMaterialSchema = Schema.Union([
   Schema.Struct({
     name: CredentialNameSchema,
@@ -123,6 +130,12 @@ export const CredentialRegistryMaterialSchema = Schema.Union([
       { expected: "bounded Pi provider material" },
     ),
   ),
+  Schema.Struct({
+    name: CredentialNameSchema,
+    kind: Schema.Literal("anthropic-auth"),
+    scope: Schema.Literal("global"),
+    token: CredentialRegistryAnthropicTokenSchema,
+  }),
   Schema.Struct({
     name: CredentialNameSchema,
     kind: Schema.Literal("github-cli"),

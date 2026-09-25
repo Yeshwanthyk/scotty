@@ -170,6 +170,23 @@ describe("session actor public projection", () => {
       ageSeconds: 3600,
       capRemainingSeconds: 10_800,
     });
+
+    const projection = sessionProjectionFromActor(
+      warmAuthority(),
+      metadata(),
+      UPDATED_AT,
+      PROJECTED_AT,
+    );
+    assert.ok(Result.isSuccess(projection));
+    assert.strictEqual(projection.success.status, "warm");
+    assert.strictEqual(projection.success.agentState, "working");
+    assert.strictEqual(projection.success.lastAgentEventAt, UPDATED_AT);
+    assert.strictEqual(projection.success.codexThreadId, undefined);
+    assert.deepStrictEqual(publicView(warmAuthority()), {
+      status: "warm",
+      deleting: false,
+      availableActions: ["checkpoint", "sleep", "work", "vaporize"],
+    });
   });
 
   it("derives create failure only after workspace metadata is available", () => {
@@ -201,20 +218,6 @@ describe("session actor public projection", () => {
         recoverable: false,
       },
     });
-  });
-
-  it("publishes fenced activity only from coherent Warm authority", () => {
-    const result = sessionProjectionFromActor(
-      warmAuthority(),
-      metadata(),
-      UPDATED_AT,
-      PROJECTED_AT,
-    );
-    assert.ok(Result.isSuccess(result));
-    assert.strictEqual(result.success.status, "warm");
-    assert.strictEqual(result.success.agentState, "working");
-    assert.strictEqual(result.success.lastAgentEventAt, UPDATED_AT);
-    assert.strictEqual(result.success.codexThreadId, undefined);
   });
 
   it("marks an origin-compatible Vaporize projection as deleting", () => {
@@ -253,6 +256,11 @@ describe("session actor public projection", () => {
       mode: "executing",
       phase: "RuntimeAccessRevoked",
     });
+    assert.deepStrictEqual(publicView(vaporizing), {
+      status: "warm",
+      deleting: true,
+      availableActions: [],
+    });
   });
 
   it("projects a reconciling checkpoint as an owned operation with no public actions", () => {
@@ -283,6 +291,11 @@ describe("session actor public projection", () => {
       },
     };
     assert.isTrue(validateAuthority(checkpoint));
+    assert.deepStrictEqual(publicView(createAuthority()), {
+      status: "booting",
+      deleting: false,
+      availableActions: [],
+    });
     const result = sessionProjectionFromActor(checkpoint, metadata(), UPDATED_AT, PROJECTED_AT);
     assert.ok(Result.isSuccess(result));
     assert.deepInclude(result.success, {
@@ -291,6 +304,7 @@ describe("session actor public projection", () => {
         kind: "snapshot",
         nonce: "checkpoint-nonce",
         startedAt: UPDATED_AT,
+        deadlineAt: HARD_CAP_AT,
         mode: "reconciling",
         phase: "Syncing",
       },

@@ -155,7 +155,6 @@ describe("Wrangler binding coverage", () => {
       /KV SESSIONS/u,
     );
   });
-
   it("uses the same plain topology data as the Alchemy stack", () => {
     const stack = read("infra/cloudflare-stack.ts");
     assert.match(stack, /from "\.\.\/scripts\/cloudflare-topology-data\.mjs"/u);

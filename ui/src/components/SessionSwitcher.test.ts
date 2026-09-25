@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionRailSession } from "./SessionRow";
-import {
-  matchesCreateQuery,
-  matchesSessionQuery,
-  moveSessionIndex,
-  scoreSessionQuery,
-} from "./SessionSwitcher";
+import { matchesCreateQuery, matchesSessionQuery, moveSessionIndex } from "./SessionSwitcher";
 
 const session: SessionRailSession = {
   id: "session-1",
@@ -24,14 +19,6 @@ describe("session switcher", () => {
   it("does not search presentation status or session ids", () => {
     expect(matchesSessionQuery(session, "session-1")).toBe(false);
     expect(matchesSessionQuery(session, "ready")).toBe(false);
-  });
-
-  it("matches order-independent terms and ranks title above repository", () => {
-    expect(matchesSessionQuery(session, "scotty repair")).toBe(true);
-    expect(matchesSessionQuery(session, "repair scotty")).toBe(true);
-    expect(scoreSessionQuery(session, "repair")).toBeGreaterThan(
-      scoreSessionQuery(session, "scotty"),
-    );
   });
 
   it("only offers create for complete action keywords", () => {

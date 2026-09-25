@@ -167,6 +167,22 @@ describe("sandbox config store", () => {
     }),
   );
 
+  it.effect("reads settings stored before the Claude Code profile existed", () =>
+    Effect.gen(function* () {
+      const { claude, ...stored } = defaultCloudSettings;
+      const storage = makeStorage({
+        revision: 3,
+        activeDigest: null,
+        lastSync: null,
+        settings: stored,
+      });
+      const snapshot = yield* Effect.flatMap(SandboxConfigStore, (store) => store.settings()).pipe(
+        Effect.provide(storage.layer),
+      );
+      assert.deepEqual(snapshot.settings.claude, claude);
+    }),
+  );
+
   it.effect("fails closed on malformed authority", () =>
     Effect.gen(function* () {
       const corrupt = makeStorage({ revision: -1, activeDigest: null, lastSync: null });

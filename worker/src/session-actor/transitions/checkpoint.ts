@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, Match, Predicate, Schema } from "effect";
+import { confirmedBackup } from "../backup";
 import {
   AuthorityStateSchema,
   type BackupIdentity,
@@ -261,7 +262,7 @@ const applyResult = (
                   ],
                   prepared: value.backup,
                   currentBackupId: transition.proof.backup.currentBackupId,
-                  confirmed: transition.proof.backup.confirmed ?? transition.proof.backup.prepared,
+                  confirmed: confirmedBackup(transition.proof.backup),
                 },
               },
               value.observedAt,

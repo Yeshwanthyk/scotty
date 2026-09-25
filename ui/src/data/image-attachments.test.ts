@@ -6,7 +6,18 @@ const file = (name = "photo.png", type = "image/png", size = 8) =>
   new File([new Uint8Array(size)], name, { type });
 
 describe("image attachment selection", () => {
-  it("accepts supported desktop and phone images", () => {
+  it("enforces image count and total size across new and existing files", () => {
+    expect(validateImageFiles([file(), file()], [{ size: 1 }, { size: 1 }, { size: 1 }])).toContain(
+      "up to 4",
+    );
+    expect(
+      validateImageFiles([file()], [{ size: PI_CONSOLE_MAX_IMAGE_BYTES - 8 }]),
+    ).toBeUndefined();
+    expect(validateImageFiles([file()], [{ size: PI_CONSOLE_MAX_IMAGE_BYTES - 7 }])).toContain(
+      "5 MB",
+    );
+  });
+  it("accepts supported images and explains unsupported or empty files", () => {
     expect(
       validateImageFiles(
         [
@@ -18,21 +29,6 @@ describe("image attachment selection", () => {
         [],
       ),
     ).toBeUndefined();
-  });
-  it("counts existing images when checking the four-image limit", () => {
-    expect(validateImageFiles([file(), file()], [{ size: 1 }, { size: 1 }, { size: 1 }])).toContain(
-      "up to 4",
-    );
-  });
-  it("enforces the total size across new and existing images", () => {
-    expect(
-      validateImageFiles([file()], [{ size: PI_CONSOLE_MAX_IMAGE_BYTES - 8 }]),
-    ).toBeUndefined();
-    expect(validateImageFiles([file()], [{ size: PI_CONSOLE_MAX_IMAGE_BYTES - 7 }])).toContain(
-      "5 MB",
-    );
-  });
-  it("explains unsupported phone photos and empty files", () => {
     expect(validateImageFiles([file("photo.heic", "image/heic")], [])).toContain("HEIC");
     expect(validateImageFiles([file("empty.png", "image/png", 0)], [])).toContain("empty");
   });

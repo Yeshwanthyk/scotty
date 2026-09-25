@@ -9,12 +9,10 @@ import {
   writeCodexSavedState,
   importCodexSavedState,
 } from "../../../src/agent/codex/persistence";
-import {
-  codexSavedStatePath,
-  type CodexSavedHistory,
-} from "../../../src/agent/codex/persistence-format";
+import { codexSavedStatePath } from "../../../src/agent/codex/persistence-format";
+import type { SidecarSavedHistory } from "../../../src/agent/sidecar/protocol";
 
-const history: typeof CodexSavedHistory.Type = {
+const history: SidecarSavedHistory = {
   threadId: "thread",
   initialTurnId: "first",
   prompt: { status: "terminal", turnId: "second", outcome: "completed", text: "second answer" },

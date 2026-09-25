@@ -1,7 +1,8 @@
 import { runtimeCliMaterializerTestLayer, sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import type { BackupOptions, ExecResult, ProcessStatus } from "@cloudflare/sandbox";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Fiber, Layer, Result } from "effect";
+import { TestClock } from "effect/testing";
 import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
 import { backupStoreLayer, type BackupCapabilities } from "../../src/backups/store";
 import { sessionRuntimeCredentials } from "../../src/credentials/managed";
@@ -26,6 +27,7 @@ const attempt: BackupLifecycleAttempt = {
   selection: { agent: "pi" },
   sessionId: "session-backup",
   attempt: "1ed4a6f4-7d9f-46b9-8a07-ef6d9c1dd64c",
+  deadlineAt: "2026-09-01T00:05:00.000Z",
   operationNonce: "operation-1",
   runtimeGeneration: "runtime-generation-1",
   transitionFence: { revision: 1, mode: "executing", phase: "RuntimeReady" },
@@ -124,6 +126,312 @@ const failure = <A>(
 };
 
 describe("BackupLifecycleSandbox", () => {
+  it.effect("restores an owned source backup into a distinct resume runtime generation", () =>
+    Effect.gen(function* () {
+      const sourceRuntimeGeneration = "warm-runtime-generation";
+      const restored = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          provider.restoreCurrentBackup({
+            ...attempt,
+            attempt: "e14136de-111f-4f6b-bf71-7cfbe7794544",
+            operationNonce: "resume-operation",
+            runtimeGeneration: "resume-runtime-generation",
+            backup: {
+              backupId: backup.id,
+              preparedAt: "2026-09-01T00:00:00.000Z",
+              confirmedAt: "2026-09-01T00:00:01.000Z",
+              sourceRuntimeGeneration,
+            },
+            ownedBackupIds: [backup.id],
+          }),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            readFileStream: async () =>
+              stream(
+                `${JSON.stringify({
+                  sessionId: attempt.sessionId,
+                  attempt: "8a650fe2-bc8b-42fc-a163-7df0eb28ae18",
+                  runtimeGeneration: sourceRuntimeGeneration,
+                })}\n`,
+              ),
+          }),
+        },
+      );
+      assert.strictEqual(restored, undefined);
+    }),
+  );
+
+  it.effect("rejects a sweep with less than the minimum budget before exec", () =>
+    Effect.gen(function* () {
+      const now = Date.parse("2026-09-01T00:00:00.000Z");
+      yield* TestClock.setTime(now);
+      let execCalls = 0;
+      const result = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          Effect.result(
+            provider.sweepWorkspaceWriters({
+              ...attempt,
+              deadlineAt: new Date(now + 34_999).toISOString(),
+            }),
+          ),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            exec: async (command) => {
+              execCalls += 1;
+              return success(command);
+            },
+          }),
+        },
+      );
+      assert.deepStrictEqual(
+        failure(result),
+        new BackupLifecycleSandboxFailure({
+          outcome: "rejected_before_admission",
+          safeResultCode: "workspace_writer_sweep_budget_exhausted",
+        }),
+      );
+      assert.strictEqual(execCalls, 0);
+
+      {
+        const now = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(now);
+        let admitted = false;
+        const createResult = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(
+              provider.prepareBackup({
+                ...attempt,
+                deadlineAt: new Date(now + 10_000).toISOString(),
+              }),
+            ),
+          ),
+          {
+            backups: backupCapabilities({
+              createBackup: async () => {
+                admitted = true;
+                return backup;
+              },
+            }),
+          },
+        );
+        assert.isFalse(admitted);
+        assert.deepStrictEqual(
+          failure(createResult),
+          new BackupLifecycleSandboxFailure({
+            outcome: "rejected_before_admission",
+            safeResultCode: "backup_create_timeout",
+          }),
+        );
+
+        const invalidResult = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(provider.prepareBackup({ ...attempt, deadlineAt: "invalid-date" })),
+          ),
+          { backups: backupCapabilities({ createBackup: () => Promise.resolve(backup) }) },
+        );
+        assert.deepStrictEqual(
+          failure(invalidResult),
+          new BackupLifecycleSandboxFailure({
+            outcome: "rejected_before_admission",
+            safeResultCode: "backup_create_timeout",
+          }),
+        );
+      }
+
+      {
+        const now = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(now);
+        let admitted = false;
+        const restoreResult = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(
+              provider.restoreCurrentBackup({
+                ...attempt,
+                deadlineAt: new Date(now + 10_000).toISOString(),
+                backup: {
+                  backupId: backup.id,
+                  preparedAt: attempt.deadlineAt,
+                  confirmedAt: attempt.deadlineAt,
+                  sourceRuntimeGeneration: attempt.runtimeGeneration,
+                },
+                ownedBackupIds: [backup.id],
+              }),
+            ),
+          ),
+          {
+            backups: backupCapabilities({
+              restoreBackup: async (value) => {
+                admitted = true;
+                return { success: true, id: value.id, dir: value.dir };
+              },
+            }),
+          },
+        );
+        assert.isFalse(admitted);
+        assert.deepStrictEqual(
+          failure(restoreResult),
+          new BackupLifecycleSandboxFailure({
+            outcome: "rejected_before_admission",
+            safeResultCode: "backup_restore_timeout",
+          }),
+        );
+      }
+    }),
+  );
+  it.effect("classifies surviving writers as unknown after the sweep was admitted", () =>
+    Effect.gen(function* () {
+      const now = Date.parse("2026-09-01T00:00:00.000Z");
+      yield* TestClock.setTime(now);
+      const result = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          Effect.result(
+            provider.sweepWorkspaceWriters({
+              ...attempt,
+              deadlineAt: new Date(now + 90_000).toISOString(),
+            }),
+          ),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            exec: async (command) => ({
+              ...success(command),
+              stdout: '{"found":1,"killed":0,"survivors":1}\n',
+            }),
+          }),
+        },
+      );
+      assert.deepStrictEqual(
+        failure(result),
+        new BackupLifecycleSandboxFailure({
+          outcome: "unknown_after_admission",
+          safeResultCode: "workspace_writers_survived",
+        }),
+      );
+    }),
+  );
+
+  for (const [remaining, expectedTimeout] of [
+    [90_000, 15_000],
+    [40_000, 10_000],
+  ] as const) {
+    it.effect(`bounds the writer sweep by the remaining budget (${remaining})`, () =>
+      Effect.gen(function* () {
+        const now = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(now);
+        let observedTimeout: number | undefined;
+        yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            provider.sweepWorkspaceWriters({
+              ...attempt,
+              deadlineAt: new Date(now + remaining).toISOString(),
+            }),
+          ),
+          {
+            runtime: runtimeCapabilities({
+              exec: async (command, options) => {
+                observedTimeout = options?.timeout;
+                return { ...success(command), stdout: '{"found":0,"killed":0,"survivors":0}\n' };
+              },
+            }),
+          },
+        );
+        assert.strictEqual(observedTimeout, expectedTimeout);
+      }),
+    );
+  }
+
+  it.effect("times out a sweep whose sandbox exec never returns", () =>
+    Effect.gen(function* () {
+      const now = Date.parse("2026-09-01T00:00:00.000Z");
+      yield* TestClock.setTime(now);
+      const fiber = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          Effect.result(
+            provider.sweepWorkspaceWriters({
+              ...attempt,
+              deadlineAt: new Date(now + 90_000).toISOString(),
+            }),
+          ),
+        ),
+        { runtime: runtimeCapabilities({ exec: () => new Promise(() => undefined) }) },
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(15_999);
+      assert.isUndefined(fiber.pollUnsafe());
+      yield* TestClock.adjust(1);
+      assert.deepStrictEqual(
+        failure(yield* Fiber.join(fiber)),
+        new BackupLifecycleSandboxFailure({
+          outcome: "unknown_after_admission",
+          safeResultCode: "workspace_writer_sweep_timeout",
+        }),
+      );
+
+      {
+        const createNow = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(createNow);
+        const createFiber = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(
+              provider.prepareBackup({
+                ...attempt,
+                deadlineAt: new Date(createNow + 90_000).toISOString(),
+              }),
+            ),
+          ),
+          { backups: backupCapabilities({ createBackup: () => new Promise(() => {}) }) },
+        ).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(59_999);
+        assert.isUndefined(createFiber.pollUnsafe());
+        yield* TestClock.adjust(1);
+        assert.deepStrictEqual(
+          failure(yield* Fiber.join(createFiber)),
+          new BackupLifecycleSandboxFailure({
+            outcome: "unknown_after_admission",
+            safeResultCode: "backup_create_timeout",
+          }),
+        );
+      }
+
+      {
+        const restoreNow = Date.parse("2026-09-01T00:00:00.000Z");
+        yield* TestClock.setTime(restoreNow);
+        const restoreFiber = yield* withProvider(
+          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+            Effect.result(
+              provider.restoreCurrentBackup({
+                ...attempt,
+                deadlineAt: new Date(restoreNow + 35_000).toISOString(),
+                backup: {
+                  backupId: backup.id,
+                  preparedAt: "2026-09-01T00:00:00.000Z",
+                  confirmedAt: "2026-09-01T00:00:01.000Z",
+                  sourceRuntimeGeneration: attempt.runtimeGeneration,
+                },
+                ownedBackupIds: [backup.id],
+              }),
+            ),
+          ),
+          { backups: backupCapabilities({ restoreBackup: () => new Promise(() => {}) }) },
+        ).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(4_999);
+        assert.isUndefined(restoreFiber.pollUnsafe());
+        yield* TestClock.adjust(1);
+        assert.deepStrictEqual(
+          failure(yield* Fiber.join(restoreFiber)),
+          new BackupLifecycleSandboxFailure({
+            outcome: "unknown_after_admission",
+            safeResultCode: "backup_restore_timeout",
+          }),
+        );
+      }
+    }),
+  );
+
   it.effect("classifies a decisively exited restored Codex supervisor", () =>
     Effect.gen(function* () {
       const result = yield* withProvider(
@@ -132,7 +440,7 @@ describe("BackupLifecycleSandbox", () => {
             ...attempt,
             sessionId: "a0b1c2d3e4f5",
             selection: { agent: "codex", model: "gpt-5.4", effort: "high" },
-            codex: { token: "a".repeat(64), threadId: "thread-1", initialTurnId: "turn-1" },
+            sidecar: { token: "a".repeat(64), threadId: "thread-1", initialTurnId: "turn-1" },
             runtime: {
               providerRuntimeId: "a0b1c2d3e4f5",
               runtimeGeneration: attempt.runtimeGeneration,
@@ -155,7 +463,7 @@ describe("BackupLifecycleSandbox", () => {
       ).pipe(Effect.result);
       assert.ok(Result.isFailure(result));
       assert.equal(result.failure.outcome, "rejected_before_admission");
-      assert.equal(result.failure.safeResultCode, "codex_resume_supervisor_exited");
+      assert.equal(result.failure.safeResultCode, "sidecar_resume_supervisor_exited");
     }),
   );
 
@@ -329,42 +637,6 @@ describe("BackupLifecycleSandbox", () => {
       }),
   );
 
-  it.effect("restores an owned source backup into a distinct resume runtime generation", () =>
-    Effect.gen(function* () {
-      const sourceRuntimeGeneration = "warm-runtime-generation";
-      const restored = yield* withProvider(
-        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
-          provider.restoreCurrentBackup({
-            ...attempt,
-            attempt: "e14136de-111f-4f6b-bf71-7cfbe7794544",
-            operationNonce: "resume-operation",
-            runtimeGeneration: "resume-runtime-generation",
-            backup: {
-              backupId: backup.id,
-              preparedAt: "2026-09-01T00:00:00.000Z",
-              confirmedAt: "2026-09-01T00:00:01.000Z",
-              sourceRuntimeGeneration,
-            },
-            ownedBackupIds: [backup.id],
-          }),
-        ),
-        {
-          runtime: runtimeCapabilities({
-            readFileStream: async () =>
-              stream(
-                `${JSON.stringify({
-                  sessionId: attempt.sessionId,
-                  attempt: "8a650fe2-bc8b-42fc-a163-7df0eb28ae18",
-                  runtimeGeneration: sourceRuntimeGeneration,
-                })}\n`,
-              ),
-          }),
-        },
-      );
-      assert.strictEqual(restored, undefined);
-    }),
-  );
-
   it.effect("reconciles an ambiguous runtime stop only from observed stopped state", () =>
     Effect.gen(function* () {
       const requestedAt = "2026-09-01T00:00:00.000Z";
@@ -403,31 +675,23 @@ describe("BackupLifecycleSandbox", () => {
           safeResultCode: "sandbox_runtime_stop_outcome_unknown",
         }),
       );
+      let stateReads = 0;
+      const resolved = yield* withProvider(
+        Effect.flatMap(BackupLifecycleSandbox, (provider) =>
+          provider.requestRuntimeStop({ ...attempt, requestedAt }),
+        ),
+        {
+          runtime: runtimeCapabilities({
+            getState: async () => {
+              stateReads += 1;
+              return { status: "stopping" };
+            },
+          }),
+        },
+      );
+      assert.strictEqual(resolved, requestedAt);
+      assert.strictEqual(stateReads, 0);
     }),
-  );
-
-  it.effect(
-    "accepts a resolved runtime stop request without requiring immediate stopped state",
-    () =>
-      Effect.gen(function* () {
-        let stateReads = 0;
-        const requestedAt = "2026-09-01T00:00:00.000Z";
-        const accepted = yield* withProvider(
-          Effect.flatMap(BackupLifecycleSandbox, (provider) =>
-            provider.requestRuntimeStop({ ...attempt, requestedAt }),
-          ),
-          {
-            runtime: runtimeCapabilities({
-              getState: async () => {
-                stateReads += 1;
-                return { status: "stopping" };
-              },
-            }),
-          },
-        );
-        assert.strictEqual(accepted, requestedAt);
-        assert.strictEqual(stateReads, 0);
-      }),
   );
 
   it.effect("reconciles an ambiguous Pi stop only from process absence", () =>
@@ -480,9 +744,10 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
     ...attempt,
     sessionId: "a0b1c2d3e4f5",
     selection: { agent: "codex", model: "gpt-5.4", effort: "high" },
-    codex: { token: "a".repeat(64), threadId: "native-thread", initialTurnId: "first-turn" },
+    sidecar: { token: "a".repeat(64), threadId: "native-thread", initialTurnId: "first-turn" },
   };
   const snapshot = {
+    agent: "codex",
     generation: codex.runtimeGeneration,
     threadId: "native-thread",
     version: CODEX_VERSION,
@@ -490,9 +755,6 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
       model: "gpt-5.4",
       effort: "high",
       workspace: "/workspace/a0b1c2d3e4f5",
-      modelProvider: "scotty-managed",
-      approvalPolicy: "never",
-      sandbox: "dangerFullAccess",
     },
     ready: true,
     failure: null,
@@ -536,7 +798,7 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
             yield* provider.quiescePi({ ...codex, credentials: sessionRuntimeCredentials([]) });
             yield* provider.syncWorkspace(codex);
             const prepared = yield* provider.prepareBackup(codex);
-            assert.deepStrictEqual(prepared.identity.codex, {
+            assert.deepStrictEqual(prepared.identity.sidecar, {
               threadId: "native-thread",
               initialTurnId: "first-turn",
             });
@@ -655,8 +917,8 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
             assert.equal(path, "/save");
             return Response.json({
               generation: codex.runtimeGeneration,
-              threadId: codex.codex?.threadId,
-              initialTurnId: codex.codex?.initialTurnId,
+              threadId: codex.sidecar?.threadId,
+              initialTurnId: codex.sidecar?.initialTurnId,
             });
           },
           getProcess: async () =>
@@ -753,7 +1015,7 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
           }),
         },
       );
-      assert.equal(failure(result).safeResultCode, "codex_server_stop_unobserved");
+      assert.equal(failure(result).safeResultCode, "sidecar_server_stop_unobserved");
       assert.deepStrictEqual(commands, []);
     }),
   );
@@ -774,7 +1036,7 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
           }),
         },
       );
-      assert.equal(failure(saved).safeResultCode, "codex_save_outcome_unknown");
+      assert.equal(failure(saved).safeResultCode, "sidecar_save_outcome_unknown");
       const transport = yield* withProvider(
         Effect.flatMap(BackupLifecycleSandbox, (provider) =>
           provider.verifyTransport({
@@ -794,7 +1056,7 @@ describe("Codex uses the existing backup lifecycle adapter", () => {
           }),
         },
       );
-      assert.equal(failure(transport).safeResultCode, "codex_resume_history_mismatch");
+      assert.equal(failure(transport).safeResultCode, "sidecar_resume_history_mismatch");
     }),
   );
 });

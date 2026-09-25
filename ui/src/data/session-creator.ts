@@ -174,7 +174,7 @@ export const buildCreateSessionPayload = (draft: CreateSessionDraft): CreateSess
 
   const prompt = draft.prompt.replace(/\r\n?/gu, "\n").trim();
   if (prompt.length === 0)
-    return { ok: false, field: "prompt", message: "Describe what Codex should do." };
+    return { ok: false, field: "prompt", message: "Describe what the agent should do." };
   const rawCap = draft.hardCapSeconds?.trim() ?? "";
   if (rawCap.length === 0)
     return { ok: true, payload: { title, repo, prompt, provider: "cloudflare" } };

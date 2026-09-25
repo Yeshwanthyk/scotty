@@ -21,7 +21,7 @@
       "ignoreDependencies": ["cloudflare"]
     },
     "worker": {
-      "entry": ["test/**/*.test.ts", "src/agent/codex/main.ts"],
+      "entry": ["test/**/*.test.ts", "src/agent/codex/main.ts", "src/agent/claude/server.ts"],
       "project": ["src/**/*.ts"],
       "ignoreDependencies": ["smol-toml"]
     }

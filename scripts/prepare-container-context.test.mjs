@@ -431,8 +431,10 @@ test("discovery follows transitive container-only source imports without includi
     await writeTree(root, {
       "worker/src/agent/codex/server.ts": "export { value } from './server-only.ts';",
       "worker/src/agent/codex/server-only.ts": "export const value = 1;",
+      "worker/src/agent/claude/server.ts": "export const value = 2;",
     });
     assert.deepEqual(await discoverContainerBuildInputs(root), [
+      "worker/src/agent/claude/server.ts",
       "worker/src/agent/codex/server-only.ts",
       "worker/src/agent/codex/server.ts",
     ]);
@@ -447,17 +449,10 @@ test("real discovery prepares and bundles the Effect Codex server for standalone
   try {
     const discovered = await discoverContainerBuildInputs(checkout);
     assert.ok(discovered.includes("protocol/agents/codex/codex-app-server.ts"));
-    for (const module of [
-      "process",
-      "session",
-      "framing",
-      "errors",
-      "server",
-      "runtime",
-      "token-file",
-    ]) {
+    for (const module of ["process", "session", "framing", "errors", "server", "runtime"]) {
       assert.ok(discovered.includes(`worker/src/agent/codex/${module}.ts`));
     }
+    assert.ok(discovered.includes("worker/src/agent/sidecar/token-file.ts"));
     assert.ok(discovered.every((path) => !path.startsWith("cli/")));
     assert.ok(discovered.every((path) => !path.split("/").includes("node_modules")));
     await materializeProjectInputs(checkout, root, [...CONTAINER_STATIC_INPUTS, ...discovered]);

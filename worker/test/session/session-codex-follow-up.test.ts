@@ -1,5 +1,5 @@
 import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
-import { CodexSnapshot } from "../../src/agent/codex/runtime";
+import { SidecarSnapshot } from "../../src/agent/sidecar/protocol";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import type { SessionAuthority } from "../../src/session-actor/authority";
 import {
@@ -23,9 +23,10 @@ const CODEX_THREAD = "runtime-1";
 const CODEX_TURN = "transport-runtime-1";
 const CODEX_INCARNATION = "container-runtime-1";
 
-type CodexPrompt = (typeof CodexSnapshot.Type)["prompt"];
+type CodexPrompt = (typeof SidecarSnapshot.Type)["prompt"];
 
-const codexSnapshot = (prompt: CodexPrompt): typeof CodexSnapshot.Type => ({
+const codexSnapshot = (prompt: CodexPrompt): typeof SidecarSnapshot.Type => ({
+  agent: "codex",
   generation: CODEX_GENERATION,
   threadId: CODEX_THREAD,
   version: CODEX_VERSION,
@@ -33,9 +34,6 @@ const codexSnapshot = (prompt: CodexPrompt): typeof CodexSnapshot.Type => ({
     model: CODEX_SELECTION.model,
     effort: CODEX_SELECTION.effort,
     workspace: `/workspace/${SESSION_ID}`,
-    modelProvider: "scotty-managed",
-    approvalPolicy: "never",
-    sandbox: "dangerFullAccess",
   },
   ready: true,
   failure: null,
@@ -43,9 +41,9 @@ const codexSnapshot = (prompt: CodexPrompt): typeof CodexSnapshot.Type => ({
   cleanup: null,
 });
 
-const runningSnapshot = (): typeof CodexSnapshot.Type =>
+const runningSnapshot = (): typeof SidecarSnapshot.Type =>
   codexSnapshot({ status: "running", turnId: CODEX_TURN });
-const interruptedSnapshot = (): typeof CodexSnapshot.Type =>
+const interruptedSnapshot = (): typeof SidecarSnapshot.Type =>
   codexSnapshot({
     status: "terminal",
     turnId: CODEX_TURN,
@@ -87,7 +85,7 @@ const makeCodexHarness = async (
   harness.memory.values.set(sessionHarnessKeys.actorMetadata, {
     ...metadata,
     selection: CODEX_SELECTION,
-    codexControl: { token: CODEX_TOKEN, initialPrompt: "Investigate the failing build" },
+    sidecarControl: { token: CODEX_TOKEN, initialPrompt: "Investigate the failing build" },
   });
   return harness;
 };
@@ -106,12 +104,12 @@ describe("DO-owned Codex follow-ups", () => {
         CODEX_INCARNATION,
         workKind,
       );
-      const conversation = await harness.sandbox.readScottyCodexConversation();
+      const conversation = await harness.sandbox.readScottySidecarConversation();
       expect(conversation?.transport.sessionRevision).toBe(1);
       expect(conversation?.runtimeStopped).toBe(false);
       expect(conversation?.messageAdmissionAvailable).toBe(false);
       expect(conversation?.turns[0]?.id).toBe(CODEX_TURN);
-      expect((await harness.sandbox.steerScottyCodexSession("later"))?.status).toBe(409);
+      expect((await harness.sandbox.steerScottySidecarSession("later"))?.status).toBe(409);
       expect(nativeReads).toBe(1);
     });
 
@@ -121,7 +119,7 @@ describe("DO-owned Codex follow-ups", () => {
       CODEX_INCARNATION,
       "down",
     );
-    await expect(harness.sandbox.readScottyCodexConversation()).rejects.toMatchObject({
+    await expect(harness.sandbox.readScottySidecarConversation()).rejects.toMatchObject({
       code: "conflict",
     });
   });
@@ -141,7 +139,7 @@ describe("DO-owned Codex follow-ups", () => {
       CODEX_INCARNATION,
       "evidence",
     );
-    await expect(harness.sandbox.readScottyCodexConversation()).rejects.toMatchObject({
+    await expect(harness.sandbox.readScottySidecarConversation()).rejects.toMatchObject({
       code: "conflict",
     });
   });
@@ -162,15 +160,15 @@ describe("DO-owned Codex follow-ups", () => {
       return Response.json(active ? runningSnapshot() : interruptedSnapshot());
     };
     const first = await makeCodexHarness(native);
-    const accepted = await first.sandbox.steerScottyCodexSession(
+    const accepted = await first.sandbox.steerScottySidecarSession(
       "Check the tests",
       "queued-1",
       "followUp",
     );
     expect(accepted?.status).toBe(202);
-    await first.sandbox.drainCodexFollowUps();
+    await first.sandbox.drainSidecarFollowUps();
     expect(posts).toBe(0);
-    const conversation = await first.sandbox.readScottyCodexConversation();
+    const conversation = await first.sandbox.readScottySidecarConversation();
     expect(conversation?.messageAdmissionAvailable).toBe(true);
     expect(conversation?.queue.followUp).toEqual([{ id: "queued-1", text: "Check the tests" }]);
     const restored = await createSessionHarness({
@@ -179,8 +177,8 @@ describe("DO-owned Codex follow-ups", () => {
       containerFetch: native,
     });
     active = false;
-    await restored.sandbox.drainCodexFollowUps();
-    await restored.sandbox.drainCodexFollowUps();
+    await restored.sandbox.drainSidecarFollowUps();
+    await restored.sandbox.drainSidecarFollowUps();
     expect(posts).toBe(1);
     expect(posted).toEqual([
       expect.objectContaining({
@@ -189,7 +187,7 @@ describe("DO-owned Codex follow-ups", () => {
         text: "Check the tests",
       }),
     ]);
-    const replay = await restored.sandbox.steerScottyCodexSession(
+    const replay = await restored.sandbox.steerScottySidecarSession(
       "Check the tests",
       "queued-1",
       "followUp",
@@ -220,10 +218,10 @@ describe("DO-owned Codex follow-ups", () => {
       }
       return Response.json(admitted ? runningSnapshot() : interruptedSnapshot());
     });
-    await harness.sandbox.steerScottyCodexSession("Check again", "queued-lost", "followUp");
-    await expect(harness.sandbox.drainCodexFollowUps()).rejects.toBeDefined();
+    await harness.sandbox.steerScottySidecarSession("Check again", "queued-lost", "followUp");
+    await expect(harness.sandbox.drainSidecarFollowUps()).rejects.toBeDefined();
     expect(harness.read(queueKey)).toMatchObject({ pending: [{ id: "queued-lost" }] });
-    await harness.sandbox.drainCodexFollowUps();
+    await harness.sandbox.drainSidecarFollowUps();
     expect(posts).toBe(2);
     expect(posted).toEqual([
       expect.objectContaining({ mode: "message", clientUserMessageId: "queued-lost" }),
@@ -235,13 +233,13 @@ describe("DO-owned Codex follow-ups", () => {
   it("rejects a reused ID with different text and requires a stable client ID", async () => {
     const harness = await makeCodexHarness(async () => Response.json(runningSnapshot()));
     expect(
-      (await harness.sandbox.steerScottyCodexSession("one", "same-id", "followUp"))?.status,
+      (await harness.sandbox.steerScottySidecarSession("one", "same-id", "followUp"))?.status,
     ).toBe(202);
     expect(
-      (await harness.sandbox.steerScottyCodexSession("two", "same-id", "followUp"))?.status,
+      (await harness.sandbox.steerScottySidecarSession("two", "same-id", "followUp"))?.status,
     ).toBe(409);
     expect(
-      (await harness.sandbox.steerScottyCodexSession("one", undefined, "followUp"))?.status,
+      (await harness.sandbox.steerScottySidecarSession("one", undefined, "followUp"))?.status,
     ).toBe(400);
   });
 });

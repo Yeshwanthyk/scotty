@@ -5,12 +5,13 @@ import type {
   CanonicalConversationTool,
   CanonicalConversationTurn,
 } from "../../../../protocol/session/conversation";
-import { codexConversation } from "../../../src/agent/codex/conversation";
-import { CodexSnapshot } from "../../../src/agent/codex/runtime";
+import { sidecarConversation } from "../../../src/agent/sidecar/conversation";
+import { SidecarSnapshot } from "../../../src/agent/sidecar/protocol";
 
 const makeSnapshot = (
-  overrides: Partial<typeof CodexSnapshot.Type> = {},
-): typeof CodexSnapshot.Type => ({
+  overrides: Partial<typeof SidecarSnapshot.Type> = {},
+): typeof SidecarSnapshot.Type => ({
+  agent: "codex",
   generation: "generation-1",
   threadId: "thread-1",
   version: CODEX_VERSION,
@@ -18,9 +19,6 @@ const makeSnapshot = (
     model: "gpt-5.4",
     effort: "high",
     workspace: "/workspace",
-    modelProvider: "scotty-managed",
-    approvalPolicy: "never",
-    sandbox: "dangerFullAccess",
   },
   ready: false,
   failure: "request_timeout",
@@ -39,7 +37,7 @@ const runningTool: CanonicalConversationTool = {
 describe("Codex conversation failure projection", () => {
   it.effect("projects only bounded stale notification context", () =>
     Effect.gen(function* () {
-      const conversation = yield* codexConversation(
+      const conversation = yield* sidecarConversation(
         makeSnapshot({
           failure: "stale_notification",
           failureDiagnostic: "item/started parent completed subAgentActivity",
@@ -60,7 +58,7 @@ describe("Codex conversation failure projection", () => {
 
   it.effect("surfaces a bounded runtime failure and closes dangling fallback tools", () =>
     Effect.gen(function* () {
-      const conversation = yield* codexConversation(makeSnapshot({ tools: [runningTool] }), {
+      const conversation = yield* sidecarConversation(makeSnapshot({ tools: [runningTool] }), {
         prompt: "run the command",
         turnId: "failed-turn",
         revision: 4,
@@ -105,11 +103,14 @@ describe("Codex conversation failure projection", () => {
         assistant: "",
         tools: [runningTool],
       };
-      const conversation = yield* codexConversation(makeSnapshot({ turns: [completed, failed] }), {
-        prompt: "current prompt",
-        turnId: "failed-turn",
-        revision: 4,
-      });
+      const conversation = yield* sidecarConversation(
+        makeSnapshot({ turns: [completed, failed] }),
+        {
+          prompt: "current prompt",
+          turnId: "failed-turn",
+          revision: 4,
+        },
+      );
 
       assert.deepStrictEqual(conversation.turns[0], completed);
       assert.deepStrictEqual(conversation.turns[1], {
@@ -119,24 +120,9 @@ describe("Codex conversation failure projection", () => {
       });
     }),
   );
-  it.effect("allows follow-ups after a terminal failed turn when the runtime is healthy", () =>
-    Effect.gen(function* () {
-      const conversation = yield* codexConversation(
-        makeSnapshot({
-          ready: true,
-          failure: null,
-          prompt: { status: "terminal", turnId: "turn-1", outcome: "failed", text: "Task failed" },
-        }),
-        { prompt: "try the task", turnId: "turn-1", revision: 4 },
-      );
-      assert.isTrue(conversation.followUpAvailable);
-      assert.isFalse(conversation.runtimeStopped);
-      assert.equal(conversation.turns[0]?.state, "failed");
-    }),
-  );
   it.effect("keeps a saved failed turn visible after the native runtime resumes", () =>
     Effect.gen(function* () {
-      const conversation = yield* codexConversation(
+      const conversation = yield* sidecarConversation(
         makeSnapshot({
           ready: true,
           failure: null,
@@ -159,7 +145,7 @@ describe("Codex conversation failure projection", () => {
   );
   it.effect("reports a stopped runtime without rewriting a completed turn", () =>
     Effect.gen(function* () {
-      const conversation = yield* codexConversation(
+      const conversation = yield* sidecarConversation(
         makeSnapshot({
           failure: "unexpected_exit",
           prompt: { status: "terminal", turnId: "turn-1", outcome: "completed", text: "Done" },

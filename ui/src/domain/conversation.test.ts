@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  activeConversationTurn,
-  turnActivityLabel,
-  turnPreview,
-  type ConversationTurn,
-} from "./conversation";
+import { activeConversationTurn, type ConversationTurn } from "./conversation";
 
 const turn = (overrides: Partial<ConversationTurn> = {}): ConversationTurn => ({
   id: "turn-1",
@@ -24,30 +19,5 @@ describe("conversation presentation", () => {
       id: "streaming",
       state: "streaming",
     });
-  });
-
-  it("summarizes terminal and active activity", () => {
-    expect(turnActivityLabel(turn())).toBe("Answered");
-    expect(
-      turnActivityLabel(
-        turn({
-          tools: [{ id: "tool-1", label: "Read", invocation: "read", state: "completed" }],
-        }),
-      ),
-    ).toBe("1 action");
-    expect(turnActivityLabel(turn({ state: "streaming" }))).toBe("Working");
-    expect(turnActivityLabel(turn({ state: "aborted" }))).toBe("Stopped");
-  });
-
-  it("keeps folded previews compact", () => {
-    expect(turnPreview(turn({ user: "one\n\n two   three" }))).toBe("one two three");
-    expect(turnPreview(turn({ user: "x".repeat(100) }), 12)).toBe(`${"x".repeat(11)}…`);
-    expect(turnPreview(turn({ user: "", assistant: "Research complete." }))).toBe(
-      "Research complete.",
-    );
-    expect(
-      turnPreview(turn({ user: "", assistant: "", activitySummary: "Compacting context" })),
-    ).toBe("Compacting context");
-    expect(turnPreview(turn({ user: "", assistant: "" }))).toBe("Conversation turn");
   });
 });

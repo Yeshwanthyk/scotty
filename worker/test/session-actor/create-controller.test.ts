@@ -259,6 +259,90 @@ const harness = (options: HarnessOptions = {}) => {
 };
 
 describe("create controller", () => {
+  it.effect("rejects an idempotency mismatch without side effects", () =>
+    Effect.gen(function* () {
+      const stored = metadata();
+      assert.ok(stored.createIdempotency !== null);
+      const test = harness({
+        reservation: {
+          _tag: "Existing",
+          metadata: {
+            ...stored,
+            createIdempotency: { ...stored.createIdempotency, inputDigest: "c".repeat(64) },
+          },
+          authority: warmAuthority(),
+        },
+      });
+      const outcome = yield* Effect.result(test.run());
+      assert.ok(Result.isFailure(outcome));
+      assert.ok(Predicate.isTagged(outcome.failure, "CreateControllerConflict"));
+      assert.strictEqual(test.actorCalls(), 0);
+      assert.strictEqual(test.hardCapCalls(), 0);
+      assert.strictEqual(test.scrubCalls(), 0);
+    }),
+  );
+
+  it.effect("rejects disabled runner creation before reserving metadata", () =>
+    Effect.gen(function* () {
+      const test = harness();
+      const outcome = yield* Effect.result(
+        test.run(
+          request({
+            session: {
+              ...session,
+              execution: { provider: "runner", runnerName: "disabled-runner" },
+            },
+          }),
+        ),
+      );
+      assert.ok(Result.isFailure(outcome));
+      assert.ok(Predicate.isTagged(outcome.failure, "CreateControllerRejected"));
+      assert.strictEqual(outcome.failure.code, "runner_create_disabled");
+      assert.deepStrictEqual(test.events, []);
+    }),
+  );
+  it.effect("rejects a matching replay whose authority is transitioning another operation", () =>
+    Effect.gen(function* () {
+      const test = harness({
+        reservation: {
+          _tag: "Existing",
+          metadata: metadata(),
+          authority: checkpointAuthority(),
+        },
+      });
+
+      const outcome = yield* Effect.result(test.run());
+
+      assert.ok(Result.isFailure(outcome));
+      assert.ok(Predicate.isTagged(outcome.failure, "CreateControllerInvariantFailure"));
+      assert.strictEqual(outcome.failure.code, "create_finished_in_unexpected_state");
+      assert.strictEqual(test.actorCalls(), 0);
+      assert.strictEqual(test.hardCapCalls(), 0);
+      assert.strictEqual(test.scrubCalls(), 0);
+    }),
+  );
+
+  for (const mode of ["executing", "reconciling"] as const) {
+    it.effect(`classifies a matching ${mode} Create replay as in progress`, () =>
+      Effect.gen(function* () {
+        const authority = createAuthority(mode);
+        const test = harness({
+          reservation: { _tag: "Existing", metadata: metadata(), authority },
+        });
+
+        const outcome = yield* test.run();
+
+        assert.ok(Predicate.isTagged(outcome, "InProgress"));
+        assert.strictEqual(outcome.replay, true);
+        assert.strictEqual(outcome.mode, mode);
+        assert.strictEqual(outcome.phase, "IntentCommitted");
+        assert.strictEqual(test.actorCalls(), 0);
+        assert.strictEqual(test.hardCapCalls(), 0);
+        assert.strictEqual(test.scrubCalls(), 0);
+      }),
+    );
+  }
+
   it.effect("arms the hard cap before authority commit and stops when arming fails", () =>
     Effect.gen(function* () {
       const test = harness({ hardCapFailure: true });
@@ -294,85 +378,6 @@ describe("create controller", () => {
     }),
   );
 
-  it.effect("replays matching idempotency without arming or redispatching", () =>
-    Effect.gen(function* () {
-      const test = harness({
-        reservation: { _tag: "Existing", metadata: metadata(), authority: warmAuthority() },
-      });
-      const outcome = yield* test.run();
-      assert.ok(Predicate.isTagged(outcome, "Warm"));
-      assert.strictEqual(outcome.replay, true);
-      assert.strictEqual(test.actorCalls(), 0);
-      assert.strictEqual(test.hardCapCalls(), 0);
-      assert.strictEqual(test.scrubCalls(), 1);
-    }),
-  );
-
-  for (const mode of ["executing", "reconciling"] as const) {
-    it.effect(`classifies a matching ${mode} Create replay as in progress`, () =>
-      Effect.gen(function* () {
-        const authority = createAuthority(mode);
-        const test = harness({
-          reservation: { _tag: "Existing", metadata: metadata(), authority },
-        });
-
-        const outcome = yield* test.run();
-
-        assert.ok(Predicate.isTagged(outcome, "InProgress"));
-        assert.strictEqual(outcome.replay, true);
-        assert.strictEqual(outcome.mode, mode);
-        assert.strictEqual(outcome.phase, "IntentCommitted");
-        assert.strictEqual(test.actorCalls(), 0);
-        assert.strictEqual(test.hardCapCalls(), 0);
-        assert.strictEqual(test.scrubCalls(), 0);
-      }),
-    );
-  }
-
-  it.effect("rejects a matching replay whose authority is transitioning another operation", () =>
-    Effect.gen(function* () {
-      const test = harness({
-        reservation: {
-          _tag: "Existing",
-          metadata: metadata(),
-          authority: checkpointAuthority(),
-        },
-      });
-
-      const outcome = yield* Effect.result(test.run());
-
-      assert.ok(Result.isFailure(outcome));
-      assert.ok(Predicate.isTagged(outcome.failure, "CreateControllerInvariantFailure"));
-      assert.strictEqual(outcome.failure.code, "create_finished_in_unexpected_state");
-      assert.strictEqual(test.actorCalls(), 0);
-      assert.strictEqual(test.hardCapCalls(), 0);
-      assert.strictEqual(test.scrubCalls(), 0);
-    }),
-  );
-
-  it.effect("rejects an idempotency mismatch without side effects", () =>
-    Effect.gen(function* () {
-      const stored = metadata();
-      assert.ok(stored.createIdempotency !== null);
-      const test = harness({
-        reservation: {
-          _tag: "Existing",
-          metadata: {
-            ...stored,
-            createIdempotency: { ...stored.createIdempotency, inputDigest: "c".repeat(64) },
-          },
-          authority: warmAuthority(),
-        },
-      });
-      const outcome = yield* Effect.result(test.run());
-      assert.ok(Result.isFailure(outcome));
-      assert.ok(Predicate.isTagged(outcome.failure, "CreateControllerConflict"));
-      assert.strictEqual(test.actorCalls(), 0);
-      assert.strictEqual(test.hardCapCalls(), 0);
-      assert.strictEqual(test.scrubCalls(), 0);
-    }),
-  );
-
   it.effect("accepts Warm only when transport matches runtime and supervisor proof", () =>
     Effect.gen(function* () {
       const invalid = warmAuthority({
@@ -385,26 +390,6 @@ describe("create controller", () => {
       assert.ok(Predicate.isTagged(outcome.failure, "CreateControllerInvariantFailure"));
       assert.strictEqual(outcome.failure.code, "authority_invalid");
       assert.strictEqual(test.scrubCalls(), 0);
-    }),
-  );
-
-  it.effect("rejects disabled runner creation before reserving metadata", () =>
-    Effect.gen(function* () {
-      const test = harness();
-      const outcome = yield* Effect.result(
-        test.run(
-          request({
-            session: {
-              ...session,
-              execution: { provider: "runner", runnerName: "disabled-runner" },
-            },
-          }),
-        ),
-      );
-      assert.ok(Result.isFailure(outcome));
-      assert.ok(Predicate.isTagged(outcome.failure, "CreateControllerRejected"));
-      assert.strictEqual(outcome.failure.code, "runner_create_disabled");
-      assert.deepStrictEqual(test.events, []);
     }),
   );
 });

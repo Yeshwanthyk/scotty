@@ -1,3 +1,5 @@
+import { AgentIdSchema } from "./agents/agents";
+import type { AgentId } from "./agents/agent-selection";
 import { Schema } from "effect";
 
 export const SessionDeploymentRecordStatusSchema = Schema.Literals([
@@ -68,7 +70,7 @@ export const SessionDeploymentReadinessSchema = Schema.Struct({
   pi: SessionDeploymentPiStateSchema,
   agentRuntime: Schema.optionalKey(
     Schema.Struct({
-      agent: Schema.Literals(["pi", "codex"]),
+      agent: AgentIdSchema,
       state: SessionDeploymentAgentRuntimeStateSchema,
     }),
   ),
@@ -93,7 +95,7 @@ export interface SessionDeploymentReadinessInput {
   readonly runtime: SessionDeploymentRuntimeState;
   readonly pi: SessionDeploymentPiState;
   readonly agentRuntime?: {
-    readonly agent: "pi" | "codex";
+    readonly agent: AgentId;
     readonly state: SessionDeploymentAgentRuntimeState;
   };
 }

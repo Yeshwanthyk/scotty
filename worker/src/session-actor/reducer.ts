@@ -29,6 +29,7 @@ import {
   WarmWorkPhaseSchema,
   WarmWorkProofSchema,
 } from "./authority";
+import { confirmedBackup } from "./backup";
 import { accept, reject } from "./control";
 import type { Decision, EffectIntent, JournalEvent } from "./decision";
 import type { SessionActorInput, SessionCommand, TransitionProof } from "./input";
@@ -132,15 +133,6 @@ const validBackupIdentity = (backup: BackupIdentity): boolean =>
   (backup.confirmedAt === null ||
     (validTimestamp(backup.confirmedAt) &&
       Date.parse(backup.preparedAt) <= Date.parse(backup.confirmedAt)));
-
-const confirmedBackup = (backup: BackupProof): BackupIdentity | null => {
-  const confirmed = backup.confirmed ?? backup.prepared;
-  return confirmed !== null &&
-    confirmed.confirmedAt !== null &&
-    confirmed.backupId === backup.currentBackupId
-    ? confirmed
-    : null;
-};
 
 const validBackup = (backup: BackupProof, currentRequired: boolean): boolean => {
   if (new Set(backup.ownedBackupIds).size !== backup.ownedBackupIds.length) return false;
@@ -644,6 +636,7 @@ const completeResume = (proof: TransitionProof): StableState | undefined => {
         backups: {
           ownedBackupIds: proof.ownedBackupIds,
           prepared: proof.backup,
+          confirmed: proof.backup.confirmedAt !== null ? proof.backup : null,
           currentBackupId: proof.backup.backupId,
         },
         activity: null,

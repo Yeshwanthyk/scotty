@@ -8,10 +8,8 @@ import { stripVTControlCharacters } from "node:util";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import { AuthError } from "alchemy/Auth";
 import { EXIT, main, VERSION, type CliDependencies } from "../scotty";
-import { BeamUpRequestSchema } from "../src/schemas";
 import { managedInstallationPath } from "../src/managed-installation-path.mjs";
 import { deploymentPlanPath } from "../src/deployment-plan";
-import { Schema } from "effect";
 import type { CloudSettings } from "../../protocol/settings/cloud-settings";
 import {
   runtimeImageCompatibilityBytes,
@@ -70,6 +68,7 @@ function harness(
     agent: "pi" as "pi" | "codex",
     pi: { agent: "pi" as const },
     codex: { agent: "codex" as const, model: "gpt-5.6-sol", effort: "high" },
+    claude: { agent: "claude" as const, model: "opus", effort: "high" },
     customInstructions: "",
     environment: {},
   };
@@ -163,8 +162,6 @@ async function planDeployment(h: ReturnType<typeof harness>): Promise<void> {
   h.stdout.length = 0;
   h.stderr.length = 0;
 }
-
-const decodeBeamUpRequest = Schema.decodeUnknownSync(BeamUpRequestSchema);
 
 const pendingUpPath = (home: string, host: string, body: unknown): string => {
   const fingerprint = createHash("sha256")
@@ -421,6 +418,9 @@ describe("configuration and transport", () => {
       effort: "high",
       provider: "cloudflare",
     });
+    expect(body).not.toHaveProperty("newRepo");
+    expect(await main([...beamArgs(), "--new-repo"], h.deps)).toBe(EXIT.OK);
+    expect(body).toMatchObject({ newRepo: true });
     for (const flags of [
       ["--agent", "codex", "--model", "gpt-5.4", "--effort", "ultra"],
       ["--agent", "pi", "--effort", "ultra"],
@@ -461,6 +461,7 @@ describe("configuration and transport", () => {
           agent: "codex",
           pi: { agent: "pi", modelProvider: "openai-codex", model: "gpt-5.6-sol", effort: "high" },
           codex: { agent: "codex", model: "gpt-6-astra", effort: "low" },
+          claude: { agent: "claude", model: "opus", effort: "high" },
           customInstructions: "",
           environment: {},
         },
@@ -642,44 +643,6 @@ describe("configuration and transport", () => {
     expect(opened).toBe("https://worker.example/s/s1");
   });
 
-  test("beam forwards --new-repo and defaults the request field to false", async () => {
-    let body: typeof BeamUpRequestSchema.Type | undefined;
-    const h = harness({
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        body = decodeBeamUpRequest(await request.json());
-        return Response.json({
-          id: "s1",
-          title: "Fix build",
-          url: "https://worker.example/s/s1",
-          branch: "scotty/s1",
-          provider: "cloudflare",
-          status: "warm",
-        });
-      },
-    });
-    expect(
-      await main(
-        [
-          "beam",
-          "fix it",
-          "--title",
-          "Fix build",
-          "--repo",
-          "owner/project",
-          "--provider",
-          "cloudflare",
-          "--new-repo",
-          "--detach",
-          "--host",
-          "https://worker.example",
-        ],
-        h.deps,
-      ),
-    ).toBe(EXIT.OK);
-    expect(body?.newRepo).toBe(true);
-  });
-
   test("beam rejects URL-normalizing repository path segments", async () => {
     const args = [
       "beam",
@@ -755,6 +718,7 @@ describe("configuration and transport", () => {
             agent: "codex",
             pi: { agent: "pi" },
             codex: { agent: "codex", model: "gpt-5.6-sol", effort: "medium" },
+            claude: { agent: "claude", model: "opus", effort: "high" },
             customInstructions: "",
             environment: {},
           },
@@ -1225,6 +1189,7 @@ describe("configuration and transport", () => {
       settings: {
         agent: "codex",
         codex: { agent: "codex", model: "gpt-5.6-sol", effort: "high" },
+        claude: { agent: "claude", model: "opus", effort: "high" },
         environment: { FEATURE: "on" },
       },
     });
@@ -4317,6 +4282,234 @@ describe("commands and schemas", () => {
     }
   });
 
+  test("polls a pending lifecycle response until the session succeeds", async () => {
+    const calls: string[] = [];
+    const h = harness({
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const path = new URL(request.url).pathname;
+        calls.push(`${request.method} ${path}`);
+        if (request.method === "POST")
+          return Response.json(
+            {
+              id: "s1",
+              status: "warm",
+              pending: true,
+              operation: {
+                kind: "snapshot",
+                nonce: "checkpoint-1",
+                deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+            { status: 202 },
+          );
+        if (path.endsWith("/actor"))
+          return Response.json({
+            journal: [
+              {
+                eventType: "completed",
+                transitionKind: "Checkpoint",
+                transitionNonce: "checkpoint-1",
+              },
+            ],
+            authority: {
+              session: { id: "s1" },
+              state: {
+                _tag: "Stable",
+                stable: {
+                  _tag: "Warm",
+                  backups: {
+                    currentBackupId: "backup-1",
+                    confirmed: null,
+                    prepared: { backupId: "backup-1", confirmedAt: "2026-09-24T00:00:00Z" },
+                  },
+                },
+              },
+            },
+          });
+        return Response.json({
+          version: 1,
+          session: {
+            identity: { id: "s1" },
+            authority: { kind: "stable", lifecycle: "warm" },
+            display: { branch: null },
+          },
+        });
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(calls).toEqual([
+      "POST /api/sessions/s1/checkpoint",
+      "GET /api/sessions/s1",
+      "GET /api/sessions/s1/actor",
+    ]);
+    expect(h.json()).toEqual({ id: "s1", status: "warm", backupId: "backup-1" });
+  });
+
+  test("reports the original lifecycle success after a newer transition starts", async () => {
+    const h = harness({
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (request.method === "POST")
+          return Response.json(
+            {
+              id: "s1",
+              status: "warm",
+              pending: true,
+              operation: {
+                kind: "snapshot",
+                nonce: "checkpoint-1",
+                deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+            { status: 202 },
+          );
+        if (new URL(request.url).pathname.endsWith("/actor"))
+          return Response.json({
+            journal: [
+              {
+                eventType: "completed",
+                transitionKind: "Checkpoint",
+                transitionNonce: "checkpoint-1",
+              },
+            ],
+            authority: { session: { id: "s1" }, state: { _tag: "Transitioning" } },
+          });
+        return Response.json({
+          version: 1,
+          session: {
+            identity: { id: "s1" },
+            authority: { kind: "transitioning", action: "sleep" },
+            display: { branch: "scotty/s1" },
+          },
+        });
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(h.json()).toEqual({ id: "s1", status: "warm", branch: "scotty/s1" });
+  });
+
+  test("polls a pending lifecycle response and reports a failed session", async () => {
+    const h = harness({
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (request.method === "POST")
+          return Response.json(
+            {
+              id: "s1",
+              status: "sleeping",
+              pending: true,
+              operation: {
+                kind: "resume",
+                nonce: "resume-1",
+                deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+            { status: 202 },
+          );
+        return Response.json({
+          version: 1,
+          session: {
+            identity: { id: "s1" },
+            authority: { kind: "stable", lifecycle: "failed" },
+            display: { branch: null },
+          },
+        });
+      },
+    });
+    expect(await main(["resume", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
+    expect(h.stdout.join("")).toBe("");
+    expect(h.error()).toEqual({
+      error: {
+        code: "upstream",
+        message: "Session resume failed",
+        hint: "Inspect Worker observability for the redacted upstream failure",
+      },
+    });
+  });
+
+  test("polls an overdue transition through network and 503 failures", async () => {
+    const requests: string[] = [];
+    const h = harness({
+      fetch: async (input, init) => {
+        const method = new Request(input, init).method;
+        requests.push(method);
+        if (method === "GET" && requests.length === 2)
+          return Promise.reject(new Error("network outage"));
+        if (method === "GET" && requests.length === 3)
+          return Response.json(
+            { error: { code: "upstream", message: "temporary" } },
+            { status: 503 },
+          );
+        if (method === "GET")
+          return Response.json({
+            version: 1,
+            session: {
+              identity: { id: "s1" },
+              authority: { kind: "stable", lifecycle: "failed" },
+              display: { branch: null },
+            },
+          });
+        return Response.json(
+          {
+            id: "s1",
+            status: "warm",
+            pending: true,
+            operation: {
+              kind: "snapshot",
+              nonce: "checkpoint-1",
+              deadlineAt: new Date(Date.now() - 31_000).toISOString(),
+            },
+          },
+          { status: 202 },
+        );
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
+    expect(requests).toEqual(["POST", "GET", "GET", "GET"]);
+    expect(h.error().error.code).toBe("upstream");
+  }, 10_000);
+
+  test("fails a pending lifecycle poll immediately on authorization rejection", async () => {
+    const methods: string[] = [];
+    const h = harness({
+      fetch: async (input, init) => {
+        const method = new Request(input, init).method;
+        methods.push(method);
+        return method === "POST"
+          ? Response.json(
+              {
+                id: "s1",
+                status: "warm",
+                pending: true,
+                operation: {
+                  kind: "snapshot",
+                  nonce: "checkpoint-1",
+                  deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+                },
+              },
+              { status: 202 },
+            )
+          : Response.json(
+              { error: { code: "unauthorized", message: "Unauthorized" } },
+              { status: 401 },
+            );
+      },
+    });
+    expect(await main(["checkpoint", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.AUTH,
+    );
+    expect(methods).toEqual(["POST", "GET"]);
+  });
+
   test("operation optionals omit nulls and missing response IDs use the requested ID", async () => {
     for (const [args, reply, expected] of [
       [
@@ -4626,7 +4819,7 @@ describe("commands and schemas", () => {
     expect(userInfo.stderr.join("")).not.toContain("url-secret");
   });
 
-  test("non-TTY vaporize never prompts and sends DELETE", async () => {
+  test("non-TTY vaporize sends DELETE and validates exact completion", async () => {
     let method = "";
     const h = harness({
       fetch: async (_input, init) => {
@@ -4641,9 +4834,6 @@ describe("commands and schemas", () => {
     expect(h.prompts()).toBe(0);
     expect(h.json()).toEqual({ id: "s1", status: "gone" });
     expect(h.stdout.join("")).not.toContain("must-not-leak");
-  });
-
-  test("vaporize requires the exact requested ID and literal gone status", async () => {
     for (const reply of [
       { id: "different", status: "gone" },
       { id: "s1", status: "sleeping" },

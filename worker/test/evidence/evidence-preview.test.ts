@@ -354,7 +354,7 @@ describe("evidence preview host adapter", () => {
     expect(cancel).toHaveBeenCalledWith("2".repeat(32));
   });
 
-  it("uses URL authority, rejects Host disagreement, and never authorizes the mismatch", async () => {
+  it("uses URL authority and never falls through malformed or mismatched preview requests", async () => {
     const response = await handleEvidencePreviewRequest(
       new Request(`https://${HOST}/`, {
         headers: {
@@ -367,9 +367,6 @@ describe("evidence preview host adapter", () => {
     expect(response?.status).toBe(404);
     expect(admit).not.toHaveBeenCalled();
     expect(proxy).not.toHaveBeenCalled();
-  });
-
-  it("never falls through for malformed preview suffixes or URL-only requests", async () => {
     const malformed = await handleEvidencePreviewRequest(
       new Request(`https://${BASE}/api/sessions`, { headers: { host: BASE } }),
       env,
@@ -415,7 +412,6 @@ describe("evidence preview host adapter", () => {
     expect(await response.text()).toBe("asset");
     expect(assets).toHaveBeenCalledOnce();
   });
-
   it("returns null only when the host is outside the configured preview suffix", async () => {
     expect(
       await handleEvidencePreviewRequest(

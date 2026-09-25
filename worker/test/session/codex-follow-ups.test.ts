@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
 import { decodeSessionMessageInput } from "../../../protocol/session/session-steer";
-import { emptyCodexFollowUps, enqueueCodexFollowUp } from "../../src/session/codex-follow-ups";
+import {
+  emptySidecarFollowUps,
+  enqueueSidecarFollowUp,
+} from "../../src/session/sidecar-follow-ups";
 
 describe("Codex follow-up admission bounds", () => {
   it("retains queued text beyond the former serialized byte cap", () => {
@@ -10,7 +13,7 @@ describe("Codex follow-up admission bounds", () => {
       pending: [],
       receipts: Array.from({ length: 6 }, (_, index) => ({ id: `receipt-${index}`, text })),
     };
-    const result = enqueueCodexFollowUp(queue, { id: "next", text });
+    const result = enqueueSidecarFollowUp(queue, { id: "next", text });
     expect(result.status).toBe("queued");
     expect(result.queue.pending[0]?.text).toBe(text);
   });
@@ -22,11 +25,11 @@ describe("Codex follow-up admission bounds", () => {
         text: "done",
       })),
     };
-    expect(enqueueCodexFollowUp(queue, { id: "receipt-0", text: "done" }).status).toBe("replay");
-    expect(enqueueCodexFollowUp(queue, { id: "new", text: "new" }).status).toBe("full");
-    expect(enqueueCodexFollowUp(emptyCodexFollowUps(), { id: "first", text: "first" }).status).toBe(
-      "queued",
-    );
+    expect(enqueueSidecarFollowUp(queue, { id: "receipt-0", text: "done" }).status).toBe("replay");
+    expect(enqueueSidecarFollowUp(queue, { id: "new", text: "new" }).status).toBe("full");
+    expect(
+      enqueueSidecarFollowUp(emptySidecarFollowUps(), { id: "first", text: "first" }).status,
+    ).toBe("queued");
   });
   it("accepts only the explicit follow-up public intent while preserving default steering", () => {
     expect(

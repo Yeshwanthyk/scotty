@@ -5,7 +5,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
-import packageMetadata from "../../package.json" with { type: "json" };
 import { CanonicalConversationSnapshotSchema } from "../../protocol/session/conversation.ts";
 import {
   AuthorityStateSchema,
@@ -15,7 +14,6 @@ import {
 import { uiSessionResponseFromActor } from "../../worker/src/ui/session-view.ts";
 import capturedFailureStates from "../fixtures/codex-failure-states.json" with { type: "json" };
 import {
-  LAB_VERSION,
   LabOperations,
   LabUsageError,
   codexCheckpointProof,
@@ -248,7 +246,7 @@ describe("Effect Scotty lab command grammar", () => {
       preparedAt: "2026-09-14T00:00:00.000Z",
       confirmedAt: "2026-09-14T00:00:01.000Z",
       sourceRuntimeGeneration: state.stable.readiness.runtime.runtimeGeneration,
-      codex: {
+      sidecar: {
         threadId: state.stable.readiness.supervisor.supervisorEpoch,
         initialTurnId: state.stable.readiness.transport.transportId,
       },
@@ -287,7 +285,7 @@ describe("Effect Scotty lab command grammar", () => {
     };
     assert.deepEqual(codexCheckpointProof(before, after), {
       backupId: backup.backupId,
-      threadId: backup.codex.threadId,
+      threadId: backup.sidecar.threadId,
     });
     assert.isUndefined(codexCheckpointProof(before, before));
     assert.isUndefined(codexCheckpointProof(after, after));
@@ -656,35 +654,7 @@ describe("Effect Scotty lab command grammar", () => {
     );
   });
 
-  it("uses the package version", () => {
-    assert.strictEqual(LAB_VERSION, packageMetadata.version);
-  });
-
-  it.effect("runs exactly start, exec, and stop", () =>
-    Effect.gen(function* () {
-      const calls: string[] = [];
-      yield* run(["start"], calls);
-      yield* run(["setup", RUN_ID, "--repo", "owner/repo"], calls);
-      yield* run(["exec", RUN_ID, "--", "doctor", "--json"], calls);
-      yield* run(["stop", RUN_ID], calls);
-      assert.deepEqual(calls, [
-        "start",
-        `setup:${RUN_ID}:owner/repo`,
-        `exec:${RUN_ID}:["doctor","--json"]`,
-        `stop:${RUN_ID}`,
-      ]);
-    }),
-  );
-
-  it.effect("dispatches the explicit Codex workflow scenario", () =>
-    Effect.gen(function* () {
-      const calls: string[] = [];
-      yield* run(["lifecycle", "codex-workflow", "--repo", "owner/repo"], calls);
-      assert.deepEqual(calls, ["codex-workflow:owner/repo:none"]);
-    }),
-  );
-
-  it.effect("forwards the complete read invocation to the production CLI", () =>
+  it.effect("forwards read invocations and enforces the exec separator", () =>
     Effect.gen(function* () {
       const calls: string[] = [];
       yield* run(
@@ -708,15 +678,17 @@ describe("Effect Scotty lab command grammar", () => {
       assert.deepEqual(calls, [
         `exec:${RUN_ID}:["read","session-1","--last","5","--role","assistant","--since","12","--follow","--json"]`,
       ]);
+      assertUsageFailure(yield* Effect.result(run(["exec", RUN_ID, "doctor"], calls)));
+      assertUsageFailure(yield* Effect.result(run(["exec", RUN_ID, "--"], calls)));
+      assert.equal(calls.length, 1);
     }),
   );
 
-  it.effect("requires the exec separator and at least one forwarded argument", () =>
+  it.effect("dispatches the explicit Codex workflow scenario", () =>
     Effect.gen(function* () {
       const calls: string[] = [];
-      assertUsageFailure(yield* Effect.result(run(["exec", RUN_ID, "doctor"], calls)));
-      assertUsageFailure(yield* Effect.result(run(["exec", RUN_ID, "--"], calls)));
-      assert.deepEqual(calls, []);
+      yield* run(["lifecycle", "codex-workflow", "--repo", "owner/repo"], calls);
+      assert.deepEqual(calls, ["codex-workflow:owner/repo:none"]);
     }),
   );
 

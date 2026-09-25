@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import {
+  CredentialKindSchema,
   CredentialNameSchema,
   CredentialRepositoriesSchema,
   CredentialVersionRefSchema,
@@ -38,6 +39,12 @@ export type ScottyCredentialSyncMaterial =
     }
   | {
       readonly name: CredentialName;
+      readonly kind: "anthropic-auth";
+      readonly scope: "global";
+      readonly token: string;
+    }
+  | {
+      readonly name: CredentialName;
       readonly kind: "github-cli";
       readonly scope: CredentialScope;
       readonly repositories?: CredentialRepositories;
@@ -46,7 +53,7 @@ export type ScottyCredentialSyncMaterial =
 
 const CredentialRegistryStatusSchema = Schema.Struct({
   name: CredentialNameSchema,
-  kind: Schema.Literals(["pi-auth", "github-cli"]),
+  kind: CredentialKindSchema,
   scope: Schema.Literals(["global", "repository"]),
   repositories: Schema.optionalKey(CredentialRepositoriesSchema),
   configured: Schema.Boolean,
@@ -186,13 +193,13 @@ export const synchronizeCredentialRegistry = Effect.fnUntraced(function* (input:
   );
   const statuses: Array<typeof CredentialRegistryStatusSchema.Type> = [];
   for (const credential of input.credentials) {
-    const agentCredentials = existing.filter(({ kind }) => kind === "pi-auth");
-    if (credential.kind === "pi-auth" && agentCredentials.length > 1)
-      return yield* credentialRegistrySyncConflict();
-    const name =
-      credential.kind === "pi-auth" && agentCredentials.length === 1
-        ? agentCredentials[0].name
-        : credential.name;
+    // Model credentials are one per kind, so a resync refreshes whichever name already holds it.
+    const sameKind =
+      credential.kind === "github-cli"
+        ? []
+        : existing.filter(({ kind }) => kind === credential.kind);
+    if (sameKind.length > 1) return yield* credentialRegistrySyncConflict();
+    const name = sameKind.length === 1 ? sameKind[0].name : credential.name;
     const current = existing.find((status) => status.name === name);
     if (current !== undefined && current.kind !== credential.kind)
       return yield* credentialRegistrySyncConflict();

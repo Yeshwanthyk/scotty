@@ -7,6 +7,53 @@ change behavior users need to know about.
 
 ## Unreleased
 
+## 0.3.30 — 2026-09-24
+
+### Fixed
+
+- Creating a session no longer fails with a runtime CLI lookup error when
+  GitHub rate-limits release lookups. Scotty uses the last verified runtime CLI
+  and reuses a recent verification for 10 minutes instead of checking GitHub on
+  every session start.
+
+## 0.3.29 — 2026-09-24
+
+### Changed
+
+- Checkpoint, sleep, and resume requests return HTTP 202 with the session view
+  and `pending: true` while the operation is still running, instead of an
+  "outcome is being reconciled" error. HTTP 200 means the session reached the
+  target state. The CLI waits for the operation to finish and keeps its exit
+  codes.
+- When a session reaches its hard-cap drain window while the agent is mid-turn,
+  Scotty waits for the turn to finish before sleeping, up to a force point
+  shortly before the cap.
+
+### Fixed
+
+- Sessions no longer stay awake after their hard cap: cap, drain, and
+  transition alarms that fire slightly early are rescheduled instead of lost,
+  and a stalled transition is driven again once it is overdue.
+- Sleeping a session that was resumed earlier no longer fails at the backup
+  step.
+- Sleeping a busy session stops processes still writing the workspace before
+  the backup, and backups are bounded by the operation's remaining time instead
+  of hanging until the deadline.
+
+## 0.3.28 — 2026-09-24
+
+### Added
+
+- Claude Code is available as a cloud agent next to Pi and Codex. Add a Claude
+  credential with `scotty sync --claude-token-file <path>` and pick the agent and
+  its model in settings or with `--agent claude`.
+
+### Changed
+
+- Model credentials are independent per provider. An installation can hold an
+  OpenAI credential, a Claude credential, or both; a session needs only the
+  credential for its own agent.
+
 ## 0.3.27 — 2026-09-22
 
 ### Fixed

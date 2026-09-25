@@ -4,6 +4,8 @@ import { CircleAlert, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CloudSettings } from "../../../protocol/settings/cloud-settings";
 import { scottyBaseAgentInstructions } from "../../../protocol/agents/agent-instructions";
+import { agentDescriptors, AgentIdSchema } from "../../../protocol/agents/agents";
+import { ClaudeReasoningEffort } from "../../../protocol/agents/claude/claude-model-capabilities";
 import { codexModelCapabilities } from "../../../protocol/agents/codex/codex-model-capabilities";
 import { Button } from "../components/Button";
 import { SettingsShell, type SettingsPane } from "../components/SettingsShell";
@@ -646,13 +648,15 @@ function AgentSection({
     onChange({ pi: { ...draft.pi, ...patch } });
   const setCodex = (patch: Partial<CloudSettings["codex"]>) =>
     onChange({ codex: { ...draft.codex, ...patch } });
+  const setClaude = (patch: Partial<CloudSettings["claude"]>) =>
+    onChange({ claude: { ...draft.claude, ...patch } });
   return (
     <section id="settings-agents" {...stylex.props(styles.section)}>
       <div {...stylex.props(styles.form)}>
         <div {...stylex.props(styles.row)}>
           <span {...stylex.props(styles.label)}>Agent</span>
           <div {...stylex.props(styles.controls)}>
-            {(["pi", "codex"] as const).map((agent) => (
+            {AgentIdSchema.literals.map((agent) => (
               <button
                 key={agent}
                 type="button"
@@ -661,7 +665,7 @@ function AgentSection({
                 onClick={() => onChange({ agent })}
                 {...stylex.props(styles.choice, draft.agent === agent && styles.choiceActive)}
               >
-                {agent === "pi" ? "Pi" : "Codex"}
+                {agentDescriptors[agent].label}
               </button>
             ))}
           </div>
@@ -773,13 +777,53 @@ function AgentSection({
             </div>
           </>
         )}
+        {draft.agent === "claude" && (
+          <>
+            <div {...stylex.props(styles.row)}>
+              <label htmlFor="claude-model" {...stylex.props(styles.label)}>
+                Model
+              </label>
+              <input
+                id="claude-model"
+                aria-label="Claude model"
+                disabled={!owner}
+                placeholder="opus, sonnet, or a model ID"
+                value={draft.claude.model}
+                onChange={(event) => setClaude({ model: event.target.value })}
+                {...stylex.props(styles.input)}
+              />
+            </div>
+            <div {...stylex.props(styles.row)}>
+              <label htmlFor="claude-effort" {...stylex.props(styles.label)}>
+                Reasoning
+              </label>
+              <select
+                id="claude-effort"
+                aria-label="Claude effort"
+                disabled={!owner}
+                value={draft.claude.effort}
+                onChange={(event) => {
+                  const effort = ClaudeReasoningEffort.literals.find(
+                    (literal) => literal === event.target.value,
+                  );
+                  if (effort !== undefined) setClaude({ effort });
+                }}
+                {...stylex.props(styles.select)}
+              >
+                {ClaudeReasoningEffort.literals.map((effort) => (
+                  <option key={effort}>{effort}</option>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
         <div {...stylex.props(styles.row)}>
           <label htmlFor="custom-agent-instructions" {...stylex.props(styles.label)}>
             Custom instructions
           </label>
           <p id="custom-agent-instructions-help" {...stylex.props(styles.help)}>
-            Markdown for new Pi and Codex sessions. Scotty combines it with the base instructions
-            once when a session is created; existing sessions keep their saved copy.
+            Markdown for new agent sessions. Scotty combines it with the base instructions once when
+            a session is created; existing sessions keep their saved copy.
           </p>
           <textarea
             id="custom-agent-instructions"

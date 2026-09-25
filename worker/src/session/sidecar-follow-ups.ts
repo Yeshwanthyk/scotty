@@ -13,7 +13,7 @@ const FollowUpContentSchema = Schema.Struct({
   ...CanonicalConversationQueueItemSchema.fields,
   imageDigest: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))),
 });
-export const CodexFollowUpSchema = Schema.Struct({
+export const SidecarFollowUpSchema = Schema.Struct({
   ...FollowUpContentSchema.fields,
   images: Schema.optionalKey(PiConsoleImagesSchema),
   attempt: Schema.optionalKey(
@@ -29,23 +29,23 @@ export const CodexFollowUpSchema = Schema.Struct({
       : entry.imageDigest === undefined,
   ),
 );
-export const CodexFollowUpsSchema = Schema.Struct({
-  pending: Schema.Array(CodexFollowUpSchema).check(
+export const SidecarFollowUpsSchema = Schema.Struct({
+  pending: Schema.Array(SidecarFollowUpSchema).check(
     Schema.isMaxLength(CONVERSATION_MAX_QUEUE_ITEMS),
   ),
   receipts: Schema.Array(FollowUpContentSchema).check(
     Schema.isMaxLength(CONVERSATION_MAX_QUEUE_ITEMS),
   ),
 });
-export type CodexFollowUps = typeof CodexFollowUpsSchema.Type;
-export const decodeCodexFollowUps = Schema.decodeUnknownEffect(CodexFollowUpsSchema);
-export const emptyCodexFollowUps = (): CodexFollowUps => ({ pending: [], receipts: [] });
+export type SidecarFollowUps = typeof SidecarFollowUpsSchema.Type;
+export const decodeSidecarFollowUps = Schema.decodeUnknownEffect(SidecarFollowUpsSchema);
+export const emptySidecarFollowUps = (): SidecarFollowUps => ({ pending: [], receipts: [] });
 const imageBytes = (image: PiConsoleImage): number =>
   (image.data.length / 4) * 3 - (image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0);
 
-export const enqueueCodexFollowUp = (
-  queue: CodexFollowUps,
-  item: typeof CodexFollowUpSchema.Type,
+export const enqueueSidecarFollowUp = (
+  queue: SidecarFollowUps,
+  item: typeof SidecarFollowUpSchema.Type,
 ) => {
   const existing = [...queue.pending, ...queue.receipts].find((entry) => entry.id === item.id);
   if (existing !== undefined)
@@ -65,7 +65,7 @@ export const enqueueCodexFollowUp = (
   const next = { ...queue, pending: [...queue.pending, item] };
   return { status: "queued" as const, queue: next };
 };
-export const confirmCodexFollowUp = (queue: CodexFollowUps, id: string): CodexFollowUps => {
+export const confirmSidecarFollowUp = (queue: SidecarFollowUps, id: string): SidecarFollowUps => {
   const item = queue.pending.find((entry) => entry.id === id);
   if (item === undefined) return queue;
   return {

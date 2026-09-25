@@ -5,27 +5,28 @@ import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import type { CredentialGrant } from "../../../../protocol/credentials/credentials";
 import { CODEX_VERSION } from "../../../../protocol/agents/codex/codex-app-server";
-import { codexConversation } from "../../../src/agent/codex/conversation";
+import { sidecarConversation } from "../../../src/agent/sidecar/conversation";
+import { SidecarSnapshot } from "../../../src/agent/sidecar/protocol";
 import {
-  admitCodexSandbox,
-  interruptCodexSandbox,
-  readCodexSandbox,
-  sendCodexSandboxMessage,
-  startCodexSandbox,
-  waitForCodexSandbox,
-  type CodexSandboxIdentity,
-  type CodexSandboxStartIdentity,
-} from "../../../src/agent/codex/sandbox";
+  admitSidecarSandbox,
+  interruptSidecarSandbox,
+  readSidecarSandbox,
+  sendSidecarSandboxMessage,
+  startSidecarSandbox,
+  waitForSidecarSandbox,
+  type SidecarSandboxIdentity,
+  type SidecarSandboxStartIdentity,
+} from "../../../src/agent/sidecar/client";
 import { sandboxRuntimeLayer } from "../../../src/sandbox/runtime";
 import { sandboxRuntimeCapabilitiesFake } from "../../support";
 
-const identity: CodexSandboxIdentity = {
+const identity: SidecarSandboxIdentity = {
   sessionId: "a0b1c2d3e4f5",
   generation: "generation-1",
   token: "a".repeat(64),
   selection: { agent: "codex", model: "gpt-5.4", effort: "high" },
 };
-const startIdentity: CodexSandboxStartIdentity = {
+const startIdentity: SidecarSandboxStartIdentity = {
   ...identity,
   configuration: {
     runtimeCli: runtimeCliPin,
@@ -48,7 +49,8 @@ const githubGrant: CredentialGrant = {
   versionRef: "github-version-1",
   handleSlots: [{ provider: "github", slot: "git-https" }],
 };
-const snapshot = {
+const snapshot: typeof SidecarSnapshot.Type = {
+  agent: "codex",
   generation: identity.generation,
   threadId: "thread-1",
   version: CODEX_VERSION,
@@ -56,9 +58,6 @@ const snapshot = {
     model: "gpt-5.4",
     effort: "high",
     workspace: "/workspace/a0b1c2d3e4f5",
-    modelProvider: "scotty-managed",
-    approvalPolicy: "never",
-    sandbox: "dangerFullAccess",
   },
   ready: true,
   failure: null,
@@ -116,9 +115,12 @@ describe("Codex Sandbox adapter", () => {
             return Promise.resolve(Response.json(terminal));
           },
         });
-        const result = yield* sendCodexSandboxMessage(identity, "thread-1", text, "message-1").pipe(
-          Effect.provide(layer),
-        );
+        const result = yield* sendSidecarSandboxMessage(
+          identity,
+          "thread-1",
+          text,
+          "message-1",
+        ).pipe(Effect.provide(layer));
         assert.deepEqual(posted, {
           mode: "message",
           threadId: "thread-1",
@@ -126,7 +128,7 @@ describe("Codex Sandbox adapter", () => {
           clientUserMessageId: "message-1",
         });
         assert.deepEqual(result.snapshot.prompt, terminal.prompt);
-        const conversation = yield* codexConversation(result.snapshot, {
+        const conversation = yield* sidecarConversation(result.snapshot, {
           prompt: text,
           turnId: "turn-1",
           revision: 1,
@@ -146,12 +148,13 @@ describe("Codex Sandbox adapter", () => {
             (spy) => Effect.sync(() => spy.mockRestore()),
           );
           const record = {
-            event: "codex_startup_failed",
+            event: "sidecar_startup_failed",
+            agent: valid ? "codex" : "private",
             stage: "runtime",
             code: valid ? "invalid_saved_state" : "private_secret",
             generation: identity.generation,
           };
-          const result = yield* waitForCodexSandbox(identity).pipe(
+          const result = yield* waitForSidecarSandbox(identity).pipe(
             Effect.provide(
               sandboxRuntimeLayer({
                 ...sandboxRuntimeCapabilitiesFake(),
@@ -202,7 +205,7 @@ describe("Codex Sandbox adapter", () => {
             : Promise.reject(new Error("still starting"));
         },
       });
-      const waiter = yield* waitForCodexSandbox(identity, 35_000).pipe(
+      const waiter = yield* waitForSidecarSandbox(identity, 35_000).pipe(
         Effect.provide(layer),
         Effect.forkChild({ startImmediately: true }),
       );
@@ -229,7 +232,7 @@ describe("Codex Sandbox adapter", () => {
           return Promise.reject(new Error("process exited"));
         },
       });
-      const result = yield* waitForCodexSandbox(identity, 35_000).pipe(
+      const result = yield* waitForSidecarSandbox(identity, 35_000).pipe(
         Effect.provide(layer),
         Effect.result,
       );
@@ -259,7 +262,7 @@ describe("Codex Sandbox adapter", () => {
             });
           },
         });
-        const fiber = yield* readCodexSandbox(identity).pipe(
+        const fiber = yield* readSidecarSandbox(identity).pipe(
           Effect.provide(layer),
           Effect.result,
           Effect.forkChild,
@@ -301,14 +304,14 @@ describe("Codex Sandbox adapter", () => {
           );
         },
       });
-      const waiter = yield* admitCodexSandbox(identity, "thread-1", "one prompt", false).pipe(
+      const waiter = yield* admitSidecarSandbox(identity, "thread-1", "one prompt", false).pipe(
         Effect.provide(layer),
         Effect.forkChild({ startImmediately: true }),
       );
       yield* Deferred.await(entered);
       yield* Fiber.interrupt(waiter);
       assert.isTrue(signal?.aborted);
-      const reconciled = yield* admitCodexSandbox(identity, "thread-1", "one prompt", true).pipe(
+      const reconciled = yield* admitSidecarSandbox(identity, "thread-1", "one prompt", true).pipe(
         Effect.provide(layer),
       );
       assert.equal(reconciled.turnId, "turn-1");
@@ -342,7 +345,7 @@ describe("Codex Sandbox adapter", () => {
           });
         },
       });
-      const processId = yield* startCodexSandbox(startIdentity, [grant, githubGrant]).pipe(
+      const processId = yield* startSidecarSandbox(startIdentity, [grant, githubGrant]).pipe(
         Effect.provide(layer),
       );
       assert.equal(processId, "scotty-codex-generation-1");
@@ -387,7 +390,7 @@ describe("Codex Sandbox adapter", () => {
           [{ ...grant, expires: 0 }],
           [{ ...grant, handleSlots: [{ provider: "openai", slot: "api-key" }] as const }],
         ]) {
-          const result = yield* startCodexSandbox(startIdentity, grants).pipe(
+          const result = yield* startSidecarSandbox(startIdentity, grants).pipe(
             Effect.provide(layer),
             Effect.result,
           );
@@ -399,7 +402,7 @@ describe("Codex Sandbox adapter", () => {
 
   it.effect("rejects malformed generations before private path provisioning", () =>
     Effect.gen(function* () {
-      const result = yield* startCodexSandbox({ ...startIdentity, generation: "../workspace" }, [
+      const result = yield* startSidecarSandbox({ ...startIdentity, generation: "../workspace" }, [
         grant,
       ]).pipe(Effect.provide(sandboxRuntimeLayer(sandboxRuntimeCapabilitiesFake())), Effect.result);
       assert.isTrue(Result.isFailure(result));
@@ -422,7 +425,7 @@ describe("Codex Sandbox adapter", () => {
             return Promise.resolve(Response.json({ ...snapshot, ...changed }));
           },
         });
-        const result = yield* admitCodexSandbox(identity, "thread-1", "one prompt", false).pipe(
+        const result = yield* admitSidecarSandbox(identity, "thread-1", "one prompt", false).pipe(
           Effect.provide(layer),
           Effect.result,
         );
@@ -443,7 +446,7 @@ describe("Codex Sandbox adapter", () => {
             return Promise.resolve(Response.json({ ...snapshot, prompt: { status } }));
           },
         });
-        const result = yield* admitCodexSandbox(identity, "thread-1", "one prompt", true).pipe(
+        const result = yield* admitSidecarSandbox(identity, "thread-1", "one prompt", true).pipe(
           Effect.provide(layer),
           Effect.result,
         );
@@ -478,12 +481,12 @@ describe("Codex Sandbox adapter", () => {
           );
         },
       });
-      const first = yield* admitCodexSandbox(identity, "thread-1", "one prompt", false).pipe(
+      const first = yield* admitSidecarSandbox(identity, "thread-1", "one prompt", false).pipe(
         Effect.provide(layer),
         Effect.result,
       );
       assert.isTrue(Result.isFailure(first));
-      const reconciled = yield* admitCodexSandbox(identity, "thread-1", "one prompt", true).pipe(
+      const reconciled = yield* admitSidecarSandbox(identity, "thread-1", "one prompt", true).pipe(
         Effect.provide(layer),
       );
       assert.equal(reconciled.turnId, "turn-1");
@@ -506,14 +509,14 @@ describe("Codex Sandbox adapter", () => {
           );
         },
       });
-      const result = yield* sendCodexSandboxMessage(
+      const result = yield* sendSidecarSandboxMessage(
         identity,
         "thread-1",
         "adjust",
         "message-1",
       ).pipe(Effect.provide(layer), Effect.result);
       assert.ok(Result.isFailure(result));
-      assert.isTrue(Predicate.isTagged(result.failure, "CodexMessageAdmissionUnknown"));
+      assert.isTrue(Predicate.isTagged(result.failure, "SidecarMessageAdmissionUnknown"));
       assert.equal(posts, 1);
     }),
   );
@@ -559,7 +562,7 @@ describe("Codex Sandbox adapter", () => {
           return Promise.reject(new Error("unexpected Codex request"));
         },
       });
-      const result = yield* interruptCodexSandbox(identity, "thread-1", "turn-1").pipe(
+      const result = yield* interruptSidecarSandbox(identity, "thread-1", "turn-1").pipe(
         Effect.provide(layer),
       );
       assert.equal(result.outcome, "interrupted");
@@ -605,7 +608,7 @@ describe("Codex Sandbox adapter", () => {
           return Promise.reject(new Error("unexpected Codex request"));
         },
       });
-      const result = yield* interruptCodexSandbox(identity, "thread-1", "turn-1").pipe(
+      const result = yield* interruptSidecarSandbox(identity, "thread-1", "turn-1").pipe(
         Effect.provide(layer),
       );
       assert.equal(result.outcome, "completed");
@@ -652,14 +655,14 @@ describe("Codex Sandbox adapter", () => {
             return Promise.reject(new Error("unexpected Codex request"));
           },
         });
-        const result = yield* sendCodexSandboxMessage(
+        const result = yield* sendSidecarSandboxMessage(
           identity,
           "thread-1",
           "adjust",
           `message-${failureMode}`,
         ).pipe(Effect.provide(layer), Effect.result);
         assert.ok(Result.isFailure(result));
-        assert.isTrue(Predicate.isTagged(result.failure, "CodexMessageAdmissionUnknown"));
+        assert.isTrue(Predicate.isTagged(result.failure, "SidecarMessageAdmissionUnknown"));
         assert.equal(posts, 1);
         assert.equal(snapshotReads, failureMode === "post-admission-read" ? 2 : 1);
       }),
@@ -667,7 +670,7 @@ describe("Codex Sandbox adapter", () => {
 
   it.effect("bounds untrusted snapshots", () =>
     Effect.gen(function* () {
-      const result = yield* readCodexSandbox(identity).pipe(
+      const result = yield* readSidecarSandbox(identity).pipe(
         Effect.provide(
           sandboxRuntimeLayer({
             ...sandboxRuntimeCapabilitiesFake(),

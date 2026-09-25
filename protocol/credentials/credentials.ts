@@ -18,7 +18,7 @@ export const CredentialNameSchema = Schema.String.check(
 );
 export type CredentialName = typeof CredentialNameSchema.Type;
 
-export const CredentialKindSchema = Schema.Literals(["pi-auth", "github-cli"]);
+export const CredentialKindSchema = Schema.Literals(["pi-auth", "anthropic-auth", "github-cli"]);
 export type CredentialKind = typeof CredentialKindSchema.Type;
 
 export const CredentialScopeSchema = Schema.Literals(["global", "repository"]);
@@ -174,6 +174,16 @@ export const parseManagedHandle = (value: unknown): Option.Option<ManagedHandle>
 
 export const isManagedHandle = (value: unknown): value is string =>
   Option.isSome(parseManagedHandle(value));
+
+/** Managed handle slots each credential kind may grant to a Session. */
+export const credentialHandleSlots = {
+  "pi-auth": [
+    { provider: "openai", slot: "api-key" },
+    { provider: "openai-codex", slot: "access" },
+  ],
+  "anthropic-auth": [{ provider: "anthropic", slot: "access" }],
+  "github-cli": [{ provider: "github", slot: "git-https" }],
+} as const satisfies { readonly [Kind in CredentialKind]: ReadonlyArray<ManagedHandleSlot> };
 
 const uniqueManagedHandleSlots = (slots: ReadonlyArray<ManagedHandleSlot>): boolean =>
   new Set(slots.map(({ provider, slot }) => `${provider}\u0000${slot}`)).size === slots.length;

@@ -13,6 +13,21 @@ COPY worker/container/pi-packages/sources/scotty-hatch/index.ts worker/container
 COPY worker/container/pi-packages/sources/scotty-browser-test/index.ts worker/container/pi-packages/sources/scotty-browser-test/index.ts
 RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs
 
+FROM docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe AS scotty-claude-server-build
+
+# The Agent SDK stays external: it resolves its native Claude Code binary from its own
+# node_modules; only the glibc x64 binary ships.
+# Pinned version provenance: protocol/agents/claude/claude-model-capabilities.ts.
+WORKDIR /build
+COPY worker/container/claude-server-build/package.json package.json
+COPY worker/container/claude-server-build/package-lock.json package-lock.json
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund --legacy-peer-deps
+COPY protocol protocol
+COPY worker/src worker/src
+RUN bun build worker/src/agent/claude/server.ts --target=node --format=esm --external @anthropic-ai/claude-agent-sdk --outfile=/opt/scotty-claude/scotty-claude-server.mjs \
+  && mkdir -p /opt/scotty-claude/node_modules/@anthropic-ai \
+  && cp -R node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-linux-x64 /opt/scotty-claude/node_modules/@anthropic-ai/
+
 FROM docker.io/cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe AS scotty-package-image
 
 ARG NODE_VERSION=24.21.0
@@ -183,6 +198,8 @@ RUN mkdir -p /workspace
 
 COPY --from=scotty-codex-server-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs
 COPY worker/container/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server
+COPY --from=scotty-claude-server-build /opt/scotty-claude /opt/scotty-claude
+COPY worker/container/scotty-claude-server.mjs /usr/local/bin/scotty-claude-server
 COPY worker/container/pi-packages /opt/scotty/pi-packages
 COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json
 COPY worker/container/scotty-pi-session.mjs /usr/local/bin/scotty-pi-session
@@ -211,7 +228,8 @@ RUN set -eu; \
   && chmod 0755 \
     /usr/local/bin/scotty-pi-session \
     /usr/local/bin/scotty-codex-server \
-  && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers \
+    /usr/local/bin/scotty-claude-server \
+  && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty-claude \
   && npm cache clean --force \
   && rm -rf /root/.cache /tmp/* \
   && apt-get clean \
@@ -229,6 +247,7 @@ LABEL org.opencontainers.image.source="https://github.com/Yeshwanthyk/scotty" \
   io.scotty.compatibility.alchemy="2.0.0-beta.76" \
   io.scotty.compatibility.pi="0.84.0" \
   io.scotty.compatibility.codex="0.154.0" \
+  io.scotty.compatibility.claude-agent-sdk="0.3.281" \
   io.scotty.compatibility.node="24.21.0"
 
 EXPOSE 43117
@@ -274,10 +293,14 @@ RUN set -eu; \
   && test "$(stat -c '%a' /usr/local/bin/scotty-codex-server)" = "755" \
   && node --check /usr/local/bin/scotty-codex-server \
   && node --check /usr/local/bin/scotty-codex-server.mjs \
+  && test "$(stat -c '%a' /usr/local/bin/scotty-claude-server)" = "755" \
+  && node --check /usr/local/bin/scotty-claude-server \
+  && node --check /opt/scotty-claude/scotty-claude-server.mjs \
+  && test "$(node -p 'require("/opt/scotty-claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json").version')" = "0.3.281" \
   && test "$(pi --version)" = "${PI_VERSION}" \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python git gh shellcheck ffmpeg Xvfb \
-    node npm bun corepack cc pkg-config pi codex scotty-codex-server scotty-pi-session ffprobe; do \
+    node npm bun corepack cc pkg-config pi codex scotty-codex-server scotty-claude-server scotty-pi-session ffprobe; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done \
   && test ! -e /usr/local/bin/scotty \

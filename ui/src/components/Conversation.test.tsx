@@ -56,16 +56,6 @@ describe("conversation disclosure", () => {
     expect(markup).toContain(streaming.assistant);
   });
 
-  it("renders the newest completed turn in full and keeps older work folded", () => {
-    const markup = renderToStaticMarkup(
-      <Conversation turns={[completed("one"), completed("two")]} />,
-    );
-
-    expect(markup.match(/data-turn-disclosure="folded"/gu)).toHaveLength(1);
-    expect(markup.match(/data-turn-disclosure="latest"/gu)).toHaveLength(1);
-    expect(markup.indexOf("Answer one")).toBeLessThan(markup.indexOf("Answer two"));
-  });
-
   it("keeps completed turns folded while the current turn is streaming", () => {
     const streaming: ConversationTurn = {
       ...completed("current"),

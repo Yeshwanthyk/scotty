@@ -574,6 +574,8 @@ export type HarnessFailureStage =
   | "workspacePrepare";
 
 export interface HarnessOptions {
+  readonly onSessionProjectionPut?: (key: string, value: unknown) => Promise<void>;
+  readonly agentTurnActivity?: SandboxEffectOptions["agentTurnActivity"];
   readonly readRuntimeCli?: () => RuntimeCliPin;
   readonly runtimeCliMaterializer?: SandboxEffectOptions["runtimeCliMaterializer"];
   readonly readCloudSettings?: () => CloudSettingsSnapshot;
@@ -582,6 +584,7 @@ export interface HarnessOptions {
   readonly actorRequestRecoveryBeforeResume?: SandboxEffectOptions["actorRequestRecoveryBeforeResume"];
   readonly clock?: SandboxEffectOptions["clock"];
   readonly commandGate?: (command: string) => Promise<void> | undefined;
+  readonly createBackupGate?: () => Promise<void> | undefined;
   readonly restoreBackupGate?: () => Promise<void> | undefined;
   readonly commandStdout?: (command: string) => string | undefined;
   readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
@@ -733,6 +736,20 @@ class HarnessStorage {
   readonly sql = {
     exec: (query: string, ...bindings: ReadonlyArray<unknown>) => {
       const [callback, time] = bindings;
+      if (query === "SELECT time, payload FROM container_schedules WHERE callback = ?")
+        return this.schedules.flatMap((schedule) =>
+          schedule.callback === callback
+            ? [
+                {
+                  time:
+                    schedule.when instanceof Date
+                      ? Math.floor(schedule.when.getTime() / 1_000)
+                      : schedule.when,
+                  payload: JSON.stringify(schedule.payload),
+                },
+              ]
+            : [],
+        );
       if (query === "SELECT id FROM container_schedules WHERE callback = ? LIMIT 1")
         return this.schedules.flatMap((schedule, index) =>
           schedule.callback === callback ? [{ id: `schedule-${index}` }] : [],
@@ -1170,7 +1187,15 @@ const makeHarnessExec =
     if (archive !== undefined) return archive;
     applyHarnessFilesystemCommand(command, context.runtimeFiles);
     const configured = context.options.commandStdout?.(command);
-    return harnessSuccessfulExec(command, configured ?? (stage === "downSha" ? "deadbeef\n" : ""));
+    return harnessSuccessfulExec(
+      command,
+      configured ??
+        (command.includes("scotty_workspace_writer_sweep")
+          ? '{"found":0,"killed":0,"survivors":0}\n'
+          : stage === "downSha"
+            ? "deadbeef\n"
+            : ""),
+    );
   };
 
 export async function createSessionHarness(options: HarnessOptions = {}): Promise<SessionHarness> {
@@ -1302,6 +1327,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       events.push(
         `projection:${isStatusProjection(decoded) ? (decoded.status ?? "unknown") : "unknown"}`,
       );
+      await options.onSessionProjectionPut?.(key, decoded);
     },
     delete: async (key: string): Promise<void> => {
       if (failures.has("projectionDelete"))
@@ -1605,6 +1631,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   } as unknown as Bindings;
 
   const sandbox = new Sandbox(ctx, env, {
+    agentTurnActivity: options.agentTurnActivity,
     actorRequestRecoveryAfterResume: options.actorRequestRecoveryAfterResume,
     actorRequestRecoveryBeforeResume: options.actorRequestRecoveryBeforeResume,
     clock: options.clock,
@@ -1745,6 +1772,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     createBackup: {
       value: async (_backupOptions: BackupOptions): Promise<DirectoryBackup> => {
         events.push("host:createBackup");
+        await options.createBackupGate?.();
         return makeResumeBackup();
       },
     },
@@ -1937,17 +1965,17 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: async (callback: string) =>
         schedules
           .filter((schedule) => schedule.callback === callback)
-          .map((schedule, index) => {
-            if (!(schedule.when instanceof Date))
-              throw injectedHarnessFailure("retention schedule must use an absolute time");
-            return {
-              taskId: `schedule-${index}`,
-              callback: schedule.callback,
-              payload: schedule.payload,
-              type: "scheduled" as const,
-              time: Math.floor(schedule.when.getTime() / 1_000),
-            };
-          }),
+          .slice(0, 1)
+          .map((schedule, index) => ({
+            taskId: `schedule-${index}`,
+            callback: schedule.callback,
+            payload: schedule.payload,
+            type: schedule.when instanceof Date ? ("scheduled" as const) : ("delayed" as const),
+            time:
+              schedule.when instanceof Date
+                ? Math.floor(schedule.when.getTime() / 1_000)
+                : schedule.when,
+          })),
     },
     deleteSchedules: {
       value: (callback: string): void => {

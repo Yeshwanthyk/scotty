@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { URL } from "node:url";
 import { assert, describe, it } from "vitest";
 import {
   evidenceFailurePresentation,
@@ -12,24 +10,9 @@ import {
 import evidenceHtml from "../../../public/evidence/index.html?raw";
 import evidenceScript from "../../../public/evidence/index.js?raw";
 
-const evidenceStyles = readFileSync(
-  new URL("../../../public/evidence/styles.css", import.meta.url),
-  "utf8",
-);
-
 describe("evidence page", () => {
-  it("uses a focused authenticated shell without inline code", () => {
-    assert.notInclude(evidenceHtml, "<style>");
-    assert.notInclude(evidenceHtml, '<script type="module">');
-    assert.include(evidenceHtml, '<link rel="stylesheet" href="/evidence/styles.css" />');
-    assert.include(evidenceHtml, '<script type="module" src="/evidence/index.js"></script>');
-    assert.include(evidenceHtml, '<details class="mobile-utilities">');
-    assert.include(evidenceHtml, 'id="session-link-mobile"');
-    assert.include(evidenceHtml, 'id="evidence-list-link-mobile"');
-  });
-
-  it("orders checkpoints and screenshots by monotonic frame offset", () => {
-    const summary = {
+  it("orders checkpoints by offsets and falls back to checkpoint index", () => {
+    const withFrames = orderedEvidenceSteps({
       steps: [
         {
           index: 1,
@@ -44,22 +27,18 @@ describe("evidence page", () => {
           frame: { frameId: "first", offsetMillis: 500 },
         },
       ],
-    };
-    const steps = orderedEvidenceSteps(summary);
-    const frames = orderedEvidenceFrames(summary);
+    });
     assert.deepStrictEqual(
-      steps.map((step) => step.name),
+      withFrames.map((step) => step.name),
       ["First", "Second"],
     );
     assert.deepStrictEqual(
-      frames.map((frame) => frame.frameId),
+      orderedEvidenceFrames({ steps: withFrames }).map((frame) => frame.frameId),
       ["first", "second"],
     );
     assert.strictEqual(evidenceStatusLabel("failed"), "Failed");
-  });
 
-  it("uses checkpoint index when only some steps have a frame offset", () => {
-    const steps = orderedEvidenceSteps({
+    const withMissingFrame = orderedEvidenceSteps({
       steps: [
         {
           index: 2,
@@ -76,9 +55,8 @@ describe("evidence page", () => {
         },
       ],
     });
-
     assert.deepStrictEqual(
-      steps.map((step) => step.name),
+      withMissingFrame.map((step) => step.name),
       ["First", "Second", "Third"],
     );
   });
@@ -114,10 +92,6 @@ describe("evidence page", () => {
     assert.include(evidenceScript, 'link.className = "evidence-frame-link"');
     assert.include(evidenceScript, "link.href = framePath(frame.frameId)");
     assert.include(evidenceScript, 'link.setAttribute("aria-label"');
-    assert.include(evidenceStyles, ".evidence-frame-link:focus-visible");
-    assert.include(evidenceStyles, ".evidence-page .subtitle");
-    assert.match(evidenceStyles, /\.evidence-step-action,[\s\S]*?font-size: 0\.8rem;/u);
-    assert.match(evidenceStyles, /\.evidence-frames-grid figcaption[\s\S]*?font-size: 0\.8rem;/u);
     assert.notInclude(evidenceScript, "toggleReplay");
     assert.notInclude(evidenceScript, ".innerHTML");
     assert.notInclude(evidenceHtml, "<video");

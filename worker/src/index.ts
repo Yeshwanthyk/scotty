@@ -1102,19 +1102,22 @@ app.patch("/api/sessions/:id", async (c) => {
 app.post("/api/sessions/:id/checkpoint", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
-  return c.json(await sessionSandbox(c.env, id).checkpointScottySession());
+  const result = await sessionSandbox(c.env, id).checkpointScottySession();
+  return "pending" in result ? c.json(result, 202) : c.json(result);
 });
 
 app.post("/api/sessions/:id/sleep", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
-  return c.json(await sessionSandbox(c.env, id).sleepScottySession());
+  const result = await sessionSandbox(c.env, id).sleepScottySession();
+  return "pending" in result ? c.json(result, 202) : c.json(result);
 });
 
 app.post("/api/sessions/:id/resume", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
-  return c.json(await sessionSandbox(c.env, id).resumeScottySession());
+  const result = await sessionSandbox(c.env, id).resumeScottySession();
+  return "pending" in result ? c.json(result, 202) : c.json(result);
 });
 
 app.get("/api/sessions/:id/down", async (c) => {

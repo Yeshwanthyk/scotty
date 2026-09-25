@@ -1,3 +1,4 @@
+import { AgentIdSchema } from "../../../protocol/agents/agents";
 import { PiConsoleImagesSchema } from "../../../protocol/agents/pi/pi-console";
 import {
   AgentSelectionSchema,
@@ -5,6 +6,7 @@ import {
 } from "../../../protocol/agents/agent-selection";
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Effect, Option, Result, Schema } from "effect";
+import { LifecyclePendingMarkerSchema } from "../../../protocol/session/lifecycle-response";
 import { CredentialGrantSchema } from "../../../protocol/credentials/credentials";
 import {
   RepositoryDefaultBranchSchema,
@@ -112,6 +114,7 @@ export const SessionOperationSchema = Schema.Struct({
   kind: OperationKindSchema,
   nonce: Schema.String,
   startedAt: Schema.String,
+  deadlineAt: Schema.optionalKey(Schema.String),
   createPhase: Schema.optionalKey(Schema.Literals(["setup", "runtime"])),
   mode: Schema.optionalKey(Schema.Literals(["executing", "reconciling"])),
   phase: Schema.optionalKey(Schema.String),
@@ -216,7 +219,7 @@ export const decodeSessionRecordResult = Schema.decodeUnknownResult(SessionRecor
 });
 
 export const SessionProjectionSchema = Schema.Struct({
-  agent: Schema.optionalKey(Schema.Literals(["pi", "codex"])),
+  agent: Schema.optionalKey(AgentIdSchema),
   id: Schema.String,
   title: Schema.String,
   status: SessionStatusSchema,
@@ -248,6 +251,17 @@ export const SessionViewSchema = Schema.Struct({
   capRemainingSeconds: Schema.Number,
 });
 export type SessionView = typeof SessionViewSchema.Type;
+
+// HTTP 200 is the unchanged SessionView. HTTP 202 adds only the pending marker.
+export const PendingSessionViewSchema = Schema.Struct({
+  ...SessionViewSchema.fields,
+  ...LifecyclePendingMarkerSchema.fields,
+});
+export type PendingSessionView = typeof PendingSessionViewSchema.Type;
+export const SessionLifecycleResponseSchema = Schema.Union([
+  PendingSessionViewSchema,
+  SessionViewSchema,
+]);
 
 export const WorkspaceCreationMarkerSchema = Schema.Struct({
   sessionId: SessionIdSchema,

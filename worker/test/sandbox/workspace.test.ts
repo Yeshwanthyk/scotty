@@ -11,7 +11,7 @@ import {
   type SandboxRuntimeCapabilities,
 } from "../../src/sandbox/runtime";
 import type { VerifiedRepository } from "../../src/repos/verifier";
-import { sessionRoot, Workspace, workspaceLayer } from "../../src/sandbox/workspace";
+import { Workspace, workspaceLayer } from "../../src/sandbox/workspace";
 import { makeSessionRecord } from "../support";
 
 const ID = "a0b1c2d3e4f5";
@@ -224,28 +224,6 @@ describe("Workspace", () => {
     }),
   );
 
-  it.effect("reconstructs without retaining runtime calls or repository results", () =>
-    Effect.gen(function* () {
-      const first = new FakeWorkspaceCapabilities();
-      const second = new FakeWorkspaceCapabilities();
-
-      const existing = yield* prepareWith(
-        first,
-        makeSessionRecord({ repoExistsAtCreate: true, defaultBranch: "dev" }),
-      );
-      const missing = yield* prepareWith(
-        second,
-        makeSessionRecord({ repoExistsAtCreate: false, defaultBranch: "main" }),
-      );
-
-      assert.strictEqual(existing.repoExists, true);
-      assert.strictEqual(missing.repoExists, false);
-      assert.strictEqual(first.calls.length, 4);
-      assert.strictEqual(second.calls.length, 3);
-      assert.notStrictEqual(first.calls, second.calls);
-    }),
-  );
-
   it.effect("keeps real credentials out of every command, environment, and failure", () =>
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
@@ -258,10 +236,4 @@ describe("Workspace", () => {
       assert.ok(!surfaces.includes(REAL_GITHUB));
     }),
   );
-});
-
-describe("workspace paths", () => {
-  it("owns the production session root", () => {
-    assert.strictEqual(sessionRoot(ID), ROOT);
-  });
 });

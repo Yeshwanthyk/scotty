@@ -390,6 +390,8 @@ const configuredSelectionLabel = (selection: SessionModel["selection"]): string 
   const effort =
     selection.effort === undefined ? "default thinking" : `${selection.effort} thinking`;
   if (selection.agent === "codex") return `OpenAI · Codex · ${selection.model} · ${effort}`;
+  if (selection.agent === "claude")
+    return `Anthropic · Claude Code · ${selection.model} · ${effort}`;
   return `Pi · ${selection.modelProvider ?? "provider unavailable"} · ${selection.model ?? "default model"} · ${effort}`;
 };
 

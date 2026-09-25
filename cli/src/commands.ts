@@ -1,7 +1,8 @@
+import { AgentIdSchema } from "../../protocol/agents/agents";
 import { canonicalReadSnapshot, decodeReadSnapshot } from "./dependencies";
 import { buildInfo } from "./build-info";
 import { decodeCanonicalReadSnapshot } from "./schemas";
-import { decodeAgentSelection } from "../../protocol/agents/agent-selection";
+import { type AgentId, decodeAgentSelection } from "../../protocol/agents/agent-selection";
 import { isAbsolute, join, resolve } from "node:path";
 import { Clock, Console, Effect, Exit, FileSystem, Option, Predicate, Ref, Result } from "effect";
 import {
@@ -42,6 +43,10 @@ import {
   decodePiInspectSnapshot,
   decodeInterruptResponse,
   decodeOperationResponse,
+  decodePendingLifecycleResponse,
+  decodeLifecyclePollResponse,
+  decodeLifecycleActorResult,
+  decodeLifecycleActorJournalResult,
   decodeRepositoriesResponse,
   decodeRepositoryRemovalResponse,
   decodeRepositoryResponse,
@@ -116,7 +121,7 @@ import {
 import { runRunnerSupervisor } from "./runner-link";
 import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { setupRunner } from "./runner-setup";
-import { requestJson } from "./transport";
+import { apiRequest, decodeJson, requestJson, type ApiRequestTarget } from "./transport";
 import {
   makeDeployUi,
   makeInitUi,
@@ -133,7 +138,7 @@ import {
 
 const beamAgentSelection = Effect.fnUntraced(function* (
   target: import("./transport").ApiRequestTarget,
-  agent: Option.Option<"pi" | "codex">,
+  agent: Option.Option<AgentId>,
   modelProvider: Option.Option<string>,
   model: Option.Option<string>,
   effort: Option.Option<string>,
@@ -157,7 +162,7 @@ const beamAgentSelection = Effect.fnUntraced(function* (
   });
   if (Result.isFailure(selection))
     return yield* usage(
-      "Codex requires a supported model and effort from flags or cloud settings; --model-provider is Pi-only; overrides must be valid model settings",
+      "Codex and Claude require a supported model and effort from flags or cloud settings; --model-provider is Pi-only; overrides must be valid model settings",
     );
   return Option.isSome(agent) || selectedAgent !== "pi" || Object.keys(selection.success).length > 1
     ? selection.success
@@ -304,6 +309,7 @@ const localCredentialMaterials = Effect.fnUntraced(function* (input: {
   readonly cwd: string;
   readonly piAuth?: string;
   readonly codexAuth?: string;
+  readonly claudeTokenFile?: string;
   readonly githubTokenFile?: string;
   readonly githubCli: boolean;
 }) {
@@ -341,6 +347,17 @@ const localCredentialMaterials = Effect.fnUntraced(function* (input: {
       providers: local.providerStore,
     });
   }
+  if (input.claudeTokenFile !== undefined) {
+    const token = (yield* readPrivateCredentialText(path(input.claudeTokenFile))).trim();
+    if (!/^sk-ant-oat01-[A-Za-z0-9_-]{16,1024}$/u.test(token))
+      return yield* new CliError(
+        "credential_registry_sync_invalid",
+        "Claude credential is not a Claude Code setup token",
+        "Run claude setup-token, save the token to a private file, and retry scotty sync.",
+        EXIT.USAGE,
+      );
+    credentials.push({ name: "claude", kind: "anthropic-auth", scope: "global", token });
+  }
   if (input.githubTokenFile !== undefined || input.githubCli) {
     const token =
       input.githubTokenFile === undefined
@@ -361,7 +378,7 @@ const localCredentialMaterials = Effect.fnUntraced(function* (input: {
   if (credentials.length === 0)
     return yield* usage(
       "sync requires a credential source",
-      "Pass --pi-auth, --codex-auth, --github-token-file, or --github.",
+      "Pass --pi-auth, --codex-auth, --claude-token-file, --github-token-file, or --github.",
     );
   return credentials;
 });
@@ -469,6 +486,187 @@ const parserUsage = (error: EffectCliError.ShowHelp): CliError => {
 };
 
 type SetExitCode = (code: ExitCode) => Effect.Effect<void>;
+
+const hasConfirmedBackup = (backup: {
+  readonly currentBackupId: string | null;
+  readonly confirmed?: { readonly backupId: string; readonly confirmedAt: string | null } | null;
+  readonly prepared?: { readonly backupId: string; readonly confirmedAt: string | null } | null;
+}): boolean =>
+  backup.currentBackupId !== null &&
+  (backup.confirmed ?? backup.prepared)?.backupId === backup.currentBackupId &&
+  (backup.confirmed ?? backup.prepared)?.confirmedAt !== null;
+
+const pollLifecycleInspection = Effect.fnUntraced(function* (
+  auth: ApiRequestTarget,
+  sessionId: string,
+) {
+  const response = yield* Effect.result(
+    apiRequest(
+      auth,
+      `/api/sessions/${encodeURIComponent(sessionId)}`,
+      {},
+      {
+        acceptedStatuses: Array.from({ length: 100 }, (_, index) => index + 500),
+      },
+    ),
+  );
+  if (Result.isFailure(response)) {
+    if (response.failure.code === "network_error" || response.failure.code === "timeout")
+      return Option.none<unknown>();
+    return yield* Effect.fail(response.failure);
+  }
+  if (response.success.response.status >= 500) return Option.none<unknown>();
+  return Option.some(yield* decodeJson(response.success.bytes));
+});
+
+const originalLifecycleNonceCompleted = Effect.fnUntraced(function* (
+  auth: ApiRequestTarget,
+  sessionId: string,
+  command: "checkpoint" | "resume",
+  nonce: string,
+) {
+  const actor = decodeLifecycleActorJournalResult(
+    yield* requestJson(auth, `/api/sessions/${encodeURIComponent(sessionId)}/actor`),
+  );
+  if (Option.isNone(actor) || actor.value.authority.session.id !== sessionId)
+    return yield* invalidResponse("Server returned an invalid session authority result");
+  return actor.value.journal.some(
+    (event) =>
+      event.eventType === "completed" &&
+      event.transitionKind === (command === "checkpoint" ? "Checkpoint" : "Resume") &&
+      event.transitionNonce === nonce,
+  );
+});
+
+const pollPendingLifecycle = Effect.fnUntraced(function* (
+  auth: ApiRequestTarget,
+  command: "checkpoint" | "resume",
+  sessionId: string,
+  raw: unknown,
+) {
+  const pending = decodePendingLifecycleResponse(raw);
+  const expectedKind = command === "checkpoint" ? "snapshot" : "resume";
+  if (
+    Option.isNone(pending) ||
+    pending.value.id !== sessionId ||
+    pending.value.operation.kind !== expectedKind
+  )
+    return yield* invalidResponse("Server returned an invalid pending lifecycle result");
+  const transitionDeadline = Date.parse(pending.value.operation.deadlineAt);
+  if (!Number.isFinite(transitionDeadline)) return yield* invalidResponse();
+  const deadline = Math.max(
+    transitionDeadline + 30_000,
+    (yield* Clock.currentTimeMillis) + 120_000,
+  );
+  while ((yield* Clock.currentTimeMillis) < deadline) {
+    yield* Effect.sleep("2 seconds");
+    const inspection = yield* pollLifecycleInspection(auth, sessionId);
+    if (Option.isNone(inspection)) continue;
+    const polled = decodeLifecyclePollResponse(inspection.value);
+    if (Option.isNone(polled) || polled.value.session.identity.id !== sessionId)
+      return yield* invalidResponse("Server returned an invalid session inspection result");
+    const current = polled.value.session;
+    if (current.authority.kind === "transitioning") {
+      if (current.authority.action !== command) {
+        if (
+          yield* originalLifecycleNonceCompleted(
+            auth,
+            sessionId,
+            command,
+            pending.value.operation.nonce,
+          )
+        )
+          return {
+            pending: false as const,
+            value: {
+              id: sessionId,
+              status: "warm",
+              branch: current.display.branch,
+              url: pending.value.url,
+              backupId: pending.value.backupId,
+            },
+          };
+        return yield* new CliError(
+          "wrong_state",
+          `Session ${command} was replaced by another operation`,
+          "Inspect the current session state before retrying.",
+          EXIT.WRONG_STATE,
+        );
+      }
+      continue;
+    }
+    if (current.authority.lifecycle === "failed")
+      return yield* new CliError(
+        "upstream",
+        `Session ${command} failed`,
+        "Inspect Worker observability for the redacted upstream failure",
+        EXIT.GENERIC,
+      );
+    if (current.authority.lifecycle !== "warm")
+      return yield* new CliError(
+        "wrong_state",
+        `Session ${command} ended in ${current.authority.lifecycle}`,
+        "Inspect the current session state before retrying.",
+        EXIT.WRONG_STATE,
+      );
+    const actor = decodeLifecycleActorResult(
+      yield* requestJson(auth, `/api/sessions/${encodeURIComponent(sessionId)}/actor`),
+    );
+    if (Option.isNone(actor) || actor.value.authority.session.id !== sessionId)
+      return yield* invalidResponse("Server returned an invalid session authority result");
+    if (
+      !actor.value.journal.some(
+        (event) =>
+          event.eventType === "completed" &&
+          event.transitionKind === (command === "checkpoint" ? "Checkpoint" : "Resume") &&
+          event.transitionNonce === pending.value.operation.nonce,
+      )
+    )
+      return yield* new CliError(
+        "wrong_state",
+        `Session ${command} completion could not be verified`,
+        "Inspect the current session state before retrying.",
+        EXIT.WRONG_STATE,
+      );
+    const backup = actor.value.authority.state.stable.backups;
+    if (command === "checkpoint" && !hasConfirmedBackup(backup))
+      return yield* invalidResponse("Session checkpoint backup is not confirmed");
+    return {
+      pending: false as const,
+      value: {
+        id: sessionId,
+        status: "warm",
+        branch: current.display.branch,
+        url: pending.value.url,
+        backupId: backup.currentBackupId,
+      },
+    };
+  }
+  return { pending: true as const };
+});
+
+const lifecycleOperationOutput = Effect.fnUntraced(function* (
+  raw: unknown,
+  sessionId: string,
+  host: string,
+) {
+  const decoded = decodeOperationResponse(raw);
+  if (Option.isNone(decoded)) return yield* invalidResponse();
+  const url = optionalString(decoded.value.url);
+  const branch = optionalString(decoded.value.branch);
+  const backupId = optionalString(decoded.value.backupId);
+  const sanitizedUrl = url
+    ? yield* Effect.fromResult(sanitizeUrl(url, host, sessionId))
+    : undefined;
+  const result: SessionOperationOutput = {
+    id: optionalString(decoded.value.id) ?? sessionId,
+    status: decoded.value.status,
+    ...(sanitizedUrl === undefined ? {} : { url: sanitizedUrl }),
+    ...(branch === undefined ? {} : { branch }),
+    ...(backupId === undefined ? {} : { backupId }),
+  };
+  return result;
+});
 
 export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const version = GlobalFlag.action({
@@ -744,9 +942,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDefault(false),
         Flag.withDescription("Confirm the displayed installation"),
       ),
-      agent: Flag.choice("agent", ["pi", "codex"]).pipe(
+      agent: Flag.choice("agent", AgentIdSchema.literals).pipe(
         Flag.optional,
-        Flag.withDescription("Default agent (pi or codex)"),
+        Flag.withDescription("Default agent (pi, codex, or claude)"),
       ),
       modelProvider: Flag.string("model-provider").pipe(
         Flag.optional,
@@ -773,6 +971,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Private Codex auth.json source"),
       ),
+      claudeTokenFile: Flag.string("claude-token-file").pipe(
+        Flag.optional,
+        Flag.withDescription("Private Claude Code setup-token source"),
+      ),
       githubTokenFile: Flag.string("github-token-file").pipe(
         Flag.optional,
         Flag.withDescription("Private GitHub token source"),
@@ -797,6 +999,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       environment,
       piAuth,
       codexAuth,
+      claudeTokenFile,
       githubTokenFile,
       github,
     }) =>
@@ -888,6 +1091,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               cwd: runtime.cwd,
               piAuth: Option.getOrUndefined(piAuth),
               codexAuth: Option.getOrUndefined(codexAuth),
+              claudeTokenFile: Option.getOrUndefined(claudeTokenFile),
               githubTokenFile: Option.getOrUndefined(githubTokenFile),
               githubCli: github,
             };
@@ -895,19 +1099,25 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               const answer = (label: string): string | undefined =>
                 runtime.prompt(label)?.trim() || undefined;
               const selected =
-                setupInput.agent ?? answer("Default agent [pi/codex, default pi]: ") ?? "pi";
-              if (selected !== "pi" && selected !== "codex")
-                return yield* usage("Default agent must be pi or codex");
+                setupInput.agent ?? answer("Default agent [pi/codex/claude, default pi]: ") ?? "pi";
+              if (selected !== "pi" && selected !== "codex" && selected !== "claude")
+                return yield* usage("Default agent must be pi, codex, or claude");
               setupInput.agent = selected;
               if (selected === "pi") {
                 setupInput.modelProvider ??= answer("Pi model provider [agent default]: ");
                 setupInput.model ??= answer("Pi model [agent default]: ");
                 setupInput.effort ??= answer("Pi reasoning effort [agent default]: ");
                 credentialSources.piAuth ??= answer("Private Pi auth.json path [skip]: ");
-              } else {
+              } else if (selected === "codex") {
                 setupInput.model ??= answer("Codex model [gpt-5.6-sol]: ") ?? "gpt-5.6-sol";
                 setupInput.effort ??= answer("Codex effort [high]: ") ?? "high";
                 credentialSources.codexAuth ??= answer("Private Codex auth.json path [skip]: ");
+              } else {
+                setupInput.model ??= answer("Claude model [opus]: ") ?? "opus";
+                setupInput.effort ??= answer("Claude effort [high]: ") ?? "high";
+                credentialSources.claudeTokenFile ??= answer(
+                  "Private Claude setup-token file path [skip]: ",
+                );
               }
               setupInput.repos ??= answer(
                 "GitHub repositories, comma-separated OWNER/NAME [skip]: ",
@@ -927,6 +1137,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const hasCredentialSources =
               credentialSources.piAuth !== undefined ||
               credentialSources.codexAuth !== undefined ||
+              credentialSources.claudeTokenFile !== undefined ||
               credentialSources.githubTokenFile !== undefined ||
               credentialSources.githubCli;
             const localCredentials = hasCredentialSources
@@ -1775,7 +1986,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       provider: Flag.choice("provider", ["cloudflare"] as const).pipe(
         Flag.withDescription("Execution provider"),
       ),
-      agent: Flag.choice("agent", ["pi", "codex"]).pipe(
+      agent: Flag.choice("agent", AgentIdSchema.literals).pipe(
         Flag.optional,
         Flag.withDescription("Agent override; otherwise use the cloud default"),
       ),
@@ -2171,6 +2382,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Codex auth.json path"),
       ),
+      claudeTokenFile: Flag.string("claude-token-file").pipe(
+        Flag.optional,
+        Flag.withDescription("Private file containing a Claude Code setup token"),
+      ),
       githubTokenFile: Flag.string("github-token-file").pipe(
         Flag.optional,
         Flag.withDescription("Private file containing a GitHub token"),
@@ -2180,7 +2395,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Read the GitHub CLI credential from gh auth token"),
       ),
     },
-    ({ codexAuth, github, githubTokenFile, piAuth }) =>
+    ({ claudeTokenFile, codexAuth, github, githubTokenFile, piAuth }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         const target = yield* credentials(options);
@@ -2191,6 +2406,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             cwd: runtime.cwd,
             piAuth: Option.getOrUndefined(piAuth),
             codexAuth: Option.getOrUndefined(codexAuth),
+            claudeTokenFile: Option.getOrUndefined(claudeTokenFile),
             githubTokenFile: Option.getOrUndefined(githubTokenFile),
             githubCli: github,
           }),
@@ -2794,7 +3010,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       resume: 11 * 60_000,
       vaporize: MUTATION_REQUEST_TIMEOUT_MS,
     }[command];
-    const raw = yield* requestJson(auth, path, { method }, { timeoutMs });
+    const response = yield* apiRequest(auth, path, { method }, { timeoutMs });
+    let raw = yield* decodeJson(response.bytes);
     if (command === "vaporize") {
       const decoded = decodeVaporizeResponse(raw);
       if (Option.isNone(decoded) || decoded.value.id !== sessionId)
@@ -2809,22 +3026,18 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       else runtime.stdout(humanResult({ command: "vaporize", value: result }));
       return;
     }
-    const decoded = decodeOperationResponse(raw);
-    if (Option.isNone(decoded)) return yield* invalidResponse();
-    const operationId = optionalString(decoded.value.id) ?? sessionId;
-    const url = optionalString(decoded.value.url);
-    const branch = optionalString(decoded.value.branch);
-    const backupId = optionalString(decoded.value.backupId);
-    const sanitizedUrl = url
-      ? yield* Effect.fromResult(sanitizeUrl(url, auth.host, sessionId))
-      : undefined;
-    const result: SessionOperationOutput = {
-      id: operationId,
-      status: decoded.value.status,
-      ...(sanitizedUrl === undefined ? {} : { url: sanitizedUrl }),
-      ...(branch === undefined ? {} : { branch }),
-      ...(backupId === undefined ? {} : { backupId }),
-    };
+    if (response.response.status === 202) {
+      const settled = yield* pollPendingLifecycle(auth, command, sessionId, raw);
+      if (settled.pending) {
+        const pendingResult = { id: sessionId, status: "pending", pending: true as const };
+        if (autoJson) outputJson(runtime.stdout, pendingResult);
+        else runtime.stdout(humanResult({ command, value: pendingResult }));
+        yield* setExitCode(EXIT.GENERIC);
+        return;
+      }
+      raw = settled.value;
+    }
+    const result = yield* lifecycleOperationOutput(raw, sessionId, auth.host);
     if (autoJson) outputJson(runtime.stdout, result);
     else runtime.stdout(humanResult({ command, value: result }));
   });
