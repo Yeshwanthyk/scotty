@@ -739,6 +739,10 @@
         {
           "at": "2026-09-25",
           "note": "Started."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Branch m-00/c-18-native-host-fakes, Graphite-stacked on main→m-00/quint-replay→m-00/test-cull. Surveyed the helper call sites. Production already reads DO storage as get<unknown> and decodes it, so narrow ports change no behavior. Blocker: session-harness builds the real 7k-line Sandbox SDK subclass (session/object.ts) with a fake DurableObjectState, so ctx needs a cast unless the session core is pulled out of the SDK class or run on workerd. Next: confirm port shapes and the Sandbox DO strategy, then Step 1 triage."
         }
       ]
     },
