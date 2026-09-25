@@ -5,6 +5,11 @@ describe("hard-cap drain decision", () => {
   const drainAt = 0;
   const deadline = 10 * 60_000;
 
+  it("waits for an active turn before forceAt", () => {
+    assert.strictEqual(drainDecision(drainAt, drainAt, deadline, true), "wait");
+    assert.strictEqual(drainDecision(5 * 60_000 - 1, drainAt, deadline, true), "wait");
+  });
+
   it("sleeps at and after forceAt", () => {
     assert.strictEqual(drainDecision(5 * 60_000, drainAt, deadline, true), "sleep");
     assert.strictEqual(drainDecision(deadline - 1, drainAt, deadline, true), "sleep");
