@@ -48,6 +48,7 @@
     "test:ops": "node --test scripts/*.test.mjs scripts/lab/*.test.mjs",
     "test:all": "npm run test:contracts && npm run test:worker && npm run test:cli && npm run test:lab && npm run ui:test && npm run test:e2e:static && npm run test:e2e:local-live:helpers && npm run test:ops",
     "audit:containers": "node scripts/reconcile-containers.mjs",
+    "board": "node scripts/board/board.mjs",
     "build": "npm run build:cli",
     "build:cli": "bun scripts/build/build-cli.mjs",
     "deploy:production": "node scripts/release/deploy-production.mjs",
