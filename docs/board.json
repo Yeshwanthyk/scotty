@@ -54,6 +54,14 @@
         {
           "at": "2026-09-25",
           "note": "Started."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Scout (luna) confirmed R-03 dead end: Create failure / no-backup Failed has actionable=false (settlement.ts:64-79, recovery.ts:144-170), Resume gated on actionable (admission.ts:60-67), Create requires absent (admission.ts:74). Report: work/reliability/m01-scout.md (local). Sol implementing: extend session_lease.qnt to all 6 kinds + Sleeping + Failed{backup,lastStable} + unknown/restart/hardcap; failedHasExit as expected violation in spec.mjs; replay extended. Branch m-01/lifecycle-model."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Model covers all 6 kinds, Sleeping/Failed{backup,lastStable,actionable}, unknown/restart/hard cap/availability. failedHasExit is the expected violation (Create→unknown→unknown→Failed; R-03). Safety = sleepingHasBackup only: at-most-one-lease, stale-never-changes-authority, Gone⇒no-owned-state held by construction in the model and were cut; the replay checks them against decide per step. Replay: guidedStep generation, 745 lines, ~5s, required coverage cells. Mutations verified failing: recovery duplicate guard, Resume lastStable, hard-cap install, overdue reconcile routing (restart.test.ts). Awaiting PR."
         }
       ]
     },
@@ -780,6 +788,20 @@
         {
           "at": "2026-09-25",
           "note": "Paused for M-01/R-03, which the user prioritized. Proposed restructure, not yet applied: merge C-05+C-11 into C-18 as a 'Sandbox host island' card after R-06/R-07. The session-harness DurableObjectState fake needs the session core pulled out of the SDK subclass. Survey commits ride on m-01/lifecycle-model."
+        }
+      ]
+    },
+    {
+      "id": "C-21",
+      "title": "Flaky: cli runner-runtime 'converges lifecycle operations' fails under full test:all load (yieldNow busy-wait for child start, runner-runtime.test.ts:490-495)",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
         }
       ]
     }

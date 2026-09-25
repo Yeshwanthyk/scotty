@@ -12,6 +12,7 @@ export const generateTraces = (options: {
   seed: string;
   traces: number;
   maxSteps: number;
+  step?: string;
 }): ReadonlyArray<unknown> => {
   const directory = mkdtempSync(join(tmpdir(), "scotty-quint-"));
   try {
@@ -23,6 +24,7 @@ export const generateTraces = (options: {
         "--backend",
         "typescript",
         "--mbt",
+        ...(options.step === undefined ? [] : ["--step", options.step]),
         "--max-steps",
         String(options.maxSteps),
         "--max-samples",
