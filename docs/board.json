@@ -727,7 +727,7 @@
     {
       "id": "C-18",
       "title": "Remove the 17 test-fake casts in worker/test/support/native-host.ts: delete non-regression fake tests, then narrow Schema-decoding storage ports",
-      "column": "next",
+      "column": "doing",
       "contract": false,
       "deps": [],
       "body": "- `worker/test/support/native-host.ts` holds 17 suppressed casts that build fake Cloudflare host objects (DO namespace/state/storage/transaction, KV, R2 bucket/object/body/json, ExecutionContext, Fetcher, Bindings, Pi ExtensionAPI). A fake cannot implement caller-generic APIs such as `storage.get<T>`, R2 `json<T>`, KV's overloaded `get` or `deserializeAttachment<T>` without a cast.\n- Users (call sites): routes.test.ts 23, session-harness.ts 15, native-storage-adapter.test.ts 5, evidence-preview 4, artifact-store 4, in-memory-fake 3, container-session-egress 2, codex-managed 2, credential-object 2, runner-transport 1, hatch-gateway 1, hatch/browser-test package tests 1 each.\n- **Step 1:** apply the regression rule (docs/reliability.md) to every test that uses these fakes. Delete a test that fails on no plausible bug that another CI test misses, citing the covering test as file:line.\n- **Step 2:** for the adapters that remain, production depends on narrow ports that return `unknown` and decode with Schema at the boundary (AGENTS.md already requires this for KV/R2/DO data). Fakes then implement the port with no casts. This touches persistence adapters, so confirm the port shapes with the user first.\n- **Consider instead:** `@cloudflare/vitest-pool-workers` for adapter contract tests on real workerd.\n- **Proof:** `native-host.ts` is deleted; lint, typecheck and `test:all` pass; no new `oxlint-disable` anywhere.",
@@ -735,6 +735,10 @@
         {
           "at": "2026-09-25",
           "note": "Added."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Started."
         }
       ]
     },
