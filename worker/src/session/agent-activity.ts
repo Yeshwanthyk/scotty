@@ -11,7 +11,7 @@ import {
   TransitionSchema,
   type ReadinessProof,
   type SessionAuthority,
-} from "../session-actor/authority";
+} from "../session-actor/reducer/authority";
 import { SessionActorMetadataStore } from "../session-actor/metadata-store";
 
 export type TurnActivity = boolean | "unknown";

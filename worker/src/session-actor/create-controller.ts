@@ -12,8 +12,8 @@ import {
   type SessionAuthority,
   type SessionIdentity,
   StableStateSchema,
-} from "./authority";
-import type { SessionActorInput } from "./input";
+} from "./reducer/authority";
+import type { SessionActorInput } from "./reducer/input";
 import {
   makeSessionActorMetadata,
   type CreateIdempotencyDigestMetadata,
@@ -27,7 +27,8 @@ import {
   type MetadataStoreMutationError,
   type MetadataStoreReadError,
 } from "./metadata-store";
-import { decide, validateAuthority } from "./reducer";
+import { decide } from "./reducer/decide";
+import { validateAuthority } from "./reducer/validity";
 import { ActorStore, type ActorStoreReadError } from "./store";
 
 export interface CreateControllerRequest {

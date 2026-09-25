@@ -1,5 +1,5 @@
 import { Context, Duration, Effect, Layer, Predicate, Result, Schema } from "effect";
-import { AuthorityStateSchema, TransitionSchema, type SessionAuthority } from "./authority";
+import { AuthorityStateSchema, TransitionSchema, type SessionAuthority } from "./reducer/authority";
 import {
   decodeSessionActorMetadata,
   makeSessionActorMetadata,

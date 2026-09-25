@@ -1,7 +1,7 @@
 import { Context, Effect, Layer, Schema } from "effect";
-import type { SessionAuthority } from "./authority";
-import type { EffectIntent } from "./decision";
-import type { SessionActorInput } from "./input";
+import type { SessionAuthority } from "./reducer/authority";
+import type { EffectIntent } from "./reducer/decision";
+import type { SessionActorInput } from "./reducer/input";
 import type { LifecycleJournalEvent } from "./journal";
 
 export type ProviderEffectIntent = Exclude<

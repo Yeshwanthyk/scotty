@@ -2,7 +2,7 @@ import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
 import { SidecarSnapshot } from "../../src/agent/sidecar/protocol";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
-import type { SessionAuthority } from "../../src/session-actor/authority";
+import type { SessionAuthority } from "../../src/session-actor/reducer/authority";
 import {
   createSessionHarness,
   SESSION_ID,

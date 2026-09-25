@@ -1,4 +1,4 @@
-import { confirmedBackup } from "../session-actor/backup";
+import { confirmedBackup } from "../session-actor/reducer/backup";
 import { RuntimeCliMaterializer, runtimeCliMaterializerLayer } from "../runtime-cli/materializer";
 import { decodeRuntimeCliPin } from "../../../protocol/runtime/runtime-cli-pin";
 import type { PiConsoleImage } from "../../../protocol/agents/pi/pi-console";
@@ -289,7 +289,7 @@ import {
   type ReadinessProgress,
   type ReadinessProof,
   type SessionAuthority,
-} from "../session-actor/authority";
+} from "../session-actor/reducer/authority";
 import { sessionProjectionFromActor, sessionViewFromActor } from "../session-actor/public-view";
 import { uiSessionResponseFromActor, type UiSessionResponse } from "../ui/session-view";
 import {
@@ -781,7 +781,7 @@ export const SANDBOX_TEST_COMPLETE_EVIDENCE_STEP = Symbol("scotty.test.completeE
 export const SANDBOX_TEST_FINALIZE_EVIDENCE = Symbol("scotty.test.finalizeEvidence");
 
 const sidecarQueueTransitionKeepsRuntime = (
-  transition: import("../session-actor/authority").Transition,
+  transition: import("../session-actor/reducer/authority").Transition,
 ): boolean =>
   Predicate.isTagged(transition, "WarmWork") || Predicate.isTagged(transition, "Resume");
 

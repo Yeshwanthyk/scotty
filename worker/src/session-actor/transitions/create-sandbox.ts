@@ -16,7 +16,7 @@ import type { SessionRuntimeCredentials } from "../../credentials/managed";
 import { SandboxRuntime, type SandboxRuntimeFailure } from "../../sandbox/runtime";
 import { SandboxDigestSchema } from "../../sandbox/config-contracts";
 import { sessionRoot } from "../../sandbox/workspace";
-import type { RuntimeProof, SessionAuthority } from "../authority";
+import type { RuntimeProof, SessionAuthority } from "../reducer/authority";
 import { SessionActorMetadataStore, type MetadataStoreMutationError } from "../metadata-store";
 import {
   CreateProviderFailure,

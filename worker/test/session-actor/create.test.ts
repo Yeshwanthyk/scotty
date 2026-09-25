@@ -2,14 +2,18 @@ import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Predicate } from "effect";
 import { actorAlarmSchedulerLayer } from "../../src/session-actor/alarm";
-import type { ReadinessProof, SessionIdentity } from "../../src/session-actor/authority";
-import type { AcceptedDecision, Decision, EffectIntent } from "../../src/session-actor/decision";
+import type { ReadinessProof, SessionIdentity } from "../../src/session-actor/reducer/authority";
+import type {
+  AcceptedDecision,
+  Decision,
+  EffectIntent,
+} from "../../src/session-actor/reducer/decision";
 import { ActorEffectRunner, actorEffectRunnerLayer } from "../../src/session-actor/effect-runner";
 import type { CommittedProviderEffectIntent } from "../../src/session-actor/effects";
 import { type EffectObservation, ProviderEffectExecutor } from "../../src/session-actor/effects";
-import type { SessionActorInput } from "../../src/session-actor/input";
+import type { SessionActorInput } from "../../src/session-actor/reducer/input";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
-import { decide } from "../../src/session-actor/reducer";
+import { decide } from "../../src/session-actor/reducer/decide";
 import {
   CreateProviderFailure,
   type CreateProviderResult,

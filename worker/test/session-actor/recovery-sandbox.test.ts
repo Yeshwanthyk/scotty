@@ -8,7 +8,7 @@ import {
   sandboxRuntimeLayer,
   type SandboxRuntimeCapabilities,
 } from "../../src/sandbox/runtime";
-import type { SessionAuthority } from "../../src/session-actor/authority";
+import type { SessionAuthority } from "../../src/session-actor/reducer/authority";
 import {
   RecoveryRuntimeDestroy,
   RecoverySandbox,

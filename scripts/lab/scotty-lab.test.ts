@@ -10,7 +10,7 @@ import {
   AuthorityStateSchema,
   SessionAuthoritySchema,
   StableStateSchema,
-} from "../../worker/src/session-actor/authority.ts";
+} from "../../worker/src/session-actor/reducer/authority.ts";
 import { uiSessionResponseFromActor } from "../../worker/src/ui/session-view.ts";
 import capturedFailureStates from "../fixtures/codex-failure-states.json" with { type: "json" };
 import {

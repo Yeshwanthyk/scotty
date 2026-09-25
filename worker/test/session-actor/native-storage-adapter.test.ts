@@ -1,9 +1,9 @@
 import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Predicate, Result } from "effect";
-import type { AcceptedDecision, Decision } from "../../src/session-actor/decision";
+import type { AcceptedDecision, Decision } from "../../src/session-actor/reducer/decision";
 import { makeLifecycleJournalEvent } from "../../src/session-actor/journal";
-import { decide } from "../../src/session-actor/reducer";
+import { decide } from "../../src/session-actor/reducer/decide";
 import type { ActorStorageTransactionPlan, EvidenceMutation } from "../../src/session-actor/store";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import {

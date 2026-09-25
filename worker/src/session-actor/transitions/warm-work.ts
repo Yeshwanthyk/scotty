@@ -6,7 +6,7 @@ import {
   type SessionAuthority,
   type Transition,
   type WarmWorkKind,
-} from "../authority";
+} from "../reducer/authority";
 import { ActorStore, type ActorStoreReadError, type EvidenceMutation } from "../store";
 
 export interface WarmWorkRequest {

@@ -8,7 +8,7 @@ import { sessionRuntimeCredentials } from "../../src/credentials/managed";
 import { ContainerAuth } from "../../src/sandbox/auth";
 import { SandboxBundleMaterializer } from "../../src/sandbox/bundle-materializer";
 import { sandboxRuntimeLayer, type SandboxRuntimeCapabilities } from "../../src/sandbox/runtime";
-import type { SessionAuthority, SupervisorProof } from "../../src/session-actor/authority";
+import type { SessionAuthority, SupervisorProof } from "../../src/session-actor/reducer/authority";
 import { SessionActorMetadataStore } from "../../src/session-actor/metadata-store";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import {

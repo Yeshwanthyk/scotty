@@ -19,17 +19,17 @@ import type {
   ReadinessProof,
   SessionAuthority,
   Transition,
-} from "../../src/session-actor/authority";
-import { AuthorityStateSchema, StableStateSchema } from "../../src/session-actor/authority";
-import type { SessionActorInput } from "../../src/session-actor/input";
-import { ActorFactSchema } from "../../src/session-actor/input";
+} from "../../src/session-actor/reducer/authority";
+import { AuthorityStateSchema, StableStateSchema } from "../../src/session-actor/reducer/authority";
+import type { SessionActorInput } from "../../src/session-actor/reducer/input";
+import { ActorFactSchema } from "../../src/session-actor/reducer/input";
 import {
   actorStoreLayer,
   makeActorStore,
   type ActorStoragePort,
   type RawActorStorageSnapshot,
 } from "../../src/session-actor/store";
-import { phases, type TransitionKind } from "../../src/session-actor/transition";
+import { phases, type TransitionKind } from "../../src/session-actor/reducer/transition";
 
 const T0 = "2026-03-03T00:00:00.000Z";
 const T1 = "2026-03-03T00:01:00.000Z";

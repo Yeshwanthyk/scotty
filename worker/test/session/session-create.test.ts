@@ -12,7 +12,10 @@ import {
   decodePiConsoleCommandPromise,
   type PiConsoleRelaySnapshot,
 } from "../../../protocol/agents/pi/pi-console";
-import { AuthorityStateSchema, type SessionAuthority } from "../../src/session-actor/authority";
+import {
+  AuthorityStateSchema,
+  type SessionAuthority,
+} from "../../src/session-actor/reducer/authority";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import { ScottyError } from "../../src/session/contracts";

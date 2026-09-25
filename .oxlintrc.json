@@ -47,6 +47,22 @@
   },
   "overrides": [
     {
+      "files": ["worker/src/session-actor/reducer/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["../**", "!../configuration", "!../../../../protocol/**"],
+                "message": "Reducer modules may import only siblings, session configuration, Effect, and protocol schemas."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": [
         "cli/scotty.ts",
         "cli/src/**/*.ts",

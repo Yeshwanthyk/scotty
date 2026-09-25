@@ -32,7 +32,7 @@ import type {
   SupervisorProof,
   TransportProof,
   Transition,
-} from "../authority";
+} from "../reducer/authority";
 import { SessionActorMetadataStore } from "../metadata-store";
 import {
   CheckpointProviderFailure,

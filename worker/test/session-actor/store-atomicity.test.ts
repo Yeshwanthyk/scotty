@@ -2,9 +2,9 @@ import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
-import type { AcceptedDecision, Decision } from "../../src/session-actor/decision";
+import type { AcceptedDecision, Decision } from "../../src/session-actor/reducer/decision";
 import { decodeLifecycleJournalEvent } from "../../src/session-actor/journal";
-import { decide } from "../../src/session-actor/reducer";
+import { decide } from "../../src/session-actor/reducer/decide";
 import {
   makeActorStore,
   type ActorCommitRequest,

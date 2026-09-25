@@ -32,7 +32,7 @@ import type {
   BackupIdentity,
   ReadinessProof,
   SessionAuthority,
-} from "../../src/session-actor/authority";
+} from "../../src/session-actor/reducer/authority";
 import {
   decodeSessionActorMetadata,
   type SessionActorMetadata,

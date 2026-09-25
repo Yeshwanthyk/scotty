@@ -13,7 +13,7 @@ import {
   RepositoryTimestampSchema,
 } from "../../../protocol/settings/repository";
 import { SandboxDigestSchema } from "../sandbox/config-contracts";
-import { AuthorityStateSchema, type SessionAuthority } from "./authority";
+import { AuthorityStateSchema, type SessionAuthority } from "./reducer/authority";
 import type { CreatePrivatePayloadReference } from "./transitions/create";
 
 const SafeReferenceSchema = Schema.NonEmptyString.check(Schema.isMaxLength(256));

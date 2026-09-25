@@ -9,7 +9,7 @@ import {
   TransitionSchema,
   type ReadinessProof,
   type SessionAuthority,
-} from "../../src/session-actor/authority";
+} from "../../src/session-actor/reducer/authority";
 import {
   actorStoreLayer,
   type ActorStoragePort,
@@ -19,7 +19,7 @@ import {
   WarmWorkController,
   warmWorkControllerLayer,
 } from "../../src/session-actor/transitions/warm-work";
-import { decide } from "../../src/session-actor/reducer";
+import { decide } from "../../src/session-actor/reducer/decide";
 
 const T0 = "2026-09-01T00:00:00.000Z";
 const T1 = "2026-09-01T00:01:00.000Z";

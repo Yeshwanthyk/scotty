@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { SessionAuthority } from "../../src/session-actor/authority";
+import type { SessionAuthority } from "../../src/session-actor/reducer/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import { ScottyError } from "../../src/session/contracts";
 import { parseSandboxTar } from "../../src/sandbox/archive";

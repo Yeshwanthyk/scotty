@@ -12,7 +12,7 @@ import {
   AuthorityStateSchema,
   StableStateSchema,
   type SessionAuthority,
-} from "../../src/session-actor/authority";
+} from "../../src/session-actor/reducer/authority";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import { createSessionHarness, sessionHarnessKeys } from "../support/session-harness";
 import { InMemoryFaultInjectableFake, makeSessionRecord } from "../support";

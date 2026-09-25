@@ -1,5 +1,5 @@
 import { Effect, Layer, Match } from "effect";
-import { AuthorityStateSchema } from "./authority";
+import { AuthorityStateSchema } from "./reducer/authority";
 import {
   ProviderEffectBoundaryFailure,
   ProviderEffectExecutor,
