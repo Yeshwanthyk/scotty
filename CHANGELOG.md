@@ -7,6 +7,12 @@ change behavior users need to know about.
 
 ## Unreleased
 
+## 0.3.31 — 2026-09-25
+
+### Fixed
+
+- Busy sessions on short hard caps (under about 20 minutes) now start their forced sleep at least 3 minutes before the deadline, so the backup can complete instead of the session failing with `backup_restore_timeout`.
+
 ## 0.3.30 — 2026-09-24
 
 ### Fixed

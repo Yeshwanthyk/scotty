@@ -85,12 +85,19 @@ export const readAgentTurnActivity = Effect.fnUntraced(function* (authority: Ses
   return activity;
 });
 
+// Sleep needs time to create and restore-verify its backup before the deadline.
+export const HARD_CAP_SLEEP_RESERVE_MS = 3 * 60_000;
+
 export const drainDecision = (
   now: number,
   drainAt: number,
   deadline: number,
   activity: TurnActivity,
 ): "wait" | "sleep" => {
-  const forceAt = deadline - Math.min(5 * 60_000, (deadline - drainAt) / 2);
+  const reserve = Math.max(
+    Math.min(5 * 60_000, (deadline - drainAt) / 2),
+    HARD_CAP_SLEEP_RESERVE_MS,
+  );
+  const forceAt = Math.max(drainAt, deadline - reserve);
   return activity === true && now < forceAt ? "wait" : "sleep";
 };
