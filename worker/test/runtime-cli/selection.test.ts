@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber } from "effect";
+import { TestClock } from "effect/testing";
 import {
   makeRuntimeCliSelection,
+  RUNTIME_CLI_SELECTION_FRESH_MILLIS,
   type RuntimeCliSelectionStorage,
 } from "../../src/runtime-cli/selection";
 import {
@@ -78,6 +80,7 @@ describe("SandboxConfig runtime CLI authority", () => {
         );
         const pin = yield* selector.select(supported);
         assert.equal(pin.freshness, "github_verified");
+        yield* TestClock.adjust(RUNTIME_CLI_SELECTION_FRESH_MILLIS);
         const restarted = makeRuntimeCliSelection(
           state.storage,
           {
@@ -107,6 +110,7 @@ describe("SandboxConfig runtime CLI authority", () => {
         { resolve: () => Effect.succeed(release()) },
         cache,
       ).select(supported);
+      yield* TestClock.adjust(RUNTIME_CLI_SELECTION_FRESH_MILLIS);
       const error = yield* makeRuntimeCliSelection(
         state.storage,
         { resolve: () => Effect.succeed(release("0.3.20")) },
@@ -124,6 +128,7 @@ describe("SandboxConfig runtime CLI authority", () => {
   for (const failure of [
     new RuntimeCliReleaseLookupError({ reason: "outage", stage: "manifest", status: 404 }),
     new RuntimeCliReleaseLookupError({ reason: "outage", stage: "releases", status: 401 }),
+    new RuntimeCliReleaseLookupError({ reason: "outage", stage: "manifest", status: 403 }),
     new RuntimeCliReleaseSignatureError({ reason: "invalid_signature", releaseTag: "v0.3.20" }),
     new NoCompatibleRuntimeCliReleaseError(),
     new RuntimeCliReleaseSearchTruncatedError({ pagesSearched: 3, releasesSearched: 30 }),
@@ -137,6 +142,7 @@ describe("SandboxConfig runtime CLI authority", () => {
           { resolve: () => Effect.succeed(release()) },
           cache,
         ).select(supported);
+        yield* TestClock.adjust(RUNTIME_CLI_SELECTION_FRESH_MILLIS);
         const error = yield* makeRuntimeCliSelection(
           state.storage,
           { resolve: () => Effect.fail(failure) },
@@ -148,6 +154,52 @@ describe("SandboxConfig runtime CLI authority", () => {
       }),
     );
   }
+  it.effect("reuses a recently verified pin without querying GitHub", () =>
+    Effect.gen(function* () {
+      const state = memory();
+      let lookups = 0;
+      const selector = makeRuntimeCliSelection(
+        state.storage,
+        { resolve: () => Effect.sync(() => (lookups += 1)).pipe(Effect.as(release())) },
+        cache,
+      );
+      const pin = yield* selector.select(supported);
+      yield* TestClock.adjust(RUNTIME_CLI_SELECTION_FRESH_MILLIS - 1);
+      assert.deepEqual(yield* selector.select(supported), pin);
+      assert.strictEqual(lookups, 1);
+      assert.deepEqual(state.read(), { issued: 1, committed: 1, pin });
+      yield* TestClock.adjust(1);
+      const refreshed = yield* selector.select(supported);
+      assert.strictEqual(lookups, 2);
+      assert.strictEqual(refreshed.verifiedAt, RUNTIME_CLI_SELECTION_FRESH_MILLIS);
+    }),
+  );
+  it.effect("falls back to the cached pin when the releases API is rate limited", () =>
+    Effect.gen(function* () {
+      const state = memory();
+      const pin = yield* makeRuntimeCliSelection(
+        state.storage,
+        { resolve: () => Effect.succeed(release()) },
+        cache,
+      ).select(supported);
+      yield* TestClock.adjust(RUNTIME_CLI_SELECTION_FRESH_MILLIS);
+      const fallback = yield* makeRuntimeCliSelection(
+        state.storage,
+        {
+          resolve: () =>
+            Effect.fail(
+              new RuntimeCliReleaseLookupError({
+                reason: "outage",
+                stage: "releases",
+                status: 403,
+              }),
+            ),
+        },
+        cache,
+      ).select(supported);
+      assert.deepEqual(fallback, { ...pin, freshness: "cached_during_lookup_outage" });
+    }),
+  );
   it.effect("stale completion cannot roll the installation selection back", () =>
     Effect.gen(function* () {
       const state = memory();

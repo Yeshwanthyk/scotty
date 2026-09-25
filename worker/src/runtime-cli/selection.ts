@@ -10,6 +10,7 @@ const AuthoritySchema = Schema.Struct({
   pin: Schema.NullOr(RuntimeCliPinSchema),
 });
 type Authority = typeof AuthoritySchema.Type;
+export const RUNTIME_CLI_SELECTION_FRESH_MILLIS = 10 * 60_000;
 const decodeAuthority = Schema.decodeUnknownResult(AuthoritySchema, { onExcessProperty: "error" });
 export class RuntimeCliSelectionFailure extends Data.TaggedError("RuntimeCliSelectionFailure")<{
   readonly reason: "storage" | "invalid_authority" | "no_cached_selection";
@@ -56,15 +57,30 @@ export const makeRuntimeCliSelection = (
     }).pipe(Effect.flatMap(Effect.fromResult));
   return {
     select: Effect.fnUntraced(function* (supported: RuntimeCliCompatibility) {
-      const ticket = yield* transact((value) => ({
-        value: value.issued + 1,
-        authority: { ...value, issued: value.issued + 1 },
-      }));
+      const now = yield* Clock.currentTimeMillis;
+      const { ticket, fresh } = yield* transact((value) => {
+        const pin = value.pin;
+        // Recently verified selections skip GitHub: Workers share egress IPs and the
+        // unauthenticated releases API allows 60 requests per hour per IP.
+        const fresh =
+          pin !== null &&
+          pin.freshness === "github_verified" &&
+          now >= pin.verifiedAt &&
+          now - pin.verifiedAt < RUNTIME_CLI_SELECTION_FRESH_MILLIS &&
+          sameRuntimeCompatibility(pin.descriptor.compatibility, supported)
+            ? pin
+            : null;
+        const issued = fresh === null ? value.issued + 1 : value.issued;
+        return { value: { ticket: issued, fresh }, authority: { ...value, issued } };
+      });
+      if (fresh !== null) return fresh;
       const resolved = yield* resolver.resolve([supported]).pipe(
         Effect.map((value) => ({ release: value })),
         Effect.catchTag("RuntimeCliReleaseLookupError", (error) =>
           error.status === undefined ||
           error.status === 429 ||
+          // GitHub reports an exhausted API rate limit as 403.
+          (error.status === 403 && error.stage === "releases") ||
           (error.status >= 500 && error.status <= 599)
             ? Effect.succeed({ release: undefined })
             : Effect.fail(error),
