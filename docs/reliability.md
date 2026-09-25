@@ -34,6 +34,17 @@ Other commands: `ls [column|prefix]`, `show`, `move <id> <column> [--at N]`, `ad
 
   Everything else becomes session-harness, deployed or browser e2e.
 
+- **Every test must catch a regression.** A test stays only if a plausible bug that breaks state, security or a public contract would fail it, and no other test that runs in CI fails on the same bug. Every card applies this to the tests it touches, both the ones it adds and the ones it edits.
+  - **Delete:**
+    - tests that check how source code is spelled (regex or grep over source);
+    - tests that exercise fixtures or mocks rather than code;
+    - assertions that repeat a path another test already covers;
+    - guards for host inputs the platform cannot produce;
+    - checks of constants and config.
+  - **Before deleting,** cite the covering CI test as `file:line` and the assertion it makes. Local-only or env-gated tests (Quint replay, the deployed canary) do not count as coverage.
+  - **Fixtures:** one builder per domain under `worker/test/support/`. Don't add a new fixture unless a kept test needs it.
+  - **New tests:** name the regression in the title ("rejects an early deadline alarm"), not the mechanism.
+
 - **Effect v4 rc.112 source first** (`vendor/effect`, `.agents/skills/*`):
   - Use `Context.Service` classes and `Effect.fnUntraced`.
   - Use `Clock` and an ID service, not `Date.now` or `crypto.randomUUID`.
@@ -42,7 +53,7 @@ Other commands: `ls [column|prefix]`, `show`, `move <id> <column> [--at N]`, `ad
   - `runPromise` is allowed only in a host island. There must be one per host, not one per route.
 - **Authority is singular.** Each fact has exactly one durable owner; everything else is a projection derived from committed authority. UI and CLI never reconcile competing sources.
 - **Time is a budget, not knobs.** Deadlines derive from one persisted policy; don't add independent constants.
-- **Quint before fences.** A change to lifecycle, lease, alarm or idempotency behavior updates the relevant Quint model first, and the model must fail on the old behavior.
+- **Quint before fences** (a local design tool; `npm run spec`, never in CI). A change to lifecycle, lease, alarm or idempotency behavior updates the relevant Quint model first, and the model must fail on the old behavior.
 
 ## Recurring mistake classes (229 fix commits since 2026-06)
 

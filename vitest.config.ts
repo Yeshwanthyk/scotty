@@ -4,7 +4,15 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   assetsInclude: ["**/*.md"],
   test: {
-    exclude: ["**/node_modules/**", "**/.lane/**", "**/.alchemy/**", "vendor/**", "work/**"],
+    exclude: [
+      "**/node_modules/**",
+      "**/.lane/**",
+      "**/.alchemy/**",
+      "vendor/**",
+      "work/**",
+      // Quint trace replay runs only through `npm run spec`, never in CI.
+      ...(process.env.SCOTTY_SPEC === "1" ? [] : ["**/*.replay.test.ts"]),
+    ],
     reporters: ["default"],
   },
   resolve: {

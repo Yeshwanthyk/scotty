@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve, dirname } from "node:path";
 
@@ -70,3 +70,10 @@ for (const model of models) {
   }
   console.log(`${model.file}: safety passed; all ${model.witnesses.length} witnesses reached`);
 }
+
+const replay = spawnSync(
+  resolve(root, "node_modules/.bin/vitest"),
+  ["run", "worker/test/session-actor/session-lease.replay.test.ts"],
+  { cwd: root, stdio: "inherit", env: { ...process.env, SCOTTY_SPEC: "1" } },
+);
+process.exit(replay.status ?? 1);

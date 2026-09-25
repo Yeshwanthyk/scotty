@@ -127,6 +127,7 @@ export const prompt = (board, card) => {
     "- Root fix only, no backward compatibility. Delete what the fix makes obsolete, including unit tests the new e2e supersedes.",
     "- Follow the Effect v4 rc.112 patterns in vendor/effect and .agents/skills.",
     "- The card's Proof is an e2e or deployed test. Keep unit tests only for pure branchy logic or security/parsing boundaries.",
+    "- Every test you add or touch must catch a regression that no other CI test catches (docs/reliability.md, Rules). Delete the rest, citing the covering CI test as file:line.",
     `- Findings outside this card go on the board, not into this change: \`${run} add <ID> "<title>"\`.`,
     "",
     "Before you stop, even mid-way",

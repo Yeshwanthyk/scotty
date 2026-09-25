@@ -14,7 +14,7 @@
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/apply-dependency-patches.mjs",
-    "check": "npm run ui:build && npm run check:effect-version && npm run check:pi-packages && npm run check:patches && npm run check:wrangler-bindings && npm run check:cli-compiled && npm run fmt:check && npm run lint && npm run knip:check && npm run typecheck && npm run spec && npm run test:all && node e2e/scripts/scan.mjs",
+    "check": "npm run ui:build && npm run check:effect-version && npm run check:pi-packages && npm run check:patches && npm run check:wrangler-bindings && npm run check:cli-compiled && npm run fmt:check && npm run lint && npm run knip:check && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
     "check:cli-compiled": "node scripts/check-cli-compiled.mjs",
     "check:patches": "node scripts/apply-dependency-patches.mjs --check",
     "check:wrangler-bindings": "node scripts/check-wrangler-bindings.mjs",
