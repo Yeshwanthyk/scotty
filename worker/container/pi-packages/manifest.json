@@ -5,14 +5,14 @@
     {
       "name": "scotty-browser-test",
       "order": 0,
-      "sourceSha256": "081f82ac1f4e1175dba3af90d1843c131f0babc5ac522915e242510cd7fa1078",
+      "sourceSha256": "5201624b10adfb4d58e2408c2decfd880f3bdebac1baf87a810daa6dd346e509",
       "sourcePath": "worker/container/pi-packages/sources/scotty-browser-test",
       "imagePath": "/opt/scotty/pi-packages/sources/scotty-browser-test"
     },
     {
       "name": "scotty-hatch",
       "order": 1,
-      "sourceSha256": "7cdc252e340f4f3253f04bbc66ef2a82802b600ed992393c64cf7f5e4f5add6b",
+      "sourceSha256": "5e390c03e15113025cb6acb1773691a9a891d132620e8f4340b6f22b889b07c4",
       "sourcePath": "worker/container/pi-packages/sources/scotty-hatch",
       "imagePath": "/opt/scotty/pi-packages/sources/scotty-hatch"
     }
