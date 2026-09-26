@@ -42,13 +42,21 @@ const rejection = (operation: Promise<unknown>): Promise<unknown> =>
     (error: unknown) => error,
   );
 
-const failedClone = async () => {
-  const harness = await createSessionHarness({ failureStage: "workspaceNonzero" });
+const failedClone = async (options: Parameters<typeof createSessionHarness>[0] = {}) => {
+  const harness = await createSessionHarness({ ...options, failureStage: "workspaceNonzero" });
   await rejection(
     harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
   );
   harness.clearFailure("workspaceNonzero");
   return harness;
+};
+
+const deferred = () => {
+  let resolve = (): void => undefined;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 };
 
 const decodeSteerResult = Schema.decodeUnknownPromise(
@@ -608,6 +616,57 @@ describe("Sandbox actor create boundary", () => {
     assert.strictEqual(
       harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata)?.privateCreateInput,
       null,
+    );
+  });
+
+  it("rejects a concurrent create retry without disturbing the one in flight", async () => {
+    const armEntered = deferred();
+    const releaseArm = deferred();
+    let gateRetry = false;
+    const harness = await failedClone({
+      hardCapScheduleGate: () => {
+        if (!gateRetry) return undefined;
+        gateRetry = false;
+        armEntered.resolve();
+        return releaseArm.promise;
+      },
+    });
+    const failedMetadata = harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata);
+    assert.isDefined(failedMetadata);
+    gateRetry = true;
+
+    const first = harness.sandbox.retryCreateScottySession();
+    await armEntered.promise;
+    const metadataWrites = harness.events.filter(
+      (event) => event === `storage:put:${sessionHarnessKeys.actorMetadata}`,
+    ).length;
+    const second = await rejection(harness.sandbox.retryCreateScottySession());
+    assert.ok(second instanceof ScottyError);
+    assert.strictEqual(second.code, "conflict");
+    assert.strictEqual(second.message, "Session create retry is already running");
+    assert.strictEqual(
+      harness.events.filter((event) => event === `storage:put:${sessionHarnessKeys.actorMetadata}`)
+        .length,
+      metadataWrites,
+    );
+    assert.deepStrictEqual(
+      harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata),
+      failedMetadata,
+    );
+
+    releaseArm.resolve();
+    const settled = await first;
+    assert.strictEqual(settled.id, SESSION_ID);
+    assert.strictEqual(settled.status, "warm");
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(authority !== undefined && AuthorityStateSchema.guards.Stable(authority.state));
+    assert.ok(Predicate.isTagged(authority.state.stable, "Warm"));
+    const journal = harness.read<LifecycleJournalEvent>(sessionHarnessKeys.actorJournalTail);
+    assert.isDefined(journal);
+    assert.isNotNull(journal.causeAttempt);
+    assert.strictEqual(
+      harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata)?.createAttempt,
+      journal.causeAttempt,
     );
   });
 

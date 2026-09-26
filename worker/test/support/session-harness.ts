@@ -596,6 +596,7 @@ export interface HarnessOptions {
   readonly actorRequestRecoveryBeforeResume?: SandboxEffectOptions["actorRequestRecoveryBeforeResume"];
   readonly clock?: SandboxEffectOptions["clock"];
   readonly commandGate?: (command: string) => Promise<void> | undefined;
+  readonly hardCapScheduleGate?: () => Promise<void> | undefined;
   readonly createBackupGate?: () => Promise<void> | undefined;
   readonly restoreBackupGate?: () => Promise<void> | undefined;
   readonly commandStdout?: (command: string) => string | undefined;
@@ -1937,6 +1938,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         payload: unknown,
       ): Promise<RecordedSchedule> => {
         events.push(`schedule:${callback}`);
+        if (callback === "sessionActorHardCap") await options.hardCapScheduleGate?.();
         if (
           callback === "sessionActorDeadline" &&
           (failures.has("actorAlarmSchedule") || failures.delete("actorAlarmScheduleOnce"))
