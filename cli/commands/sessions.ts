@@ -1,0 +1,76 @@
+import { Effect, Option } from "effect";
+import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Created, List, Log, View, failure } from "../client.js";
+import { output, sessionPath, url, usage, withClient } from "./common.js";
+
+const id = Argument.String("id");
+const repository = Argument.String("owner/repo");
+const repoName = (input: string) => {
+  const value = input.startsWith("https://github.com/")
+    ? input
+        .slice(19)
+        .replace(/\.git$/, "")
+        .replace(/\/$/, "")
+    : input;
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value))
+    throw usage("Expected owner/repo or https://github.com/owner/repo", "new");
+  return value;
+};
+export const create = Command.make(
+  "new",
+  {
+    url,
+    repository,
+    base: Flag.String("base").pipe(Flag.optional),
+    prompt: Flag.String("prompt").pipe(Flag.optional),
+    key: Flag.String("key").pipe(Flag.optional),
+  },
+  ({ url: target, repository: input, base, prompt, key }) =>
+    Effect.gen(function* () {
+      const repo = repoName(input);
+      if (Option.isSome(base))
+        return yield* failure(
+          "unsupported",
+          "--base is not supported by this Worker yet",
+          `scotty new ${repo} --prompt 'Inspect this repository'`,
+          2,
+        );
+      const api = yield* withClient(target);
+      const body = {
+        repo,
+        title: repo,
+        prompt: Option.getOrElse(prompt, () => "Inspect this repository and report what you find."),
+        provider: "cloudflare",
+      };
+      return yield* output(
+        yield* api("/api/sessions", Created, {
+          method: "POST",
+          body,
+          ...(Option.isSome(key) ? { key: key.value } : {}),
+        }),
+      );
+    }),
+).pipe(Command.withDescription("Create a session on a GitHub repository"));
+
+export const ls = Command.make("ls", { url }, ({ url: target }) =>
+  Effect.gen(function* () {
+    const api = yield* withClient(target);
+    return yield* output(yield* api("/api/sessions", List));
+  }),
+).pipe(Command.withDescription("List sessions"));
+
+export const show = Command.make("show", { url, id }, ({ url: target, id: value }) =>
+  Effect.gen(function* () {
+    const path = sessionPath(value);
+    const api = yield* withClient(target);
+    return yield* output(yield* api(path, View));
+  }),
+).pipe(Command.withDescription("Show a session view"));
+
+export const log = Command.make("log", { url, id }, ({ url: target, id: value }) =>
+  Effect.gen(function* () {
+    const path = sessionPath(value);
+    const api = yield* withClient(target);
+    return yield* output(yield* api(`${path}/log`, Log));
+  }),
+).pipe(Command.withDescription("Show raw session events"));

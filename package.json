@@ -16,7 +16,8 @@
     "ui:build": "npm run build --workspace @scotty/ui",
     "test": "vitest run",
     "e2e": "bun e2e/run.ts",
-    "deploy": "bun deploy/run.ts"
+    "deploy": "bun deploy/run.ts",
+    "scotty": "bun cli/main.ts"
   },
   "dependencies": {
     "@distilled.cloud/cloudflare": "1.0.0-rc.12",
