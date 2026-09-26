@@ -14,7 +14,7 @@
     "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspace @scotty/ui",
     "ui:dev": "npm run dev --workspace @scotty/ui",
     "ui:build": "npm run build --workspace @scotty/ui",
-    "test": "echo 'npm test: not yet (added in step 2)' && exit 1",
+    "test": "vitest run",
     "e2e": "echo 'npm run e2e: not yet (added in step 2)' && exit 1",
     "deploy": "echo 'npm run deploy: not yet (added in step 2)' && exit 1"
   },

@@ -24,6 +24,7 @@ src/
   session/
     events.ts         event Schemas (the log format)
     fold.ts           pure fold(state, event) and invariants; the only unit-tested module
+    commands.ts       pure command(state, event): the at-most-one command the DO sends after an append
     object.ts         Session DO: append → fold → maybe send a command; one derived alarm
     view.ts           state → UI API shapes (sessions, conversation, changes)
   creds/
@@ -57,20 +58,23 @@ State is `fold(events)`. Every handler does the same three things:
 
 A handler never awaits an outside party while changing state. An outside action is recorded as an intent event, and its result arrives as a later event. An unknown result leaves the intent pending until an outcome or a timeout event settles it; it is never reported as success.
 
-| Event                                                                  | Fields                                                         |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `created`                                                              | `repo, baseBranch, title, prompt, image, agent`                |
-| `container.start` / `sup.hello`                                        | `gen` / `gen, image, version`                                  |
-| `workspace.ready`                                                      | `gen, branch, commit`                                          |
-| `prompt.requested` / `prompt.delivered`                                | `req, turn, text, images` / `req`                              |
-| `interrupt.requested`                                                  | `req, turn`                                                    |
-| `agent.event`                                                          | `gen, n, kind, event` (the agent's raw notification)           |
-| `turn.ended`                                                           | `turn, state`                                                  |
-| `pause.requested` / `wip.pushed` / `agent.saved` / `container.stopped` | `op` / `commit` / `r2Key, sha` / `gen`                         |
-| `resume.requested` / `agent.restored`                                  | `op` / `threadId`                                              |
-| `failed`                                                               | `phase, code, retryable`                                       |
-| `vaporize.requested` / `gone`                                          | `op`                                                           |
-| `timeout`                                                              | `op or gen` (from the one alarm the DO derives from its state) |
+| Event                                                                  | Fields                                                                                                             |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `created`                                                              | `repo, baseBranch, title, prompt, image, agentKind`                                                                |
+| `container.start` / `sup.hello`                                        | `gen` / `gen, version`                                                                                             |
+| `workspace.ready`                                                      | `gen, branch, commit`                                                                                              |
+| `prompt.requested` / `prompt.delivered`                                | `req, turn, text, images` / `req` (settles a prompt or an interrupt; a client `req` never starts with `initial:`)  |
+| `interrupt.requested`                                                  | `req, turn`                                                                                                        |
+| `agent.event`                                                          | `gen, n, agentKind, event` (the agent's raw notification, stored as received)                                      |
+| `turn.ended`                                                           | `gen, turn, state`                                                                                                 |
+| `pause.requested` / `wip.pushed` / `agent.saved` / `container.stopped` | `op` / `commit` / `r2Key, sha` / `gen`                                                                             |
+| `resume.requested` / `agent.restored`                                  | `op` / `threadId`                                                                                                  |
+| `failed`                                                               | `phase, code, retryable`                                                                                           |
+| `vaporize.requested` / `gone`                                          | `op`                                                                                                               |
+| `socket.closed` / `dial.failed`                                        | `gen` (the DO's supervisor socket closed / a dial attempt failed)                                                  |
+| `sup.redial`                                                           | `gen` (the DO woke with a live `gen` and no socket; marks it disconnected and restarts or dials it)                |
+| `invariant.violated`                                                   | `code, detail`                                                                                                     |
+| `timeout`                                                              | `op`: `container`, `workspace`, `dial`, `redial` or `req:<req>` (from the one alarm the DO derives from its state) |
 
 Fold states, and the status the UI shows for each:
 
@@ -95,6 +99,15 @@ Duplicate requests (the same `req`) do nothing. A prompt whose `turn` no longer 
 - Dialing is an outside action: the DO appends `container.start {gen}`, then dials outside the handler. `hello {gen}` is the result; a failed dial or the deadline is a later event.
 - When the DO wakes and the fold says a `gen` is running, it re-dials and resumes from the last acknowledged `n`. The supervisor keeps running and keeps unacknowledged messages across a socket drop.
 - The DO handles socket messages one at a time through a queue, never a `runPromise` per message.
+- The `container.start` command means: call `start()` if the container is not `running`, then dial. The fold's deadline table paces everything, and the DO keeps no other timer:
+  - `container` bounds boot until `hello`.
+  - `workspace` bounds the time from `hello` to `workspace_ready`.
+  - `dial` is set once when a live socket is lost. A failed dial never extends it; if it expires, the session fails.
+  - `redial` (2 s) paces retries. When it expires, the DO dials again.
+- On wake, `sup.redial` restarts the container if `hello` has not arrived; otherwise it dials.
+- When `hello` arrives before the workspace is ready, the DO sends `start` again, and the supervisor treats a repeated `start` for the same `gen` as a no-op. When `hello` arrives after the workspace is ready, the DO sends `ack {after: last accepted n}` and resends every request that is still pending. The supervisor treats a repeated `req` as a no-op.
+- The initial prompt is the pending request `initial:<gen>` from `workspace.ready` until `delivered` or its timeout. A request that times out stays `timed_out`; a late `delivered` does not change it. After `failed` the DO sends nothing.
+- The DO passes socket messages and the socket close through one queue, so notifications that arrived before a close are appended first. The fold accepts a notification only when its `gen` matches, the socket is connected, and `n` is above the last accepted `n`.
 
 - **DO → supervisor:** `start {gen, repo, branch, agent, restore?}`, `prompt {req, turn, text}`, `interrupt {req}`, `pause {op}`, `shutdown`.
 - **Supervisor → DO:** `hello`, `workspace_ready`, `delivered {req}`, `agent {n, kind, event}`, `turn_end`, `wip_pushed`, `agent_saved`, `error`.
