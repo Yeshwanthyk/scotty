@@ -18,9 +18,7 @@ import {
   runtimeCliCacheObjectKey,
   RuntimeCliCacheBucketFailure,
   type RuntimeCliCacheError,
-  type RuntimeCliCacheIntegrityError,
   type RuntimeCliCacheObject,
-  type RuntimeCliCacheLengthError,
 } from "../../src/runtime-cli/cache";
 import type { ResolvedRuntimeCliRelease } from "../../src/runtime-cli/release-resolver";
 
@@ -103,16 +101,23 @@ const failure = (result: Result.Result<unknown, RuntimeCliCacheError>): RuntimeC
 const lengthFailure = (result: Result.Result<unknown, RuntimeCliCacheError>) => {
   const error = failure(result);
   assert.isTrue(Predicate.isTagged("RuntimeCliCacheLengthError")(error));
-  return error as RuntimeCliCacheLengthError;
+  if (Predicate.isTagged(error, "RuntimeCliCacheLengthError")) return error;
+  return assert.fail("expected length error");
 };
 
 const integrityFailure = (result: Result.Result<unknown, RuntimeCliCacheError>) => {
   const error = failure(result);
   assert.isTrue(Predicate.isTagged("RuntimeCliCacheIntegrityError")(error));
-  return error as RuntimeCliCacheIntegrityError;
+  if (Predicate.isTagged(error, "RuntimeCliCacheIntegrityError")) return error;
+  return assert.fail("expected integrity error");
 };
 
 const noObject = { head: () => Effect.succeed(undefined) };
+
+const readableBytesStream = (value: unknown): ReadableStream<Uint8Array> => {
+  if (value instanceof ReadableStream) return value;
+  return assert.fail("expected readable byte stream");
+};
 
 const fakeDigestStream = () => {
   const hash = createHash("sha256");
@@ -138,10 +143,7 @@ const fakeDigestStream = () => {
       resolveDigest(value.buffer);
     },
   });
-  Object.defineProperty(writable, "digest", { value: digest });
-  return writable as WritableStream<ArrayBuffer | ArrayBufferView> & {
-    readonly digest: Promise<ArrayBuffer>;
-  };
+  return Object.assign(writable, { digest });
 };
 
 const fixedLengthStream = (length: number) => {
@@ -200,7 +202,7 @@ const nativeBucket = (options: {
   head: () => Effect.runPromise(Effect.succeed(options.existing ?? null)),
   put: async (key, value, putOptions) => {
     assert.instanceOf(value, ReadableStream);
-    const stream = value as ReadableStream<Uint8Array>;
+    const stream = readableBytesStream(value);
     const reader = stream.getReader();
     const chunks: Uint8Array[] = [];
     for (;;) {
@@ -513,7 +515,7 @@ describe("RuntimeCliCache", () => {
       const bucket = nativeBucket({ seen });
       bucket.put = async (_key, value) => {
         assert.instanceOf(value, ReadableStream);
-        const stream = value as ReadableStream<Uint8Array>;
+        const stream = readableBytesStream(value);
         await stream.getReader().read();
         markUploadStarted();
         return await new Promise<R2Object>(() => undefined);
@@ -596,7 +598,7 @@ describe("cache streaming lifecycle", () => {
       const bucket = nativeBucket({ seen: [] });
       bucket.put = (_key, value) => {
         assert.instanceOf(value, ReadableStream);
-        started.resolve((value as ReadableStream<Uint8Array>).getReader());
+        started.resolve(readableBytesStream(value).getReader());
         return late.promise;
       };
       const source = new ReadableStream<Uint8Array>({
@@ -644,7 +646,7 @@ describe("cache streaming lifecycle", () => {
               });
         bucket.put = (_key, value) => {
           assert.instanceOf(value, ReadableStream);
-          const reader = (value as ReadableStream<Uint8Array>).getReader();
+          const reader = readableBytesStream(value).getReader();
           // Consume but never settle put, including when local verification aborts the stream.
           const consume = async () => {
             while (!(await reader.read()).done) {
@@ -796,7 +798,7 @@ describe("cache streaming lifecycle", () => {
           bucket.put = (_key, value) => {
             if (verified) {
               const consume = async () => {
-                const reader = (value as ReadableStream<Uint8Array>).getReader();
+                const reader = readableBytesStream(value).getReader();
                 while (!(await reader.read()).done) {
                   /* drain */
                 }
@@ -932,13 +934,15 @@ describe("cache streaming lifecycle", () => {
       const aborted = pending<void>();
       // Reject the digest independently of write/close, as native abort does.
       const failedDigest = pending<ArrayBuffer>();
-      const hashing = new WritableStream<ArrayBuffer | ArrayBufferView>({
-        write() {
-          failedDigest.reject(new Error("digest aborted"));
-          aborted.resolve();
-        },
-      });
-      Object.defineProperty(hashing, "digest", { value: failedDigest.promise });
+      const hashing = Object.assign(
+        new WritableStream<ArrayBuffer | ArrayBufferView>({
+          write() {
+            failedDigest.reject(new Error("digest aborted"));
+            aborted.resolve();
+          },
+        }),
+        { digest: failedDigest.promise },
+      );
       // Also prove our normal fake rejects its digest on abort instead of leaving it pending.
       const fakeRejection = Effect.tryPromise({
         try: () => digestStream.digest,
@@ -956,11 +960,9 @@ describe("cache streaming lifecycle", () => {
         },
       });
       const fiber = yield* Effect.result(
-        r2RuntimeCliCacheBucket(
-          bucket,
-          fixedLengthStream,
-          () => hashing as ReturnType<typeof fakeDigestStream>,
-        ).publish(publicationInput(source)),
+        r2RuntimeCliCacheBucket(bucket, fixedLengthStream, () => hashing).publish(
+          publicationInput(source),
+        ),
       ).pipe(Effect.forkChild);
       yield* Effect.promise(() => aborted.promise);
       const result = yield* Fiber.join(fiber);

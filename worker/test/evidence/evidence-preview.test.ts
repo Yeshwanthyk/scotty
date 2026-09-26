@@ -17,7 +17,6 @@ vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   proxyToSandbox: proxy,
 }));
 
-import type { Bindings } from "../../src/shared/bindings";
 import {
   EVIDENCE_PREVIEW_MAX_INGRESS_BYTES,
   EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
@@ -34,6 +33,11 @@ import {
   sanitizeEvidencePreviewResponse,
 } from "../../src/evidence/preview";
 import { workerFetch } from "../../src/index";
+import {
+  nativeBindings,
+  nativeExecutionContext,
+  nativeSandboxNamespace,
+} from "../support/native-host";
 
 const BASE = "preview.example.test";
 const SESSION_ID = "a0b1c2d3e4f5";
@@ -45,11 +49,11 @@ const futurePermitExpiry = (): string => {
   const expiresAt = Date.now() + 30_000;
   return new Date(expiresAt).toISOString();
 };
-const env = {
-  SANDBOX: {} as DurableObjectNamespace<import("../../src/session/object").Sandbox>,
+const env = nativeBindings({
+  SANDBOX: nativeSandboxNamespace({}),
   SCOTTY_PREVIEW_BASE: BASE,
   SCOTTY_EVIDENCE_ENABLED: "true",
-} as Bindings;
+});
 
 describe("evidence preview host parser", () => {
   it("accepts only the canonical SDK host", () => {
@@ -387,7 +391,7 @@ describe("evidence preview host adapter", () => {
         headers: { cookie: `${EVIDENCE_PREVIEW_COOKIE}=${COOKIE_SECRET}` },
       }),
       { ...env, SCOTTY_EVIDENCE_ENABLED: undefined },
-      {} as ExecutionContext,
+      nativeExecutionContext({}),
     );
     expect(response.status).toBe(404);
     expect(admit).not.toHaveBeenCalled();
@@ -405,7 +409,7 @@ describe("evidence preview host adapter", () => {
     const response = await workerFetch(
       new Request("https://control.example.test/app.js"),
       { ...env, ASSETS: assetFetcher },
-      {} as ExecutionContext,
+      nativeExecutionContext({}),
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("x-source")).toBe("assets");

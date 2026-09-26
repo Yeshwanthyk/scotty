@@ -31,6 +31,13 @@ import {
 } from "../../src/session-actor/store";
 import { phases, type TransitionKind } from "../../src/session-actor/reducer/transition";
 
+const decodeCreatePhase = Schema.decodeUnknownSync(Schema.Literals(phases.Create));
+const decodeCheckpointPhase = Schema.decodeUnknownSync(Schema.Literals(phases.Checkpoint));
+const decodeSleepPhase = Schema.decodeUnknownSync(Schema.Literals(phases.Sleep));
+const decodeResumePhase = Schema.decodeUnknownSync(Schema.Literals(phases.Resume));
+const decodeWarmWorkPhase = Schema.decodeUnknownSync(Schema.Literals(phases.WarmWork));
+const decodeVaporizePhase = Schema.decodeUnknownSync(Schema.Literals(phases.Vaporize));
+
 const T0 = "2026-03-03T00:00:00.000Z";
 const T1 = "2026-03-03T00:01:00.000Z";
 const DEADLINE = "2026-03-03T01:00:00.000Z";
@@ -92,7 +99,7 @@ const transition = (kind: TransitionKind, phase: string): Transition => {
           _tag: "Create",
           ...common,
           origin: "Absent",
-          phase: phase as (typeof phases.Create)[number],
+          phase: decodeCreatePhase(phase),
           proof: { workspaceId: "workspace-1", readiness },
         }) satisfies Transition,
     ),
@@ -103,7 +110,7 @@ const transition = (kind: TransitionKind, phase: string): Transition => {
           _tag: "Checkpoint",
           ...common,
           origin: "Warm",
-          phase: phase as (typeof phases.Checkpoint)[number],
+          phase: decodeCheckpointPhase(phase),
           proof: { readiness, piStoppedAt: T1, backup: backups },
         }) satisfies Transition,
     ),
@@ -114,7 +121,7 @@ const transition = (kind: TransitionKind, phase: string): Transition => {
           _tag: "Sleep",
           ...common,
           origin: "Warm",
-          phase: phase as (typeof phases.Sleep)[number],
+          phase: decodeSleepPhase(phase),
           proof: {
             readiness,
             piStoppedAt: T1,
@@ -130,7 +137,7 @@ const transition = (kind: TransitionKind, phase: string): Transition => {
           _tag: "Resume",
           ...common,
           origin: "Sleeping",
-          phase: phase as (typeof phases.Resume)[number],
+          phase: decodeResumePhase(phase),
           proof: {
             backup: backupIdentity,
             ownedBackupIds: backups.ownedBackupIds,
@@ -147,7 +154,7 @@ const transition = (kind: TransitionKind, phase: string): Transition => {
           _tag: "WarmWork",
           ...common,
           origin: "Warm",
-          phase: phase as (typeof phases.WarmWork)[number],
+          phase: decodeWarmWorkPhase(phase),
           workKind: "Evidence",
           proof: {
             readiness,
@@ -165,7 +172,7 @@ const transition = (kind: TransitionKind, phase: string): Transition => {
           _tag: "Vaporize",
           ...common,
           origin: "Warm",
-          phase: phase as (typeof phases.Vaporize)[number],
+          phase: decodeVaporizePhase(phase),
           proof: {
             revokedAt: T1,
             ownedBackupIds: ["backup-1"],
@@ -853,7 +860,14 @@ describe("session actor restart", () => {
 
   it.effect("reconstructs every transition phase from storage without runtime-memory state", () =>
     Effect.gen(function* () {
-      for (const kind of Object.keys(phases) as ReadonlyArray<TransitionKind>) {
+      for (const kind of [
+        "Create",
+        "Checkpoint",
+        "Sleep",
+        "Resume",
+        "WarmWork",
+        "Vaporize",
+      ] satisfies ReadonlyArray<TransitionKind>) {
         for (const phase of phases[kind]) {
           const expectedTransition = transition(kind, phase);
           const expected = authority(expectedTransition);

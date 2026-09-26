@@ -320,7 +320,10 @@ export function humanSession(record: SessionResponse): string {
 export function durationSeconds(value: string): Result.Result<number, CliError> {
   const match = /^(\d+)(m|h|d)$/.exec(value);
   if (!match) return Result.fail(usage("--cap must be a duration such as 30m, 4h, or 1d"));
-  const seconds = Number(match[1]) * { m: 60, h: 3_600, d: 86_400 }[match[2] as "m" | "h" | "d"];
+  const unit = match[2];
+  if (unit !== "m" && unit !== "h" && unit !== "d")
+    return Result.fail(usage("--cap must be a duration such as 30m, 4h, or 1d"));
+  const seconds = Number(match[1]) * { m: 60, h: 3_600, d: 86_400 }[unit];
   if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > 86_400)
     return Result.fail(usage("--cap must be between 1m and 1d"));
   return Result.succeed(seconds);

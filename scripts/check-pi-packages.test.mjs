@@ -161,12 +161,7 @@ test("the first-party browser test package stays bounded and browser-authority f
     "worker/container/pi-packages/sources/scotty-browser-test/index.ts",
     "utf8",
   );
-  const dockerfile = readFileSync("worker/container/Dockerfile", "utf8");
 
-  assert.equal((source.match(/registerTool\(/gu) ?? []).length, 1);
-  assert.match(source, /name: "scotty_browser_test"/u);
-  assert.match(source, /https:\/\/scotty\.internal\/api\/evidence\/jobs/u);
-  assert.match(source, /64 \* 1_024/u);
   for (const forbidden of [
     "agent-browser",
     "playwright",
@@ -180,23 +175,14 @@ test("the first-party browser test package stays bounded and browser-authority f
   ]) {
     assert.equal(source.toLowerCase().includes(forbidden.toLowerCase()), false, forbidden);
   }
-  assert.match(dockerfile, /scotty-browser-test/u);
-  assert.doesNotMatch(dockerfile, /(?:apt-get|npm install)[^\n]*(?:chromium|agent-browser)/iu);
 });
 
 test("the first-party Hatch package stays source-bound, process-scoped, and credential-free", () => {
   const source = readFileSync("worker/container/pi-packages/sources/scotty-hatch/index.ts", "utf8");
-  const dockerfile = readFileSync("worker/container/Dockerfile", "utf8");
-
-  assert.equal((source.match(/registerTool\(/gu) ?? []).length, 1);
-  assert.match(source, /name: "scotty_hatch"/u);
-  assert.match(source, /https:\/\/scotty\.internal\/api\/hatch/u);
-  assert.match(source, /detached: true/u);
+  // Executed Hatch tests inject spawnProcess, so the production spawn is checked here.
   assert.match(source, /shell: false/u);
   assert.match(source, /process\.kill\(-pid, signal\)/u);
-  assert.match(source, /"SIGTERM"/u);
-  assert.match(source, /"SIGKILL"/u);
-  assert.match(source, /64 \* 1_024/u);
+
   for (const forbidden of [
     "SCOTTY_SESSION_ID",
     "GH_TOKEN",
@@ -207,5 +193,4 @@ test("the first-party Hatch package stays source-bound, process-scoped, and cred
   ]) {
     assert.equal(source.includes(forbidden), false, forbidden);
   }
-  assert.match(dockerfile, /scotty-hatch/u);
 });

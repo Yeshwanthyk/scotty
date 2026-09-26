@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { nativePiExtensionApi } from "../../../../test/support/native-host.ts";
 import { Check } from "typebox/value";
 import scottyHatch, {
   type ConfiguredStatus,
@@ -950,7 +950,7 @@ test("registers one safely guided scotty_hatch tool and idempotent session clean
       tools.push(tool);
     },
   };
-  scottyHatch(api as ExtensionAPI);
+  scottyHatch(nativePiExtensionApi(api));
   assert.deepEqual(
     tools.map(({ name }) => name),
     ["scotty_hatch"],

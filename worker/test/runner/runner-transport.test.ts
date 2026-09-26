@@ -14,6 +14,7 @@ import {
   type RunnerDispatchResult,
   type RunnerSocket,
 } from "../../src/runner/transport";
+import { nativeWebSocketAttachment } from "../support/native-host";
 
 class FakeSocket implements RunnerSocket {
   attachment: unknown = null;
@@ -38,7 +39,7 @@ class FakeSocket implements RunnerSocket {
   }
 
   deserializeAttachment<T>(): T | null {
-    return this.attachment as T | null;
+    return nativeWebSocketAttachment<T>(this.attachment);
   }
 }
 

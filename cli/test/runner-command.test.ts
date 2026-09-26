@@ -2,8 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Match } from "effect";
-import type { RunnerFrame, RunnerResponse } from "../../protocol/runner/runner";
+import { Match, Schema } from "effect";
+import { RunnerFrameSchema, type RunnerResponse } from "../../protocol/runner/runner";
+
+const decodeRunnerFrameJson = Schema.decodeUnknownSync(Schema.fromJsonString(RunnerFrameSchema));
 
 const temporaryDirectories: string[] = [];
 
@@ -39,7 +41,7 @@ describe("runner serve", () => {
       websocket: {
         open: () => undefined,
         message: (webSocket, message) => {
-          const frame = JSON.parse(String(message)) as RunnerFrame;
+          const frame = decodeRunnerFrameJson(String(message));
           Match.value(frame).pipe(
             Match.tagsExhaustive({
               RunnerHello: () =>

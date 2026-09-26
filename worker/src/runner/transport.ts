@@ -137,7 +137,9 @@ interface PendingHttp {
   readonly connectionId: string;
   readonly requestCredits: Queue.Queue<number>;
   readonly requestHasBody: boolean;
-  readonly requestReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  readonly requestReader:
+    | Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "cancel" | "releaseLock">
+    | undefined;
   readonly response: Deferred.Deferred<Response>;
   readonly responseChunks: Queue.Queue<HttpResponseChunk>;
   readonly runtimeId: string;

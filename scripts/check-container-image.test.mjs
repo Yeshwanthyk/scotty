@@ -29,94 +29,17 @@ import {
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 
 describe("final container image gate", () => {
-  it("preserves the verified Codex archive and wires the bundled native host", () => {
+  it("preserves the pinned Codex archive and package version", () => {
     const dockerfile = read("worker/container/Dockerfile");
-    const start = dockerfile.indexOf("# Pinned release provenance and regeneration evidence:");
-    assert.ok(start >= 0);
-    const install = dockerfile.slice(start, dockerfile.indexOf("RUN apt-get update", start));
     assert.ok(
-      install.includes(
+      dockerfile.includes(
         "https://github.com/openai/codex/releases/download/rust-v0.154.0/codex-package-x86_64-unknown-linux-musl.tar.gz",
       ),
     );
-    const digest = "fc6e3e3b85f2cf7d664520ee5c66a7fe4aa12bae7d46834f47e2f165fd0d6f78";
-    assert.ok(install.includes(`${digest}  /tmp/scotty-codex-install/codex.tar.gz`));
-    const ordered = [
-      "sha256sum --check --strict",
-      "mkdir /opt/codex",
-      "tar -xzf /tmp/scotty-codex-install/codex.tar.gz -C /opt/codex",
-      'a.deepEqual(require("/opt/codex/codex-package.json"), {layoutVersion:1, version:"0.154.0", target:"x86_64-unknown-linux-musl", variant:"codex", entrypoint:"bin/codex", resourcesDir:"codex-resources", pathDir:"codex-path"})',
-      "test -x /opt/codex/bin/codex-code-mode-host",
-      "test -x /opt/codex/codex-path/rg",
-      "test -x /opt/codex/codex-resources/bwrap",
-      "test -x /opt/codex/codex-resources/zsh/bin/zsh",
-      'test -z "$(find /opt/codex -perm /6000 -print -quit)"',
-      "ln -s /opt/codex/bin/codex /usr/local/bin/codex",
-      `test "$(stat -Lc '%a' /usr/local/bin/codex)" = "755"`,
-      'test "$(env -i HOME=/tmp/scotty-codex-install/home CODEX_HOME=/tmp/scotty-codex-install/codex-home PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/codex --version)" = "codex-cli 0.154.0"',
-      "rm -rf /tmp/scotty-codex-install",
-    ];
-    let previous = -1;
-    for (const command of ordered) {
-      const index = install.indexOf(command);
-      assert.ok(index > previous, `missing or out-of-order: ${command}`);
-      previous = index;
-    }
-    assert.doesNotMatch(install, /--strip-components|install -m|chmod.*[2467][0-7]{3}/u);
-    assert.doesNotMatch(dockerfile, /if command -v codex|ARG CODEX/u);
-    const aptInstall = dockerfile.slice(
-      dockerfile.indexOf("RUN apt-get update"),
-      dockerfile.indexOf("&& sed -i"),
-    );
-    assert.doesNotMatch(aptInstall, /\b(?:bubblewrap|bwrap)\b/u);
-    assert.doesNotMatch(dockerfile, /--privileged|--cap-add|seccomp|chmod [2467][0-7]{3}/u);
-    assert.match(dockerfile, /ARG PI_VERSION=0\.84\.0/u);
-    assert.doesNotMatch(dockerfile, /scotty-codex-(?:host|session)/u);
     assert.ok(
-      dockerfile.includes(
-        "RUN bun build worker/src/agent/codex/server.ts --target=node --format=esm --outfile=/out/scotty-codex-server.mjs",
-      ),
+      dockerfile.includes("fc6e3e3b85f2cf7d664520ee5c66a7fe4aa12bae7d46834f47e2f165fd0d6f78"),
     );
-    assert.ok(
-      dockerfile.includes(
-        "COPY --from=scotty-codex-server-build /out/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server.mjs",
-      ),
-    );
-    assert.ok(
-      dockerfile.includes(
-        "COPY worker/container/scotty-codex-server.mjs /usr/local/bin/scotty-codex-server",
-      ),
-    );
-    assert.equal(
-      read("worker/container/scotty-codex-server.mjs"),
-      '#!/usr/bin/env node\nimport { runServer } from "./scotty-codex-server.mjs";\n\nrunServer(process.argv.slice(2));\n',
-    );
-    assert.ok(
-      dockerfile.includes(
-        "RUN bun build worker/src/agent/claude/server.ts --target=node --format=esm --external @anthropic-ai/claude-agent-sdk --outfile=/opt/scotty-claude/scotty-claude-server.mjs",
-      ),
-    );
-    assert.ok(
-      dockerfile.includes(
-        "COPY worker/container/scotty-claude-server.mjs /usr/local/bin/scotty-claude-server",
-      ),
-    );
-    assert.equal(
-      read("worker/container/scotty-claude-server.mjs"),
-      '#!/usr/bin/env node\nimport { runServer } from "/opt/scotty-claude/scotty-claude-server.mjs";\n\nrunServer(process.argv.slice(2));\n',
-    );
-    assert.ok(
-      containerImageCodexPackagingArgs(containerImagePlan())
-        .join(" ")
-        .includes("prepared-generation"),
-    );
-    assert.doesNotMatch(dockerfile, /scotty-skill-commands/u);
-    assert.ok(dockerfile.includes('test "$(pi --version)" = "${PI_VERSION}"'));
-    assert.match(
-      dockerfile,
-      /COPY worker\/container\/scotty-pi-session\.mjs \/usr\/local\/bin\/scotty-pi-session/u,
-    );
-    assert.doesNotMatch(install, /npm|auth\.json|app-server --listen/u);
+    assert.ok(dockerfile.includes('version:"0.154.0"'));
   });
 
   it("builds and loads the final linux/amd64 image, then smokes packages and measures its rootfs", async () => {

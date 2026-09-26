@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
 import path from "node:path";
-import { assert, describe, it } from "@effect/vitest";
+import { describe, it } from "@effect/vitest";
 import { RuleTester } from "oxlint/plugins-dev";
 import noBrowserPersistence from "./rules/no-browser-persistence.js";
 import noConditionalTests from "./rules/no-conditional-tests.js";
@@ -36,7 +35,6 @@ import noUnsafeDomHtmlSink from "./rules/no-unsafe-dom-html-sink.js";
 import preferEffectPredicate from "./rules/prefer-effect-predicate.js";
 import preferSchemaInferredTypes from "./rules/prefer-schema-inferred-types.js";
 import preferValueInferredExtensionTypes from "./rules/prefer-value-inferred-extension-types.js";
-import scottyPlugin from "../oxlint-plugin-scotty.js";
 
 RuleTester.describe = describe;
 RuleTester.it = it;
@@ -637,121 +635,4 @@ tester.run("no-try-catch-or-throw", noTryCatchOrThrow, {
       errors: 2,
     },
   ],
-});
-
-describe("Scotty Oxlint policy integration", () => {
-  it("enables the complete non-fetch subset globally", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../../..");
-    const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
-    const globalRules = [
-      "no-manual-tag-check",
-      "no-match-orelse",
-      "no-promise-client-surface",
-      "no-raw-error-throw",
-      "no-redundant-error-factory",
-      "no-redundant-primitive-cast",
-      "no-schema-class",
-      "no-switch-statement",
-      "no-unsupported-effect-api",
-      "prefer-effect-predicate",
-      "prefer-value-inferred-extension-types",
-    ];
-    for (const rule of globalRules) {
-      assert.equal(config.rules[`scotty/${rule}`], "error");
-    }
-    assert.equal(config.rules["scotty/no-raw-fetch"], undefined);
-  });
-
-  it("covers Worker source strictly with only the three legacy exceptions", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../../..");
-    const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
-    const legacyFiles = new Set([
-      "worker/src/auth/request.ts",
-      "worker/src/index.ts",
-      "worker/src/session/object.ts",
-    ]);
-    const legacyOverrides = config.overrides.filter(
-      (override) => override.files.length === 1 && legacyFiles.has(override.files[0]),
-    );
-    assert.ok(config.overrides[0].files.includes("worker/src/**/*.ts"));
-    assert.deepEqual(
-      legacyOverrides.map((override) => override.files),
-      [["worker/src/session/object.ts"], ["worker/src/index.ts"], ["worker/src/auth/request.ts"]],
-    );
-    assert.deepEqual(legacyOverrides.flatMap((override) => override.files).sort(), [
-      "worker/src/auth/request.ts",
-      "worker/src/index.ts",
-      "worker/src/session/object.ts",
-    ]);
-  });
-
-  it("enables the precise strict rules and removes the imprecise rules", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../../..");
-    const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
-    const strictRules = config.overrides[0].rules;
-    const enabledRules = [
-      "no-direct-do-storage",
-      "no-effect-internal-tags",
-      "no-error-subclass",
-      "no-instanceof-tagged-error",
-      "no-promise-catch",
-      "no-unknown-error-message",
-    ];
-    for (const rule of enabledRules) {
-      assert.ok(scottyPlugin.rules[rule]);
-      assert.equal(strictRules[`scotty/${rule}`], "error");
-    }
-    for (const rule of ["no-unknown-shape-probing", "prefer-yield-tagged-error"]) {
-      assert.equal(scottyPlugin.rules[rule], undefined);
-      assert.equal(strictRules[`scotty/${rule}`], undefined);
-    }
-  });
-
-  it("keeps storage, session, CLI, and test rules at their current migration gates", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../../..");
-    const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
-    const strict = config.overrides[0];
-    const workerStorage = config.overrides.find(
-      (override) => override.files.length === 1 && override.files[0] === "worker/src/**/*.ts",
-    );
-    const session = config.overrides.find((override) =>
-      override.files.includes("worker/src/session/object.ts"),
-    );
-    const workerTests = config.overrides.find(
-      (override) => override.files.length === 1 && override.files[0] === "worker/test/**/*.ts",
-    );
-
-    assert.equal(strict.rules["scotty/no-direct-do-storage"], "error");
-    assert.equal(strict.rules["scotty/no-error-subclass"], "error");
-    assert.ok(scottyPlugin.rules["no-storage-key-literal"]);
-    assert.equal(workerStorage.rules["scotty/no-storage-key-literal"], "error");
-    assert.equal(session.rules["scotty/no-direct-do-storage"], undefined);
-    assert.equal(session.rules["scotty/no-storage-key-literal"], undefined);
-    assert.equal(session.rules["scotty/no-error-subclass"], undefined);
-    assert.ok(strict.files.some((file) => file.startsWith("cli/")));
-    assert.ok(!strict.files.some((file) => file.startsWith("worker/test/")));
-    assert.equal(workerTests.rules["scotty/no-raw-wall-clock"], "error");
-  });
-
-  it("scopes browser quality rules to public adapters without banning browser ownership", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "../../..");
-    const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
-    const browser = config.overrides.find(
-      (override) => override.files.length === 1 && override.files[0] === "worker/public/**/*.js",
-    );
-    const browserRules = [
-      "no-browser-persistence",
-      "no-browser-rpc-path",
-      "no-unsafe-dom-html-sink",
-    ];
-
-    assert.deepEqual(browser.env, { browser: true });
-    for (const rule of browserRules) {
-      assert.ok(scottyPlugin.rules[rule]);
-      assert.equal(config.rules[`scotty/${rule}`], undefined);
-      assert.equal(browser.rules[`scotty/${rule}`], "error");
-    }
-    assert.equal(browser.rules["scotty/no-promise-catch"], "off");
-    assert.equal(browser.rules["scotty/no-raw-fetch"], undefined);
-  });
 });

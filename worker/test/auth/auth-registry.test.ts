@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import {
   ADMIN_AUTH_SCOPES,
@@ -7,12 +7,14 @@ import {
   AuthRegistryFailure,
   authRegistryLayer,
   STANDARD_AUTH_SCOPES,
-  type AuthAuthority,
+  AuthAuthoritySchema,
   type AuthAuthorityStorage,
   type AuthAuthorityTransaction,
   type ClientCandidate,
   type IssuedClientCredential,
 } from "../../src/auth/registry";
+
+const decodeAuthAuthority = Schema.decodeUnknownSync(AuthAuthoritySchema);
 
 const NOW = Date.parse("2026-07-22T12:00:00.000Z");
 const FIVE_MINUTES = 5 * 60 * 1_000;
@@ -138,7 +140,7 @@ describe("AuthRegistry ownership authority", () => {
         current: true,
       });
 
-      const authority = storage.snapshot() as AuthAuthority;
+      const authority = decodeAuthAuthority(storage.snapshot());
       assert.deepStrictEqual(authority.ownership, {
         state: "claimed",
         ownerClientId: "111111111111",
@@ -181,7 +183,7 @@ describe("AuthRegistry ownership authority", () => {
           ),
         );
         assert.deepInclude(failure(expired), { reason: "credential_invalid" });
-        const authority = storage.snapshot() as AuthAuthority;
+        const authority = decodeAuthAuthority(storage.snapshot());
         assert.strictEqual(authority.clients[0]?.id, owner.client.id);
         assert.deepStrictEqual(authority.ownership, {
           state: "claimed",
@@ -196,7 +198,7 @@ describe("AuthRegistry ownership authority", () => {
           "Replacement primary",
         );
         assert.strictEqual(replacement.client.role, "owner");
-        assert.strictEqual((storage.snapshot() as AuthAuthority).ownership.epoch, 2);
+        assert.strictEqual(decodeAuthAuthority(storage.snapshot()).ownership.epoch, 2);
       }),
   );
 
@@ -393,7 +395,7 @@ describe("AuthRegistry ownership authority", () => {
       assert.strictEqual(accepted.credential, `scotty_client.${target.client.id}.${secret("i")}`);
       assert.strictEqual(accepted.client.role, "owner");
 
-      const authority = storage.snapshot() as AuthAuthority;
+      const authority = decodeAuthAuthority(storage.snapshot());
       assert.deepStrictEqual(authority.ownership, {
         state: "claimed",
         ownerClientId: target.client.id,
@@ -478,7 +480,7 @@ describe("AuthRegistry ownership authority", () => {
         Number(Result.isSuccess(outcomes[0])) + Number(Result.isSuccess(outcomes[1]));
       assert.strictEqual(successCount, 1);
 
-      const authority = storage.snapshot() as AuthAuthority;
+      const authority = decodeAuthAuthority(storage.snapshot());
       assert.notProperty(authority, "ownerTransfer");
       assert.isTrue(
         authority.ownership.state === "claimed" &&
@@ -526,7 +528,7 @@ describe("AuthRegistry ownership authority", () => {
       );
       assert.strictEqual(replacement.client.role, "owner");
 
-      const authority = storage.snapshot() as AuthAuthority;
+      const authority = decodeAuthAuthority(storage.snapshot());
       assert.deepStrictEqual(authority.ownership, {
         state: "claimed",
         ownerClientId: replacement.client.id,
@@ -650,7 +652,7 @@ describe("AuthRegistry ownership authority", () => {
       );
 
       assert.strictEqual(replacement.client.role, "owner");
-      const authority = storage.snapshot() as AuthAuthority;
+      const authority = decodeAuthAuthority(storage.snapshot());
       assert.lengthOf(authority.clients, 129);
       assert.deepStrictEqual(authority.ownership, {
         state: "claimed",
@@ -681,7 +683,7 @@ describe("AuthRegistry ownership authority", () => {
           }),
         ),
       );
-      const authority = storage.snapshot() as AuthAuthority;
+      const authority = decodeAuthAuthority(storage.snapshot());
       assert.lengthOf(authority.hatchHandoffs ?? [], 1);
       assert.notInclude(JSON.stringify(authority), handoff.credential);
       assert.notInclude(JSON.stringify(authority), secret("h"));

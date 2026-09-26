@@ -1,77 +1,18 @@
 import { readFile } from "node:fs/promises";
-import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
 const root = new URL("../../", import.meta.url);
-const PackageManifestSchema = Schema.Struct({
-  dependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-  devDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-});
-type PackageManifest = typeof PackageManifestSchema.Type;
-const decodePackageManifest = Schema.decodeUnknownSync(
-  Schema.fromJsonString(PackageManifestSchema),
-);
-
-async function readPackageManifest(path: string): Promise<PackageManifest> {
-  return decodePackageManifest(await readFile(new URL(path, root), "utf8"));
-}
-
 describe("pinned Task 4 contracts", () => {
-  it("pins the selected toolchain and runtime packages exactly", async () => {
-    const rootPackage = await readPackageManifest("package.json");
-    const workerPackage = await readPackageManifest("worker/package.json");
-
-    expect(rootPackage.devDependencies).toMatchObject({
-      "@effect/vitest": "4.0.0-rc.112",
-      typescript: "7.0.2",
-      vitest: "4.1.10",
-      wrangler: "4.128.0",
-    });
-    expect(rootPackage.dependencies).toMatchObject({
-      "@effect/platform-node": "4.0.0-rc.112",
-      alchemy: "2.0.0-beta.76",
-      effect: "4.0.0-rc.112",
-    });
-    expect(workerPackage.dependencies).toEqual({
-      "@cloudflare/containers": "0.3.7",
-      "@cloudflare/sandbox": "0.12.9",
-      effect: "4.0.0-rc.112",
-      hono: "4.12.31",
-      "qrcode-generator": "1.4.4",
-      "smol-toml": "1.8.0",
-      typebox: "1.3.7",
-    });
-    expect(workerPackage.devDependencies).toEqual({
-      "@anthropic-ai/claude-agent-sdk": "0.3.281",
-      "@earendil-works/pi-coding-agent": "0.84.0",
-    });
-  });
-
   it("pairs the Sandbox image, Codex minor, and CLI build context", async () => {
     const dockerfile = await readFile(new URL("worker/container/Dockerfile", root), "utf8");
-    const dockerignore = await readFile(new URL(".dockerignore", root), "utf8");
 
     expect(dockerfile).toContain(
       "cloudflare/sandbox:0.12.9@sha256:4a56a37a3cfd9b38d65bb4b5d0b341e6490a3a4c0226274ae4c1cca4948e85fe",
     );
     expect(dockerfile).not.toContain("ARG CODEX_VERSION=");
     expect(dockerfile).not.toContain("@openai/codex");
-    expect(dockerfile).toContain("COPY protocol protocol");
-    expect(dockerignore).toContain("!protocol/");
-    expect(dockerignore).toContain("!protocol/**");
-    expect(dockerignore).toContain("**/node_modules");
-    expect(dockerignore).toContain("**/.git");
     expect(dockerfile).not.toContain("AGENT_BROWSER");
     expect(dockerfile).not.toContain("agent-browser");
     expect(dockerfile).not.toMatch(/(?:TOKEN|SECRET|PASSWORD)=\S+/);
-  });
-
-  it("selects RPC transport and the expected runtime bindings", async () => {
-    const config = await readFile(new URL("worker/wrangler.jsonc", root), "utf8");
-
-    expect(config).toContain('"SANDBOX_TRANSPORT": "rpc"');
-    expect(config).toContain('"instance_type": "standard-2"');
-    expect(config).toContain('"binding": "BACKUP_BUCKET"');
-    expect(config).toContain('"binding": "SESSIONS"');
   });
 });

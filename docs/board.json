@@ -34,6 +34,10 @@
         {
           "at": "2026-09-25",
           "note": "SUPERSEDES the HANDOFF blocker list. Quint is local only (user direction): removed npm run spec from npm run check; vitest.config.ts excludes **/*.replay.test.ts unless SCOTTY_SPEC=1; scripts/spec.mjs runs the replay after the model checks. Triaged blockers before PR1, reduced to: (a) restore the deadline-after-repeated-UnknownProviderOutcome test in reducer.test.ts; (b) key reachesStaleRedelivery on a lastAction variable so a duplicate Vaporize cannot satisfy it; (c) delete the singleLease/revisionStep invariants, which hold by construction. Dropped as busy work: attempt/deadlineAt replay tracking (not modeled; M-01), spawn timeouts and FORCE_COLOR (local tool only), import allowlist widening (hypothetical)."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Done: spec is local only (npm run spec; the replay is excluded from default vitest unless SCOTTY_SPEC=1); regression rule added to docs/reliability.md and the board prompt. PR stack: PR1 m-00/quint-replay (at c277e33) on main; PR2 m-00/test-cull stacked on PR1 (gh pr create --base m-00/quint-replay). Merge bottom-up; not pushed; no PRs opened yet."
         }
       ]
     },
@@ -627,6 +631,134 @@
         "M-00"
       ],
       "body": "- Apply the M-00 test rubric to the rest of the suite, about 45k lines outside `worker/test/session-actor` (session 6.6k, agent 5.4k, cli/test 5.3k, integration 5.3k, …).\n- Rubric: a test stays only if it names a concrete regression (\"fails if <code change>\") that no e2e, integration, replay or higher-layer test also catches. Delete tests that only echo their fixtures, restate the implementation line by line, or are covered elsewhere.\n- Keep one fixture builder module per domain under `worker/test/support/`, with no per-file copies of `hardCap`/`session`/`readiness`.\n- Work one directory per PR, with a luna audit, a review, then sol applying the deletions.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Branch m-00/test-cull; test-cull work, handoff for a fresh session:\n(1) Culled tests: removed ~775 lines of source-spelling tests in 12 files, keeping static absence checks and the risky invariants (C-14..C-17); restored the auth-fragment-before-fetch/no-web-storage checks and Hatch shell:false/process-group kill (production spawn is never executed in tests); deleted 3 duplicate tests (runtime-recovery sleeping hard-cap, session-terminal PTY identity, ui/src/domain/conversation.test.ts).\n(2) Wired orphan suites into CI: test:pi-packages (hatch, browser-test) and protocol/runner in test:contracts.\n(3) Enabled typescript/no-non-null-assertion and consistent-type-assertions (never) repo-wide; removed ~40 production and ~150 test assertions.\n(4) Review corrections to sol's output: reverted a WebSocket fallback that dropped auth headers; replaced an errno guard that lost ENOENT (28 CLI failures) with a code-only FileSystemFailure channel; dropped DOM lib from cli/tsconfig so Bun's WebSocket options overload types (RequestInfo -> string|URL|Request; readers typed as Pick<read|cancel|releaseLock>; Request construction branches); error envelope keeps c.json with an isContentfulStatus guard; bundleRoot guard; isContainerPlanChanged takes {resources:{action}}; deleted cli/test/support/native-host.ts; sandbox harness via Object.assign.\n(5) Process: new rules in docs/reliability.md (fix types at the root; verify delegated work) and in the board prompt.\nVerified before the last round: test:all green (worker 1053+2 skip, contracts 151, cli 103, ops 210). After the last round (DOM lib, errno, plan): lint, typecheck, knip, cli 103, cli/effect-test+runner 172 green; the full test:all has NOT been rerun yet.\nNext: rerun npm run fmt, lint, typecheck, knip:check and test:all; commit in logical commits (spelling cull, orphan wiring, assertion rules and fixes, rules/board). Then C-18 (native-host casts), C-19, C-20. The flaky supervisor tests are C-13."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Committed on m-00/test-cull as four commits: test cull, CI wiring of orphan suites, type-assertion rules and fixes, rules and board. Verified before committing: fmt, lint, typecheck, knip green; test:all green except the two C-13 supervisor flakes (65/65 in isolation). Not pushed. Next card: C-18."
+        }
+      ]
+    },
+    {
+      "id": "C-13",
+      "title": "Flaky: codex-session-supervisor code-mode preflight tests fail under full-suite load",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "scripts/codex-session-supervisor.test.mjs:2246 (wrong-version, truncated, oversized) fail in npm run test:all with ENOENT on helper-bin/hello.json after ~1s; pass 7/7 in isolation twice. Timing-dependent helper handshake; fix the wait, not the timeout. Seen 2026-09-25 on m-00/test-cull."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "2026-09-25 full test:all on m-00/test-cull: codex-session-supervisor 'startup fault: oversized' and 'startup fault: wrong-id' (scripts/codex-session-supervisor.test.mjs:567) failed under full-suite load; the file alone passed 65/65 three times. Same flake class as the code-mode preflight tests."
+        }
+      ]
+    },
+    {
+      "id": "C-14",
+      "title": "Replace deploy-runner source regex tests with executed runner tests",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- scripts/deployment-safety.test.mjs still greps scripts/release/deploy-production.mjs for its CI, dirty-tree, branch, lock and digest guards (\"rejects CI and unsafe git state while holding a local lock\", \"derives the planned digest from an immutable production source\").\n- Replace both with executed tests: a temp Git repo plus stub commands that prove CI, dirty-tree and wrong-branch rejection, lock serialization and cleanup after interruption, and rejection of absent, malformed or mutable image refs.\n- **Proof:** delete the regex tests in the same change; a seeded removal of each guard fails the new test.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        }
+      ]
+    },
+    {
+      "id": "C-15",
+      "title": "Typed exhaustive registry for scheduled session callbacks",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- deployment-safety \"tracks every scheduled session callback in the cancellation inventory\" regex-scans worker/src/session/object.ts for this.schedule(...) names against SESSION_SCHEDULE_CALLBACKS.\n- Make the callback name a typed union, derived from one registry that owns cancellation, so an unregistered callback fails typecheck.\n- **Proof:** delete the regex test; adding a callback without registering it fails npm run typecheck.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        }
+      ]
+    },
+    {
+      "id": "C-16",
+      "title": "Execute Alchemy uninstall and retention paths against a provider fixture",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- infra/test/cloudflare-stack.test.ts asserts on stack source text for: guard-before-resource ordering, retained stateful resources, deleting preview topology only by owned Alchemy state IDs, idempotent uninstall retries after route/DNS deletion, bucket retain-or-empty-then-delete, and Effect Runner isolation in the private Worker.\n- Replace these with tests that execute plans against Alchemy's test provider (or a Scotty provider fixture): matching, missing and unrelated state; not-found on retry; non-empty buckets.\n- **Proof:** delete the source-text tests; a seeded wrong-ID delete fails.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        }
+      ]
+    },
+    {
+      "id": "C-17",
+      "title": "Executed checks for canary secret boundaries and session UI security",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- e2e/canary/full-stack-canary.test.ts \"keeps disposable secret values out of Worker props and persisted Action data\" mixes static absence checks (keep) with API-spelling checks; the spelling part should inspect the executed Alchemy plan/action.\n- e2e/tests/protocol-security.test.mjs \"the TanStack session UI keeps protocol, state, and view boundaries explicit\" regex-scans UI source for API paths, innerHTML, localStorage and WebSocket use. Move the sink bans (innerHTML, localStorage, raw WebSocket) into scoped oxlint rules for ui/src, and cover the API paths in a browser or route test.\n- **Proof:** the regex assertions are deleted, and each banned sink seeded into ui/src fails lint.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        }
+      ]
+    },
+    {
+      "id": "C-18",
+      "title": "Remove the 17 test-fake casts in worker/test/support/native-host.ts: delete non-regression fake tests, then narrow Schema-decoding storage ports",
+      "column": "next",
+      "contract": false,
+      "deps": [],
+      "body": "- `worker/test/support/native-host.ts` holds 17 suppressed casts that build fake Cloudflare host objects (DO namespace/state/storage/transaction, KV, R2 bucket/object/body/json, ExecutionContext, Fetcher, Bindings, Pi ExtensionAPI). A fake cannot implement caller-generic APIs such as `storage.get<T>`, R2 `json<T>`, KV's overloaded `get` or `deserializeAttachment<T>` without a cast.\n- Users (call sites): routes.test.ts 23, session-harness.ts 15, native-storage-adapter.test.ts 5, evidence-preview 4, artifact-store 4, in-memory-fake 3, container-session-egress 2, codex-managed 2, credential-object 2, runner-transport 1, hatch-gateway 1, hatch/browser-test package tests 1 each.\n- **Step 1:** apply the regression rule (docs/reliability.md) to every test that uses these fakes. Delete a test that fails on no plausible bug that another CI test misses, citing the covering test as file:line.\n- **Step 2:** for the adapters that remain, production depends on narrow ports that return `unknown` and decode with Schema at the boundary (AGENTS.md already requires this for KV/R2/DO data). Fakes then implement the port with no casts. This touches persistence adapters, so confirm the port shapes with the user first.\n- **Consider instead:** `@cloudflare/vitest-pool-workers` for adapter contract tests on real workerd.\n- **Proof:** `native-host.ts` is deleted; lint, typecheck and `test:all` pass; no new `oxlint-disable` anywhere.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        }
+      ]
+    },
+    {
+      "id": "C-19",
+      "title": "Split god test files (routes 5.3k, cli 5.1k, session-actor-lifecycle 3.1k) and consolidate fixture builders",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- God test files: `worker/test/integration/routes.test.ts` (5,262 lines), `cli/test/cli.test.ts` (5,137), `worker/test/session-actor/session-actor-lifecycle.test.ts` (3,083).\n- Apply the regression rule first (delete before splitting). Then split by domain.\n- One fixture builder per domain: a session-authority builder in `worker/test/support/`, a CLI temp-dir helper, a shared `withNode` runner helper, one in-memory object store.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        }
+      ]
+    },
+    {
+      "id": "C-20",
+      "title": "expect → assert in vitest files (Effect tests use @effect/vitest assert; cli/test stays bun)",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- AGENTS.md: Effect-returning tests use `@effect/vitest` `it.effect` and `assert`. Migrate the remaining `expect(` in vitest files. `cli/test` runs on bun and is excluded.\n- Mechanical: delegate, then verify per docs/reliability.md (\"Delegated work is not done until the orchestrator verifies it\").",
       "log": [
         {
           "at": "2026-09-25",

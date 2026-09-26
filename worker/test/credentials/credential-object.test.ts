@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { ScottyCredentialRegistry } from "../../src/credentials/object";
+import { nativeBindings, nativeDurableObjectState } from "../support/native-host";
 
 const registryWithEmptyStorage = () => {
   let value: unknown;
@@ -12,12 +13,11 @@ const registryWithEmptyStorage = () => {
         },
       }),
   };
-  // oxlint-disable-next-line scotty/no-double-cast -- boundary: the test supplies only the storage capability used by the native host state
-  const ctx = { storage } as unknown as DurableObjectState;
-  const env = {
+  const ctx = nativeDurableObjectState({ storage });
+  const env = nativeBindings({
     CREDENTIAL_WRAPPING_KEY: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
     SCOTTY_INSTALLATION_NAME: "test-installation",
-  } as ConstructorParameters<typeof ScottyCredentialRegistry>[1];
+  });
   return new ScottyCredentialRegistry(ctx, env);
 };
 

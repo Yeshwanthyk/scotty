@@ -228,7 +228,7 @@ export class CliRuntime extends Context.Service<CliRuntime, CliRuntimeShape>()(
 
 interface HttpTransportShape {
   readonly fetch: (
-    input: RequestInfo | URL,
+    input: string | URL | Request,
     init?: RequestInit,
   ) => Effect.Effect<Response, CliError>;
 }
@@ -331,14 +331,11 @@ interface FileSystemShape {
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | CliError, R>;
   readonly stat: (path: string) => Effect.Effect<Stats, CliError>;
-  readonly readText: (path: string) => Effect.Effect<string, NodeJS.ErrnoException>;
+  readonly readText: (path: string) => Effect.Effect<string, FileSystemFailure>;
   readonly readPrivateText: (path: string) => Effect.Effect<string, PrivateFileError>;
   readonly readLockedText: (path: string) => Effect.Effect<string, CliError>;
-  readonly remove: (path: string) => Effect.Effect<void, NodeJS.ErrnoException>;
-  readonly writeExclusive: (
-    path: string,
-    data: string,
-  ) => Effect.Effect<void, NodeJS.ErrnoException>;
+  readonly remove: (path: string) => Effect.Effect<void, FileSystemFailure>;
+  readonly writeExclusive: (path: string, data: string) => Effect.Effect<void, FileSystemFailure>;
   readonly writeText: (path: string, data: string) => Effect.Effect<void, CliError>;
   readonly writeSecure: (path: string, data: string) => Effect.Effect<void, CliError>;
   readonly appendOnce: (
@@ -368,7 +365,15 @@ const networkFailure = (): CliError =>
     EXIT.GENERIC,
   );
 
-const errno = (cause: unknown): NodeJS.ErrnoException => cause as NodeJS.ErrnoException;
+/** A rejected node:fs call, reduced to the errno code callers classify. */
+interface FileSystemFailure {
+  readonly code: string | undefined;
+}
+
+const errno = (cause: unknown): FileSystemFailure => ({
+  code:
+    Predicate.hasProperty(cause, "code") && Predicate.isString(cause.code) ? cause.code : undefined,
+});
 
 const hostPromise = <A>(operation: () => Promise<A>): Effect.Effect<A, CliError> =>
   Effect.tryPromise({ try: operation, catch: unexpected });

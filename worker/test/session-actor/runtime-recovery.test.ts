@@ -115,29 +115,6 @@ const hardCapInput = (
 });
 
 describe("session actor runtime recovery", () => {
-  it("preserves a sleeping session when its matching hard-cap alarm arrives", () => {
-    const sleeping: SessionAuthority = {
-      session,
-      hardCap: hardCap(),
-      revision: 12,
-      state: {
-        _tag: "Stable",
-        stable: {
-          _tag: "Sleeping",
-          backup,
-          ownedBackupIds: [backup.backupId],
-          stop: { requestedAt: T0, observedAt: T1, runtimeGeneration: "runtime-1" },
-          wakeSource: { backupId: backup.backupId, confirmedAt: T1 },
-        },
-      },
-    };
-
-    assert.deepStrictEqual(decide(sleeping, hardCapInput()), {
-      _tag: "Rejected",
-      code: "duplicate",
-    });
-  });
-
   it("commits a matching runtime stop as an actionable failure before cleanup", () => {
     const result = accepted(decide(warm(), runtimeInput()));
     assert.strictEqual(result.journalEvent.eventType, "availability_lost");

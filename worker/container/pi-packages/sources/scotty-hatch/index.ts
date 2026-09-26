@@ -372,7 +372,7 @@ const byteLength = (value: string): number => new TextEncoder().encode(value).by
 
 function parseJson(text: string): unknown {
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(text);
   } catch {
     return undefined;
   }

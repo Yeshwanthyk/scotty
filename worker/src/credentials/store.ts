@@ -279,10 +279,13 @@ const makeCredentialStore = (
     ReadonlyArray<CredentialRegistryStatus>,
     CredentialRegistryFailure
   > = read((authority) => {
-    const values = authority.credentials.map((credential) => status(credential, authority));
-    return values.some((value) => value === undefined)
-      ? Result.fail(invalidAuthority())
-      : Result.succeed(values as ReadonlyArray<CredentialRegistryStatus>);
+    const values: CredentialRegistryStatus[] = [];
+    for (const credential of authority.credentials) {
+      const value = status(credential, authority);
+      if (value === undefined) return Result.fail(invalidAuthority());
+      values.push(value);
+    }
+    return Result.succeed(values);
   });
 
   const projectGrant = (grant: CredentialRegistryAuthority["grants"][number]): CredentialGrant => {
@@ -484,7 +487,7 @@ const makeCredentialStore = (
         return Result.succeed({
           value: {
             sessionId: decoded.success.sessionId,
-            released: true as boolean,
+            released: true,
           },
           authority,
           write: false as const,
@@ -508,7 +511,7 @@ const makeCredentialStore = (
       return Result.succeed({
         value: {
           sessionId: decoded.success.sessionId,
-          released: true as boolean,
+          released: true,
         },
         authority: next,
       });

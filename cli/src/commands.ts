@@ -820,7 +820,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       });
     const runtime = yield* CliRuntime;
     return yield* fetchReleasedContainerImage(VERSION, (input, init) =>
-      runtime.hostFetch(new Request(input, init)),
+      runtime.hostFetch(
+        input instanceof Request ? new Request(input, init) : new Request(input.toString(), init),
+      ),
     ).pipe(
       Effect.mapError(
         () =>

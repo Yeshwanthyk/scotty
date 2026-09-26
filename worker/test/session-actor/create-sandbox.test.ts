@@ -99,9 +99,10 @@ const context = (
 ): CreateProviderContext => {
   const current = authority(phase, supervisor);
   assert.ok(Predicate.isTagged(current.state, "Transitioning"));
+  assert.ok(Predicate.isTagged(current.state.transition, "Create"));
   return {
     authority: current,
-    transition: current.state.transition as CreateTransition,
+    transition: current.state.transition,
     payload: { reference: "payload-1" },
   };
 };

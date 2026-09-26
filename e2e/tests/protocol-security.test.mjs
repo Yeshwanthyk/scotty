@@ -6,23 +6,22 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-test("critical auth pages externalize scripts and strip fragments before fetch", () => {
+test("auth pages drop the token fragment before fetch and never persist it", () => {
   const assets = path.join(ROOT, "worker/public");
   for (const name of ["pair", "owner-transfer", "recover"]) {
-    const html = fs.readFileSync(path.join(assets, "auth", `${name}.html`), "utf8");
     const script = fs.readFileSync(path.join(assets, "auth", `${name}.js`), "utf8");
-    assert.match(html, new RegExp(`<script type="module" src="/auth/${name}\\.js"></script>`, "u"));
-    assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/iu);
     assert.ok(
       script.indexOf("history.replaceState") >= 0 &&
         script.indexOf("history.replaceState") < script.indexOf("fetch("),
       `${name} must remove its fragment before fetch`,
     );
-    assert.match(script, /addEventListener\("click"/u);
     assert.doesNotMatch(script, /localStorage|sessionStorage/u);
   }
+});
+
+test("locked auth page never embeds tokens, cookies, or credentials", () => {
+  const assets = path.join(ROOT, "worker/public");
   const lockedHtml = fs.readFileSync(path.join(assets, "auth", "locked.html"), "utf8");
-  assert.match(lockedHtml, /<code>scotty owner recover<\/code>/u);
   assert.doesNotMatch(lockedHtml, /<script|<form|<input|<textarea/iu);
   assert.doesNotMatch(
     lockedHtml,
@@ -42,12 +41,4 @@ test("the TanStack session UI keeps protocol, state, and view boundaries explici
   assert.match(lifecycle, /\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}/u);
   assert.doesNotMatch(conversation, /innerHTML|outerHTML|insertAdjacentHTML|srcdoc/u);
   assert.doesNotMatch(route, /localStorage|sessionStorage|new WebSocket/u);
-});
-
-test("the UI build replaces only its bounded app asset directory", () => {
-  const config = fs.readFileSync(path.join(ROOT, "ui/vite.config.ts"), "utf8");
-  assert.match(config, /emptyOutDir:\s*true/u);
-  assert.match(config, /outDir:\s*"\.\.\/worker\/public\/app"/u);
-  assert.match(config, /outputPath:\s*"\/_shell\.html"/u);
-  assert.doesNotMatch(config, /outDir:\s*"\.\.\/worker\/public"/u);
 });

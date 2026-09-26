@@ -92,23 +92,22 @@ const readJson = async (path: string, signal?: AbortSignal): Promise<unknown> =>
   return response.json();
 };
 
-const changedStatuses = new Set<ChangedFileStatus>([
-  "added",
-  "copied",
-  "deleted",
-  "modified",
-  "renamed",
-  "type_changed",
-  "unmerged",
-  "untracked",
-]);
+const isChangedFileStatus = (value: string): value is ChangedFileStatus =>
+  value === "added" ||
+  value === "copied" ||
+  value === "deleted" ||
+  value === "modified" ||
+  value === "renamed" ||
+  value === "type_changed" ||
+  value === "unmerged" ||
+  value === "untracked";
 
 const decodeChangedFile = (value: unknown): ChangedFile | undefined => {
   if (
     !isObject(value) ||
     !isString(value.path) ||
     !isString(value.status) ||
-    !changedStatuses.has(value.status as ChangedFileStatus) ||
+    !isChangedFileStatus(value.status) ||
     !isBoolean(value.staged) ||
     !isBoolean(value.unstaged) ||
     !isBoolean(value.binary) ||
@@ -120,7 +119,7 @@ const decodeChangedFile = (value: unknown): ChangedFile | undefined => {
     return undefined;
   return {
     path: value.path,
-    status: value.status as ChangedFileStatus,
+    status: value.status,
     staged: value.staged,
     unstaged: value.unstaged,
     binary: value.binary,

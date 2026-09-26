@@ -128,6 +128,8 @@ export const prompt = (board, card) => {
     "- Follow the Effect v4 rc.112 patterns in vendor/effect and .agents/skills.",
     "- The card's Proof is an e2e or deployed test. Keep unit tests only for pure branchy logic or security/parsing boundaries.",
     "- Every test you add or touch must catch a regression that no other CI test catches (docs/reliability.md, Rules). Delete the rest, citing the covering CI test as file:line.",
+    "- Fix types at the root, including narrow production signature changes. A new suppression, cast helper, `unknown → T` function or behavior-changing fallback is a failure: report it instead of working around it.",
+    "- If you delegate, verify before accepting: grep the diff for new suppressions and casts, read every production hunk, and run the full `npm run test:all` yourself.",
     `- Findings outside this card go on the board, not into this change: \`${run} add <ID> "<title>"\`.`,
     "",
     "Before you stop, even mid-way",

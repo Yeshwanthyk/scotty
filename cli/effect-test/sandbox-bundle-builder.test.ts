@@ -309,11 +309,13 @@ describe("sandbox bundle preparation", () => {
         assert.strictEqual(isSensitiveBundlePath("nested/ordinary.ts"), false);
 
         const { roots } = yield* fixture(root);
-        const ordinary = join(roots.tools[0]!, "ordinary.ts");
+        const toolsRoot = roots.tools[0];
+        assert.isDefined(toolsRoot);
+        const ordinary = join(toolsRoot, "ordinary.ts");
         yield* Effect.promise(() => writeFile(ordinary, "token = 'not a path rule'\n"));
         yield* buildFixtureBundle(roots);
         yield* Effect.promise(() => rm(ordinary));
-        yield* Effect.promise(() => writeFile(join(roots.tools[0]!, ".env.local"), "not a secret"));
+        yield* Effect.promise(() => writeFile(join(toolsRoot, ".env.local"), "not a secret"));
         const result = yield* Effect.result(buildFixtureBundle(roots));
         assert.ok(Result.isFailure(result));
         assert.instanceOf(result.failure, CliError);

@@ -5,6 +5,7 @@ import type { RepoProjectionStorage } from "../../src/repos/projection";
 import type { SandboxExecOptions, SandboxRuntimeCapabilities } from "../../src/sandbox/runtime";
 import type { SessionProjectionStorage } from "../../src/session/projection";
 import type { StatsProjectionStorage } from "../../src/projections/stats";
+import { nativeSdkValue } from "./native-host";
 
 interface InjectedFailure {
   readonly error: unknown;
@@ -17,10 +18,10 @@ type Handler = (...args: ReadonlyArray<unknown>) => unknown | Promise<unknown>;
 export class InMemoryFaultInjectableFake<Operation extends string = string> {
   value: unknown | undefined;
   readonly values = new Map<string, unknown>();
-  private readonly callLog = new Map<Operation, Array<ReadonlyArray<unknown>>>();
-  private readonly failures = new Map<Operation, InjectedFailure>();
-  private readonly handlers = new Map<Operation, Handler>();
-  private readonly responses = new Map<Operation, unknown>();
+  private readonly callLog = new Map<Operation | "transaction", Array<ReadonlyArray<unknown>>>();
+  private readonly failures = new Map<Operation | "transaction", InjectedFailure>();
+  private readonly handlers = new Map<Operation | "transaction", Handler>();
+  private readonly responses = new Map<Operation | "transaction", unknown>();
   private transactionTail: Promise<void> = Promise.resolve();
 
   constructor(value?: unknown) {
@@ -64,7 +65,7 @@ export class InMemoryFaultInjectableFake<Operation extends string = string> {
   }
 
   async invoke<A>(
-    operation: Operation,
+    operation: Operation | "transaction",
     args: ReadonlyArray<unknown> = [],
     fallback?: () => A | Promise<A>,
   ): Promise<A> {
@@ -81,10 +82,10 @@ export class InMemoryFaultInjectableFake<Operation extends string = string> {
     }
 
     const handler = this.handlers.get(operation);
-    if (handler !== undefined) return (await handler(...args)) as A;
-    if (this.responses.has(operation)) return this.responses.get(operation) as A;
+    if (handler !== undefined) return nativeSdkValue<A>(await handler(...args));
+    if (this.responses.has(operation)) return nativeSdkValue<A>(this.responses.get(operation));
     if (fallback !== undefined) return fallback();
-    return undefined as A;
+    return nativeSdkValue<A>(undefined);
   }
 
   async transaction<A>(
@@ -94,7 +95,7 @@ export class InMemoryFaultInjectableFake<Operation extends string = string> {
       readonly delete: () => Promise<void>;
     }) => Promise<A>,
   ): Promise<A> {
-    return this.invoke("transaction" as Operation, [], async () => {
+    return this.invoke("transaction", [], async () => {
       const preceding = this.transactionTail;
       let unlock = (): void => undefined;
       this.transactionTail = new Promise((resolve) => {

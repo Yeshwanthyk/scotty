@@ -25,6 +25,7 @@ vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
 }));
 
 import type { ScottyAuthRegistryStub } from "../../src/auth/object";
+import { nativeSandboxNamespace } from "../support/native-host";
 import {
   HATCH_COOKIE,
   HATCH_HANDOFF_PATH,
@@ -67,9 +68,9 @@ const authStub = {
   logoutClient: vi.fn(),
   revokeClient: vi.fn(),
   startOwnerTransfer: vi.fn(),
-} as ScottyAuthRegistryStub;
+} satisfies ScottyAuthRegistryStub;
 const env = {
-  SANDBOX: {} as DurableObjectNamespace<import("../../src/session/object").Sandbox>,
+  SANDBOX: nativeSandboxNamespace({}),
   SCOTTY_PREVIEW_BASE: BASE,
   AUTH: { getByName: () => authStub },
 };

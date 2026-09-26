@@ -33,19 +33,23 @@ const decodeSettings = Schema.decodeUnknownSync(
     }),
   ),
 );
+const decodeProjectedPiAuth = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      openai: Schema.Struct({ type: Schema.Literal("api_key"), key: Schema.String }),
+      "openai-codex": Schema.Struct({
+        type: Schema.Literal("oauth"),
+        access: Schema.String,
+        refresh: Schema.String,
+        expires: Schema.Number,
+        accountId: Schema.String,
+      }),
+    }),
+  ),
+);
 
 const PI_EXPIRES = 1_795_000_123_456;
 
-type ProjectedPiAuth = {
-  readonly openai: { readonly type: "api_key"; readonly key: string };
-  readonly "openai-codex": {
-    readonly type: "oauth";
-    readonly access: string;
-    readonly refresh: string;
-    readonly expires: number;
-    readonly accountId: string;
-  };
-};
 const SESSION_ID = "a0b1c2d3e4f5";
 const sessionConfiguration = {
   runtimeCli: runtimeCliPin,
@@ -197,7 +201,7 @@ describe("container managed credential projection", () => {
   );
 
   it("projects credential handles and rejects ambient or ambiguous grants", () => {
-    const auth = JSON.parse(piAuthJson(credentials)) as ProjectedPiAuth;
+    const auth = decodeProjectedPiAuth(piAuthJson(credentials));
     const apiKey = "scotty-managed://codex/openai/api-key";
     const access = "scotty-managed://codex/openai-codex/access";
     const github = "scotty-managed://github/github/git-https";

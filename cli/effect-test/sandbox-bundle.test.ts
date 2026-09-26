@@ -125,7 +125,8 @@ describe("sandbox archive validation", () => {
       "duplicate bundle",
     );
 
-    const record = item.files[0]!;
+    const record = item.files[0];
+    assert.isDefined(record);
     const duplicatePathItem = {
       ...item,
       shape: "directory" as const,

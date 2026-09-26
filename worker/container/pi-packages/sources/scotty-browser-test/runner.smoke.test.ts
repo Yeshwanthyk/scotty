@@ -5,7 +5,6 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { AddressInfo } from "node:net";
 import type { BrowserEvidenceJob } from "./index.ts";
 import { runBrowserEvidenceJob } from "./runner.ts";
 
@@ -52,7 +51,9 @@ test(
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const output = await mkdtemp(join(tmpdir(), "scotty-browser-video-smoke-"));
     try {
-      const port = (server.address() as AddressInfo).port;
+      const address = server.address();
+      assert.ok(address !== null && typeof address !== "string");
+      const port = address.port;
       const job: BrowserEvidenceJob = {
         port,
         viewport: { width: 320, height: 240 },

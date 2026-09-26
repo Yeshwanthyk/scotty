@@ -210,7 +210,8 @@ export const selectCraneAsset = (
   platform: NodeJS.Platform = hostPlatform(),
   architecture: string = hostArchitecture(),
 ): CraneAsset => {
-  const selected = CRANE_ASSETS[`${platform}-${architecture}` as keyof typeof CRANE_ASSETS];
+  const key = `${platform}-${architecture}`;
+  const selected = Object.entries(CRANE_ASSETS).find(([assetKey]) => assetKey === key)?.[1];
   if (selected === undefined)
     return reject(
       new ContainerImageError({
@@ -248,7 +249,7 @@ const validCachedCrane = async (path: string, asset: CraneAsset): Promise<boolea
 };
 
 export type ContainerImageFetch = (
-  input: RequestInfo | URL,
+  input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
 

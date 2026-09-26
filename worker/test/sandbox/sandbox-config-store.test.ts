@@ -1,12 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect } from "effect";
-import type { SandboxConfigAuthority } from "../../src/sandbox/config-contracts";
+import { Effect, Schema } from "effect";
+import { SandboxConfigAuthoritySchema } from "../../src/sandbox/config-contracts";
 import { defaultCloudSettings } from "../../../protocol/settings/cloud-settings";
 import {
   type SandboxConfigAuthorityStorage,
   SandboxConfigStore,
   sandboxConfigStoreLayer,
 } from "../../src/sandbox/config-store";
+
+const decodeSandboxConfigAuthority = Schema.decodeUnknownSync(SandboxConfigAuthoritySchema);
 
 const makeStorage = (initial?: unknown) => {
   let authority = initial;
@@ -58,7 +60,7 @@ describe("sandbox config store", () => {
         }),
       ).pipe(Effect.provide(storage.layer));
       assert.deepEqual(replay, activated);
-      const persisted = storage.snapshot() as SandboxConfigAuthority;
+      const persisted = decodeSandboxConfigAuthority(storage.snapshot());
       assert.strictEqual(persisted.revision, 1);
       assert.strictEqual(persisted.activeDigest, "a".repeat(64));
     }),
@@ -126,7 +128,7 @@ describe("sandbox config store", () => {
         }),
       ).pipe(Effect.provide(storage.layer));
       assert.deepEqual(second, first);
-      const persisted = storage.snapshot() as SandboxConfigAuthority;
+      const persisted = decodeSandboxConfigAuthority(storage.snapshot());
       assert.strictEqual(persisted.revision, 1);
       assert.strictEqual(persisted.lastSync?.idempotencyKey, "sync-1");
     }),
@@ -162,7 +164,7 @@ describe("sandbox config store", () => {
         ).pipe(Effect.provide(storage.layer)),
       );
       assert.strictEqual(reused.reason, "conflict");
-      const persisted = storage.snapshot() as SandboxConfigAuthority;
+      const persisted = decodeSandboxConfigAuthority(storage.snapshot());
       assert.strictEqual(persisted.activeDigest, "a".repeat(64));
     }),
   );

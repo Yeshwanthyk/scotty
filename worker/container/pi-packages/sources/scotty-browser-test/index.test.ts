@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { nativePiExtensionApi } from "../../../../test/support/native-host.ts";
 import { Check } from "typebox/value";
 import scottyBrowserTest, {
   BrowserEvidenceJobParameters,
@@ -198,7 +198,7 @@ test("registers exactly one scotty_browser_test tool with safe reference guidanc
       tools.push(tool);
     },
   };
-  scottyBrowserTest(api as ExtensionAPI);
+  scottyBrowserTest(nativePiExtensionApi(api));
   assert.deepEqual(tools.map(({ name }) => name), ["scotty_browser_test"]);
   assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /exact scotty-evidence:<jobId>/u);
   assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /once/u);

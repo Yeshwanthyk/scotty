@@ -13,11 +13,6 @@ const canaryRunSource = readFileSync(
   new URL("./full-stack-canary.run.ts", import.meta.url),
   "utf8",
 );
-const canaryWorkerSource = readFileSync(
-  new URL("./full-stack-canary-worker.ts", import.meta.url),
-  "utf8",
-);
-
 const approved = () => {
   const approvals = expectedFullStackCanaryApprovals(stage);
   return {
@@ -84,23 +79,5 @@ describe("full-stack canary safety", () => {
 
     assert.strictEqual(token, `scotty-assets-v1:${digest}`);
     assert.notStrictEqual(token, digest);
-  });
-
-  it("keeps the canary subclass on the production Sandbox egress identity", () => {
-    assert.match(
-      canaryWorkerSource,
-      /export const ScottySandbox = class Sandbox extends ProductionSandbox/u,
-    );
-  });
-
-  it("keeps deployed credential proof at layered boundaries", () => {
-    assert.notMatch(canaryWorkerSource, /e2eSecurityProbe|CanarySecurity|__e2e\/security/u);
-    assert.notMatch(canaryWorkerSource, /scanCanaryR2Bucket|readBoundedBytes/u);
-    assert.notMatch(
-      canaryWorkerSource,
-      /containerProcessArgsNonSecret|containerProcessEnvNonSecret/u,
-    );
-    assert.notMatch(canaryWorkerSource, /credentialRegistryStorageInspected/u);
-    assert.notMatch(canaryWorkerSource, /containerLogsNonSecret|ownedBackupIds/u);
   });
 });

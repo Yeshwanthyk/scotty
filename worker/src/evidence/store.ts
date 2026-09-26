@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Result } from "effect";
+import { Clock, Context, Effect, Layer, Option, Predicate, Result } from "effect";
 import {
   conflict,
   decodeSessionRecordResult,
@@ -588,7 +588,12 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
     return Effect.tryPromise({
       try: () => evidenceTransaction(operation),
       catch: () => STORAGE_ERROR,
-    }).pipe(Effect.flatMap(Effect.fromResult));
+    }).pipe(
+      Effect.flatMap(Effect.fromResult),
+      Effect.mapError((error) =>
+        Predicate.isTagged(error, "EvidenceStateError") ? error : STORAGE_ERROR,
+      ),
+    );
   };
 
   const updateActive = (
@@ -622,7 +627,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
       if (Result.isFailure(updated)) return Result.fail(updated.failure);
       await transaction.putEvidence(updated.success.state);
       return Result.succeed(updated.success.active);
-    }) as Effect.Effect<EvidenceActiveJob, EvidenceStateError>;
+    });
 
   const finalize = Effect.fnUntraced(function* (
     nonce: string,
@@ -679,7 +684,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
       );
       await transaction.putEvidence(nextState);
       return Result.succeed(summary);
-    }) as Effect.Effect<EvidenceJobSummary, EvidenceStateError>;
+    });
   });
 
   return EvidenceStore.of({
@@ -854,7 +859,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
         };
         await transaction.putEvidence({ ...state.success, activeJob: next });
         return Result.succeed(next);
-      }) as Effect.Effect<EvidenceActiveJob, EvidenceStateError>;
+      });
     }),
     publishPreviewExposure: Effect.fnUntraced(function* (nonce, input) {
       const nowMillis = yield* Clock.currentTimeMillis;
@@ -897,7 +902,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
         };
         await transaction.putEvidence({ ...state.success, activeJob: next });
         return Result.succeed(next);
-      }) as Effect.Effect<EvidenceActiveJob, EvidenceStateError>;
+      });
     }),
     admitPreview: Effect.fnUntraced(function* (input) {
       const nowMillis = yield* Clock.currentTimeMillis;
@@ -959,7 +964,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
         };
         await transaction.putEvidence({ ...state.success, activeJob: next });
         return Result.succeed({ requestId: input.requestId, expiresAt });
-      }) as Effect.Effect<EvidencePreviewPermitAdmission | undefined, EvidenceStateError>;
+      });
     }),
     adjustPreview: Effect.fnUntraced(function* (requestId, ingressBytes) {
       const nowMillis = yield* Clock.currentTimeMillis;
@@ -986,7 +991,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
           });
         }
         return Result.succeed(accepted);
-      }) as Effect.Effect<boolean, EvidenceStateError>;
+      });
     }),
     claimPreview: Effect.fnUntraced(function* (input) {
       const nowMillis = yield* Clock.currentTimeMillis;
@@ -1030,7 +1035,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
             ? { operationNonce: active.operationNonce, expiresAt: permit.expiresAt }
             : undefined,
         );
-      }) as Effect.Effect<ClaimedEvidencePreviewPermit | undefined, EvidenceStateError>;
+      });
     }),
     settlePreview: Effect.fnUntraced(function* (requestId, responseBytes) {
       const nowMillis = yield* Clock.currentTimeMillis;
@@ -1058,7 +1063,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
           });
         }
         return Result.succeed(undefined);
-      }) as Effect.Effect<void, EvidenceStateError>;
+      });
     }),
     cancelPreview: Effect.fnUntraced(function* (requestId) {
       const nowMillis = yield* Clock.currentTimeMillis;
@@ -1080,7 +1085,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
           });
         }
         return Result.succeed(undefined);
-      }) as Effect.Effect<void, EvidenceStateError>;
+      });
     }),
     expirePreview: Effect.fnUntraced(function* (requestId) {
       const nowMillis = yield* Clock.currentTimeMillis;
@@ -1104,7 +1109,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
           activeJob: { ...active, previewAccounting: accounting },
         });
         return Result.succeed(undefined);
-      }) as Effect.Effect<void, EvidenceStateError>;
+      });
     }),
     revokePreview: (nonce, interruptionReason) =>
       updateActive(nonce, (active, state) => {
@@ -1313,7 +1318,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
         };
         await transaction.putEvidence(requestDeletes(withArtifact, [pending], reason, requestedAt));
         return Result.succeed(pending);
-      }) as Effect.Effect<EvidenceArtifact | undefined, EvidenceStateError>;
+      });
     }),
     prepareExpiredDeletes: Effect.fnUntraced(function* () {
       const nowMillis = yield* Clock.currentTimeMillis;
@@ -1330,9 +1335,9 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
             requestDeletes(state.success, expired, "expired", requestedAt),
           );
         return Result.succeed(
-          expired.map((artifact) => ({ ...artifact, status: "delete_pending" })),
+          expired.map((artifact): EvidenceArtifact => ({ ...artifact, status: "delete_pending" })),
         );
-      }) as Effect.Effect<ReadonlyArray<EvidenceArtifact>, EvidenceStateError>;
+      });
     })(),
     prepareVaporizeDeletes: Effect.fnUntraced(function* (nonce) {
       const requestedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
@@ -1366,7 +1371,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
         if (state.success.activeJob !== undefined || state.success.artifacts.length > 0)
           await transaction.putEvidence(requested);
         return Result.succeed(requested.artifacts);
-      }) as Effect.Effect<ReadonlyArray<EvidenceArtifact>, EvidenceStateError>;
+      });
     }),
     confirmDelete: (objectKey) => {
       if (Option.isNone(decodeEvidenceObjectKey(objectKey)))
@@ -1393,7 +1398,7 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
           retainedBytes: state.success.retainedBytes - artifact.bytes,
         });
         return Result.succeed(undefined);
-      }) as Effect.Effect<void, EvidenceStateError>;
+      });
     },
     clearForVaporize: (nonce) =>
       transact(async (transaction) => {
@@ -1418,6 +1423,6 @@ const makeEvidenceStore = (storage: SessionAuxiliaryStorage): EvidenceStoreShape
           return Result.fail(new EvidenceStateError({ reason: "invalid" }));
         await transaction.deleteEvidence();
         return Result.succeed(undefined);
-      }) as Effect.Effect<void, EvidenceStateError>,
+      }),
   });
 };

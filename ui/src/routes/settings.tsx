@@ -1,4 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
+import { Schema } from "effect";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { CircleAlert, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -7,6 +8,8 @@ import { scottyBaseAgentInstructions } from "../../../protocol/agents/agent-inst
 import { agentDescriptors, AgentIdSchema } from "../../../protocol/agents/agents";
 import { ClaudeReasoningEffort } from "../../../protocol/agents/claude/claude-model-capabilities";
 import { codexModelCapabilities } from "../../../protocol/agents/codex/codex-model-capabilities";
+import { CodexReasoningEffort } from "../../../protocol/agents/codex/codex-model-capabilities";
+import { PiReasoningEffortSchema } from "../../../protocol/agents/agent-selection";
 import { Button } from "../components/Button";
 import { SettingsShell, type SettingsPane } from "../components/SettingsShell";
 import { ResourcesSection, type ResourcesSectionHandle } from "../components/ResourcesSection";
@@ -32,6 +35,9 @@ import {
   settingsPreviewSnapshot,
 } from "../fixtures/settings";
 import { isSettingsPreview } from "../data/settings-preview";
+
+const isPiReasoningEffort = Schema.is(PiReasoningEffortSchema);
+const isCodexReasoningEffort = Schema.is(CodexReasoningEffort);
 
 export const Route = createFileRoute("/settings")({
   loader: ({ abortController, location }) => {
@@ -695,9 +701,10 @@ function AgentSection({
                 aria-label="Pi effort"
                 disabled={!owner}
                 value={draft.pi.effort ?? "off"}
-                onChange={(event) =>
-                  setPi({ effort: event.target.value as CloudSettings["pi"]["effort"] })
-                }
+                onChange={(event) => {
+                  const effort = event.target.value;
+                  if (isPiReasoningEffort(effort)) setPi({ effort });
+                }}
                 {...stylex.props(styles.select)}
               >
                 {["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((effort) => (
@@ -763,9 +770,10 @@ function AgentSection({
                 aria-label="Codex effort"
                 disabled={!owner}
                 value={draft.codex.effort}
-                onChange={(event) =>
-                  setCodex({ effort: event.target.value as CloudSettings["codex"]["effort"] })
-                }
+                onChange={(event) => {
+                  const effort = event.target.value;
+                  if (isCodexReasoningEffort(effort)) setCodex({ effort });
+                }}
                 {...stylex.props(styles.select)}
               >
                 {codexModelCapabilities

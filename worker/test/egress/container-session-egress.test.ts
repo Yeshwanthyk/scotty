@@ -27,6 +27,7 @@ import {
   sessionHarnessKeys,
 } from "../support/session-harness";
 import { makeSessionRecord } from "../support";
+import { nativeBindings, nativeSandboxNamespace } from "../support/native-host";
 
 const TARGET_ID = "b0b1c2d3e4f5";
 const SOURCE_CONTAINER_ID = "a".repeat(64);
@@ -143,43 +144,34 @@ function sandboxNamespace(options: {
   readonly onName?: (name: string) => void;
   readonly onString?: (id: string) => void;
 }): Bindings["SANDBOX"] {
-  return {
-    idFromName: (name) => {
+  return nativeSandboxNamespace({
+    idFromName: (name: string) => {
       options.onName?.(name);
       return durableObjectId(name);
     },
-    idFromString: (id) => {
+    idFromString: (id: string) => {
       options.onString?.(id);
       return durableObjectId(id);
     },
-    get: (id) => {
-      const named = id as NamedDurableObjectId;
+    get: (id: DurableObjectId) => {
+      const name = id.toString();
       const resolved =
-        named.name === SOURCE_CONTAINER_ID
-          ? (options.fromString?.(named.name) ?? options.fromName?.(named.name))
-          : (options.fromName?.(named.name) ?? options.fromString?.(named.name));
-      return resolved as never;
+        name === SOURCE_CONTAINER_ID
+          ? (options.fromString?.(name) ?? options.fromName?.(name))
+          : (options.fromName?.(name) ?? options.fromString?.(name));
+      return resolved;
     },
-    getByName: (name) => (options.fromName?.(name) ?? options.fromString?.(name)) as never,
+    getByName: (name: string) => options.fromName?.(name) ?? options.fromString?.(name),
     newUniqueId: () => durableObjectId("unique"),
     jurisdiction: () => sandboxNamespace(options),
-  } as Bindings["SANDBOX"];
+  });
 }
 
 function bindings(namespace: Bindings["SANDBOX"]): Bindings {
-  return {
-    AUTH: undefined as never,
-    RUNNER_REGISTRY: undefined as never,
-    RUNNERS: undefined as never,
+  return nativeBindings({
     SANDBOX: namespace,
-    SESSIONS: undefined as never,
-    BACKUP_BUCKET: undefined as never,
-    ARTIFACT_BUCKET: undefined as never,
-    SANDBOX_BUNDLE_BUCKET: undefined as never,
-    SANDBOX_CONFIG: undefined as never,
-    ASSETS: undefined as never,
     SCOTTY_TOKEN: "unused",
-  };
+  });
 }
 
 const context = (containerId = SOURCE_CONTAINER_ID): OutboundHandlerContext<unknown> => ({

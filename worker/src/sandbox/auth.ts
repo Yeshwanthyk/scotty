@@ -233,8 +233,8 @@ const existingExtraResources = Effect.fnUntraced(function* (
     .pipe(Effect.catchTag("SandboxRuntimeFailure", () => Effect.succeed(undefined)));
   if (settingsBytes === undefined)
     return {
-      packagePaths: [] as ReadonlyArray<string>,
-      extensionPaths: [] as ReadonlyArray<string>,
+      packagePaths: [] satisfies ReadonlyArray<string>,
+      extensionPaths: [] satisfies ReadonlyArray<string>,
       selection: undefined,
     };
   const decoded = yield* Effect.result(
@@ -242,8 +242,8 @@ const existingExtraResources = Effect.fnUntraced(function* (
   );
   if (Result.isFailure(decoded))
     return {
-      packagePaths: [] as ReadonlyArray<string>,
-      extensionPaths: [] as ReadonlyArray<string>,
+      packagePaths: [] satisfies ReadonlyArray<string>,
+      extensionPaths: [] satisfies ReadonlyArray<string>,
       selection: undefined,
     };
   const selection = {
@@ -258,10 +258,10 @@ const existingExtraResources = Effect.fnUntraced(function* (
   const packages = decoded.success.packages ?? [];
   const extensionPaths = decoded.success.extensions ?? [];
   if (packages.length < PI_PACKAGES.length)
-    return { packagePaths: [] as ReadonlyArray<string>, extensionPaths, selection };
+    return { packagePaths: [] satisfies ReadonlyArray<string>, extensionPaths, selection };
   for (let index = 0; index < PI_PACKAGES.length; index += 1) {
     if (packages[index] !== PI_PACKAGES[index])
-      return { packagePaths: [] as ReadonlyArray<string>, extensionPaths, selection };
+      return { packagePaths: [] satisfies ReadonlyArray<string>, extensionPaths, selection };
   }
   return { packagePaths: packages.slice(PI_PACKAGES.length), extensionPaths, selection };
 });
@@ -304,10 +304,13 @@ const mergedSkillCommand = (
       codexSkills: `${sessionRoot(id)}/.codex/skills`,
       piSkills: `${sessionRoot(id)}/.pi-agent/skills`,
     },
-    extraSkills.map((skill) => ({
-      name: skill.name,
-      source: extraSkillSourcePath(bundleRoot!, skill.name),
-    })),
+    // Materialization rejects extras without a bundle root, so none reach here without one.
+    bundleRoot === undefined
+      ? []
+      : extraSkills.map((skill) => ({
+          name: skill.name,
+          source: extraSkillSourcePath(bundleRoot, skill.name),
+        })),
   );
 };
 
@@ -490,8 +493,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
             message: "Sandbox Pi settings packages do not start with built-in packages",
           });
       }
-      for (let index = 0; index < extraPackagePaths.length; index += 1) {
-        const packagePath = extraPackagePaths[index]!;
+      for (const [index, packagePath] of extraPackagePaths.entries()) {
         if (packages[PI_PACKAGES.length + index] !== packagePath)
           return yield* new SandboxRuntimeFailure({
             reason: "nonzero_exit",

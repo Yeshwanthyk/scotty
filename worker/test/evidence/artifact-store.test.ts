@@ -12,6 +12,12 @@ import {
   type ArtifactObjectMetadata,
   type ArtifactStoreCapabilities,
 } from "../../src/evidence/artifact-store";
+import {
+  nativeR2Bucket,
+  nativeR2JsonValue,
+  nativeR2Object,
+  nativeR2ObjectBody,
+} from "../support/native-host";
 
 const PNG = Uint8Array.from([
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
@@ -68,7 +74,9 @@ const makeMemoryCapabilities = (ambiguousPut = false) => {
   return { capabilities, objects, putCalls: () => putCalls, headCalls: () => headCalls };
 };
 
-const r2Object = (stored: StoredObject, includeBody: boolean): R2Object | R2ObjectBody => {
+function r2Object(stored: StoredObject, includeBody: false): R2Object;
+function r2Object(stored: StoredObject, includeBody: true): R2ObjectBody;
+function r2Object(stored: StoredObject, includeBody: boolean): R2Object | R2ObjectBody {
   const base = {
     key: stored.key,
     version: "1",
@@ -82,19 +90,19 @@ const r2Object = (stored: StoredObject, includeBody: boolean): R2Object | R2Obje
     storageClass: "Standard",
     writeHttpMetadata: () => undefined,
   };
-  if (!includeBody) return base as R2Object;
+  if (!includeBody) return nativeR2Object(base);
   const body = bodyFor(stored).body;
-  return {
+  return nativeR2ObjectBody({
     ...base,
     body,
     bodyUsed: false,
     arrayBuffer: () => Promise.resolve(stored.bytes.buffer.slice(0)),
     bytes: () => Promise.resolve(Uint8Array.from(stored.bytes)),
     text: () => Promise.resolve(""),
-    json: <T>() => Promise.resolve({} as T),
+    json: <T>() => Promise.resolve(nativeR2JsonValue<T>({})),
     blob: () => Promise.resolve(new Blob([stored.bytes], { type: "image/png" })),
-  } as R2ObjectBody;
-};
+  });
+}
 
 const makeR2Capabilities = () => {
   const memory = makeMemoryCapabilities();
@@ -116,15 +124,15 @@ const makeR2Capabilities = () => {
       });
       const stored = memory.objects.get(key);
       assert.ok(stored);
-      return r2Object(stored, false) as R2Object;
+      return r2Object(stored, false);
     },
     head: async (key: string) => {
       const stored = memory.objects.get(key);
-      return stored === undefined ? null : (r2Object(stored, false) as R2Object);
+      return stored === undefined ? null : r2Object(stored, false);
     },
     get: async (key: string) => {
       const stored = memory.objects.get(key);
-      return stored === undefined ? null : (r2Object(stored, true) as R2ObjectBody);
+      return stored === undefined ? null : r2Object(stored, true);
     },
     delete: async (key: string | string[]) => {
       for (const candidate of typeof key === "string" ? [key] : key)
@@ -132,7 +140,7 @@ const makeR2Capabilities = () => {
     },
   };
   return {
-    capabilities: r2ArtifactStoreCapabilities(bucketShape as R2Bucket),
+    capabilities: r2ArtifactStoreCapabilities(nativeR2Bucket(bucketShape)),
     objects: memory.objects,
     putCalls: memory.putCalls,
     headCalls: memory.headCalls,

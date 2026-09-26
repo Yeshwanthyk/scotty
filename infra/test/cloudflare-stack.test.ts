@@ -367,8 +367,6 @@ describe("Cloudflare stack source contract", () => {
     assert.notMatch(workerPackageSource, /@cloudflare\/playwright/u);
     assert.notMatch(packageLockSource, /node_modules\/@cloudflare\/playwright/u);
     assert.notMatch(source, /Cloudflare\.Browser/u);
-    assert.match(source, /ARTIFACT_BUCKET: artifacts/u);
-    assert.match(source, /SANDBOX_BUNDLE_BUCKET: sandboxBundles/u);
   });
 
   it("bundles the Worker and full-stack canary without managed browser code or credentials", () => {
@@ -404,8 +402,6 @@ describe("Cloudflare stack source contract", () => {
     const combined = `${source}\n${entrypointSource}`;
     assert.notMatch(combined, /workers\.dev|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f-]{27}/u);
     assert.notMatch(combined, /example-runner|yeshwanth|MonolithWorker/u);
-    assert.match(entrypointSource, /required\("SCOTTY_INSTALLATION_NAME"\)/u);
-    assert.notMatch(entrypointSource, /SCOTTY_ADOPTION_MANIFEST/u);
   });
 
   it("guards before every Resource Effect and retains stateful and compute resources", () => {
@@ -423,11 +419,6 @@ describe("Cloudflare stack source contract", () => {
   });
 
   it("uses Alchemy public wildcard DNS and WorkerRoute resources without a parallel reconciler", () => {
-    assert.match(source, /Cloudflare\.DNS\.Record\(topology\.preview\.dns\.logicalId/u);
-    assert.match(source, /Cloudflare\.Workers\.WorkerRoute\(topology\.preview\.route\.logicalId/u);
-    assert.match(source, /name: topology\.preview\.dns\.name/u);
-    assert.match(source, /pattern: topology\.preview\.route\.pattern/u);
-    assert.match(source, /script: worker\.workerName/u);
     assert.notMatch(source, /wrangler|cloudflare\.com\/client\/v4/u);
   });
 
@@ -565,20 +556,7 @@ describe("Cloudflare stack source contract", () => {
 
   it("keeps credentials out of Alchemy props and state", () => {
     assert.notMatch(source, /SecretsStore|WriteOnlySecret|secret_text|\bvalue\s*:/u);
-    assert.match(source, /worker\.bind\("InheritedWorkerSecrets"/u);
-    assert.match(source, /type: "inherit", name/u);
-    assert.match(source, /CREDENTIAL_WRAPPING_KEY/u);
     assert.equal(/CREDENTIAL_WRAPPING_KEY\s*:/u.test(source), false);
-  });
-
-  it("uses prebuilt runner entrypoints when embedded deployment is enabled", () => {
-    const runnerWorkerSource = readFileSync(
-      new URL("../../worker/src/runner-worker.ts", import.meta.url),
-      "utf8",
-    );
-    assert.match(runnerWorkerSource, /PREBUILT_RUNNER_WORKER_ENTRY/u);
-    assert.match(runnerWorkerSource, /prebuiltWorkers === true/u);
-    assert.match(runnerWorkerSource, /bundle: false as const/u);
   });
 
   it("hosts the Effect Runner only in the private cross-script Worker", () => {

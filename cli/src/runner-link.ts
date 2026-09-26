@@ -135,12 +135,7 @@ const socketOpenError = (cause: unknown): Socket.SocketError =>
 
 export type RunnerWebSocketConstructor = (url: string, options: Bun.WebSocketOptions) => WebSocket;
 
-const makeBunWebSocket: RunnerWebSocketConstructor = (url, options) =>
-  // boundary: Bun extends the DOM constructor with authenticated upgrade headers.
-  new (WebSocket as new (url: string | URL, options?: Bun.WebSocketOptions) => WebSocket)(
-    url,
-    options,
-  );
+const makeBunWebSocket: RunnerWebSocketConstructor = (url, options) => new WebSocket(url, options);
 
 const makeSocket = (config: RunnerLinkConfig, makeWebSocket: RunnerWebSocketConstructor) =>
   Socket.fromWebSocket(
@@ -172,7 +167,9 @@ interface ActiveHttpStream {
   requestUncredited: number;
   responseCredit: number;
   responseEnded: boolean;
-  responseReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  responseReader:
+    | Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "cancel" | "releaseLock">
+    | undefined;
   responseStarted: boolean;
 }
 

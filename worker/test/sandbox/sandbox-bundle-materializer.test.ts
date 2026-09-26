@@ -351,12 +351,17 @@ const itemBundle = () => {
     };
   });
   const manifest = { items };
+  const [skill, tool, extension, packageFile] = contents;
+  assert.isDefined(skill);
+  assert.isDefined(tool);
+  assert.isDefined(extension);
+  assert.isDefined(packageFile);
   return createDeterministicTarGz([
     fileMember("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`),
-    fileMember("skills/release-notes/SKILL.md", contents[0]!.content),
-    fileMember("tools/hello", contents[1]!.content, "executable"),
-    fileMember("extensions/review/index.ts", contents[2]!.content),
-    fileMember("pi-packages/@scope/ready-package/package.json", contents[3]!.content),
+    fileMember("skills/release-notes/SKILL.md", skill.content),
+    fileMember("tools/hello", tool.content, "executable"),
+    fileMember("extensions/review/index.ts", extension.content),
+    fileMember("pi-packages/@scope/ready-package/package.json", packageFile.content),
   ]);
 };
 

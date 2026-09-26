@@ -67,6 +67,17 @@ import {
 } from "../../src/session/object";
 import { EVIDENCE_RECORD_KEY } from "../../src/session/store";
 import { InMemoryFaultInjectableFake } from "./index";
+import {
+  nativeBindings,
+  nativeCredentialNamespace,
+  nativeDurableObjectState,
+  nativeKvNamespace,
+  nativeR2Bucket,
+  nativeR2Object,
+  nativeR2ObjectBody,
+  nativeR2JsonValue,
+  nativeStorageValue,
+} from "./native-host";
 
 const ACTOR_FIXTURE_SESSION_KEY = "fixture:actor-session";
 const ACTOR_FIXTURE_RUNTIME_GENERATION_KEY = "fixture:actor-runtime-generation";
@@ -123,8 +134,8 @@ const makeSandboxBundleBucket = (
       storageClass: "Standard",
       writeHttpMetadata: () => undefined,
     };
-    if (!includeBody) return base as R2Object;
-    return {
+    if (!includeBody) return nativeR2Object(base);
+    return nativeR2ObjectBody({
       ...base,
       body: new ReadableStream<Uint8Array>({
         start(controller) {
@@ -136,12 +147,12 @@ const makeSandboxBundleBucket = (
       arrayBuffer: () => Promise.resolve(object.bytes.buffer.slice(0)),
       bytes: () => Promise.resolve(Uint8Array.from(object.bytes)),
       text: () => Promise.resolve(""),
-      json: <T>() => Promise.resolve({} as T),
+      json: <T>() => Promise.resolve(nativeR2JsonValue<T>({})),
       blob: () => Promise.resolve(new Blob([object.bytes], { type: object.contentType })),
-    } as R2ObjectBody;
+    });
   };
 
-  return {
+  return nativeR2Bucket({
     put: async (
       key: string,
       value: ArrayBuffer | ArrayBufferView | Blob | ReadableStream | string | null,
@@ -182,7 +193,7 @@ const makeSandboxBundleBucket = (
       for (const key of deleted) objects.delete(String(key));
     },
     list: async () => ({ objects: [], truncated: false, delimitedPrefixes: [] }),
-  } as never;
+  });
 };
 
 class InjectedHarnessFailure extends Data.TaggedError("InjectedHarnessFailure")<{
@@ -725,8 +736,10 @@ class HarnessStorage {
   }
 
   readonly kv = {
-    get: <A>(key: string): A | undefined => this.memory.values.get(key) as A | undefined,
-    list: <A>(): Iterable<[string, A]> => [...this.memory.values.entries()] as Array<[string, A]>,
+    get: <A>(key: string): A | undefined =>
+      nativeStorageValue<A | undefined>(this.memory.values.get(key)),
+    list: <A>(): Iterable<[string, A]> =>
+      nativeStorageValue<Array<[string, A]>>([...this.memory.values.entries()]),
     put: <A>(key: string, value: A): void => {
       this.memory.values.set(key, structuredClone(value));
     },
@@ -782,7 +795,7 @@ class HarnessStorage {
       this.failNextGet = false;
       throw injectedHarnessFailure("injected storage get failure");
     }
-    const value = structuredClone(this.memory.values.get(key)) as A | undefined;
+    const value = nativeStorageValue<A | undefined>(structuredClone(this.memory.values.get(key)));
     const count = (this.getCounts.get(key) ?? 0) + 1;
     this.getCounts.set(key, count);
     await this.onStorageGet?.(key, count, this.memory);
@@ -800,7 +813,9 @@ class HarnessStorage {
     entries.sort(([left], [right]) => left.localeCompare(right));
     if (options.reverse) entries.reverse();
     const limited = entries.slice(0, options.limit);
-    return new Map(limited.map(([key, value]) => [key, structuredClone(value) as A]));
+    return new Map(
+      limited.map(([key, value]) => [key, nativeStorageValue<A>(structuredClone(value))]),
+    );
   };
 
   delete = async (key: string): Promise<boolean> => {
@@ -831,7 +846,8 @@ class HarnessStorage {
       > = [];
       try {
         const result = await operation({
-          get: async <T>(key: string) => structuredClone(staged.get(key)) as T | undefined,
+          get: async <T>(key: string) =>
+            nativeStorageValue<T | undefined>(structuredClone(staged.get(key))),
           list: async <T>(options: DurableObjectListOptions = {}) => {
             const prefix = options.prefix ?? "";
             const entries = [...staged.entries()].filter(([key]) => key.startsWith(prefix));
@@ -840,7 +856,7 @@ class HarnessStorage {
             return new Map(
               entries
                 .slice(0, options.limit)
-                .map(([key, value]) => [key, structuredClone(value) as T]),
+                .map(([key, value]) => [key, nativeStorageValue<T>(structuredClone(value))]),
             );
           },
           put: async <T>(key: string, value: T) => {
@@ -888,7 +904,7 @@ class HarnessStorage {
   sync = async (): Promise<void> => undefined;
 
   read<A>(key: string): A | undefined {
-    return structuredClone(this.memory.values.get(key)) as A | undefined;
+    return nativeStorageValue<A | undefined>(structuredClone(this.memory.values.get(key)));
   }
 
   injectNextGetFailure(): void {
@@ -926,7 +942,7 @@ const makeCredentialRegistry = (
   requests: unknown[],
   releases: unknown[],
 ): Bindings["CREDENTIALS"] =>
-  ({
+  nativeCredentialNamespace({
     getByName: () => ({
       issueGrants: async (input: unknown) => {
         requests.push(structuredClone(input));
@@ -993,7 +1009,7 @@ const makeCredentialRegistry = (
         };
       },
     }),
-  }) as never;
+  });
 
 interface HarnessArtifactObject {
   readonly bytes: Uint8Array;
@@ -1267,12 +1283,12 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const constructorWork: Promise<unknown>[] = [];
   const backgroundWork: Promise<unknown>[] = [];
 
-  const ctx: DurableObjectState<{}> = {
+  const ctx = nativeDurableObjectState<{}>({
     id: {
       toString: () => SESSION_ID,
       equals: () => false,
-    } as never,
-    storage: storage as never,
+    },
+    storage,
     container: {
       get running() {
         return rawPiContainerRunning;
@@ -1290,7 +1306,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           },
         };
       },
-    } as never,
+    },
     blockConcurrencyWhile: <A>(operation: () => Promise<A>): Promise<A> => {
       const work = operation();
       constructorWork.push(work);
@@ -1302,9 +1318,9 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     abort: (reason?: string) => {
       aborts.push(reason ?? "");
     },
-    exports: {} as never,
+    exports: {},
     props: {},
-    facets: {} as never,
+    facets: {},
     acceptWebSocket: () => undefined,
     getWebSockets: () => [],
     setWebSocketAutoResponse: () => undefined,
@@ -1313,13 +1329,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     setHibernatableWebSocketEventTimeout: () => undefined,
     getHibernatableWebSocketEventTimeout: () => null,
     getTags: () => [],
-  };
+  });
 
   const projections = new Map<string, string>();
   for (const [key, value] of Object.entries(options.initialProjections ?? {})) {
     projections.set(key, JSON.stringify(value));
   }
-  const sessions = {
+  const sessions = nativeKvNamespace({
     get: async (key: string): Promise<string | null> => projections.get(key) ?? null,
     put: async (key: string, value: string): Promise<void> => {
       projections.set(key, value);
@@ -1349,11 +1365,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       list_complete: true,
       cacheStatus: null,
     }),
-  } as KVNamespace;
+  });
 
   // lint-allow-double-cast: boundary: excluded Worker bindings retain removed provider env fields
-  const env = {
-    AUTH: undefined as never,
+  const env = nativeBindings({
+    AUTH: undefined,
     RUNNER_REGISTRY: {
       getByName: () => ({
         authenticate: async () => ({
@@ -1446,7 +1462,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
                 sessionId: operation.sessionId,
                 result,
               },
-            } as never;
+            };
           }),
         fetch:
           options.runnerFetch ??
@@ -1466,7 +1482,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         control: async () => undefined,
       }),
     },
-    SANDBOX: options.sandboxNamespace ?? (undefined as never),
+    SANDBOX: options.sandboxNamespace,
     CREDENTIALS: credentialRegistry,
     SANDBOX_CONFIG: {
       getByName: () => ({
@@ -1551,7 +1567,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         r2DeletedKeys.push(deleted);
         events.push(`r2:delete:${deleted.join(",")}`);
       },
-    } as never,
+    },
     ARTIFACT_BUCKET: {
       put: async (key: string, value: unknown, putOptions?: R2PutOptions) => {
         if (!(value instanceof Uint8Array))
@@ -1616,19 +1632,19 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         if (failures.has("artifactDeleteAmbiguous"))
           throw injectedHarnessFailure("injected ambiguous artifact delete failure");
       },
-    } as never,
+    },
     SANDBOX_BUNDLE_BUCKET: makeSandboxBundleBucket(
       sandboxBundleObjectMap,
       sandboxBundleDeletedKeys,
     ),
-    ASSETS: undefined as never,
+    ASSETS: undefined,
     SCOTTY_TOKEN: "test-token",
     ...(options.localE2E === true ? { SCOTTY_LOCAL_E2E: "1" } : {}),
     ...(options.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
     ...(options.previewBase === undefined ? {} : { SCOTTY_PREVIEW_BASE: options.previewBase }),
     // The legacy provider bindings remain in the excluded Worker binding adapter (3A); this
     // Session-only harness deliberately omits them because the runtime reads Registry grants.
-  } as unknown as Bindings;
+  });
 
   const sandbox = new Sandbox(ctx, env, {
     agentTurnActivity: options.agentTurnActivity,
@@ -1676,22 +1692,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         await options.onGetContainerPlacementId?.();
         return currentContainerPlacementId;
       },
-    },
-    acceptScottyEvidenceJob: {
-      value: (value: unknown) => sandbox[SANDBOX_TEST_ACCEPT_EVIDENCE](value),
-    },
-    completeScottyEvidenceStep: {
-      value: (nonce: string, value: unknown) =>
-        sandbox[SANDBOX_TEST_COMPLETE_EVIDENCE_STEP](nonce, value),
-    },
-    exposeScottyEvidencePreview: {
-      value: (nonce: string) => sandbox[SANDBOX_TEST_EXPOSE_EVIDENCE](nonce),
-    },
-    finalizeScottyEvidenceJob: {
-      value: (
-        nonce: string,
-        status: Parameters<Sandbox[typeof SANDBOX_TEST_FINALIZE_EVIDENCE]>[1],
-      ) => sandbox[SANDBOX_TEST_FINALIZE_EVIDENCE](nonce, status),
     },
     start: {
       value: async (): Promise<void> => {
@@ -1991,7 +1991,16 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   });
 
   return {
-    sandbox: sandbox as SandboxHarness,
+    sandbox: Object.assign(sandbox, {
+      acceptScottyEvidenceJob: (value: unknown) => sandbox[SANDBOX_TEST_ACCEPT_EVIDENCE](value),
+      completeScottyEvidenceStep: (nonce: string, value: unknown) =>
+        sandbox[SANDBOX_TEST_COMPLETE_EVIDENCE_STEP](nonce, value),
+      exposeScottyEvidencePreview: (nonce: string) => sandbox[SANDBOX_TEST_EXPOSE_EVIDENCE](nonce),
+      finalizeScottyEvidenceJob: (
+        nonce: string,
+        status: Parameters<Sandbox[typeof SANDBOX_TEST_FINALIZE_EVIDENCE]>[1],
+      ) => sandbox[SANDBOX_TEST_FINALIZE_EVIDENCE](nonce, status),
+    }),
     events,
     schedules,
     deletedSchedules,

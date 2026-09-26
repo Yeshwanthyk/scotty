@@ -53,7 +53,14 @@
     "scotty/no-unsupported-effect-api": "error",
     "scotty/prefer-effect-predicate": "error",
     "scotty/prefer-schema-inferred-types": "error",
-    "scotty/prefer-value-inferred-extension-types": "error"
+    "scotty/prefer-value-inferred-extension-types": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/consistent-type-assertions": [
+      "error",
+      {
+        "assertionStyle": "never"
+      }
+    ]
   },
   "overrides": [
     {

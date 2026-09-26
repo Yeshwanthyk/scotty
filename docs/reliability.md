@@ -45,6 +45,23 @@ Other commands: `ls [column|prefix]`, `show`, `move <id> <column> [--at N]`, `ad
   - **Fixtures:** one builder per domain under `worker/test/support/`. Don't add a new fixture unless a kept test needs it.
   - **New tests:** name the regression in the title ("rejects an early deadline alarm"), not the mechanism.
 
+- **Fix types at the root; never launder them.** Lint enforces `typescript/consistent-type-assertions` (never) and `typescript/no-non-null-assertion` across the repo.
+  - Fix the cause, even if that means a narrow change to a production signature: make the parameter the shape the code actually reads, decode with Schema, or use a real type guard. Before blaming a host type, check the tsconfig libs (the CLI once hid Bun's `WebSocket` options overload by including `DOM`).
+  - **Forbidden:**
+    - moving a cast into a helper;
+    - `unknown → T` functions;
+    - suppressions that give "native host boundary" as the reason for a cast in test fakes;
+    - silent fallbacks that change behavior (`?? ""`, `: new WebSocket(url)` without its options).
+  - A suppression is allowed only on a native host callback signature that Scotty cannot own. It must be adjacent and rule-specific, and give the host contract as its reason.
+
+- **Delegated work is not done until the orchestrator verifies it.** Whoever dispatches an implementer owns the result.
+  - The prompt must allow root fixes, and must say that a new suppression, cast helper or fallback counts as a failure the implementer reports instead of working around.
+  - Before accepting the result:
+    - grep the diff for new `oxlint-disable`, `as`, `(value: unknown):` helpers and `??` or `instanceof` fallbacks;
+    - read every production hunk for behavior changes;
+    - run the full `npm run test:all` outside the implementer's sandbox.
+  - Redo anything below the bar with a stronger model or higher effort. Never forward an implementer's self-report as verification.
+
 - **Effect v4 rc.112 source first** (`vendor/effect`, `.agents/skills/*`):
   - Use `Context.Service` classes and `Effect.fnUntraced`.
   - Use `Clock` and an ID service, not `Date.now` or `crypto.randomUUID`.

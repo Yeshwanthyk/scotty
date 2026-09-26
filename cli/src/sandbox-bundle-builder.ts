@@ -251,8 +251,10 @@ const discoverItems = Effect.fnUntraced(function* (
     return byKind === 0 ? compareUtf8(left.manifest.name, right.manifest.name) : byKind;
   });
   for (let index = 1; index < items.length; index += 1) {
-    const previous = items[index - 1]!.manifest;
-    const current = items[index]!.manifest;
+    const previous = items[index - 1]?.manifest;
+    const current = items[index]?.manifest;
+    if (previous === undefined || current === undefined)
+      return yield* sandboxSourceInvalid("Configured bundle item is missing", `Index ${index}.`);
     if (previous.kind === current.kind && previous.name === current.name)
       return yield* sandboxSourceInvalid(
         "Configured bundle item names must be unique within each kind",

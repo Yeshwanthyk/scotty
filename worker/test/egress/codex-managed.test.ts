@@ -3,7 +3,7 @@ import { rejects } from "node:assert/strict";
 import { vi } from "vitest";
 import { managedPiAccessToken } from "../../src/credentials/managed";
 import { makeOutboundByHost } from "../../src/egress/worker";
-import type { Bindings } from "../../src/shared/bindings";
+import { nativeBindings, nativeSandboxNamespace } from "../support/native-host";
 
 const containerId = "a".repeat(64);
 const oldContainerId = "b".repeat(64);
@@ -50,14 +50,14 @@ function fixture(
   });
   // Native DO bindings expose much more than this adapter consumes. These single
   // boundary assertions stand in only for idFromString/get and the one RPC method.
-  const namespace = {
+  const namespace = nativeSandboxNamespace({
     idFromString: (id: string) => {
       selected.push(id);
       return { toString: () => id };
     },
     get: (id: DurableObjectId) => session(id.toString()),
-  } as Bindings["SANDBOX"];
-  const env = { SANDBOX: namespace } as Bindings;
+  });
+  const env = nativeBindings({ SANDBOX: namespace });
   const handlers = makeOutboundByHost((input) => {
     assert.ok(input instanceof Request);
     forwarded.push(input);
