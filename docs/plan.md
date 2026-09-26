@@ -161,6 +161,8 @@ Spike code lives in `work/spikes/<id>/` and is never committed. Record the resul
 
 - **Depends on:** 2.
 - **In scope:** the owner uses stage `dev` for real work: create sessions on real repositories, steer, interrupt, reconnect from the phone, redeploy mid-session. Fix only what blocks that use. Record what felt slow, confusing or missing (cold start, answer latency, what the UI shows) under this step's Status notes.
+- **Agent-first CLI, first slice:** `scotty doctor | signin | new | ls | show | steer | interrupt | watch | log` against `SCOTTY_URL` (see `design.md` "CLI"). It is the driver for the owner, for agents and for `.agents/skills/verify-scotty`; the e2e uses its client. Deploy stays `npm run deploy` until step 6.
+- **Verification skill:** `.agents/skills/verify-scotty/` (launch, doctor, drive, evidence, cleanup, feature map) is proven on `dev` here, then kept current: every later step's **Done when** includes updating it and re-driving the features it touched.
 - **Then shape it:** before any new feature, tighten what exists until it feels very good: cold start and answer latency, what the UI shows, error messages, and the code itself.
 - **Then the features, one at a time, each tight:** Codex (polished first), GitHub and `gh`, Hatch previews, evidence, and Claude as a second agent. Steps 3–8 are rewritten around this list in the order the trial suggests; each lands small, end to end and very good before the next starts.
 - **Out of scope:** new features before the shaping pass.
@@ -232,7 +234,7 @@ Spike code lives in `work/spikes/<id>/` and is never committed. Record the resul
 ## Step 6: CLI
 
 - **Depends on:** 2b. Grows with each later slice.
-- **In scope:** `deploy --stage`, `up`, `ls`, `inspect`, `read`, `steer`, `interrupt`, `sleep`, `resume`, `vaporize`, `log`, `replay`. Built with `bun build --compile`. `deploy` embeds `alchemy.run.ts`, the built UI and the default image digest.
+- **In scope:** grows the step 2b CLI: `deploy --stage` (replacing `npm run deploy`), then `sleep`, `resume`, `vaporize` and `replay` as their slices land. Built with `bun build --compile`. `deploy` embeds `alchemy.run.ts`, the built UI and the default image digest.
 - **Done when:**
   - `npm run e2e -- cli` passes: `up` twice with the same key produces one session.
   - `scotty replay` on a saved log in `e2e/logs/` reproduces its recorded invariant failure.

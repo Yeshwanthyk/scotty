@@ -38,7 +38,8 @@ container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
   supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; pause/resume
 cli/
-  main.ts             Effect CLI: deploy, up, ls, inspect, read, steer, interrupt, vaporize, log
+  main.ts             Effect CLI: doctor, signin, new, ls, show, steer, interrupt, watch, log (deploy later)
+  client.ts           typed API client behind Access; shared with e2e/
 protocol/             API schemas shared by the UI and the Worker (kept from the old repository)
 ui/                   the web app (kept)
 e2e/                  tests against a real deployment
@@ -174,6 +175,16 @@ The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{me
 | `GET /api/credentials` + sign-in                                          | The Creds DO (the UI change for ChatGPT sign-in comes in slice 2)                         |
 
 Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Session DO → `getTcpPort(port)`), `/evidence`, the terminal WebSocket, and `/api/resources`. The Devices, Providers-and-runners and Stats screens get hidden.
+
+## CLI
+
+Agent-first: an agent or a script is the primary user, and a person reading it gets the same clarity.
+
+- **Output:** stdout carries exactly one JSON value per command (`watch` streams JSON lines). Progress and hints go to stderr. No colour codes, no prompts, no pager.
+- **Errors:** `{"error":{"code","message","hint"}}` on stdout, with a non-zero exit: 1 for a request or agent failure, 2 for bad usage, 3 when setup is missing (no `SCOTTY_URL`, no Access login, not signed in to ChatGPT). `hint` is the exact command that fixes it.
+- **Target:** `SCOTTY_URL` or `--url`, never derived. Access through `cloudflared access token` at run time; nothing stored by the CLI.
+- **Commands:** `doctor` checks the URL, Access, the Worker's reply and ChatGPT sign-in, and prints what to fix. `signin` runs the device code (prints the URL and code to stderr, polls, prints the result). `new <owner/repo> [--base b] [--prompt text] [--key k]` is idempotent on `--key`. `show <id>` prints the session view; `log <id>` the raw events; `watch <id> [--until idle|turn-end] [--timeout s]` streams view changes and exits when the condition holds. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries.
+- **Help:** `--help` on every command is short and ends with one runnable example.
 
 ## Deploy
 
