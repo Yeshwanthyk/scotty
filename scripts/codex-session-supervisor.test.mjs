@@ -565,7 +565,8 @@ for (const [mode, code] of [
   ["bad-advisory", "invalid_message"],
 ])
   test(`startup fault: ${mode}`, async (t) => {
-    const f = await fixture(t, mode, { startupTimeoutMs: 1500, requestTimeoutMs: 1500 });
+    // The deadline also covers the fake's process start, so it leaves room for a loaded runner.
+    const f = await fixture(t, mode, { startupTimeoutMs: 5000, requestTimeoutMs: 5000 });
     await assert.rejects(f.launch(), (error) => {
       assert.ok(
         (mode === "exit" ? ["unexpected_exit", "transport_failed"] : [code]).includes(error.code),
@@ -2247,7 +2248,8 @@ for (const mode of [
     const f = await fixture(t, "normal", {
       model: "gpt-6-astra",
       effort: "ultra",
-      requestTimeoutMs: 1000,
+      // The deadline also covers the helper's process start, so it leaves room for a loaded runner.
+      requestTimeoutMs: 5000,
     });
     const bin = await mkdtemp(join(stage, "helper-bin-"));
     await copyFile(f.options.binary, join(bin, "codex"));
