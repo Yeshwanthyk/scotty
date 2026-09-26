@@ -715,7 +715,7 @@
     {
       "id": "C-13",
       "title": "Flaky: codex-session-supervisor code-mode preflight tests fail under full-suite load",
-      "column": "backlog",
+      "column": "done",
       "contract": false,
       "deps": [],
       "body": "",
@@ -731,6 +731,10 @@
         {
           "at": "2026-09-25",
           "note": "2026-09-25 full test:all on m-00/test-cull: codex-session-supervisor 'startup fault: oversized' and 'startup fault: wrong-id' (scripts/codex-session-supervisor.test.mjs:567) failed under full-suite load; the file alone passed 65/65 three times. Same flake class as the code-mode preflight tests."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Done. Cause: the 1-1.5 s deadlines under test also cover starting the Node fake/helper, so under load a fault case timed out before exhibiting its fault (hello.json ENOENT / wrong code). Reproduced 7-8 failures per run with 10 parallel runs + 24 busy loops; 5 s deadlines pass 10/10 under the same load. Non-timeout modes finish without waiting; only hang/timeout modes wait the full deadline."
         }
       ]
     },
