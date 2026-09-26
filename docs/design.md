@@ -124,6 +124,19 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
 - **One store.** The Creds DO holds the ChatGPT access token, refresh token, expiry and account ID, plus the GitHub token. It is the only place a real secret exists.
   - It refreshes the ChatGPT token itself before expiry: a refresh intent, a call outside the state change, then the result.
   - If a refresh result is unclear, it asks for a new sign-in rather than retrying.
+- **Sign-in runs on the Worker** (spike 1a). The Creds DO runs Codex's device-code flow against `https://auth.openai.com` with client ID `app_EMoamEEZ73f0CkXaXp7hrann`:
+  1. `POST /api/accounts/deviceauth/usercode` (JSON `client_id`) → `device_auth_id`, `user_code`, string `interval`. The user opens `/codex/device`.
+  2. `POST /api/accounts/deviceauth/token` (JSON `device_auth_id`, `user_code`). Only 403 `deviceauth_authorization_pending` means pending; any other non-200 fails with its status and error code. A 200 returns `authorization_code`, `code_verifier`, `code_challenge`.
+  3. `POST /oauth/token`, **form-encoded** (`grant_type=authorization_code`, `client_id`, `code`, `redirect_uri=https://auth.openai.com/deviceauth/callback`, `code_verifier`), sent once: the code may be consumed even if the reply is lost.
+  - The account ID is `["https://api.openai.com/auth"].chatgpt_account_id` in the ID token. Expiry is the access token's `exp` (refresh 5 minutes before it).
+- **Refresh:** `POST /oauth/token`, **JSON** `{grant_type: "refresh_token", client_id, refresh_token}`.
+  - The refresh token rotates on every refresh, so the old one is dead once the call succeeds.
+  - Only one refresh runs at a time.
+  - The new tokens replace the old in one storage write.
+  - A lost reply, or a 200 without both tokens, is unknown: sign-in is required, and the old token is never retried.
+  - 401, 400 `invalid_grant` and `refresh_token_{expired,reused,invalidated}` are permanent; other failures are transient.
+- **OAuth errors** record the HTTP status and upstream `error`/`code`, never token fields.
+- **Sign-out** revokes at `https://auth.openai.com/oauth/revoke`.
 - **Sentinels only in the container.** Each session gets a random sentinel per provider. No real secret ever enters the container.
 - **Codex:** `config.toml` sets `model_provider` to use `base_url = "https://<host>/p/chatgpt"` and `env_key = "SCOTTY_CHATGPT"`, with the sentinel in that variable. The provider also sets `wire_api = "responses"`, `requires_openai_auth = false`, `supports_websockets = false` and zero retries, and `config.toml` sets `[features] plugins = false`, so `/p/chatgpt/responses` is the only ChatGPT path (spike 1c). Codex runs with an explicit environment allowlist, never the supervisor's whole environment. The `/p/chatgpt` route:
   - checks the sentinel;
@@ -155,7 +168,7 @@ Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Ses
 - `scotty deploy` builds the UI, supervisor and image, then applies `alchemy.run.ts`.
 - **Stage:** explicit, default `personal`. It is never derived from the user, machine or account.
 - **State:** Alchemy local state under `~/.scotty/state/`.
-- **Cloudflare credentials:** `CLOUDFLARE_API_TOKEN` and the account ID come from the environment and are never deployed.
+- **Cloudflare credentials:** the Alchemy OAuth profile (`--profile default`) or `CLOUDFLARE_API_TOKEN` with the account ID from the environment; never deployed.
 - **Updates:** each CLI release embeds its own stack, so updating is a new CLI followed by `scotty deploy`.
 - No patches on Alchemy or other dependencies unless a beta.79 failure is shown.
 
@@ -179,7 +192,7 @@ Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Ses
 
 ## Open questions to settle early
 
-- Can the Worker run the ChatGPT device-code sign-in itself (Codex's `login --device-auth` flow), and what does the refresh endpoint look like?
+- ~~Can the Worker run the ChatGPT device-code sign-in itself (Codex's `login --device-auth` flow), and what does the refresh endpoint look like?~~ **Answered by spike 1a (deployed, 2026-09-26): yes.** No bot check on Worker egress to `auth.openai.com`. The refresh token rotated on the one refresh. The ID token lives one hour; the access token's lifetime was not measured. The first run failed because Effect's `bodyText` sets `text/plain` over an explicit content type (`HttpClientRequest.ts:693-700`, `internal/httpBody.ts:9-11`); the code exchange must use `bodyUrlParams`. The fallback (CLI sign-in) is not needed. Not covered: a second refresh with the rotated token, a refresh that races another, and whether re-polling after a successful exchange is safe.
 - ~~Does `getTcpPort(...).fetch` support a WebSocket upgrade from the DO to the container on Alchemy beta.79?~~ **Answered by spike 1b (deployed, 2026-09-26): yes.** The DO sends `port.fetch` with `Upgrade: websocket`, takes `webSocket` from the 101 response and calls `accept()`. Pings and ticks flowed both ways for 600 s with no reconnect, 43–71 ms echo latency. The `/sup/<id>` fallback is not needed. Not covered: a DO restart or redeploy closes the socket and nothing reconnects it; cold start was not measured; an open outbound socket keeps the DO resident (no hibernation).
 - ~~Does Codex send anything to `chatgpt.com` outside `base_url`?~~ **Answered by spike 1c (Codex 0.157.0, run locally, 2026-09-26):**
   - With the provider config under "Credentials", a full turn with tool use (write `hello.txt`, run `cat hello.txt`) sent all 3 model requests as `POST <base_url>/responses` through the swap proxy, with only a sentinel in Codex's environment. No login or refresh call was needed.
