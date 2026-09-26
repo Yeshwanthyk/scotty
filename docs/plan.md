@@ -5,6 +5,7 @@ This is the work queue for the rebuild. Any session should be able to pick up th
 - [design.md](design.md) describes what is being built.
 - This file describes the order, the proof for each step, and the mistakes not to repeat.
 - `@old` means the old implementation at commit `3042018` on `main`. Read an old file with `git show 3042018:<path>`.
+- **Simple, with great ergonomics.** Every step is judged first by how simple it is and how good it feels to use: fewer moving parts, fewer steps for the owner, clear errors, fast feedback. Cut complexity that doesn't buy that.
 - **Minimal shape, not parity.** Build the smallest thing the owner can use, then let real use decide what comes next. Parity with @old is not a goal; an @old feature comes back only when use shows it's needed.
 
 ## Start here (every session)
