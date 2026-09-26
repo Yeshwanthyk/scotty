@@ -1,0 +1,65 @@
+name: image
+
+# Publishes the default supervisor image and records its linux/amd64 digest.
+# Deploys copy it by digest into registry.cloudflare.com (docs/design.md "Deploy").
+on:
+  push:
+    branches: [rebuild/core]
+    paths:
+      - container/**
+      - protocol/supervisor.ts
+      - package-lock.json
+      - .github/workflows/image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: image-release
+    timeout-minutes: 30
+    env:
+      REPOSITORY: ${{ vars.SCOTTY_DOCKERHUB_REPOSITORY }}
+    steps:
+      - name: Check publication is authorized
+        if: vars.SCOTTY_IMAGE_PUBLICATION_AUTHORIZED != 'publish-public-image'
+        run: |
+          echo "SCOTTY_IMAGE_PUBLICATION_AUTHORIZED is not set to publish-public-image" >&2
+          exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Log in to Docker Hub
+        env:
+          USERNAME: ${{ secrets.SCOTTY_DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.SCOTTY_DOCKERHUB_TOKEN }}
+        run: printf '%s' "$TOKEN" | docker login docker.io --username "$USERNAME" --password-stdin
+      - name: Build and push
+        run: |
+          tag="$REPOSITORY:rebuild-$GITHUB_SHA"
+          docker buildx build \
+            --platform linux/amd64 \
+            --file container/Dockerfile \
+            --tag "$tag" \
+            --provenance=false \
+            --metadata-file "$RUNNER_TEMP/metadata.json" \
+            --push .
+          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/metadata.json")
+          case "$digest" in sha256:*) ;; *) echo "no digest in build metadata" >&2; exit 1 ;; esac
+          {
+            echo "### Supervisor image"
+            echo
+            echo "- tag: \`$tag\`"
+            echo "- linux/amd64 digest: \`$digest\`"
+            echo "- ref: \`$REPOSITORY@$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Log out
+        if: always()
+        run: docker logout docker.io
