@@ -515,6 +515,83 @@ describe("session actor restart", () => {
     }),
   );
 
+  it.effect("fails an overdue reconciling Create lease without calling the provider", () =>
+    Effect.gen(function* () {
+      const persistedTransition = {
+        ...transition("Create", "WorkspacePreparing"),
+        mode: "reconciling" as const,
+      };
+      const persisted = authority(persistedTransition);
+      const memory = actorPort(undefined, false, {
+        authority: persisted,
+        revision: persisted.revision,
+        journalSequence: 1,
+        journalTail: {
+          sequence: 1,
+          revision: persisted.revision,
+          timestamp: T1,
+          correlationId: "correlation-before-overdue-reconcile",
+          transitionNonce: persistedTransition.nonce,
+          eventType: "provider_reconciling",
+          transitionKind: "Create",
+          transitionPhase: persistedTransition.phase,
+          resultCode: "unknown",
+          causeSequence: null,
+          causeAttempt: persistedTransition.attempt,
+        },
+      });
+      let providerCalls = 0;
+      const runner = actorEffectRunnerLayer.pipe(
+        Layer.provide(
+          Layer.merge(
+            actorAlarmSchedulerLayer(() => Effect.void),
+            providerEffectExecutorLayer(() => {
+              providerCalls += 1;
+              return Effect.succeed(createCommand());
+            }),
+          ),
+        ),
+      );
+      const actor = sessionActorLayer.pipe(
+        Layer.provide(Layer.merge(actorStoreLayer(memory.port), runner)),
+      );
+      const result = yield* Effect.flatMap(SessionActor, (service) =>
+        service.resume({
+          timestamp: "2026-03-03T01:00:01.000Z",
+          correlationId: "correlation-overdue-reconcile",
+          fence: {
+            kind: "reconcile",
+            alarmId: actorAlarmId(
+              "reconcile",
+              persistedTransition.nonce,
+              persistedTransition.attempt,
+              DEADLINE,
+              persistedTransition.phase,
+            ),
+            revision: persisted.revision,
+            transitionNonce: persistedTransition.nonce,
+            attempt: persistedTransition.attempt,
+            expectedPhase: persistedTransition.phase,
+            expectedDeadlineAt: DEADLINE,
+            correlationId: "correlation-alarm",
+          },
+        }),
+      ).pipe(Effect.provide(actor));
+
+      assert.strictEqual(providerCalls, 0);
+      assert.ok(result !== undefined);
+      assert.strictEqual(result.committed.length, 1);
+      const retained = result.committed[0]?.authority;
+      assert.ok(retained !== undefined && AuthorityStateSchema.guards.Stable(retained.state));
+      assert.ok(StableStateSchema.guards.Failed(retained.state.stable));
+      assert.strictEqual(retained.state.stable.code, "transition_deadline_elapsed");
+      assert.strictEqual(
+        result.committed[0]?.journalEvent.resultCode,
+        "transition_deadline_elapsed",
+      );
+    }),
+  );
+
   it.effect("resolves a prompt alarm against the current reconciling revision and phase", () =>
     Effect.gen(function* () {
       const persistedTransition = {
