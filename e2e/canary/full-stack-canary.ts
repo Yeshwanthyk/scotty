@@ -3,7 +3,14 @@ import * as Workers from "@distilled.cloud/cloudflare/workers";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
+import * as Config from "effect/Config";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
+import packageMetadata from "../../package.json" with { type: "json" };
 import { bindExternalSandboxContainer } from "../../infra/external-sandbox-container-binding.ts";
 
 export const FULL_STACK_CANARY_STAGE_PREFIX = "scotty-e2e-";
@@ -25,6 +32,39 @@ export interface FullStackCanaryNames {
   readonly backups: string;
   readonly sandboxBundles: string;
 }
+
+const ReleasedImageManifestSchema = Schema.Struct({
+  releaseTag: Schema.String,
+  image: Schema.Struct({ reference: Schema.String, digest: Schema.String }),
+  // The Worker verifies this signed evidence against the pinned release key before use.
+  runtimeCompatibility: Schema.Json,
+});
+
+const releasedImageError = (message: string) =>
+  new Config.ConfigError(new ConfigProvider.SourceError({ message }));
+
+/** Runtime CLI admission accepts only release-signed images, so the canary deploys this version's. */
+const releasedContainerImage = Effect.fnUntraced(function* (version: string) {
+  const releaseTag = `v${version}`;
+  const manifest = yield* HttpClient.get(
+    `https://github.com/Yeshwanthyk/scotty/releases/download/${releaseTag}/scotty-image-manifest.json`,
+  ).pipe(
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.flatMap(HttpClientResponse.schemaBodyJson(ReleasedImageManifestSchema)),
+    Effect.provide(FetchHttpClient.layer),
+    Effect.mapError(() =>
+      releasedImageError(`Release image manifest ${releaseTag} is unavailable.`),
+    ),
+  );
+  if (
+    manifest.releaseTag !== releaseTag ||
+    !manifest.image.reference.endsWith(`@${manifest.image.digest}`)
+  )
+    return yield* Effect.fail(
+      releasedImageError(`Release image manifest ${releaseTag} is inconsistent.`),
+    );
+  return manifest;
+});
 
 export const fullStackCanaryAssetHash = (digest: string): string => `scotty-assets-v1:${digest}`;
 
@@ -137,11 +177,13 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
     // oxlint-disable-next-line scotty/no-effect-escape-hatch -- boundary: missing or invalid checked-in canary assets are an unrecoverable Alchemy build defect
     Effect.orDie,
   )).hash;
+  const releasedImage = yield* releasedContainerImage(packageMetadata.version);
   const sessions = yield* Cloudflare.KV.Namespace("SessionsProjection", {
     title: names.sessions,
   }).pipe(removalPolicy);
   const backups = yield* Cloudflare.R2.Bucket("BackupBucket", {
     name: names.backups,
+    forceDestroy: true,
     lifecycleRules: [
       {
         id: "disposable-e2e-backups",
@@ -152,6 +194,7 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
   }).pipe(removalPolicy);
   const sandboxBundles = yield* Cloudflare.R2.Bucket("SandboxBundleBucket", {
     name: names.sandboxBundles,
+    forceDestroy: true,
   }).pipe(removalPolicy);
   const durableObject = Cloudflare.DurableObject("Sandbox", {
     className: "ScottySandbox",
@@ -194,6 +237,8 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
       BACKUP_BUCKET_NAME: names.backups,
       SCOTTY_E2E_CANARY_STAGE: config.stage,
       SCOTTY_INSTALLATION_NAME: names.installationName,
+      SCOTTY_CONTAINER_IMAGE_DIGEST: releasedImage.image.digest,
+      SCOTTY_RUNTIME_IMAGE_COMPATIBILITY: JSON.stringify(releasedImage.runtimeCompatibility),
     },
   }).pipe(removalPolicy);
   yield* worker.bind("InheritedWorkerSecrets", {
@@ -205,8 +250,7 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
   yield* installCanaryWorkerSecrets({ accountId, workerName: worker.workerName });
   const container = yield* Cloudflare.Containers.ContainerPlatform("SandboxContainer", {
     name: names.container,
-    context: ".",
-    dockerfile: "worker/container/Dockerfile",
+    image: releasedImage.image.reference,
     instanceType: "standard-2",
     maxInstances: 3,
     observability: { logs: { enabled: false } },

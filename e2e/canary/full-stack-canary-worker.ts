@@ -1,12 +1,27 @@
 import { getSandbox } from "@cloudflare/sandbox";
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { PI_CONSOLE_MAX_RESPONSE_BYTES } from "../../protocol/agents/pi/pi-console";
 import type { Bindings } from "../../worker/src/shared/bindings";
 import { readBoundedUtf8Body } from "../../worker/src/shared/bounded-http";
 import { runtimeCliExecutable } from "../../worker/src/runtime-cli/paths";
 import { decodeJsonValue } from "../../worker/src/shared/json";
 import { ContainerProxy } from "../../worker/src/egress/session";
-import { SESSION_KV_PREFIX, type SessionRecord } from "../../worker/src/session/contracts";
+import { SESSION_KV_PREFIX } from "../../worker/src/session/contracts";
+import {
+  AuthorityStateSchema,
+  publicRecovery,
+  StableStateSchema,
+  type SessionAuthority,
+} from "../../worker/src/session-actor/reducer/authority";
+import { publicView, type PublicStatus } from "../../worker/src/session-actor/public-view";
+import type { LifecycleJournalEvent } from "../../worker/src/session-actor/journal";
+import type { SessionActorMetadata } from "../../worker/src/session-actor/metadata";
+import { makeActorStore } from "../../worker/src/session-actor/store";
+import { makeSessionActorMetadataStore } from "../../worker/src/session-actor/metadata-store";
+import {
+  durableObjectSessionActorMetadataStorage,
+  durableObjectSessionActorStorage,
+} from "../../worker/src/session/store";
 import { denyOutbound, makeOutboundByHost } from "../../worker/src/egress/worker";
 import app from "../../worker/src/index";
 import { SESSION_SCHEDULE_CALLBACKS } from "../../worker/src/session/lifecycle";
@@ -14,11 +29,19 @@ import { Sandbox as ProductionSandbox } from "../../worker/src/session/object";
 import { shellQuote } from "../../worker/src/sandbox/runtime";
 import { ScottyAuthRegistry } from "../../worker/src/auth/object";
 import { ScottyRunnerRegistry } from "../../worker/src/runner/registry-object";
-import { ScottyCredentialRegistry } from "../../worker/src/credentials/object";
+import {
+  CREDENTIAL_REGISTRY_OBJECT_NAME,
+  ScottyCredentialRegistry,
+} from "../../worker/src/credentials/object";
 import { ScottySandboxConfig } from "../../worker/src/sandbox/config-object";
 
-const RECORD_KEY = "scotty:session";
-const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
+const FILL_DISK_COMMAND = [
+  "set -eu",
+  "mkdir -p /var/backups",
+  "avail=$(df --output=avail -B1 /var/backups | tail -n 1 | tr -d ' ')",
+  "fallocate -l $((avail - 1048576)) /var/backups/scotty-e2e-fill",
+  "df --output=avail -B1 /var/backups | tail -n 1 | tr -d ' '",
+].join("\n");
 const SESSION_ID_PATTERN = /^[0-9a-f]{12}$/u;
 const CANARY_STAGE_PATTERN = /^scotty-e2e-[a-f0-9]{32}$/u;
 
@@ -72,13 +95,17 @@ const decodePeerCommandInput = Schema.decodeUnknownOption(CanaryPeerCommandSchem
 interface CanaryOrphanProbe {
   readonly activeLease: boolean;
   readonly alarm: boolean;
-  readonly authorityStatus: string | null;
+  readonly authorityStatus: PublicStatus | null;
   readonly backups: ReadonlyArray<string>;
   readonly createIdempotency: boolean;
   readonly credentials: boolean;
   readonly githubCredentialCurrent: boolean;
   readonly incarnation: string;
   readonly kv: boolean;
+  readonly failureCode: string | null;
+  readonly lastTransitionKind: LifecycleJournalEvent["transitionKind"];
+  readonly phase: string | null;
+  readonly recovery: "resume" | "create" | "terminal" | null;
   readonly runtime: boolean;
   readonly schedules: ReadonlyArray<string>;
   readonly registry: ReadonlyArray<{
@@ -87,6 +114,51 @@ interface CanaryOrphanProbe {
     readonly scope: string;
   }>;
 }
+
+const actorProbeFields = (
+  authority: SessionAuthority | undefined,
+  journalTail: LifecycleJournalEvent | undefined,
+  metadata: SessionActorMetadata | undefined,
+): Pick<
+  CanaryOrphanProbe,
+  | "activeLease"
+  | "authorityStatus"
+  | "createIdempotency"
+  | "credentials"
+  | "failureCode"
+  | "githubCredentialCurrent"
+  | "lastTransitionKind"
+  | "phase"
+  | "recovery"
+> => {
+  const transitioning =
+    authority !== undefined && AuthorityStateSchema.guards.Transitioning(authority.state)
+      ? authority.state.transition
+      : null;
+  const failed =
+    authority !== undefined &&
+    AuthorityStateSchema.guards.Stable(authority.state) &&
+    StableStateSchema.guards.Failed(authority.state.stable)
+      ? authority.state.stable
+      : null;
+  const credentialGrants = metadata?.createObservations.credentialGrants;
+  return {
+    activeLease: transitioning !== null,
+    authorityStatus: publicView(authority)?.status ?? null,
+    createIdempotency: metadata?.createIdempotency != null,
+    credentials: credentialGrants !== null && credentialGrants !== undefined,
+    failureCode: failed === null ? null : failed.code,
+    githubCredentialCurrent:
+      credentialGrants?.grants.some((grant) =>
+        grant.handleSlots.some(
+          ({ provider, slot }) => provider === "github" && slot === "git-https",
+        ),
+      ) ?? false,
+    lastTransitionKind: journalTail === undefined ? null : journalTail.transitionKind,
+    phase: transitioning?.phase ?? null,
+    recovery: failed === null ? null : publicRecovery(failed.recovery),
+  };
+};
 
 const jsonError = (status: number, error: string): Response =>
   Response.json({ error }, { status, headers: { "cache-control": "no-store" } });
@@ -107,24 +179,25 @@ export const ScottySandbox = class Sandbox extends ProductionSandbox {
     const command: CanaryPeerCommand = decoded.value;
     if (!CANARY_STAGE_PATTERN.test(command.stage) || command.sourceId === command.targetId)
       return jsonError(400, "invalid peer command");
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    const { authority } = await Effect.runPromise(
+      makeActorStore(durableObjectSessionActorStorage(this.ctx.storage)).read,
+    );
     if (
-      record === undefined ||
-      record.id !== command.sourceId ||
-      record.status !== "warm" ||
-      record.operation !== null ||
-      record.provider !== "cloudflare" ||
-      record.execution.provider !== "cloudflare"
+      authority === undefined ||
+      authority.session.id !== command.sourceId ||
+      authority.session.execution.provider !== "cloudflare" ||
+      !AuthorityStateSchema.guards.Stable(authority.state) ||
+      !StableStateSchema.guards.Warm(authority.state.stable)
     )
       return jsonError(409, "source session is not an authoritative warm container");
 
-    const executable = shellQuote(runtimeCliExecutable(record.id));
+    const executable = shellQuote(runtimeCliExecutable(authority.session.id));
     const invocation =
       command.action === "inspect"
         ? `${executable} inspect ${command.targetId} --json`
         : `${executable} steer ${command.targetId} ${shellQuote(command.message)} --json`;
     const executed = await this.exec(invocation, {
-      env: { SCOTTY_SESSION_ID: record.id },
+      env: { SCOTTY_SESSION_ID: authority.session.id },
       timeout: 60_000,
     })
       .then((result) => ({ result }))
@@ -143,9 +216,8 @@ export const ScottySandbox = class Sandbox extends ProductionSandbox {
   }
 
   async e2eProbe(): Promise<CanaryOrphanProbe> {
-    const [record, createIdempotency, alarm, schedules, state, registryResult] = await Promise.all([
-      this.ctx.storage.get<SessionRecord>(RECORD_KEY),
-      this.ctx.storage.get(CREATE_IDEMPOTENCY_KEY),
+    const [snapshot, alarm, schedules, state, registryResult] = await Promise.all([
+      Effect.runPromise(makeActorStore(durableObjectSessionActorStorage(this.ctx.storage)).read),
       this.ctx.storage.getAlarm(),
       Promise.all(
         SESSION_SCHEDULE_CALLBACKS.map(async (callback) => ({
@@ -154,30 +226,29 @@ export const ScottySandbox = class Sandbox extends ProductionSandbox {
         })),
       ),
       this.getState(),
-      this.env.CREDENTIALS?.getByName("account").list(),
+      this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME).list(),
     ]);
-    const credentialGrant = record?.credentialGrant;
+    const authority = snapshot.authority;
+    const metadata =
+      authority === undefined
+        ? undefined
+        : await Effect.runPromise(
+            makeSessionActorMetadataStore(
+              durableObjectSessionActorMetadataStorage(this.ctx.storage),
+            ).read(authority),
+          );
     const backupPage = await this.env.BACKUP_BUCKET.list();
-    const projection = record
-      ? await this.env.SESSIONS.get(`${SESSION_KV_PREFIX}${record.id}`)
+    const projection = authority
+      ? await this.env.SESSIONS.get(`${SESSION_KV_PREFIX}${authority.session.id}`)
       : null;
     const activeSchedules = schedules
       .filter(({ count }) => count > 0)
       .map(({ callback }) => callback);
     const runtime = state.status !== "stopped" && state.status !== "stopped_with_code";
     return {
-      activeLease: record?.operation != null,
       alarm: alarm !== null,
-      authorityStatus: record?.status ?? null,
       backups: backupPage.objects.map(({ key }) => key).sort(),
-      createIdempotency: createIdempotency !== undefined,
-      credentials: credentialGrant !== undefined,
-      githubCredentialCurrent:
-        credentialGrant?.grants.some((grant) =>
-          grant.handleSlots.some(
-            ({ provider, slot }) => provider === "github" && slot === "git-https",
-          ),
-        ) ?? false,
+      ...actorProbeFields(authority, snapshot.journalTail, metadata),
       incarnation: this.e2eIncarnation,
       kv: projection !== null,
       runtime,
@@ -187,6 +258,18 @@ export const ScottySandbox = class Sandbox extends ProductionSandbox {
           ? registryResult.value.map(({ name, kind, scope }) => ({ name, kind, scope }))
           : [],
     };
+  }
+
+  // Leaves the SDK backup filesystem nearly full so the next Sleep backup fails in the provider.
+  async e2eFillDisk(): Promise<Response> {
+    const executed = await this.exec(FILL_DISK_COMMAND, { timeout: 60_000 })
+      .then((result) => ({ result }))
+      .catch(() => undefined);
+    if (executed === undefined || executed.result.exitCode !== 0)
+      return jsonError(502, "disk fill command failed");
+    const availableBytes = Number(executed.result.stdout.trim());
+    if (!Number.isSafeInteger(availableBytes)) return jsonError(502, "disk fill output invalid");
+    return Response.json({ availableBytes }, { headers: { "cache-control": "no-store" } });
   }
 
   e2eAbortHost(): Promise<void> {
@@ -224,7 +307,7 @@ export default {
         githubTokenBytes: 0,
       });
     }
-    const route = /^\/__e2e\/(probe|reconstruct|peer)\/([^/]+)$/u.exec(url.pathname);
+    const route = /^\/__e2e\/(probe|reconstruct|peer|fill-disk)\/([^/]+)$/u.exec(url.pathname);
     if (route === null) return app.fetch(request, env, ctx);
     if (!canaryAuthorized(request, env)) return jsonError(401, "unauthorized");
     const id = route[2];
@@ -239,6 +322,10 @@ export default {
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
       await sandbox.e2eAbortHost();
       return new Response(null, { status: 204 });
+    }
+    if (route[1] === "fill-disk") {
+      if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      return sandbox.e2eFillDisk();
     }
     if (route[1] === "peer") {
       if (
