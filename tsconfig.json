@@ -12,5 +12,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["src", "container", "cli", "e2e", "protocol"]
+  "include": ["src", "container", "cli", "e2e", "protocol", "deploy", "alchemy.run.ts"]
 }

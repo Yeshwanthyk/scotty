@@ -15,16 +15,18 @@
     "ui:dev": "npm run dev --workspace @scotty/ui",
     "ui:build": "npm run build --workspace @scotty/ui",
     "test": "vitest run",
-    "e2e": "echo 'npm run e2e: not yet (added in step 2)' && exit 1",
-    "deploy": "echo 'npm run deploy: not yet (added in step 2)' && exit 1"
+    "e2e": "bun e2e/run.ts",
+    "deploy": "bun deploy/run.ts"
   },
   "dependencies": {
+    "@distilled.cloud/cloudflare": "1.0.0-rc.12",
     "@effect/platform-bun": "4.0.0-rc.117",
     "@effect/sql-sqlite-do": "4.0.0-rc.117",
     "alchemy": "2.0.0-beta.79",
     "effect": "4.0.0-rc.117"
   },
   "devDependencies": {
+    "@effect/platform-node": "4.0.0-rc.117",
     "@effect/vitest": "4.0.0-rc.117",
     "oxfmt": "0.70.0",
     "oxlint": "1.85.0",
