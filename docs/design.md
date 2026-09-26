@@ -165,7 +165,11 @@ Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Ses
 
 ## Deploy
 
-- `scotty deploy` builds the UI, supervisor and image, then applies `alchemy.run.ts`.
+- **Image:** CI builds the default image from `container/Dockerfile` (supervisor included), publishes it to a public OCI registry, and records its linux/amd64 manifest digest; each CLI release embeds that digest. No local Docker is needed to deploy or develop.
+- `scotty deploy` builds the UI, copies the pinned image into `registry.cloudflare.com/<account>/<explicit repository>@sha256:<digest>` over the OCI distribution API with short-lived registry credentials (verifying every digest, streaming blobs, never logging or persisting the credential), then applies `alchemy.run.ts` with `registryId: "registry.cloudflare.com"` and that digest ref, which Alchemy deploys as pre-pushed with no Docker (`ContainerProvider.ts:442-458,536-542`). The copy runs in the CLI before the apply; only the digest ref reaches Alchemy props or state.
+- Copy rather than pull: Cloudflare can pull public Docker Hub images directly but does not cache them, so every cold start would pull from Docker Hub under its rate limits; GHCR is not a supported pull source.
+- Later, user-supplied images use the same digest-pinned copy and are checked against the supervisor contract at `hello`.
+- Don't use Alchemy's local `dev` Container runtime; it runs Docker (`vendor/alchemy/website/src/content/docs/cloudflare/local-development.mdx:79-80`).
 - **Stage:** explicit, default `personal`. It is never derived from the user, machine or account.
 - **State:** Alchemy local state under `~/.scotty/state/`.
 - **Cloudflare credentials:** the Alchemy OAuth profile (`--profile default`) or `CLOUDFLARE_API_TOKEN` with the account ID from the environment; never deployed.
@@ -200,3 +204,5 @@ Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Ses
   - Limit: the egress observer saw only traffic that honours `HTTPS_PROXY`/`HTTP_PROXY`. The container's own egress rules are the backstop.
   - `account/login/start` with `type: "chatgptAuthTokens"` (seen in t3code) rejects an opaque sentinel with `invalid ID token format`; it needs a real JWT and is marked internal-only. Scotty does not use it.
   - The model must be one the ChatGPT account allows: `gpt-5.5` worked; `gpt-5.1-codex` and `gpt-5.4` returned HTTP 400. The model is a setting, not a constant.
+- ~~Can Scotty deploy its Container from a prebuilt image without a local Docker?~~ **Answered by spike 1d (deployed, 2026-09-26): yes, by copy.** An Effect script copied a digest-pinned linux/amd64 image into `registry.cloudflare.com/<account>/<repo>` over the OCI HTTP API with `Containers.createContainerRegistryCredentials` (account-wide, pull+push, 60 min), and Alchemy deployed it as pre-pushed with no docker on PATH; the DO got HTTP 200. Not covered: a direct `docker.io` pull (the nginx test image crashed the same way from both registries; Cloudflare documents Docker Hub as supported but uncached); digest verification, streaming and retries for a multi-GB image; registry size limits; first boot of the real image (a 4.6 MB image took 22.7 s after a rollout); garbage collection of copied images.
+- How does container development work without local Docker? Each `container/` change otherwise needs a CI image build before a dev deploy. Options: a CI workflow on push to `rebuild/core`; a stable base image with the compiled supervisor fetched at start by digest; a remote builder. Settle before step 2 deploys.
