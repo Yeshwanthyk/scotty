@@ -131,6 +131,10 @@
         {
           "at": "2026-09-26",
           "note": "Review fixes uncommitted on r-03/failed-recovery: Vaporize releases grants by session ID; Create retry cleanup no longer owns backups; repository verification is persisted before workspace clone for pending retry projection; metadata retry is fenced and Create admission is exclusive; Quint witness/replay and focused worker, CLI, UI, lint, typecheck pass. Persisted metadata now includes repositoryVerification: reset existing R-03 test/session actors before any deployment; no migration. Full worker and CLI suites still have local socket sandbox failures (Codex HTTP listen EPERM, runner Bun.serve EADDRINUSE); deployed canary not run. No commit or PR."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "PR #278 open (base m-01/lifecycle-model): typed Failed.recovery Resume|Create|Terminal, Create retry from Failed with CleanupObserved, failedHasExit in safety, full local gate green, 17/18 mutations killed (concurrent-retry lock untested). Vaporized c31ef4f2a9e6, 3d89357c1221. Next: deployed test blocked without a test-only hook; reset session actors before deploy (metadata shape change); merge after #277."
         }
       ]
     },
