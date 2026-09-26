@@ -202,11 +202,16 @@
     {
       "id": "C-09a",
       "title": "Cull the 7 dead unit-test files",
-      "column": "next",
+      "column": "done",
       "contract": false,
       "deps": [],
       "body": "The current suite is 110 files and 1,078 tests (e2e: 14 files, 241 tests).\n\n- **C-09a:** delete 7 files now:\n  - `worker/test/agent/codex/{conversation,rollout-export}.test.ts`;\n  - `worker/test/public/{auth/locked-page,evidence/evidence-page,showcase/showcase-page}.test.ts`;\n  - `worker/test/session/session-projection.test.ts`;\n  - `worker/test/ui/session-view.test.ts`.\n\n  Also switch `session-actor-lifecycle.test.ts` from `expect` to `assert`.\n\n- **C-09b:** convert 64 files as their owning R card lands. Each R card deletes the unit tests its e2e supersedes.\n- **Keep (25):**\n  - reducer, command-races and store-atomicity;\n  - the credential crypto/contract suites;\n  - egress;\n  - the protocol parsers;\n  - the sandbox archive;\n  - bounded-http;\n  - the session contracts.\n\n  `auth-ownership-machine` is replaced once M-07 lands.",
-      "log": []
+      "log": [
+        {
+          "at": "2026-09-26",
+          "note": "Done. Deleted the 7 files; session-actor-lifecycle.test.ts uses assert only (3 rejection checks)."
+        }
+      ]
     },
     {
       "id": "D-01",
