@@ -6,8 +6,8 @@ import type {
   SessionAuthority,
   StableState,
   Transition,
-} from "./authority";
-import { AuthorityStateSchema } from "./authority";
+} from "./reducer/authority";
+import { AuthorityStateSchema } from "./reducer/authority";
 import type { SessionActorMetadata } from "./metadata";
 
 export type PublicStatus = "booting" | "warm" | "sleeping" | "failed" | "gone";

@@ -6,8 +6,8 @@ import {
   SleepPhaseSchema,
   VaporizePhaseSchema,
   WarmWorkPhaseSchema,
-} from "./authority";
-import type { JournalEvent } from "./decision";
+} from "./reducer/authority";
+import type { JournalEvent } from "./reducer/decision";
 
 const SafeTextSchema = Schema.NonEmptyString.check(Schema.isMaxLength(256));
 const SafeTimestampSchema = Schema.NonEmptyString.check(Schema.isMaxLength(64));

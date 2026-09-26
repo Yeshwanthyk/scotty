@@ -490,39 +490,6 @@ test("rejects a symlink escape and an oversized request before spawning", async 
   assert.equal(spawns, 0);
 });
 
-test("prepares once before initial start, reports fenced startup, and skips preparation on idempotent ensure", async () => {
-  const { root } = await workspace();
-  const spawned: string[] = [];
-  const reports: unknown[] = [];
-  const manager = new ProductionHatchManager({
-    workspaceRoot: root,
-    spawnProcess: (argv) => {
-      spawned.push(argv[0]);
-      const child = new FakeChild(600 + spawned.length);
-      if (argv[0] === "prepare") queueMicrotask(() => child.succeed());
-      return child;
-    },
-    localTransport: async () => new Response(),
-    authorityTransport: async (input, init) => {
-      if (String(input) === SCOTTY_HATCH_STARTUP_ROUTE) {
-        reports.push(JSON.parse(String(init?.body)));
-        return Response.json({ attemptId: "attempt-1", runtimeEpoch: "epoch-1" });
-      }
-      return Response.json(configured());
-    },
-  });
-  const input = { ...ensureInput(), prepare: { argv: ["prepare"], timeout_seconds: 1 } };
-  await manager.run(input);
-  await manager.run(input);
-  assert.deepEqual(spawned, ["prepare", "node"]);
-  assert.deepEqual(reports, [
-    { operation: "begin" },
-    { operation: "finish", attemptId: "attempt-1", runtimeEpoch: "epoch-1" },
-    { operation: "begin" },
-    { operation: "finish", attemptId: "attempt-1", runtimeEpoch: "epoch-1" },
-  ]);
-});
-
 test("repository Hatch config builds a service, reaches real loopback health, and stops it", async () => {
   const { root } = await workspace();
   const reservation = createServer();

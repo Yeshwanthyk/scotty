@@ -1,8 +1,12 @@
 import { Clock, Context, Effect, Layer, Result, Schema } from "effect";
 import { ContainerAuth, PI_SESSION_PROCESS_ID } from "../../sandbox/auth";
 import { SandboxRuntime, type SandboxRuntimeFailure } from "../../sandbox/runtime";
-import { AuthorityStateSchema, StableStateSchema, type SessionAuthority } from "../authority";
-import type { SessionActorInput } from "../input";
+import {
+  AuthorityStateSchema,
+  StableStateSchema,
+  type SessionAuthority,
+} from "../reducer/authority";
+import type { SessionActorInput } from "../reducer/input";
 
 const RuntimeStateSchema = Schema.Struct({
   status: Schema.Literals(["running", "healthy", "stopping", "stopped", "stopped_with_code"]),

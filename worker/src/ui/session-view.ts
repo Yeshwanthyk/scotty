@@ -2,7 +2,7 @@ import { Match, Predicate, Result, Schema } from "effect";
 import { AgentSelectionSchema } from "../../../protocol/agents/agent-selection";
 import type { SessionOperation, SessionView } from "../session/contracts";
 import type { SessionActorMetadata } from "../session-actor/metadata";
-import type { SessionAuthority } from "../session-actor/authority";
+import type { SessionAuthority } from "../session-actor/reducer/authority";
 import { publicView } from "../session-actor/public-view";
 
 const UiSessionLifecycleSchema = Schema.Literals(["warm", "sleeping", "failed", "gone"]);

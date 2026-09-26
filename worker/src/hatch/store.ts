@@ -4,7 +4,7 @@ import {
   decodeSessionAuthority,
   type ExecutionMode,
   type Transition,
-} from "../session-actor/authority";
+} from "../session-actor/reducer/authority";
 import { decodeSessionRecordResult, type SessionRecord } from "../session/contracts";
 import {
   decodeHatchStateResult,

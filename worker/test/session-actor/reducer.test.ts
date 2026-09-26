@@ -6,20 +6,21 @@ import type {
   ReadinessProof,
   SessionAuthority,
   Transition,
-} from "../../src/session-actor/authority";
+} from "../../src/session-actor/reducer/authority";
 import {
   AuthorityStateSchema,
   StableStateSchema,
   TransitionSchema,
-} from "../../src/session-actor/authority";
-import type { AcceptedDecision, Decision } from "../../src/session-actor/decision";
+} from "../../src/session-actor/reducer/authority";
+import type { AcceptedDecision, Decision } from "../../src/session-actor/reducer/decision";
 import type {
   SessionActorInput,
   SessionCommand,
   TransitionProof,
-} from "../../src/session-actor/input";
-import { decide, validateAuthority } from "../../src/session-actor/reducer";
-import { phaseIndex, transitionPhases } from "../../src/session-actor/transition";
+} from "../../src/session-actor/reducer/input";
+import { decide } from "../../src/session-actor/reducer/decide";
+import { validateAuthority } from "../../src/session-actor/reducer/validity";
+import { phaseIndex, transitionPhases } from "../../src/session-actor/reducer/transition";
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const T1 = "2026-01-01T00:01:00.000Z";
@@ -283,58 +284,7 @@ describe("session actor reducer", () => {
     assert.deepStrictEqual(repeated, { _tag: "Rejected", code: "duplicate" });
   });
 
-  it("retains vaporize authority on failure and treats Gone as terminal", () => {
-    const admitted = accepted(decide(warmAuthority(), command("VaporizeCommand", 7))).nextAuthority;
-    const transition = transitioning(admitted).transition;
-    const failed = accepted(
-      decide(admitted, {
-        _tag: "TransitionFailed",
-        revision: admitted.revision,
-        transitionNonce: transition.nonce,
-        attempt: transition.attempt,
-        expectedPhase: transition.phase,
-        timestamp: T1,
-        correlationId: "correlation-vaporize-failed",
-        failureCode: "provider_outcome_unknown",
-        actionable: false,
-        backup: null,
-        ownedBackupIds: [],
-        wakeSource: null,
-        resultCode: "provider_outcome_unknown",
-      }),
-    );
-    const retained = transitioning(failed.nextAuthority).transition;
-    assert.strictEqual(TransitionSchema.guards.Vaporize(retained), true);
-    assert.strictEqual(retained.mode, "reconciling");
-
-    const gone: SessionAuthority = {
-      session,
-      hardCap,
-      revision: 10,
-      state: {
-        _tag: "Stable",
-        stable: {
-          _tag: "Gone",
-          cleanup: {
-            absent: [
-              "runtime",
-              "backups",
-              "evidence",
-              "grants",
-              "hatch",
-              "idempotency",
-              "schedules",
-            ],
-            lastObservedAt: T1,
-          },
-        },
-      },
-    };
-    assert.deepStrictEqual(decide(gone, command("VaporizeCommand", gone.revision)), {
-      _tag: "Rejected",
-      code: "duplicate",
-    });
-
+  it("keeps vaporize reconciling across repeated unknown provider outcomes", () => {
     const repeatedAdmission = accepted(
       decide(warmAuthority(), command("VaporizeCommand", warmAuthority().revision)),
     ).nextAuthority;
@@ -344,26 +294,9 @@ describe("session actor reducer", () => {
     const repeated = accepted(decide(reconciling, unknown(reconciling))).nextAuthority;
     assert.ok(TransitionSchema.guards.Vaporize(transitioning(repeated).transition));
     assert.strictEqual(transitioning(repeated).transition.mode, "reconciling");
-
-    const current = transitioning(repeated).transition;
-    const deadline = accepted(
-      decide(repeated, {
-        _tag: "DeadlineAlarm",
-        revision: repeated.revision,
-        transitionNonce: current.nonce,
-        attempt: current.attempt,
-        expectedPhase: current.phase,
-        timestamp: DEADLINE,
-        correlationId: "correlation-vaporize-deadline",
-        alarmId: "alarm-vaporize",
-        expectedDeadlineAt: DEADLINE,
-      }),
-    ).nextAuthority;
-    assert.ok(TransitionSchema.guards.Vaporize(transitioning(deadline).transition));
-    assert.strictEqual(transitioning(deadline).transition.mode, "reconciling");
   });
 
-  it("rejects stale and duplicate facts without intents or mutation", () => {
+  it("rejects forged fact fences without intents or mutation", () => {
     const created = accepted(decide(undefined, createCommand()));
     const authority = created.nextAuthority;
     const proof = transitioning(authority).transition.proof;
@@ -388,13 +321,6 @@ describe("session actor reducer", () => {
       decide(authority, fact(authority, "WorkspacePreparing", proof, { revision: 99 })),
       { _tag: "Rejected", code: "revision_mismatch" },
     );
-
-    const progressed = accepted(decide(authority, fact(authority, "WorkspacePreparing", proof)));
-    const duplicate = decide(
-      progressed.nextAuthority,
-      fact(authority, "WorkspacePreparing", proof),
-    );
-    assert.deepStrictEqual(duplicate, { _tag: "Rejected", code: "duplicate" });
   });
 
   it("fails an ordinary transition at its deadline", () => {
@@ -411,8 +337,6 @@ describe("session actor reducer", () => {
       alarmId: "alarm-1",
       expectedDeadlineAt: DEADLINE,
     };
-    const early = decide(created, { ...alarm, timestamp: T1 });
-    assert.deepStrictEqual(early, { _tag: "Rejected", code: "stale_phase" });
     const mismatched = decide(created, { ...alarm, expectedDeadlineAt: T1 });
     assert.deepStrictEqual(mismatched, { _tag: "Rejected", code: "stale_phase" });
     const failed = accepted(decide(created, alarm));

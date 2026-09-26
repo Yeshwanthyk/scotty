@@ -6,22 +6,23 @@ import type {
   ReadinessProof,
   SessionAuthority,
   Transition,
-} from "../../src/session-actor/authority";
-import { decodeSessionAuthority } from "../../src/session-actor/authority";
-import { AuthorityStateSchema } from "../../src/session-actor/authority";
-import type { AcceptedDecision, Decision } from "../../src/session-actor/decision";
+} from "../../src/session-actor/reducer/authority";
+import { decodeSessionAuthority } from "../../src/session-actor/reducer/authority";
+import { AuthorityStateSchema } from "../../src/session-actor/reducer/authority";
+import type { AcceptedDecision, Decision } from "../../src/session-actor/reducer/decision";
 import type {
   SessionActorInput,
   SessionCommand,
   TransitionProof,
-} from "../../src/session-actor/input";
-import { decide, validateAuthority } from "../../src/session-actor/reducer";
+} from "../../src/session-actor/reducer/input";
+import { decide } from "../../src/session-actor/reducer/decide";
+import { validateAuthority } from "../../src/session-actor/reducer/validity";
 import {
   phaseIndex,
   phases,
   transitionKind,
   transitionPhases,
-} from "../../src/session-actor/transition";
+} from "../../src/session-actor/reducer/transition";
 
 const T0 = "2026-02-01T00:00:00.000Z";
 const T1 = "2026-02-01T00:01:00.000Z";

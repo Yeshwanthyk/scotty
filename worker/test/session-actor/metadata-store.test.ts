@@ -5,7 +5,7 @@ import {
   AuthorityStateSchema,
   type SessionAuthority,
   type StableState,
-} from "../../src/session-actor/authority";
+} from "../../src/session-actor/reducer/authority";
 import {
   makeSessionActorMetadataStore,
   MetadataStoreConflict,

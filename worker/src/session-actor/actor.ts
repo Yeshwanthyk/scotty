@@ -1,11 +1,11 @@
 import { Context, Effect, Layer, Predicate } from "effect";
 import { actorAlarmId, type ActorAlarmFence } from "./alarm";
-import { AuthorityStateSchema, TransitionSchema, type SessionAuthority } from "./authority";
-import { transitionOf } from "./control";
-import type { Decision } from "./decision";
+import { AuthorityStateSchema, TransitionSchema, type SessionAuthority } from "./reducer/authority";
+import { transitionOf } from "./reducer/control";
+import type { Decision } from "./reducer/decision";
 import { ActorEffectRunner, type EffectRunnerError } from "./effect-runner";
-import type { SessionActorInput } from "./input";
-import { decide } from "./reducer";
+import type { SessionActorInput } from "./reducer/input";
+import { decide } from "./reducer/decide";
 import {
   ActorStore,
   type ActorCommitRequest,
@@ -15,7 +15,7 @@ import {
   type CommittedActorDecision,
   type EvidenceMutation,
 } from "./store";
-import { transitionKind } from "./transition";
+import { transitionKind } from "./reducer/transition";
 
 export type ActorHandleError =
   | ActorStoreReadError

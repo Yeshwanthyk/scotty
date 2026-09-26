@@ -7,13 +7,17 @@ import type {
   SessionAuthority,
   SessionIdentity,
   Transition,
-} from "../../src/session-actor/authority";
-import type { AcceptedDecision, Decision, EffectIntent } from "../../src/session-actor/decision";
+} from "../../src/session-actor/reducer/authority";
+import type {
+  AcceptedDecision,
+  Decision,
+  EffectIntent,
+} from "../../src/session-actor/reducer/decision";
 import type { CommittedProviderEffectIntent } from "../../src/session-actor/effects";
-import type { SessionActorInput } from "../../src/session-actor/input";
+import type { SessionActorInput } from "../../src/session-actor/reducer/input";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
-import { decide } from "../../src/session-actor/reducer";
-import { transitionKind } from "../../src/session-actor/transition";
+import { decide } from "../../src/session-actor/reducer/decide";
+import { transitionKind } from "../../src/session-actor/reducer/transition";
 import {
   executeVaporizeTransition,
   VaporizeProviderFailure,

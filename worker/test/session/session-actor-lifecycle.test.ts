@@ -8,7 +8,7 @@ import {
   defaultCloudSettings,
   type CloudSettingsSnapshot,
 } from "../../../protocol/settings/cloud-settings";
-import type { SessionAuthority } from "../../src/session-actor/authority";
+import type { SessionAuthority } from "../../src/session-actor/reducer/authority";
 import { actorAlarmId } from "../../src/session-actor/alarm";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { EvidenceState } from "../../src/evidence/contracts";

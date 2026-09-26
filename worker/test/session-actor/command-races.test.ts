@@ -1,8 +1,8 @@
 import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate, Result } from "effect";
-import type { AcceptedDecision, Decision } from "../../src/session-actor/decision";
-import { decide } from "../../src/session-actor/reducer";
+import type { AcceptedDecision, Decision } from "../../src/session-actor/reducer/decision";
+import { decide } from "../../src/session-actor/reducer/decide";
 import {
   makeActorStore,
   type ActorCommitRequest,

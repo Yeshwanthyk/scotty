@@ -6,17 +6,21 @@ import type {
   ReadinessProof,
   SessionAuthority,
   SessionIdentity,
-} from "../../src/session-actor/authority";
-import type { AcceptedDecision, Decision, EffectIntent } from "../../src/session-actor/decision";
+} from "../../src/session-actor/reducer/authority";
+import type {
+  AcceptedDecision,
+  Decision,
+  EffectIntent,
+} from "../../src/session-actor/reducer/decision";
 import type { CommittedProviderEffectIntent } from "../../src/session-actor/effects";
-import type { SessionActorInput } from "../../src/session-actor/input";
+import type { SessionActorInput } from "../../src/session-actor/reducer/input";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
-import { decide } from "../../src/session-actor/reducer";
+import { decide } from "../../src/session-actor/reducer/decide";
 import {
   executeCreateTransition,
   type CreateTransitionProviderShape,
 } from "../../src/session-actor/transitions/create";
-import { transitionKind } from "../../src/session-actor/transition";
+import { transitionKind } from "../../src/session-actor/reducer/transition";
 import {
   CheckpointProviderFailure,
   type CheckpointProviderResult,

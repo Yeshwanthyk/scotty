@@ -32,7 +32,7 @@ import { SessionActorDiagnosticsSchema } from "../../worker/src/session-actor/di
 import {
   AuthorityStateSchema,
   StableStateSchema,
-} from "../../worker/src/session-actor/authority.ts";
+} from "../../worker/src/session-actor/reducer/authority.ts";
 import { UiSessionResponseSchema } from "../../worker/src/ui/session-view.ts";
 import {
   acquireLifecycleLock,

@@ -1,9 +1,13 @@
 import { Context, Effect, Layer, Predicate, Schema } from "effect";
 import { actorResultRejectedBeforeCommit, SessionActor, type ActorHandleError } from "./actor";
-import { AuthorityStateSchema, type SessionAuthority, StableStateSchema } from "./authority";
+import {
+  AuthorityStateSchema,
+  type SessionAuthority,
+  StableStateSchema,
+} from "./reducer/authority";
 import { CreateHardCapController, type CreateControllerBoundaryFailure } from "./create-controller";
-import type { SessionActorInput } from "./input";
-import { decide } from "./reducer";
+import type { SessionActorInput } from "./reducer/input";
+import { decide } from "./reducer/decide";
 import { ActorStore, type ActorStoreReadError } from "./store";
 
 export type LifecycleCommandKind = "Checkpoint" | "Sleep" | "Resume";

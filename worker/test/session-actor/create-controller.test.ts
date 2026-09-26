@@ -8,7 +8,7 @@ import {
   type ReadinessProof,
   type SessionAuthority,
   type SessionIdentity,
-} from "../../src/session-actor/authority";
+} from "../../src/session-actor/reducer/authority";
 import {
   CreateController,
   CreateControllerBoundaryFailure,
@@ -19,12 +19,12 @@ import {
   type CreateControllerRequest,
   type CreateMetadataReservation,
 } from "../../src/session-actor/create-controller";
-import type { AcceptedDecision } from "../../src/session-actor/decision";
+import type { AcceptedDecision } from "../../src/session-actor/reducer/decision";
 import {
   makeSessionActorMetadata,
   type SessionActorMetadata,
 } from "../../src/session-actor/metadata";
-import { decide } from "../../src/session-actor/reducer";
+import { decide } from "../../src/session-actor/reducer/decide";
 
 const T0 = "2026-03-04T00:00:00.000Z";
 const DEADLINE = "2026-03-04T01:00:00.000Z";

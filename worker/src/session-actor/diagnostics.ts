@@ -1,5 +1,5 @@
 import { Equal, Result, Schema } from "effect";
-import { SessionAuthoritySchema, type SessionAuthority } from "./authority";
+import { SessionAuthoritySchema, type SessionAuthority } from "./reducer/authority";
 import {
   decodeLifecycleJournalEvent,
   LifecycleJournalEventSchema,

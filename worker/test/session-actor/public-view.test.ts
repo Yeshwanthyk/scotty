@@ -5,9 +5,9 @@ import {
   AuthorityStateSchema,
   StableStateSchema,
   type SessionAuthority,
-} from "../../src/session-actor/authority";
+} from "../../src/session-actor/reducer/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
-import { validateAuthority } from "../../src/session-actor/reducer";
+import { validateAuthority } from "../../src/session-actor/reducer/validity";
 import {
   SessionActorProjectionUnavailable,
   publicView,

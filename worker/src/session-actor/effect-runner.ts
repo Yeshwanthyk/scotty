@@ -1,5 +1,5 @@
 import { Context, Effect, Exit, Layer, Match, Schema } from "effect";
-import { AuthorityStateSchema, type Transition } from "./authority";
+import { AuthorityStateSchema, type Transition } from "./reducer/authority";
 import { actorAlarmId, ActorAlarmScheduler, type ActorAlarmOutcomeUnknown } from "./alarm";
 import {
   type CommittedEffectIntent,

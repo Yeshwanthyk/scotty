@@ -1,7 +1,7 @@
 import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Predicate, Result } from "effect";
-import type { SessionAuthority, StableState } from "../../src/session-actor/authority";
+import type { SessionAuthority, StableState } from "../../src/session-actor/reducer/authority";
 import {
   decodeSessionActorMetadata,
   makeSessionActorMetadata,

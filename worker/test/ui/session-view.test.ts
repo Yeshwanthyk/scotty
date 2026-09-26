@@ -1,7 +1,7 @@
 import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Result, Schema } from "effect";
-import type { SessionAuthority, ReadinessProof } from "../../src/session-actor/authority";
+import type { SessionAuthority, ReadinessProof } from "../../src/session-actor/reducer/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import {
   UiSessionListResponseSchema,

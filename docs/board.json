@@ -1,0 +1,638 @@
+{
+  "name": "Scotty reliability",
+  "columns": [
+    "backlog",
+    "next",
+    "doing",
+    "done"
+  ],
+  "cards": [
+    {
+      "id": "M-00",
+      "title": "Quint toolchain + ITF trace replay against the reducer",
+      "column": "doing",
+      "contract": false,
+      "deps": [],
+      "body": "- `spec/quint/` with `quint` pinned via npx.\n- `npm run spec` (local only, never in CI) runs `quint typecheck`, a bounded `quint run` with invariants and witnesses, then the ITF replay test.\n- Add a vitest that loads ITF traces (`quint run --out-itf`) and replays each step into `worker/src/session-actor/reducer.ts`, asserting the same abstract state. Excluded from the default vitest run; `npm run spec` sets `SCOTTY_SPEC=1` to include it.\n- Proof: `npm run spec` exits non-zero on a seeded model violation and on a seeded reducer divergence. Quint is a local design tool; it does not run in CI.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Started."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Done (uncommitted, branch m-00/quint-replay): spec/quint/session_lease.qnt (Create/Vaporize walk, preemption, deadline/failure, stale redelivery, revision fences; invariants singleLease/revisionStep/leaseFresh; 6 witnesses as vacuity guard), scripts/spec.mjs wired into npm run check, quint 0.32.0 pinned with --backend typescript (rust backend downloads unpinned binary), worker/test/session-actor/session-lease.replay.test.ts replays 200 ITF traces into decide() with zero divergence. Seeded proofs: reducer mutation fails replay; model mutation fails npm run spec. Open: user OK on -78 line reducer.test.ts trim; commit/PR split for board files. Next (M-01): extend model with Checkpoint/Sleep/Resume/unknown outcomes, then shrink reducer.test.ts further."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Scope grew per the user's direction (trim aggressively, no god modules). reducer.ts (1082 lines) split into session-actor/reducer/ (decide.ts is the fence and dispatch; admission/progress/settlement/activity/recovery; validity; plus the moved pure core authority/input/decision/transition/control/backup). Checked as a pure move: 81 definitions unchanged. A no-restricted-imports override keeps reducer/ pure, proven with a temporary violating import. transitions/recovery.ts moved into reducer/. All checks green, 147 tests pass. reducer.test.ts -78 lines covered by replay (user approved). In progress: a luna audit of all worker/test/session-actor tests (rubric: keep only e2e and state-breaking regression tests), then sol deletes and consolidates fixtures into worker/test/support/session-actor.ts. Filed C-11 (session/ + session-actor/ merge) and C-12 (audit of the rest of the suite). Still uncommitted on m-00/quint-replay."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "HANDOFF (fresh session). PR PLAN: stacked PRs, all merged at the end. PR1 = m-00/quint-replay (Quint + replay + reducer split into session-actor/reducer/ + boundary lint), on top of main. Later PRs branch from the previous one (m-00/test-audit from m-00/quint-replay, etc.); open each with gh pr create --base <parent branch>; merge bottom-up, retargeting to main as each lands. Do not squash in a way that breaks the stack. BLOCKERS before opening PR1 (astra high review, work/m-00/astra-review.md, 4 confirmed by repro): (1) replay copies attempt/deadlineAt from reducer output, so corrupting them passes; track expected attempt/deadline from admission independently and compare. (2) the reachesStaleRedelivery witness also matches a duplicate Vaporize (474/500 traces with redeliver disabled); key it on the action or an explicit redelivery flag, and assert action and witness coverage over the replayed traces themselves. (3) no timeout on spawnSync in worker/test/support/quint.ts or on the spec.mjs child. (4) FORCE_COLOR=1 makes a passing npm run spec exit 1; set NO_COLOR in the child env and strip ANSI. (5) the reducer no-restricted-imports override only blocks ../**; add an allowlist that also bans node:*, cloudflare:*, @cloudflare/*, bare packages other than effect. (6) restore the deadline-after-repeated-UnknownProviderOutcome assertion in reducer.test.ts (unknown outcomes are not modeled). Also: singleLease/revisionStep are true by construction; consider replacing them with an invariant that can actually fail. NEXT PR (stacked): session-actor test cull. The luna draft at work/m-00/session-actor-test-audit.draft.md (delete 113/152) is NOT safe to apply: it claims replay covers UnknownProviderOutcome and forged current-revision fences (false), it counts the env-gated deployed canary as CI coverage (it is not), and it drops credential/prompt scrubbing, hard-cap, and chunked-storage tests as low-value. Verify every covered-by claim by reading the cited test before deleting; keep AGENTS.md invariant tests unless CI-run coverage is proven; then consolidate fixtures into worker/test/support/session-actor.ts (2 hardCap variants suffice). work/ is gitignored and local only."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "SUPERSEDES the HANDOFF blocker list. Quint is local only (user direction): removed npm run spec from npm run check; vitest.config.ts excludes **/*.replay.test.ts unless SCOTTY_SPEC=1; scripts/spec.mjs runs the replay after the model checks. Triaged blockers before PR1, reduced to: (a) restore the deadline-after-repeated-UnknownProviderOutcome test in reducer.test.ts; (b) key reachesStaleRedelivery on a lastAction variable so a duplicate Vaporize cannot satisfy it; (c) delete the singleLease/revisionStep invariants, which hold by construction. Dropped as busy work: attempt/deadlineAt replay tracking (not modeled; M-01), spawn timeouts and FORCE_COLOR (local tool only), import allowlist widening (hypothetical)."
+        }
+      ]
+    },
+    {
+      "id": "M-01",
+      "title": "Session lifecycle model (lease, fences, stale results, Failed exits)",
+      "column": "next",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- States: `Absent`, `Warm`, `Sleeping`, `Failed{recovery}` and `Gone`, plus `Transitioning{kind, phase, nonce, attempt, deadline}`.\n- Actions:\n  - commands (Create, Checkpoint, Sleep, Resume, Vaporize), with Vaporize preempting;\n  - provider results as `ok`, `rejected` or `unknown`, including late delivery;\n  - deadline expiry;\n  - crash and restart.\n- Invariants:\n  - at most one lease;\n  - a stale result never changes authority;\n  - `Sleeping ⇒ confirmed owned backup ∧ runtime stopped`;\n  - `Gone ⇒ no owned state`.\n- Liveness: every `Failed` has a non-Vaporize exit, or is explicitly terminal by design.\n- Source: `reducer.ts:370-445,527-604,721-756,887-957`; `store.ts:243-256`.\n- Must find: the no-backup `Failed` dead end (R-03).",
+      "log": []
+    },
+    {
+      "id": "M-03",
+      "title": "Create idempotency model",
+      "column": "next",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- Covers CLI key lifecycle × server outcomes (committed, failed, ambiguous, vaporized) × process restarts.\n- Assert that a retry after a definitive failure creates a new session, and that an ambiguous outcome never duplicates one.\n- Must find: R-01.",
+      "log": []
+    },
+    {
+      "id": "M-04",
+      "title": "Projection convergence model",
+      "column": "next",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- Covers authority transitions × projection writes that may fail × list reads × UI caches.\n- Assert: once authority is `Gone`, the session is eventually never listed; the list never shows a state older than one committed revision.",
+      "log": []
+    },
+    {
+      "id": "M-06",
+      "title": "Sidecar turn / checkpoint / save model",
+      "column": "next",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- Actions: admit, steer, interrupt, checkpoint export, sleep save, stop and restore, with generation, thread and turn identity.\n- Assert that checkpoint never interrupts, and that idempotent replay never double-admits a turn.",
+      "log": []
+    },
+    {
+      "id": "R-03",
+      "title": "Failed is a dead end → durable recovery operation",
+      "column": "next",
+      "contract": true,
+      "deps": [
+        "M-01"
+      ],
+      "body": "- **Problem:**\n  - `Failed{actionable:boolean, backup|null}` (`session-actor/authority.ts:140-148`).\n  - Resume admits only `actionable` failures (`reducer.ts:370-377`) and Create rejects any existing authority, so Vaporize is the only exit.\n  - `backup` and `wakeSource` are redundant and need equality checks (`reducer.ts:200-217`).\n  - Live: `c31ef4f2a9e6`.\n- **Root fix:** `Failed` carries a typed `recovery: ResumeFrom(backup) | Recreate(workspace spec) | Terminal(reason)`, recorded when the failure is committed.\n  - `Recreate` gives setup failures a real retry path that keeps the session ID.\n  - Remove the boolean and the redundant wake source.\n- **Proof:** a session-harness test and a deployed test covering create clone failure → `Failed(Recreate)` → retry → `Warm`, and sleep failure → `Failed(ResumeFrom)` → resume.\n- **Deps:** M-01.",
+      "log": []
+    },
+    {
+      "id": "R-01",
+      "title": "Server-owned create idempotency (CLI pending-up poisoning)",
+      "column": "next",
+      "contract": true,
+      "deps": [
+        "M-03"
+      ],
+      "body": "- **Problem:**\n  - The CLI keys `POST /api/sessions` with a local pending-up file keyed by `sha256([host, body])`, with a 24-hour TTL (`cli/src/dependencies.ts:222-240`).\n  - A non-conflict failure returns without clearing it (`:327`). The only recovery path is a regex over the conflict message (`conflictSessionId`, cc5bf74).\n  - Live repro: a clone failure during a rollout made every retry reuse the same session ID `c31ef4f2a9e6`. A new title was the only workaround.\n- **Root fix:** the server records each idempotency key as `in_progress | committed(sessionId) | failed(code)` and returns it as a typed response.\n  - The CLI reuses the key only while the outcome is ambiguous (transport failure or `in_progress`).\n  - It clears the key on a definitive `failed` result.\n- **Delete:** `conflictSessionId` and the message-regex path; any local key that outlives a definitive answer.\n- **Proof:** a deployed test that forces a create failure (a bad repo), then retries from a fresh process and gets a new session. Also: a transport drop plus retry returns the same session.\n- **Deps:** M-03.",
+      "log": []
+    },
+    {
+      "id": "R-02",
+      "title": "Authoritative session list; Gone is never listed",
+      "column": "next",
+      "contract": true,
+      "deps": [
+        "M-04"
+      ],
+      "body": "- **Problem:**\n  - `GET /api/sessions` reads the KV projection (`worker/src/index.ts:939-957`), and KV writes are best-effort (`session/projection.ts:57`).\n  - Vaporize's Gone fast paths return before the projection is removed (`session/object.ts:3703-3710`).\n  - The UI compensates with correction caches and suppression sets (`ui/src/data/session-catalog-controller.ts:68-204`).\n  - Observed live: `scotty list` shows vaporized sessions.\n- **Root fix:** each committed actor transition emits its projection through a durable outbox that retries until acked. This includes `Gone`, which deletes the projection.\n  - **Decision to record first:** keep KV and repair via the outbox, or move to an installation-scoped session index DO. Leaning KV + outbox, since it keeps list reads cheap.\n- **Delete:**\n  - the UI correction and suppression sets;\n  - actor-versus-projection merging;\n  - the best-effort publish helpers.\n- **Proof:** deployed test where vaporize, with a projection write fault injected, eventually leaves the session out of both `scotty list` and `/api/sessions`. Plus a browser check that the row disappears.\n- **Deps:** M-04. It also unblocks D-08.",
+      "log": []
+    },
+    {
+      "id": "R-04",
+      "title": "Checkpoint must not interrupt a running turn",
+      "column": "next",
+      "contract": true,
+      "deps": [
+        "M-06"
+      ],
+      "body": "- **Problem:** there are two paths.\n  - Sidecar `save` interrupts a running turn, then stops the host (`worker/src/agent/sidecar/runtime.ts:441-460`).\n  - The shared quiesce path POSTs `/quiesce` and then SIGTERMs Pi (`session-actor/transitions/backup-lifecycle-sandbox.ts:336-358`, `sandbox/auth.ts:757-788`).\n\n  Checkpoint and sleep share both paths. `worker/test/agent/codex/runtime.test.ts:1006-1048` codifies the interruption as correct behavior.\n\n- **Root fix:** split the agent contract into `export` (a consistent snapshot, non-disruptive, with a receipt tied to generation, thread and backup) and `quiesceAndStop` (sleep only).\n  - Adapters declare their checkpoint capability. An agent that can't export mid-turn makes checkpoint wait for the turn, bounded, or return a typed `busy` outcome. It never interrupts silently.\n- **Delete:** the `save → interrupt` path and the test that codifies it.\n- **Proof:** deployed test with Codex and Claude: start a long turn, checkpoint, then assert the turn completes and the transcript survives a resume.\n- **Deps:** M-06; interacts with R-05.",
+      "log": []
+    },
+    {
+      "id": "C-01",
+      "title": "Delete legacy compat paths",
+      "column": "next",
+      "contract": false,
+      "deps": [],
+      "body": "Each removal gets a reset note in the PR.\n\n- Remove:\n  - `legacyHardCapDrainAt` (`lifecycle.ts:19-22`, `object.ts:635-638`);\n  - the Hatch v1 fields (`hatch/contracts.ts:145-163,220-234`);\n  - the `HATCH_STATE_VERSION` export;\n  - the Codex `0.153.4` archive literal (`agent/codex/persistence-format.ts:8-11`);\n  - the Claude settings decoding default and its test (`protocol/settings/cloud-settings.ts:43-46`);\n  - the inventory legacy decoder (2142c3a).\n- ⚠ CLI aliases `-V` and `ls` are a public CLI surface, so confirm first.\n- **Keep:**\n  - session wire v1 (it is the current format);\n  - inline chunked storage (the current writer uses it);\n  - Codex `ThreadHistoryMode \"legacy\"` (a native term).",
+      "log": []
+    },
+    {
+      "id": "C-09a",
+      "title": "Cull the 7 dead unit-test files",
+      "column": "next",
+      "contract": false,
+      "deps": [],
+      "body": "The current suite is 110 files and 1,078 tests (e2e: 14 files, 241 tests).\n\n- **C-09a:** delete 7 files now:\n  - `worker/test/agent/codex/{conversation,rollout-export}.test.ts`;\n  - `worker/test/public/{auth/locked-page,evidence/evidence-page,showcase/showcase-page}.test.ts`;\n  - `worker/test/session/session-projection.test.ts`;\n  - `worker/test/ui/session-view.test.ts`.\n\n  Also switch `session-actor-lifecycle.test.ts` from `expect` to `assert`.\n\n- **C-09b:** convert 64 files as their owning R card lands. Each R card deletes the unit tests its e2e supersedes.\n- **Keep (25):**\n  - reducer, command-races and store-atomicity;\n  - the credential crypto/contract suites;\n  - egress;\n  - the protocol parsers;\n  - the sandbox archive;\n  - bounded-http;\n  - the session contracts.\n\n  `auth-ownership-machine` is replaced once M-07 lands.",
+      "log": []
+    },
+    {
+      "id": "D-01",
+      "title": "Direction (owner decision)",
+      "column": "next",
+      "contract": false,
+      "deps": [],
+      "body": "**Acceptance:** Recorded in `DESIGN.md`: dark-only vs. adding light; brand identity (the mark, hero and wordmark as one system); density; reference products. Everything else follows from it.",
+      "log": []
+    },
+    {
+      "id": "M-02",
+      "title": "Hard-cap timing model",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- Covers drain, force and deadline; turn activity `active|idle|unknown`; early, dropped and duplicate alarms; per-phase durations.\n- Assert that at the deadline the state is `Sleeping` with a confirmed backup, or `Failed(hard_cap_elapsed)` with the prior backup kept. The force point must always leave the sleep budget.\n- Must find: the 75-second reserve on a 5-minute cap (fixed as a bandaid in 3be0300).",
+      "log": []
+    },
+    {
+      "id": "M-05",
+      "title": "Provider outcome / late completion model",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- Covers create, backup, restore and destroy with `unknown` outcomes, late completion after timeout, and a retry with the same op ID.\n- Assert: no completion without confirmed evidence; no orphaned owned resources after `Gone`.",
+      "log": []
+    },
+    {
+      "id": "M-07",
+      "title": "Auth ownership model (replaces the test-only machine)",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- Covers owner, clients, pairing, transfer, recovery and revocation.\n- Replaces `worker/test/auth/auth-ownership-machine.test.ts`.",
+      "log": []
+    },
+    {
+      "id": "M-08",
+      "title": "Deploy-run receipt model",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- States: plan → approve → apply-ack → rollout observations, plus timeout and retry.\n- Assert: an apply that may have succeeded is never reported as simply \"failed\"; drift after approval blocks the apply.",
+      "log": []
+    },
+    {
+      "id": "M-09",
+      "title": "Hatch + Evidence model",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- Covers desired/observed/exposure/cleanup × generation/epoch × delayed completion.\n- Assert: a closed or Gone Hatch never becomes exposed, and no available artifact points at a missing object.",
+      "log": []
+    },
+    {
+      "id": "R-05",
+      "title": "One persisted hard-cap budget policy; drain policy moves into the actor",
+      "column": "backlog",
+      "contract": true,
+      "deps": [
+        "M-02",
+        "R-06"
+      ],
+      "body": "- **Problem:** independent knobs:\n  - drain `min(10m, d/2)` (`session/lifecycle.ts:14`);\n  - reserve `HARD_CAP_SLEEP_RESERVE_MS` = 3 minutes (`session/agent-activity.ts:88-103`);\n  - backup margin 30 s, minimum 5 s, sweep up to 15 s (`backup-lifecycle-sandbox.ts:56-59,215-230,380-405`);\n  - a hard-coded 5 s drain retry (`object.ts:6632,6689`).\n\n  The drain decision lives in the host, not the actor (`object.ts:6643-6691`). Bandaids so far: 3be0300, e81ada3, 9c7ecfc.\n\n- **Root fix:**\n  - A persisted `CapBudget` computed at create time holds per-phase budgets (quiesce, sync/sweep, backup, confirm, stop) and derives `forceAt`, every alarm, and every operation timeout.\n  - Size the budgets from measured p99s in live tail logs.\n  - The drain decision moves into the actor's lifecycle policy.\n- **Delete:**\n  - `legacyHardCapDrainAt` (`lifecycle.ts:19-22`, `object.ts:635-638`);\n  - the scattered constants;\n  - host-side drain policy.\n- **Proof:** deployed busy and idle hard-cap runs on 5-minute and 20-minute caps with Pi, Codex and Claude, each ending `Sleeping` with a confirmed backup. Plus the M-02 trace replay.\n- **Deps:** M-02, R-06.",
+      "log": []
+    },
+    {
+      "id": "R-06",
+      "title": "Actor-owned wake scheduling; the host only delivers",
+      "column": "backlog",
+      "contract": true,
+      "deps": [
+        "M-01",
+        "M-02"
+      ],
+      "body": "- **Problem:**\n  - Alarm policy is spread across the host: callback dedupe, overdue repair, and SQL scans of Container's internal scheduler table because `listSchedules` truncates (`object.ts:3358-3412`).\n  - The 60-second retry-then-log path leaves a consumed alarm with no successor (`object.ts:6482-6499`).\n  - Callback names are passed as `string`.\n- **Root fix:** every actor commit returns a typed `nextWake` set, which the host persists and delivers through one alarm adapter with durable schedule state and repair on the next DO activation. Callbacks are a closed union.\n- **Delete:** per-callback retry variants, the log-and-swallow path, and duplicated fence matching in the host.\n- **Proof:** a harness test with injected schedule failures and DO restarts, where every wake eventually fires. Plus a deployed canary checking alarm delivery across eviction.\n- **Deps:** M-01, M-02.",
+      "log": []
+    },
+    {
+      "id": "R-07",
+      "title": "SandboxProvider contract + durable operation IDs (runner prerequisite)",
+      "column": "backlog",
+      "contract": true,
+      "deps": [
+        "M-05"
+      ],
+      "body": "- **Problem:**\n  - `SandboxRuntime` is an optional Cloudflare capability bag with SDK types (`sandbox/runtime.ts:1-36`).\n  - Actor transitions check `provider === cloudflare` (`backup-lifecycle-sandbox.ts:1323`, `create-sandbox.ts:178`).\n  - The runner protocol has no backup or restore, and no `unknown` outcome (`protocol/runner/runner.ts:30,239-255`).\n  - The backup SDK promise can't be cancelled (`backups/store.ts:53-83`).\n  - Idempotent backup relies on metadata and size, not a digest (`patches/@cloudflare+sandbox+0.12.9.patch:50-122`).\n- **Root fix:**\n  - A `SandboxProvider` service exposes `create | exec | backup | restore | destroy | inspect`, each keyed by a durable op ID, returning `Confirmed | Rejected | Unknown`. Reconciliation goes through `inspect` before any retry.\n  - The Cloudflare adapter owns the SDK types, `stop`/`destroy`, ports and `localBucket`.\n  - Backup becomes a Scotty-owned write-once R2 object with a digest and a tombstone.\n- **Delete:** provider checks in transitions; the backup mutation parts of the sandbox patch.\n- **Proof:** a shared provider contract test runs against the real Cloudflare adapter, deployed. The runner adapter must pass the same suite before runner create is enabled.\n- **Deps:** M-05.",
+      "log": []
+    },
+    {
+      "id": "R-08",
+      "title": "Deploy run: applied ≠ settled; resumable observation",
+      "column": "backlog",
+      "contract": true,
+      "deps": [
+        "M-08"
+      ],
+      "body": "- **Problem:**\n  - The CLI throws a settle timeout after `Apply.apply(plan)` has already succeeded (`cli/src/installation-deployment.ts:991-1019`). The release script does the same (`scripts/release/deploy-production.mjs:584-645`).\n  - Release authorization checks the parsed plan text, then runs a fresh `alchemy deploy` (`:1152-1167`), so the apply isn't bound to the reviewed plan.\n  - Runtime compatibility evidence is optional (`alchemy.run.ts:59-96`).\n  - There are two watchers.\n  - Live: every deploy of v0.3.29–31 reported `installation_deploy_failed`, yet the re-plan showed 0 changes.\n- **Root fix:**\n  - A persisted `DeployRun` goes `planned → applied(receipt) → settling → settled | failed | unknown`. `scotty deploy --resume` observes without reapplying. The exit code distinguishes \"applied, not settled\".\n  - Both paths apply the exact reviewed plan.\n  - Compat evidence is required for production.\n- **Delete:** the duplicate release watcher and the text-plan authorization.\n- **Proof:** a deployed CLI test with a short settle timeout: it reports `applied/unsettled`, then `--resume` reports `settled`.\n- **Deps:** M-08.",
+      "log": []
+    },
+    {
+      "id": "R-09",
+      "title": "Credential grant is the sole capability record",
+      "column": "backlog",
+      "contract": true,
+      "deps": [],
+      "body": "- **Problem:**\n  - The session side reconstructs grants (`session/object.ts:5895-5920`).\n  - `issuedSessions` normalization is optional.\n  - The plaintext `string` crosses RPC untyped (`credentials/object.ts:26-40`).\n  - `egress/session.ts` carries a complexity suppression.\n  - History: 21 commits, including 2 reverted migrations.\n- **Root fix:**\n  - The Registry DO grant is the only capability record, and the session holds a grant ID only.\n  - Plaintext crosses RPC as a branded, redacted wrapper decoded at the egress edge.\n  - Split egress into resolve, inject and proxy.\n- **Delete:** reconstruction, normalization and compat shapes.\n- **Proof:** full credential-sink e2e: a canary credential must be absent from container env, files, process args, logs, Git config, KV, R2, API responses and Alchemy state (extends `e2e/scripts/scan.mjs`). Rotation during a live session keeps working.",
+      "log": []
+    },
+    {
+      "id": "R-10",
+      "title": "Hatch: one tagged transition state + reconciler",
+      "column": "backlog",
+      "contract": true,
+      "deps": [
+        "M-09",
+        "R-06"
+      ],
+      "body": "- **Problem:**\n  - Hatch state combines desired, observed, exposure, transition and cleanup (`hatch/contracts.ts:190-237`).\n  - Cleanup retries every 5 s from several entry points (`object.ts:2010-2300`).\n  - The v1 quota fields remain (`hatch/contracts.ts:145-163`).\n  - Fixes so far: e16e241, fa5eb9c, ecda4aa, d2eae17.\n- **Root fix:** one persisted tagged Hatch transition and a single reconciler for ensure, restore, close, failure, sleep and vaporize, keeping the generation and epoch fences.\n- **Delete:** duplicated cleanup and retry branches; the v1 fields (with a reset note).\n- **Proof:** deployed test covering Hatch ensure → handoff → HTTP and WebSocket traffic → sleep/resume → close, after which the port is unreachable.\n- **Deps:** M-09, R-06.",
+      "log": []
+    },
+    {
+      "id": "R-11",
+      "title": "Evidence: actor-reconciled operation outbox",
+      "column": "backlog",
+      "contract": true,
+      "deps": [
+        "M-09",
+        "R-06"
+      ],
+      "body": "- **Problem:**\n  - Job phase, preview exposure, R2 publication and deletion settle independently.\n  - Deadline and retention callbacks are scattered (`object.ts:2697-2821`, `evidence/store.ts:627-1318`).\n  - The store has more than 20 `as Effect.Effect<…>` casts.\n  - The R2 body is cast (`evidence/artifact-store.ts:397`).\n- **Root fix:** a durable operation log reconciled by the actor; R2 deletes stay represented until confirmed.\n- **Proof:** deployed test: capture → final state → authenticated read → expiry or eviction → vaporize, after which the R2 objects are absent.\n- **Deps:** M-09, R-06.",
+      "log": []
+    },
+    {
+      "id": "R-12",
+      "title": "Runtime CLI selection from a signed R2 catalog, not the GitHub API",
+      "column": "backlog",
+      "contract": true,
+      "deps": [],
+      "body": "- **Problem:**\n  - Runtime selection scans GitHub Releases, up to 3 pages plus manifests (`runtime-cli/release-resolver.ts:333-443`).\n  - Bandaids: the 10-minute freshness window and the outage/403 fallback (abcdade, `selection.ts:13,59-110`).\n  - `sameRuntimeCompatibility` is duplicated.\n- **Root fix:** release/deploy publishes a signed, compatibility-indexed catalog to installation R2, and the Worker selects from it and pins per image.\n- **Delete:** GitHub discovery, pagination, the freshness window and the fallback.\n- **Proof:** deployed create with GitHub unreachable still succeeds.",
+      "log": []
+    },
+    {
+      "id": "R-13",
+      "title": "CLI installation-state owner; a real doctor",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- **Problem:**\n  - init, recover and deploy each keep their own journal and file.\n  - `doctor` is shallow (`cli/src/commands.ts:2606`).\n  - There are 48 disables in `cli/src`, and an `ErrnoException` cast (`services.ts:371`).\n- **Root fix:** one `InstallationState` service owns the local pointer and journals atomically. `doctor` checks auth, Worker version skew, rollout state, the credential presence of each provider, and alarm health.\n- **Proof:** CLI e2e covering init → interrupted deploy → `doctor` pinpoints the problem → `deploy --resume`.",
+      "log": []
+    },
+    {
+      "id": "R-14",
+      "title": "Repo registry: async, versioned projection repair; one GitHub boundary",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- **Problem:** listing does a synchronous full KV scan, delete and rebuild, and ignores repair failure (`index.ts:890-895,1910-1928`, `repos/projection.ts:158-190`). GitHub is verified again on every add path.\n- **Root fix:** versioned projection repair through the same outbox as R-02, behind one GitHub metadata boundary with coalescing and rate-limit handling.\n- **Proof:** deployed test where a stale projection is repaired without a full rebuild, and concurrent adds converge.",
+      "log": []
+    },
+    {
+      "id": "R-15",
+      "title": "All external JSON shapes live in protocol/**; one error envelope",
+      "column": "backlog",
+      "contract": true,
+      "deps": [],
+      "body": "- **Problem:** duplicate wire schemas:\n  - the error envelope ×3 (`worker/src/session/contracts.ts:454-462`, `cli/src/schemas.ts:270-275`, `egress/session.ts:85-106`);\n  - the session view as Worker, CLI and UI variants;\n  - `BeamUpOutputSchema` duplicating `UpResponseSchema`.\n\n  The UI uses hand-written guards and casts (`ui/src/data/settings.ts:75-95`, `session-reader.ts`), and the container Pi protocol is handwritten JS.\n\n- **Root fix:** every externally consumed request and response lives in `protocol/**`, and Worker, CLI and UI import the same Schema. Lifecycle mutations return a server-owned operation resource that the UI observes to completion.\n- **Delete:**\n  - the UI JSON guards;\n  - `session-lifecycle-reconciliation.ts` (db4bac4);\n  - the duplicate schemas;\n  - the legacy inventory decoder (2142c3a).\n- **Proof:** a cross-surface fixture test in which each producer encodes and each consumer decodes the same fixtures, plus the browser lifecycle journey (E-02).",
+      "log": []
+    },
+    {
+      "id": "C-02",
+      "title": "One Worker host request adapter; drop the index.ts lint carve-out",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- 19 `Effect.runPromise` calls in `worker/src/index.ts`, plus a six-rule file-wide carve-out (`.oxlintrc.json:116-130`).\n- Error mapping is duplicated at `index.ts:246-272,1945-1983` and `auth/request.ts:171-203`.\n- Target: routes are Effects run by one adapter, per `routing-effect-http`. Remove the carve-out and add `index.ts` to the strict override.",
+      "log": []
+    },
+    {
+      "id": "C-03",
+      "title": "Clock + IdGenerator services everywhere in the domain",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- 49 `crypto.randomUUID()` calls and 7 `Date.now()` calls (`object.ts:5778`, `evidence/preview.ts`, `hatch/gateway.ts`, `auth/request.ts:132`) in domain code.\n- Add an `IdGenerator` service with a test layer. Remaining direct calls must be adjacent host-boundary suppressions.",
+      "log": []
+    },
+    {
+      "id": "C-04",
+      "title": "Throwing parsers → Result; dedupe decoders; Schema.Unknown audit",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- `session/contracts.ts:514-559` throws, with 19 suppressions.\n- `decodeJsonValue` is duplicated (`worker/src/shared/json.ts`, `cli/src/schemas.ts:326`).\n- 60 `Schema.Unknown`: audit and tighten each one.\n- `buildResourceBundle` uses `Effect.promise` where it should use `tryPromise` (`sandbox/cloud-resources.ts:213-296`).",
+      "log": []
+    },
+    {
+      "id": "C-05",
+      "title": "Split session/object.ts (after R-06, R-10, R-11)",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "R-06",
+        "R-10",
+        "R-11"
+      ],
+      "body": "- Do this after R-06, R-10 and R-11, so it's a real ownership split rather than a file move.\n- Target: host island (SDK callbacks, `#run`), alarm adapter, Hatch workflow, Evidence workflow, and projection publisher.",
+      "log": []
+    },
+    {
+      "id": "C-06",
+      "title": "Split the other oversized modules",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- `cli/src/commands.ts` (3.1k) → per-command modules via `modeling-effect-cli`.\n- `installation-deployment.ts` (1.7k) → plan, apply, observe and uninstall (with R-08).\n- `backup-lifecycle-sandbox.ts` (1.4k) → per transition plus a shared backup adapter (with R-07).\n- `codex/session.ts` (1.1k), `runner/transport.ts` (1.1k), `evidence/store.ts` (1.4k), `hatch/store.ts` (1.2k).\n- Remove the `as Effect.Effect` casts.",
+      "log": []
+    },
+    {
+      "id": "C-07",
+      "title": "Busy-wait polling loops → Deferred / SubscriptionRef",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- `while (...) yield* Effect.sleep(\"10 millis\")` in sidecar save (`agent/sidecar/runtime.ts:443-447`), plus similar loops elsewhere (grep for them).\n- Replace with `Deferred`, `SubscriptionRef` or `Queue`.",
+      "log": []
+    },
+    {
+      "id": "C-08",
+      "title": "Suppression audit: only host-boundary disables survive",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "- 136 disables across worker, cli and scripts: 51 `no-try-catch-or-throw`, 19 `no-effect-runtime-escape`, 16 `no-raw-wall-clock`, 9 `no-direct-do-storage`.\n- Each survivor must be a documented native host contract.\n- Complexity suppressions go; split the code instead.\n- Add a lint budget check so the count only goes down.",
+      "log": []
+    },
+    {
+      "id": "C-09b",
+      "title": "Convert the 64 unit-test files to e2e as their R cards land",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "The current suite is 110 files and 1,078 tests (e2e: 14 files, 241 tests).\n\n- **C-09a:** delete 7 files now:\n  - `worker/test/agent/codex/{conversation,rollout-export}.test.ts`;\n  - `worker/test/public/{auth/locked-page,evidence/evidence-page,showcase/showcase-page}.test.ts`;\n  - `worker/test/session/session-projection.test.ts`;\n  - `worker/test/ui/session-view.test.ts`.\n\n  Also switch `session-actor-lifecycle.test.ts` from `expect` to `assert`.\n\n- **C-09b:** convert 64 files as their owning R card lands. Each R card deletes the unit tests its e2e supersedes.\n- **Keep (25):**\n  - reducer, command-races and store-atomicity;\n  - the credential crypto/contract suites;\n  - egress;\n  - the protocol parsers;\n  - the sandbox archive;\n  - bounded-http;\n  - the session contracts.\n\n  `auth-ownership-machine` is replaced once M-07 lands.",
+      "log": []
+    },
+    {
+      "id": "C-10",
+      "title": "knip export audit",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "337 unused exports and 172 unused types. Audit in batches per module during C-05/C-06, then turn on `knip` exports in the gate.",
+      "log": []
+    },
+    {
+      "id": "E-01",
+      "title": "Deployed e2e lane: busy/idle hard cap, Claude, full credential sink scan",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "One script drives the baseline installation and must be green before every release. It covers:\n\n- create, prompt, steer and interrupt;\n- checkpoint mid-turn (R-04);\n- sleep and resume;\n- busy and idle hard caps at 5 minutes, for Pi, Codex and Claude;\n- vaporize, then absence from the list (R-02);\n- the credential sink scan (R-09).\n\nEvery R card adds its proof here.",
+      "log": []
+    },
+    {
+      "id": "E-02",
+      "title": "Browser journey + visual regression lane",
+      "column": "backlog",
+      "contract": false,
+      "deps": [],
+      "body": "Playwright against the deployed UI, at desktop and mobile widths:\n\n- pairing and recovery;\n- create → session;\n- lifecycle pending → outcome;\n- vaporize removes the row;\n- live turn streaming and reconnect;\n- the workbench tools.\n\nAdd screenshot baselines for the key screens, which D cards update deliberately. Replaces `e2e/scripts/assistant-images.mjs`-style one-offs.",
+      "log": []
+    },
+    {
+      "id": "D-02",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-01"
+      ],
+      "log": [],
+      "title": "Executable tokens",
+      "body": "**Acceptance:** Semantic scales for color roles, type, spacing, radius, elevation, motion, focus and icon; `DESIGN.md` checked against the token source."
+    },
+    {
+      "id": "D-03",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-02"
+      ],
+      "log": [],
+      "title": "Kill workspace.css",
+      "body": "**Acceptance:** Every selector migrated to component-owned StyleX variants; the file is deleted with no visual regression (E-02 baselines)."
+    },
+    {
+      "id": "D-04",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-02"
+      ],
+      "log": [],
+      "title": "Primitive set",
+      "body": "**Acceptance:** Button, IconButton, Input, Textarea, Field, Menu, Panel and Dialog, with consistent focus, hover, disabled, pending, error and touch states. No route-local lookalikes, e.g. the create button in `routes/sessions.tsx:81-95`."
+    },
+    {
+      "id": "D-05",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-02"
+      ],
+      "log": [],
+      "title": "One palette everywhere",
+      "body": "**Acceptance:** Auth, evidence and showcase pages consume the same tokens (a generated CSS variables file)."
+    },
+    {
+      "id": "D-06",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-02"
+      ],
+      "log": [],
+      "title": "Type and density",
+      "body": "**Acceptance:** Named text roles (heading, body, control, meta) with a readable metadata floor; consistent density at each breakpoint."
+    },
+    {
+      "id": "D-07",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-02"
+      ],
+      "log": [],
+      "title": "Iconography",
+      "body": "**Acceptance:** Named icon sizes and strokes; aligned optical baselines."
+    },
+    {
+      "id": "D-08",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "R-02",
+        "R-15",
+        "D-04"
+      ],
+      "log": [],
+      "title": "Session header + lifecycle",
+      "body": "**Acceptance:** Actions show intent → pending → authoritative outcome (from the R-15 operation resource). The hard-cap countdown is always visible, accessible and fits mobile. The title, repo and branch stay discoverable on mobile (`workspace.css:201-215` hides them)."
+    },
+    {
+      "id": "D-09",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-04"
+      ],
+      "log": [],
+      "title": "Conversation",
+      "body": "**Acceptance:** Unified states (connecting, working, paused, reconnecting, unavailable, empty); one rich-block system for code, tables, Mermaid, diffs, tools and evidence, with contained overflow and copy; streaming Markdown without whole-document reparsing on each 750 ms poll (`Markdown.tsx:391-400`)."
+    },
+    {
+      "id": "D-10",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-04"
+      ],
+      "log": [],
+      "title": "Workbench contract",
+      "body": "**Acceptance:** Summary, diff, terminal, Hatch and evidence share a panel header, scrolling and empty/loading/error states. The terminal gets a reconnect action; diffs stay usable on mobile."
+    },
+    {
+      "id": "D-11",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-04"
+      ],
+      "log": [],
+      "title": "First run",
+      "body": "**Acceptance:** locked → pair → recover → owner, with expiry, failure and retry states; ends on the session list."
+    },
+    {
+      "id": "D-12",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-04"
+      ],
+      "log": [],
+      "title": "Home + create",
+      "body": "**Acceptance:** Clear first action and empty, loading, stale and retry states; create is one legible flow (repo, task, agent, submit progress) that submits once."
+    },
+    {
+      "id": "D-13",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-04"
+      ],
+      "log": [],
+      "title": "Switcher + a11y",
+      "body": "**Acceptance:** ⌘K keyboard-only selection; mobile drawer focus; measured contrast; zoom/reflow; status announced, not signaled by color alone (the connection indicator is currently 1 px, `workspace.css:267-278`)."
+    },
+    {
+      "id": "D-14",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-04"
+      ],
+      "log": [],
+      "title": "Settings/admin",
+      "body": "**Acceptance:** Shared section, field and status patterns across settings, resources, providers, devices and stats; the devices copy-link action shows failures."
+    },
+    {
+      "id": "D-15",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "R-15"
+      ],
+      "log": [],
+      "title": "Split UI modules",
+      "body": "**Acceptance:** Transport/polling vs. view in `LiveConversation`; per-tool workbench views; settings panes; UI data readers use `protocol/**` Schema (R-15)."
+    },
+    {
+      "id": "D-16",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "D-09"
+      ],
+      "log": [],
+      "title": "Performance at scale",
+      "body": "**Acceptance:** A long-history, long-stream browser scenario meets defined frame and input-latency budgets."
+    },
+    {
+      "id": "R-00",
+      "title": "v0.3.31 short-cap sleep reserve (bandaid; root fix is R-05)",
+      "column": "done",
+      "contract": false,
+      "deps": [],
+      "body": "Shipped in PR #274. `HARD_CAP_SLEEP_RESERVE_MS` = 3 min. Root fix tracked in R-05.",
+      "pr": 274,
+      "log": []
+    },
+    {
+      "id": "C-11",
+      "title": "Merge session/ and session-actor/ into one session domain (reducer/, actor/, transitions/, host/); move configuration.ts out of the actor; break the public-view ↔ session/contracts cycle",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "C-05"
+      ],
+      "body": "- `session/` (host, the 6,968-line `object.ts`) and `session-actor/` are one domain split in two, with a cycle: `session-actor/public-view.ts` imports `session/contracts`, and `session/` imports half of `session-actor/`.\n- Target: one `session/` directory with `reducer/` (the pure core, already isolated by M-00 and enforced by the `no-restricted-imports` override in `.oxlintrc.json`), `actor/` (actor, store, effect-runner, controllers, metadata), `transitions/` (executors) and `host/` (the Durable Object from C-05).\n- Move `session-actor/configuration.ts` (the non-secret session config pinned at admission, read by `sandbox/auth.ts` and `agent/sidecar/client.ts`) to `session/` or `protocol/`, and drop the `!../configuration` exception from the reducer boundary rule.\n- Pure move, with no re-exports for backward compatibility. Do it after C-05, so the host split has already happened.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        }
+      ]
+    },
+    {
+      "id": "C-12",
+      "title": "Test suite audit outside session-actor: keep e2e + state-breaking regression tests only; one fixture builder per domain",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "M-00"
+      ],
+      "body": "- Apply the M-00 test rubric to the rest of the suite, about 45k lines outside `worker/test/session-actor` (session 6.6k, agent 5.4k, cli/test 5.3k, integration 5.3k, …).\n- Rubric: a test stays only if it names a concrete regression (\"fails if <code change>\") that no e2e, integration, replay or higher-layer test also catches. Delete tests that only echo their fixtures, restate the implementation line by line, or are covered elsewhere.\n- Keep one fixture builder module per domain under `worker/test/support/`, with no per-file copies of `hardCap`/`session`/`readiness`.\n- Work one directory per PR, with a luna audit, a review, then sol applying the deletions.",
+      "log": [
+        {
+          "at": "2026-09-25",
+          "note": "Added."
+        }
+      ]
+    }
+  ]
+}

@@ -7,13 +7,13 @@ import type {
   SessionAuthority,
   StableState,
   Transition,
-} from "../authority";
-import { AuthorityStateSchema, StableStateSchema, TransitionSchema } from "../authority";
-import { confirmedBackup } from "../backup";
-import { accept, reject } from "../control";
-import type { Decision, JournalEvent } from "../decision";
-import type { SessionActorInput } from "../input";
-import { transitionKind } from "../transition";
+} from "./authority";
+import { AuthorityStateSchema, StableStateSchema, TransitionSchema } from "./authority";
+import { confirmedBackup } from "./backup";
+import { accept, reject } from "./control";
+import type { Decision, JournalEvent } from "./decision";
+import type { SessionActorInput } from "./input";
+import { transitionKind } from "./transition";
 
 export type RecoveryInput = Extract<
   SessionActorInput,

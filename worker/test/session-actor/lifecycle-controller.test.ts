@@ -2,14 +2,14 @@ import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Predicate, Result } from "effect";
 import { SessionActor, type ActorHandleResult } from "../../src/session-actor/actor";
-import type { ReadinessProof, SessionAuthority } from "../../src/session-actor/authority";
+import type { ReadinessProof, SessionAuthority } from "../../src/session-actor/reducer/authority";
 import {
   LifecycleController,
   lifecycleControllerLayer,
   type LifecycleControllerRequest,
 } from "../../src/session-actor/lifecycle-controller";
 import { ActorStore, type ActorStoreSnapshot } from "../../src/session-actor/store";
-import type { SessionActorInput } from "../../src/session-actor/input";
+import type { SessionActorInput } from "../../src/session-actor/reducer/input";
 import {
   createHardCapControllerLayer,
   type CreateHardCapArm,

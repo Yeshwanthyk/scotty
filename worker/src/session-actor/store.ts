@@ -1,12 +1,16 @@
 import { Context, Duration, Effect, Equal, Layer, Predicate, Result, Schema } from "effect";
-import { AuthorityStateSchema, decodeSessionAuthority, type SessionAuthority } from "./authority";
-import type { AcceptedDecision, EffectIntent } from "./decision";
+import {
+  AuthorityStateSchema,
+  decodeSessionAuthority,
+  type SessionAuthority,
+} from "./reducer/authority";
+import type { AcceptedDecision, EffectIntent } from "./reducer/decision";
 import {
   decodeLifecycleJournalEvent,
   makeLifecycleJournalEvent,
   type LifecycleJournalEvent,
 } from "./journal";
-import { validateAuthority } from "./reducer";
+import { validateAuthority } from "./reducer/validity";
 
 export type EvidenceMutation =
   | { readonly _tag: "Keep" }

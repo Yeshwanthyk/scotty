@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Match, Predicate, Schema } from "effect";
-import { confirmedBackup } from "../backup";
+import { confirmedBackup } from "../reducer/backup";
 import {
   AuthorityStateSchema,
   type BackupIdentity,
@@ -9,10 +9,10 @@ import {
   StopObservationSchema,
   type Transition,
   TransitionSchema,
-} from "../authority";
+} from "../reducer/authority";
 import type { CommittedProviderEffectIntent } from "../effects";
 import { ProviderEffectBoundaryFailure, ProviderEffectExecutor } from "../effects";
-import type { SessionActorInput } from "../input";
+import type { SessionActorInput } from "../reducer/input";
 
 export type SleepTransition = Extract<Transition, { readonly _tag: "Sleep" }>;
 export type SleepProof = SleepTransition["proof"];

@@ -1,6 +1,6 @@
-import { AgentSelectionSchema } from "../../../protocol/agents/agent-selection";
+import { AgentSelectionSchema } from "../../../../protocol/agents/agent-selection";
 import { Schema } from "effect";
-import { SessionConfigurationSchema } from "./configuration";
+import { SessionConfigurationSchema } from "../configuration";
 
 const SafeIdentifierSchema = Schema.NonEmptyString.check(Schema.isMaxLength(256));
 const SafeTimestampSchema = Schema.NonEmptyString.check(Schema.isMaxLength(64));

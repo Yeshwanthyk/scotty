@@ -5,11 +5,11 @@ import type {
   HardCapProof,
   ReadinessProof,
   SessionAuthority,
-} from "../../src/session-actor/authority";
-import { AuthorityStateSchema, StableStateSchema } from "../../src/session-actor/authority";
-import type { AcceptedDecision, Decision } from "../../src/session-actor/decision";
-import type { SessionActorInput } from "../../src/session-actor/input";
-import { decide } from "../../src/session-actor/reducer";
+} from "../../src/session-actor/reducer/authority";
+import { AuthorityStateSchema, StableStateSchema } from "../../src/session-actor/reducer/authority";
+import type { AcceptedDecision, Decision } from "../../src/session-actor/reducer/decision";
+import type { SessionActorInput } from "../../src/session-actor/reducer/input";
+import { decide } from "../../src/session-actor/reducer/decide";
 
 const T0 = "2026-09-01T00:00:00.000Z";
 const T1 = "2026-09-01T00:01:00.000Z";

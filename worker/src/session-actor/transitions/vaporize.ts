@@ -1,9 +1,9 @@
 import { Context, Effect, Layer, Match, Schema } from "effect";
-import type { VaporizeAbsenceCategory, Transition } from "../authority";
-import { AuthorityStateSchema, TransitionSchema } from "../authority";
+import type { VaporizeAbsenceCategory, Transition } from "../reducer/authority";
+import { AuthorityStateSchema, TransitionSchema } from "../reducer/authority";
 import type { CommittedProviderEffectIntent } from "../effects";
 import { ProviderEffectBoundaryFailure } from "../effects";
-import type { SessionActorInput } from "../input";
+import type { SessionActorInput } from "../reducer/input";
 
 export type VaporizeTransition = Extract<Transition, { readonly _tag: "Vaporize" }>;
 

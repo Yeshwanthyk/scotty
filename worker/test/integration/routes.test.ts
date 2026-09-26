@@ -2,7 +2,7 @@ import {
   AuthorityStateSchema,
   StableStateSchema,
   type SessionAuthority,
-} from "../../src/session-actor/authority";
+} from "../../src/session-actor/reducer/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import { CODEX_VERSION } from "../../../protocol/agents/codex/codex-app-server";
 import { beforeEach, describe, expect, it, vi } from "vitest";

@@ -10,10 +10,10 @@ import {
   TransportProofSchema,
   type Transition,
   TransitionSchema,
-} from "../authority";
+} from "../reducer/authority";
 import type { CommittedProviderEffectIntent } from "../effects";
 import { ProviderEffectBoundaryFailure, ProviderEffectExecutor } from "../effects";
-import type { SessionActorInput } from "../input";
+import type { SessionActorInput } from "../reducer/input";
 
 export type ResumeTransition = Extract<Transition, { readonly _tag: "Resume" }>;
 export type ResumeProof = ResumeTransition["proof"];

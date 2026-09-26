@@ -17,7 +17,7 @@ import {
 } from "../../src/egress/session";
 import { EVIDENCE_TOOL_MAX_PROTOCOL_BYTES } from "../../src/evidence/contracts";
 import { ScottyError } from "../../src/session/contracts";
-import type { SessionAuthority } from "../../src/session-actor/authority";
+import type { SessionAuthority } from "../../src/session-actor/reducer/authority";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import { ALLOWED_HOSTS, makeOutboundByHost } from "../../src/egress/worker";
 import {

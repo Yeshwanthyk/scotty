@@ -8,7 +8,7 @@ import {
   type ActivityProof,
   type BackupIdentity,
   type SessionAuthority,
-} from "../session-actor/authority";
+} from "../session-actor/reducer/authority";
 import { decodeSessionActorMetadata, type SessionActorMetadata } from "../session-actor/metadata";
 import type { MetadataStoragePort } from "../session-actor/metadata-store";
 import { publicView, sessionOperationFromActor } from "../session-actor/public-view";
