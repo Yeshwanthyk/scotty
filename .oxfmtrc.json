@@ -1,22 +1,12 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "ignorePatterns": [
-    ".artifacts/**",
     ".alchemy/**",
-    ".pi/**",
-    "**/.wrangler/**",
-    "coverage/**",
-    "dist/**",
+    "**/dist/**",
     "**/node_modules/**",
-    "**/*.tsbuildinfo",
     "vendor/**",
     "work/**",
-    "docs/board.json",
-    "ui/src/routeTree.gen.ts",
-    "worker/container/pi-packages/sources/scotty-browser-test/**",
-    "worker/public/vendor/**",
-    "*.tldraw",
-    "*.svg"
+    "ui/src/routeTree.gen.ts"
   ],
   "printWidth": 100
 }

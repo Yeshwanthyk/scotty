@@ -16,7 +16,7 @@ import { readCurrentPrincipal } from "../data/admin";
 import { Button } from "./Button";
 import { SessionRow, type SessionRowProps } from "./SessionRow";
 import { colors, spacing } from "../theme/tokens.stylex";
-import scottyMark from "../../../worker/public/brand/scotty-mark-128.png?url";
+import scottyMark from "../assets/brand/scotty-mark-128.png?url";
 
 export interface RepositoryGroup {
   readonly name: string;

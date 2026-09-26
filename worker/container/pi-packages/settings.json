@@ -1,6 +1,0 @@
-{
-  "packages": [
-    "/opt/scotty/pi-packages/sources/scotty-browser-test",
-    "/opt/scotty/pi-packages/sources/scotty-hatch"
-  ]
-}

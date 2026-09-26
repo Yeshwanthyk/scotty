@@ -3,8 +3,8 @@ import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-r
 import workspaceCss from "../workspace.css?url";
 import globalCss from "../global.css?url";
 import { colors } from "../theme/tokens.stylex";
-import scottyFavicon from "../../../worker/public/brand/scotty-favicon-32.png?url";
-import scottyMark from "../../../worker/public/brand/scotty-mark-128.png?url";
+import scottyFavicon from "../assets/brand/scotty-favicon-32.png?url";
+import scottyMark from "../assets/brand/scotty-mark-128.png?url";
 import { SessionCatalogProvider } from "../data/session-catalog";
 
 const styles = stylex.create({

@@ -5,9 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev --port 4173",
-    "build": "vite build && node ../scripts/check-ui-stylex-build.mjs",
+    "build": "vite build",
     "generate-routes": "tsr generate",
-    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

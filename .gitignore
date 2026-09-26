@@ -1,15 +1,8 @@
-/work/
 **/node_modules/
-/dist/
 **/dist/
 .wrangler/
 .alchemy/
 .dev.vars
 *.log
-/.pi/
-/.scotty-build/
-/worker/prebuilt/
-/worker/public/app/
 /ui/.tanstack/
-/vendor/
-.scotty-lab/
+/work/

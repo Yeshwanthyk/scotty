@@ -1,8 +1,0 @@
-{
-  "extends": "../tsconfig.json",
-  "compilerOptions": {
-    "lib": ["ESNext"],
-    "types": ["bun", "node"]
-  },
-  "include": ["scotty.ts", "src/**/*.ts", "src/**/*.d.mts", "*.d.ts"]
-}

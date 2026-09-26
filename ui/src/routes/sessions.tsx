@@ -7,7 +7,7 @@ import { Button } from "../components/Button";
 import { SessionRow, type SessionRowProps } from "../components/SessionRow";
 import { useSessionCatalog } from "../data/session-catalog";
 import { colors, spacing } from "../theme/tokens.stylex";
-import scottyHero from "../../../worker/public/brand/scotty-hero-16x9.png?url";
+import scottyHero from "../assets/brand/scotty-hero-16x9.png?url";
 
 export const RecentRepositoriesContext = createContext<ReadonlyArray<string>>([]);
 

@@ -11,7 +11,7 @@ export default defineConfig({
       build: {
         assetsDir: "assets",
         emptyOutDir: true,
-        outDir: "../worker/public/app",
+        outDir: "dist",
       },
     },
   },
