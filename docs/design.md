@@ -11,7 +11,7 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 
   Claude, Pi providers, custom providers and `gh` come later, with the same providers shape.
 
-- **One agent: Codex** (`codex app-server` over stdio).
+- **One agent: Codex** (`codex app-server` over stdio). The contracts are agent-neutral so Claude and pi can be added later as a new case, not a breaking change: the supervisor's `start` carries `agent: {kind: "codex", ...}`, agent output is `agent {n, kind, event}`, the supervisor runs Codex behind an agent-runner interface, and only `view.ts` interprets agent events, per `kind`.
 - **One runtime: a Cloudflare Container.** It runs the default image this repository ships, or an image the user supplies that meets the supervisor contract.
 - **The UI stays as it is.** It talks to the API contract below.
 
@@ -59,12 +59,12 @@ A handler never awaits an outside party while changing state. An outside action 
 
 | Event                                                                  | Fields                                                         |
 | ---------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `created`                                                              | `repo, baseBranch, title, prompt, image`                       |
+| `created`                                                              | `repo, baseBranch, title, prompt, image, agent`                |
 | `container.start` / `sup.hello`                                        | `gen` / `gen, image, version`                                  |
 | `workspace.ready`                                                      | `gen, branch, commit`                                          |
 | `prompt.requested` / `prompt.delivered`                                | `req, turn, text, images` / `req`                              |
 | `interrupt.requested`                                                  | `req, turn`                                                    |
-| `agent.event`                                                          | `gen, n, event` (Codex app-server notification)                |
+| `agent.event`                                                          | `gen, n, kind, event` (the agent's raw notification)           |
 | `turn.ended`                                                           | `turn, state`                                                  |
 | `pause.requested` / `wip.pushed` / `agent.saved` / `container.stopped` | `op` / `commit` / `r2Key, sha` / `gen`                         |
 | `resume.requested` / `agent.restored`                                  | `op` / `threadId`                                              |
@@ -96,8 +96,8 @@ Duplicate requests (the same `req`) do nothing. A prompt whose `turn` no longer 
 - When the DO wakes and the fold says a `gen` is running, it re-dials and resumes from the last acknowledged `n`. The supervisor keeps running and keeps unacknowledged messages across a socket drop.
 - The DO handles socket messages one at a time through a queue, never a `runPromise` per message.
 
-- **DO → supervisor:** `start {gen, repo, branch, codexConfig, restore?}`, `prompt {req, turn, text}`, `interrupt {req}`, `pause {op}`, `shutdown`.
-- **Supervisor → DO:** `hello`, `workspace_ready`, `delivered {req}`, `agent {n, event}`, `turn_end`, `wip_pushed`, `agent_saved`, `error`.
+- **DO → supervisor:** `start {gen, repo, branch, agent, restore?}`, `prompt {req, turn, text}`, `interrupt {req}`, `pause {op}`, `shutdown`.
+- **Supervisor → DO:** `hello`, `workspace_ready`, `delivered {req}`, `agent {n, kind, event}`, `turn_end`, `wip_pushed`, `agent_saved`, `error`.
 
 Every message carries `gen` and a sequence number `n`. On reconnect, each side resends everything after the last sequence number the other side acknowledged. If the container dies, the DO sees the socket close, appends an event, and the fold decides what happens next.
 
