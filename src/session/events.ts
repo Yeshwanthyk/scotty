@@ -1,6 +1,11 @@
 import { Schema } from "effect";
 
 const envelope = { seq: Schema.Natural, at: Schema.Finite, src: Schema.String };
+const fromSupervisor = {
+  ...envelope,
+  gen: Schema.Natural,
+  n: Schema.Natural.check(Schema.isGreaterThan(0)),
+};
 export const AgentKind = Schema.Literals(["codex"]);
 const ClientReq = Schema.String.check(Schema.isPattern(/^(?!initial:)/));
 const TimeoutOp = Schema.Union([
@@ -15,23 +20,30 @@ export const SessionEvent = Schema.Union([
     agentKind: AgentKind,
     repo: Schema.String,
     baseBranch: Schema.String,
+    branch: Schema.String,
     title: Schema.String,
     prompt: Schema.String,
     image: Schema.String,
   }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.start"), gen: Schema.Natural }),
   Schema.Struct({
-    ...envelope,
+    ...fromSupervisor,
     kind: Schema.Literal("sup.hello"),
-    gen: Schema.Natural,
     version: Schema.String,
+    boot: Schema.String,
   }),
   Schema.Struct({
-    ...envelope,
+    ...fromSupervisor,
     kind: Schema.Literal("workspace.ready"),
-    gen: Schema.Natural,
+    base: Schema.String,
     branch: Schema.String,
     commit: Schema.String,
+  }),
+  Schema.Struct({
+    ...fromSupervisor,
+    kind: Schema.Literal("agent.ready"),
+    agentKind: AgentKind,
+    session: Schema.String,
   }),
   Schema.Struct({
     ...envelope,
@@ -41,7 +53,11 @@ export const SessionEvent = Schema.Union([
     text: Schema.String,
     images: Schema.Array(Schema.String),
   }),
-  Schema.Struct({ ...envelope, kind: Schema.Literal("prompt.delivered"), req: Schema.String }),
+  Schema.Struct({
+    ...fromSupervisor,
+    kind: Schema.Literal("prompt.delivered"),
+    req: Schema.String,
+  }),
   Schema.Struct({
     ...envelope,
     kind: Schema.Literal("interrupt.requested"),
@@ -49,19 +65,24 @@ export const SessionEvent = Schema.Union([
     turn: Schema.String,
   }),
   Schema.Struct({
-    ...envelope,
+    ...fromSupervisor,
     kind: Schema.Literal("agent.event"),
     agentKind: AgentKind,
-    gen: Schema.Natural,
-    n: Schema.Natural,
     event: Schema.Json,
   }),
   Schema.Struct({
-    ...envelope,
+    ...fromSupervisor,
     kind: Schema.Literal("turn.ended"),
-    gen: Schema.Natural,
     turn: Schema.String,
+    codexTurn: Schema.String,
     state: Schema.String,
+  }),
+  Schema.Struct({
+    ...fromSupervisor,
+    kind: Schema.Literal("sup.error"),
+    code: Schema.String,
+    message: Schema.String,
+    req: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({
     ...envelope,

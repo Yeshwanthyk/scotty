@@ -1,73 +1,13 @@
+import { shouldAck } from "./ack.js";
 import type { SessionEvent } from "./events.js";
+import { deadlines, has, remove, addOnce, reqOp, isOp, requestFromOp } from "./deadlines.js";
+import type { Request, State } from "./state.js";
+export { initial } from "./state.js";
+export type { State, Request } from "./state.js";
+export { deadline, deadlines } from "./deadlines.js";
+export { invariants } from "./invariants.js";
+export type { Violation } from "./invariants.js";
 
-export const deadlines = {
-  container: 120_000,
-  workspace: 120_000,
-  dial: 30_000,
-  redial: 2_000,
-  prompt: 30_000,
-  interrupt: 30_000,
-} as const;
-
-type Op = "container" | "workspace" | "dial" | "redial" | `req:${string}`;
-const reqOp = (req: string): `req:${string}` => `req:${req}`;
-const isOp = (value: string): value is Op =>
-  ["container", "workspace", "dial", "redial"].includes(value) || value.startsWith("req:");
-const requestFromOp = (op: `req:${string}`): string => op.slice(4);
-type Pending = { readonly op: Op; readonly due: number };
-type RequestBase = {
-  readonly req: string;
-  readonly turn: string;
-  readonly status: "pending" | "delivered" | "stale" | "timed_out" | "ended";
-  readonly seq: number;
-};
-export type Request =
-  | (RequestBase & { readonly kind: "prompt"; readonly text: string })
-  | (RequestBase & { readonly kind: "interrupt" });
-type Turn = { readonly turn: string; readonly state: string };
-
-export type State = {
-  readonly phase: "provisioning" | "running" | "failed";
-  readonly lastSeq: number;
-  readonly gen: number | undefined;
-  readonly startSeq: number;
-  readonly hello: boolean;
-  readonly connected: boolean;
-  readonly ready: boolean;
-  readonly lastN: number;
-  readonly lastHelloSeq: number;
-  readonly lastRedialSeq: number;
-  readonly currentTurn: string;
-  readonly turns: readonly Turn[];
-  readonly requests: readonly Request[];
-  readonly pending: readonly Pending[];
-  readonly created: Extract<SessionEvent, { kind: "created" }> | undefined;
-};
-
-export const initial: State = {
-  phase: "provisioning",
-  lastSeq: 0,
-  gen: undefined,
-  startSeq: 0,
-  hello: false,
-  connected: false,
-  ready: false,
-  lastN: 0,
-  lastHelloSeq: 0,
-  lastRedialSeq: 0,
-  currentTurn: "0",
-  turns: [],
-  requests: [],
-  pending: [],
-  created: undefined,
-};
-
-const has = (pending: readonly Pending[], op: Op): boolean =>
-  pending.some((item) => item.op === op);
-const remove = (pending: readonly Pending[], op: Op): readonly Pending[] =>
-  pending.filter((item) => item.op !== op);
-const addOnce = (pending: readonly Pending[], op: Op, due: number): readonly Pending[] =>
-  has(pending, op) ? pending : [...pending, { op, due }];
 const settle = (
   requests: readonly Request[],
   req: string,
@@ -86,6 +26,15 @@ const failAll = (state: State): State => ({
   ),
 });
 
+const accepts = (state: State, event: { readonly gen: number; readonly n: number }): boolean =>
+  state.gen === event.gen && state.connected && state.phase !== "failed" && event.n > state.lastN;
+const advance = (state: State, n: number, forceAck = false): State => ({
+  ...state,
+  lastN: n,
+  lastAckN: shouldAck(state, n, forceAck) ? n : state.lastAckN,
+  lastAckSeq: shouldAck(state, n, forceAck) ? state.lastSeq : state.lastAckSeq,
+});
+
 export function fold(state: State, event: SessionEvent): State {
   if (event.seq <= state.lastSeq) return state;
   const next = { ...state, lastSeq: event.seq };
@@ -102,17 +51,18 @@ export function fold(state: State, event: SessionEvent): State {
         pending: addOnce(state.pending, "container", event.at + deadlines.container),
       };
     case "sup.hello":
-      if (
-        event.gen !== state.gen ||
-        state.phase === "failed" ||
-        state.connected ||
-        (!has(state.pending, "container") && !has(state.pending, "dial"))
-      )
+      if (event.gen !== state.gen || state.phase === "failed") return next;
+      if (state.boot !== undefined && state.boot !== event.boot)
+        return failAll({ ...next, failure: { code: "supervisor_restarted", retryable: true } });
+      if (state.connected || (!has(state.pending, "container") && !has(state.pending, "dial")))
         return next;
       return {
-        ...next,
+        ...advance(next, Math.max(state.lastN, event.n)),
+        lastAckN: state.lastAckN,
+        lastAckSeq: state.lastAckSeq,
         hello: true,
         connected: true,
+        boot: event.boot,
         lastHelloSeq: event.seq,
         pending: state.ready
           ? remove(remove(state.pending, "dial"), "redial")
@@ -123,18 +73,14 @@ export function fold(state: State, event: SessionEvent): State {
             ),
       };
     case "workspace.ready": {
-      if (
-        event.gen !== state.gen ||
-        !state.hello ||
-        !state.connected ||
-        state.phase === "failed" ||
-        state.ready ||
-        state.created === undefined
-      )
-        return next;
+      if (!accepts(state, event)) return next;
+      const accepted = state.ready
+        ? advance(next, event.n)
+        : { ...advance(next, event.n), lastAckN: state.lastAckN, lastAckSeq: state.lastAckSeq };
+      if (state.ready || state.created === undefined) return accepted;
       const req = `initial:${event.gen}`;
       return {
-        ...next,
+        ...accepted,
         ready: true,
         phase: "running",
         requests: [
@@ -186,24 +132,51 @@ export function fold(state: State, event: SessionEvent): State {
       };
     }
     case "prompt.delivered":
+      if (!accepts(state, event)) return next;
       if (!state.requests.some((item) => item.req === event.req && item.status === "pending"))
-        return next;
+        return advance(next, event.n);
       return {
-        ...next,
+        ...advance(next, event.n),
         requests: settle(state.requests, event.req, "delivered"),
         pending: remove(state.pending, reqOp(event.req)),
       };
-    case "agent.event":
-      return event.gen === state.gen && state.connected && event.n > state.lastN
-        ? { ...next, lastN: event.n }
+    case "agent.ready":
+      return accepts(state, event)
+        ? { ...advance(next, event.n), agentSession: event.session }
         : next;
-    case "turn.ended":
-      if (event.gen !== state.gen || state.phase !== "running" || event.turn !== state.currentTurn)
-        return next;
+    case "agent.event":
+      return accepts(state, event) ? advance(next, event.n) : next;
+    case "sup.error":
+      if (!accepts(state, event)) return next;
+      if (event.req === undefined && event.code === "exit")
+        return failAll({
+          ...advance(next, event.n),
+          lastAckN: state.lastAckN,
+          lastAckSeq: state.lastAckSeq,
+          failure: { code: "agent_exited", retryable: true },
+        });
+      if (
+        event.req === undefined ||
+        event.code === "timeout" ||
+        !state.requests.some((item) => item.req === event.req && item.status === "pending")
+      )
+        return advance(next, event.n);
       return {
-        ...next,
+        ...advance(next, event.n),
+        requests: settle(state.requests, event.req, "failed"),
+        pending: remove(state.pending, reqOp(event.req)),
+      };
+    case "turn.ended":
+      if (!accepts(state, event)) return next;
+      const ended = advance(next, event.n, true);
+      if (state.phase !== "running" || event.turn !== state.currentTurn) return ended;
+      return {
+        ...ended,
         currentTurn: String(state.turns.length + 1),
-        turns: [...state.turns, { turn: event.turn, state: event.state }],
+        turns: [
+          ...state.turns,
+          { turn: event.turn, codexTurn: event.codexTurn, state: event.state },
+        ],
         requests: state.requests.map((item) =>
           item.turn === event.turn && item.status === "pending"
             ? { ...item, status: "ended" }
@@ -254,7 +227,7 @@ export function fold(state: State, event: SessionEvent): State {
       )
         return next;
       if (event.op === "container" || event.op === "workspace" || event.op === "dial")
-        return failAll(next);
+        return failAll({ ...next, failure: { code: `${event.op}_timeout`, retryable: true } });
       if (event.op === "redial")
         return { ...next, lastRedialSeq: event.seq, pending: remove(state.pending, "redial") };
       return {
@@ -263,90 +236,8 @@ export function fold(state: State, event: SessionEvent): State {
         pending: remove(state.pending, event.op),
       };
     case "failed":
-      return failAll(next);
+      return failAll({ ...next, failure: { code: event.code, retryable: event.retryable } });
     case "invariant.violated":
       return next;
   }
-}
-
-export function deadline(state: State): number | undefined {
-  return state.pending.reduce<number | undefined>(
-    (earliest, item) => (earliest === undefined ? item.due : Math.min(earliest, item.due)),
-    undefined,
-  );
-}
-
-export type Violation = { readonly code: string; readonly detail: string };
-export function invariants(state: State): Violation[] {
-  const violations: Violation[] = [];
-  const check = (ok: boolean, code: string, detail: string): void => {
-    if (!ok) violations.push({ code, detail });
-  };
-  check(state.lastSeq >= 0, "sequence", "negative event sequence");
-  check(state.gen === undefined || state.gen >= 0, "generation", "negative generation");
-  check(state.lastN >= 0, "ack", "negative supervisor acknowledgement");
-  check(
-    state.currentTurn === String(state.turns.length) &&
-      state.turns.every((turn, i) => turn.turn === String(i)),
-    "turns",
-    "turns must be contiguous",
-  );
-  check(!state.connected || state.hello, "connection", "connected without hello");
-  check(!state.ready || state.hello, "workspace", "workspace ready without hello");
-  check(state.phase !== "running" || state.ready, "running", "running without workspace");
-  check(
-    state.phase !== "failed" || (state.pending.length === 0 && !state.connected),
-    "failed",
-    "failed with pending work or connection",
-  );
-  check(
-    new Set(state.requests.map((item) => item.req)).size === state.requests.length,
-    "requests",
-    "duplicate request id",
-  );
-  check(
-    new Set(state.pending.map((item) => item.op)).size === state.pending.length &&
-      state.pending.every((item) => Number.isFinite(item.due)),
-    "deadlines",
-    "duplicate or invalid deadline",
-  );
-  check(
-    state.requests.every(
-      (item) => (item.status === "pending") === has(state.pending, reqOp(item.req)),
-    ),
-    "pending",
-    "request and deadline disagree",
-  );
-  check(
-    state.pending.every(
-      (item) =>
-        !item.op.startsWith("req:") ||
-        state.requests.some((req) => reqOp(req.req) === item.op && req.status === "pending"),
-    ),
-    "operations",
-    "orphan pending operation",
-  );
-  check(
-    has(state.pending, "container") ===
-      (state.gen !== undefined && !state.hello && state.phase !== "failed"),
-    "container",
-    "container deadline does not match startup",
-  );
-  check(
-    has(state.pending, "workspace") === (state.hello && !state.ready && state.phase !== "failed"),
-    "workspaceDeadline",
-    "workspace deadline does not match readiness",
-  );
-  check(
-    has(state.pending, "dial") === (state.hello && !state.connected && state.phase !== "failed"),
-    "dial",
-    "dial deadline does not match connection",
-  );
-  check(
-    !has(state.pending, "redial") ||
-      (state.gen !== undefined && !state.connected && state.phase !== "failed"),
-    "redial",
-    "redial without disconnected generation",
-  );
-  return violations;
 }

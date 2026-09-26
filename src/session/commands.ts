@@ -1,5 +1,6 @@
 import type { AgentKind, SessionEvent } from "./events.js";
 import type { State, Request } from "./fold.js";
+import { ackRecorded } from "./ack.js";
 
 type Resend =
   | { readonly req: string; readonly kind: "prompt"; readonly turn: string; readonly text: string }
@@ -17,17 +18,24 @@ export type Command =
       readonly kind: "start";
       readonly gen: number;
       readonly repo: string;
+      readonly base: string;
       readonly branch: string;
       readonly agentKind: typeof AgentKind.Type;
     }
   | {
-      readonly kind: "ack";
+      readonly kind: "resend";
       readonly gen: number;
-      readonly after: number;
-      readonly resend: readonly Resend[];
+      readonly requests: readonly Resend[];
     }
+  | { readonly kind: "ack"; readonly gen: number; readonly ack: number }
   | { readonly kind: "prompt"; readonly req: string; readonly turn: string; readonly text: string }
   | { readonly kind: "interrupt"; readonly req: string };
+
+const ackFor = (
+  state: State,
+  output: { readonly gen: number; readonly n: number },
+): Command | undefined =>
+  ackRecorded(state, output) ? { kind: "ack", gen: output.gen, ack: output.n } : undefined;
 
 export function command(state: State, event: SessionEvent): Command | undefined {
   if (state.lastSeq !== event.seq || state.phase === "failed") return undefined;
@@ -54,10 +62,9 @@ export function command(state: State, event: SessionEvent): Command | undefined 
         return undefined;
       if (state.ready)
         return {
-          kind: "ack",
+          kind: "resend",
           gen: event.gen,
-          after: state.lastN,
-          resend: state.requests.filter((item) => item.status === "pending").map(toResend),
+          requests: state.requests.filter((item) => item.status === "pending").map(toResend),
         };
       return state.created === undefined
         ? undefined
@@ -65,7 +72,8 @@ export function command(state: State, event: SessionEvent): Command | undefined 
             kind: "start",
             gen: event.gen,
             repo: state.created.repo,
-            branch: state.created.baseBranch,
+            base: state.created.baseBranch,
+            branch: state.created.branch,
             agentKind: state.created.agentKind,
           };
     case "workspace.ready": {
@@ -77,7 +85,7 @@ export function command(state: State, event: SessionEvent): Command | undefined 
       );
       return state.gen === event.gen && request?.kind === "prompt"
         ? { kind: "prompt", req: request.req, turn: request.turn, text: request.text }
-        : undefined;
+        : ackFor(state, event);
     }
     case "prompt.requested":
       return state.connected &&
@@ -93,6 +101,12 @@ export function command(state: State, event: SessionEvent): Command | undefined 
         )
         ? { kind: "interrupt", req: event.req }
         : undefined;
+    case "agent.ready":
+    case "agent.event":
+    case "prompt.delivered":
+    case "sup.error":
+    case "turn.ended":
+      return ackFor(state, event);
     default:
       return undefined;
   }

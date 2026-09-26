@@ -23,7 +23,11 @@ src/
   worker.ts           Effect HttpRouter: /api/*, /p/* credential swap, preview host routing, UI assets
   session/
     events.ts         event Schemas (the log format)
-    fold.ts           pure fold(state, event) and invariants; the only unit-tested module
+    fold.ts           pure fold(state, event); the only transition function
+    state.ts          State shape and initial state
+    deadlines.ts      deadline table and the one derived alarm
+    invariants.ts     invariants(state), checked after every append
+    ack.ts            pure ack threshold and recorded-ack checks
     commands.ts       pure command(state, event): the at-most-one command the DO sends after an append
     object.ts         Session DO: append → fold → maybe send a command; one derived alarm
     view.ts           state → UI API shapes (sessions, conversation, changes)
@@ -58,23 +62,25 @@ State is `fold(events)`. Every handler does the same three things:
 
 A handler never awaits an outside party while changing state. An outside action is recorded as an intent event, and its result arrives as a later event. An unknown result leaves the intent pending until an outcome or a timeout event settles it; it is never reported as success.
 
-| Event                                                                  | Fields                                                                                                             |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `created`                                                              | `repo, baseBranch, title, prompt, image, agentKind`                                                                |
-| `container.start` / `sup.hello`                                        | `gen` / `gen, version`                                                                                             |
-| `workspace.ready`                                                      | `gen, branch, commit`                                                                                              |
-| `prompt.requested` / `prompt.delivered`                                | `req, turn, text, images` / `req` (settles a prompt or an interrupt; a client `req` never starts with `initial:`)  |
-| `interrupt.requested`                                                  | `req, turn`                                                                                                        |
-| `agent.event`                                                          | `gen, n, agentKind, event` (the agent's raw notification, stored as received)                                      |
-| `turn.ended`                                                           | `gen, turn, state`                                                                                                 |
-| `pause.requested` / `wip.pushed` / `agent.saved` / `container.stopped` | `op` / `commit` / `r2Key, sha` / `gen`                                                                             |
-| `resume.requested` / `agent.restored`                                  | `op` / `threadId`                                                                                                  |
-| `failed`                                                               | `phase, code, retryable`                                                                                           |
-| `vaporize.requested` / `gone`                                          | `op`                                                                                                               |
-| `socket.closed` / `dial.failed`                                        | `gen` (the DO's supervisor socket closed / a dial attempt failed)                                                  |
-| `sup.redial`                                                           | `gen` (the DO woke with a live `gen` and no socket; marks it disconnected and restarts or dials it)                |
-| `invariant.violated`                                                   | `code, detail`                                                                                                     |
-| `timeout`                                                              | `op`: `container`, `workspace`, `dial`, `redial` or `req:<req>` (from the one alarm the DO derives from its state) |
+| Event                                                                  | Fields                                                                                                                                                          |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `created`                                                              | `repo, baseBranch, branch, title, prompt, image, agentKind` (`branch` is the work branch `scotty/<session id>`, chosen at create time)                          |
+| `container.start` / `sup.hello`                                        | `gen` / `gen, n, version, boot` (`boot` identifies one supervisor process)                                                                                      |
+| `workspace.ready`                                                      | `gen, n, base, branch, commit`                                                                                                                                  |
+| `agent.ready`                                                          | `gen, n, agentKind, session` (the agent's session id)                                                                                                           |
+| `prompt.requested` / `prompt.delivered`                                | `req, turn, text, images` / `gen, n, req` (delivery settles a prompt or interrupt; client `req` cannot start with `initial:`)                                   |
+| `interrupt.requested`                                                  | `req, turn`                                                                                                                                                     |
+| `agent.event`                                                          | `gen, n, agentKind, event` (the raw agent notification; the fold does not interpret it)                                                                         |
+| `turn.ended`                                                           | `gen, n, turn, codexTurn, state` (`turn` is the DO turn; `codexTurn` is recorded, not matched)                                                                  |
+| `sup.error`                                                            | `gen, n, code, message, req?` (a pending `req` fails except on `timeout`; `stale` fails it too; req-less `exit` fails the session as `agent_exited`, retryable) |
+| `failed`                                                               | `phase, code, retryable`                                                                                                                                        |
+| `socket.closed` / `dial.failed`                                        | `gen`                                                                                                                                                           |
+| `sup.redial`                                                           | `gen` (on wake, start if no hello; otherwise dial)                                                                                                              |
+| `invariant.violated`                                                   | `code, detail`                                                                                                                                                  |
+| `timeout`                                                              | `op`: `container`, `workspace`, `dial`, `redial`, or `req:<req>`; lifecycle expiry fails with `<op>_timeout`, retryable                                         |
+| `pause.requested` / `wip.pushed` / `agent.saved` / `container.stopped` | `op` / `commit` / `r2Key, sha` / `gen` (later)                                                                                                                  |
+| `resume.requested` / `agent.restored`                                  | `op` / `threadId` (later)                                                                                                                                       |
+| `vaporize.requested` / `gone`                                          | `op` (later)                                                                                                                                                    |
 
 Fold states, and the status the UI shows for each:
 
@@ -96,23 +102,16 @@ Duplicate requests (the same `req`) do nothing. A prompt whose `turn` no longer 
 `scotty-sup` is the container's entrypoint. It listens on port 7000. The Session DO connects to it with `container.getTcpPort(7000)` and upgrades to a WebSocket. That traffic never leaves Cloudflare, so the supervisor needs no auth token and no public route.
 
 - Don't use `Cloudflare.Containers.layer` in the Session DO. It starts the container on every DO construction (`vendor/alchemy/packages/alchemy/src/Cloudflare/Containers/StartContainer.ts:398-402`), so reading a paused session would boot it. Use the container handle's `start()`, `destroy()` and `running` (`Container.ts:137-147`) from the fold's commands. `start()` returns before the container boots (`ContainerPlatform.ts:213`), so the dial retries until `hello` arrives or the fold's deadline fires.
-- Dialing is an outside action: the DO appends `container.start {gen}`, then dials outside the handler. `hello {gen}` is the result; a failed dial or the deadline is a later event.
-- When the DO wakes and the fold says a `gen` is running, it re-dials and resumes from the last acknowledged `n`. The supervisor keeps running and keeps unacknowledged messages across a socket drop.
-- The DO handles socket messages one at a time through a queue, never a `runPromise` per message.
-- The `container.start` command means: call `start()` if the container is not `running`, then dial. The fold's deadline table paces everything, and the DO keeps no other timer:
-  - `container` bounds boot until `hello`.
-  - `workspace` bounds the time from `hello` to `workspace_ready`.
-  - `dial` is set once when a live socket is lost. A failed dial never extends it; if it expires, the session fails.
-  - `redial` (2 s) paces retries. When it expires, the DO dials again.
-- On wake, `sup.redial` restarts the container if `hello` has not arrived; otherwise it dials.
-- When `hello` arrives before the workspace is ready, the DO sends `start` again, and the supervisor treats a repeated `start` for the same `gen` as a no-op. When `hello` arrives after the workspace is ready, the DO sends `ack {after: last accepted n}` and resends every request that is still pending. The supervisor treats a repeated `req` as a no-op.
-- The initial prompt is the pending request `initial:<gen>` from `workspace.ready` until `delivered` or its timeout. A request that times out stays `timed_out`; a late `delivered` does not change it. After `failed` the DO sends nothing.
-- The DO passes socket messages and the socket close through one queue, so notifications that arrived before a close are appended first. The fold accepts a notification only when its `gen` matches, the socket is connected, and `n` is above the last accepted `n`.
+- Dialing is an outside action: the DO appends `container.start {gen}`, then starts and dials outside the handler. `start()` returns before boot; the fold's `container` deadline bounds boot to `hello`, `workspace` bounds hello to workspace readiness, and `dial` bounds a lost socket. A failed dial never extends that deadline. The single alarm also drives `redial` retries every 2 seconds; the DO keeps no other timer.
+- On wake, `sup.redial` starts the container if hello has not arrived (start if it is not running, then dial); otherwise it dials `ws://container/?gen=<gen>&after=<lastN>`. `lastN` is the highest accepted supervisor output number, regardless of output type. The supervisor replays stored outputs after that number without waiting for an ack message.
+- `hello {gen, n:1, version, boot}` is the reconnect handshake. It is accepted while disconnected with a pending container or dial operation, even if `n:1` is below `lastN`; it never decreases `lastN`. A changed boot for the same gen fails the session with `supervisor_restarted`, retryable. A repeated hello while connected does nothing. A new gen after failure is later work.
+- After hello, the DO sends `start {repo, base, branch, agent}` if the workspace is not ready, or re-sends pending prompts and interrupts in log order if it is. `start` is idempotent per gen; the supervisor deduplicates requests by `req`. A prompt for a DO turn the supervisor has already ended receives `error {req, code:"stale"}` and becomes failed. The initial prompt `initial:<gen>` remains pending from `workspace.ready` until delivery, a non-timeout error, or its own timeout. A settled request never changes again.
+- All other supervisor outputs are accepted only if the gen matches, the socket is connected and `n > lastN`. Accepting one advances `lastN` even if it otherwise changes nothing. An error with `req` and code `timeout` leaves the request pending; a non-timeout code fails it. A req-less `exit` means the agent died and fails the session as `agent_exited`, retryable; other req-less errors are informational. The DO passes socket messages and close through one queue, so messages that arrived first are appended first.
+- The DO sends `ack {ack:lastN}` on an accepted turn end and whenever an accepted output crosses 50 past the last recorded ack. One append sends at most one command: hello sends start/resend, and the first workspace-ready sends the initial prompt instead of acking. The next accepted output that still crosses the threshold acks. Repeated or rejected outputs do not ack. `turn_end.turn` is the DO turn; `codexTurn` is informational.
+- **DO → supervisor:** `start {repo, base, branch, agent}`, `prompt {req, turn, text}`, `interrupt {req}`, `ack {ack}`. Later: `pause {op}` and `shutdown`.
+- **Supervisor → DO:** `hello {version, boot}`, `workspace_ready {base, branch, commit}`, `agent_ready {kind, session}`, `delivered {req}`, `agent {kind, event}`, `turn_end {turn, codexTurn, state}`, `error {code, message, req?}`. Every output also has `{gen, n}`. Later: `wip_pushed` and `agent_saved`.
 
-- **DO → supervisor:** `start {gen, repo, branch, agent, restore?}`, `prompt {req, turn, text}`, `interrupt {req}`, `pause {op}`, `shutdown`.
-- **Supervisor → DO:** `hello`, `workspace_ready`, `delivered {req}`, `agent {n, kind, event}`, `turn_end`, `wip_pushed`, `agent_saved`, `error`.
-
-Every message carries `gen` and a sequence number `n`. On reconnect, each side resends everything after the last sequence number the other side acknowledged. If the container dies, the DO sees the socket close, appends an event, and the fold decides what happens next.
+The fold, its invariants, and saved-log replays are the only unit-tested session behavior. Supervisor transport, request deduplication, frame limits, workspace cloning and Codex integration are proved against a deployment, not mocked.
 
 ## Pause and resume
 

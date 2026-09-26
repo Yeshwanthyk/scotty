@@ -1,0 +1,9 @@
+{"seq":1,"at":1000,"src":"api","kind":"created","repo":"https://github.com/example/public.git","baseBranch":"main","branch":"scotty/session-2","title":"Timer recovery","prompt":"Summarize the README","image":"scotty-v1","agentKind":"codex"}
+{"seq":2,"at":2000,"src":"do","kind":"container.start","gen":1}
+{"seq":3,"at":3000,"src":"sup","kind":"sup.hello","gen":1,"n":1,"boot":"boot-timer","version":"step-2"}
+{"seq":4,"at":4000,"src":"sup","kind":"workspace.ready","gen":1,"n":2,"base":"main","branch":"scotty/session-2","commit":"a1b2c3"}
+{"seq":5,"at":5000,"src":"sup","kind":"prompt.delivered","gen":1,"n":3,"req":"initial:1"}
+{"seq":6,"at":6000,"src":"do","kind":"socket.closed","gen":1}
+{"seq":7,"at":8000,"src":"alarm","kind":"timeout","op":"redial"}
+{"seq":8,"at":8500,"src":"sup","kind":"sup.hello","gen":1,"n":1,"boot":"boot-timer","version":"step-2"}
+{"seq":9,"at":9000,"src":"sup","kind":"agent.ready","gen":1,"n":4,"agentKind":"codex","session":"thread-2"}
