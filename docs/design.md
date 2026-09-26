@@ -91,6 +91,11 @@ Duplicate requests (the same `req`) do nothing. A prompt whose `turn` no longer 
 
 `scotty-sup` is the container's entrypoint. It listens on port 7000. The Session DO connects to it with `container.getTcpPort(7000)` and upgrades to a WebSocket. That traffic never leaves Cloudflare, so the supervisor needs no auth token and no public route.
 
+- Don't use `Cloudflare.Containers.layer` in the Session DO. It starts the container on every DO construction (`vendor/alchemy/packages/alchemy/src/Cloudflare/Containers/StartContainer.ts:398-402`), so reading a paused session would boot it. Use the container handle's `start()`, `destroy()` and `running` (`Container.ts:137-147`) from the fold's commands. `start()` returns before the container boots (`ContainerPlatform.ts:213`), so the dial retries until `hello` arrives or the fold's deadline fires.
+- Dialing is an outside action: the DO appends `container.start {gen}`, then dials outside the handler. `hello {gen}` is the result; a failed dial or the deadline is a later event.
+- When the DO wakes and the fold says a `gen` is running, it re-dials and resumes from the last acknowledged `n`. The supervisor keeps running and keeps unacknowledged messages across a socket drop.
+- The DO handles socket messages one at a time through a queue, never a `runPromise` per message.
+
 - **DO → supervisor:** `start {gen, repo, branch, codexConfig, restore?}`, `prompt {req, turn, text}`, `interrupt {req}`, `pause {op}`, `shutdown`.
 - **Supervisor → DO:** `hello`, `workspace_ready`, `delivered {req}`, `agent {n, event}`, `turn_end`, `wip_pushed`, `agent_saved`, `error`.
 
@@ -175,7 +180,7 @@ Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Ses
 ## Open questions to settle early
 
 - Can the Worker run the ChatGPT device-code sign-in itself (Codex's `login --device-auth` flow), and what does the refresh endpoint look like?
-- Does `getTcpPort(...).fetch` support a WebSocket upgrade from the DO to the container on Alchemy beta.79? If not, the supervisor dials in to the Worker at `/sup/<id>` with a per-session secret, and Access bypasses that one path.
+- ~~Does `getTcpPort(...).fetch` support a WebSocket upgrade from the DO to the container on Alchemy beta.79?~~ **Answered by spike 1b (deployed, 2026-09-26): yes.** The DO sends `port.fetch` with `Upgrade: websocket`, takes `webSocket` from the 101 response and calls `accept()`. Pings and ticks flowed both ways for 600 s with no reconnect, 43–71 ms echo latency. The `/sup/<id>` fallback is not needed. Not covered: a DO restart or redeploy closes the socket and nothing reconnects it; cold start was not measured; an open outbound socket keeps the DO resident (no hibernation).
 - ~~Does Codex send anything to `chatgpt.com` outside `base_url`?~~ **Answered by spike 1c (Codex 0.157.0, run locally, 2026-09-26):**
   - With the provider config under "Credentials", a full turn with tool use (write `hello.txt`, run `cat hello.txt`) sent all 3 model requests as `POST <base_url>/responses` through the swap proxy, with only a sentinel in Codex's environment. No login or refresh call was needed.
   - With plugins enabled (the default), Codex also opened one direct `chatgpt.com:443` connection and two `github.com:443` connections: the curated-plugin startup sync (`git ls-remote`/`fetch` of `openai/plugins`, and most likely `chatgpt.com/backend-api/plugins/export/curated`). With `[features] plugins = false`, a fresh run made no connection outside `base_url`.
