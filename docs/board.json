@@ -135,6 +135,10 @@
         {
           "at": "2026-09-26",
           "note": "PR #278 open (base m-01/lifecycle-model): typed Failed.recovery Resume|Create|Terminal, Create retry from Failed with CleanupObserved, failedHasExit in safety, full local gate green, 17/18 mutations killed (concurrent-retry lock untested). Vaporized c31ef4f2a9e6, 3d89357c1221. Next: deployed test blocked without a test-only hook; reset session actors before deploy (metadata shape change); merge after #277."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Added concurrent-retry lock test (mutation-killed); 18/18 mutations now killed. Deployed proof split to R-03b. PR #278 awaiting review after #277."
         }
       ]
     },
@@ -831,6 +835,26 @@
         {
           "at": "2026-09-25",
           "note": "Added."
+        }
+      ]
+    },
+    {
+      "id": "R-03b",
+      "title": "Deployed proof for Failed recovery: force clone and sleep failures on a stage without a production test hook",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "R-03"
+      ],
+      "body": "",
+      "log": [
+        {
+          "at": "2026-09-26",
+          "note": "Added."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "From R-03 (#278): harness proves clone failure → Failed(Create) → create → Warm and sleep failure → Failed(Resume) → resume → Warm, but no deployed test. Needs a design call: how to force a clone failure (e.g. a repo that fails clone after verification) and a sleep failure on a deployed stage without a test-only production hook."
         }
       ]
     }
