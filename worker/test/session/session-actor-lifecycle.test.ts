@@ -1,6 +1,6 @@
 import { runtimeCliPin } from "../runtime-cli/fixtures";
 import { scottyBaseAgentInstructions } from "../../../protocol/agents/agent-instructions";
-import { assert, describe, expect, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import { Effect, Option, Predicate, Result, Schema } from "effect";
 import { vi } from "vitest";
 import { TestClock } from "effect/testing";
@@ -806,9 +806,12 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     );
 
     const failed = await createSessionHarness({ failureStage: "hardCapDrainSchedule" });
-    await expect(
-      failed.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
-    ).rejects.toBeDefined();
+    assert.isTrue(
+      await failed.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY).then(
+        () => false,
+        () => true,
+      ),
+    );
     assert.strictEqual(failed.read(sessionHarnessKeys.actorAuthority), undefined);
     assert.deepStrictEqual(
       failed.schedules
@@ -2148,7 +2151,12 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
       assert.strictEqual((await response.arrayBuffer()).byteLength, expectedBytes);
     }
     const oversized = await fetchAuthorizedHatchRequest(harness, route);
-    await expect(oversized.arrayBuffer()).rejects.toMatchObject({ name: "QuotaExceededError" });
+    const oversizedError = await oversized.arrayBuffer().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    assert.instanceOf(oversizedError, DOMException);
+    assert.strictEqual(oversizedError.name, "QuotaExceededError");
 
     const hatch = harness.read<HatchState>(sessionHarnessKeys.hatch)?.primary;
     assert.strictEqual(hatch?.requests.length, 0);
@@ -2813,7 +2821,12 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
 
     harness.injectFailure("actorCommitAfterAbsence");
     harness.injectFailure("actorAlarmSchedule");
-    await expect(harness.sandbox.vaporizeScottySession()).rejects.toBeDefined();
+    assert.isTrue(
+      await harness.sandbox.vaporizeScottySession().then(
+        () => false,
+        () => true,
+      ),
+    );
 
     const retained = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
     assert.ok(
