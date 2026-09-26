@@ -34,12 +34,12 @@ Scotty runs Codex sessions in Cloudflare Containers, driven from a phone-friendl
 
 ## Git
 
-- Work on `rebuild/<step>` branched from `rebuild/core`. Don't commit to `main`.
+- Work and commit directly on `rebuild/core`; no branch per step. Commit each finished piece of work. Don't commit to `main`.
 - `vendor/` is read-only. `work/` is scratch space that is never committed; spikes go in `work/spikes/`.
 
 ## Checks
 
-Run these before every PR. Report what ran and what didn't.
+Run these before every commit. Report what ran and what didn't.
 
 ```sh
 npm run fmt

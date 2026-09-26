@@ -11,15 +11,15 @@ This is the work queue for the rebuild. Any session should be able to pick up th
 1. Read `AGENTS.md`, then `docs/design.md`, then this file.
 2. Run `git submodule update --init vendor/effect vendor/alchemy` if `vendor/` is empty. It is read-only reference source.
 3. In **Status**, pick the first step that is `todo` and whose dependencies are all `done`. If a step is `in progress`, read its notes and continue it rather than starting another.
-4. Set that step to `in progress` in **Status**, with the branch name. Work on the branch `rebuild/<step-id>`, created from `rebuild/core`.
+4. Set that step to `in progress` in **Status**. Work directly on `rebuild/core`; don't create a branch per step. Commit each finished piece of work as you go, with the step id in the message (for example `Step 3: ...`).
 5. Do only what the step's **In scope** list says. Anything else you find goes on a new line under **Later**; don't build it now.
-6. The step counts as done only when every **Done when** item has passed. Record the commands you ran and their results in **Status** notes and in the PR.
-7. Before opening the PR, check the diff against **Review rules**.
-8. If a design decision changes, update `docs/design.md` in the same PR. If a spike changes the plan, update the affected steps here.
+6. The step counts as done only when every **Done when** item has passed. Record the commands you ran and their results in **Status** notes and in the commit message.
+7. Before committing, check the diff against **Review rules**.
+8. If a design decision changes, update `docs/design.md` in the same commit. If a spike changes the plan, update the affected steps here.
 
 ## Status
 
-Update this table in every PR that moves a step.
+Update this table in every commit that moves a step.
 
 | Step | Title                                    | Depends on | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ---- | ---------------------------------------- | ---------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -69,7 +69,7 @@ The old reliability board (`docs/reliability.md:75-87` @old) counted 229 fix com
 
 ## Review rules
 
-Check every PR against these.
+Check every commit against these.
 
 - **R1.** In `src/session/object.ts` and `src/creds/object.ts`, nothing awaits or `yield*`s an outside call (container, R2, fetch, another DO) between reading state and appending the event.
 - **R2.** Every outside action has an intent event, a result event, and a deadline in the fold.
@@ -78,7 +78,7 @@ Check every PR against these.
 - **R5.** Stage, account and installation names come from explicit input only.
 - **R6.** No compatibility code for @old formats.
 - **R7.** A test is either a fold or replay unit test or an e2e test against a deployment. Reject mocks and tests that match source text.
-- **R8.** The step's e2e ran on a deployment, and the PR records the command and result.
+- **R8.** The step's e2e ran on a deployment, and the commit message records the command and result.
 
 ## Step 0: repository setup
 
@@ -90,7 +90,7 @@ Check every PR against these.
     - `alchemy`: `2.0.0-beta.79`.
     - `vitest` `5.x` (required by `@effect/vitest`), `oxfmt` `0.70.0`, `oxlint` `1.85.0`, `typescript` `7.0.2`.
   - Add `oxlint` with only built-in rules: `no-explicit-any`, no non-null assertions, no unused code. No custom plugin.
-  - To move to a newer Effect or Alchemy later, bump the npm version and the `vendor/` submodule to the same release commit in one PR, then rerun every check and e2e.
+  - To move to a newer Effect or Alchemy later, bump the npm version and the `vendor/` submodule to the same release commit in one commit, then rerun every check and e2e.
   - Create the empty folders `src/session`, `src/creds`, `container/supervisor`, `cli`, `e2e`, `e2e/logs`.
   - Make `npm run typecheck` cover `src/`, `container/`, `cli/`, `e2e/` and `protocol/` as well as `ui/`.
   - Add the scripts `test`, `e2e` and `deploy` as stubs that exit with a clear "not yet" message.
