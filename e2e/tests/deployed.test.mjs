@@ -83,6 +83,10 @@ const canaryRequest = async (pathname, init) => {
   return response;
 };
 
+const listedIds = (result) => result.json.sessions.map((session) => session.identity.id);
+const listedAuthority = (result, id) =>
+  result.json?.sessions?.find((session) => session.identity.id === id)?.authority;
+
 const probe = async (id) => {
   const response = await canaryRequest(`/__e2e/probe/${id}`);
   return response.json();
@@ -200,7 +204,7 @@ const noOrphans = (value) =>
 
 test(
   "deployed canary: beam/Pi terminal/checkpoint/hard-cap/resume/archive/vaporize leaves no orphans",
-  { skip: skipReason, timeout: 20 * 60_000 },
+  { skip: skipReason, timeout: 30 * 60_000 },
   async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-deployed-e2e-home-"));
     t.after(() => {
@@ -252,14 +256,14 @@ test(
     let remoteBranch;
     const baseline = await runCli(["list", "--json"], { env, cwd });
     assert.equal(baseline.code, 0, baseline.stderr);
-    const baselineIds = new Set(baseline.json.map((session) => session.id));
+    const baselineIds = new Set(listedIds(baseline));
     t.after(async () => {
       const current = await runCli(["list", "--json"], { env, cwd });
       const cleanupIds = new Set([id, peerTargetId, sourceId].filter(Boolean));
       if (current.code === 0) {
-        for (const session of current.json) {
-          if (baselineIds.has(session.id)) continue;
-          cleanupIds.add(session.id);
+        for (const sessionId of listedIds(current)) {
+          if (baselineIds.has(sessionId)) continue;
+          cleanupIds.add(sessionId);
         }
       }
       for (const sessionId of cleanupIds) {
@@ -350,10 +354,10 @@ test(
     assert.equal(beforeReconstruction.kv, true);
     assert.ok(beforeReconstruction.backups.length > 0);
     assert.deepEqual(beforeReconstruction.registry, [
-      { name: "codex", kind: "pi-auth", scope: "global" },
-      { name: "github", kind: "github-cli", scope: "repository" },
+      { name: "github", kind: "github-cli", scope: "global" },
+      { name: "pi", kind: "pi-auth", scope: "global" },
     ]);
-    assert.ok(beforeReconstruction.schedules.includes("enforceHardCap"));
+    assert.ok(beforeReconstruction.schedules.includes("sessionActorHardCap"));
 
     await requestReconstruction(id).catch(() => undefined);
     const reconstructed = await poll(
@@ -373,9 +377,7 @@ test(
     const timeoutMs = Number(process.env.SCOTTY_E2E_CAP_TIMEOUT_MS ?? 600_000);
     await poll(
       async () => runCli(["list", "--json"], { env, cwd, timeoutMs: 30_000 }),
-      (result) =>
-        result.code === 0 &&
-        result.json?.find((session) => session.id === id)?.status === "sleeping",
+      (result) => result.code === 0 && listedAuthority(result, id)?.lifecycle === "sleeping",
       { timeoutMs, intervalMs: 5_000 },
     );
     const sleeping = await probe(id);
@@ -391,6 +393,43 @@ test(
     assert.equal(resume.code, 0, resume.stderr);
     const resumed = await probe(id);
     assert.equal(resumed.runtime, true);
+
+    // A full backup filesystem fails the next hard-cap Sleep; recovery resumes the last backup.
+    const filled = await (await canaryRequest(`/__e2e/fill-disk/${id}`, { method: "POST" })).json();
+    assert.ok(filled.availableBytes < 16 * 1024 * 1024, JSON.stringify(filled));
+    const failedSleep = await poll(
+      () => probe(id),
+      (value) => value.authorityStatus === "failed",
+      { timeoutMs, intervalMs: 2_000 },
+    );
+    t.diagnostic(`failed sleep: ${failedSleep.failureCode} (${failedSleep.lastTransitionKind})`);
+    assert.equal(failedSleep.lastTransitionKind, "Sleep");
+    assert.equal(failedSleep.recovery, "resume");
+    assert.equal(failedSleep.activeLease, false);
+    assert.ok(failedSleep.backups.length > 0);
+    await poll(
+      () => probe(id),
+      (value) => value.authorityStatus === "failed" && value.runtime === false,
+      { timeoutMs, intervalMs: 5_000 },
+    );
+    const failedList = await runCli(["list", "--json"], { env, cwd, timeoutMs: 30_000 });
+    assert.equal(failedList.code, 0, failedList.stderr);
+    assert.deepEqual(listedAuthority(failedList, id), {
+      kind: "stable",
+      lifecycle: "failed",
+      failure: { code: failedSleep.failureCode, recovery: "resume" },
+    });
+
+    const recovered = await runCli(["resume", id, "--json"], {
+      env,
+      cwd,
+      timeoutMs: 300_000,
+    });
+    assert.equal(recovered.code, 0, recovered.stderr);
+    assertCliResponseClean(recovered, knownValues, "failed-sleep resume response");
+    const recoveredProbe = await probe(id);
+    assert.equal(recoveredProbe.authorityStatus, "warm");
+    assert.equal(recoveredProbe.runtime, true);
 
     const down = await canaryRequest(`/api/sessions/${id}/down`, {
       signal: AbortSignal.timeout(180_000),
@@ -416,14 +455,10 @@ test(
     id = undefined;
     const list = await poll(
       () => runCli(["list", "--json"], { env, cwd }),
-      (result) => result.code === 0 && !result.json.some((session) => session.id === vaporizedId),
+      (result) => result.code === 0 && !listedIds(result).includes(vaporizedId),
       { timeoutMs: 120_000, intervalMs: 2_000 },
     );
-    assert.equal(
-      list.json.some((session) => session.id === vaporizedId),
-      false,
-      "KV projection must be removed",
-    );
+    assert.equal(listedIds(list).includes(vaporizedId), false, "KV projection must be removed");
     const cleaned = await poll(() => probe(vaporizedId), noOrphans, {
       timeoutMs: 180_000,
       intervalMs: 2_000,

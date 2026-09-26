@@ -54,7 +54,9 @@ The deployed canary uses `e2e/canary/full-stack-canary.run.ts`, which creates a 
 stage-isolated Worker, Sandbox, Credential Registry, Auth Durable Objects, Container application,
 KV namespace, and R2 buckets with destroy-on-cleanup policies. The stage must be
 `scotty-e2e-<32 lowercase hex>` and requires exact stage-scoped deploy and cleanup approvals.
-Production names and hosts fail closed.
+Production names and hosts fail closed. The Container runs the signed release image for
+`package.json`'s version, because runtime CLI admission accepts only images with release-signed
+compatibility evidence; container changes reach the canary through a release.
 
 ```sh
 stage="scotty-e2e-$(openssl rand -hex 16)"
@@ -87,6 +89,11 @@ inspection endpoint or inspect deployed Durable Object, container, KV, or R2 sto
 checks known disposable values only across externally observed CLI, HTTP, terminal, checkpoint,
 archive, and repository-operation artifacts.
 
+A fresh stage's Container application takes about two minutes to schedule and report a healthy
+instance. Until then, session creation fails with "There is no container instance that can be
+provided to this Durable Object", so wait for the application's health to report a healthy
+instance before running the canary.
+
 Use a disposable clone of the repository. The canary pushes one random `scotty/<id>` branch and
 proves the Worker `/api/sessions/:id/down` route returns its session archive; the test deletes that
 branch in its cleanup hook.
@@ -108,7 +115,8 @@ npm run test:e2e:deployed
 
 The test performs the real lifecycle sequence
 `beam → root recovery on the disposable stage → Pi worklog/RPC boundary → checkpoint → scheduled
-hard-cap sleep → resume → Worker /down → vaporize`, then runs isolated local and peer inspect/steer
+hard-cap sleep → resume → full backup filesystem → failed hard-cap sleep → Failed(resume) → resume →
+Worker /down → vaporize`, then runs isolated local and peer inspect/steer
 proofs.
 The root-authenticated local CLI first steers a same-repository target and verifies its exact
 response through passive inspect. The disposable Container application permits a lingering

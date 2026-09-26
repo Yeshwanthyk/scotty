@@ -10,7 +10,7 @@
     {
       "id": "M-00",
       "title": "Quint toolchain + ITF trace replay against the reducer",
-      "column": "doing",
+      "column": "done",
       "contract": false,
       "deps": [],
       "body": "- `spec/quint/` with `quint` pinned via npx.\n- `npm run spec` (local only, never in CI) runs `quint typecheck`, a bounded `quint run` with invariants and witnesses, then the ITF replay test.\n- Add a vitest that loads ITF traces (`quint run --out-itf`) and replays each step into `worker/src/session-actor/reducer.ts`, asserting the same abstract state. Excluded from the default vitest run; `npm run spec` sets `SCOTTY_SPEC=1` to include it.\n- Proof: `npm run spec` exits non-zero on a seeded model violation and on a seeded reducer divergence. Quint is a local design tool; it does not run in CI.",
@@ -38,13 +38,18 @@
         {
           "at": "2026-09-25",
           "note": "Done: spec is local only (npm run spec; the replay is excluded from default vitest unless SCOTTY_SPEC=1); regression rule added to docs/reliability.md and the board prompt. PR stack: PR1 m-00/quint-replay (at c277e33) on main; PR2 m-00/test-cull stacked on PR1 (gh pr create --base m-00/quint-replay). Merge bottom-up; not pushed; no PRs opened yet."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Done in PR #276."
         }
-      ]
+      ],
+      "pr": 276
     },
     {
       "id": "M-01",
       "title": "Session lifecycle model (lease, fences, stale results, Failed exits)",
-      "column": "doing",
+      "column": "done",
       "contract": false,
       "deps": [
         "M-00"
@@ -66,8 +71,13 @@
         {
           "at": "2026-09-25",
           "note": "PR #277 (stack: #275 → #276 → #277, plain gh stacked PRs, base chain main ← m-00/quint-replay ← m-00/test-cull ← m-01/lifecycle-model). Mark done after merge."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Done in PR #277."
         }
-      ]
+      ],
+      "pr": 277
     },
     {
       "id": "M-03",
@@ -105,7 +115,7 @@
     {
       "id": "R-03",
       "title": "Failed is a dead end → durable recovery operation",
-      "column": "doing",
+      "column": "done",
       "contract": true,
       "deps": [
         "M-01"
@@ -139,8 +149,13 @@
         {
           "at": "2026-09-26",
           "note": "Added concurrent-retry lock test (mutation-killed); 18/18 mutations now killed. Deployed proof split to R-03b. PR #278 awaiting review after #277."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Done in PR #278."
         }
-      ]
+      ],
+      "pr": 278
     },
     {
       "id": "R-01",
@@ -343,7 +358,12 @@
       "contract": true,
       "deps": [],
       "body": "- **Problem:**\n  - Runtime selection scans GitHub Releases, up to 3 pages plus manifests (`runtime-cli/release-resolver.ts:333-443`).\n  - Bandaids: the 10-minute freshness window and the outage/403 fallback (abcdade, `selection.ts:13,59-110`).\n  - `sameRuntimeCompatibility` is duplicated.\n- **Root fix:** release/deploy publishes a signed, compatibility-indexed catalog to installation R2, and the Worker selects from it and pins per image.\n- **Delete:** GitHub discovery, pagination, the freshness window and the fallback.\n- **Proof:** deployed create with GitHub unreachable still succeeds.",
-      "log": []
+      "log": [
+        {
+          "at": "2026-09-26",
+          "note": "Another bandaid: #279 falls back to releases/latest/download manifest when the releases API refuses (Workers egress 403 in 3/5 canary runs). Delete it with GitHub discovery."
+        }
+      ]
     },
     {
       "id": "R-13",
@@ -841,7 +861,7 @@
     {
       "id": "R-03b",
       "title": "Deployed proof for Failed recovery: force clone and sleep failures on a stage without a production test hook",
-      "column": "backlog",
+      "column": "done",
       "contract": false,
       "deps": [
         "R-03"
@@ -855,6 +875,18 @@
         {
           "at": "2026-09-26",
           "note": "From R-03 (#278): harness proves clone failure → Failed(Create) → create → Warm and sleep failure → Failed(Resume) → resume → Warm, but no deployed test. Needs a design call: how to force a clone failure (e.g. a repo that fails clone after verification) and a sleep failure on a deployed stage without a test-only production hook."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Started."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Scope (owner): deployed proof covers sleep failure → Failed(Resume) → resume → Warm only; clone path stays harness-covered (no empty-repo fixture). Trigger: checkpoint, then a canary-only DO method fills the container disk outside the workspace so the sleep backup (squashfs in /var/backups) fails; settlement.ts failedFrom gives Resume from the checkpoint backup. First repairs the stale canary: it read legacy 'scotty:session', which production no longer writes."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Done. Disposable-stage canary passed end to end: fill-disk failed sleep → Failed(resume) with code reconciliation_outcome_unknown (Sleep) → resume → Warm, then /down, vaporize, peer inspect/steer; plan no-op; stage destroyed. Canary now deploys the signed release image (runtime CLI admission requires release-signed evidence) and force-destroys its buckets. Needed #279 (runtime CLI download fallback) to pass reliably."
         }
       ]
     }
