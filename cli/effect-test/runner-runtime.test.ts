@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, FileSystem, Match, Predicate, Result } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Match, Predicate, Result, Schedule } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import {
   type IsolatedRuntimeCompute,
@@ -120,6 +120,20 @@ const workspaceOf = (response: RunnerResponse): string =>
 
 const withNode = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+
+/** Child processes start in real time, so this polls on the live clock, not the TestClock. */
+const awaitChildFile = (fs: FileSystem.FileSystem, path: string) =>
+  TestClock.withLive(
+    fs
+      .exists(path)
+      .pipe(
+        Effect.repeat({
+          until: (exists) => exists,
+          schedule: Schedule.spaced("10 millis"),
+          times: 3_000,
+        }),
+      ),
+  );
 
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 
@@ -443,13 +457,7 @@ describe("RunnerRuntime", () => {
             ),
           )
           .pipe(Effect.forkChild);
-        const startedPath = `${drainingWorkspace}/started`;
-        let drainingStarted = false;
-        for (let attempt = 0; attempt < 10_000 && !drainingStarted; attempt++) {
-          drainingStarted = yield* fs.exists(startedPath);
-          if (!drainingStarted) yield* Effect.yieldNow;
-        }
-        assert.isTrue(drainingStarted);
+        assert.isTrue(yield* awaitChildFile(fs, `${drainingWorkspace}/started`));
         const drainingStop = yield* runtime
           .handle(stop("stop-draining", drainingSession))
           .pipe(Effect.forkChild);
@@ -487,12 +495,7 @@ describe("RunnerRuntime", () => {
           )
           .pipe(Effect.forkChild);
         const pidPath = `${stubbornWorkspace}/pid.txt`;
-        let started = false;
-        for (let attempt = 0; attempt < 10_000 && !started; attempt++) {
-          started = yield* fs.exists(pidPath);
-          if (!started) yield* Effect.yieldNow;
-        }
-        assert.isTrue(started);
+        assert.isTrue(yield* awaitChildFile(fs, pidPath));
         const pid = Number(yield* fs.readFileString(pidPath));
         const interruptFiber = yield* Fiber.interrupt(stubbornFiber).pipe(Effect.forkChild);
         yield* TestClock.adjust("2 seconds");
