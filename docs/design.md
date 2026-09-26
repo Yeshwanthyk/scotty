@@ -201,7 +201,7 @@ Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Ses
 
 ## Slices
 
-1. Stack plus the Session DO event log plus the supervisor, running a hard-coded prompt through Codex with an API key → proof: e2e 1.
+1. Stack plus the Session DO event log plus the supervisor, running a hard-coded prompt through Codex with the owner's ChatGPT sign-in (minimal, no refresh yet) → proof: e2e 1.
 2. ChatGPT sign-in and refresh in the Creds DO, and the `/p/chatgpt` swap → e2e 2.
 3. GitHub token, `/p/github`, WIP branch pause and resume → e2e 3 and 4.
 4. The rest of the UI contract: changes, settings, repos, and hiding the unused screens.

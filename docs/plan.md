@@ -128,13 +128,13 @@ Spike code lives in `work/spikes/<id>/` and is never committed. Record the resul
 - **Read first:** `design.md` sections "Session", "Supervisor" and "Deploy".
 - **In scope:**
   - Create a session from a public repository, get a Codex answer, steer it, and interrupt it.
-  - Codex uses an OpenAI API key stored in the Creds DO and swapped at `/p/openai`, so no real secret enters the container even here. The key is set with a temporary `POST /api/credentials/openai`.
+  - Codex uses the owner's ChatGPT sign-in, swapped at `/p/chatgpt`, so no real secret enters the container. Step 2 takes the minimal sign-in from spike 1a (device-code start, poll, exchange, stored in the Creds DO) behind a temporary `POST /api/credentials/chatgpt/{start,poll}`; step 3 adds refresh, the credential events, sign-out and the UI control.
 - **Out of scope:** ChatGPT, GitHub push, pause, the UI beyond what already renders, the CLI.
 - **Build:**
   - `alchemy.run.ts`: the Worker (assets from `ui/dist`, Access), the Session DO hosting the Container, the Creds DO, R2.
   - `src/session/events.ts`, `src/session/fold.ts` (states, invariants, deadline table), `src/session/object.ts`.
   - `src/session/object.ts` dials the supervisor with the container handle, not `Containers.layer`, and re-dials on activation when the fold has a live `gen` (see `design.md` "Supervisor").
-  - `src/worker.ts`: `POST /api/sessions`, `GET /api/sessions/:id`, `/steer`, `/interrupt`, `/p/openai`.
+  - `src/worker.ts`: `POST /api/sessions`, `GET /api/sessions/:id`, `/steer`, `/interrupt`, `/p/chatgpt`.
   - `container/Dockerfile`, trimmed from `worker/container/Dockerfile` @old, without the Sandbox SDK base image.
   - `container/supervisor/`: the WebSocket protocol from `design.md`, cloning, and `codex app-server --listen stdio://`.
   - `e2e/core.ts`; `npm test`; `npm run e2e`; `npm run deploy`.
@@ -142,7 +142,7 @@ Spike code lives in `work/spikes/<id>/` and is never committed. Record the resul
 - **Port from @old:**
   - Codex `config.toml` and launch: `worker/src/agent/codex/process.ts:204-270`.
   - Thread start and resume: `worker/src/agent/codex/session.ts:996-1044`.
-  - Header cleanup and OpenAI swap: `worker/src/egress/worker.ts:95-123`, `428-443`.
+  - Header cleanup and ChatGPT swap: `worker/src/egress/worker.ts:95-123`, `164-240`.
 - **Do not port:** `worker/src/session/object.ts`, `worker/src/session-actor/**`, `worker/src/sandbox/runtime.ts`, `@cloudflare/sandbox`.
 - **Done when:**
   - `npm test` passes, covering every invariant and the alarm-equals-earliest-deadline property.
@@ -157,7 +157,7 @@ Spike code lives in `work/spikes/<id>/` and is never committed. Record the resul
 ## Step 3: slice 2, ChatGPT credentials
 
 - **Depends on:** 1a, 2.
-- **In scope:** sign in to ChatGPT from the UI's Settings; the Creds DO stores and refreshes the tokens; Codex uses `/p/chatgpt`. Remove `/p/openai` and the temporary key endpoint.
+- **In scope:** sign in to ChatGPT from the UI's Settings; the Creds DO stores and refreshes the tokens; Codex uses `/p/chatgpt` (from step 2). Replace step 2's temporary sign-in endpoints.
 - **Out of scope:** GitHub, other providers.
 - **Build:**
   - `src/creds/oauth.ts`: plain Effect HttpClient calls for start, poll, exchange, refresh, revoke (endpoints and encodings from `design.md` "Credentials"), each returning a typed result with HTTP status and upstream error code. Schema-decoded; no `orDie`.
