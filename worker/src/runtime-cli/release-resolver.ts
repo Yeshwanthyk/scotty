@@ -117,7 +117,6 @@ export type RuntimeCliReleaseResolverError =
   | RuntimeCliReleaseSignatureError;
 
 export interface ResolvedRuntimeCliRelease {
-  readonly releaseId: number;
   readonly releaseTag: string;
   /**
    * Authenticated release metadata only. The bytes at this URL have not been downloaded or
@@ -330,18 +329,12 @@ const compareReleaseVersions = (left: string, right: string): number => {
   return 0;
 };
 
-const candidate = Effect.fnUntraced(function* (
+const verifiedManifest = Effect.fnUntraced(function* (
   client: HttpClient.HttpClient,
-  release: GitHubRelease,
-  supported: ReadonlyArray<RuntimeCliCompatibility>,
+  releaseTag: string,
+  manifestUrl: string,
 ) {
-  const assets = yield* runtimeCliReleaseAssets(release);
-  if (assets === undefined) return undefined;
-  const manifestText = yield* fetchManifest(
-    client,
-    release.tag_name,
-    assets.manifest.browser_download_url,
-  );
+  const manifestText = yield* fetchManifest(client, releaseTag, manifestUrl);
   const manifestJson = yield* decodeManifestJson(manifestText).pipe(
     Effect.mapError(() => new MalformedRuntimeCliReleaseDataError({ stage: "manifest" })),
   );
@@ -353,23 +346,38 @@ const candidate = Effect.fnUntraced(function* (
         Effect.fail(
           new RuntimeCliReleaseSignatureError({
             reason: "invalid_signature",
-            releaseTag: release.tag_name,
+            releaseTag,
           }),
         ),
       RuntimeCliManifestCryptoError: () =>
         Effect.fail(
           new RuntimeCliReleaseSignatureError({
             reason: "crypto_failure",
-            releaseTag: release.tag_name,
+            releaseTag,
           }),
         ),
     }),
   );
-  if (descriptor.releaseTag !== release.tag_name)
+  if (descriptor.releaseTag !== releaseTag)
     return yield* new RuntimeCliReleaseIntegrityError({
       reason: "release_tag_mismatch",
-      releaseTag: release.tag_name,
+      releaseTag,
     });
+  return descriptor;
+});
+
+const candidate = Effect.fnUntraced(function* (
+  client: HttpClient.HttpClient,
+  release: GitHubRelease,
+  supported: ReadonlyArray<RuntimeCliCompatibility>,
+) {
+  const assets = yield* runtimeCliReleaseAssets(release);
+  if (assets === undefined) return undefined;
+  const descriptor = yield* verifiedManifest(
+    client,
+    release.tag_name,
+    assets.manifest.browser_download_url,
+  );
   if (descriptor.artifact.byteSize !== assets.artifact.size)
     return yield* new RuntimeCliReleaseIntegrityError({
       reason: "artifact_size_mismatch",
@@ -378,9 +386,46 @@ const candidate = Effect.fnUntraced(function* (
   if (!supported.some((requirement) => sameCompatibility(requirement, descriptor.compatibility)))
     return undefined;
   return {
-    releaseId: release.id,
     releaseTag: release.tag_name,
     artifactDownloadUrl: assets.artifact.browser_download_url,
+    descriptor,
+  } satisfies ResolvedRuntimeCliRelease;
+});
+
+const latestManifestRedirect =
+  /^https:\/\/github\.com\/Yeshwanthyk\/scotty\/releases\/download\/(v\d+\.\d+\.\d+)\/scotty-runtime-manifest\.json$/u;
+
+/** Reads the latest release's signed manifest through the download host, not the rate-limited API. */
+const latestRelease = Effect.fnUntraced(function* (
+  client: HttpClient.HttpClient,
+  supported: ReadonlyArray<RuntimeCliCompatibility>,
+) {
+  const response = yield* execute(
+    client,
+    HttpClientRequest.get(
+      `${GITHUB_DOWNLOAD_ORIGIN}/${RELEASE_REPOSITORY}/releases/latest/download/${RUNTIME_CLI_MANIFEST_NAME}`,
+      { headers: requestHeaders },
+    ),
+    "manifest",
+  );
+  yield* discardResponse(response);
+  const location = response.headers.location;
+  const releaseTag =
+    response.status === 302 && location !== undefined
+      ? latestManifestRedirect.exec(location)?.[1]
+      : undefined;
+  if (releaseTag === undefined || !releaseTagPattern.test(releaseTag))
+    return yield* lookupError("outage", "manifest", response.status);
+  const descriptor = yield* verifiedManifest(
+    client,
+    releaseTag,
+    expectedDownloadUrl(releaseTag, RUNTIME_CLI_MANIFEST_NAME),
+  );
+  if (!supported.some((requirement) => sameCompatibility(requirement, descriptor.compatibility)))
+    return yield* new NoCompatibleRuntimeCliReleaseError();
+  return {
+    releaseTag,
+    artifactDownloadUrl: expectedDownloadUrl(releaseTag, RUNTIME_CLI_ASSET_NAME),
     descriptor,
   } satisfies ResolvedRuntimeCliRelease;
 });
@@ -432,6 +477,13 @@ const makeRuntimeCliReleaseResolver = (
         releasesSearched,
       });
     }).pipe(
+      // Workers share egress IPs, so the unauthenticated releases API is often exhausted.
+      // Its failure is kept when the latest release cannot serve this image.
+      Effect.catchTag("RuntimeCliReleaseLookupError", (error) =>
+        error.stage === "releases"
+          ? latestRelease(client, supported).pipe(Effect.catch(() => Effect.fail(error)))
+          : Effect.fail(error),
+      ),
       Effect.provideService(FetchHttpClient.RequestInit, {
         redirect: "manual",
       }),

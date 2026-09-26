@@ -175,6 +175,8 @@ const cancellableResponse = (status = 200) => {
 const listUrl = (page = 1): string =>
   `https://api.github.com/repos/Yeshwanthyk/scotty/releases?per_page=10&page=${page}`;
 
+const latestManifestUrl = `https://github.com/Yeshwanthyk/scotty/releases/latest/download/${MANIFEST_NAME}`;
+
 const failure = (
   result: Result.Result<unknown, RuntimeCliReleaseResolverError>,
 ): RuntimeCliReleaseResolverError =>
@@ -594,6 +596,47 @@ describe("RuntimeCliReleaseResolver", () => {
       yield* TestClock.adjust("5 seconds");
       const timeoutError = lookupFailure(yield* Fiber.join(pending));
       assert.strictEqual(timeoutError.reason, "timeout");
+    }),
+  );
+
+  it.effect("reads the latest signed manifest from the download host when the API refuses", () =>
+    Effect.gen(function* () {
+      const keys = keyPair();
+      trust(keys.publicKey);
+      const latest = (location: string, manifest = descriptor("1.4.0")) =>
+        harness(
+          new Map<string, Route>([
+            [listUrl(), new Response(null, { status: 403 })],
+            [latestManifestUrl, new Response(null, { status: 302, headers: { location } })],
+            [
+              downloadUrl("v1.4.0", MANIFEST_NAME),
+              Response.json(signed(manifest, keys.privateKey)),
+            ],
+          ]),
+        );
+
+      const resolved = yield* latest(downloadUrl("v1.4.0", MANIFEST_NAME)).resolver.resolve([
+        compatibility(),
+      ]);
+      assert.strictEqual(resolved.releaseTag, "v1.4.0");
+      assert.strictEqual(
+        resolved.artifactDownloadUrl,
+        downloadUrl("v1.4.0", RUNTIME_CLI_ASSET_NAME),
+      );
+
+      for (const refused of [
+        latest("https://example.com/Yeshwanthyk/scotty/releases/download/v1.4.0/" + MANIFEST_NAME),
+        latest(
+          downloadUrl("v1.4.0", MANIFEST_NAME),
+          descriptor("1.4.0", compatibility(OTHER_SANDBOX_IMAGE)),
+        ),
+      ]) {
+        const error = lookupFailure(
+          yield* Effect.result(refused.resolver.resolve([compatibility()])),
+        );
+        assert.strictEqual(error.stage, "releases");
+        assert.strictEqual(error.status, 403);
+      }
     }),
   );
 
