@@ -160,8 +160,9 @@ Spike code lives in `work/spikes/<id>/` and is never committed. Record the resul
 
 - **Depends on:** 2.
 - **In scope:** the owner uses stage `dev` for real work: create sessions on real repositories, steer, interrupt, reconnect from the phone, redeploy mid-session. Fix only what blocks that use. Record what felt slow, confusing or missing (cold start, answer latency, what the UI shows) under this step's Status notes.
+- **Then shape it:** before any new feature, tighten what exists until it feels very good: cold start and answer latency, what the UI shows, error messages, and the code itself.
 - **Out of scope:** new features.
-- **Done when:** the owner has used it and, with the orchestrator, rewritten steps 3–8 to the minimum the trial showed is needed. Steps may be cut, merged, reordered or moved to **Later**. No step after this starts before that rewrite.
+- **Done when:** the owner has used it, the shaping pass is done, and, with the orchestrator, rewritten steps 3–8 to the minimum the trial showed is needed. Steps may be cut, merged, reordered or moved to **Later**. No step after this starts before that rewrite.
 
 ## Step 3: slice 2, ChatGPT credentials
 
