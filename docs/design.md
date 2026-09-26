@@ -120,7 +120,7 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
   - It refreshes the ChatGPT token itself before expiry: a refresh intent, a call outside the state change, then the result.
   - If a refresh result is unclear, it asks for a new sign-in rather than retrying.
 - **Sentinels only in the container.** Each session gets a random sentinel per provider. No real secret ever enters the container.
-- **Codex:** `config.toml` sets `model_provider` to use `base_url = "https://<host>/p/chatgpt"` and `env_key = "SCOTTY_CHATGPT"`, with the sentinel in that variable. The `/p/chatgpt` route:
+- **Codex:** `config.toml` sets `model_provider` to use `base_url = "https://<host>/p/chatgpt"` and `env_key = "SCOTTY_CHATGPT"`, with the sentinel in that variable. The provider also sets `wire_api = "responses"`, `requires_openai_auth = false`, `supports_websockets = false` and zero retries, and `config.toml` sets `[features] plugins = false`, so `/p/chatgpt/responses` is the only ChatGPT path (spike 1c). Codex runs with an explicit environment allowlist, never the supervisor's whole environment. The `/p/chatgpt` route:
   - checks the sentinel;
   - removes the incoming auth headers;
   - sets the `Authorization: Bearer` and ChatGPT account headers;
@@ -176,4 +176,9 @@ Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Ses
 
 - Can the Worker run the ChatGPT device-code sign-in itself (Codex's `login --device-auth` flow), and what does the refresh endpoint look like?
 - Does `getTcpPort(...).fetch` support a WebSocket upgrade from the DO to the container on Alchemy beta.79? If not, the supervisor dials in to the Worker at `/sup/<id>` with a per-session secret, and Access bypasses that one path.
-- Does Codex send anything to `chatgpt.com` outside `base_url`, for example usage or rate-limit calls, that needs its own route?
+- ~~Does Codex send anything to `chatgpt.com` outside `base_url`?~~ **Answered by spike 1c (Codex 0.157.0, run locally, 2026-09-26):**
+  - With the provider config under "Credentials", a full turn with tool use (write `hello.txt`, run `cat hello.txt`) sent all 3 model requests as `POST <base_url>/responses` through the swap proxy, with only a sentinel in Codex's environment. No login or refresh call was needed.
+  - With plugins enabled (the default), Codex also opened one direct `chatgpt.com:443` connection and two `github.com:443` connections: the curated-plugin startup sync (`git ls-remote`/`fetch` of `openai/plugins`, and most likely `chatgpt.com/backend-api/plugins/export/curated`). With `[features] plugins = false`, a fresh run made no connection outside `base_url`.
+  - Limit: the egress observer saw only traffic that honours `HTTPS_PROXY`/`HTTP_PROXY`. The container's own egress rules are the backstop.
+  - `account/login/start` with `type: "chatgptAuthTokens"` (seen in t3code) rejects an opaque sentinel with `invalid ID token format`; it needs a real JWT and is marked internal-only. Scotty does not use it.
+  - The model must be one the ChatGPT account allows: `gpt-5.5` worked; `gpt-5.1-codex` and `gpt-5.4` returned HTTP 400. The model is a setting, not a constant.
