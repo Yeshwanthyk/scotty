@@ -16,7 +16,9 @@ const actionVerb = (action: SessionLifecycleAction): string =>
       ? "put the session to sleep"
       : action === "resume"
         ? "resume the session"
-        : "vaporize the session";
+        : action === "create"
+          ? "retry creating the session"
+          : "vaporize the session";
 
 export const hasReachedLifecycleTarget = (
   action: SessionLifecycleAction,
@@ -24,7 +26,7 @@ export const hasReachedLifecycleTarget = (
   current: SessionLifecycle,
 ): boolean => {
   if (action === "sleep") return startedFrom === "warm" && current === "sleeping";
-  if (action === "resume")
+  if (action === "resume" || action === "create")
     return (startedFrom === "sleeping" || startedFrom === "failed") && current === "warm";
   if (action === "vaporize")
     return startedFrom !== null && startedFrom !== "gone" && current === "gone";

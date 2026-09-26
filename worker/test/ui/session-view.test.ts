@@ -63,6 +63,7 @@ const metadata: SessionActorMetadata = {
   createAttempt: "create-attempt-1",
   privateCreateInput: null,
   createObservations: {
+    repositoryVerification: null,
     workspace: {
       attempt: "create-attempt-1",
       payloadReference: "payload-1",
@@ -218,6 +219,7 @@ describe("UI session authority response", () => {
       failure: null,
     });
     assert.deepStrictEqual(response.session.capabilities, {
+      create: false,
       checkpoint: true,
       sleep: true,
       resume: false,
@@ -252,6 +254,7 @@ describe("UI session authority response", () => {
       startedAt: UPDATED_AT,
     });
     assert.deepStrictEqual(checkpoint.session.capabilities, {
+      create: false,
       checkpoint: false,
       sleep: false,
       resume: false,
@@ -313,6 +316,7 @@ describe("UI session authority response", () => {
       failure: null,
     });
     assert.deepStrictEqual(result.success.sessions[1].capabilities, {
+      create: false,
       checkpoint: false,
       sleep: false,
       resume: true,
@@ -358,6 +362,7 @@ it("exposes Codex checkpoint and sleep", () => {
     NOW,
   );
   assert.deepStrictEqual(response.session.capabilities, {
+    create: false,
     checkpoint: true,
     sleep: true,
     resume: false,
@@ -379,6 +384,7 @@ it("keeps Codex list checkpoint/sleep/resume capabilities aligned", () => {
   ]);
   assert.ok(Result.isSuccess(result));
   assert.deepStrictEqual(result.success.sessions[0].capabilities, {
+    create: false,
     checkpoint: true,
     sleep: true,
     resume: false,
@@ -386,6 +392,7 @@ it("keeps Codex list checkpoint/sleep/resume capabilities aligned", () => {
     vaporize: true,
   });
   assert.deepStrictEqual(result.success.sessions[1].capabilities, {
+    create: false,
     checkpoint: false,
     sleep: false,
     resume: true,

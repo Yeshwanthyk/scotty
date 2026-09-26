@@ -1175,6 +1175,27 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.ok(harness.events.includes("host:restoreBackup"));
   });
 
+  it("resumes a failed sleep from an already confirmed backup", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.sandbox.checkpointScottySession();
+    harness.injectFailure("terminalStop");
+    await harness.sandbox.sleepScottySession().then(
+      () => assert.fail("sleep should fail"),
+      () => undefined,
+    );
+    const failed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(failed !== undefined && Predicate.isTagged(failed.state, "Stable"));
+    assert.ok(Predicate.isTagged(failed.state.stable, "Failed"));
+    assert.strictEqual(Predicate.isTagged(failed.state.stable.recovery, "Resume"), true);
+    harness.clearFailure("terminalStop");
+    const resumed = await harness.sandbox.resumeScottySession();
+    assert.strictEqual(resumed.status, "warm");
+    const settled = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(settled !== undefined && Predicate.isTagged(settled.state, "Stable"));
+    assert.ok(Predicate.isTagged(settled.state.stable, "Warm"));
+  });
+
   it.effect("allows bounded backup work for Sleep and Resume without extending Checkpoint", () =>
     Effect.gen(function* () {
       const clock = yield* TestClock.make();
@@ -1551,12 +1572,10 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         stable: {
           _tag: "Failed",
           code: "transition_deadline_elapsed",
-          actionable: false,
           origin: reconciling.state.transition.origin,
           lastStable: "Warm",
-          backup: null,
           ownedBackupIds: reconciling.state.transition.proof.backup.ownedBackupIds,
-          wakeSource: null,
+          recovery: { _tag: "Create" },
         },
       },
     };
@@ -2941,7 +2960,7 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
     assert.include(harness.events, "host:restoreBackup");
   });
 
-  it("destroys an already-failed runtime when its matching hard cap arrives", async () => {
+  it("destroys an already-failed Terminal runtime when its matching hard cap arrives", async () => {
     const harness = await createSessionHarness();
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
     const current = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
@@ -2958,18 +2977,13 @@ describe("Sandbox actor checkpoint, sleep, and resume", () => {
         stable: {
           _tag: "Failed" as const,
           code: "transition_deadline_elapsed",
-          actionable: current.state.stable.backups.prepared?.confirmedAt != null,
           origin: "Warm" as const,
           lastStable: "Warm" as const,
-          backup: current.state.stable.backups.prepared,
           ownedBackupIds: current.state.stable.backups.ownedBackupIds,
-          wakeSource:
+          recovery:
             current.state.stable.backups.prepared?.confirmedAt == null
-              ? null
-              : {
-                  backupId: current.state.stable.backups.prepared.backupId,
-                  confirmedAt: current.state.stable.backups.prepared.confirmedAt,
-                },
+              ? { _tag: "Terminal" }
+              : { _tag: "Resume", backup: current.state.stable.backups.prepared },
         },
       },
     } satisfies SessionAuthority;

@@ -1,6 +1,7 @@
 import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Predicate } from "effect";
+import { TestClock } from "effect/testing";
 import { actorAlarmSchedulerLayer } from "../../src/session-actor/alarm";
 import type { ReadinessProof, SessionIdentity } from "../../src/session-actor/reducer/authority";
 import type {
@@ -112,6 +113,7 @@ const result = <Tag extends CreateProviderResult["_tag"]>(
 const successProvider = (
   overrides: Partial<CreateTransitionProviderShape> = {},
 ): CreateTransitionProviderShape => ({
+  prepareRetry: () => Effect.void,
   lookupPayload: () => Effect.succeed({ reference: "private-create-payload-1" }),
   prepareWorkspace: () =>
     Effect.succeed(
@@ -212,11 +214,12 @@ const observedInput = (observation: EffectObservation): SessionActorInput => {
 describe("create transition executor", () => {
   it.effect("reaches Warm only after matching runtime, supervisor, and transport proof", () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(T1));
       const provider = successProvider();
       let decision = accepted(decide(undefined, createCommand()));
       const visited: string[] = [];
 
-      for (let index = 0; index < 7; index += 1) {
+      for (let index = 0; index < 8; index += 1) {
         const authority = decision.nextAuthority;
         assert.ok(Predicate.isTagged(authority.state, "Transitioning"));
         visited.push(authority.state.transition.phase);
@@ -232,6 +235,7 @@ describe("create transition executor", () => {
       assert.deepStrictEqual(readiness, { runtime, supervisor, transport });
       assert.deepStrictEqual(visited, [
         "IntentCommitted",
+        "CleanupObserved",
         "WorkspacePreparing",
         "RuntimeMaterializing",
         "RuntimeReady",
@@ -244,6 +248,7 @@ describe("create transition executor", () => {
 
   it.effect("fences late reducer input and mismatched generation proof", () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(T1));
       const provider = successProvider();
       const admitted = accepted(decide(undefined, createCommand()));
       const firstInput = yield* execute(provider, committed(admitted));
@@ -280,9 +285,13 @@ describe("create transition executor", () => {
 
   it.effect("reconciles an unknown provider outcome without redispatching the phase", () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(T1));
       const admitted = accepted(decide(undefined, createCommand()));
       const payloadInput = yield* execute(successProvider(), committed(admitted));
-      const preparing = accepted(decide(admitted.nextAuthority, payloadInput));
+      const cleaned = accepted(decide(admitted.nextAuthority, payloadInput));
+      const preparing = accepted(
+        decide(cleaned.nextAuthority, yield* execute(successProvider(), committed(cleaned))),
+      );
       let prepareCalls = 0;
       let reconcileCalls = 0;
       const provider = successProvider({
@@ -341,9 +350,13 @@ describe("create transition executor", () => {
 
   it.effect("turns a confirmed provider rejection into a fenced Failed observation", () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(T1));
       const admitted = accepted(decide(undefined, createCommand()));
       const payloadInput = yield* execute(successProvider(), committed(admitted));
-      const preparing = accepted(decide(admitted.nextAuthority, payloadInput));
+      const cleaned = accepted(decide(admitted.nextAuthority, payloadInput));
+      const preparing = accepted(
+        decide(cleaned.nextAuthority, yield* execute(successProvider(), committed(cleaned))),
+      );
       const provider = successProvider({
         prepareWorkspace: () =>
           Effect.fail(
@@ -364,9 +377,13 @@ describe("create transition executor", () => {
 
   it.effect("fails safely after restart when the private payload reference is unavailable", () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(T1));
       const admitted = accepted(decide(undefined, createCommand()));
       const payloadInput = yield* execute(successProvider(), committed(admitted));
-      const preparing = accepted(decide(admitted.nextAuthority, payloadInput));
+      const cleaned = accepted(decide(admitted.nextAuthority, payloadInput));
+      const preparing = accepted(
+        decide(cleaned.nextAuthority, yield* execute(successProvider(), committed(cleaned))),
+      );
       let workspaceCalls = 0;
       const restartedProvider = successProvider({
         lookupPayload: () =>

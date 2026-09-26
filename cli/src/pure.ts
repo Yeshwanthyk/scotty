@@ -332,7 +332,7 @@ export function durationSeconds(value: string): Result.Result<number, CliError> 
 type HumanResultInput =
   | { readonly command: "beam"; readonly value: BeamUpOutput }
   | { readonly command: "attach"; readonly value: AttachOutput }
-  | { readonly command: "checkpoint" | "resume"; readonly value: SessionOperationOutput }
+  | { readonly command: "checkpoint" | "resume" | "create"; readonly value: SessionOperationOutput }
   | { readonly command: "vaporize"; readonly value: VaporizeOutput };
 
 const formatHumanResult = (input: HumanResultInput): string => {
@@ -341,7 +341,7 @@ const formatHumanResult = (input: HumanResultInput): string => {
     return `${String(value.id)}  ${String(value.status)}  ${String(value.branch)}\n${String(value.url)}\n`;
   if (command === "attach") return `Opened ${String(value.url)}\n`;
   if (command === "checkpoint") return `Checkpoint ${String(value.id)}: ${String(value.status)}\n`;
-  if (command === "resume")
+  if (command === "resume" || command === "create")
     return `Session ${String(value.id)}: ${String(value.status)}${value.url ? `\n${String(value.url)}` : ""}\n`;
   return `Vaporized ${String(value.id)}\n`;
 };

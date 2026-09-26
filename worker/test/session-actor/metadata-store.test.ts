@@ -69,18 +69,72 @@ const input = (): SessionActorMetadataInput => ({
 const failed = (): StableState => ({
   _tag: "Failed",
   code: "create_failed",
-  actionable: false,
   origin: "Absent",
   lastStable: null,
-  backup: null,
   ownedBackupIds: [],
-  wakeSource: null,
+  recovery: { _tag: "Create" },
 });
 
 const stableAuthority = (): SessionAuthority => ({
   ...createAuthority(),
   revision: 2,
   state: { _tag: "Stable", stable: failed() },
+});
+
+const retryAuthority = (): SessionAuthority => ({
+  ...createAuthority(),
+  revision: 3,
+  hardCap: { ...hardCap, generation: "hard-cap-generation-2" },
+  state: {
+    _tag: "Transitioning",
+    transition: {
+      _tag: "Create",
+      nonce: "retry-nonce",
+      origin: "Failed",
+      attempt: "create-attempt-2",
+      startedAt: T1,
+      lastProgressAt: T1,
+      deadlineAt: DEADLINE,
+      mode: "executing",
+      phase: "IntentCommitted",
+      proof: {
+        workspaceId: null,
+        readiness: { runtime: null, supervisor: null, transport: null },
+      },
+    },
+  },
+});
+
+const warmAuthority = (): SessionAuthority => ({
+  ...createAuthority(),
+  revision: 2,
+  state: {
+    _tag: "Stable",
+    stable: {
+      _tag: "Warm",
+      readiness: {
+        runtime: {
+          providerRuntimeId: "runtime",
+          runtimeGeneration: "generation",
+          containerIncarnation: "incarnation",
+        },
+        supervisor: {
+          processId: "process",
+          supervisorEpoch: "epoch",
+          runtimeGeneration: "generation",
+          containerIncarnation: "incarnation",
+        },
+        transport: {
+          transportId: "transport",
+          supervisorEpoch: "epoch",
+          runtimeGeneration: "generation",
+          containerIncarnation: "incarnation",
+        },
+      },
+      backups: { ownedBackupIds: [], prepared: null, currentBackupId: null },
+      activity: null,
+    },
+  },
 });
 
 const vaporizingAuthority = (): SessionAuthority => ({
@@ -149,7 +203,6 @@ describe("session actor metadata store", () => {
       const storage = fakeStorage();
       const store = makeSessionActorMetadataStore(storage);
       yield* store.admitCreate(createAuthority(), input());
-      yield* store.scrubSettledCreate(stableAuthority());
 
       const deleted = yield* store.deleteForVaporize(stableAuthority());
       assert.ok(Predicate.isTagged(deleted, "DeletedForVaporize"));
@@ -157,7 +210,7 @@ describe("session actor metadata store", () => {
 
       const replay = yield* store.deleteForVaporize(stableAuthority());
       assert.ok(Predicate.isTagged(replay, "AlreadyDeletedForVaporize"));
-      assert.strictEqual(storage.writeCount(), 3);
+      assert.strictEqual(storage.writeCount(), 2);
     }),
   );
   it.effect("admits once and replays only matching safe idempotency digests", () =>
@@ -300,22 +353,116 @@ describe("session actor metadata store", () => {
     }),
   );
 
-  it.effect("scrubs private prompt and payload after authority settles", () =>
+  it.effect(
+    "prepares a retry once while retaining observed workspace and resetting attempt resources",
+    () =>
+      Effect.gen(function* () {
+        const port = fakeStorage();
+        const store = makeSessionActorMetadataStore(port);
+        yield* store.admitCreate(createAuthority(), input());
+        const fence = {
+          attempt: "create-attempt-1",
+          payloadReference: "private-payload-reference-1",
+          observedAt: T1,
+        };
+        yield* store.recordObservation(createAuthority(), {
+          _tag: "RepositoryVerification",
+          value: { ...fence, defaultBranch: "main", repositoryExists: true },
+        });
+        yield* store.recordObservation(createAuthority(), {
+          _tag: "Workspace",
+          value: {
+            ...fence,
+            workspaceId: "workspace-1",
+            repository: "owner/disposable",
+            defaultBranch: "main",
+            repositoryExists: true,
+          },
+        });
+        yield* store.recordObservation(createAuthority(), {
+          _tag: "Bundle",
+          value: { ...fence, digest: "a".repeat(64) },
+        });
+        yield* store.recordObservation(createAuthority(), {
+          _tag: "CredentialGrants",
+          value: {
+            ...fence,
+            grants: [
+              {
+                name: "github",
+                kind: "github-cli",
+                versionRef: "github-version-1",
+                handleSlots: [{ provider: "github", slot: "git-https" }],
+              },
+            ],
+          },
+        });
+        const prepared = yield* store.prepareRetry(stableAuthority(), retryAuthority());
+        assert.ok(Predicate.isTagged(prepared, "RetryPrepared"));
+        assert.strictEqual(prepared.metadata.createAttempt, "create-attempt-2");
+        assert.strictEqual(prepared.metadata.privateCreateInput?.attempt, "create-attempt-2");
+        assert.strictEqual(
+          prepared.metadata.createObservations.workspace?.workspaceId,
+          "workspace-1",
+        );
+        assert.strictEqual(
+          prepared.metadata.createObservations.repositoryVerification?.defaultBranch,
+          "main",
+        );
+        assert.strictEqual(prepared.metadata.createObservations.bundle, null);
+        assert.strictEqual(prepared.metadata.createObservations.credentialGrants, null);
+        const writes = port.writeCount();
+        const replay = yield* store.prepareRetry(stableAuthority(), retryAuthority());
+        assert.ok(Predicate.isTagged(replay, "RetryPrepared"));
+        assert.strictEqual(port.writeCount(), writes);
+      }),
+  );
+
+  it.effect("rejects retry preparation outside Failed Create recovery", () =>
     Effect.gen(function* () {
       const port = fakeStorage();
       const store = makeSessionActorMetadataStore(port);
       yield* store.admitCreate(createAuthority(), input());
+      const failure = yield* Effect.flip(store.prepareRetry(warmAuthority(), retryAuthority()));
+      assert.ok(Predicate.isTagged(failure, "SessionActorMetadataViolation"));
+      assert.strictEqual(port.writeCount(), 1);
+    }),
+  );
 
-      const scrubbed = yield* store.scrubSettledCreate(stableAuthority());
+  it.effect("rejects retry preparation after private create input was scrubbed", () =>
+    Effect.gen(function* () {
+      const port = fakeStorage();
+      const store = makeSessionActorMetadataStore(port);
+      yield* store.admitCreate(createAuthority(), input());
+      yield* store.scrubSettledCreate(warmAuthority());
+      const failure = yield* Effect.flip(store.prepareRetry(stableAuthority(), retryAuthority()));
+      assert.ok(Predicate.isTagged(failure, "MetadataStoreConflict"));
+      assert.strictEqual(failure.code, "metadata_missing");
+      assert.strictEqual(port.writeCount(), 2);
+    }),
+  );
+
+  it.effect("scrubs settled Warm input once and replays without a write", () =>
+    Effect.gen(function* () {
+      const port = fakeStorage();
+      const store = makeSessionActorMetadataStore(port);
+      yield* store.admitCreate(createAuthority(), input());
+      const retained = yield* Effect.flip(store.scrubSettledCreate(stableAuthority()));
+      assert.ok(Predicate.isTagged(retained, "SessionActorMetadataViolation"));
+      assert.strictEqual(retained.code, "create_retry_retains_input");
+      assert.equal(port.writeCount(), 1);
+      const scrubbed = yield* store.scrubSettledCreate(warmAuthority());
       assert.ok(Predicate.isTagged(scrubbed, "PrivateInputScrubbed"));
       assert.strictEqual(scrubbed.metadata.privateCreateInput, null);
-
-      const read = yield* store.read(stableAuthority());
-      assert.strictEqual(read?.privateCreateInput, null);
-      const replay = yield* store.scrubSettledCreate(stableAuthority());
+      assert.equal(port.writeCount(), 2);
+      const replay = yield* store.scrubSettledCreate(warmAuthority());
       assert.ok(Predicate.isTagged(replay, "PrivateInputAlreadyScrubbed"));
       assert.equal(port.writeCount(), 2);
+    }),
+  );
 
+  it.effect("removes failed-create input for vaporize", () =>
+    Effect.gen(function* () {
       const vaporPort = fakeStorage();
       const vaporStore = makeSessionActorMetadataStore(vaporPort);
       yield* vaporStore.admitCreate(createAuthority(), input());

@@ -363,7 +363,7 @@ describe("Effect Scotty lab command grammar", () => {
     assert.deepEqual(ui.session.authority, {
       kind: "stable",
       lifecycle: "failed",
-      failure: { code: "reconciliation_outcome_unknown", recoverable: false },
+      failure: { code: "reconciliation_outcome_unknown", recovery: "terminal" },
     });
     assert.isFalse(ui.session.capabilities.resume);
     assert.isTrue(ui.session.capabilities.vaporize);

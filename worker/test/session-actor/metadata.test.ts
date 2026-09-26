@@ -173,16 +173,6 @@ describe("session actor companion metadata", () => {
     for (const stable of [
       warm(),
       {
-        _tag: "Failed" as const,
-        code: "create_failed",
-        actionable: false,
-        origin: "Absent" as const,
-        lastStable: null,
-        backup: null,
-        ownedBackupIds: [],
-        wakeSource: null,
-      },
-      {
         _tag: "Gone" as const,
         cleanup: {
           absent: [
@@ -204,6 +194,18 @@ describe("session actor companion metadata", () => {
       assert.ok(Result.isSuccess(scrubbed));
       assert.strictEqual(scrubbed.success.privateCreateInput, null);
     }
+  });
+
+  it("retains private input while failed create can be retried", () => {
+    const failed: StableState = {
+      _tag: "Failed",
+      code: "create_failed",
+      origin: "Absent",
+      lastStable: null,
+      ownedBackupIds: [],
+      recovery: { _tag: "Create" },
+    };
+    assert.ok(Result.isSuccess(validateSessionActorMetadata(stableAuthority(failed), metadata())));
   });
 
   it("fences provider observations by the current create attempt and opaque reference", () => {

@@ -1,7 +1,8 @@
-import { Match } from "effect";
+import { Match, Predicate } from "effect";
 import type { SessionAuthority, Transition } from "./authority";
 import {
   AuthorityStateSchema,
+  failedCreateOf,
   StableStateSchema,
   TransitionSchema,
   emptyCleanupProof,
@@ -59,11 +60,35 @@ const base = (command: SessionCommand, origin: Transition["origin"]) => ({
 
 const resumableFrom = (
   current: SessionAuthority | undefined,
-): StableCase<"Sleeping"> | StableCase<"Failed"> | undefined => {
+):
+  | {
+      readonly backup: StableCase<"Sleeping">["backup"];
+      readonly ownedBackupIds: ReadonlyArray<string>;
+      readonly lastStable: "Warm" | "Sleeping";
+      readonly origin: "Sleeping" | "Failed";
+    }
+  | undefined => {
   if (current === undefined || !AuthorityStateSchema.guards.Stable(current.state)) return undefined;
   const stable = current.state.stable;
-  if (StableStateSchema.guards.Sleeping(stable)) return stable;
-  return StableStateSchema.guards.Failed(stable) && stable.actionable ? stable : undefined;
+  if (StableStateSchema.guards.Sleeping(stable))
+    return {
+      backup: stable.backup,
+      ownedBackupIds: stable.ownedBackupIds,
+      lastStable: "Sleeping",
+      origin: "Sleeping",
+    };
+  if (
+    StableStateSchema.guards.Failed(stable) &&
+    Predicate.isTagged(stable.recovery, "Resume") &&
+    stable.lastStable !== null
+  )
+    return {
+      backup: stable.recovery.backup,
+      ownedBackupIds: stable.ownedBackupIds,
+      lastStable: stable.lastStable,
+      origin: "Failed",
+    };
+  return undefined;
 };
 
 const commandTransition = (
@@ -72,10 +97,15 @@ const commandTransition = (
 ): Transition | undefined => {
   return Match.valueTags(command, {
     CreateCommand: (value) => {
-      if (current !== undefined) return undefined;
+      const failed = failedCreateOf(current);
+      if (
+        current !== undefined &&
+        (failed === undefined || JSON.stringify(current.session) !== JSON.stringify(value.session))
+      )
+        return undefined;
       return {
         _tag: "Create",
-        ...base(value, "Absent"),
+        ...base(value, current === undefined ? "Absent" : "Failed"),
         phase: "IntentCommitted",
         proof: {
           workspaceId: null,
@@ -116,19 +146,15 @@ const commandTransition = (
     ResumeCommand: (value) => {
       const stable = resumableFrom(current);
       if (stable === undefined) return undefined;
-      const backup = stable.backup;
-      if (backup === null || backup.confirmedAt === null) return undefined;
-      const ownedBackupIds = stable.ownedBackupIds;
-      const lastStable = StableStateSchema.guards.Sleeping(stable) ? "Sleeping" : stable.lastStable;
-      if (lastStable === null) return undefined;
+      if (stable.backup.confirmedAt === null) return undefined;
       return {
         _tag: "Resume",
-        ...base(value, StableStateSchema.guards.Sleeping(stable) ? "Sleeping" : "Failed"),
+        ...base(value, stable.origin),
         phase: "WatchdogArmed",
         proof: {
-          backup,
-          ownedBackupIds,
-          lastStable,
+          backup: stable.backup,
+          ownedBackupIds: stable.ownedBackupIds,
+          lastStable: stable.lastStable,
           watchdogArmedAt: value.timestamp,
           readiness: { runtime: null, supervisor: null, transport: null },
         },
@@ -219,8 +245,12 @@ export const handleCommand = (
     );
   if (!validTransitionProof(transition)) return reject("invalid_progress");
   const session = SessionCommandSchema.guards.CreateCommand(command)
-    ? command.session
-    : current?.session;
+    ? current === undefined
+      ? command.session
+      : current.session
+    : current === undefined
+      ? undefined
+      : current.session;
   if (session === undefined) return reject("not_admissible");
   const hardCap = SessionCommandSchema.guards.CreateCommand(command)
     ? command.hardCap

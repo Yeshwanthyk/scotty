@@ -65,8 +65,9 @@ const Auth = Schema.Union([
       kind: Schema.Literals(["Warm", "Sleeping", "Failed", "Gone"]),
       backup: Schema.Boolean,
       lastStable: Schema.Literals(["Warm", "Sleeping", "None"]),
-      actionable: Schema.Boolean,
+      recovery: Schema.String,
       ownedBackups: Schema.Boolean,
+      createInput: Schema.Boolean,
     }),
   }),
   Schema.Struct({
@@ -135,32 +136,44 @@ const abstractAuthority = (
   if (AuthorityStateSchema.guards.Stable(authority.state)) {
     const stable = authority.state.stable;
     const value = Match.valueTags(stable, {
-      Warm: (warm) => ({ kind: "Warm", ...backupSummary(warm.backups), actionable: false }),
+      Warm: (warm) => ({
+        kind: "Warm",
+        ...backupSummary(warm.backups),
+        recovery: "",
+        createInput: false,
+      }),
       Sleeping: (sleeping) => ({
         kind: "Sleeping",
-        actionable: false,
+        recovery: "",
         lastStable: "Sleeping",
         backup:
           sleeping.backup.confirmedAt !== null &&
           sleeping.ownedBackupIds.includes(sleeping.backup.backupId),
         ownedBackups: sleeping.ownedBackupIds.length > 0,
+        createInput: false,
       }),
       Failed: (failed) => ({
         kind: "Failed",
-        actionable: failed.actionable,
+        recovery: Match.valueTags(failed.recovery, {
+          Resume: () => "Resume",
+          Create: () => "Create",
+          Terminal: () => "Terminal",
+        }),
         lastStable: failed.lastStable === null ? "None" : failed.lastStable,
         backup:
-          failed.backup !== null &&
-          failed.backup.confirmedAt !== null &&
-          failed.ownedBackupIds.includes(failed.backup.backupId),
+          Predicate.isTagged(failed.recovery, "Resume") &&
+          failed.recovery.backup.confirmedAt !== null &&
+          failed.ownedBackupIds.includes(failed.recovery.backup.backupId),
         ownedBackups: failed.ownedBackupIds.length > 0,
+        createInput: Predicate.isTagged(failed.recovery, "Create"),
       }),
       Gone: (gone) => ({
         kind: "Gone",
         backup: false,
         lastStable: "None",
-        actionable: false,
+        recovery: "",
         ownedBackups: !gone.cleanup.absent.includes("backups"),
+        createInput: false,
       }),
     });
     return { ok: true, auth: decodeAuth({ _tag: "Stable", value }) };
@@ -312,11 +325,11 @@ const proofFor = (
 ): TransitionProof => {
   if (TransitionSchema.guards.Create(transition))
     return {
-      workspaceId: nextIndex >= 1 ? "workspace-1" : transition.proof.workspaceId,
+      workspaceId: nextIndex >= 2 ? "workspace-1" : transition.proof.workspaceId,
       readiness: {
-        runtime: nextIndex >= 3 ? readiness.runtime : transition.proof.readiness.runtime,
-        supervisor: nextIndex >= 6 ? readiness.supervisor : transition.proof.readiness.supervisor,
-        transport: nextIndex >= 6 ? readiness.transport : transition.proof.readiness.transport,
+        runtime: nextIndex >= 4 ? readiness.runtime : transition.proof.readiness.runtime,
+        supervisor: nextIndex >= 7 ? readiness.supervisor : transition.proof.readiness.supervisor,
+        transport: nextIndex >= 7 ? readiness.transport : transition.proof.readiness.transport,
       },
     };
   if (TransitionSchema.guards.Checkpoint(transition))
@@ -542,10 +555,7 @@ const inputs: {
       _tag: "TransitionFailed",
       ...factFields(active, active.authority.revision, active.current),
       failureCode: "provider_failed",
-      actionable: false,
-      backup: null,
       ownedBackupIds: [],
-      wakeSource: null,
       resultCode: "provider_failed",
     })),
   unknownOutcome: (context) => unknownInput(context, false),
@@ -721,6 +731,7 @@ it("replays required lifecycle and fenced-input cells against the reducer", () =
     "complete:Accepted:Sleeping",
     "settleStoppedSleep:Accepted:Sleeping",
     "resumeCommand:Accepted:Failed",
+    "createCommand:Accepted:Failed",
     "availabilityLost:Accepted:Executing",
     "availabilityLost:Rejected:duplicate:Reconciling",
     "completeEarly:Rejected",

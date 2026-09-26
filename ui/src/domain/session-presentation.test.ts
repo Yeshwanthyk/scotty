@@ -101,7 +101,41 @@ describe("presentSession", () => {
     });
     const terminal = presentSession(failedTerminal, { now: FIXTURE_NOW, source: "actor" });
     expect(recoverable.failureMessage).toContain("confirmed backup");
-    expect(terminal.failureMessage).toBe("This session has no confirmed backup to restore.");
+    expect(terminal.failureMessage).toBe(
+      "This session cannot be recovered. Vaporize it to remove the failed session.",
+    );
+    const retryable = presentSession(
+      {
+        ...failedTerminal,
+        authority: {
+          kind: "stable",
+          lifecycle: "failed",
+          failure: { code: "create_workspace_failed", recovery: "create" },
+        },
+      },
+      { now: FIXTURE_NOW, source: "actor" },
+    );
+    expect(retryable.failureMessage).toBe("Creating this session can be retried.");
+    const terminalRuntime = presentSession(
+      {
+        ...failedTerminal,
+        authority: {
+          kind: "stable",
+          lifecycle: "failed",
+          failure: { code: "runtime_missing", recovery: "terminal" },
+        },
+      },
+      { now: FIXTURE_NOW, source: "actor" },
+    );
+    expect(terminalRuntime.failureMessage).toBe(terminal.failureMessage);
+    const missing = presentSession(
+      {
+        ...failedTerminal,
+        authority: { kind: "stable", lifecycle: "failed", failure: null },
+      },
+      { now: FIXTURE_NOW, source: "actor" },
+    );
+    expect(missing.failureMessage).toBe("This session cannot be recovered.");
   });
 });
 

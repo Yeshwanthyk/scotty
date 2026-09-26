@@ -2,7 +2,7 @@ import { Match, Predicate, Result, Schema } from "effect";
 import { AgentSelectionSchema } from "../../../protocol/agents/agent-selection";
 import type { SessionOperation, SessionView } from "../session/contracts";
 import type { SessionActorMetadata } from "../session-actor/metadata";
-import type { SessionAuthority } from "../session-actor/reducer/authority";
+import { publicRecovery, type SessionAuthority } from "../session-actor/reducer/authority";
 import { publicView } from "../session-actor/public-view";
 
 const UiSessionLifecycleSchema = Schema.Literals(["warm", "sleeping", "failed", "gone"]);
@@ -24,7 +24,7 @@ const UiSessionAuthoritySchema = Schema.Union([
     failure: Schema.NullOr(
       Schema.Struct({
         code: Schema.String,
-        recoverable: Schema.Boolean,
+        recovery: Schema.Literals(["resume", "create", "terminal"]),
       }),
     ),
   }),
@@ -38,6 +38,7 @@ const UiSessionAuthoritySchema = Schema.Union([
 ]);
 
 const UiSessionCapabilitiesSchema = Schema.Struct({
+  create: Schema.Boolean,
   checkpoint: Schema.Boolean,
   sleep: Schema.Boolean,
   resume: Schema.Boolean,
@@ -90,7 +91,10 @@ export type UiSessionListResponse = typeof UiSessionListResponseSchema.Type;
 
 export class UiSessionProjectionInvalid extends Schema.TaggedError<UiSessionProjectionInvalid>()(
   "UiSessionProjectionInvalid",
-  { sessionId: Schema.String, reason: Schema.Literal("booting_without_operation") },
+  {
+    sessionId: Schema.String,
+    reason: Schema.Literals(["booting_without_operation", "failed_without_failure"]),
+  },
 ) {}
 
 const warmWorkAction = (
@@ -116,10 +120,13 @@ const authorityView = (authority: SessionAuthority): UiSessionResponse["session"
           lifecycle: "sleeping" as const,
           failure: null,
         }),
-        Failed: ({ actionable, code }) => ({
+        Failed: ({
+          recovery,
+          code,
+        }): Extract<UiSession["authority"], { readonly kind: "stable" }> => ({
           kind: "stable" as const,
           lifecycle: "failed" as const,
-          failure: { code, recoverable: actionable },
+          failure: { code, recovery: publicRecovery(recovery) },
         }),
         Gone: () => ({ kind: "stable" as const, lifecycle: "gone" as const, failure: null }),
       }),
@@ -144,6 +151,7 @@ const capabilitiesView = (
 ): UiSessionResponse["session"]["capabilities"] => {
   const actions = new Set(publicView(authority)?.availableActions ?? []);
   return {
+    create: actions.has("create"),
     checkpoint: actions.has("checkpoint"),
     sleep: actions.has("sleep"),
     resume: actions.has("resume"),
@@ -225,16 +233,25 @@ const stableProjectionAuthority = (
         reason: "booting_without_operation",
       }),
     );
+  if (projection.status === "failed") {
+    const failure = projection.failure;
+    if (failure === undefined)
+      return Result.fail(
+        new UiSessionProjectionInvalid({
+          sessionId: projection.id,
+          reason: "failed_without_failure",
+        }),
+      );
+    return Result.succeed({
+      kind: "stable",
+      lifecycle: "failed",
+      failure: { code: failure.code, recovery: failure.recovery },
+    });
+  }
   return Result.succeed({
     kind: "stable",
     lifecycle: projection.status,
-    failure:
-      projection.status === "failed"
-        ? {
-            code: projection.failure?.code ?? "unknown",
-            recoverable: projection.failure?.recoverable ?? false,
-          }
-        : null,
+    failure: null,
   });
 };
 
@@ -258,13 +275,21 @@ export const uiSessionListItemFromProjection = (
         projection.provider === "cloudflare" && stableWarm ? "unchecked" : "not-applicable",
     },
     capabilities: transitioning
-      ? { checkpoint: false, sleep: false, resume: false, work: false, vaporize: false }
+      ? {
+          create: false,
+          checkpoint: false,
+          sleep: false,
+          resume: false,
+          work: false,
+          vaporize: false,
+        }
       : {
+          create: authority.success.lifecycle === "failed" && failure?.recovery === "create",
           checkpoint: stableWarm,
           sleep: stableWarm,
           resume:
             authority.success.lifecycle === "sleeping" ||
-            (authority.success.lifecycle === "failed" && failure?.recoverable === true),
+            (authority.success.lifecycle === "failed" && failure?.recovery === "resume"),
           work: stableWarm,
           vaporize: authority.success.lifecycle !== "gone",
         },

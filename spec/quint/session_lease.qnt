@@ -5,8 +5,9 @@ module session_lease {
     kind: str,
     backup: bool,
     lastStable: str,
-    actionable: bool,
+    recovery: str,
     ownedBackups: bool,
+    createInput: bool,
   }
   type Transition = {
     kind: str,
@@ -23,24 +24,28 @@ module session_lease {
   type Outcome = Init | Accepted | Rejected(str)
 
   pure def lastPhase(kind: str): int =
-    if (kind == "Resume") 5
+    if (kind == "Create") 7
+    else if (kind == "Resume") 5
     else if (kind == "WarmWork") 2
     else if (kind == "Vaporize") 8
     else 6
-  pure def stable(kind: str, backup: bool, lastStable: str, actionable: bool,
-      ownedBackups: bool): Auth =
+  pure def stable(kind: str, backup: bool, lastStable: str, recovery: str,
+      ownedBackups: bool, createInput: bool): Auth =
     Stable({
       kind: kind,
       backup: backup,
       lastStable: lastStable,
-      actionable: actionable,
+      recovery: recovery,
       ownedBackups: ownedBackups,
+      createInput: createInput,
     })
   pure def ownsBackup(t: Transition): bool =
     t.backup or ((t.kind == "Checkpoint" or t.kind == "Sleep") and t.phase >= 3)
-  pure def failed(t: Transition, recovery: bool): Auth = {
-    val actionable = t.backup and (not(recovery) or t.lastStable != "None")
-    stable("Failed", actionable, t.lastStable, actionable, ownsBackup(t))
+  pure def failed(t: Transition): Auth = {
+    val canResume = t.backup and t.lastStable != "None"
+    stable("Failed", canResume, t.lastStable,
+      if (canResume) "Resume" else if (t.kind == "Create" and t.lastStable == "None") "Create" else "Terminal",
+      ownsBackup(t), t.kind == "Create" and t.lastStable == "None")
   }
   pure def admissible(kind: str, current: Auth): bool = match current {
     | Absent => kind == "Create"
@@ -48,7 +53,8 @@ module session_lease {
     | Stable(s) =>
       (s.kind == "Warm" and Set("Checkpoint", "Sleep", "WarmWork").contains(kind)) or
       (kind == "Resume" and (s.kind == "Sleeping" or
-        (s.kind == "Failed" and s.actionable and s.backup and s.lastStable != "None")))
+        (s.kind == "Failed" and s.recovery == "Resume" and s.backup and s.lastStable != "None"))) or
+      (kind == "Create" and s.kind == "Failed" and s.recovery == "Create" and s.createInput)
   }
 
   var auth: Auth
@@ -64,7 +70,7 @@ module session_lease {
   var hardCapGeneration: int
 
   action init = {
-    nondet kind = Set("Create", "Checkpoint", "Sleep", "Resume", "WarmWork", "Random", "StoppedSleep", "RestartVaporize", "InvalidSleep", "InvalidVaporize", "Availability", "CompleteEarly", "RestartExecuting", "SleepProviderFailure", "ResumeHardCap").oneOf()
+    nondet kind = Set("Create", "CreateRetry", "Checkpoint", "Sleep", "Resume", "WarmWork", "Random", "StoppedSleep", "RestartVaporize", "InvalidSleep", "InvalidVaporize", "Availability", "CompleteEarly", "RestartExecuting", "SleepProviderFailure", "ResumeHardCap").oneOf()
     nondet result = Set("deadline", "providerFailure", "unknown", "hardCap").oneOf()
     all {
       auth' = Absent,
@@ -93,6 +99,8 @@ module session_lease {
     else if (name == "settleStoppedSleep" and accepted)
       namedCell(name, "Accepted", "Sleeping", "")
     else if (name == "resumeCommand" and accepted and match before { | Stable(s) => s.kind == "Failed" | _ => false })
+      namedCell(name, "Accepted", "Failed", "")
+    else if (name == "createCommand" and accepted and match before { | Stable(s) => s.kind == "Failed" | _ => false })
       namedCell(name, "Accepted", "Failed", "")
     else if (name == "availabilityLost" and accepted and beforeLease != "")
       namedCell(name, "Accepted", "Executing", "")
@@ -185,7 +193,9 @@ module session_lease {
     }
     else if (admissible(kind, auth)) match auth {
       | Absent => admit(kind, "Absent", false, "None", name)
-      | Stable(s) => if (kind == "Resume")
+      | Stable(s) => if (kind == "Create")
+          admit(kind, "Failed", false, "None", name)
+        else if (kind == "Resume")
           admit(kind, s.kind, true, if (s.kind == "Sleeping") "Sleeping" else s.lastStable,
             name)
         else admit(kind, "Warm", s.backup, "Warm", name)
@@ -214,10 +224,10 @@ module session_lease {
   }
   pure def completed(t: Transition): Auth =
     if (t.kind == "Vaporize")
-      stable("Gone", false, "None", false, false)
+      stable("Gone", false, "None", "", false, false)
     else if (t.kind == "Sleep")
-      stable("Sleeping", t.backup, "Sleeping", false, ownsBackup(t))
-    else stable("Warm", t.backup, "Warm", false, ownsBackup(t))
+      stable("Sleeping", t.backup, "Sleeping", "", ownsBackup(t), false)
+    else stable("Warm", t.backup, "Warm", "", ownsBackup(t), false)
   action advance = all {
     leased,
     lease.phase < lastPhase(lease.kind),
@@ -259,7 +269,7 @@ module session_lease {
     leased,
     if (lease.kind == "Vaporize")
       fencedCommitCell(Transitioning({ ...lease, mode: "Reconciling" }), name, label)
-    else fencedCommitCell(failed(lease, false), name, label),
+    else fencedCommitCell(failed(lease), name, label),
   }
   action settle(name: str): bool = settleCell(name, emptyCell)
   action deadline = {
@@ -274,7 +284,7 @@ module session_lease {
     leased,
     if (lease.mode == "Executing" or lease.kind == "Vaporize")
       fencedCommit(Transitioning({ ...lease, mode: "Reconciling" }), "unknownOutcome")
-    else fencedCommit(failed(lease, false), "unknownOutcome"),
+    else fencedCommit(failed(lease), "unknownOutcome"),
   }
   // actor.resume dispatches a due alarm when its valid fence calls for one;
   // otherwise it sends UnknownProviderOutcome for executing, or runs
@@ -308,7 +318,7 @@ module session_lease {
         settleCell("restart", namedCell("restart", if (due and reconcileFence) "VaporizeReconcileFence" else "Reconciling", "observation", ""))
       else if (lease.kind == "Vaporize")
         fencedCommitCell(Transitioning(lease), "restart", namedCell("restart", if (due and reconcileFence) "VaporizeReconcileFence" else "Reconciling", "observation", ""))
-      else fencedCommitCell(failed(lease, false), "restart", namedCell("restart", "Reconciling", "observation", "")),
+      else fencedCommitCell(failed(lease), "restart", namedCell("restart", "Reconciling", "observation", "")),
     }
   }
   // Matching supervisor loss: stable Warm fails; an executing lease with a
@@ -318,7 +328,7 @@ module session_lease {
     (lease.kind == "Resume" and lease.phase >= 4)
   action availabilityLost = match auth {
     | Stable(s) => if (s.kind == "Warm")
-        commit(stable("Failed", s.backup, "Warm", s.backup, s.ownedBackups), nonceSeq, "availabilityLost")
+        commit(stable("Failed", s.backup, "Warm", if (s.backup) "Resume" else "Terminal", s.ownedBackups, false), nonceSeq, "availabilityLost")
       else reject("stale_generation", "availabilityLost")
     | Transitioning(t) => if (t.mode == "Executing" and t.kind != "Vaporize" and hasSupervisor)
         commit(Transitioning({ ...t, mode: "Reconciling" }), nonceSeq, "availabilityLost")
@@ -331,15 +341,15 @@ module session_lease {
     lease.mode == "Reconciling",
     lease.phase >= 5,
     lease.backup,
-    commit(stable("Sleeping", lease.backup, "Sleeping", false, ownsBackup(lease)), nonceSeq, "settleStoppedSleep"),
+    commit(stable("Sleeping", lease.backup, "Sleeping", "", ownsBackup(lease), false), nonceSeq, "settleStoppedSleep"),
   }
   action hardCapElapsed = match auth {
     | Absent => reject("duplicate", "hardCapElapsed")
     | Stable(s) => if (s.kind == "Warm")
-        commit(stable("Failed", s.backup, "Warm", s.backup, s.ownedBackups), nonceSeq, "hardCapElapsed")
+        commit(stable("Failed", s.backup, "Warm", if (s.backup) "Resume" else "Terminal", s.ownedBackups, false), nonceSeq, "hardCapElapsed")
       else reject("duplicate", "hardCapElapsed")
     | Transitioning(t) => if (t.kind == "Vaporize") reject("duplicate", "hardCapElapsed")
-      else commit(failed(t, true), nonceSeq, "hardCapElapsed")
+      else commit(failed(t), nonceSeq, "hardCapElapsed")
   }
   action redeliver = all {
     issued.exists(f => f.revision < revision),
@@ -389,13 +399,15 @@ module session_lease {
         else warmWorkCommand
       }
       else if (s.kind == "Sleeping" and (scenarioKind == "Resume" or scenarioKind == "ResumeHardCap")) resumeCommand
+      else if (s.kind == "Failed" and scenarioKind == "CreateRetry") createCommand
       else interfere
     | Transitioning(t) =>
-      if (scenarioKind == "SleepProviderFailure" and t.kind == "Sleep") providerFailure
+      if (scenarioKind == "CreateRetry" and t.kind == "Create" and t.origin == "Absent") providerFailure
+      else if (scenarioKind == "SleepProviderFailure" and t.kind == "Sleep") providerFailure
       else if (scenarioKind == "ResumeHardCap" and t.kind == "Resume") hardCapElapsed
       else if (scenarioKind == "Random" and t.kind == "Create") unknownOutcome
       else if (scenarioKind == "Availability" and t.kind == "Create") {
-        if (t.phase < 6) advance else availabilityLost
+        if (t.phase < 7) advance else availabilityLost
       }
       else if (scenarioKind == "CompleteEarly" and t.phase < lastPhase(t.kind)) completeEarly
       else if (scenarioKind == "RestartExecuting" and t.mode == "Executing") restart
@@ -428,13 +440,17 @@ module session_lease {
     | Stable(s) => s.kind == "Sleeping" implies s.backup
     | _ => true
   }
-  val safety = sleepingHasBackup
   val failedHasExit = match auth {
     | Stable(s) => s.kind == "Failed" implies
-        Set("Create", "Checkpoint", "Sleep", "Resume", "WarmWork").exists(k => admissible(k, auth))
+        (s.recovery == "Terminal" or Set("Create", "Checkpoint", "Sleep", "Resume", "WarmWork").exists(k => admissible(k, auth)))
     | _ => true
   }
+  val safety = sleepingHasBackup and failedHasExit
 
   val reachesSleeping = match auth { | Stable(s) => s.kind == "Sleeping" | _ => false }
   val reachesStoppedSleep = reachesSleeping and lastAction == "settleStoppedSleep"
+  val reachesCreateRetry = match auth {
+    | Transitioning(t) => t.kind == "Create" and t.lastStable == "None" and t.origin == "Failed"
+    | _ => false
+  }
 }

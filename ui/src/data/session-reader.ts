@@ -7,7 +7,7 @@ import {
 export const SESSION_WIRE_VERSION = 1 as const;
 
 export type SessionLifecycle = "warm" | "sleeping" | "failed" | "gone";
-export type SessionAction = "checkpoint" | "sleep" | "resume" | "work" | "vaporize";
+export type SessionAction = "create" | "checkpoint" | "sleep" | "resume" | "work" | "vaporize";
 export type SessionTransitionAction =
   | "create"
   | "checkpoint"
@@ -23,7 +23,10 @@ export type SessionAuthority =
   | {
       readonly kind: "stable";
       readonly lifecycle: SessionLifecycle;
-      readonly failure: { readonly code: string; readonly recoverable: boolean } | null;
+      readonly failure: {
+        readonly code: string;
+        readonly recovery: "resume" | "create" | "terminal";
+      } | null;
     }
   | {
       readonly kind: "transitioning";
@@ -34,6 +37,7 @@ export type SessionAuthority =
     };
 
 export interface SessionCapabilities {
+  readonly create: boolean;
   readonly checkpoint: boolean;
   readonly sleep: boolean;
   readonly resume: boolean;
@@ -145,16 +149,19 @@ const isTransitionAction = (value: JsonValue | undefined): value is SessionTrans
 
 const failureFrom = (
   value: JsonValue | undefined,
-): { readonly code: string; readonly recoverable: boolean } | null | undefined => {
+):
+  | { readonly code: string; readonly recovery: "resume" | "create" | "terminal" }
+  | null
+  | undefined => {
   if (value === null) return null;
   if (
     !isJsonObject(value) ||
-    !hasOnlyKeys(value, ["code", "recoverable"]) ||
+    !hasOnlyKeys(value, ["code", "recovery"]) ||
     typeof value.code !== "string" ||
-    typeof value.recoverable !== "boolean"
+    (value.recovery !== "resume" && value.recovery !== "create" && value.recovery !== "terminal")
   )
     return undefined;
-  return { code: value.code, recoverable: value.recoverable };
+  return { code: value.code, recovery: value.recovery };
 };
 
 const stableAuthority = (value: JsonObject): SessionAuthority | undefined => {
@@ -220,6 +227,7 @@ const runtimeFrom = (value: JsonValue | undefined): SessionModel["runtime"] | un
 };
 
 const capabilitiesWithin = (actual: SessionCapabilities, allowed: SessionCapabilities): boolean =>
+  (!actual.create || allowed.create) &&
   (!actual.checkpoint || allowed.checkpoint) &&
   (!actual.sleep || allowed.sleep) &&
   (!actual.resume || allowed.resume) &&
@@ -244,11 +252,16 @@ const validSessionContract = (session: Omit<SessionModel, "source">): boolean =>
 
   const expected =
     lifecycle === "warm"
-      ? { checkpoint: true, sleep: true, resume: false, work: true, vaporize: true }
+      ? { create: false, checkpoint: true, sleep: true, resume: false, work: true, vaporize: true }
       : lifecycle === "sleeping"
         ? { ...noCapabilities, resume: true, vaporize: true }
         : lifecycle === "failed"
-          ? { ...noCapabilities, resume: failure?.recoverable === true, vaporize: true }
+          ? {
+              ...noCapabilities,
+              create: failure?.recovery === "create",
+              resume: failure?.recovery === "resume",
+              vaporize: true,
+            }
           : noCapabilities;
   const expectedReadiness =
     session.runtime.provider === "cloudflare" && lifecycle === "warm"
@@ -263,7 +276,8 @@ const validSessionContract = (session: Omit<SessionModel, "source">): boolean =>
 const capabilitiesFrom = (value: JsonValue | undefined): SessionCapabilities | undefined => {
   if (
     !isJsonObject(value) ||
-    !hasOnlyKeys(value, ["checkpoint", "sleep", "resume", "work", "vaporize"]) ||
+    !hasOnlyKeys(value, ["create", "checkpoint", "sleep", "resume", "work", "vaporize"]) ||
+    typeof value.create !== "boolean" ||
     typeof value.checkpoint !== "boolean" ||
     typeof value.sleep !== "boolean" ||
     typeof value.resume !== "boolean" ||
@@ -272,6 +286,7 @@ const capabilitiesFrom = (value: JsonValue | undefined): SessionCapabilities | u
   )
     return undefined;
   return {
+    create: value.create,
     checkpoint: value.checkpoint,
     sleep: value.sleep,
     resume: value.resume,
@@ -368,6 +383,7 @@ const normalizeWireV1 = (value: unknown): SessionModel | undefined => {
 };
 
 const noCapabilities: SessionCapabilities = {
+  create: false,
   checkpoint: false,
   sleep: false,
   resume: false,
@@ -409,7 +425,7 @@ const demoFixtures = new Map<string, SessionModel>([
       "warm-demo-01",
       "TanStack UI rebuild",
       { kind: "stable", lifecycle: "warm", failure: null },
-      { checkpoint: true, sleep: true, resume: false, work: true, vaporize: true },
+      { create: false, checkpoint: true, sleep: true, resume: false, work: true, vaporize: true },
     ),
   ],
   [
@@ -444,7 +460,7 @@ const demoFixtures = new Map<string, SessionModel>([
       {
         kind: "stable",
         lifecycle: "failed",
-        failure: { code: "runtime_missing", recoverable: true },
+        failure: { code: "runtime_missing", recovery: "resume" },
       },
       { ...noCapabilities, resume: true, vaporize: true },
     ),
@@ -559,6 +575,13 @@ export const decideConsoleEligibility = (session: SessionModel): ConsoleEligibil
 };
 
 export const availableActions = (session: SessionModel): ReadonlyArray<SessionAction> =>
-  (["checkpoint", "sleep", "resume", "work", "vaporize"] as const).filter(
-    (action) => session.capabilities[action],
-  );
+  (
+    [
+      "create",
+      "checkpoint",
+      "sleep",
+      "resume",
+      "work",
+      "vaporize",
+    ] satisfies ReadonlyArray<SessionAction>
+  ).filter((action) => session.capabilities[action]);

@@ -123,8 +123,7 @@ describe("session actor runtime recovery", () => {
     const stable = result.nextAuthority.state.stable;
     assert.ok(StableStateSchema.guards.Failed(stable));
     assert.strictEqual(stable.code, "runtime_stopped");
-    assert.strictEqual(stable.actionable, true);
-    assert.strictEqual(stable.backup?.backupId, "backup-1");
+    assert.deepStrictEqual(stable.recovery, { _tag: "Resume", backup });
   });
 
   it("rejects stale runtime callback generations and journals matching starts", () => {
@@ -403,7 +402,7 @@ describe("session actor runtime recovery", () => {
     const elapsed = accepted(decide(reconciling, hardCapInput())).nextAuthority;
     assert.ok(AuthorityStateSchema.guards.Stable(elapsed.state));
     assert.ok(StableStateSchema.guards.Failed(elapsed.state.stable));
-    assert.strictEqual(elapsed.state.stable.backup?.backupId, backup.backupId);
+    assert.deepStrictEqual(elapsed.state.stable.recovery, { _tag: "Resume", backup });
     assert.deepStrictEqual(elapsed.state.stable.ownedBackupIds, [
       backup.backupId,
       candidate.backupId,
@@ -441,9 +440,7 @@ describe("session actor runtime recovery", () => {
       const elapsed = accepted(decide(sleeping, hardCapInput())).nextAuthority;
       assert.ok(AuthorityStateSchema.guards.Stable(elapsed.state));
       assert.ok(StableStateSchema.guards.Failed(elapsed.state.stable));
-      assert.strictEqual(elapsed.state.stable.actionable, true);
-      assert.strictEqual(elapsed.state.stable.backup?.backupId, backup.backupId);
-      assert.strictEqual(elapsed.state.stable.wakeSource?.confirmedAt, T1);
+      assert.deepStrictEqual(elapsed.state.stable.recovery, { _tag: "Resume", backup });
       assert.deepStrictEqual(elapsed.state.stable.ownedBackupIds, [
         backup.backupId,
         "final-attempt",
@@ -487,8 +484,7 @@ describe("session actor runtime recovery", () => {
       const elapsed = accepted(decide(checkpoint, hardCapInput())).nextAuthority;
       assert.ok(AuthorityStateSchema.guards.Stable(elapsed.state));
       assert.ok(StableStateSchema.guards.Failed(elapsed.state.stable));
-      assert.strictEqual(elapsed.state.stable.actionable, false);
-      assert.strictEqual(elapsed.state.stable.backup, null);
+      assert.deepStrictEqual(elapsed.state.stable.recovery, { _tag: "Terminal" });
       assert.deepStrictEqual(elapsed.state.stable.ownedBackupIds, [candidate.backupId]);
     }
   });

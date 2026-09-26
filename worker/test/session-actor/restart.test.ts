@@ -416,10 +416,7 @@ describe("session actor restart", () => {
                 timestamp: T1,
                 correlationId: committed.journalEvent.correlationId,
                 failureCode: "workspace_absent_after_restart",
-                actionable: false,
-                backup: null,
                 ownedBackupIds: [],
-                wakeSource: null,
                 resultCode: "workspace_absent_after_restart",
               });
             }),
@@ -489,10 +486,7 @@ describe("session actor restart", () => {
                   timestamp: T1,
                   correlationId: committed.journalEvent.correlationId,
                   failureCode: "workspace_absent_after_restart",
-                  actionable: false,
-                  backup: null,
                   ownedBackupIds: [],
-                  wakeSource: null,
                   resultCode: "workspace_absent_after_restart",
                 });
               }),
@@ -638,10 +632,7 @@ describe("session actor restart", () => {
                 timestamp: T1,
                 correlationId: committed.journalEvent.correlationId,
                 failureCode: "workspace_absent",
-                actionable: false,
-                backup: null,
                 ownedBackupIds: [],
-                wakeSource: null,
                 resultCode: "workspace_absent",
               });
             }),
@@ -1077,7 +1068,7 @@ describe("session actor restart", () => {
       expectedPhase: current.phase,
       timestamp: T1,
       correlationId: "correlation-observation",
-      nextPhase: "WorkspacePreparing",
+      nextPhase: "CleanupObserved",
       proof: current.proof,
       resultCode: "observed",
     };

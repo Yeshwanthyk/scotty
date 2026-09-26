@@ -1128,6 +1128,13 @@ app.post("/api/sessions/:id/resume", async (c) => {
   return "pending" in result ? c.json(result, 202) : c.json(result);
 });
 
+app.post("/api/sessions/:id/create", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  const id = parseSessionId(c.req.param("id"));
+  const result = await sessionSandbox(c.env, id).retryCreateScottySession();
+  return "pending" in result ? c.json(result, 202) : c.json(result);
+});
+
 app.get("/api/sessions/:id/down", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));

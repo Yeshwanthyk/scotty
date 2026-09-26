@@ -303,12 +303,10 @@
             "stable": {
               "_tag": "Failed",
               "code": "reconciliation_outcome_unknown",
-              "actionable": false,
               "origin": "Warm",
               "lastStable": "Warm",
-              "backup": null,
               "ownedBackupIds": [],
-              "wakeSource": null
+              "recovery": { "_tag": "Terminal" }
             }
           }
         },

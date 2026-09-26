@@ -79,6 +79,7 @@ export const Route = createFileRoute("/s/$sessionId")({
 });
 
 const actionDetails = {
+  create: { label: "Retry create", pendingLabel: "Creating", icon: Play },
   checkpoint: { label: "Save checkpoint", pendingLabel: "Saving", icon: Save },
   sleep: { label: "Sleep session", pendingLabel: "Going to sleep", icon: Moon },
   resume: { label: "Resume session", pendingLabel: "Waking", icon: Play },
@@ -588,6 +589,17 @@ const isGone = (result: Awaited<ReturnType<typeof readAuthoritativeSession>>): b
   result.session.authority.kind === "stable" &&
   result.session.authority.lifecycle === "gone";
 
+const primaryLifecycleAction = (
+  actions: ReadonlyArray<SessionAction>,
+): SessionAction | undefined =>
+  actions.includes("create")
+    ? "create"
+    : actions.includes("resume")
+      ? "resume"
+      : actions.includes("sleep")
+        ? "sleep"
+        : undefined;
+
 function LifecycleControls({
   presentation,
   sessionId,
@@ -682,11 +694,7 @@ function LifecycleControls({
       </div>
     );
 
-  const primary: SessionAction | undefined = presentation.availableActions.includes("resume")
-    ? "resume"
-    : presentation.availableActions.includes("sleep")
-      ? "sleep"
-      : undefined;
+  const primary = primaryLifecycleAction(presentation.availableActions);
   const secondary = presentation.availableActions.filter(
     (action) => action !== primary && action !== "vaporize",
   );

@@ -1,5 +1,10 @@
 import { Context, Duration, Effect, Layer, Predicate, Result, Schema } from "effect";
-import { AuthorityStateSchema, TransitionSchema, type SessionAuthority } from "./reducer/authority";
+import {
+  AuthorityStateSchema,
+  failedCreateOf,
+  TransitionSchema,
+  type SessionAuthority,
+} from "./reducer/authority";
 import {
   decodeSessionActorMetadata,
   makeSessionActorMetadata,
@@ -36,6 +41,7 @@ export type MetadataMutationOutcome =
   | { readonly _tag: "ObservationReplay"; readonly metadata: SessionActorMetadata }
   | { readonly _tag: "PrivateInputScrubbed"; readonly metadata: SessionActorMetadata }
   | { readonly _tag: "PrivateInputAlreadyScrubbed"; readonly metadata: SessionActorMetadata }
+  | { readonly _tag: "RetryPrepared"; readonly metadata: SessionActorMetadata }
   | { readonly _tag: "DeletedForVaporize" }
   | { readonly _tag: "AlreadyDeletedForVaporize" };
 
@@ -52,7 +58,7 @@ export interface MetadataStoragePort {
 
 export class MetadataStoreCorrupt extends Schema.TaggedError<MetadataStoreCorrupt>()(
   "MetadataStoreCorrupt",
-  { operation: Schema.Literals(["read", "admit", "observe", "scrub"]) },
+  { operation: Schema.Literals(["read", "admit", "retry", "observe", "scrub"]) },
 ) {}
 
 export class MetadataStoreReadFailure extends Schema.TaggedError<MetadataStoreReadFailure>()(
@@ -63,7 +69,7 @@ export class MetadataStoreReadFailure extends Schema.TaggedError<MetadataStoreRe
 export class MetadataStoreMutationOutcomeUnknown extends Schema.TaggedError<MetadataStoreMutationOutcomeUnknown>()(
   "MetadataStoreMutationOutcomeUnknown",
   {
-    operation: Schema.Literals(["admit", "observe", "scrub", "vaporize"]),
+    operation: Schema.Literals(["admit", "retry", "observe", "scrub", "vaporize"]),
     sessionId: Schema.String,
     attempt: Schema.String,
   },
@@ -114,6 +120,10 @@ export interface SessionActorMetadataStoreShape {
   readonly recordObservation: (
     authority: SessionAuthority,
     observation: CreateMetadataObservation,
+  ) => Effect.Effect<MetadataMutationOutcome, MetadataStoreMutationError>;
+  readonly prepareRetry: (
+    currentAuthority: SessionAuthority,
+    proposedAuthority: SessionAuthority,
   ) => Effect.Effect<MetadataMutationOutcome, MetadataStoreMutationError>;
   readonly scrubSettledCreate: (
     authority: SessionAuthority,
@@ -221,7 +231,7 @@ export const makeSessionActorMetadataStore = (
   );
 
   const mutate = Effect.fnUntraced(function* (
-    operation: "admit" | "observe" | "scrub" | "vaporize",
+    operation: "admit" | "retry" | "observe" | "scrub" | "vaporize",
     authority: SessionAuthority,
     decide: (current: unknown | undefined) => MetadataStorageMutation,
   ) {
@@ -282,11 +292,15 @@ export const makeSessionActorMetadataStore = (
           outcome: new MetadataStoreConflict({ code: "metadata_missing" }),
         };
       const observations = current.success.createObservations;
-      const occupied = Predicate.isTagged(observation, "Workspace")
-        ? observations.workspace !== null
-        : Predicate.isTagged(observation, "Bundle")
-          ? observations.bundle !== null
-          : observations.credentialGrants !== null;
+      const occupied = Predicate.isTagged(observation, "RepositoryVerification")
+        ? observations.repositoryVerification !== null &&
+          observations.repositoryVerification.attempt === current.success.createAttempt
+        : Predicate.isTagged(observation, "Workspace")
+          ? observations.workspace !== null &&
+            observations.workspace.attempt === current.success.createAttempt
+          : Predicate.isTagged(observation, "Bundle")
+            ? observations.bundle !== null
+            : observations.credentialGrants !== null;
       const next = recordCreateObservation(authority, current.success, observation);
       if (Result.isFailure(next)) return { _tag: "NoWrite", outcome: next.failure };
       const validUpdate = validateSessionActorMetadataUpdate(
@@ -305,8 +319,62 @@ export const makeSessionActorMetadataStore = (
     });
   });
 
+  const prepareRetry = Effect.fnUntraced(function* (
+    currentAuthority: SessionAuthority,
+    authority: SessionAuthority,
+  ) {
+    return yield* mutate("retry", authority, (raw) => {
+      if (
+        failedCreateOf(currentAuthority) === undefined ||
+        !AuthorityStateSchema.guards.Transitioning(authority.state) ||
+        !TransitionSchema.guards.Create(authority.state.transition) ||
+        authority.state.transition.origin !== "Failed" ||
+        authority.state.transition.phase !== "IntentCommitted" ||
+        authority.revision !== currentAuthority.revision + 1 ||
+        authority.session.id !== currentAuthority.session.id
+      )
+        return {
+          _tag: "NoWrite",
+          outcome: new SessionActorMetadataViolation({ code: "create_transition_required" }),
+        };
+      const decoded = validatedCurrent(raw, currentAuthority, "retry");
+      if (Result.isFailure(decoded)) return { _tag: "NoWrite", outcome: decoded.failure };
+      const current = decoded.success;
+      if (current === undefined || current.privateCreateInput === null)
+        return {
+          _tag: "NoWrite",
+          outcome: new MetadataStoreConflict({ code: "metadata_missing" }),
+        };
+      if (current.createAttempt === authority.state.transition.attempt)
+        return { _tag: "NoWrite", outcome: { _tag: "RetryPrepared", metadata: current } };
+      const next: SessionActorMetadata = {
+        ...current,
+        hardCap: authority.hardCap,
+        createAttempt: authority.state.transition.attempt,
+        privateCreateInput: {
+          ...current.privateCreateInput,
+          attempt: authority.state.transition.attempt,
+        },
+        createObservations: {
+          repositoryVerification: current.createObservations.repositoryVerification,
+          workspace: current.createObservations.workspace,
+          bundle: null,
+          credentialGrants: null,
+        },
+      };
+      const valid = validateSessionActorMetadata(authority, next);
+      if (Result.isFailure(valid)) return { _tag: "NoWrite", outcome: valid.failure };
+      return { _tag: "Put", value: next, outcome: { _tag: "RetryPrepared", metadata: next } };
+    });
+  });
+
   const scrubSettledCreate = Effect.fnUntraced(function* (authority: SessionAuthority) {
     return yield* mutate("scrub", authority, (raw) => {
+      if (failedCreateOf(authority) !== undefined)
+        return {
+          _tag: "NoWrite",
+          outcome: new SessionActorMetadataViolation({ code: "create_retry_retains_input" }),
+        };
       const current = validatedCurrent(raw, authority, "scrub");
       if (Result.isFailure(current)) {
         // A settled authority is expected to find an otherwise valid record whose private input
@@ -411,6 +479,7 @@ export const makeSessionActorMetadataStore = (
     read,
     admitCreate,
     recordObservation,
+    prepareRetry,
     scrubSettledCreate,
     scrubVaporizingCreate,
     deleteForVaporize,

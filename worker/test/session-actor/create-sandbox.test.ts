@@ -123,7 +123,12 @@ const metadata = (current: SessionAuthority): SessionActorMetadata => ({
     initialPrompt: "Implement the requested change",
     images: [{ type: "image", mimeType: "image/png", data: "aGVsbG8=" }],
   },
-  createObservations: { workspace: null, bundle: null, credentialGrants: null },
+  createObservations: {
+    repositoryVerification: null,
+    workspace: null,
+    bundle: null,
+    credentialGrants: null,
+  },
 });
 
 const providerLayer = (
@@ -164,12 +169,14 @@ const providerLayer = (
           metadata: metadata(authority("WorkspacePreparing")),
           observation,
         }),
+      prepareRetry: () => Effect.die("unused"),
       scrubSettledCreate: () => Effect.die("unused"),
       scrubVaporizingCreate: () => Effect.die("unused"),
       deleteForVaporize: () => Effect.die("unused"),
     }),
   );
   const boundary = createSandboxBoundaryLayer({
+    cleanupFailedCreate: () => Effect.void,
     resolve: (_current, _transition, payloadReference) =>
       Effect.succeed({
         payloadReference,

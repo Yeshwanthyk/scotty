@@ -13,7 +13,7 @@ import {
   RepositoryTimestampSchema,
 } from "../../../protocol/settings/repository";
 import { SandboxDigestSchema } from "../sandbox/config-contracts";
-import { AuthorityStateSchema, type SessionAuthority } from "./reducer/authority";
+import { AuthorityStateSchema, failedCreateOf, type SessionAuthority } from "./reducer/authority";
 import type { CreatePrivatePayloadReference } from "./transitions/create";
 
 const SafeReferenceSchema = Schema.NonEmptyString.check(Schema.isMaxLength(256));
@@ -69,6 +69,13 @@ export const WorkspaceCreateObservationSchema = Schema.Struct({
 });
 export type WorkspaceCreateObservation = typeof WorkspaceCreateObservationSchema.Type;
 
+export const RepositoryVerificationObservationSchema = Schema.Struct({
+  ...CreateObservationFence,
+  defaultBranch: RepositoryDefaultBranchSchema,
+  repositoryExists: Schema.Boolean,
+});
+export type RepositoryVerificationObservation = typeof RepositoryVerificationObservationSchema.Type;
+
 export const BundleCreateObservationSchema = Schema.Struct({
   ...CreateObservationFence,
   digest: SandboxDigestSchema,
@@ -82,6 +89,7 @@ export const CredentialGrantCreateObservationSchema = Schema.Struct({
 export type CredentialGrantCreateObservation = typeof CredentialGrantCreateObservationSchema.Type;
 
 const CreateResourceObservationsSchema = Schema.Struct({
+  repositoryVerification: Schema.NullOr(RepositoryVerificationObservationSchema),
   workspace: Schema.NullOr(WorkspaceCreateObservationSchema),
   bundle: Schema.NullOr(BundleCreateObservationSchema),
   credentialGrants: Schema.NullOr(CredentialGrantCreateObservationSchema),
@@ -134,6 +142,7 @@ export class SessionActorMetadataViolation extends Schema.TaggedError<SessionAct
       "create_transition_required",
       "create_attempt_mismatch",
       "private_create_input_not_scrubbed",
+      "create_retry_retains_input",
       "immutable_metadata_changed",
       "create_observation_conflict",
       "create_observation_fence_mismatch",
@@ -199,6 +208,16 @@ const sameWorkspaceObservation = (
   left.defaultBranch === right.defaultBranch &&
   left.repositoryExists === right.repositoryExists;
 
+const sameRepositoryVerification = (
+  left: RepositoryVerificationObservation,
+  right: RepositoryVerificationObservation,
+): boolean =>
+  left.attempt === right.attempt &&
+  left.payloadReference === right.payloadReference &&
+  left.observedAt === right.observedAt &&
+  left.defaultBranch === right.defaultBranch &&
+  left.repositoryExists === right.repositoryExists;
+
 const sameBundleObservation = (
   left: BundleCreateObservation,
   right: BundleCreateObservation,
@@ -217,42 +236,67 @@ const sameGrantObservation = (
   left.observedAt === right.observedAt &&
   sameGrants(left.grants, right.grants);
 
-const validateObservationFences = (metadata: SessionActorMetadata): boolean => {
+const validateObservationFences = (
+  authority: SessionAuthority,
+  metadata: SessionActorMetadata,
+): boolean => {
   const observations = metadata.createObservations;
-  return [observations.workspace, observations.bundle, observations.credentialGrants].every(
+  const create = createTransition(authority);
+  const retainedPriorWorkspace =
+    (create !== undefined && create.origin === "Failed") ||
+    failedCreateOf(authority) !== undefined ||
+    (AuthorityStateSchema.guards.Transitioning(authority.state) &&
+      Predicate.isTagged(authority.state.transition, "Vaporize") &&
+      authority.state.transition.origin === "Failed");
+  return [
+    observations.repositoryVerification,
+    observations.workspace,
+    observations.bundle,
+    observations.credentialGrants,
+  ].every(
     (observation) =>
       observation === null ||
-      (observation.attempt === metadata.createAttempt &&
+      ((observation.attempt === metadata.createAttempt ||
+        (retainedPriorWorkspace &&
+          (observation === observations.workspace ||
+            observation === observations.repositoryVerification))) &&
         (metadata.privateCreateInput === null ||
           observation.payloadReference === metadata.privateCreateInput.payload.reference)),
   );
 };
 
-export const validateSessionActorMetadata = (
+const metadataMatchesAuthority = (
   authority: SessionAuthority,
   metadata: SessionActorMetadata,
-): Result.Result<SessionActorMetadata, SessionActorMetadataViolation> => {
-  if (
+): boolean =>
+  !(
     metadata.sessionId !== authority.session.id ||
     metadata.repository !== authority.session.repository ||
     JSON.stringify(metadata.selection) !== JSON.stringify(authority.session.selection) ||
     JSON.stringify(metadata.configuration) !== JSON.stringify(authority.session.configuration) ||
     isSidecarSelection(metadata.selection) !== (metadata.sidecarControl !== undefined)
-  )
-    return invalid("authority_identity_mismatch");
+  );
+
+export const validateSessionActorMetadata = (
+  authority: SessionAuthority,
+  metadata: SessionActorMetadata,
+): Result.Result<SessionActorMetadata, SessionActorMetadataViolation> => {
+  if (!metadataMatchesAuthority(authority, metadata)) return invalid("authority_identity_mismatch");
 
   const create = createTransition(authority);
+  const failedCreate = failedCreateOf(authority) !== undefined;
   if (metadata.privateCreateInput !== null) {
-    if (create === undefined) return invalid("private_create_input_not_scrubbed");
+    if (create === undefined && !failedCreate) return invalid("private_create_input_not_scrubbed");
     if (
-      create.attempt !== metadata.createAttempt ||
-      metadata.privateCreateInput.attempt !== create.attempt
+      metadata.privateCreateInput.attempt !== metadata.createAttempt ||
+      (create !== undefined && metadata.createAttempt !== create.attempt)
     )
       return invalid("create_attempt_mismatch");
   }
   if (create !== undefined && create.attempt !== metadata.createAttempt)
     return invalid("create_attempt_mismatch");
-  if (!validateObservationFences(metadata)) return invalid("create_observation_fence_mismatch");
+  if (!validateObservationFences(authority, metadata))
+    return invalid("create_observation_fence_mismatch");
   return Result.succeed(metadata);
 };
 
@@ -280,7 +324,12 @@ export const makeSessionActorMetadata = (
       initialPrompt: input.initialPrompt,
       ...(input.images === undefined ? {} : { images: input.images }),
     },
-    createObservations: { workspace: null, bundle: null, credentialGrants: null },
+    createObservations: {
+      repositoryVerification: null,
+      workspace: null,
+      bundle: null,
+      credentialGrants: null,
+    },
   };
   return validateSessionActorMetadata(authority, metadata);
 };
@@ -295,6 +344,7 @@ export const scrubSettledCreatePrivateInput = (
 };
 
 type CreateObservation =
+  | { readonly _tag: "RepositoryVerification"; readonly value: RepositoryVerificationObservation }
   | { readonly _tag: "Workspace"; readonly value: WorkspaceCreateObservation }
   | { readonly _tag: "Bundle"; readonly value: BundleCreateObservation }
   | { readonly _tag: "CredentialGrants"; readonly value: CredentialGrantCreateObservation };
@@ -319,8 +369,19 @@ export const recordCreateObservation = (
     return invalid("create_observation_fence_mismatch");
   const current = metadata.createObservations;
   const updated = Match.valueTags(observation, {
+    RepositoryVerification: ({ value }) =>
+      current.repositoryVerification !== null &&
+      current.repositoryVerification.attempt === metadata.createAttempt &&
+      !sameRepositoryVerification(current.repositoryVerification, value)
+        ? invalid("create_observation_conflict")
+        : Result.succeed({
+            ...metadata,
+            createObservations: { ...current, repositoryVerification: value },
+          }),
     Workspace: ({ value }) =>
-      current.workspace !== null && !sameWorkspaceObservation(current.workspace, value)
+      current.workspace !== null &&
+      current.workspace.attempt === metadata.createAttempt &&
+      !sameWorkspaceObservation(current.workspace, value)
         ? invalid("create_observation_conflict")
         : Result.succeed({
             ...metadata,
@@ -386,8 +447,16 @@ const observationsOnlyAdvance = (
   const before = current.createObservations;
   const after = next.createObservations;
   return (
+    (before.repositoryVerification === null ||
+      (after.repositoryVerification !== null &&
+        (sameRepositoryVerification(before.repositoryVerification, after.repositoryVerification) ||
+          (before.repositoryVerification.attempt !== current.createAttempt &&
+            after.repositoryVerification.attempt === current.createAttempt)))) &&
     (before.workspace === null ||
-      (after.workspace !== null && sameWorkspaceObservation(before.workspace, after.workspace))) &&
+      (after.workspace !== null &&
+        (sameWorkspaceObservation(before.workspace, after.workspace) ||
+          (before.workspace.attempt !== current.createAttempt &&
+            after.workspace.attempt === current.createAttempt)))) &&
     (before.bundle === null ||
       (after.bundle !== null && sameBundleObservation(before.bundle, after.bundle))) &&
     (before.credentialGrants === null ||

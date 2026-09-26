@@ -4,6 +4,7 @@ import { Data, Predicate, Result } from "effect";
 import {
   AuthorityStateSchema,
   decodeSessionAuthority,
+  publicRecovery,
   StableStateSchema,
   type ActivityProof,
   type BackupIdentity,
@@ -105,9 +106,13 @@ const actorStableRecordDetails = (authority: SessionAuthority): ActorStableRecor
   if (StableStateSchema.guards.Failed(stable))
     return {
       ownedBackupIds: stable.ownedBackupIds,
-      currentBackup: stable.backup,
+      currentBackup: Predicate.isTagged(stable.recovery, "Resume") ? stable.recovery.backup : null,
       activity: null,
-      failure: { code: stable.code, message: stable.code, recoverable: stable.actionable },
+      failure: {
+        code: stable.code,
+        message: stable.code,
+        recovery: publicRecovery(stable.recovery),
+      },
     };
   return { ownedBackupIds: [], currentBackup: null, activity: null, failure: undefined };
 };

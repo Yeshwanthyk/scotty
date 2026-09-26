@@ -86,13 +86,14 @@ const stableShellTitles = {
 const failureMessageFor = (session: SessionModel): string | null => {
   const authority = session.authority;
   if (authority.kind !== "stable" || authority.lifecycle !== "failed") return null;
-  const code = authority.failure?.code;
-  if (code === "runtime_missing")
+  const failure = authority.failure;
+  if (failure === undefined || failure === null) return "This session cannot be recovered.";
+  if (failure.recovery === "resume" && failure.code === "runtime_missing")
     return "The runtime stopped, but this session can be restored from its confirmed backup.";
-  if (code === "backup_missing") return "This session has no confirmed backup to restore.";
-  return authority.failure?.recoverable === true
-    ? "This session can be recovered."
-    : "This session cannot be recovered.";
+  if (failure.recovery === "terminal")
+    return "This session cannot be recovered. Vaporize it to remove the failed session.";
+  if (failure.recovery === "resume") return "This session can be restored from its backup.";
+  return "Creating this session can be retried.";
 };
 
 const stablePresentation = (
@@ -105,16 +106,13 @@ const stablePresentation = (
   return {
     id: session.id,
     authority: { kind: "stable", lifecycle },
-    railLabel:
-      lifecycle === "failed" && authority.failure?.recoverable === true
-        ? "Needs attention"
-        : stableRailLabels[lifecycle],
+    railLabel: lifecycle === "failed" ? "Needs attention" : stableRailLabels[lifecycle],
     shellTitle:
       lifecycle === "warm"
         ? runtime === "ready"
           ? session.display.title
           : "Connecting to session"
-        : lifecycle === "failed" && authority.failure?.recoverable === true
+        : lifecycle === "failed"
           ? "Session needs attention"
           : stableShellTitles[lifecycle],
     source: options.source,
