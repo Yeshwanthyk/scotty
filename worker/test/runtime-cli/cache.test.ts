@@ -55,7 +55,6 @@ const descriptor = (
 });
 
 const release = (value = descriptor()): ResolvedRuntimeCliRelease => ({
-  releaseId: 42,
   releaseTag: value.releaseTag,
   artifactDownloadUrl: downloadUrl,
   descriptor: value,

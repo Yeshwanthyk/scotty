@@ -21,7 +21,6 @@ import {
 import { runtimeCliPin } from "./fixtures";
 
 const release = (version = "0.3.19"): ResolvedRuntimeCliRelease => ({
-  releaseId: 1,
   releaseTag: `v${version}`,
   artifactDownloadUrl: `https://github.com/Yeshwanthyk/scotty/releases/download/v${version}/scotty-runtime-linux-amd64`,
   descriptor: {
