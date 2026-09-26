@@ -39,6 +39,7 @@ const sandbox = vi.hoisted(() => ({
   checkpointScottySession: vi.fn(),
   sleepScottySession: vi.fn(),
   resumeScottySession: vi.fn(),
+  retryCreateScottySession: vi.fn(),
   prepareDownArchive: vi.fn(),
   prepareCodexRolloutArchive: vi.fn(),
   readScottyArchiveStream: vi.fn(),
@@ -481,7 +482,7 @@ const projection = {
   hardCapAt: "2026-01-01T04:00:00.000Z",
   projectedAt: "2026-01-01T00:01:00.000Z",
   sandboxBundle: { digest: null },
-  failure: { code: "backup_failed", message: "Backup failed", recoverable: true },
+  failure: { code: "backup_failed", message: "Backup failed", recovery: "resume" },
   secret: "must-not-survive",
 };
 
@@ -710,6 +711,36 @@ describe("real Hono boundary", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual(entry.output);
     }
+  });
+
+  it("requires session write scope and returns pending create retry as 202", async () => {
+    const pending = { id: "a0b1c2d3e4f5", status: "booting", pending: true };
+    sandbox.retryCreateScottySession.mockResolvedValueOnce(pending);
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: { client: { ...REGISTERED_CLIENT, scopes: ["sessions:read"] }, renewed: false },
+    });
+    const denied = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/create",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
+      env(),
+    );
+    expect(denied.status).toBe(401);
+    const admitted = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/create",
+      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(admitted.status).toBe(202);
+    await expect(admitted.json()).resolves.toEqual(pending);
+    expect(sandbox.retryCreateScottySession).toHaveBeenCalledOnce();
   });
 
   it("serves a JSON not-found response for Cloudflare sub-asset routes", async () => {
@@ -1040,6 +1071,7 @@ describe("real Hono boundary", () => {
           runtime: { provider: "cloudflare", readiness: "not-applicable" },
           capabilities: {
             checkpoint: false,
+            create: false,
             sleep: false,
             resume: true,
             work: false,
@@ -1288,7 +1320,7 @@ describe("real Hono boundary", () => {
       failure: {
         code: "resume_failed",
         message: "Session restore failed",
-        recoverable: true,
+        recovery: "resume",
       },
     };
     const sessions = nativeKvNamespace({
@@ -3608,7 +3640,7 @@ describe("real Hono boundary", () => {
         `projection:delete:session:${SESSION_ID}`,
       ]),
     );
-    expect(harness.credentialGrantReleases).toEqual([]);
+    expect(harness.credentialGrantReleases).toEqual([{ sessionId: SESSION_ID }]);
     expect(harness.events).not.toContain(`projection:delete:stats:workspace-created:${SESSION_ID}`);
   });
 
@@ -3640,7 +3672,7 @@ describe("real Hono boundary", () => {
           authority: {
             kind: "stable",
             lifecycle: "failed",
-            failure: { code: projection.failure.code, recoverable: true },
+            failure: { code: projection.failure.code, recovery: "resume" },
           },
           projection: { projectedAt: projection.projectedAt },
         },

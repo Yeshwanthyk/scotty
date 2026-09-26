@@ -4,6 +4,7 @@ import type { Transition } from "./authority";
 export const phases = {
   Create: [
     "IntentCommitted",
+    "CleanupObserved",
     "WorkspacePreparing",
     "RuntimeMaterializing",
     "RuntimeReady",

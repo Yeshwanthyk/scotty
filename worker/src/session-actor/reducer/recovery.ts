@@ -8,7 +8,12 @@ import type {
   StableState,
   Transition,
 } from "./authority";
-import { AuthorityStateSchema, StableStateSchema, TransitionSchema } from "./authority";
+import {
+  AuthorityStateSchema,
+  recoveryFor,
+  StableStateSchema,
+  TransitionSchema,
+} from "./authority";
 import { confirmedBackup } from "./backup";
 import { accept, reject } from "./control";
 import type { Decision, JournalEvent } from "./decision";
@@ -96,11 +101,13 @@ const recoveryBackup = (authority: SessionAuthority) => {
     if (StableStateSchema.guards.Sleeping(stable))
       return recoveryBackupIdentity(stable.backup, stable.ownedBackupIds, stable.backup.backupId);
     if (StableStateSchema.guards.Failed(stable))
-      return recoveryBackupIdentity(
-        stable.backup,
-        stable.ownedBackupIds,
-        stable.backup?.backupId ?? null,
-      );
+      return Predicate.isTagged(stable.recovery, "Resume")
+        ? recoveryBackupIdentity(
+            stable.recovery.backup,
+            stable.ownedBackupIds,
+            stable.recovery.backup.backupId,
+          )
+        : recoveryBackupIdentity(null, stable.ownedBackupIds, null);
     return recoveryBackupIdentity(null, [], null);
   }
   return Match.valueTags(authority.state.transition, {
@@ -129,7 +136,7 @@ const failureOrigin = (
     });
   }
   return Match.valueTags(authority.state.transition, {
-    Create: () => ({ origin: "Absent" as const, lastStable: null }),
+    Create: (transition) => ({ origin: transition.origin, lastStable: null }),
     Checkpoint: () => ({ origin: "Warm" as const, lastStable: "Warm" as const }),
     Sleep: () => ({ origin: "Warm" as const, lastStable: "Warm" as const }),
     Resume: (transition) => ({
@@ -149,16 +156,20 @@ const fail = (
 ): Decision => {
   const backup = recoveryBackup(authority);
   const origin = failureOrigin(authority);
-  const actionable = backup.backup !== null && origin.lastStable !== null;
   const failed: StableState = {
     _tag: "Failed",
     code: failureCode,
-    actionable,
     origin: origin.origin,
     lastStable: origin.lastStable,
-    backup: actionable ? backup.backup : null,
     ownedBackupIds: backup.ownedBackupIds,
-    wakeSource: actionable ? backup.wakeSource : null,
+    recovery: recoveryFor(
+      backup.backup,
+      origin.lastStable,
+      AuthorityStateSchema.guards.Transitioning(authority.state)
+        ? transitionKind(authority.state.transition)
+        : "Warm",
+      origin.origin,
+    ),
   };
   return accept(
     authority.revision,

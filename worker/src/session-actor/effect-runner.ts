@@ -50,10 +50,7 @@ const boundaryFailureObservation = (
             timestamp: observedAt,
             correlationId: committed.journalEvent.correlationId,
             failureCode: safeResultCode,
-            actionable: false,
-            backup: null,
             ownedBackupIds: [],
-            wakeSource: null,
             resultCode: safeResultCode,
           },
   };

@@ -12,8 +12,8 @@ const wireSession = (
   id: string,
   lifecycle: "warm" | "sleeping" = "warm",
   capabilities: SessionCapabilities = lifecycle === "warm"
-    ? { checkpoint: true, sleep: true, resume: false, work: true, vaporize: true }
-    : { checkpoint: false, sleep: false, resume: true, work: false, vaporize: true },
+    ? { create: false, checkpoint: true, sleep: true, resume: false, work: true, vaporize: true }
+    : { create: false, checkpoint: false, sleep: false, resume: true, work: false, vaporize: true },
 ) => ({
   version: SESSION_WIRE_VERSION,
   session: {
@@ -106,6 +106,7 @@ describe("readAuthoritativeSession", () => {
         authority: { kind: "stable", lifecycle: "gone", failure: null },
         runtime: { provider: "cloudflare", readiness: "not-applicable" },
         capabilities: {
+          create: false,
           checkpoint: false,
           sleep: false,
           resume: false,
@@ -135,6 +136,7 @@ describe("readAuthoritativeSession", () => {
         },
         runtime: { provider: "cloudflare", readiness: "not-applicable" },
         capabilities: {
+          create: false,
           checkpoint: false,
           sleep: false,
           resume: false,
@@ -216,6 +218,7 @@ describe("readAuthoritativeSession", () => {
 
   it("accepts backend Codex capability subsets but rejects lifecycle-invalid actions", async () => {
     const codex = wireSession("codex-123", "warm", {
+      create: false,
       checkpoint: false,
       sleep: false,
       resume: false,

@@ -6,7 +6,14 @@ const listItem = (id: string) => ({
   selection: { agent: "codex", model: "gpt-5.6-sol", effort: "medium" },
   authority: { kind: "stable", lifecycle: "warm", failure: null },
   runtime: { provider: "cloudflare", readiness: "unchecked" },
-  capabilities: { checkpoint: true, sleep: true, resume: false, work: true, vaporize: true },
+  capabilities: {
+    create: false,
+    checkpoint: true,
+    sleep: true,
+    resume: false,
+    work: true,
+    vaporize: true,
+  },
   display: {
     title: `Session ${id}`,
     repository: "personal/scotty",
@@ -43,6 +50,7 @@ describe("session list boundary", () => {
       },
       runtime: { provider: "cloudflare", readiness: "not-applicable" },
       capabilities: {
+        create: false,
         checkpoint: false,
         sleep: false,
         resume: false,

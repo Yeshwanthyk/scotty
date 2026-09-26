@@ -121,6 +121,7 @@ describe("session catalog controller", () => {
       authority: { kind: "stable", lifecycle: "sleeping", failure: null } as const,
       runtime: { ...warmIdle.runtime, readiness: "not-applicable" as const },
       capabilities: {
+        create: false,
         checkpoint: false,
         sleep: false,
         resume: true,

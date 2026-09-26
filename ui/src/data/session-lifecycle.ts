@@ -11,9 +11,9 @@ import { LifecyclePendingMarkerSchema } from "../../../protocol/session/lifecycl
 
 const SessionViewSchema = Schema.Struct({
   id: Schema.NonEmptyString,
-  status: Schema.Literals(["warm", "sleeping", "failed", "gone"]),
+  status: Schema.Literals(["booting", "warm", "sleeping", "failed", "gone"]),
   operation: Schema.Struct({
-    kind: Schema.Literals(["snapshot", "sleep", "resume"]),
+    kind: Schema.Literals(["create", "snapshot", "sleep", "resume"]),
     nonce: Schema.NonEmptyString,
     deadlineAt: Schema.NonEmptyString,
   }),
@@ -22,7 +22,7 @@ const decodePendingSessionView = Schema.decodeUnknownOption(
   Schema.Struct({ ...SessionViewSchema.fields, ...LifecyclePendingMarkerSchema.fields }),
 );
 
-export type SessionLifecycleAction = "checkpoint" | "sleep" | "resume" | "vaporize";
+export type SessionLifecycleAction = "create" | "checkpoint" | "sleep" | "resume" | "vaporize";
 
 export interface SessionMutationSuccess {
   readonly action: SessionLifecycleAction;

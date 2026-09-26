@@ -65,6 +65,7 @@ const metadata = (workspaceObserved = true): SessionActorMetadata => ({
   createAttempt: "create-attempt-1",
   privateCreateInput: null,
   createObservations: {
+    repositoryVerification: null,
     workspace: workspaceObserved
       ? {
           attempt: "create-attempt-1",
@@ -199,12 +200,10 @@ describe("session actor public projection", () => {
         stable: {
           _tag: "Failed",
           code: "create_transport_failed",
-          actionable: false,
           origin: "Absent",
           lastStable: null,
-          backup: null,
           ownedBackupIds: [],
-          wakeSource: null,
+          recovery: { _tag: "Create" },
         },
       },
     };
@@ -215,7 +214,7 @@ describe("session actor public projection", () => {
       failure: {
         code: "create_transport_failed",
         message: "create_transport_failed",
-        recoverable: false,
+        recovery: "create",
       },
     });
   });

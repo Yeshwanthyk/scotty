@@ -8,7 +8,9 @@ import {
 } from "./actor";
 import {
   AuthorityStateSchema,
+  failedCreateOf,
   type ExecutionMode,
+  type FailedRecovery,
   type SessionAuthority,
   type SessionIdentity,
   StableStateSchema,
@@ -63,7 +65,7 @@ export type CreateControllerResult =
       readonly replay: boolean;
       readonly authority: SessionAuthority;
       readonly code: string;
-      readonly actionable: boolean;
+      readonly recovery: FailedRecovery;
     }
   | {
       readonly _tag: "InProgress";
@@ -170,6 +172,13 @@ interface CreateMetadataControllerShape {
     authority: SessionAuthority,
     createAttempt: string,
   ) => Effect.Effect<void, MetadataStoreMutationError>;
+  readonly prepareRetry: (
+    current: SessionAuthority,
+    proposed: SessionAuthority,
+  ) => Effect.Effect<
+    void,
+    MetadataStoreReadError | MetadataStoreMutationError | CreateControllerRejected
+  >;
 }
 
 export class CreateMetadataController extends Context.Service<
@@ -218,6 +227,14 @@ export const createMetadataControllerFromStoresLayer: Layer.Layer<
         };
       }),
       scrubSettled: (settled) => metadata.scrubSettledCreate(settled).pipe(Effect.asVoid),
+      prepareRetry: Effect.fnUntraced(function* (current, proposed) {
+        const record = yield* metadata.read(current);
+        if (record === undefined || record.privateCreateInput === null)
+          return yield* new CreateControllerRejected({
+            code: "create_private_payload_unavailable",
+          });
+        yield* metadata.prepareRetry(current, proposed);
+      }),
     });
   }),
 );
@@ -352,7 +369,7 @@ const classify = (
       replay,
       authority,
       code: authority.state.stable.code,
-      actionable: authority.state.stable.actionable,
+      recovery: authority.state.stable.recovery,
     });
   return Effect.fail(
     new CreateControllerInvariantFailure({ code: "create_finished_in_unexpected_state" }),
@@ -364,7 +381,7 @@ const scrubIfSettled = (
   authority: SessionAuthority,
   createAttempt: string,
 ): Effect.Effect<void, MetadataStoreMutationError> =>
-  AuthorityStateSchema.guards.Stable(authority.state)
+  AuthorityStateSchema.guards.Stable(authority.state) && failedCreateOf(authority) === undefined
     ? metadata.scrubSettled(authority, createAttempt)
     : Effect.void;
 

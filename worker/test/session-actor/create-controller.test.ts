@@ -241,8 +241,9 @@ const harness = (options: HarnessOptions = {}) => {
       events.push("metadata_scrubbed");
       return Effect.void;
     },
+    prepareRetry: () => Effect.void,
   });
-  const dependencies = Layer.merge(Layer.merge(actorLayer, capLayer), metadataLayer);
+  const dependencies = Layer.mergeAll(actorLayer, capLayer, metadataLayer);
   const layer = createControllerLayer.pipe(Layer.provide(dependencies));
   const run = (value: CreateControllerRequest = request()) =>
     Effect.flatMap(CreateController, (controller) => controller.create(value)).pipe(

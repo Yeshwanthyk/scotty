@@ -2,15 +2,23 @@ import { Context, Effect, Layer, Predicate, Schema } from "effect";
 import { actorResultRejectedBeforeCommit, SessionActor, type ActorHandleError } from "./actor";
 import {
   AuthorityStateSchema,
+  failedCreateOf,
+  type FailedRecovery,
   type SessionAuthority,
   StableStateSchema,
 } from "./reducer/authority";
-import { CreateHardCapController, type CreateControllerBoundaryFailure } from "./create-controller";
+import {
+  CreateHardCapController,
+  CreateMetadataController,
+  type CreateControllerBoundaryFailure,
+  type CreateControllerRejected,
+} from "./create-controller";
+import type { MetadataStoreReadError, MetadataStoreMutationError } from "./metadata-store";
 import type { SessionActorInput } from "./reducer/input";
 import { decide } from "./reducer/decide";
 import { ActorStore, type ActorStoreReadError } from "./store";
 
-export type LifecycleCommandKind = "Checkpoint" | "Sleep" | "Resume";
+export type LifecycleCommandKind = "Create" | "Checkpoint" | "Sleep" | "Resume";
 
 interface LifecycleControllerRequestBase {
   readonly kind: LifecycleCommandKind;
@@ -24,6 +32,10 @@ interface LifecycleControllerRequestBase {
 export type LifecycleControllerRequest =
   | (LifecycleControllerRequestBase & { readonly kind: "Checkpoint" })
   | (LifecycleControllerRequestBase & { readonly kind: "Sleep" })
+  | (LifecycleControllerRequestBase & {
+      readonly kind: "Create";
+      readonly nextHardCap: SessionAuthority["hardCap"];
+    })
   | (LifecycleControllerRequestBase & {
       readonly kind: "Resume";
       readonly nextHardCap: SessionAuthority["hardCap"];
@@ -40,13 +52,13 @@ export type LifecycleControllerResult =
       readonly _tag: "Failed";
       readonly authority: SessionAuthority;
       readonly code: string;
-      readonly actionable: boolean;
+      readonly recovery: FailedRecovery;
     };
 
 export class LifecycleControllerRejected extends Schema.TaggedError<LifecycleControllerRejected>()(
   "LifecycleControllerRejected",
   {
-    kind: Schema.Literals(["Checkpoint", "Sleep", "Resume"]),
+    kind: Schema.Literals(["Create", "Checkpoint", "Sleep", "Resume"]),
     code: Schema.String,
   },
 ) {}
@@ -60,6 +72,9 @@ export type LifecycleControllerError =
   | ActorHandleError
   | ActorStoreReadError
   | CreateControllerBoundaryFailure
+  | CreateControllerRejected
+  | MetadataStoreReadError
+  | MetadataStoreMutationError
   | LifecycleControllerRejected
   | LifecycleControllerInvariantFailure;
 
@@ -77,7 +92,8 @@ export class LifecycleController extends Context.Service<
 const command = (
   request: LifecycleControllerRequest,
   expectedRevision: number,
-): Extract<SessionActorInput, { readonly _tag: `${LifecycleCommandKind}Command` }> => {
+  session: SessionAuthority["session"] | undefined,
+): Extract<SessionActorInput, { readonly _tag: `${LifecycleCommandKind}Command` }> | undefined => {
   const base = {
     expectedRevision,
     correlationId: request.correlationId,
@@ -88,6 +104,10 @@ const command = (
   };
   if (request.kind === "Checkpoint") return { _tag: "CheckpointCommand", ...base };
   if (request.kind === "Sleep") return { _tag: "SleepCommand", ...base };
+  if (request.kind === "Create")
+    return session === undefined
+      ? undefined
+      : { _tag: "CreateCommand", ...base, session, hardCap: request.nextHardCap };
   return { _tag: "ResumeCommand", ...base, nextHardCap: request.nextHardCap };
 };
 
@@ -104,7 +124,7 @@ const classify = (authority: SessionAuthority): LifecycleControllerResult => {
         _tag: "Failed",
         authority,
         code: stable.code,
-        actionable: stable.actionable,
+        recovery: stable.recovery,
       }
     : { _tag: "Settled", authority };
 };
@@ -112,30 +132,45 @@ const classify = (authority: SessionAuthority): LifecycleControllerResult => {
 export const lifecycleControllerLayer: Layer.Layer<
   LifecycleController,
   never,
-  ActorStore | SessionActor | CreateHardCapController
+  ActorStore | SessionActor | CreateHardCapController | CreateMetadataController
 > = Layer.effect(
   LifecycleController,
   Effect.gen(function* () {
     const store = yield* ActorStore;
     const actor = yield* SessionActor;
     const hardCap = yield* CreateHardCapController;
+    const metadata = yield* CreateMetadataController;
     return LifecycleController.of({
       run: Effect.fnUntraced(function* (request) {
         const before = yield* store.read;
-        const input = command(request, before.revision);
-        const proposed = decide(before.authority, input);
+        const current = before.authority;
+        if (current === undefined)
+          return yield* new LifecycleControllerRejected({
+            kind: request.kind,
+            code: "not_admissible",
+          });
+        const input = command(request, before.revision, current.session);
+        if (input === undefined)
+          return yield* new LifecycleControllerRejected({
+            kind: request.kind,
+            code: "not_admissible",
+          });
+        const proposed = decide(current, input);
         if (Predicate.isTagged(proposed, "Rejected"))
           return yield* new LifecycleControllerRejected({
             kind: request.kind,
             code: proposed.code,
           });
-        if (request.kind === "Resume") {
+        if (request.kind === "Resume" || request.kind === "Create") {
           yield* hardCap.arm({
             sessionId: proposed.nextAuthority.session.id,
             generation: request.nextHardCap.generation,
             deadlineAt: request.nextHardCap.deadlineAt,
             durationSeconds: request.nextHardCap.durationSeconds,
           });
+        }
+        if (request.kind === "Create") {
+          yield* metadata.prepareRetry(current, proposed.nextAuthority);
         }
         const handled = yield* actor.handle(input);
         if (actorResultRejectedBeforeCommit(handled))
@@ -148,6 +183,12 @@ export const lifecycleControllerLayer: Layer.Layer<
           return yield* new LifecycleControllerInvariantFailure({
             code: "actor_committed_no_authority",
           });
+        if (
+          request.kind === "Create" &&
+          AuthorityStateSchema.guards.Stable(after.authority.state) &&
+          failedCreateOf(after.authority) === undefined
+        )
+          yield* metadata.scrubSettled(after.authority, request.attempt);
         return classify(after.authority);
       }),
     });

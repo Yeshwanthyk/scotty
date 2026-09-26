@@ -141,7 +141,7 @@ export type SessionCreateSetupStage = typeof SessionCreateSetupStageSchema.Type;
 export const SessionFailureSchema = Schema.Struct({
   code: Schema.String,
   message: Schema.String,
-  recoverable: Schema.Boolean,
+  recovery: Schema.Literals(["resume", "create", "terminal"]),
   stage: Schema.optionalKey(SessionCreateSetupStageSchema),
 });
 export type SessionFailure = typeof SessionFailureSchema.Type;

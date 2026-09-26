@@ -134,7 +134,7 @@ export const OperationResponseSchema = Schema.Struct({
   status: Schema.NonEmptyString,
 });
 const LifecycleOperationSchema = Schema.Struct({
-  kind: Schema.Literals(["snapshot", "sleep", "resume"]),
+  kind: Schema.Literals(["create", "snapshot", "sleep", "resume"]),
   nonce: Schema.NonEmptyString,
   deadlineAt: Schema.NonEmptyString,
 });
@@ -216,7 +216,7 @@ const SessionActionSchema = Schema.Literals([
 ]);
 const SessionFailureSchema = Schema.Struct({
   code: Schema.NonEmptyString,
-  recoverable: Schema.Boolean,
+  recovery: Schema.Literals(["resume", "create", "terminal"]),
 });
 const SessionAuthoritySchema = Schema.Union([
   Schema.Struct({
@@ -233,6 +233,7 @@ const SessionAuthoritySchema = Schema.Union([
   }),
 ]);
 const SessionCapabilitiesSchema = Schema.Struct({
+  create: Schema.Boolean,
   checkpoint: Schema.Boolean,
   sleep: Schema.Boolean,
   resume: Schema.Boolean,

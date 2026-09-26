@@ -1,5 +1,5 @@
 import { AgentSelectionSchema } from "../../../../protocol/agents/agent-selection";
-import { Schema } from "effect";
+import { Match, Predicate, Schema } from "effect";
 import { SessionConfigurationSchema } from "../configuration";
 
 const SafeIdentifierSchema = Schema.NonEmptyString.check(Schema.isMaxLength(256));
@@ -139,12 +139,14 @@ export const SleepingStableSchema = Schema.TaggedStruct("Sleeping", {
 });
 export const FailedStableSchema = Schema.TaggedStruct("Failed", {
   code: Schema.String,
-  actionable: Schema.Boolean,
   origin: OriginSchema,
   lastStable: Schema.NullOr(Schema.Literals(["Warm", "Sleeping"])),
-  backup: Schema.NullOr(BackupIdentitySchema),
   ownedBackupIds: Schema.Array(Schema.String),
-  wakeSource: Schema.NullOr(Schema.Struct({ backupId: Schema.String, confirmedAt: Schema.String })),
+  recovery: Schema.Union([
+    Schema.TaggedStruct("Resume", { backup: BackupIdentitySchema }),
+    Schema.TaggedStruct("Create", {}),
+    Schema.TaggedStruct("Terminal", {}),
+  ]).pipe(Schema.toTaggedUnion("_tag")),
 });
 export const GoneStableSchema = Schema.TaggedStruct("Gone", { cleanup: CleanupProofSchema });
 export const StableStateSchema = Schema.Union([
@@ -157,6 +159,7 @@ export type StableState = typeof StableStateSchema.Type;
 
 export const CreatePhaseSchema = Schema.Literals([
   "IntentCommitted",
+  "CleanupObserved",
   "WorkspacePreparing",
   "RuntimeMaterializing",
   "RuntimeReady",
@@ -311,6 +314,42 @@ export const SessionAuthoritySchema = Schema.Struct({
   state: AuthorityStateSchema,
 });
 export type SessionAuthority = typeof SessionAuthoritySchema.Type;
+
+export type FailedRecovery = Extract<StableState, { readonly _tag: "Failed" }>["recovery"];
+
+export const recoveryFor = (
+  backup: BackupIdentity | null,
+  lastStable: "Warm" | "Sleeping" | null,
+  transitionKind: Transition["_tag"] | StableState["_tag"],
+  origin: Origin,
+): FailedRecovery => {
+  if (backup !== null && lastStable !== null) return { _tag: "Resume", backup };
+  if (
+    transitionKind === "Create" &&
+    lastStable === null &&
+    (origin === "Absent" || origin === "Failed")
+  )
+    return { _tag: "Create" };
+  return { _tag: "Terminal" };
+};
+
+export const publicRecovery = (recovery: FailedRecovery): "resume" | "create" | "terminal" =>
+  Match.valueTags(recovery, {
+    Resume: (): "resume" => "resume",
+    Create: (): "create" => "create",
+    Terminal: (): "terminal" => "terminal",
+  });
+
+export const failedCreateOf = (
+  authority: SessionAuthority | undefined,
+): Extract<StableState, { readonly _tag: "Failed" }> | undefined => {
+  if (authority === undefined || !AuthorityStateSchema.guards.Stable(authority.state))
+    return undefined;
+  const stable = authority.state.stable;
+  return StableStateSchema.guards.Failed(stable) && Predicate.isTagged(stable.recovery, "Create")
+    ? stable
+    : undefined;
+};
 
 export const decodeSessionAuthority = Schema.decodeUnknownResult(SessionAuthoritySchema, {
   onExcessProperty: "error",

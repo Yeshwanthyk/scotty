@@ -69,6 +69,10 @@ export interface CreateSandboxPreparedWorkspace {
 }
 
 interface CreateSandboxBoundaryShape {
+  readonly cleanupFailedCreate: (
+    authority: SessionAuthority,
+    transition: CreateTransition,
+  ) => Effect.Effect<void, CreateSandboxBoundaryFailure>;
   readonly resolve: (
     authority: SessionAuthority,
     transition: CreateTransition,
@@ -724,7 +728,7 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     });
 
     const reconcile = Effect.fnUntraced(function* (context: CreateProviderContext) {
-      if (context.transition.phase === "IntentCommitted") {
+      if (context.transition.phase === "CleanupObserved") {
         const observedAt = yield* timestamp;
         return {
           _tag: "PayloadResolved" as const,
@@ -847,6 +851,26 @@ export const createSandboxTransitionProviderLayer: Layer.Layer<
     });
 
     return CreateTransitionProvider.of({
+      prepareRetry: Effect.fnUntraced(function* (authority, transition) {
+        const observedAt = yield* timestamp;
+        const metadata = yield* metadataStore
+          .read(authority)
+          .pipe(
+            Effect.mapError(() =>
+              failure("unknown_after_admission", "create_metadata_unavailable", observedAt),
+            ),
+          );
+        if (metadata === undefined || metadata.privateCreateInput === null)
+          return yield* failure(
+            "rejected_before_admission",
+            "create_private_payload_unavailable",
+            observedAt,
+          );
+        if (transition.origin === "Failed")
+          yield* boundary
+            .cleanupFailedCreate(authority, transition)
+            .pipe(Effect.mapError((error) => mapBoundaryFailure(error, observedAt)));
+      }),
       lookupPayload: (authority, transition) => lookupPayload(metadataStore, authority, transition),
       prepareWorkspace,
       materializeRuntime,

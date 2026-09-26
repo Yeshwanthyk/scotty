@@ -17,6 +17,7 @@ const repositories = [
 ] as const;
 
 const none: SessionCapabilities = {
+  create: false,
   checkpoint: false,
   sleep: false,
   resume: false,
@@ -31,6 +32,7 @@ const capabilitiesFor = (
   if (authority.kind === "transitioning" || authority.lifecycle === "gone") return none;
   if (authority.lifecycle === "warm")
     return {
+      create: false,
       checkpoint: selection?.agent !== "codex",
       sleep: true,
       resume: false,
@@ -40,7 +42,8 @@ const capabilitiesFor = (
   if (authority.lifecycle === "sleeping") return { ...none, resume: true, vaporize: true };
   return {
     ...none,
-    resume: authority.failure?.recoverable === true,
+    create: authority.failure?.recovery === "create",
+    resume: authority.failure?.recovery === "resume",
     vaporize: true,
   };
 };
@@ -79,7 +82,10 @@ const session = (input: SessionInput): SessionModel => ({
 
 const stable = (
   lifecycle: SessionLifecycle,
-  failure: { readonly code: string; readonly recoverable: boolean } | null = null,
+  failure: {
+    readonly code: string;
+    readonly recovery: "resume" | "create" | "terminal";
+  } | null = null,
 ): SessionAuthority => ({ kind: "stable", lifecycle, failure });
 
 const transition = (
@@ -125,13 +131,13 @@ export const sleepingRetained = session({
 export const failedRecoverable = session({
   id: "failed-recoverable-001",
   title: "Recover the interrupted workspace",
-  authority: stable("failed", { code: "runtime_missing", recoverable: true }),
+  authority: stable("failed", { code: "runtime_missing", recovery: "resume" }),
 });
 
 export const failedTerminal = session({
   id: "failed-terminal-001",
   title: "Session without a wake source",
-  authority: stable("failed", { code: "backup_missing", recoverable: false }),
+  authority: stable("failed", { code: "backup_missing", recovery: "terminal" }),
 });
 
 export const transitionCreate = session({
@@ -221,9 +227,9 @@ const manySession = (index: number): SessionModel => {
       : stableIndex === 1
         ? stable("sleeping")
         : stableIndex === 2
-          ? stable("failed", { code: "runtime_missing", recoverable: true })
+          ? stable("failed", { code: "runtime_missing", recovery: "resume" })
           : stableIndex === 3
-            ? stable("failed", { code: "backup_missing", recoverable: false })
+            ? stable("failed", { code: "backup_missing", recovery: "terminal" })
             : stable("gone");
   return session({
     id: `many-session-${suffix}`,

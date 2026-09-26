@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Match, Predicate, Schema } from "effect";
+import { Clock, Context, Effect, Layer, Match, Predicate, Schema } from "effect";
 import {
   AuthorityStateSchema,
   type RuntimeProof,
@@ -38,6 +38,7 @@ const ProviderResultBase = {
 };
 
 export const CreateProviderResultSchema = Schema.Union([
+  Schema.TaggedStruct("RetryCleaned", ProviderResultBase),
   Schema.TaggedStruct("PayloadResolved", ProviderResultBase),
   Schema.TaggedStruct("WorkspacePrepared", {
     ...ProviderResultBase,
@@ -73,6 +74,10 @@ export interface CreateProviderContext {
 }
 
 export interface CreateTransitionProviderShape {
+  readonly prepareRetry: (
+    authority: SessionAuthority,
+    transition: CreateTransition,
+  ) => Effect.Effect<void, CreateProviderFailure>;
   readonly lookupPayload: (
     authority: SessionAuthority,
     transition: CreateTransition,
@@ -228,8 +233,21 @@ const applyResult = (
   result: CreateProviderResult,
 ): Effect.Effect<SessionActorInput, ProviderEffectBoundaryFailure> =>
   Match.valueTags(result, {
-    PayloadResolved: (value) =>
+    RetryCleaned: (value) =>
       transition.phase === "IntentCommitted"
+        ? Effect.succeed(
+            progress(
+              committed,
+              transition,
+              "CleanupObserved",
+              transition.proof,
+              value.observedAt,
+              value.resultCode,
+            ),
+          )
+        : Effect.fail(staleProof(committed, transition, value.observedAt)),
+    PayloadResolved: (value) =>
+      transition.phase === "CleanupObserved"
         ? Effect.succeed(
             progress(
               committed,
@@ -355,6 +373,15 @@ const dispatch = (
 ): Effect.Effect<CreateProviderResult, CreateProviderFailure> =>
   Match.value(context.transition.phase).pipe(
     Match.when("IntentCommitted", () =>
+      Effect.fail(
+        new CreateProviderFailure({
+          outcome: "rejected_before_admission",
+          safeResultCode: "create_intent_dispatch_unreachable",
+          observedAt: context.transition.lastProgressAt,
+        }),
+      ),
+    ),
+    Match.when("CleanupObserved", () =>
       Effect.succeed({
         _tag: "PayloadResolved" as const,
         observedAt: context.transition.lastProgressAt,
@@ -418,6 +445,18 @@ export const executeCreateTransition = Effect.fnUntraced(function* (
         }),
       ),
     );
+  if (transition.phase === "IntentCommitted") {
+    if (transition.origin === "Failed")
+      yield* provider
+        .prepareRetry(committed.authority, transition)
+        .pipe(Effect.mapError((failure) => boundaryFailure(committed, transition, failure)));
+    const observedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    return yield* applyResult(committed, transition, {
+      _tag: "RetryCleaned",
+      observedAt,
+      resultCode: "create_cleanup_observed",
+    });
+  }
   const payload = yield* provider
     .lookupPayload(committed.authority, transition)
     .pipe(Effect.mapError((failure) => boundaryFailure(committed, transition, failure)));

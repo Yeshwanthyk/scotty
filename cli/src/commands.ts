@@ -519,10 +519,13 @@ const pollLifecycleInspection = Effect.fnUntraced(function* (
   return Option.some(yield* decodeJson(response.success.bytes));
 });
 
+const commandKinds: Record<"checkpoint" | "create" | "resume", "Checkpoint" | "Create" | "Resume"> =
+  { checkpoint: "Checkpoint", create: "Create", resume: "Resume" };
+
 const originalLifecycleNonceCompleted = Effect.fnUntraced(function* (
   auth: ApiRequestTarget,
   sessionId: string,
-  command: "checkpoint" | "resume",
+  command: "checkpoint" | "resume" | "create",
   nonce: string,
 ) {
   const actor = decodeLifecycleActorJournalResult(
@@ -533,19 +536,19 @@ const originalLifecycleNonceCompleted = Effect.fnUntraced(function* (
   return actor.value.journal.some(
     (event) =>
       event.eventType === "completed" &&
-      event.transitionKind === (command === "checkpoint" ? "Checkpoint" : "Resume") &&
+      event.transitionKind === commandKinds[command] &&
       event.transitionNonce === nonce,
   );
 });
 
 const pollPendingLifecycle = Effect.fnUntraced(function* (
   auth: ApiRequestTarget,
-  command: "checkpoint" | "resume",
+  command: "checkpoint" | "resume" | "create",
   sessionId: string,
   raw: unknown,
 ) {
   const pending = decodePendingLifecycleResponse(raw);
-  const expectedKind = command === "checkpoint" ? "snapshot" : "resume";
+  const expectedKind = command === "checkpoint" ? "snapshot" : command;
   if (
     Option.isNone(pending) ||
     pending.value.id !== sessionId ||
@@ -618,7 +621,7 @@ const pollPendingLifecycle = Effect.fnUntraced(function* (
       !actor.value.journal.some(
         (event) =>
           event.eventType === "completed" &&
-          event.transitionKind === (command === "checkpoint" ? "Checkpoint" : "Resume") &&
+          event.transitionKind === commandKinds[command] &&
           event.transitionNonce === pending.value.operation.nonce,
       )
     )
@@ -2984,7 +2987,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   );
 
   const sessionOperation = Effect.fnUntraced(function* (
-    command: "checkpoint" | "resume" | "vaporize",
+    command: "checkpoint" | "resume" | "create" | "vaporize",
     id: string,
     yes: boolean,
   ) {
@@ -3010,6 +3013,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     const timeoutMs = {
       checkpoint: MUTATION_REQUEST_TIMEOUT_MS,
       resume: 11 * 60_000,
+      create: 11 * 60_000,
       vaporize: MUTATION_REQUEST_TIMEOUT_MS,
     }[command];
     const response = yield* apiRequest(auth, path, { method }, { timeoutMs });
@@ -3060,6 +3064,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ({ id }) => sessionOperation("resume", id, false),
   ).pipe(Command.withDescription("Restore a sleeping session"));
 
+  const retryCreate = Command.make(
+    "create",
+    {
+      id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
+    },
+    ({ id }) => sessionOperation("create", id, false),
+  ).pipe(Command.withDescription("Retry create for a failed session"));
+
   const vaporize = Command.make(
     "vaporize",
     {
@@ -3095,6 +3107,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       owner,
       checkpoint,
       resume,
+      retryCreate,
       vaporize,
       runner,
     ]),

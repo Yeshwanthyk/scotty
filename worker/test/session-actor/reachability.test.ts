@@ -87,11 +87,11 @@ const stableKind = (authority: SessionAuthority): string =>
   });
 
 const createProofAt = (nextIndex: number): TransitionProof => ({
-  workspaceId: nextIndex >= 1 ? "workspace-1" : null,
+  workspaceId: nextIndex >= 2 ? "workspace-1" : null,
   readiness: {
-    runtime: nextIndex >= 3 ? ready.runtime : null,
-    supervisor: nextIndex >= 5 ? ready.supervisor : null,
-    transport: nextIndex >= 6 ? ready.transport : null,
+    runtime: nextIndex >= 4 ? ready.runtime : null,
+    supervisor: nextIndex >= 6 ? ready.supervisor : null,
+    transport: nextIndex >= 7 ? ready.transport : null,
   },
 });
 
@@ -248,10 +248,7 @@ describe("session actor reachability", () => {
         timestamp: T1,
         correlationId: "correlation-failed",
         failureCode: "provider_unavailable",
-        actionable: true,
-        backup: currentBackup,
         ownedBackupIds: ["backup-1"],
-        wakeSource: { backupId: "backup-1", confirmedAt: T1 },
         resultCode: "failed",
       }),
     ).nextAuthority;

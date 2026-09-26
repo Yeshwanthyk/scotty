@@ -404,16 +404,15 @@ const fixtureAuthority = (record: SessionRecord, runtimeGeneration: string): Ses
         stable: {
           _tag: "Failed",
           code: record.failure?.code ?? "fixture_failed",
-          actionable:
-            (record.failure?.recoverable ?? false) && record.backup?.current !== undefined,
           origin: "Warm",
           lastStable: "Warm",
-          backup: record.backup?.current === undefined ? null : backup,
           ownedBackupIds: record.ownedBackupIds,
-          wakeSource:
-            record.backup?.current === undefined
-              ? null
-              : { backupId: backup.backupId, confirmedAt: record.updatedAt },
+          recovery:
+            record.failure?.recovery === "resume" && record.backup?.current !== undefined
+              ? { _tag: "Resume", backup }
+              : record.failure?.recovery === "create"
+                ? { _tag: "Create" }
+                : { _tag: "Terminal" },
         },
       },
     };
@@ -497,6 +496,7 @@ const fixtureMetadata = (record: SessionRecord): SessionActorMetadata => {
     createAttempt: attempt,
     privateCreateInput: null,
     createObservations: {
+      repositoryVerification: null,
       workspace: {
         ...observation,
         workspaceId: `/workspace/${record.id}`,
@@ -559,6 +559,7 @@ export type HarnessFailureStage =
   | "actorAlarmScheduleOnce"
   | "actorCommitAfterAbsence"
   | "backupDelete"
+  | "createAfterCleanupAlarm"
   | "backupList"
   | "checkpointDefect"
   | "checkpointSync"
@@ -595,6 +596,7 @@ export interface HarnessOptions {
   readonly actorRequestRecoveryBeforeResume?: SandboxEffectOptions["actorRequestRecoveryBeforeResume"];
   readonly clock?: SandboxEffectOptions["clock"];
   readonly commandGate?: (command: string) => Promise<void> | undefined;
+  readonly hardCapScheduleGate?: () => Promise<void> | undefined;
   readonly createBackupGate?: () => Promise<void> | undefined;
   readonly restoreBackupGate?: () => Promise<void> | undefined;
   readonly commandStdout?: (command: string) => string | undefined;
@@ -685,6 +687,7 @@ export interface SessionHarness {
   }>;
   readonly environmentUpdates: ReadonlyArray<Readonly<Record<string, string | undefined>>>;
   readonly r2DeletedKeys: ReadonlyArray<ReadonlyArray<string>>;
+  readonly deletedBackupIds: ReadonlyArray<string>;
   readonly artifactDeletedKeys: ReadonlyArray<string>;
   readonly artifactKeys: () => ReadonlyArray<string>;
   readonly sandboxBundleKeys: () => ReadonlyArray<string>;
@@ -1236,6 +1239,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const environmentUpdates: Array<Readonly<Record<string, string | undefined>>> = [];
   const runtimeFiles = new Map<string, Uint8Array>();
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
+  const deletedBackupIds: string[] = [];
   const artifactDeletedKeys: string[] = [];
   const sandboxBundleDeletedKeys: string[] = [];
   let runtimeIdentitySequence = 0;
@@ -1777,10 +1781,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     },
     deleteBackup: {
-      value: async (_backupId: string): Promise<void> => {
+      value: async (backupId: string): Promise<void> => {
         events.push("host:deleteBackup");
         if (failures.has("backupDelete"))
           throw injectedHarnessFailure("injected backup delete failure");
+        deletedBackupIds.push(backupId);
       },
     },
     restoreBackup: {
@@ -1923,6 +1928,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         if (failures.has("vaporizeDestroy") || options.destroyBehavior === "reject")
           throw injectedHarnessFailure("injected destroy failure");
         if (options.destroyBehavior === "pending") return new Promise<void>(() => undefined);
+        if (failures.delete("createAfterCleanupAlarm")) failures.add("actorAlarmScheduleOnce");
       },
     },
     schedule: {
@@ -1932,6 +1938,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         payload: unknown,
       ): Promise<RecordedSchedule> => {
         events.push(`schedule:${callback}`);
+        if (callback === "sessionActorHardCap") await options.hardCapScheduleGate?.();
         if (
           callback === "sessionActorDeadline" &&
           (failures.has("actorAlarmSchedule") || failures.delete("actorAlarmScheduleOnce"))
@@ -2013,6 +2020,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     writtenFiles,
     environmentUpdates,
     r2DeletedKeys,
+    deletedBackupIds,
     artifactDeletedKeys,
     artifactKeys: () => [...artifactObjects.keys()],
     sandboxBundleKeys: () => [...sandboxBundleObjectMap.keys()],

@@ -12,6 +12,7 @@ import { ActorStore, type ActorStoreSnapshot } from "../../src/session-actor/sto
 import type { SessionActorInput } from "../../src/session-actor/reducer/input";
 import {
   createHardCapControllerLayer,
+  createMetadataControllerLayer,
   type CreateHardCapArm,
 } from "../../src/session-actor/create-controller";
 
@@ -83,8 +84,8 @@ const sleeping: SessionAuthority = {
 function request(kind: "Resume"): Extract<LifecycleControllerRequest, { readonly kind: "Resume" }>;
 function request(
   kind: "Checkpoint" | "Sleep",
-): Exclude<LifecycleControllerRequest, { readonly kind: "Resume" }>;
-function request(kind: LifecycleControllerRequest["kind"]): LifecycleControllerRequest {
+): Extract<LifecycleControllerRequest, { readonly kind: "Checkpoint" | "Sleep" }>;
+function request(kind: "Checkpoint" | "Sleep" | "Resume"): LifecycleControllerRequest {
   const fields = {
     correlationId: "correlation",
     nonce: "nonce",
@@ -143,6 +144,12 @@ const layer = (
           }),
         ),
         createHardCapControllerLayer((request) => Effect.sync(() => arm(request))),
+        createMetadataControllerLayer({
+          inspect: () => Effect.succeed({ _tag: "Missing" }),
+          reserve: () => Effect.die("unused"),
+          scrubSettled: () => Effect.void,
+          prepareRetry: () => Effect.void,
+        }),
       ),
     ),
   );

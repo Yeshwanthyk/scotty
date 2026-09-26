@@ -874,6 +874,7 @@ describe("configuration and transport", () => {
             authority: { kind: "stable", lifecycle: "warm", failure: null },
             runtime: { provider: "cloudflare", readiness: "unchecked" },
             capabilities: {
+              create: false,
               checkpoint: true,
               sleep: true,
               resume: false,
@@ -3475,6 +3476,7 @@ describe("configuration and transport", () => {
       authority: { kind: "stable", lifecycle: "warm", failure: null },
       runtime: { provider: "cloudflare", readiness: "unchecked" },
       capabilities: {
+        create: false,
         checkpoint: true,
         sleep: true,
         resume: false,
@@ -4252,7 +4254,7 @@ describe("commands and schemas", () => {
     expect(calls).toBe(1);
   });
 
-  test("checkpoint and resume emit minimal stable schemas", async () => {
+  test("checkpoint, resume, and create retry emit minimal stable schemas", async () => {
     for (const [args, reply, expected] of [
       [
         ["checkpoint", "s1"],
@@ -4275,10 +4277,33 @@ describe("commands and schemas", () => {
           branch: "scotty/s1",
         },
       ],
+      [
+        ["create", "s1"],
+        {
+          id: "s1",
+          status: "warm",
+          branch: "scotty/s1",
+          url: "https://worker.example/s/s1?t=secret",
+          ignored: true,
+        },
+        {
+          id: "s1",
+          status: "warm",
+          url: "https://worker.example/s/s1",
+          branch: "scotty/s1",
+        },
+      ],
     ] as const) {
-      const h = harness({ fetch: async () => Response.json(reply) });
+      const paths: string[] = [];
+      const h = harness({
+        fetch: async (input) => {
+          paths.push(new URL(new Request(input).url).pathname);
+          return Response.json(reply);
+        },
+      });
       expect(await main([...args, "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
       expect(h.json()).toEqual(expected);
+      expect(paths).toContain(`/api/sessions/s1/${args[0]}`);
     }
   });
 
@@ -4346,6 +4371,63 @@ describe("commands and schemas", () => {
       "GET /api/sessions/s1/actor",
     ]);
     expect(h.json()).toEqual({ id: "s1", status: "warm", backupId: "backup-1" });
+  });
+
+  test("polls a pending create retry until its own Create transition completes", async () => {
+    const calls: string[] = [];
+    const h = harness({
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const path = new URL(request.url).pathname;
+        calls.push(`${request.method} ${path}`);
+        if (request.method === "POST")
+          return Response.json(
+            {
+              id: "s1",
+              status: "booting",
+              pending: true,
+              operation: {
+                kind: "create",
+                nonce: "create-retry-1",
+                deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+            { status: 202 },
+          );
+        if (path.endsWith("/actor"))
+          return Response.json({
+            journal: [
+              {
+                eventType: "completed",
+                transitionKind: "Create",
+                transitionNonce: "create-retry-1",
+              },
+            ],
+            authority: {
+              session: { id: "s1" },
+              state: {
+                _tag: "Stable",
+                stable: { _tag: "Warm", backups: { currentBackupId: null } },
+              },
+            },
+          });
+        return Response.json({
+          version: 1,
+          session: {
+            identity: { id: "s1" },
+            authority: { kind: "stable", lifecycle: "warm" },
+            display: { branch: "scotty/s1" },
+          },
+        });
+      },
+    });
+    expect(await main(["create", "s1", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
+    expect(calls).toEqual([
+      "POST /api/sessions/s1/create",
+      "GET /api/sessions/s1",
+      "GET /api/sessions/s1/actor",
+    ]);
+    expect(h.json()).toEqual({ id: "s1", status: "warm", branch: "scotty/s1" });
   });
 
   test("reports the original lifecycle success after a newer transition starts", async () => {

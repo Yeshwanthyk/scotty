@@ -16,6 +16,7 @@ import {
   AuthorityStateSchema,
   type SessionAuthority,
 } from "../../src/session-actor/reducer/authority";
+import { publicView } from "../../src/session-actor/public-view";
 import type { LifecycleJournalEvent } from "../../src/session-actor/journal";
 import type { SessionActorMetadata } from "../../src/session-actor/metadata";
 import { ScottyError } from "../../src/session/contracts";
@@ -40,6 +41,23 @@ const rejection = (operation: Promise<unknown>): Promise<unknown> =>
     () => undefined,
     (error: unknown) => error,
   );
+
+const failedClone = async (options: Parameters<typeof createSessionHarness>[0] = {}) => {
+  const harness = await createSessionHarness({ ...options, failureStage: "workspaceNonzero" });
+  await rejection(
+    harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+  );
+  harness.clearFailure("workspaceNonzero");
+  return harness;
+};
+
+const deferred = () => {
+  let resolve = (): void => undefined;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+};
 
 const decodeSteerResult = Schema.decodeUnknownPromise(
   Schema.Struct({ id: Schema.String, status: Schema.String }),
@@ -211,6 +229,7 @@ describe("Sandbox actor create boundary", () => {
       }),
       [
         "IntentCommitted",
+        "CleanupObserved",
         "WorkspacePreparing",
         "RuntimeMaterializing",
         "RuntimeReady",
@@ -224,7 +243,7 @@ describe("Sandbox actor create boundary", () => {
         const payload = decodeDeadlineSchedulePayload(schedule.payload);
         return payload.revision;
       }),
-      [1, 2, 3, 4, 5, 6, 7],
+      [1, 2, 3, 4, 5, 6, 7, 8],
     );
     const cloneCommand = harness.commands.find(
       (command) => command.startsWith("rm -rf ") && command.includes(" git -c http.extraHeader="),
@@ -566,7 +585,7 @@ describe("Sandbox actor create boundary", () => {
     );
   });
 
-  it("settles a confirmed workspace failure as Failed", async () => {
+  it("retries a failed clone after reconciling runtime and credential grants", async () => {
     const harness = await createSessionHarness({ failureStage: "workspaceNonzero" });
 
     const error = await rejection(
@@ -579,6 +598,174 @@ describe("Sandbox actor create boundary", () => {
     assert.ok(authority !== undefined && AuthorityStateSchema.guards.Stable(authority.state));
     assert.ok(Predicate.isTagged(authority.state.stable, "Failed"));
     assert.strictEqual(authority.state.stable.code, "create_workspace_failed");
+    assert.deepStrictEqual(authority.state.stable.recovery, { _tag: "Create" });
+    assert.isNotNull(
+      harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata)?.privateCreateInput,
+    );
+
+    harness.clearFailure("workspaceNonzero");
+    const retried = await harness.sandbox.retryCreateScottySession();
+    assert.strictEqual(retried.id, SESSION_ID);
+    assert.strictEqual(retried.status, "warm");
+    const settled = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(settled !== undefined && AuthorityStateSchema.guards.Stable(settled.state));
+    assert.ok(Predicate.isTagged(settled.state.stable, "Warm"));
+    assert.notStrictEqual(settled.hardCap.generation, authority.hardCap.generation);
+    assert.include(harness.events, "host:destroy");
+    assert.deepStrictEqual(harness.credentialGrantReleases, [{ sessionId: SESSION_ID }]);
+    assert.strictEqual(
+      harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata)?.privateCreateInput,
+      null,
+    );
+  });
+
+  it("rejects a concurrent create retry without disturbing the one in flight", async () => {
+    const armEntered = deferred();
+    const releaseArm = deferred();
+    let gateRetry = false;
+    const harness = await failedClone({
+      hardCapScheduleGate: () => {
+        if (!gateRetry) return undefined;
+        gateRetry = false;
+        armEntered.resolve();
+        return releaseArm.promise;
+      },
+    });
+    const failedMetadata = harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata);
+    assert.isDefined(failedMetadata);
+    gateRetry = true;
+
+    const first = harness.sandbox.retryCreateScottySession();
+    await armEntered.promise;
+    const metadataWrites = harness.events.filter(
+      (event) => event === `storage:put:${sessionHarnessKeys.actorMetadata}`,
+    ).length;
+    const second = await rejection(harness.sandbox.retryCreateScottySession());
+    assert.ok(second instanceof ScottyError);
+    assert.strictEqual(second.code, "conflict");
+    assert.strictEqual(second.message, "Session create retry is already running");
+    assert.strictEqual(
+      harness.events.filter((event) => event === `storage:put:${sessionHarnessKeys.actorMetadata}`)
+        .length,
+      metadataWrites,
+    );
+    assert.deepStrictEqual(
+      harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata),
+      failedMetadata,
+    );
+
+    releaseArm.resolve();
+    const settled = await first;
+    assert.strictEqual(settled.id, SESSION_ID);
+    assert.strictEqual(settled.status, "warm");
+    const authority = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(authority !== undefined && AuthorityStateSchema.guards.Stable(authority.state));
+    assert.ok(Predicate.isTagged(authority.state.stable, "Warm"));
+    const journal = harness.read<LifecycleJournalEvent>(sessionHarnessKeys.actorJournalTail);
+    assert.isDefined(journal);
+    assert.isNotNull(journal.causeAttempt);
+    assert.strictEqual(
+      harness.read<SessionActorMetadata>(sessionHarnessKeys.actorMetadata)?.createAttempt,
+      journal.causeAttempt,
+    );
+  });
+
+  it("returns the pending Create view when retry is already transitioning", async () => {
+    const harness = await failedClone();
+    harness.injectFailure("actorAlarmScheduleOnce");
+    const first = await rejection(harness.sandbox.retryCreateScottySession());
+    assert.ok(first instanceof ScottyError);
+    const committed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      committed !== undefined && AuthorityStateSchema.guards.Transitioning(committed.state),
+    );
+    assert.ok(Predicate.isTagged(committed.state.transition, "Create"));
+    const retry = await harness.sandbox.retryCreateScottySession();
+    assert.isTrue("pending" in retry && retry.pending);
+    assert.strictEqual(retry.operation?.kind, "create");
+  });
+
+  it("releases issued grants on vaporize after retry cleanup stays unknown until Failed", async () => {
+    const harness = await failedClone();
+    harness.injectFailure("vaporizeDestroy");
+    const first = await harness.sandbox.retryCreateScottySession();
+    assert.isTrue("pending" in first && first.pending, JSON.stringify(first));
+    const alarm = harness.schedules.findLast(
+      (schedule) => schedule.callback === "sessionActorDeadline",
+    );
+    assert.isDefined(alarm);
+    await rejection(harness.sandbox.sessionActorDeadline(alarm.payload));
+    const reconcileAlarm = harness.schedules.findLast(
+      (schedule) => schedule.callback === "sessionActorDeadline",
+    );
+    assert.isDefined(reconcileAlarm);
+    await rejection(harness.sandbox.sessionActorDeadline(reconcileAlarm.payload));
+    const failed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(failed !== undefined && AuthorityStateSchema.guards.Stable(failed.state));
+    assert.ok(Predicate.isTagged(failed.state.stable, "Failed"));
+    harness.clearFailure("vaporizeDestroy");
+    assert.deepStrictEqual(await harness.sandbox.vaporizeScottySession(), {
+      id: SESSION_ID,
+      status: "gone",
+    });
+    assert.deepStrictEqual(harness.credentialGrantReleases, [{ sessionId: SESSION_ID }]);
+  });
+
+  it("repeats completed cleanup after the next retry observation is unknown", async () => {
+    const harness = await failedClone();
+    const releasesBefore = harness.credentialGrantReleases.length;
+    harness.injectFailure("createAfterCleanupAlarm");
+    const first = await rejection(harness.sandbox.retryCreateScottySession());
+    assert.ok(first instanceof ScottyError);
+    assert.deepStrictEqual(harness.credentialGrantReleases.slice(releasesBefore), [
+      { sessionId: SESSION_ID },
+    ]);
+    const committed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(
+      committed !== undefined && AuthorityStateSchema.guards.Transitioning(committed.state),
+    );
+    assert.ok(Predicate.isTagged(committed.state.transition, "Create"));
+    assert.strictEqual(committed.state.transition.phase, "CleanupObserved");
+    const retry = await harness.sandbox.retryCreateScottySession();
+    assert.isTrue("pending" in retry && retry.pending);
+    const alarm = harness.schedules.findLast(
+      (schedule) => schedule.callback === "sessionActorDeadline",
+    );
+    assert.isDefined(alarm);
+    harness.injectFailure("workspacePrepare");
+    await rejection(harness.sandbox.sessionActorDeadline(alarm.payload));
+    const reconcileAlarm = harness.schedules.findLast(
+      (schedule) => schedule.callback === "sessionActorDeadline",
+    );
+    assert.isDefined(reconcileAlarm);
+    await rejection(harness.sandbox.sessionActorDeadline(reconcileAlarm.payload));
+    const failedAgain = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(failedAgain !== undefined && AuthorityStateSchema.guards.Stable(failedAgain.state));
+    assert.ok(Predicate.isTagged(failedAgain.state.stable, "Failed"));
+    assert.deepStrictEqual(failedAgain.state.stable.recovery, { _tag: "Create" });
+    assert.deepStrictEqual(failedAgain.state.stable.ownedBackupIds, []);
+    harness.clearFailure("workspacePrepare");
+    const settled = await harness.sandbox.retryCreateScottySession();
+    assert.strictEqual(settled.status, "warm");
+    assert.deepStrictEqual(harness.credentialGrantReleases.slice(releasesBefore), [
+      { sessionId: SESSION_ID },
+      { sessionId: SESSION_ID },
+    ]);
+  });
+
+  it("makes a Warm session without a backup Terminal after runtime loss", async () => {
+    const harness = await createSessionHarness();
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    await harness.stopRuntime();
+    await harness.drainBackground();
+    const failed = harness.read<SessionAuthority>(sessionHarnessKeys.actorAuthority);
+    assert.ok(failed !== undefined && AuthorityStateSchema.guards.Stable(failed.state));
+    assert.ok(Predicate.isTagged(failed.state.stable, "Failed"));
+    assert.deepStrictEqual(failed.state.stable.recovery, { _tag: "Terminal" });
+    assert.deepStrictEqual(publicView(failed)?.availableActions, ["vaporize"]);
+    const rejected = await rejection(harness.sandbox.retryCreateScottySession());
+    assert.ok(rejected instanceof ScottyError);
+    assert.strictEqual(rejected.code, "wrong_state");
   });
 
   it("preserves the missing-repository public not_found contract and points to --new-repo", async () => {

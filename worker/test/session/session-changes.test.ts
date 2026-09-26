@@ -238,7 +238,7 @@ describe("session changed-files review", () => {
       "failed",
       makeSessionRecord({
         status: "failed",
-        failure: { code: "runtime_failed", message: "failed", recoverable: true },
+        failure: { code: "runtime_failed", message: "failed", recovery: "resume" },
       }),
     ],
     [

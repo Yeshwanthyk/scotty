@@ -89,7 +89,9 @@ const failedStable = (authority: SessionAuthority) => {
   return state.stable;
 };
 
-const createCommand = (expectedRevision = 0): SessionCommand => ({
+const createCommand = (
+  expectedRevision = 0,
+): Extract<SessionCommand, { readonly _tag: "CreateCommand" }> => ({
   _tag: "CreateCommand",
   expectedRevision,
   correlationId: "correlation-create",
@@ -232,6 +234,103 @@ const completeTerminal = (
 };
 
 describe("session actor reducer", () => {
+  it("admits same-session Create only from Failed Create recovery", () => {
+    const failed: SessionAuthority = {
+      session,
+      hardCap,
+      revision: 2,
+      state: {
+        _tag: "Stable",
+        stable: {
+          _tag: "Failed",
+          code: "create_workspace_failed",
+          origin: "Absent",
+          lastStable: null,
+          ownedBackupIds: [],
+          recovery: { _tag: "Create" },
+        },
+      },
+    };
+    const retry = createCommand(2);
+    const admitted = accepted(decide(failed, retry)).nextAuthority;
+    const transition = transitioning(admitted).transition;
+    assert.ok(TransitionSchema.guards.Create(transition));
+    assert.strictEqual(transition.origin, "Failed");
+    assert.strictEqual(admitted.session.id, failed.session.id);
+    assert.strictEqual(
+      validateAuthority({
+        ...failed,
+        state: {
+          _tag: "Stable",
+          stable: { ...failedStable(failed), ownedBackupIds: ["unexpected-backup"] },
+        },
+      }),
+      false,
+    );
+    assert.deepStrictEqual(decide(failed, { ...retry, session: { ...session, id: "other" } }), {
+      _tag: "Rejected",
+      code: "not_admissible",
+    });
+    assert.deepStrictEqual(decide(failed, { ...retry, expectedRevision: 1 }), {
+      _tag: "Rejected",
+      code: "revision_mismatch",
+    });
+    assert.deepStrictEqual(decide(failed, command("ResumeCommand", 2)), {
+      _tag: "Rejected",
+      code: "not_admissible",
+    });
+  });
+
+  it("admits Resume only with a confirmed owned Failed backup", () => {
+    const failed: SessionAuthority = {
+      session,
+      hardCap,
+      revision: 2,
+      state: {
+        _tag: "Stable",
+        stable: {
+          _tag: "Failed",
+          code: "sleep_failed",
+          origin: "Warm",
+          lastStable: "Warm",
+          ownedBackupIds: ["backup-1"],
+          recovery: { _tag: "Resume", backup: backup() },
+        },
+      },
+    };
+    assert.strictEqual(validateAuthority(failed), true);
+    const resumed = accepted(decide(failed, command("ResumeCommand", 2))).nextAuthority;
+    const transition = transitioning(resumed).transition;
+    assert.ok(TransitionSchema.guards.Resume(transition));
+    assert.deepStrictEqual(transition.proof.backup, backup());
+    assert.deepStrictEqual(decide(failed, createCommand(2)), {
+      _tag: "Rejected",
+      code: "not_admissible",
+    });
+    assert.strictEqual(
+      validateAuthority({
+        ...failed,
+        state: { _tag: "Stable", stable: { ...failedStable(failed), ownedBackupIds: [] } },
+      }),
+      false,
+    );
+    assert.strictEqual(
+      validateAuthority({
+        ...failed,
+        state: {
+          _tag: "Stable",
+          stable: {
+            ...failedStable(failed),
+            recovery: {
+              _tag: "Resume",
+              backup: { ...backup(), confirmedAt: null },
+            },
+          },
+        },
+      }),
+      false,
+    );
+  });
   it("admits only commands valid for the current authority", () => {
     const created = accepted(decide(undefined, createCommand()));
     assert.strictEqual(created.nextAuthority.revision, 1);
@@ -366,8 +465,8 @@ describe("session actor reducer", () => {
     const progressed = accepted(
       decide(
         reconciled.nextAuthority,
-        fact(reconciled.nextAuthority, "WorkspacePreparing", {
-          workspaceId: "workspace-1",
+        fact(reconciled.nextAuthority, "CleanupObserved", {
+          workspaceId: null,
           readiness: { runtime: null, supervisor: null, transport: null },
         }),
       ),
@@ -413,12 +512,10 @@ describe("session actor reducer", () => {
     assert.deepStrictEqual(failedStable(failed), {
       _tag: "Failed",
       code: "reconciliation_outcome_unknown",
-      actionable: true,
       origin: "Warm",
       lastStable: "Warm",
-      backup: backup(),
       ownedBackupIds: ["backup-1", "backup-2"],
-      wakeSource: { backupId: "backup-1", confirmedAt: T1 },
+      recovery: { _tag: "Resume", backup: backup() },
     });
   });
 
@@ -475,19 +572,14 @@ describe("session actor reducer", () => {
         timestamp: T1,
         correlationId: "correlation-failed",
         failureCode: "provider_rejected",
-        actionable: false,
-        backup: null,
         ownedBackupIds: [],
-        wakeSource: null,
         resultCode: "provider_rejected",
       }),
     ).nextAuthority;
     assert.deepInclude(failedStable(failed), {
       code: "provider_rejected",
-      actionable: true,
-      backup: backup(),
       ownedBackupIds: ["backup-1"],
-      wakeSource: { backupId: "backup-1", confirmedAt: T1 },
+      recovery: { _tag: "Resume", backup: backup() },
     });
   });
 

@@ -120,12 +120,10 @@ const failedAuthority = (): SessionAuthority => ({
     stable: {
       _tag: "Failed",
       code: "runtime_stopped",
-      actionable: false,
       origin: "Warm",
       lastStable: "Warm",
-      backup: null,
       ownedBackupIds: [],
-      wakeSource: null,
+      recovery: { _tag: "Create" },
     },
   },
 });

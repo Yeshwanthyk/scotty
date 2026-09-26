@@ -155,7 +155,12 @@ describe("native Durable Object session actor storage adapter", () => {
         payload: { reference: "payload-native-storage" },
         initialPrompt: "private",
       },
-      createObservations: { workspace: null, bundle: null, credentialGrants: null },
+      createObservations: {
+        repositoryVerification: null,
+        workspace: null,
+        bundle: null,
+        credentialGrants: null,
+      },
     };
 
     assert.deepStrictEqual(

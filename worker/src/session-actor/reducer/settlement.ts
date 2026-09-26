@@ -1,12 +1,13 @@
 import { Match } from "effect";
 import type { BackupIdentity, SessionAuthority, StableState, Transition } from "./authority";
-import { TransitionSchema } from "./authority";
+import { recoveryFor, TransitionSchema } from "./authority";
 import { confirmedBackup } from "./backup";
 import { accept, journal, reject, runtimeProof } from "./control";
 import type { Decision } from "./decision";
 import type { SessionActorInput } from "./input";
 import type { StableCase } from "./validity";
 import { validStable, validTransitionProof } from "./validity";
+import { transitionKind } from "./transition";
 
 const reconcile = (
   current: SessionAuthority,
@@ -63,18 +64,14 @@ const ownedBackupsOfTransition = (transition: Transition): ReadonlyArray<string>
 
 const failedFrom = (transition: Transition, code: string): StableCase<"Failed"> => {
   const backup = confirmedBackupOf(transition);
+  const lastStable = failedLastStable(transition);
   return {
     _tag: "Failed",
     code,
-    actionable: backup !== null,
     origin: transition.origin,
-    lastStable: failedLastStable(transition),
-    backup,
+    lastStable,
     ownedBackupIds: [...ownedBackupsOfTransition(transition)],
-    wakeSource:
-      backup?.confirmedAt === null || backup === null
-        ? null
-        : { backupId: backup.backupId, confirmedAt: backup.confirmedAt },
+    recovery: recoveryFor(backup, lastStable, transitionKind(transition), transition.origin),
   };
 };
 

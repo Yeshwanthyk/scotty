@@ -25,8 +25,8 @@ const models = [
   {
     file: "spec/quint/session_lease.qnt",
     invariants: ["safety"],
-    expectedViolations: ["failedHasExit"],
-    witnesses: ["reachesSleeping", "reachesStoppedSleep"],
+    expectedViolations: [],
+    witnesses: ["reachesSleeping", "reachesStoppedSleep", "reachesCreateRetry"],
   },
 ];
 

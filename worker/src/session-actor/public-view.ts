@@ -1,4 +1,4 @@
-import { Match, Result, Schema } from "effect";
+import { Match, Predicate, Result, Schema } from "effect";
 import type { SessionOperation, SessionProjection, SessionView } from "../session/contracts";
 import type {
   ActivityProof,
@@ -7,11 +7,11 @@ import type {
   StableState,
   Transition,
 } from "./reducer/authority";
-import { AuthorityStateSchema } from "./reducer/authority";
+import { AuthorityStateSchema, publicRecovery } from "./reducer/authority";
 import type { SessionActorMetadata } from "./metadata";
 
 export type PublicStatus = "booting" | "warm" | "sleeping" | "failed" | "gone";
-export type PublicAction = "checkpoint" | "sleep" | "resume" | "work" | "vaporize";
+export type PublicAction = "create" | "checkpoint" | "sleep" | "resume" | "work" | "vaporize";
 
 export interface PublicSessionView {
   readonly status: PublicStatus;
@@ -74,24 +74,13 @@ export const sessionOperationFromActor = (authority: SessionAuthority): SessionO
     kind,
     nonce: transition.nonce,
     startedAt: transition.startedAt,
-    ...(kind === "snapshot" || kind === "sleep" || kind === "resume"
+    ...(kind === "create" || kind === "snapshot" || kind === "sleep" || kind === "resume"
       ? { deadlineAt: transition.deadlineAt }
       : {}),
     mode: transition.mode,
     phase: transition.phase,
     ...(kind === "create" ? { createPhase: "runtime" as const } : {}),
   };
-};
-
-const actions = (
-  status: PublicStatus,
-  deleting: boolean,
-  actionableFailure: boolean,
-): ReadonlyArray<PublicAction> => {
-  if (deleting || status === "gone" || status === "booting") return [];
-  if (status === "warm") return ["checkpoint", "sleep", "work", "vaporize"];
-  if (status === "sleeping") return ["resume", "vaporize"];
-  return actionableFailure ? ["resume", "vaporize"] : ["vaporize"];
 };
 
 export const publicView = (
@@ -101,16 +90,19 @@ export const publicView = (
   return Match.valueTags(authority.state, {
     Stable: ({ stable }) => {
       const status = stableStatus(stable);
-      const actionableFailure = Match.valueTags(stable, {
-        Warm: () => false,
-        Sleeping: () => false,
-        Failed: ({ actionable }) => actionable,
-        Gone: () => false,
+      const availableActions = Match.valueTags(stable, {
+        Warm: (): ReadonlyArray<PublicAction> => ["checkpoint", "sleep", "work", "vaporize"],
+        Sleeping: (): ReadonlyArray<PublicAction> => ["resume", "vaporize"],
+        Failed: ({ recovery }): ReadonlyArray<PublicAction> => {
+          const action = publicRecovery(recovery);
+          return action === "terminal" ? ["vaporize"] : [action, "vaporize"];
+        },
+        Gone: (): ReadonlyArray<PublicAction> => [],
       });
       return {
         status,
         deleting: false,
-        availableActions: actions(status, false, actionableFailure),
+        availableActions,
       };
     },
     Transitioning: ({ transition }) => {
@@ -144,9 +136,13 @@ const stableProjectionDetails = (stable: StableState): AuthorityProjectionDetail
       ...(activity === null ? {} : { activity }),
     }),
     Sleeping: ({ backup }) => backupDetails(backup),
-    Failed: ({ code, actionable, backup }) => ({
-      ...backupDetails(backup),
-      failure: { code, message: code, recoverable: actionable },
+    Failed: ({ code, recovery }): AuthorityProjectionDetails => ({
+      ...backupDetails(Predicate.isTagged(recovery, "Resume") ? recovery.backup : null),
+      failure: {
+        code,
+        message: code,
+        recovery: publicRecovery(recovery),
+      },
     }),
     Gone: () => ({}),
   });
@@ -181,7 +177,11 @@ export const sessionProjectionFromActor = (
   projectedAt: SessionProjectionTimestamp,
 ): Result.Result<SessionProjection, SessionActorProjectionUnavailable> => {
   const workspace = metadata.createObservations.workspace;
-  if (workspace === null)
+  let defaultBranch: string;
+  if (workspace !== null) defaultBranch = workspace.defaultBranch;
+  else if (metadata.createObservations.repositoryVerification !== null)
+    defaultBranch = metadata.createObservations.repositoryVerification.defaultBranch;
+  else
     return Result.fail(new SessionActorProjectionUnavailable({ code: "workspace_not_observed" }));
 
   const view = publicView(authority);
@@ -204,8 +204,8 @@ export const sessionProjectionFromActor = (
     ...(operation === null ? {} : { operation }),
     provider: execution.provider,
     ...(execution.provider === "runner" ? { runner: execution.runnerName } : {}),
-    repo: workspace.repository,
-    defaultBranch: workspace.defaultBranch,
+    repo: authority.session.repository,
+    defaultBranch,
     branch: metadata.branch,
     ...(details.backupId === undefined ? {} : { backupId: details.backupId }),
     ...(activity === undefined ? {} : { agentState: activity.state }),

@@ -105,7 +105,7 @@
     {
       "id": "R-03",
       "title": "Failed is a dead end → durable recovery operation",
-      "column": "next",
+      "column": "doing",
       "contract": true,
       "deps": [
         "M-01"
@@ -115,6 +115,30 @@
         {
           "at": "2026-09-25",
           "note": "Design approved 2026-09-25: (1) Failed.recovery records the retry command at failure commit: Resume(backup) when a confirmed backup exists, otherwise Create; no Terminal variant until a real case exists. (2) No new Recreate kind: recovery reuses the existing Resume and Create commands; Create becomes admissible from Failed-without-backup (origin Failed, same session ID); drop the actionable boolean and redundant wakeSource. Create-from-Failed must first reconcile leftover owned state (runtime, workspace, grants) from the failed attempt. Client surface exposes the typed recovery action, not a boolean. (3) Delete existing Failed records (c31ef4f2a9e6, 3d89357c1221) instead of migrating them; use the M-01 counterexample (Create → unknown → unknown → Failed) as the repro. Proof: spec failedHasExit flips from expected violation to invariant in safety; harness + deployed test per card."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Started."
+        },
+        {
+          "at": "2026-09-25",
+          "note": "done Failed typed recovery, fenced Create retry cleanup, hard cap, metadata, route/CLI/UI, Quint and harness proof; next deployed canary only if clone/sleep failures can be forced without production hook; open local socket sandbox blocks six worker HTTP tests (EPERM) and one CLI runner test (EADDRINUSE); branch r-03/failed-recovery, no PR or commit"
+        },
+        {
+          "at": "2026-09-25",
+          "note": "Design addendum approved 2026-09-25: Failed.recovery = Resume(backup) | Create | Terminal. Create only when the failed create never settled (origin Absent or Failed; private create input still retained). Warm-origin failures with no confirmed backup are Terminal (Vaporize only) because the create input was scrubbed at settle. failedHasExit becomes: Failed implies an admissible exit or recovery Terminal."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Review fixes uncommitted on r-03/failed-recovery: Vaporize releases grants by session ID; Create retry cleanup no longer owns backups; repository verification is persisted before workspace clone for pending retry projection; metadata retry is fenced and Create admission is exclusive; Quint witness/replay and focused worker, CLI, UI, lint, typecheck pass. Persisted metadata now includes repositoryVerification: reset existing R-03 test/session actors before any deployment; no migration. Full worker and CLI suites still have local socket sandbox failures (Codex HTTP listen EPERM, runner Bun.serve EADDRINUSE); deployed canary not run. No commit or PR."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "PR #278 open (base m-01/lifecycle-model): typed Failed.recovery Resume|Create|Terminal, Create retry from Failed with CleanupObserved, failedHasExit in safety, full local gate green, 17/18 mutations killed (concurrent-retry lock untested). Vaporized c31ef4f2a9e6, 3d89357c1221. Next: deployed test blocked without a test-only hook; reset session actors before deploy (metadata shape change); merge after #277."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "Added concurrent-retry lock test (mutation-killed); 18/18 mutations now killed. Deployed proof split to R-03b. PR #278 awaiting review after #277."
         }
       ]
     },
@@ -811,6 +835,26 @@
         {
           "at": "2026-09-25",
           "note": "Added."
+        }
+      ]
+    },
+    {
+      "id": "R-03b",
+      "title": "Deployed proof for Failed recovery: force clone and sleep failures on a stage without a production test hook",
+      "column": "backlog",
+      "contract": false,
+      "deps": [
+        "R-03"
+      ],
+      "body": "",
+      "log": [
+        {
+          "at": "2026-09-26",
+          "note": "Added."
+        },
+        {
+          "at": "2026-09-26",
+          "note": "From R-03 (#278): harness proves clone failure → Failed(Create) → create → Warm and sleep failure → Failed(Resume) → resume → Warm, but no deployed test. Needs a design call: how to force a clone failure (e.g. a repo that fails clone after verification) and a sleep failure on a deployed stage without a test-only production hook."
         }
       ]
     }

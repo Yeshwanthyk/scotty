@@ -284,13 +284,18 @@ import {
 } from "../session-actor/transitions/warm-work";
 import {
   AuthorityStateSchema,
+  failedCreateOf,
   StableStateSchema,
   TransitionSchema,
   type ReadinessProgress,
   type ReadinessProof,
   type SessionAuthority,
 } from "../session-actor/reducer/authority";
-import { sessionProjectionFromActor, sessionViewFromActor } from "../session-actor/public-view";
+import {
+  publicView,
+  sessionProjectionFromActor,
+  sessionViewFromActor,
+} from "../session-actor/public-view";
 import { uiSessionResponseFromActor, type UiSessionResponse } from "../ui/session-view";
 import {
   hardCapDrainAt,
@@ -357,6 +362,16 @@ const sidecarSnapshotHasInitialTurn = (
   return "turnId" in snapshot.prompt && snapshot.prompt.turnId === turnId;
 };
 
+class CredentialCleanupFailure extends Schema.TaggedError<CredentialCleanupFailure>()(
+  "CredentialCleanupFailure",
+  { code: Schema.Literals(["credential_registry_unavailable", "credential_release_unconfirmed"]) },
+) {}
+
+class RuntimeDestroyFailure extends Schema.TaggedError<RuntimeDestroyFailure>()(
+  "RuntimeDestroyFailure",
+  {},
+) {}
+
 const sameSidecarAuthorityProof = (
   current: SessionAuthority | undefined,
   observed: SessionAuthority,
@@ -407,7 +422,7 @@ type ActorRequestRecovery =
 
 const expectedRecoveredStable = (
   authority: SessionAuthority,
-  expectedKind: LifecycleCommandKind | "Create",
+  expectedKind: LifecycleCommandKind,
 ): boolean => {
   if (!AuthorityStateSchema.guards.Stable(authority.state)) return false;
   const stable = authority.state.stable;
@@ -419,7 +434,7 @@ const expectedRecoveredStable = (
 
 const provesRecoveredTransition = (
   snapshot: ActorStoreSnapshot,
-  expectedKind: LifecycleCommandKind | "Create",
+  expectedKind: LifecycleCommandKind,
   transitionNonce: string,
 ): boolean => {
   const authority = snapshot.authority;
@@ -1229,6 +1244,28 @@ export class Sandbox extends BaseSandbox<Bindings> {
       deleteBackup: (backupId: string) => this.deleteBackup(backupId),
     };
     const backup = backupStoreLayer(backupCapabilities, runtimeAccess);
+    const destroyOwnedRuntime = () =>
+      Effect.tryPromise({
+        try: () => this.destroy(),
+        catch: () => new RuntimeDestroyFailure({}),
+      });
+    const deleteOwnedBackups = (ids: ReadonlyArray<string>) =>
+      Effect.gen(function* () {
+        const backups = yield* BackupStore;
+        for (const backupId of new Set(ids)) yield* backups.delete(backupId);
+      });
+    const releaseOwnedGrants = (sessionId: string) =>
+      Effect.gen(function* () {
+        const registry = env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+        if (registry === undefined)
+          return yield* new CredentialCleanupFailure({ code: "credential_registry_unavailable" });
+        const released = yield* Effect.tryPromise({
+          try: () => registry.release({ sessionId }),
+          catch: () => new CredentialCleanupFailure({ code: "credential_release_unconfirmed" }),
+        });
+        if (!released.ok || !released.value.released)
+          return yield* new CredentialCleanupFailure({ code: "credential_release_unconfirmed" });
+      });
     const evidenceRecorder =
       options.containerEvidenceRecorder === undefined
         ? containerEvidenceRecorderLayer.pipe(Layer.provide(runtime))
@@ -1267,6 +1304,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
           new CreateSandboxBoundaryFailure({ outcome, safeResultCode });
 
         return CreateSandboxBoundary.of({
+          cleanupFailedCreate: Effect.fnUntraced(function* (authority, transition) {
+            if (transition.origin !== "Failed" || transition.phase !== "IntentCommitted")
+              return yield* rejectBoundary("create_cleanup_fence_mismatch");
+            yield* destroyOwnedRuntime().pipe(
+              Effect.mapError(() =>
+                rejectBoundary("create_runtime_cleanup_unknown", "unknown_after_admission"),
+              ),
+            );
+            yield* releaseOwnedGrants(authority.session.id).pipe(
+              Effect.mapError((error) =>
+                error.code === "credential_registry_unavailable"
+                  ? rejectBoundary(error.code)
+                  : rejectBoundary("create_grant_cleanup_unknown", "unknown_after_admission"),
+              ),
+            );
+          }),
           resolve: Effect.fnUntraced(function* (authority, transition, payloadReference) {
             const metadata = yield* actorMetadataStore
               .read(authority)
@@ -1349,6 +1402,27 @@ export class Sandbox extends BaseSandbox<Bindings> {
               );
             if (!verified.exists && !metadata.createRepositoryIfMissing)
               return yield* rejectBoundary("create_repository_not_found");
+
+            const verifiedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+            yield* actorMetadataStore
+              .recordObservation(authority, {
+                _tag: "RepositoryVerification",
+                value: {
+                  attempt: transition.attempt,
+                  payloadReference: input.payloadReference,
+                  observedAt: verifiedAt,
+                  defaultBranch: verified.exists ? verified.defaultBranch : "main",
+                  repositoryExists: verified.exists,
+                },
+              })
+              .pipe(
+                Effect.mapError(() =>
+                  rejectBoundary(
+                    "create_repository_observation_unknown",
+                    "unknown_after_admission",
+                  ),
+                ),
+              );
 
             const now = transition.lastProgressAt;
             const workspaceRecord: SessionRecord = {
@@ -1508,19 +1582,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
           destroyRuntime: ({ authority }) =>
             authority.session.execution.provider === "runner"
               ? vaporizeRejected("runner_vaporize_not_enabled")
-              : Effect.tryPromise({
-                  try: () => this.destroy(),
-                  catch: () => undefined,
-                }).pipe(
+              : destroyOwnedRuntime().pipe(
                   Effect.catch(vaporizeUnknown("runtime_destroy_outcome_unknown")),
                   Effect.andThen(vaporizeResult("RuntimeAbsent", "runtime_absent_confirmed")),
                 ),
           deleteBackups: ({ transition }) =>
-            Effect.gen(function* () {
-              for (const backupId of new Set(transition.proof.ownedBackupIds))
-                yield* backups.delete(backupId);
-              return yield* vaporizeResult("BackupsAbsent", "backups_absent_confirmed");
-            }).pipe(Effect.catch(vaporizeUnknown("backup_absence_unknown"))),
+            deleteOwnedBackups(transition.proof.ownedBackupIds).pipe(
+              Effect.provideService(BackupStore, backups),
+              Effect.andThen(vaporizeResult("BackupsAbsent", "backups_absent_confirmed")),
+              Effect.catch(vaporizeUnknown("backup_absence_unknown")),
+            ),
           deleteEvidence: ({ transition }) =>
             Effect.gen(function* () {
               const stateResult = yield* Effect.result(evidenceStore.read);
@@ -1545,20 +1616,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
             }).pipe(Effect.catch(vaporizeUnknown("evidence_absence_unknown"))),
           releaseGrants: ({ authority }) =>
             Effect.gen({ self: this }, function* () {
+              yield* releaseOwnedGrants(authority.session.id).pipe(
+                Effect.catch((reason) =>
+                  reason.code === "credential_registry_unavailable"
+                    ? vaporizeRejected(reason.code)
+                    : vaporizeUnknown("credential_release_unconfirmed")(),
+                ),
+              );
               yield* metadataStore.scrubVaporizingCreate(authority);
-              const metadata = yield* metadataStore.read(authority);
-              const grants = metadata?.createObservations.credentialGrants?.grants ?? [];
-              if (grants.length > 0) {
-                const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
-                if (registry === undefined)
-                  return yield* vaporizeRejected("credential_registry_unavailable");
-                const released = yield* Effect.tryPromise({
-                  try: () => registry.release({ sessionId: authority.session.id, grants }),
-                  catch: () => undefined,
-                });
-                if (!released.ok || !released.value.released)
-                  return yield* vaporizeUnknown("credential_release_unconfirmed")();
-              }
               yield* hostEffect("sidecarQueue", () => this.sidecarFollowUps.clear());
               yield* metadataStore.deleteForVaporize(authority);
               return yield* vaporizeResult("GrantsReleased", "owned_authority_released");
@@ -1625,14 +1690,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
           });
       }),
     );
+    const metadataController = createMetadataControllerFromStoresLayer.pipe(
+      Layer.provide(Layer.merge(actorMetadata, actorStore)),
+    );
     const lifecycleController = lifecycleControllerLayer.pipe(
-      Layer.provide(Layer.mergeAll(actorStore, actor, hardCap)),
+      Layer.provide(Layer.mergeAll(actorStore, actor, hardCap, metadataController)),
     );
     const warmWorkController = warmWorkControllerLayer.pipe(
       Layer.provide(Layer.merge(actorStore, actor)),
-    );
-    const metadataController = createMetadataControllerFromStoresLayer.pipe(
-      Layer.provide(Layer.merge(actorMetadata, actorStore)),
     );
     const createController = createControllerLayer.pipe(
       Layer.provide(Layer.mergeAll(actor, hardCap, metadataController)),
@@ -3310,7 +3375,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly recoverTransitioningActorForRequestProgram = Effect.fnUntraced(function* (
     this: Sandbox,
-    expectedKind: LifecycleCommandKind | "Create",
+    expectedKind: LifecycleCommandKind,
   ) {
     const store = yield* ActorStore;
     const before = yield* store.read;
@@ -3754,7 +3819,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     kind: LifecycleCommandKind,
   ) {
     yield* this.dispatchOverdueTransitionProgram().pipe(Effect.ignore({ log: "Warn" }));
-    const current = yield* this.readActorSessionStateProgram();
+    const current =
+      kind === "Create"
+        ? yield* Effect.flatMap(ActorStore, (store) => store.read).pipe(
+            Effect.flatMap((snapshot) =>
+              snapshot.authority === undefined
+                ? notFound("Session not found")
+                : Effect.succeed({ authority: snapshot.authority }),
+            ),
+          )
+        : yield* this.readActorSessionStateProgram();
     const controller = yield* LifecycleController;
     const recovered = yield* this.recoverTransitioningActorForRequestProgram(kind).pipe(
       Effect.mapError((failure) =>
@@ -3774,8 +3848,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
           StableStateSchema.guards.Gone(authority.state.stable)
         )
           return yield* wrongState("gone", kind.toLowerCase());
-        const state = yield* this.readActorSessionStateProgram();
-        return yield* wrongState(state.view.status, kind.toLowerCase());
+        const view = publicView(authority);
+        return view === undefined
+          ? yield* notFound("Session not found")
+          : yield* wrongState(view.status, kind.toLowerCase());
       }
       const snapshot = recovered.provenSnapshot;
       const authority = snapshot.authority;
@@ -3799,7 +3875,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       attempt: crypto.randomUUID(),
       timestamp: new Date(now).toISOString(),
       deadlineAt: new Date(
-        kind === "Checkpoint"
+        kind === "Checkpoint" || kind === "Create"
           ? now + ABANDONED_OPERATION_MS
           : Math.min(
               now + BACKUP_LIFECYCLE_OPERATION_MS,
@@ -3808,7 +3884,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ).toISOString(),
     };
     const request =
-      kind === "Resume"
+      kind === "Resume" || kind === "Create"
         ? yield* Effect.gen(function* () {
             const store = yield* ActorStore;
             const snapshot = yield* store.read;
@@ -3820,12 +3896,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
             return {
               ...baseRequest,
               kind,
-              deadlineAt: new Date(
-                Math.min(
-                  now + BACKUP_LIFECYCLE_OPERATION_MS,
-                  now + snapshot.authority.hardCap.durationSeconds * 1_000,
-                ),
-              ).toISOString(),
+              deadlineAt:
+                kind === "Create"
+                  ? baseRequest.deadlineAt
+                  : new Date(
+                      Math.min(
+                        now + BACKUP_LIFECYCLE_OPERATION_MS,
+                        now + snapshot.authority.hardCap.durationSeconds * 1_000,
+                      ),
+                    ).toISOString(),
               nextHardCap: {
                 durationSeconds: snapshot.authority.hardCap.durationSeconds,
                 deadlineAt: new Date(
@@ -3836,14 +3915,42 @@ export class Sandbox extends BaseSandbox<Bindings> {
             };
           })
         : { ...baseRequest, kind };
-    const outcome = yield* this.withActiveActorMutation(
-      request.nonce,
-      controller.run(request),
-    ).pipe(
+    const mutation =
+      kind === "Create"
+        ? this.withExclusiveActorMutation("create-retry", controller.run(request)).pipe(
+            Effect.flatMap((value) =>
+              value === undefined
+                ? conflict("Session create retry is already running")
+                : Effect.succeed(value),
+            ),
+          )
+        : this.withActiveActorMutation(request.nonce, controller.run(request));
+    const outcome = yield* mutation.pipe(
       Effect.catchTag("LifecycleControllerRejected", () =>
-        Effect.flatMap(this.readActorSessionStateProgram(), ({ view }) =>
-          wrongState(view.status, kind.toLowerCase()),
+        Effect.flatMap(ActorStore, (store) => store.read).pipe(
+          Effect.flatMap((snapshot) => {
+            const view = publicView(snapshot.authority);
+            return view === undefined
+              ? notFound("Session not found")
+              : wrongState(view.status, kind.toLowerCase());
+          }),
         ),
+      ),
+      Effect.catchTag("CreateControllerRejected", (failure) =>
+        failure.code === "create_private_payload_unavailable"
+          ? new ScottyError("wrong_state", "Private create input is unavailable for retry", {
+              httpStatus: 409,
+              exitCode: 5,
+              hint: "Vaporize this session.",
+            })
+          : Effect.flatMap(ActorStore, (store) => store.read).pipe(
+              Effect.flatMap((snapshot) => {
+                const view = publicView(snapshot.authority);
+                return view === undefined
+                  ? notFound("Session not found")
+                  : wrongState(view.status, "create");
+              }),
+            ),
       ),
       Effect.mapError((failure) =>
         Predicate.isTagged(failure, "ScottyError")
@@ -3892,7 +3999,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       kind === "Sleep"
         ? StableStateSchema.guards.Sleeping(stable)
         : StableStateSchema.guards.Warm(stable) &&
-          (kind === "Resume" || confirmedBackup(stable.backups) !== null);
+          (kind === "Resume" || kind === "Create" || confirmedBackup(stable.backups) !== null);
     if (!reachedTarget) return yield* wrongState(state.view.status, kind.toLowerCase());
     yield* Effect.tryPromise({
       try: () =>
@@ -6418,6 +6525,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
+  private readonly retryCreateProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    return yield* this.actorLifecycleProgram("Create");
+  });
+
+  async retryCreateScottySession(): Promise<SessionView | PendingSessionView> {
+    return this.#run(this.retryCreateProgram());
+  }
+
   async checkpointScottySession(): Promise<SessionView | PendingSessionView> {
     return this.#run(this.actorLifecycleProgram("Checkpoint"));
   }
@@ -6531,7 +6646,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
         if (
           after.authority !== undefined &&
           AuthorityStateSchema.guards.Stable(after.authority.state) &&
-          !StableStateSchema.guards.Gone(after.authority.state.stable)
+          !StableStateSchema.guards.Gone(after.authority.state.stable) &&
+          failedCreateOf(after.authority) === undefined
         ) {
           // A previous alarm may have committed Create before its metadata scrub failed.
           const metadataStore = yield* SessionActorMetadataStore;

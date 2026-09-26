@@ -1,6 +1,5 @@
 import { Schema } from "effect";
 import {
-  BackupIdentitySchema,
   ActivityProofSchema,
   CheckpointProofSchema,
   CreateProofSchema,
@@ -92,10 +91,7 @@ export const TransitionCompletedSchema = Schema.TaggedStruct("TransitionComplete
 export const TransitionFailedSchema = Schema.TaggedStruct("TransitionFailed", {
   ...FactFence,
   failureCode: Schema.String,
-  actionable: Schema.Boolean,
-  backup: Schema.NullOr(BackupIdentitySchema),
   ownedBackupIds: Schema.Array(Schema.String),
-  wakeSource: Schema.NullOr(Schema.Struct({ backupId: Schema.String, confirmedAt: Schema.String })),
   resultCode: Schema.String,
 });
 export const DeadlineAlarmSchema = Schema.TaggedStruct("DeadlineAlarm", {

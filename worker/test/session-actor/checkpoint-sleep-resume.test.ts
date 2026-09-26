@@ -1,6 +1,7 @@
 import { sessionIdentityPin } from "../runtime-cli/fixtures";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
+import { TestClock } from "effect/testing";
 import type {
   BackupIdentity,
   ReadinessProof,
@@ -359,6 +360,7 @@ const resumeProvider = (
 });
 
 const createProvider = (): CreateTransitionProviderShape => ({
+  prepareRetry: () => Effect.void,
   lookupPayload: () => Effect.succeed({ reference: "private-create-payload" }),
   prepareWorkspace: () =>
     Effect.succeed({
@@ -414,8 +416,9 @@ const createProvider = (): CreateTransitionProviderShape => ({
 describe("checkpoint, sleep, and resume transition executors", () => {
   it.effect("runs create, sleep, resume, and sleep through to Sleeping", () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(T1));
       let decision = accepted(decide(undefined, createCommand()));
-      for (let index = 0; index < 7; index += 1) {
+      for (let index = 0; index < 8; index += 1) {
         decision = accepted(
           decide(
             decision.nextAuthority,

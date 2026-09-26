@@ -1,4 +1,4 @@
-import { Match, Schema } from "effect";
+import { Match, Predicate, Schema } from "effect";
 import type {
   BackupIdentity,
   BackupProof,
@@ -186,24 +186,21 @@ const validSleeping = (stable: StableCase<"Sleeping">): boolean =>
   validTimestamp(stable.stop.observedAt) &&
   stable.stop.requestedAt <= stable.stop.observedAt;
 
-const validFailedBackup = (stable: StableCase<"Failed">): boolean =>
-  (stable.backup === null && stable.wakeSource === null) ||
-  (stable.backup !== null &&
-    stable.backup.confirmedAt !== null &&
-    validBackupIdentity(stable.backup) &&
-    stable.ownedBackupIds.includes(stable.backup.backupId));
-
 const validFailed = (stable: StableCase<"Failed">): boolean =>
   nonEmpty(stable.code) &&
   new Set(stable.ownedBackupIds).size === stable.ownedBackupIds.length &&
-  ((stable.origin === "Absent" && stable.lastStable === null) ||
-    (stable.origin !== "Absent" && stable.lastStable !== null)) &&
-  validFailedBackup(stable) &&
-  (!stable.actionable ||
-    (stable.backup !== null &&
-      stable.wakeSource !== null &&
-      stable.wakeSource.backupId === stable.backup.backupId &&
-      stable.wakeSource.confirmedAt === stable.backup.confirmedAt));
+  ((stable.lastStable === null && (stable.origin === "Absent" || stable.origin === "Failed")) ||
+    (stable.lastStable !== null && stable.origin !== "Absent")) &&
+  ((Predicate.isTagged(stable.recovery, "Create") &&
+    stable.lastStable === null &&
+    stable.ownedBackupIds.length === 0 &&
+    (stable.origin === "Absent" || stable.origin === "Failed")) ||
+    (Predicate.isTagged(stable.recovery, "Terminal") && stable.lastStable !== null) ||
+    (Predicate.isTagged(stable.recovery, "Resume") &&
+      stable.lastStable !== null &&
+      stable.recovery.backup.confirmedAt !== null &&
+      validBackupIdentity(stable.recovery.backup) &&
+      stable.ownedBackupIds.includes(stable.recovery.backup.backupId)));
 
 export const validStable = (stable: StableState): boolean =>
   Match.valueTags(stable, {
@@ -216,10 +213,10 @@ export const validStable = (stable: StableState): boolean =>
 type TransitionCase<Tag extends Transition["_tag"]> = Extract<Transition, { _tag: Tag }>;
 
 const validCreateTransition = (transition: TransitionCase<"Create">, index: number): boolean =>
-  transition.origin === "Absent" &&
+  (transition.origin === "Absent" || transition.origin === "Failed") &&
   validReadinessProgress(transition.proof.readiness) &&
-  (index < 3 || transition.proof.readiness.runtime !== null) &&
-  (index < 6 || transition.proof.readiness.supervisor !== null);
+  (index < 4 || transition.proof.readiness.runtime !== null) &&
+  (index < 7 || transition.proof.readiness.supervisor !== null);
 
 const validCheckpointTransition = (
   transition: TransitionCase<"Checkpoint">,
