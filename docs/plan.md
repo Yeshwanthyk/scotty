@@ -161,8 +161,9 @@ Spike code lives in `work/spikes/<id>/` and is never committed. Record the resul
 - **Depends on:** 2.
 - **In scope:** the owner uses stage `dev` for real work: create sessions on real repositories, steer, interrupt, reconnect from the phone, redeploy mid-session. Fix only what blocks that use. Record what felt slow, confusing or missing (cold start, answer latency, what the UI shows) under this step's Status notes.
 - **Then shape it:** before any new feature, tighten what exists until it feels very good: cold start and answer latency, what the UI shows, error messages, and the code itself.
-- **Out of scope:** new features.
-- **Done when:** the owner has used it, the shaping pass is done, and, with the orchestrator, rewritten steps 3–8 to the minimum the trial showed is needed. Steps may be cut, merged, reordered or moved to **Later**. No step after this starts before that rewrite.
+- **Then the features, one at a time, each tight:** Codex (polished first), GitHub and `gh`, Hatch previews, evidence, and Claude as a second agent. Steps 3–8 are rewritten around this list in the order the trial suggests; each lands small, end to end and very good before the next starts.
+- **Out of scope:** new features before the shaping pass.
+- **Done when:** the owner has used it, the shaping pass is done, and, with the orchestrator, rewritten steps 3–8 around the feature list above, as the trial showed. Steps may be cut, merged, reordered or moved to **Later**. No step after this starts before that rewrite.
 
 ## Step 3: slice 2, ChatGPT credentials
 
