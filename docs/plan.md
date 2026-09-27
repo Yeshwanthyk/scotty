@@ -93,8 +93,9 @@ Update this table in every commit that moves a step. Keep notes to commands, res
 | 2    | Core loop                            | 1          | done   | `c68623e`…`f82cdb9`. On `dev`: `npm run e2e -- core` passes (create → `ready 0` → redeploy → steer → interrupt; cold start 2.3 s). verify-scotty core-loop C1–C5 pass (`work/verify/`). 27 tests (`npm test`) incl. replays `e2e/logs/reconnect-before-ready.jsonl`, `redial-alarm.jsonl`.                                                                                                                                                                                                                                                                                                                    |
 | 2b   | Agent-first CLI slice, verify skill  | 2          | done   | `7413f66`, `f82cdb9`: `doctor signin new ls show steer interrupt watch log`; `.agents/skills/verify-scotty` proven on `dev`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 3    | Tidy what exists                     | 2b         | done   | `72f74c2` + owner-approved CLI/docs/recipe/log extension replaces `watch` with `read`. `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run ui:build`, `npm test`: pass (27). Dev: `npm run deploy -- --stage dev`, `npm run --silent e2e -- core` (2229 ms cold start), `npm run --silent scotty -- doctor`: pass. Missing-field curl: HTTP 400, `{"error":{"message":"Missing key\n  at [\"title\"]","code":"bad_request"}}`. `git ls-files deploy e2e/lib`: only deploy TS. verify-scotty C1–C5 + read bounds/roles/IDs/removal pass: `work/verify/step3-read-aFLnOa5H/` (2562 ms). Code net −481. |
+| 3b   | Clear old leftovers outside `ui/`    | 3          | todo   | Audit 2026-09-26: 4 read-only scouts (UI views, UI data, core, meta). `ui/` findings are in step 5.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 4    | ChatGPT refresh and sign-out         | 3          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 5    | Phone UI on the core                 | 3          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 5    | Phone UI on the core                 | 3b         | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | 6    | GitHub: private repos and push       | 3          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | 7    | Owner trial (gate)                   | 4, 5, 6    | todo   | Owner action. Steps 8–12 are provisional until this step rewrites them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | 8    | Pause, resume, vaporize              | 7          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -121,6 +122,30 @@ Update this table in every commit that moves a step. Keep notes to commands, res
   - After deploy, `npm run --silent e2e -- core` passes on `dev`.
   - `git ls-files deploy e2e/lib` lists no `.js` file and no `client.ts` under `e2e/lib`.
   - `read --last 1` returns at most one message and the latest turn state, including `aborted` after interrupt; `--role assistant` filters before limiting. Invalid bounds/roles exit 2. `watch` is absent from help and exits 2 when invoked. The updated verify-scotty core-loop recipe passes on dev.
+
+## Step 3b: clear old leftovers outside `ui/`
+
+- **Why:** an audit on 2026-09-26 (four read-only scouts, one per slice: UI views, UI data, core, repo meta) found a few leftovers outside `ui/`. They are small and independent of every later step, so clear them first. `ui/` leftovers are listed in step 5.
+- **Depends on:** 3.
+- **In scope:**
+  1. Delete the placeholder files in non-empty directories: `cli/.gitkeep`, `container/supervisor/.gitkeep`, `e2e/logs/.gitkeep`, `src/creds/.gitkeep`, `src/session/.gitkeep`.
+  2. `deploy/image.ts`: delete the exported `copy` wrapper (no caller; `deploy/run.ts` uses `copyImage` with `copyLayer`).
+  3. `package.json`: remove the dev dependency `@effect/platform-node` (nothing imports it; Alchemy lists it only as an optional peer). Run `npm uninstall @effect/platform-node` so the lockfile follows, and prove the deploy still works.
+  4. `src/http/api.ts`: remove `hardCapSeconds` from `Create`. It is accepted and never used, and no step implements a hard cap. The UI still sends it until step 5; Schema structs ignore extra keys, so this is safe to do first.
+  5. `cli/commands/sessions.ts`: remove `new --base`. It is parsed and then always rejected as unsupported, and the API always uses the repository's default branch. Update `cli/main.ts` help and `docs/design.md` "CLI". If the trial needs a base branch, it becomes a step then.
+  6. `docs/design.md`:
+     - "Scope of v1" says sign-in is from the web UI and "the UI stays as it is". Say instead that sign-in is `scotty signin` today (the UI control is step 9) and that step 5 reduces the UI to the core flow.
+     - "Layout": `src/worker.ts` serves `/api/*` and UI assets today. Mark `/p/github` as step 6 and preview routing as step 11. Mark `protocol/` as holding only `supervisor.ts`.
+     - "API the UI needs": split the table into **served now** (`GET/POST /api/sessions`, `GET /api/sessions/:id`, `GET /conversation`, `GET /log`, `POST /steer`, `POST /interrupt`, `GET /api/credentials/chatgpt` + `start`/`poll`) and **planned**, each with its step: DELETE and sleep/resume/checkpoint → 8; changes, settings, repos → 9; hatch, evidence, terminal, resources → 11.
+  7. Step 9 below: drop the sentence that makes `ui/src/protocol/` the unchangeable contract. After step 5, the surviving readers in `ui/src/data/` are the contract.
+- **Out of scope:** anything in `ui/` (step 5); `deploy/**` beyond item 2 (step 10); the UI-shaped fields in `src/session/view.ts` (step 5 removes what the UI stops reading); the `provider` field (the CLI and UI both send it and the UI reads it back).
+- **Touch:** the five `.gitkeep` files, `deploy/image.ts`, `package.json`, `package-lock.json`, `src/http/api.ts`, `cli/commands/sessions.ts`, `cli/main.ts`, `docs/design.md`, `docs/plan.md`.
+- **Budget:** net negative lines of code.
+- **Done when:**
+  - The checks pass.
+  - `git ls-files | grep gitkeep` prints nothing; `rg -n 'platform-node|hardCapSeconds' --glob '!vendor' --glob '!ui' --glob '!package-lock.json' .` prints nothing.
+  - On `dev`: `npm run deploy -- --stage dev` (proves the dependency removal) and `npm run --silent e2e -- core` pass.
+  - `npm run --silent scotty -- new octocat/Hello-World --base main` exits 2 (unknown flag).
 
 ## Step 4: ChatGPT refresh and sign-out
 
@@ -154,22 +179,40 @@ Update this table in every commit that moves a step. Keep notes to commands, res
 
 ## Step 5: the phone UI on the core
 
-- **Why:** the trial (step 7) is phone-first, and `ui/` still speaks the old API. The new API already serves the paths the UI calls (`/api/sessions`, `/:id`, `/conversation`, `/steer`, `/interrupt`), so this step is about making the shapes match and removing the rest, not about adding a backend.
-- **Depends on:** 3.
+- **Why:** the trial (step 7) is phone-first, and `ui/` still speaks the old API. The new API already serves the paths the UI reads (`GET /api/sessions`, `GET /api/sessions/:id`, `GET /conversation`), and the list, detail and conversation shapes already match `src/session/view.ts`. What is left is fixing the writes, deleting the old-only screens, and deleting what they leave unused.
+- **Depends on:** 3b.
+- **Known mismatches** (from the 2026-09-26 audit; confirm in the browser first):
+  - Steer: `ui/src/data/conversation-client.ts` sends `message` (plus optional `images`, `deliverAs`, `clientUserMessageId`); the API needs `{text, turn, req?}`.
+  - Interrupt: the UI sends `{turnId, sessionRevision}`; the API needs `{turn, req?}`.
+  - Create: `ui/src/data/session-creator.ts` sends `hardCapSeconds` and Pi images; the API takes `{title, repo, prompt, provider}`. The create response already matches.
+  - The new-session form reads `/api/settings` and `/api/repos` (not served) for its repository list.
 - **In scope:**
-  1. **Find out what breaks.** Deploy `dev`, open it in a real browser at 390×844, and list each screen and request that fails against the new API, in Status notes. Do this before changing code.
-  2. **Make the core flow work:** the session list, the new-session form (public repository, base branch, prompt; Codex only), and the session page with the conversation, steer and interrupt. Where the UI reads a field the core has, change `src/session/view.ts` or `src/http/api.ts` to serve it. Where the UI reads a field that only the old implementation had (Claude/Pi agent selection, image attachments, resources, hatch), change the UI reader to stop reading it.
-  3. **Hide what has no backend:** Devices, Providers-and-runners, Stats, admin, resources, the settings screens, the changes/evidence/hatch panels, and the sleep/resume/checkpoint/vaporize controls. Remove the route or the control; don't leave disabled stubs.
-  4. **Delete what nothing imports any more** in `ui/src/` (including `ui/src/protocol/`), checked with `grep` and `npm run typecheck`.
-  5. Add `.agents/skills/verify-scotty/features/ui.md`: a browser recipe at 390×844 (create on `octocat/Hello-World`, see the answer, steer, interrupt, reload, and check that the list matches the session page).
-- **Out of scope:** the ChatGPT sign-in control (the CLI's `signin` covers it), changes/diff, lifecycle actions, new UI features or restyling, a browser e2e dependency.
-- **Touch:** `ui/src/**`, `src/session/view.ts`, `src/http/api.ts`, `docs/design.md` ("API the UI needs"), `.agents/skills/verify-scotty/features/ui.md`, `.agents/skills/verify-scotty/SKILL.md`.
-- **Budget:** +150 added lines outside `ui/`. `ui/` must shrink in net lines.
+  1. **Confirm in the browser first.** Deploy `dev`, open it in a real browser at 390×844, and record in Status notes each screen and request that fails.
+  2. **Fix the core flow:** the session list, the new-session form (public repository and prompt; Codex only; no base branch, no images, no hard cap, no repository picker), and the session page with the conversation, steer and interrupt. Fix the mismatches above in the UI's data layer; don't change the API to accept old shapes.
+  3. **Delete old-only screens and their components:**
+     - Routes: `routes/devices.tsx`, `routes/providers.tsx`, `routes/stats.tsx`, `routes/settings.tsx`. Regenerate `routeTree.gen.ts` with `npm run generate-routes --workspace @scotty/ui`; don't edit it by hand.
+     - Components used only by those routes: `AdminPage.tsx`, `SettingsShell.tsx`, `ResourcesSection.tsx`.
+     - Components with no backend: `ImageAttachments.tsx`, `Terminal.tsx` (terminal is step 11), `PierreDiff.tsx` (diff is step 9), and `SessionSelection.tsx` (Claude/Pi/provider labels). Rebuild these in their own steps if still needed; don't keep old code for them.
+  4. **Strip old parts from the files that stay:**
+     - `Sidebar.tsx`: the admin links and the principal/owner check (`readCurrentPrincipal`).
+     - `s.$sessionId.tsx`, `SessionMenu.tsx`, `SessionRow.tsx`, `SessionSwitcher.tsx`: the lifecycle controls (sleep, resume, checkpoint, vaporize) and the selection labels.
+     - `SessionWorkbench.tsx`: everything except the conversation (the Summary, Diff, Terminal, Hatch and Evidence panels).
+     - `LiveConversation.tsx`, `Conversation.tsx`, `MarkdownImage.tsx`: images, evidence, and queued follow-ups.
+     - `CreateSessionForm.tsx`: images, settings links, the repository lookup, and the hard cap.
+     - `workspace.css`: the selectors that no remaining element uses.
+  5. **Delete the data layer those removals orphan:** `data/admin.ts`, `data/settings.ts`, `data/settings-preview.ts`, `data/session-lifecycle.ts`, `data/session-workbench.ts`, `data/image-attachments.ts`, `data/resource-files.ts`, `domain/session-lifecycle-reconciliation.ts`, `fixtures/settings.ts`, and all of `ui/src/protocol/` except `session/conversation.ts`. Remove fixture fallbacks and demo content from `fixtures/sessions.ts`, `fixtures/conversation.ts` and `fixtures/markdown.ts` unless a remaining screen needs them. Before deleting each file, `grep` for its importers.
+  6. **Delete the UI dependencies nothing imports afterwards:** likely `@pierre/diffs`, `@xterm/xterm` and `@xterm/addon-fit`; check `mermaid` too. Remove them with `npm uninstall --workspace @scotty/ui <name>`.
+  7. **Server side:** remove from `src/session/view.ts` the fields that no remaining UI reader, `cli/client.ts` schema or `e2e/` assertion reads (capabilities, cap time, transport counters, queue, truncation, if unused).
+  8. Add `.agents/skills/verify-scotty/features/ui.md`: a browser recipe at 390×844. Create on `octocat/Hello-World`, see the answer, steer, interrupt, reload, and check that the list matches the session page.
+- **Out of scope:** the ChatGPT sign-in control (the CLI's `signin` covers it), changes/diff, lifecycle actions, new UI features or restyling, and a browser e2e dependency.
+- **Touch:** `ui/src/**`, `ui/package.json`, `package-lock.json`, `src/session/view.ts`, `cli/client.ts` (only if a view field it decodes is removed), `docs/design.md` ("API the UI needs"), `.agents/skills/verify-scotty/features/ui.md`, `.agents/skills/verify-scotty/SKILL.md`.
+- **Budget:** +150 added lines outside `ui/`. `ui/` must shrink in net lines; expect several thousand lines to go.
 - **Done when:**
   - The checks pass. On `dev`: `npm run --silent e2e -- core` passes.
   - The `ui` recipe is driven in a real browser on `dev`, with screenshots and results in `work/verify/`.
-  - No UI request returns 404 during the recipe (the browser's network log is saved with the evidence).
-  - `grep -rniE 'claude|pi-console|resources' ui/src` finds nothing that a visible route uses.
+  - No UI request returns 404 during the recipe (save the browser's network log with the evidence).
+  - Every file listed for deletion in items 3 and 5 is gone; `ls ui/src/protocol` shows only `session/`.
+  - `rg -niE 'claude|pi-console|resource|hatch|evidence|runner|pairing|principal|sleep|vaporize' ui/src` finds nothing, or each remaining hit is explained in Status notes.
 
 ## Step 6: GitHub, private repositories and push
 
@@ -203,7 +246,7 @@ Update this table in every commit that moves a step. Keep notes to commands, res
 ## Step 9: the rest of the UI API (provisional)
 
 - **Depends on:** 8.
-- **Contract:** the UI's readers in `ui/src/data/*.ts` and `ui/src/protocol/` are the field-level contract. Match them; don't change them. Step 5 already runs the core flow and hid everything without a backend; this step brings back only the screens the trial asked for, and adds the ChatGPT sign-in control in Settings.
+- **Contract:** step 5 left only the core flow; its readers in `ui/src/data/` are the contract. This step builds back only the screens the trial asked for, each written against the new API (not restored from `3042018`), and adds a ChatGPT sign-in control.
 - **Build:** `view.ts` for every shape the UI reads; the session index; `changes`, `settings`, `repos`, `checkpoint`.
 - **Done when:** `e2e -- ui` (a browser at 390×844: create, watch the answer stream in, steer, open the diff) passes, and the list matches each detail view.
 
