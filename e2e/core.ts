@@ -1,5 +1,5 @@
 import { BunServices } from "@effect/platform-bun";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { SessionEvent } from "../src/session/events.js";
 import { acceptedAgentEvents } from "../src/session/view.js";
@@ -185,7 +185,43 @@ const program = Effect.gen(function* () {
           event.kind === "turn.ended" && event.turn === "2" && event.state === "interrupted",
       ),
   );
-  console.log("Core: create, answer, redeploy, steer, interrupt recorded");
+  const snapshot = yield* Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const child = yield* spawner.spawn(
+      ChildProcess.make("bun", ["cli/main.ts", "read", session.id], {
+        stdin: "ignore",
+        stderr: "ignore",
+      }),
+    );
+    const json = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
+    if ((yield* child.exitCode) !== 0)
+      return yield* failure("core", "CLI read exited unsuccessfully", `scotty read ${session.id}`);
+    return yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(
+        Schema.Struct({
+          id: Schema.String,
+          turn: Schema.Struct({ id: Schema.String, state: Schema.String }),
+          messages: Schema.Array(Schema.Unknown),
+        }),
+      ),
+    )(json);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(BunServices.layer),
+    Effect.mapError(() => failure("core", "CLI read failed", `scotty read ${session.id}`)),
+  );
+  if (
+    snapshot.id !== session.id ||
+    snapshot.turn.id !== longReq ||
+    snapshot.turn.state !== "aborted" ||
+    snapshot.messages.length > 1
+  )
+    return yield* failure(
+      "core",
+      "CLI read did not report the latest aborted turn within its default bound",
+      `scotty read ${session.id}`,
+    );
+  console.log("Core: create, answer, redeploy, steer, interrupt, bounded read recorded");
 });
 
 Effect.runPromise(program).catch((error: unknown) => {

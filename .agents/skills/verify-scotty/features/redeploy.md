@@ -11,23 +11,26 @@ is lost or duplicated.
 
 ## Entry points
 
-- CLI `scotty steer | watch | log`, plus `npm run deploy -- --stage <stage>` (owner authorized).
+- CLI `scotty steer | read | log`, plus `npm run deploy -- --stage <stage>` (owner authorized).
 
 ## Drive
 
 1. Have a ready session from [core-loop](core-loop.md) (steps 1–2).
 2. `steer <id> "Count from 1 to 200, one number per line, then say MARKER3."`, and wait until
-   `watch` shows the turn running.
+   `read <id>` shows a new latest turn with state `streaming`; record its ID.
 3. Redeploy the same stage with the same env (see SKILL.md "Launch"); save its output as
    `$EVIDENCE/03-redeploy.log` (no secrets are printed).
-4. `watch <id> --until idle --timeout 600 > $EVIDENCE/04-watch.jsonl`: the answer ends with `MARKER3` (R1).
+4. Run `read <id> --role assistant --last 1` into numbered `04-read-<attempt>.json` files,
+   with command exit codes. Read again at 1–2 second intervals for at most 600 seconds until
+   the recorded turn is `completed` and its assistant message ends with `MARKER3` (R1).
+   Stop on a failed session, command error, or missed deadline.
 5. `log <id> > $EVIDENCE/05-log.json`: a `socket.closed` then a re-dial and `sup.hello` with the
    same boot, the `n` values strictly increasing with no repeats, one `prompt.delivered` per
    request (R2).
 
 ## Proof
 
-`04-watch.jsonl` with `MARKER3`; `05-log.json` showing the reconnect with no duplicate or missing
+The final `04-read-<attempt>.json` with `MARKER3`; `05-log.json` showing the reconnect with no duplicate or missing
 `n`.
 
 ## Gotchas

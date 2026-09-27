@@ -5,11 +5,11 @@ import { CliFailure, failure } from "./client.js";
 import { doctor, signin } from "./commands/setup.js";
 import { create, ls, show, log } from "./commands/sessions.js";
 import { steer, interrupt } from "./commands/actions.js";
-import { watch } from "./commands/watch.js";
+import { read } from "./commands/read.js";
 
 const help: Record<string, string> = {
   scotty:
-    "Usage: scotty <command> [--url https://host]\nCommands: doctor, signin, new, ls, show, steer, interrupt, watch, log\nRun scotty <command> --help for options.\nExample: scotty doctor",
+    "Usage: scotty <command> [--url https://host]\nCommands: doctor, signin, new, ls, show, steer, interrupt, read, log\nRun scotty <command> --help for options.\nExample: scotty doctor",
   doctor:
     "Usage: scotty doctor [--url https://host]\nCheck Access and Worker connectivity.\nExample: scotty doctor",
   signin:
@@ -21,13 +21,12 @@ const help: Record<string, string> = {
     "Usage: scotty steer <id> <text> [--req id] [--url https://host]\nSend text to a session.\nExample: scotty steer abcdef 'Run the checks'",
   interrupt:
     "Usage: scotty interrupt <id> [--req id] [--url https://host]\nInterrupt the current turn.\nExample: scotty interrupt abcdef",
-  watch:
-    "Usage: scotty watch <id> [--until idle|turn-end] [--timeout seconds] [--url https://host]\nStream one JSON line per view change.\nExample: scotty watch abcdef --until idle --timeout 60",
+  read: "Usage: scotty read <id> [--last N] [--role user|assistant] [--url https://host]\nRead one snapshot with session authority and latest turn status. --last defaults to 1 (integer 1–500); filter by role before selecting the last messages. Empty assistant messages are omitted.\nExample: scotty read abcdef --last 5 --role assistant",
   log: "Usage: scotty log <id> [--url https://host]\nShow raw events.\nExample: scotty log abcdef",
 };
 
 const root = Command.make("scotty").pipe(
-  Command.withSubcommands([doctor, signin, create, ls, show, steer, interrupt, watch, log]),
+  Command.withSubcommands([doctor, signin, create, ls, show, steer, interrupt, read, log]),
 );
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {

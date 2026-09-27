@@ -13,25 +13,37 @@ A session on a public repository gets a Codex answer, accepts a steer, and stops
 
 ## Entry points
 
-- CLI `scotty new | watch | steer | interrupt | show | log`.
+- CLI `scotty new | read | steer | interrupt | show | log`.
 
 ## Drive
 
 1. `npm run --silent scotty -- new octocat/Hello-World --prompt "Reply with the word MARKER1 and
 nothing else." --key $RANDOM-$$ > $EVIDENCE/01-new.json`: exit 0, an `id` (C1).
-2. `npm run --silent scotty -- watch <id> --until idle --timeout 600 > $EVIDENCE/02-watch.jsonl`:
-   exit 0 once idle. `watch` prints only session views; read answers with
-   `scotty show <id> > $EVIDENCE/02b-show.json`: `turns[0].assistant` contains `MARKER1` (C1, C2).
+2. Run `npm run --silent scotty -- read <id> --role assistant --last 1` into numbered
+   `02-read-<attempt>.json` files. Each invocation exits 0 with one snapshot. Read again at
+   1–2 second intervals, stopping within 600 seconds, until `authority` is stable/warm,
+   `turn.state` is `completed` and a message contains `MARKER1` (C1, C2). A null turn means
+   the initial prompt has not appeared yet; it is not proof of completion. Save `show <id>`
+   into `02b-show.json` and check the same answer and turn ID through that second view.
 3. `npm run --silent scotty -- steer <id> "Now reply with MARKER2." > $EVIDENCE/03-steer.json`,
-   then `watch <id> --until idle` into `04-watch.jsonl` and `show <id>` into `04b-show.json`:
-   `turns[1].assistant` contains `MARKER2` (C3).
+   then read into numbered `04-read-<attempt>.json` files until a new turn ID is `completed`
+   and its assistant message contains `MARKER2`; check `show <id>` in `04b-show.json` (C3).
 4. `steer <id> "Count slowly from 1 to 500, one number per line."` into `05-steer.json`; once
-   `show` has a turn whose `state` is `streaming`, `interrupt <id>` into `06-interrupt.json`; then
-   `watch <id> --until idle` into `07-watch.jsonl` and `show <id>` into `07b-show.json`: that turn's
-   `state` is `aborted`, and the log's `turn.ended` has `state: "interrupted"` (C4).
+   `read` has a new latest turn whose `state` is `streaming`, `interrupt <id>` into
+   `06-interrupt.json`. Read into numbered `07-read-<attempt>.json` files until that turn's
+   state is `aborted`; each read must exit 0 and return at most one message. Check
+   `show <id>` in `07b-show.json`: the same turn is `aborted`, and the log's `turn.ended`
+   has `state: "interrupted"` (C4). Use the same 600-second bound for each read sequence;
+   stop on a failed session, command error, or missed deadline.
 5. `npm run --silent scotty -- log <id> > $EVIDENCE/08-log.json`. From it: `container.start` to
    `sup.hello` time (C5); exactly one `prompt.delivered` per `req` (the interrupt is delivered as
    its own `req` too); no duplicate agent events.
+
+6. On this same session, compare default `read`, `--last 2`, and `--role assistant --last 2`
+   with `show`: counts are bounded, role filtering precedes the limit, message IDs remain
+   stable across reads, and the latest `turn` stays the same regardless of filtering. Bounds
+   `0`, `501`, `1.5`, and role `tool` must exit 2. Root help must list `read` and omit `watch`;
+   invoking `watch <id>` must exit 2. Record these commands and results too.
 
 ## Proof
 

@@ -57,15 +57,16 @@ another run is driving unless the recipe is the redeploy recipe.
 
 A recipe passes only with, for each step: the command, its exit code, its JSON, and the state it
 caused, read back through a second view (`show` after `steer`, `log` for the raw events). Save
-`log <id>` at the end of every run, pass or fail. A failed run's log goes to `e2e/logs/` with a
-failing replay (AGENTS.md "Tests") before anything is fixed.
+`log <id>` at the end of every run, pass or fail. Save a failed run's log to `e2e/logs/` before
+fixing it; a fold bug needs a failing replay, and other bugs need one e2e assertion (plan.md
+"When something breaks").
 
 Never write tokens into evidence. The CLI never prints them; don't add `cloudflared access
 token` output or headers to files.
 
 ## Cleanup
 
-Stop any `watch` you started. Sessions stay on the stage (vaporize arrives in a later step);
+Each `read` exits after one snapshot. Sessions stay on the stage (vaporize arrives in a later step);
 list the IDs this run created in `$EVIDENCE/owned.json` so later runs treat them as owned. Never
 touch sessions from `before.json`. Evidence under `work/verify/` stays (it is never committed).
 

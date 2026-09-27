@@ -38,7 +38,7 @@ container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
   supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; pause/resume
 cli/
-  main.ts             Effect CLI: doctor, signin, new, ls, show, steer, interrupt, watch, log (deploy later)
+  main.ts             Effect CLI: doctor, signin, new, ls, show, read, steer, interrupt, log (deploy later)
   client.ts           typed API client behind Access; shared with e2e/
 protocol/             API schemas shared by the UI and the Worker (kept from the old repository)
 ui/                   the web app (kept)
@@ -179,10 +179,10 @@ Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Ses
 
 Agent-first: an agent or a script is the primary user, and a person reading it gets the same clarity.
 
-- **Output:** stdout carries exactly one JSON value per command (`watch` streams JSON lines). Progress and hints go to stderr. No colour codes, no prompts, no pager.
+- **Output:** stdout carries exactly one JSON value per command. Progress and hints go to stderr. No colour codes, no prompts, no pager.
 - **Errors:** `{"error":{"code","message","hint"}}` on stdout, with a non-zero exit: 1 for a request or agent failure, 2 for bad usage, 3 when setup is missing (no `SCOTTY_URL`, no Access login, not signed in to ChatGPT). `hint` is the exact command that fixes it.
 - **Target:** `SCOTTY_URL` or `--url`, never derived. Access through `cloudflared access token` at run time; nothing stored by the CLI.
-- **Commands:** `doctor` checks the URL, Access, the Worker's reply and ChatGPT sign-in, and prints what to fix. `signin` runs the device code (prints the URL and code to stderr, polls, prints the result). `new <owner/repo> [--base b] [--prompt text] [--key k]` is idempotent on `--key`. `show <id>` prints the session view; `log <id>` the raw events; `watch <id> [--until idle|turn-end] [--timeout s]` streams view changes and exits when the condition holds. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries.
+- **Commands:** `doctor` checks the URL, Access, the Worker's reply and ChatGPT sign-in, and prints what to fix. `signin` runs the device code (prints the URL and code to stderr, polls, prints the result). `new <owner/repo> [--base b] [--prompt text] [--key k]` is idempotent on `--key`. `show <id>` prints the session view and conversation; `log <id>` the raw events. `read <id> [--last N] [--role user|assistant]` returns recent messages (default 1, maximum 500), session authority and the latest turn's ID/state. Messages have stable IDs, role, turn state and text; role filtering precedes the limit, and empty assistant text is omitted. The latest turn is independent of the selected messages; it is null before any prompt appears. Callers choose when to read again: there is no `watch` command. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries.
 - **Help:** `--help` on every command is short and ends with one runnable example.
 
 ## Deploy

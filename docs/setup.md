@@ -122,7 +122,7 @@ npm run --silent e2e -- core          # create, answer, redeploy, steer, interru
 
 For agents: the `.agents/skills/verify-scotty` skill drives the CLI through feature recipes (`features/*.md`) and saves evidence to `work/verify/`.
 
-Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `signin`, `new`, `ls`, `show <id>`, `steer <id>`, `interrupt <id>`, `watch <id> --until idle`, `log <id>`. Output is JSON on stdout; errors are JSON on stderr with a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
+Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `signin`, `new`, `ls`, `show <id>`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Output and errors are JSON on stdout; errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
 
 ## Troubleshooting
 
