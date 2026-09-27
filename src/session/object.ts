@@ -111,7 +111,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   Effect.retry({
                     schedule: Schedule.spaced("500 millis"),
                     times: 20,
-                    while: () => container.running && current(action.gen),
+                    // Not container.running: it can still read false just after start().
+                    while: () => current(action.gen),
                   }),
                 );
               return;
