@@ -1,8 +1,8 @@
 import {
   defaultCloudSettings,
   type CloudSettingsSnapshot,
-} from "../../../protocol/settings/cloud-settings";
-import type { RepositoryRegistryEntry } from "../../../protocol/settings/repository";
+} from "../protocol/settings/cloud-settings";
+import type { RepositoryRegistryEntry } from "../protocol/settings/repository";
 import type { CurrentPrincipal } from "../data/admin";
 import type { CredentialStatus, ResourceSnapshot, SettingsResult } from "../data/settings";
 

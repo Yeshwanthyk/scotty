@@ -2,11 +2,8 @@ import * as stylex from "@stylexjs/stylex";
 import { Schema } from "effect";
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { ChevronRight, FileCode2, MoreHorizontal, Plus, Upload } from "lucide-react";
-import type {
-  CloudResourceFile,
-  CloudResourceKind,
-} from "../../../protocol/resources/cloud-resources";
-import { CloudResourceKindSchema } from "../../../protocol/resources/cloud-resources";
+import type { CloudResourceFile, CloudResourceKind } from "../protocol/resources/cloud-resources";
+import { CloudResourceKindSchema } from "../protocol/resources/cloud-resources";
 import {
   readResource,
   removeResource,

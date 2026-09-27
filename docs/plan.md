@@ -38,7 +38,7 @@ The old implementation died from weight: 229 fix commits, ~74k lines of tests, c
 Run through this list and write the answers in your final report:
 
 - `git diff --stat`: is every file in the step's **Touch** list? Is the added-line count within **Budget**?
-- For every new exported symbol: `grep -rn '<name>' src cli container e2e protocol`. Does it have a caller outside its own file? If not, un-export or delete it.
+- For every new exported symbol: `grep -rn '<name>' src cli container e2e protocol ui/src`. Does it have a caller outside its own file? If not, un-export or delete it.
 - For every new test: which Done-when item or which bug does it prove? If none, delete it.
 - For every new `if`, `catch` or `Option`: which real input reaches it? If none, delete it.
 - Did you add anything the step didn't ask for? Move it under **Later** and remove it from the diff.
@@ -182,7 +182,7 @@ Update this table in every commit that moves a step. Keep notes to commands, res
 ## Step 8: the rest of the UI API (provisional)
 
 - **Depends on:** 7.
-- **Contract:** the UI's readers in `ui/src/data/*.ts` and `protocol/` are the field-level contract. Match them; don't change them. `ui/` changes only to hide routes that have no backend (Devices, Providers-and-runners, Stats) and to add the ChatGPT sign-in control in Settings.
+- **Contract:** the UI's readers in `ui/src/data/*.ts` and `ui/src/protocol/` are the field-level contract. Match them; don't change them. `ui/` changes only to hide routes that have no backend (Devices, Providers-and-runners, Stats) and to add the ChatGPT sign-in control in Settings.
 - **Build:** `view.ts` for every shape the UI reads; the session index; `changes`, `settings`, `repos`, `checkpoint`.
 - **Done when:** `e2e -- ui` (a browser at 390×844: create, watch the answer stream in, steer, open the diff) passes, and the list matches each detail view.
 

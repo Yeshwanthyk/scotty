@@ -40,8 +40,9 @@ container/
 cli/
   main.ts             Effect CLI: doctor, signin, new, ls, show, read, steer, interrupt, log (deploy later)
   client.ts           typed API client behind Access; shared with e2e/
-protocol/             API schemas shared by the UI and the Worker (kept from the old repository)
-ui/                   the web app (kept)
+protocol/
+  supervisor.ts       wire schema shared by the Session DO and the supervisor
+ui/                   the web app (kept; its old API schemas are in ui/src/protocol/ until it is rewired)
 e2e/                  tests against a real deployment
 ```
 
@@ -161,7 +162,7 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
 
 ## API the UI needs
 
-The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{message,code?,hint?}}`. The full field-level contract is in the old UI's readers (`ui/src/data/*.ts`) and `protocol/`.
+The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{message,code?,hint?}}`. The full field-level contract is in the old UI's readers (`ui/src/data/*.ts`) and `ui/src/protocol/`.
 
 | Endpoint                                                                  | Source                                                                                    |
 | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |

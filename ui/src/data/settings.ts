@@ -1,20 +1,17 @@
-import type {
-  CloudSettings,
-  CloudSettingsSnapshot,
-} from "../../../protocol/settings/cloud-settings";
+import type { CloudSettings, CloudSettingsSnapshot } from "../protocol/settings/cloud-settings";
 import {
   decodeCloudSettingsSnapshot as decodeSnapshotResult,
   CloudSettingsSchema,
-} from "../../../protocol/settings/cloud-settings";
+} from "../protocol/settings/cloud-settings";
 import { Option, Result, Schema } from "effect";
-import type { RepositoryRegistryEntry } from "../../../protocol/settings/repository";
+import type { RepositoryRegistryEntry } from "../protocol/settings/repository";
 import {
   CloudResourceKindSchema,
   CloudResourceNameSchema,
   CloudResourceFileSchema,
   type CloudResourceKind,
   type CloudResourceFile,
-} from "../../../protocol/resources/cloud-resources";
+} from "../protocol/resources/cloud-resources";
 
 export interface CredentialStatus {
   readonly name: string;

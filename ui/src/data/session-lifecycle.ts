@@ -7,7 +7,7 @@ import {
   type SessionReadFailure,
 } from "./session-reader";
 import { Option, Schema } from "effect";
-import { LifecyclePendingMarkerSchema } from "../../../protocol/session/lifecycle-response";
+import { LifecyclePendingMarkerSchema } from "../protocol/session/lifecycle-response";
 
 const SessionViewSchema = Schema.Struct({
   id: Schema.NonEmptyString,

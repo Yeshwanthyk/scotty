@@ -1,8 +1,5 @@
 import { Result } from "effect";
-import {
-  decodeAgentSelection,
-  type AgentSelection,
-} from "../../../protocol/agents/agent-selection";
+import { decodeAgentSelection, type AgentSelection } from "../protocol/agents/agent-selection";
 
 export const SESSION_WIRE_VERSION = 1 as const;
 
