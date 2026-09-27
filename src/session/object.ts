@@ -5,6 +5,7 @@ import { Config, Effect } from "effect";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
 import type { Command } from "./commands.js";
+import { bindSessionContainer } from "./container-binding.js";
 import { deadline } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
 import { installChatGptEgress, chatGptBaseUrl } from "./chatgpt-egress.js";
@@ -21,7 +22,6 @@ export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
       image,
       registryId: "registry.cloudflare.com",
       instanceType: "basic" as const,
-      className: "SessionObject",
     })),
   ),
 ) {}
@@ -31,6 +31,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
   Effect.gen(function* () {
     const storage = yield* Cloudflare.DurableObjectState;
     const credentials = yield* CredsObject;
+    yield* bindSessionContainer(SessionContainer);
     return Effect.gen(function* () {
       // The container handle exists only at run time, not while Alchemy plans the deploy.
       const container = storage.container;

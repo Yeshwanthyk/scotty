@@ -5,7 +5,7 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import CredsObject from "./creds/object.js";
 import { apiHandler } from "./http/api.js";
 import { chatGptHandler } from "./http/chatgpt.js";
-import SessionObject, { SessionContainer } from "./session/object.js";
+import SessionObject from "./session/object.js";
 
 export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
   "ScottyWorker",
@@ -17,9 +17,6 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
       main: import.meta.url,
       compatibility: { date: "2026-09-01" },
       assets: { directory: "./ui/dist" },
-      // Same key as the DO binding: Alchemy checks migrations per logical id, and a second id
-      // for the one SessionObject class makes it re-create the class (docs/design.md "Deploy").
-      env: { SessionObject: SessionContainer },
       access: {
         policies: [{ decision: "allow" as const, include: [{ email: { email } }] }],
       },
