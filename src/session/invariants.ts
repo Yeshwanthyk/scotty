@@ -1,4 +1,4 @@
-import type { State } from "./state.js";
+import { live, type State } from "./state.js";
 import { has, reqOp } from "./deadlines.js";
 
 export type Violation = { readonly code: string; readonly detail: string };
@@ -35,9 +35,9 @@ export function invariants(state: State): Violation[] {
   check(!state.ready || state.hello, "workspace", "workspace ready without hello");
   check(state.phase !== "running" || state.ready, "running", "running without workspace");
   check(
-    state.phase !== "failed" || (state.pending.length === 0 && !state.connected),
+    live(state) || (state.pending.length === 0 && !state.connected),
     "failed",
-    "failed with pending work or connection",
+    "stopped or failed with pending work or connection",
   );
   check(
     new Set(state.requests.map((item) => item.req)).size === state.requests.length,
@@ -67,24 +67,22 @@ export function invariants(state: State): Violation[] {
     "orphan pending operation",
   );
   check(
-    has(state.pending, "container") ===
-      (state.gen !== undefined && !state.hello && state.phase !== "failed"),
+    has(state.pending, "container") === (state.gen !== undefined && !state.hello && live(state)),
     "container",
     "container deadline does not match startup",
   );
   check(
-    has(state.pending, "workspace") === (state.hello && !state.ready && state.phase !== "failed"),
+    has(state.pending, "workspace") === (state.hello && !state.ready && live(state)),
     "workspaceDeadline",
     "workspace deadline does not match readiness",
   );
   check(
-    has(state.pending, "dial") === (state.hello && !state.connected && state.phase !== "failed"),
+    has(state.pending, "dial") === (state.hello && !state.connected && live(state)),
     "dial",
     "dial deadline does not match connection",
   );
   check(
-    !has(state.pending, "redial") ||
-      (state.gen !== undefined && !state.connected && state.phase !== "failed"),
+    !has(state.pending, "redial") || (state.gen !== undefined && !state.connected && live(state)),
     "redial",
     "redial without disconnected generation",
   );

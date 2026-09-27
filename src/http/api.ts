@@ -26,7 +26,7 @@ const Steer = Schema.Struct({
   req: Schema.optional(Schema.String),
 });
 const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(Schema.String) });
-const path = /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|conversation|log))?$/;
+const path = /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|conversation|log))?$/;
 const bad = (message: string, status = 400) =>
   HttpServerResponse.json(
     { error: { message, code: status === 404 ? "not_found" : "bad_request" } },
@@ -69,7 +69,7 @@ export function apiHandler(
         title: created.display.title,
         branch: created.display.branch,
         provider: "cloudflare",
-        status: created.authority.kind === "stable" ? "warm" : "booting",
+        status: created.authority.kind === "stable" ? created.authority.lifecycle : "booting",
         url: `/s/${id}`,
       });
     }
@@ -97,6 +97,8 @@ export function apiHandler(
       return yield* HttpServerResponse.json(yield* stub.conversation());
     if (request.method === "GET" && subpath === "log")
       return yield* HttpServerResponse.json(yield* stub.log());
+    if (request.method === "POST" && subpath === "stop")
+      return yield* HttpServerResponse.json(yield* stub.stop());
     if (request.method === "POST" && subpath === "steer") {
       const body = yield* Schema.decodeUnknownEffect(Steer)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),

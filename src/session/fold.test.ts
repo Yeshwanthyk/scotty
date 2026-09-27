@@ -211,11 +211,6 @@ describe("session fold", () => {
     const cases = [
       { op: "container", state: started, code: "container_timeout" },
       { op: "workspace", state: fold(started, hello), code: "workspace_timeout" },
-      {
-        op: "dial",
-        state: fold(boot(), make(6, "socket.closed", { gen: 1 })),
-        code: "dial_timeout",
-      },
     ];
     for (const item of cases) {
       const due = item.state.pending.find((p) => p.op === item.op)?.due;
@@ -232,5 +227,36 @@ describe("session fold", () => {
       expect(timed.failure).toEqual({ code: item.code, retryable: true });
       check(timed);
     }
+  });
+
+  it("stops, not fails, when the dial deadline passes", () => {
+    const closed = fold(boot(), make(6, "socket.closed", { gen: 1 }));
+    const due = closed.pending.find((p) => p.op === "dial")?.due;
+    const timeout = decodeSessionEvent({
+      seq: 7,
+      at: due,
+      src: "alarm",
+      kind: "timeout",
+      op: "dial",
+    });
+    const state = fold(closed, timeout);
+    expect(state.phase).toBe("stopped");
+    expect(state.failure).toBeUndefined();
+    expect(command(state, timeout)).toEqual({ kind: "destroy" });
+    check(state);
+  });
+
+  it("stops on container.stopped, ends pending requests and ignores later output", () => {
+    const stopped = make(6, "container.stopped", { gen: 1 });
+    const state = fold(boot(), stopped);
+    expect(state.phase).toBe("stopped");
+    expect(state.requests.every((r) => r.status !== "pending")).toBe(true);
+    expect(command(state, stopped)).toEqual({ kind: "destroy" });
+    const late = fold(
+      state,
+      make(7, "agent.event", { gen: 1, n: 7, agentKind: "codex", event: null }),
+    );
+    expect(late).toEqual({ ...state, lastSeq: 7 });
+    check(late);
   });
 });

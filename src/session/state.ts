@@ -13,10 +13,11 @@ export type Request =
 type Turn = { readonly turn: string; readonly codexTurn: string; readonly state: string };
 
 export type State = {
-  readonly phase: "provisioning" | "running" | "failed";
+  readonly phase: "provisioning" | "running" | "stopped" | "failed";
   readonly lastSeq: number;
   readonly gen: number | undefined;
   readonly startSeq: number;
+  readonly stopSeq: number;
   readonly hello: boolean;
   readonly connected: boolean;
   readonly ready: boolean;
@@ -35,11 +36,16 @@ export type State = {
   readonly created: Extract<SessionEvent, { kind: "created" }> | undefined;
 };
 
+// Stopped and failed sessions hold no connection, deadline or pending request.
+export const live = (state: State): boolean =>
+  state.phase !== "failed" && state.phase !== "stopped";
+
 export const initial: State = {
   phase: "provisioning",
   lastSeq: 0,
   gen: undefined,
   startSeq: 0,
+  stopSeq: 0,
   hello: false,
   connected: false,
   ready: false,

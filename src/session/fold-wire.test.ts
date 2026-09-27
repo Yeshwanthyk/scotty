@@ -157,13 +157,13 @@ describe("supervisor outputs", () => {
     check(state);
   });
 
-  it("fails the session on a request-less agent exit", () => {
+  it("stops the session on a request-less agent exit", () => {
     const event = make(6, "sup.error", { gen: 1, n: 6, code: "exit", message: "agent exited" });
     const state = fold(boot(), event);
-    expect(state.failure).toEqual({ code: "agent_exited", retryable: true });
-    expect(state.phase).toBe("failed");
+    expect(state.failure).toBeUndefined();
+    expect(state.phase).toBe("stopped");
     expect(state.lastN).toBe(6);
-    expect(command(state, event)).toBeUndefined();
+    expect(command(state, event)).toEqual({ kind: "destroy" });
     check(state);
   });
   it("reports each invariant without throwing", () => {

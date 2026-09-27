@@ -86,12 +86,12 @@ A handler never awaits an outside party while changing state. An outside action 
 
 Fold states, and the status the UI shows for each:
 
-| State                      | UI status |
-| -------------------------- | --------- |
-| `provisioning`, `resuming` | `booting` |
-| `running`                  | `running` |
-| `stopped`                  | `stopped` |
-| `failed`                   | `failed`  |
+| State          | UI status |
+| -------------- | --------- |
+| `provisioning` | `booting` |
+| `running`      | `running` |
+| `stopped`      | `stopped` |
+| `failed`       | `failed`  |
 
 Invariants are checked on every append. A violation appends an `invariant.violated` event and alerts; it does not throw. `scotty log <id>` shows the timeline. `scotty replay <id>` downloads the events and runs the same fold locally, stopping at the first bad event.
 
@@ -123,7 +123,7 @@ There are no disk snapshots and no vaporize. A session is `running` or `stopped`
   1. Destroy any running container and start a new one (a new gen).
   2. `PUT /save` the tar, then `start` with `resume: {threadId, commit}`.
   3. Clone, check out the base commit on `scotty/<id>`, unpack `repo/`, delete the `deleted` paths.
-  4. Unpack `codex/` into `CODEX_HOME` and resume Codex with `thread/resume`.
+  4. Unpack `codex/` into `CODEX_HOME` at the rollout's original relative path and resume Codex with `thread/resume {threadId, cwd, approvalPolicy, sandbox}`. Codex 0.157.1 takes no path; it finds the rollout under `CODEX_HOME` by thread ID (spike 6a, `work/spikes/6a/RESULT.md`).
 - Pushing to GitHub is the agent's own `git push` (step 7), when asked or needed.
 
 Old reference for the Codex state files: `worker/src/agent/codex/persistence-format.ts` and `worker/src/agent/codex/session.ts:996-1044` at `3042018`.

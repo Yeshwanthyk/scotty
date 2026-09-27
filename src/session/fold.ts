@@ -1,7 +1,7 @@
 import { shouldAck } from "./ack.js";
 import type { SessionEvent } from "./events.js";
 import { deadlines, has, remove, addOnce, reqOp, isOp, requestFromOp } from "./deadlines.js";
-import type { Request, State } from "./state.js";
+import { live, type Request, type State } from "./state.js";
 export { initial } from "./state.js";
 export type { State, Request } from "./state.js";
 export { deadline, deadlines } from "./deadlines.js";
@@ -16,9 +16,10 @@ const settle = (
   requests.map((item) =>
     item.req === req && item.status === "pending" ? { ...item, status } : item,
   );
-const failAll = (state: State): State => ({
+const endAll = (state: State, phase: "stopped" | "failed"): State => ({
   ...state,
-  phase: "failed",
+  phase,
+  stopSeq: state.lastSeq,
   connected: false,
   pending: [],
   requests: state.requests.map((item) =>
@@ -27,7 +28,7 @@ const failAll = (state: State): State => ({
 });
 
 const accepts = (state: State, event: { readonly gen: number; readonly n: number }): boolean =>
-  state.gen === event.gen && state.connected && state.phase !== "failed" && event.n > state.lastN;
+  state.gen === event.gen && state.connected && live(state) && event.n > state.lastN;
 const advance = (state: State, n: number, forceAck = false): State => ({
   ...state,
   lastN: n,
@@ -42,8 +43,7 @@ export function fold(state: State, event: SessionEvent): State {
     case "created":
       return state.created === undefined ? { ...next, created: event } : next;
     case "container.start":
-      if (state.created === undefined || state.phase === "failed" || state.gen !== undefined)
-        return next;
+      if (state.created === undefined || !live(state) || state.gen !== undefined) return next;
       return {
         ...next,
         gen: event.gen,
@@ -51,9 +51,12 @@ export function fold(state: State, event: SessionEvent): State {
         pending: addOnce(state.pending, "container", event.at + deadlines.container),
       };
     case "sup.hello":
-      if (event.gen !== state.gen || state.phase === "failed") return next;
+      if (event.gen !== state.gen || !live(state)) return next;
       if (state.boot !== undefined && state.boot !== event.boot)
-        return failAll({ ...next, failure: { code: "supervisor_restarted", retryable: true } });
+        return endAll(
+          { ...next, failure: { code: "supervisor_restarted", retryable: true } },
+          "failed",
+        );
       if (state.connected || (!has(state.pending, "container") && !has(state.pending, "dial")))
         return next;
       return {
@@ -148,13 +151,12 @@ export function fold(state: State, event: SessionEvent): State {
       return accepts(state, event) ? advance(next, event.n) : next;
     case "sup.error":
       if (!accepts(state, event)) return next;
+      // A lone agent exit (crash or OOM) leaves the session resumable, not broken.
       if (event.req === undefined && event.code === "exit")
-        return failAll({
-          ...advance(next, event.n),
-          lastAckN: state.lastAckN,
-          lastAckSeq: state.lastAckSeq,
-          failure: { code: "agent_exited", retryable: true },
-        });
+        return endAll(
+          { ...advance(next, event.n), lastAckN: state.lastAckN, lastAckSeq: state.lastAckSeq },
+          "stopped",
+        );
       if (
         event.req === undefined ||
         event.code === "timeout" ||
@@ -191,7 +193,7 @@ export function fold(state: State, event: SessionEvent): State {
         ),
       };
     case "socket.closed":
-      if (event.gen !== state.gen || state.phase === "failed" || !state.connected) return next;
+      if (event.gen !== state.gen || !live(state) || !state.connected) return next;
       return {
         ...next,
         connected: false,
@@ -202,7 +204,7 @@ export function fold(state: State, event: SessionEvent): State {
         ),
       };
     case "dial.failed":
-      if (event.gen !== state.gen || state.phase === "failed" || state.connected) return next;
+      if (event.gen !== state.gen || !live(state) || state.connected) return next;
       return {
         ...next,
         pending: addOnce(
@@ -212,7 +214,7 @@ export function fold(state: State, event: SessionEvent): State {
         ),
       };
     case "sup.redial":
-      if (event.gen !== state.gen || state.phase === "failed") return next;
+      if (event.gen !== state.gen || !live(state)) return next;
       return {
         ...next,
         connected: false,
@@ -226,8 +228,13 @@ export function fold(state: State, event: SessionEvent): State {
         !state.pending.some((item) => item.op === event.op && item.due <= event.at)
       )
         return next;
-      if (event.op === "container" || event.op === "workspace" || event.op === "dial")
-        return failAll({ ...next, failure: { code: `${event.op}_timeout`, retryable: true } });
+      // The container is gone or unreachable; its saved work can still resume.
+      if (event.op === "dial") return endAll(next, "stopped");
+      if (event.op === "container" || event.op === "workspace")
+        return endAll(
+          { ...next, failure: { code: `${event.op}_timeout`, retryable: true } },
+          "failed",
+        );
       if (event.op === "redial")
         return { ...next, lastRedialSeq: event.seq, pending: remove(state.pending, "redial") };
       return {
@@ -235,8 +242,13 @@ export function fold(state: State, event: SessionEvent): State {
         requests: settle(state.requests, requestFromOp(event.op), "timed_out"),
         pending: remove(state.pending, event.op),
       };
+    case "container.stopped":
+      return event.gen === state.gen && live(state) ? endAll(next, "stopped") : next;
     case "failed":
-      return failAll({ ...next, failure: { code: event.code, retryable: event.retryable } });
+      return endAll(
+        { ...next, failure: { code: event.code, retryable: event.retryable } },
+        "failed",
+      );
     case "invariant.violated":
       return next;
   }

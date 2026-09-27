@@ -100,4 +100,13 @@ describe("saved session event logs", () => {
     expect(state.lastN).toBe(4);
     expect(state.requests.find((r) => r.req === "initial:1")?.status).toBe("delivered");
   });
+  it("replays a warm session whose container stopped and ends stopped, not failed", async () => {
+    const file = "2026-09-27-warm-after-container-stopped.jsonl";
+    const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
+    let state = initial;
+    for (const [index, line] of lines.entries()) state = replayLine(state, line, file, index + 1);
+    expect(state.phase).toBe("stopped");
+    expect(state.failure).toBeUndefined();
+    expect(state.pending).toEqual([]);
+  });
 });

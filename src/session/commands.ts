@@ -29,7 +29,8 @@ export type Command =
     }
   | { readonly kind: "ack"; readonly gen: number; readonly ack: number }
   | { readonly kind: "prompt"; readonly req: string; readonly turn: string; readonly text: string }
-  | { readonly kind: "interrupt"; readonly req: string };
+  | { readonly kind: "interrupt"; readonly req: string }
+  | { readonly kind: "destroy" };
 
 const ackFor = (
   state: State,
@@ -38,7 +39,10 @@ const ackFor = (
   ackRecorded(state, output) ? { kind: "ack", gen: output.gen, ack: output.n } : undefined;
 
 export function command(state: State, event: SessionEvent): Command | undefined {
-  if (state.lastSeq !== event.seq || state.phase === "failed") return undefined;
+  if (state.lastSeq !== event.seq) return undefined;
+  if (state.phase === "stopped")
+    return state.stopSeq === event.seq ? { kind: "destroy" } : undefined;
+  if (state.phase === "failed") return undefined;
   switch (event.kind) {
     case "container.start":
       return state.gen === event.gen && state.startSeq === event.seq

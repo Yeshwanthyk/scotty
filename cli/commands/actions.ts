@@ -1,6 +1,6 @@
 import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
-import { Log, Reply, failure } from "../client.js";
+import { Log, Reply, View, failure } from "../client.js";
 import { output, sessionPath, turnFrom, url, withClient } from "./common.js";
 
 const id = Argument.String("id");
@@ -39,3 +39,10 @@ export const interrupt = Command.make(
       return yield* output(yield* api(`${path}/interrupt`, Reply, { method: "POST", body }));
     }),
 ).pipe(Command.withDescription("Interrupt the current turn"));
+
+export const stop = Command.make("stop", { url, id }, ({ url: target, id: value }) =>
+  Effect.gen(function* () {
+    const api = yield* withClient(target);
+    return yield* output(yield* api(`${sessionPath(value)}/stop`, View, { method: "POST" }));
+  }),
+).pipe(Command.withDescription("Stop a session's container"));

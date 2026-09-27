@@ -101,12 +101,17 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (log.state.gen !== undefined)
                 link.send({ type: "interrupt", gen: log.state.gen, n: 1, req: action.req });
               return;
+            case "destroy":
+              if (container.running) yield* Effect.promise(() => container.destroy());
+              return;
           }
         }).pipe(
           Effect.catchCause(() =>
             Effect.gen(function* () {
               if (action?.kind === "container.start" || action?.kind === "dial") {
-                yield* append({ kind: "dial.failed", gen: action.gen }, "session");
+                // A dial that fails because the container is gone is a stop, not a retry.
+                const kind = container.running ? "dial.failed" : "container.stopped";
+                yield* dispatch(yield* append({ kind, gen: action.gen }, "session"));
               } else if (action?.kind === "start") {
                 yield* append(
                   {
@@ -138,7 +143,10 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       link = new SupervisorLink((input) =>
         Effect.runPromise(Effect.provide(onSocket(input).pipe(Effect.orDie), context)),
       );
-      if (log.state.gen !== undefined && log.state.phase !== "failed") {
+      if (
+        log.state.gen !== undefined &&
+        (log.state.phase === "provisioning" || log.state.phase === "running")
+      ) {
         const restart = yield* append({ kind: "sup.redial", gen: log.state.gen }, "session");
         yield* storage.waitUntil(dispatch(restart));
       }
@@ -194,6 +202,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 log.state.requests.find((request) => request.req === input.req)?.status ??
                 "unknown",
             };
+          }),
+        stop: () =>
+          Effect.gen(function* () {
+            if (log.state.gen !== undefined)
+              yield* dispatch(
+                yield* append({ kind: "container.stopped", gen: log.state.gen }, "api"),
+              );
+            return { version: 1, session: sessionView(id(), log.state) };
           }),
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
         conversation: () => Effect.sync(() => conversationView(log.state, log.history)),

@@ -3,6 +3,7 @@ import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
 import { deadline, fold, initial, type State } from "./fold.js";
+import { live } from "./state.js";
 import { check, created, generated, hello, kinds, ready, start } from "./fold-fixtures.js";
 
 const supervisor = new Set([
@@ -102,13 +103,10 @@ it.prop(
         const issued = command(state, event);
         check(state);
         expect(state.lastN).toBeGreaterThanOrEqual(before.lastN);
-        if (before.phase === "failed") expect(issued).toBeUndefined();
+        if (!live(before)) expect(issued).toBeUndefined();
         if (supervisor.has(event.kind) && "n" in event) {
           const accepted =
-            before.phase !== "failed" &&
-            event.gen === before.gen &&
-            before.connected &&
-            event.n > before.lastN;
+            live(before) && event.gen === before.gen && before.connected && event.n > before.lastN;
           if (accepted) {
             expect(state.lastN).toBe(event.n);
             bump(`accepted ${event.kind}`);
@@ -121,14 +119,14 @@ it.prop(
             accepted &&
             state.lastN - before.lastAckN >= 50 &&
             !(event.kind === "workspace.ready" && !before.ready) &&
-            state.phase !== "failed"
+            live(state)
           ) {
             expect(issued?.kind).toBe("ack");
           }
         }
         if (event.kind === "sup.hello") {
           if (
-            before.phase !== "failed" &&
+            live(before) &&
             event.gen === before.gen &&
             before.boot !== undefined &&
             before.boot !== event.boot

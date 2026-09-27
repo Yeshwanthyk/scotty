@@ -35,13 +35,15 @@ export function sessionView(id: string, state: State) {
       },
     };
   }
-  const warm = state.phase === "running";
   return {
     ...base,
     authority: {
       kind: "stable" as const,
-      lifecycle: warm ? ("warm" as const) : ("failed" as const),
-      failure: warm ? null : { code: "session_failed", recovery: "create" as const },
+      lifecycle: state.phase,
+      failure:
+        state.phase === "failed"
+          ? { code: state.failure?.code ?? "session_failed", recovery: "create" as const }
+          : null,
     },
   };
 }

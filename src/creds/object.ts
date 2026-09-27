@@ -30,7 +30,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       const sql = yield* SqliteClient.SqliteClient;
       yield* sql`CREATE TABLE IF NOT EXISTS credentials (provider TEXT PRIMARY KEY, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, id_token TEXT NOT NULL, account_id TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), device_auth_id TEXT NOT NULL, user_code TEXT NOT NULL, interval INTEGER NOT NULL, expires_at INTEGER NOT NULL)`;
-      yield* sql`CREATE TABLE IF NOT EXISTS sessions (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS session_index (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
 
       return {
         reserve: (req: string, id: string) =>
@@ -41,8 +41,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const session = yield* Schema.decodeUnknownEffect(
               Schema.String.check(Schema.isPattern(/^[a-z0-9-]{6,32}$/)),
             )(id);
-            yield* sql`INSERT OR IGNORE INTO sessions (req, id) VALUES (${key}, ${session})`;
-            const rows = yield* sql`SELECT id FROM sessions WHERE req = ${key}`;
+            yield* sql`INSERT OR IGNORE INTO session_index (req, id) VALUES (${key}, ${session})`;
+            const rows = yield* sql`SELECT id FROM session_index WHERE req = ${key}`;
             const row = rows[0];
             if (row === undefined)
               return yield* new CredentialStoreError({ message: "Reservation missing" });
@@ -53,12 +53,12 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const session = yield* Schema.decodeUnknownEffect(
               Schema.String.check(Schema.isPattern(/^[a-z0-9-]{6,32}$/)),
             )(id);
-            const rows = yield* sql`SELECT id FROM sessions WHERE id = ${session}`;
+            const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session}`;
             return rows.length > 0;
           }),
         sessions: () =>
           Effect.gen(function* () {
-            const rows = yield* sql`SELECT id FROM sessions`;
+            const rows = yield* sql`SELECT id FROM session_index`;
             return yield* Effect.forEach(rows, (row) =>
               Schema.decodeUnknownEffect(SessionRow)(row),
             );

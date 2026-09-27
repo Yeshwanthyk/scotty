@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
 import { decodeSessionEvent, type SessionEvent } from "./events.js";
 import { deadline, fold, initial, invariants, type State } from "./fold.js";
+import { live } from "./state.js";
 
 const supervisorKinds = new Set([
   "sup.hello",
@@ -59,14 +60,12 @@ export const check = (state: State): void => {
     pending.length === 0 ? undefined : Math.min(...pending.map((item) => item.due)),
   );
   expect(pending.some((p) => p.op === "container")).toBe(
-    state.gen !== undefined && !state.hello && state.phase !== "failed",
+    state.gen !== undefined && !state.hello && live(state),
   );
   expect(pending.some((p) => p.op === "workspace")).toBe(
-    state.hello && !state.ready && state.phase !== "failed",
+    state.hello && !state.ready && live(state),
   );
-  expect(pending.some((p) => p.op === "dial")).toBe(
-    state.hello && !state.connected && state.phase !== "failed",
-  );
+  expect(pending.some((p) => p.op === "dial")).toBe(state.hello && !state.connected && live(state));
   for (const request of state.requests)
     expect(pending.some((p) => p.op === `req:${request.req}`)).toBe(request.status === "pending");
 };
