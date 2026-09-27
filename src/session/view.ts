@@ -1,6 +1,16 @@
 import type { SessionEvent } from "./events.js";
 import { fold, initial, type State } from "./fold.js";
 
+// Codex ends a turn as completed, interrupted or failed; the view has no pending "ended" state.
+const turnState = (ended: string | undefined) =>
+  ended === undefined
+    ? ("streaming" as const)
+    : ended === "interrupted"
+      ? ("aborted" as const)
+      : ended === "failed"
+        ? ("failed" as const)
+        : ("completed" as const);
+
 export function sessionView(id: string, state: State) {
   const created = state.created;
   const title = created?.title ?? "Session";
@@ -109,9 +119,7 @@ export function conversationView(id: string, state: State, events: readonly Sess
       .filter((request) => request.kind === "prompt")
       .map((request) => ({
         id: request.req,
-        state: state.turns.some((turn) => turn.turn === request.turn)
-          ? ("completed" as const)
-          : ("streaming" as const),
+        state: turnState(state.turns.find((turn) => turn.turn === request.turn)?.state),
         user: request.text,
         assistant: answers.get(request.turn) ?? "",
         tools: [],

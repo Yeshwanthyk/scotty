@@ -1,21 +1,32 @@
 import { Effect, Option } from "effect";
 import { Command } from "effect/unstable/cli";
-import { Polled, Started, List, failure } from "../client.js";
+import { ChatGptStatus, Polled, Started, List, failure } from "../client.js";
 import { output, url, withClient } from "./common.js";
 
 export const doctor = Command.make("doctor", { url }, ({ url: target }) =>
   Effect.gen(function* () {
     const api = yield* withClient(target);
     const reply = yield* api("/api/sessions", List);
+    const chatgpt = yield* api("/api/credentials/chatgpt", ChatGptStatus);
+    if (chatgpt.status !== "signed-in")
+      return yield* failure(
+        "setup",
+        chatgpt.status === "expiring"
+          ? "ChatGPT sign-in expires within a day"
+          : "ChatGPT is not signed in",
+        "npm run --silent scotty -- signin",
+        3,
+      );
     yield* output({
       url: Option.getOrElse(target, () => process.env.SCOTTY_URL ?? ""),
       access: "ok",
       worker: "ok",
       sessions: reply.sessions.length,
-      chatgpt: "unknown",
+      chatgpt: "ok",
+      chatgptExpiresAt: chatgpt.expiresAt,
     });
   }),
-).pipe(Command.withDescription("Check URL, Access and Worker connectivity"));
+).pipe(Command.withDescription("Check URL, Access, Worker and ChatGPT sign-in"));
 
 export const signin = Command.make("signin", { url }, ({ url: target }) =>
   Effect.gen(function* () {

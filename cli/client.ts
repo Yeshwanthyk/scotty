@@ -51,13 +51,12 @@ export const Conversation = Schema.Struct({
     }),
   ),
 });
+// Events keep every field so agents can read answers and errors from the raw log.
 export const Log = Schema.Array(
-  Schema.Struct({
-    seq: Schema.Number,
-    at: Schema.Number,
-    kind: Schema.String,
-    data: Schema.optional(Schema.Unknown),
-  }),
+  Schema.StructWithRest(
+    Schema.Struct({ seq: Schema.Number, at: Schema.Number, kind: Schema.String }),
+    [Schema.Record(Schema.String, Schema.Unknown)],
+  ),
 );
 export const Started = Schema.Union([
   Schema.Struct({
@@ -72,6 +71,10 @@ export const Started = Schema.Union([
     code: Schema.NullOr(Schema.String),
   }),
 ]);
+export const ChatGptStatus = Schema.Struct({
+  status: Schema.Literals(["signed-in", "signed-out", "expiring"]),
+  expiresAt: Schema.NullOr(Schema.Number),
+});
 export const Polled = Schema.Union([
   Schema.Struct({ status: Schema.Literal("signed-in"), expiresAt: Schema.Number }),
   Schema.Struct({ status: Schema.Literal("pending"), interval: Schema.Number }),

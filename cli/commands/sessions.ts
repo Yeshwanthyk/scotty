@@ -1,6 +1,6 @@
 import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
-import { Created, List, Log, View, failure } from "../client.js";
+import { Conversation, Created, List, Log, View, failure } from "../client.js";
 import { output, sessionPath, url, usage, withClient } from "./common.js";
 
 const id = Argument.String("id");
@@ -63,9 +63,11 @@ export const show = Command.make("show", { url, id }, ({ url: target, id: value 
   Effect.gen(function* () {
     const path = sessionPath(value);
     const api = yield* withClient(target);
-    return yield* output(yield* api(path, View));
+    const view = yield* api(path, View);
+    const conversation = yield* api(`${path}/conversation`, Conversation);
+    return yield* output({ ...view, turns: conversation.turns });
   }),
-).pipe(Command.withDescription("Show a session view"));
+).pipe(Command.withDescription("Show a session view and its conversation turns"));
 
 export const log = Command.make("log", { url, id }, ({ url: target, id: value }) =>
   Effect.gen(function* () {

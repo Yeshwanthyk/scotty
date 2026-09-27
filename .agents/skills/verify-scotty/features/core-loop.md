@@ -20,14 +20,18 @@ A session on a public repository gets a Codex answer, accepts a steer, and stops
 1. `npm run --silent scotty -- new octocat/Hello-World --prompt "Reply with the word MARKER1 and
 nothing else." --key $RANDOM-$$ > $EVIDENCE/01-new.json`: exit 0, an `id` (C1).
 2. `npm run --silent scotty -- watch <id> --until idle --timeout 600 > $EVIDENCE/02-watch.jsonl`:
-   exit 0; the last line's answer contains `MARKER1` (C1, C2).
+   exit 0 once idle. `watch` prints only session views; read answers with
+   `scotty show <id> > $EVIDENCE/02b-show.json`: `turns[0].assistant` contains `MARKER1` (C1, C2).
 3. `npm run --silent scotty -- steer <id> "Now reply with MARKER2." > $EVIDENCE/03-steer.json`,
-   then `watch <id> --until idle` into `04-watch.jsonl`: the new answer contains `MARKER2` (C3).
+   then `watch <id> --until idle` into `04-watch.jsonl` and `show <id>` into `04b-show.json`:
+   `turns[1].assistant` contains `MARKER2` (C3).
 4. `steer <id> "Count slowly from 1 to 500, one number per line."` into `05-steer.json`; once
-   `watch` shows the turn running, `interrupt <id>` into `06-interrupt.json`; then
-   `watch <id> --until idle` into `07-watch.jsonl`: the turn ends `interrupted` (C4).
-5. `npm run --silent scotty -- log <id> > $EVIDENCE/08-log.json`. From it: `container.started` to
-   `sup.hello` time (C5); exactly one `prompt.delivered` per request; no duplicate agent events.
+   `show` has a turn whose `state` is `streaming`, `interrupt <id>` into `06-interrupt.json`; then
+   `watch <id> --until idle` into `07-watch.jsonl` and `show <id>` into `07b-show.json`: that turn's
+   `state` is `aborted`, and the log's `turn.ended` has `state: "interrupted"` (C4).
+5. `npm run --silent scotty -- log <id> > $EVIDENCE/08-log.json`. From it: `container.start` to
+   `sup.hello` time (C5); exactly one `prompt.delivered` per `req` (the interrupt is delivered as
+   its own `req` too); no duplicate agent events.
 
 ## Proof
 
