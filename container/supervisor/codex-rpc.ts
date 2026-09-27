@@ -48,13 +48,17 @@ export class CodexRpc {
       Stream.decodeText(),
       Stream.splitLines,
       Stream.runForEach((line) => this.receive(line)),
-      Effect.catchCause(() =>
+      // A clean end of stdout also means Codex is gone.
+      Effect.exit,
+      Effect.andThen(
         this.failAll(new AgentError({ code: "exit", message: "Codex stdout closed" })),
       ),
       Effect.forkScoped,
     );
     yield* this.child.exitCode.pipe(
-      Effect.flatMap(() => this.failAll(new AgentError({ code: "exit", message: "Codex exited" }))),
+      // exitCode fails when a signal kills Codex, which is still an exit.
+      Effect.exit,
+      Effect.andThen(this.failAll(new AgentError({ code: "exit", message: "Codex exited" }))),
       Effect.forkScoped,
     );
   });
