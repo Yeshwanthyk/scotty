@@ -307,39 +307,57 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
 
 - **Why:** the owner validates work from a phone; today a server inside a session is unreachable.
 - **Depends on:** 7.
-- **Design (owner, 2026-09-27):** `https://<port>-<id>.<base>` → Worker (Host check) → Session DO `fetch` → `getTcpPort(port).fetch`, HTTP and WebSocket, behind the same Access application. No nonce, no handoff token, no cookie, no permits, no quotas, no fold event. Every old Hatch auth failure (`9deb075`, `b3df3b8`, `bc7e038`, `3a2813a`) and the quota failure (`597096a`) came from layers this design leaves out.
+- **Design (owner, 2026-09-27):** `https://<port>-<id>.<base>` → Worker (Host check) → Session DO `fetch` → `getTcpPort(port).fetch`, HTTP and WebSocket, behind Access. No nonce, no handoff token, no cookie, no permits, no quotas, no fold event. Every old Hatch auth failure (`9deb075`, `b3df3b8`, `bc7e038`, `3a2813a`) and the quota failure (`597096a`) came from layers this design leaves out.
 - **In scope:**
-  1. **Owner action:** name the zone and base in `work/dev-env.sh` as `SCOTTY_HATCH_BASE` (for example `preview.<zone>`) and `SCOTTY_HATCH_ZONE_ID`. `alchemy.run.ts` rejects a missing value.
+  1. **Owner action:** name the zone and base in `work/dev-env.sh` as `SCOTTY_HATCH_BASE` (for example `preview.<zone>`) and `SCOTTY_HATCH_ZONE_ID`. `alchemy.run.ts` rejects a missing value. If 8a-b ends with a separate Access application, run `cloudflared access login https://1024-x.<base>` once.
   2. **Spike 8a** (`work/spikes/8a/`, uncommitted), stopping at the first failure:
      a. `runWorkerFirst: true` with `ui/dist` served through `ASSETS` still serves the step 5 URLs. Today `runWorkerFirst: ["/api/*"]` (`src/worker.ts:26`) would answer preview paths from the SPA fallback.
-     b. A wildcard route plus a proxied AAAA `100::` record (as in `git show 3042018:infra/cloudflare-stack.ts`) is gated by the Worker's dedicated Access app. If it isn't, use a `self_hosted` Access application for `*.<base>`.
-     c. A WebSocket goes through Worker → DO → `getTcpPort` to an echo server.
-     d. A server started from a Codex command as `setsid nohup <cmd> > /workspace/.scotty/logs/<name>.log 2>&1 < /dev/null &` survives the command and the turn (Codex 0.157.1). This informs step 8b too.
+     b. A wildcard route plus a proxied AAAA `100::` record is gated by the Worker's Access app. If it isn't, pass one `self_hosted` Application for `*.<base>` as the Worker's `access` (`WorkerAccess.ts:27`), so the UI and previews share one application and one token; a second application only if that fails.
+     c. A WebSocket goes through Worker → DO → `getTcpPort` to an echo server that also prints the `Host` it received. It must be `localhost:<port>` (Vite answers 403 to any other); if it isn't, the DO deletes the incoming `host` header.
+     d. A server started from a Codex command as `setsid nohup <cmd> > /workspace/.scotty/logs/<name>.log 2>&1 < /dev/null &` survives the command and the turn (Codex 0.157.1).
      Write the results into `design.md` "Hatch".
   3. **Infra** in `alchemy.run.ts` / `src/worker.ts` props: a proxied AAAA `100::` DNS record for `*.<base>`, `routes: [{pattern: "*.<base>/*", zoneId}]`, and `runWorkerFirst: true`.
   4. **Worker:** after the loopback branch, a `Host` ending in `.<base>` is parsed as `<port>-<id>`. Port 7000, and any port outside 1024–65535, gets a 404; otherwise the request goes to `sessions.getByName(id).fetch(request)`. Other hosts: `/api/*` goes to the router, everything else to `ASSETS`.
-  5. **Session DO `fetch`:** if the phase isn't `running`, answer 502 `session not running` and start nothing. Otherwise call `getTcpPort(port).fetch(new Request("http://localhost:<port><path><search>", request))` with `X-Forwarded-Host`; a rejected fetch is a 502. The response goes back as is, so a 101 passes through.
+  5. **Session DO `fetch`:** if the phase isn't `running`, answer 502 `session not running` and start nothing. Otherwise forward the web request to `getTcpPort(port).fetch("http://localhost:<port><path><search>", …)` and return the reply as `HttpServerResponse.raw(response)`, in the DO and in the Worker: `raw` is the one body `toWeb` hands back untouched (`vendor/effect/packages/effect/src/unstable/http/HttpServerResponse.ts:1031-1040`), so a 101 keeps its `webSocket`; `fromWeb` (`src/creds/git.ts:72`) rebuilds it and drops it. A rejected fetch is a 502.
   6. **API and CLI:** `GET /api/sessions/:id/hatch/:port` → `{url}`, or 409 `not_running`. `scotty hatch <id> <port>` prints it. `hatchHost(port, id)` is shared by items 4 and 6.
   7. `e2e/hatch.ts`, registered in `e2e/run.ts`.
-- **Out of scope:** image changes, port discovery, agent instructions, environment files, resume behaviour (8b), UI (12), quotas, caps, per-request auth.
+- **Out of scope:** image changes, port discovery, agent instructions, resume behaviour (8b), UI (12), quotas, caps, per-request auth.
 - **Touch:** `alchemy.run.ts`, `src/worker.ts`, `src/session/object.ts`, `src/http/api.ts`, `cli/commands/actions.ts`, `cli/main.ts`, `e2e/hatch.ts`, `e2e/run.ts`, `docs/design.md`, `docs/plan.md`, `docs/setup.md`.
-- **Budget:** +170 added lines, excluding docs (infra 20, Worker 35, DO 30, API/CLI 35, e2e 50). Past that, stop and ask.
+- **Budget:** +220 added lines, excluding docs (infra 20, Worker 35, DO 30, API/CLI 35, e2e 100). Past that, stop and ask.
 - **Done when:**
   - The checks pass. No image change.
   - `npm run --silent e2e -- hatch` on `dev`:
     1. `new octocat/Hello-World` with a prompt to write `server.mjs`: a Node HTTP server on `0.0.0.0:8080` whose `GET /` returns a random marker from the prompt and whose `/ws` echoes. The prompt runs it detached (spike 8a d) and asks for the reply `done`.
     2. `scotty hatch <id> 8080` prints `https://8080-<id>.<base>`. `GET /` with an Access token returns 200 and the marker; a WebSocket to `/ws` echoes a message.
     3. Without the token, the URL never returns the marker (only Access's redirect, 302 or 401).
-    4. `https://7000-<id>.<base>/` returns 404. `https://8080-nosuchsession.<base>/` returns 502, and `wrangler containers instances` shows no new container.
+    4. `https://7000-<id>.<base>/` returns 404 and `https://8080-nosuchsession.<base>/` returns 502.
     5. After `stop`, `GET /` returns 502 and `scotty hatch <id> 8080` exits 1 with `not_running`.
   - The owner repeats item 2 by hand in a phone browser (one Access login, then the marker page), noted in Status.
   - `e2e -- core`, `stop-resume`, `github` and `scotty doctor` pass on `dev`; the SPA still loads at `/`, `/sessions` and `/s/<id>`.
 
-## Step 8b: Hatch, the dev environment (provisional)
+## Step 8b: Hatch: the dev environment
 
+- **Why:** a preview URL is useless until the agent can install a repository's toolchain, run its app on `0.0.0.0`, keep it running past the turn, and bring it back after a resume. The old build's `hatch.toml`, restore extension and toolchain allowlist each broke (`e16e241`, `1bc8b36`, `fbbdb24`, `109c66b`, `ecda4aa`, `fa5eb9c`, `284f056`, `ade3b12`).
 - **Depends on:** 8.
-- **Build:** the agent sets up a repository's dev environment (toolchains, dependencies, services, dev servers) from a loose Markdown map it keeps in the repository, runs the app detached on `0.0.0.0`, and hands the owner its Hatch URL; after a resume it sets the environment up again. Being settled with the owner: image contents and size, whether the instance type is a setting, the map's name and shape, and how setup is cached.
-- **Done when:** e2e `hatch-env`: the agent sets up a small Vite app from one prompt, the owner opens and uses it on a phone, and it comes back after stop and resume.
+- **Design (owner, 2026-09-27):** the agent writes and owns the environment, in the repository, as `.agents/setup`, the file the owner's Amp already writes (`../scotty/.agents/setup`). Scotty never parses or runs it; it only tells the agent the contract. No cache, no snapshot, nothing restarts by itself: after a resume the agent runs setup again.
+- **In scope:**
+  1. **Image:** `curl sudo xz-utils` and `/etc/sudoers.d/scotty` with `scotty ALL=(ALL) NOPASSWD:ALL`. Nothing else.
+  2. **Instance:** `instanceType` in `src/session/object.ts` becomes `standard-1` (4 GiB; `basic` is 1 GiB). A constant.
+  3. **Protocol:** `start.hatch`, the URL template `https://{port}-<id>.<base>`, composed by the Session DO.
+  4. **Instructions:** `codex.ts` passes the same `developerInstructions` on `thread/start` and `thread/resume` (~20 lines): you are `scotty` in a Scotty container (Debian bookworm, Node 22, git, curl, passwordless sudo, internet; `sudo apt-get update` before installing); repo at `/workspace/repo`; its dev environment is `.agents/setup` (bash, idempotent, committed): run it if it exists, write it if the task needs the app running (toolchains pinned from repo files onto `PATH` via `/usr/local/bin`, dependencies, services, dev servers); bind to `0.0.0.0`, start long-lived servers with `mkdir -p /workspace/.scotty/logs && setsid nohup <cmd> > /workspace/.scotty/logs/<name>.log 2>&1 < /dev/null &`; port N is reachable at the template, give the user the URL; keep dependency and build dirs git-ignored; after a resume only tracked and untracked non-ignored files come back, so run `.agents/setup` first.
+  5. `e2e/hatch-env.ts`, registered in `e2e/run.ts`. `SCOTTY_HATCH_TEST_REPO` names a small Vite + React repo the owner picks.
+- **Out of scope:** a cache (Later), toolchain managers or Bun/Go/Rust/Python/build-essential in the image, browsers (step 9), databases, dev-env secrets, snapshots, per-session instance sizes, Scotty running setup, an automatic prompt after resume, port discovery, UI (step 12).
+- **Touch:** `container/Dockerfile`, `container/supervisor/{codex,controller}.ts`, `protocol/supervisor.ts`, `src/session/object.ts`, `e2e/hatch-env.ts`, `e2e/run.ts`, `docs/design.md`, `docs/plan.md`, `docs/setup.md`.
+- **Budget:** +160 excluding docs (image 3, protocol/DO 20, supervisor 40, e2e 100). Past that, stop and ask.
+- **Done when:**
+  - The checks pass; new image built and deployed to `dev`.
+  - `npm run --silent e2e -- hatch-env` on `dev`:
+    1. `new $SCOTTY_HATCH_TEST_REPO`, prompt "Set up this repo's dev environment, start the dev server, and reply with only its URL." The reply is `https://<port>-<id>.<base>`; `GET /` with an Access token returns 200 with `/@vite/client` in the body.
+    2. Steer "Run `test -x .agents/setup && echo SETUP_OK` and reply with the output" → `SETUP_OK`.
+    3. `stop`, then steer "Bring the dev server back up and reply with only its URL": the URL answers 200 with `/@vite/client` again.
+    4. The e2e prints, and Status records, time from `new` to item 1's reply and from item 3's steer to its reply. These decide the cache.
+  - The owner repeats item 1 on a phone and uses the app, noted in Status.
+  - `e2e -- hatch`, `core`, `stop-resume`, `github` and `scotty doctor` pass on `dev`; leftover sessions `stopped`.
 
 ## Step 9: images and video in chat (provisional)
 
@@ -385,6 +403,7 @@ Each item gets its own step before anyone builds it.
 - The terminal (a PTY in the supervisor relayed Worker → DO → container).
 - `changes`/diff, `settings`, `repos` API for the UI.
 - `gh` inside the container.
+- **Dev-environment cache (step 8b review):** Build it when post-resume setup is > ~3 min on a real repo, or registry throttling makes item 3 flaky: `cache.internal` via `interceptOutboundHttp`, R2 `cache/<owner>/<repo>/<key>.tar` streamed by the Worker, a 15-line `scotty-cache restore|save` script, key chosen by the agent from the lockfile hash.
 - Warm per-repository environments: a setup script run once per repository, its result cached (for example a workspace tar in R2) so sessions start with dependencies installed.
 - User-supplied images, checked against the supervisor contract at `hello`.
 
