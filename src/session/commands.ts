@@ -30,7 +30,8 @@ export type Command =
   | { readonly kind: "ack"; readonly gen: number; readonly ack: number }
   | { readonly kind: "prompt"; readonly req: string; readonly turn: string; readonly text: string }
   | { readonly kind: "interrupt"; readonly req: string }
-  | { readonly kind: "destroy" };
+  | { readonly kind: "destroy" }
+  | { readonly kind: "save"; readonly gen: number; readonly turn: string; readonly ack: number };
 
 const ackFor = (
   state: State,
@@ -109,8 +110,11 @@ export function command(state: State, event: SessionEvent): Command | undefined 
     case "agent.event":
     case "prompt.delivered":
     case "sup.error":
-    case "turn.ended":
       return ackFor(state, event);
+    case "turn.ended":
+      return state.saveSeq === event.seq && ackRecorded(state, event)
+        ? { kind: "save", gen: event.gen, turn: event.turn, ack: event.n }
+        : ackFor(state, event);
     default:
       return undefined;
   }

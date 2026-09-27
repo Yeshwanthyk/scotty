@@ -259,4 +259,30 @@ describe("session fold", () => {
     expect(late).toEqual({ ...state, lastSeq: 7 });
     check(late);
   });
+
+  it("saves after an accepted turn end and clears the save deadline on its result", () => {
+    const end = make(6, "turn.ended", { gen: 1, turn: "0", codexTurn: "cx", state: "completed" });
+    const ended = fold(boot(), end);
+    expect(command(ended, end)).toEqual({ kind: "save", gen: 1, turn: "0", ack: 6 });
+    expect(ended.pending.find((p) => p.op === "save")?.due).toBe(6_000 + deadlines.save);
+    const done = fold(ended, make(7, "save.done", { turn: "0" }));
+    expect(done.pending.some((p) => p.op === "save")).toBe(false);
+    check(done);
+  });
+
+  it("records a save timeout without failing the session", () => {
+    const end = make(6, "turn.ended", { gen: 1, turn: "0", codexTurn: "cx", state: "completed" });
+    const ended = fold(boot(), end);
+    const timeout = decodeSessionEvent({
+      seq: 7,
+      at: 6_000 + deadlines.save,
+      src: "alarm",
+      kind: "timeout",
+      op: "save",
+    });
+    const state = fold(ended, timeout);
+    expect(state.phase).toBe("running");
+    expect(state.pending.some((p) => p.op === "save")).toBe(false);
+    check(state);
+  });
 });

@@ -18,6 +18,7 @@ export type State = {
   readonly gen: number | undefined;
   readonly startSeq: number;
   readonly stopSeq: number;
+  readonly saveSeq: number;
   readonly hello: boolean;
   readonly connected: boolean;
   readonly ready: boolean;
@@ -46,6 +47,7 @@ export const initial: State = {
   gen: undefined,
   startSeq: 0,
   stopSeq: 0,
+  saveSeq: 0,
   hello: false,
   connected: false,
   ready: false,

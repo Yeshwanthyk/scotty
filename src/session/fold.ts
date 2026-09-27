@@ -184,14 +184,26 @@ export function fold(state: State, event: SessionEvent): State {
             ? { ...item, status: "ended" }
             : item,
         ),
-        pending: state.pending.filter(
-          (item) =>
-            !state.requests.some(
-              (req) =>
-                req.turn === event.turn && req.status === "pending" && reqOp(req.req) === item.op,
-            ),
+        saveSeq: event.seq,
+        pending: addOnce(
+          state.pending.filter(
+            (item) =>
+              item.op !== "save" &&
+              !state.requests.some(
+                (req) =>
+                  req.turn === event.turn && req.status === "pending" && reqOp(req.req) === item.op,
+              ),
+          ),
+          "save",
+          event.at + deadlines.save,
         ),
       };
+    case "save.done":
+    case "save.failed":
+      // Only the latest turn's save owns the deadline; an older save's result changes nothing.
+      return state.turns.at(-1)?.turn === event.turn
+        ? { ...next, pending: remove(state.pending, "save") }
+        : next;
     case "socket.closed":
       if (event.gen !== state.gen || !live(state) || !state.connected) return next;
       return {
@@ -235,6 +247,8 @@ export function fold(state: State, event: SessionEvent): State {
           { ...next, failure: { code: `${event.op}_timeout`, retryable: true } },
           "failed",
         );
+      // A lost save leaves the previous save in place; the session carries on.
+      if (event.op === "save") return { ...next, pending: remove(state.pending, "save") };
       if (event.op === "redial")
         return { ...next, lastRedialSeq: event.seq, pending: remove(state.pending, "redial") };
       return {

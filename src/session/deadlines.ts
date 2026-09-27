@@ -7,12 +7,13 @@ export const deadlines = {
   redial: 2_000,
   prompt: 30_000,
   interrupt: 30_000,
+  save: 60_000,
 } as const;
 
-export type Op = "container" | "workspace" | "dial" | "redial" | `req:${string}`;
+export type Op = "container" | "workspace" | "dial" | "redial" | "save" | `req:${string}`;
 export const reqOp = (req: string): `req:${string}` => `req:${req}`;
 export const isOp = (value: string): value is Op =>
-  ["container", "workspace", "dial", "redial"].includes(value) || value.startsWith("req:");
+  ["container", "workspace", "dial", "redial", "save"].includes(value) || value.startsWith("req:");
 export const requestFromOp = (op: `req:${string}`): string => op.slice(4);
 export type Pending = { readonly op: Op; readonly due: number };
 export const has = (pending: readonly Pending[], op: Op): boolean =>

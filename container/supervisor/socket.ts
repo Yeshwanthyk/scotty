@@ -14,7 +14,7 @@ interface Server {
 declare const Bun: {
   serve(options: {
     port: number;
-    fetch(request: Request, server: Server): Response | undefined;
+    fetch(request: Request, server: Server): Response | Promise<Response> | undefined;
     websocket: {
       open(peer: Peer): void;
       message(peer: Peer, data: string | Uint8Array): void;
@@ -39,7 +39,12 @@ type Event =
   | { type: "input"; peer: Peer; data: string | Uint8Array }
   | { type: "output"; output: Output; gen?: number };
 
-export const serve = (receive: (message: ToSupervisorMessage) => Effect.Effect<void, Error>) => {
+type Saves = { save: (gen: number) => Effect.Effect<Uint8Array, Error> };
+
+export const serve = (
+  receive: (message: ToSupervisorMessage) => Effect.Effect<void, Error>,
+  saves: Saves,
+) => {
   const queue = Effect.runSync(Queue.unbounded<Event>());
   // The consumer alone owns wire state and the active peer; Bun callbacks only enqueue.
   let wire = initialWire(crypto.randomUUID());
@@ -165,6 +170,21 @@ export const serve = (receive: (message: ToSupervisorMessage) => Effect.Effect<v
     port: port.success,
     fetch(request, server) {
       const url = new URL(request.url);
+      if (url.pathname === "/save") {
+        // Saves go over HTTP because inbound WebSocket frames are capped at 1 MiB.
+        const gen = wire.gen;
+        if (gen === undefined || url.searchParams.get("gen") !== String(gen))
+          return new Response("generation conflict", { status: 409 });
+        if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
+        return Effect.runPromise(
+          saves.save(gen).pipe(
+            Effect.match({
+              onSuccess: (tar) => new Response(new Uint8Array(tar)),
+              onFailure: () => new Response("save failed", { status: 500 }),
+            }),
+          ),
+        );
+      }
       if (url.pathname !== "/") return new Response("not found", { status: 404 });
       const rawGen = url.searchParams.get("gen") ?? "";
       const rawAfter = url.searchParams.get("after") ?? "";

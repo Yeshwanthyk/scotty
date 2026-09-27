@@ -9,7 +9,7 @@ const fromSupervisor = {
 export const AgentKind = Schema.Literals(["codex"]);
 const ClientReq = Schema.String.check(Schema.isPattern(/^(?!initial:)/));
 const TimeoutOp = Schema.Union([
-  Schema.Literals(["container", "workspace", "dial", "redial"]),
+  Schema.Literals(["container", "workspace", "dial", "redial", "save"]),
   Schema.String.check(Schema.isPattern(/^req:/)),
 ]);
 
@@ -96,6 +96,13 @@ export const SessionEvent = Schema.Union([
   Schema.Struct({ ...envelope, kind: Schema.Literal("dial.failed"), gen: Schema.Natural }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("sup.redial"), gen: Schema.Natural }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.stopped"), gen: Schema.Natural }),
+  Schema.Struct({ ...envelope, kind: Schema.Literal("save.done"), turn: Schema.String }),
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("save.failed"),
+    turn: Schema.String,
+    code: Schema.String,
+  }),
   Schema.Struct({
     ...envelope,
     kind: Schema.Literal("invariant.violated"),

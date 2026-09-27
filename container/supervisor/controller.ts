@@ -6,7 +6,7 @@ import { makeRunner } from "./agent.js";
 import { Requests } from "./requests.js";
 import { AgentError, type Runner } from "./runner.js";
 import type { Output } from "./wire.js";
-import { prepareWorkspace } from "./workspace.js";
+import { prepareWorkspace, saveWorkspace, WorkspaceError } from "./workspace.js";
 
 type Start = Extract<ToSupervisorMessage, { type: "start" }>;
 type Ready = { base: string; branch: string; commit: string; kind: "codex"; session: string };
@@ -128,6 +128,14 @@ export class Controller {
           ),
         onSuccess: () => Effect.sync(() => this.send({ type: "delivered", req }, gen)),
       }),
+    );
+  }
+  save(gen: number): Effect.Effect<Uint8Array, WorkspaceError> {
+    const state = this.startState;
+    if (state?.status !== "ready" || this.gen !== gen)
+      return Effect.fail(new WorkspaceError({ message: "workspace not ready" }));
+    return saveWorkspace(state.ready.commit, state.ready.session).pipe(
+      Effect.provide(BunServices.layer),
     );
   }
   receive(message: ToSupervisorMessage): Effect.Effect<void> {

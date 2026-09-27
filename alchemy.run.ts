@@ -1,6 +1,7 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Exit, Schema } from "effect";
+import { SessionArtifacts } from "./src/session/object.js";
 import ScottyWorker from "./src/worker.js";
 
 const image = process.env.SCOTTY_IMAGE;
@@ -30,7 +31,7 @@ export default Alchemy.Stack(
   "scotty",
   { providers: Cloudflare.providers(), state: Alchemy.localState() },
   Effect.gen(function* () {
-    yield* Cloudflare.R2.Bucket("SessionArtifacts");
+    yield* SessionArtifacts;
     const worker = yield* ScottyWorker;
     return { url: worker.url.as<string>() };
   }),

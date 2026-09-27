@@ -25,12 +25,15 @@ export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
   ),
 ) {}
 
+export const SessionArtifacts = Cloudflare.R2.Bucket("SessionArtifacts");
+
 export default class SessionObject extends Cloudflare.DurableObject<SessionObject>()(
   "SessionObject",
   Effect.gen(function* () {
     const storage = yield* Cloudflare.DurableObjectState;
     const credentials = yield* CredsObject;
     yield* bindSessionContainer(SessionContainer);
+    const bucket = yield* Cloudflare.R2.ReadWriteBucket(SessionArtifacts);
     return Effect.gen(function* () {
       // The container handle exists only at run time, not while Alchemy plans the deploy.
       const container = storage.container;
@@ -40,6 +43,17 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       const context = yield* Effect.context<RuntimeContext | Cloudflare.DurableObjectState>();
 
       const append = log.append;
+      const saveKey = () => `saves/${id()}.tar`;
+      const supervisor = (path: string, init?: { method: "PUT"; body: ArrayBuffer }) =>
+        Effect.tryPromise(() =>
+          container.getTcpPort(7000).fetch(`http://container${path}`, init),
+        ).pipe(
+          Effect.flatMap((response) =>
+            response.ok
+              ? Effect.succeed(response)
+              : Effect.fail(new Error(`Supervisor ${path} returned ${response.status}`)),
+          ),
+        );
 
       let link: SupervisorLink;
       const dispatch = (action: Command | undefined): Effect.Effect<void, never, RuntimeContext> =>
@@ -101,6 +115,23 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (log.state.gen !== undefined)
                 link.send({ type: "interrupt", gen: log.state.gen, n: 1, req: action.req });
               return;
+            case "save": {
+              link.send({ type: "ack", gen: action.gen, n: 1, ack: action.ack });
+              const turn = action.turn;
+              // The tar can take seconds; the result arrives as a later event (R1).
+              yield* storage.waitUntil(
+                supervisor(`/save?gen=${action.gen}`).pipe(
+                  Effect.flatMap((response) => Effect.tryPromise(() => response.arrayBuffer())),
+                  Effect.flatMap((tar) => bucket.put(saveKey(), tar)),
+                  Effect.matchEffect({
+                    onSuccess: () => append({ kind: "save.done", turn }, "session"),
+                    onFailure: () =>
+                      append({ kind: "save.failed", turn, code: "save_failed" }, "session"),
+                  }),
+                ),
+              );
+              return;
+            }
             case "destroy":
               if (container.running) yield* Effect.promise(() => container.destroy());
               return;
@@ -223,5 +254,5 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           }),
       };
     }).pipe(Effect.provide(SqliteClient.layer({ storage: storage.raw.storage })), Effect.orDie);
-  }),
+  }).pipe(Effect.provide(Cloudflare.R2.ReadWriteBucketBinding)),
 ) {}

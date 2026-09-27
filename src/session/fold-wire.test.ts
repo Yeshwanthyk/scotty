@@ -55,7 +55,7 @@ describe("supervisor outputs", () => {
     });
     state = fold(state, ended);
     expect(state.turns[0]).toEqual({ turn: "0", codexTurn: "codex-123", state: "completed" });
-    expect(command(state, ended)).toEqual({ kind: "ack", gen: 1, ack: 57 });
+    expect(command(state, ended)).toEqual({ kind: "save", gen: 1, turn: "0", ack: 57 });
     check(state);
   });
 
@@ -134,7 +134,7 @@ describe("supervisor outputs", () => {
       state: "completed",
     });
     state = fold(state, end);
-    expect(command(state, end)).toEqual({ kind: "ack", gen: 1, ack: 6 });
+    expect(command(state, end)).toEqual({ kind: "save", gen: 1, turn: "0", ack: 6 });
     const duplicate = make(7, "turn.ended", {
       gen: 1,
       n: 6,

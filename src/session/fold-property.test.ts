@@ -121,7 +121,7 @@ it.prop(
             !(event.kind === "workspace.ready" && !before.ready) &&
             live(state)
           ) {
-            expect(issued?.kind).toBe("ack");
+            expect(["ack", "save"]).toContain(issued?.kind);
           }
         }
         if (event.kind === "sup.hello") {
@@ -144,7 +144,15 @@ it.prop(
             );
         }
         if (state.lastAckN !== before.lastAckN)
-          expect(issued).toEqual({ kind: "ack", gen: state.gen, ack: state.lastN });
+          expect(
+            issued?.kind === "save" ? { kind: "ack", gen: issued.gen, ack: issued.ack } : issued,
+          ).toEqual({ kind: "ack", gen: state.gen, ack: state.lastN });
+        // A save carries the turn-end ack so one command both acks and saves.
+        if (issued?.kind === "save") {
+          expect(event.kind).toBe("turn.ended");
+          expect(issued.ack).toBe(state.lastN);
+          bump("save");
+        }
         if (issued?.kind === "ack") {
           expect(issued.ack).toBe(state.lastN);
           expect(event.kind === "turn.ended" || state.lastN - before.lastAckN >= 50).toBe(true);
@@ -199,6 +207,7 @@ it("covers generated paths", () => {
   expect(hits["n gap"]).toBeGreaterThan(0);
   expect(hits["ack threshold"]).toBeGreaterThan(0);
   expect(hits["ack turn"]).toBeGreaterThan(0);
+  expect(hits["save"]).toBeGreaterThan(0);
   expect(hits["error pending failed"]).toBeGreaterThan(0);
   expect(hits["error settled request"]).toBeGreaterThan(0);
 });
