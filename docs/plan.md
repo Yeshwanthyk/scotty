@@ -94,13 +94,14 @@ Update this table in every commit that moves a step. Keep notes to commands, res
 | 2b   | Agent-first CLI slice, verify skill  | 2          | done   | `7413f66`, `f82cdb9`: `doctor signin new ls show steer interrupt watch log`; `.agents/skills/verify-scotty` proven on `dev`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 3    | Tidy what exists                     | 2b         | done   | `72f74c2` + owner-approved CLI/docs/recipe/log extension replaces `watch` with `read`. `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run ui:build`, `npm test`: pass (27). Dev: `npm run deploy -- --stage dev`, `npm run --silent e2e -- core` (2229 ms cold start), `npm run --silent scotty -- doctor`: pass. Missing-field curl: HTTP 400, `{"error":{"message":"Missing key\n  at [\"title\"]","code":"bad_request"}}`. `git ls-files deploy e2e/lib`: only deploy TS. verify-scotty C1–C5 + read bounds/roles/IDs/removal pass: `work/verify/step3-read-aFLnOa5H/` (2562 ms). Code net −481. |
 | 4    | ChatGPT refresh and sign-out         | 3          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 5    | Owner trial (gate)                   | 4          | todo   | Owner action. Steps 6–11 are provisional until this step rewrites them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| 6    | GitHub: private repos and push       | 5          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 7    | Pause, resume, vaporize              | 6          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 8    | The rest of the UI API               | 7          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 9    | `scotty deploy` and the compiled CLI | 5          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 10   | Previews, terminal, evidence         | 8          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| 11   | Cutover                              | 8, 9       | todo   | Needs the owner's approval before touching the old deployment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 5    | Phone UI on the core                 | 3          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 6    | GitHub: private repos and push       | 3          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 7    | Owner trial (gate)                   | 4, 5, 6    | todo   | Owner action. Steps 8–12 are provisional until this step rewrites them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 8    | Pause, resume, vaporize              | 7          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 9    | The rest of the UI API               | 8          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 10   | `scotty deploy` and the compiled CLI | 7          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 11   | Previews, terminal, evidence         | 9          | todo   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 12   | Cutover                              | 9, 10      | todo   | Needs the owner's approval before touching the old deployment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## Step 3: tidy what exists
 
@@ -141,7 +142,7 @@ Update this table in every commit that moves a step. Keep notes to commands, res
      - After the refreshes, `npm run e2e -- core`'s create-and-answer part still works (the new access token works from the container). Reuse the core flow; don't copy it.
      - Fire two `/refresh` calls concurrently: both return `signed-in` and neither leaves the store signed out.
   6. Update `design.md` "Credentials": refresh at `exp − 48h` (it currently says 5 minutes), the transient and permanent rules above, and the `/refresh` route.
-- **Out of scope:** a UI sign-in control (step 8), refreshing tokens already handed to a running session, GitHub.
+- **Out of scope:** a UI sign-in control (step 9), refreshing tokens already handed to a running session, GitHub.
 - **Touch:** `src/creds/oauth.ts`, `src/creds/object.ts`, `src/http/api.ts`, `cli/commands/setup.ts`, `cli/main.ts`, `e2e/signin.ts`, `e2e/run.ts`, `docs/design.md`, `.agents/skills/verify-scotty/features/signin.md`.
 - **Budget:** +250 lines.
 - **Done when:**
@@ -151,19 +152,29 @@ Update this table in every commit that moves a step. Keep notes to commands, res
   - `grep -rn 'access_token\|refresh_token' src cli e2e container | grep -v '^src/creds/'` finds nothing new.
   - The verify-scotty `signin` recipe is updated for `signout` and re-driven, with evidence in `work/verify/`.
 
-## Step 5: owner trial (gate)
+## Step 5: the phone UI on the core
 
-- **Depends on:** 4. This step is the owner's; an agent only supports it.
+- **Why:** the trial (step 7) is phone-first, and `ui/` still speaks the old API. The new API already serves the paths the UI calls (`/api/sessions`, `/:id`, `/conversation`, `/steer`, `/interrupt`), so this step is about making the shapes match and removing the rest, not about adding a backend.
+- **Depends on:** 3.
 - **In scope:**
-  - The owner uses `dev` for real work for a few days: sessions on real public repositories from the phone UI and from the CLI, steering, interrupting, reconnecting, a redeploy mid-session.
-  - An agent fixes only what blocks that use, each fix with a saved log and replay if it is in the fold ("When something breaks").
-  - Record what felt slow, confusing or missing in this step's Status notes, in the owner's words.
-- **Then:** with the owner, rewrite steps 6–11 to the minimum the trial showed is needed. Steps may be cut, merged, reordered or moved to **Later**. No step after this starts before that rewrite is committed.
-- **Done when:** the owner says the trial is done and the rewrite of steps 6–11 is committed.
+  1. **Find out what breaks.** Deploy `dev`, open it in a real browser at 390×844, and list each screen and request that fails against the new API, in Status notes. Do this before changing code.
+  2. **Make the core flow work:** the session list, the new-session form (public repository, base branch, prompt; Codex only), and the session page with the conversation, steer and interrupt. Where the UI reads a field the core has, change `src/session/view.ts` or `src/http/api.ts` to serve it. Where the UI reads a field that only the old implementation had (Claude/Pi agent selection, image attachments, resources, hatch), change the UI reader to stop reading it.
+  3. **Hide what has no backend:** Devices, Providers-and-runners, Stats, admin, resources, the settings screens, the changes/evidence/hatch panels, and the sleep/resume/checkpoint/vaporize controls. Remove the route or the control; don't leave disabled stubs.
+  4. **Delete what nothing imports any more** in `ui/src/` (including `ui/src/protocol/`), checked with `grep` and `npm run typecheck`.
+  5. Add `.agents/skills/verify-scotty/features/ui.md`: a browser recipe at 390×844 (create on `octocat/Hello-World`, see the answer, steer, interrupt, reload, and check that the list matches the session page).
+- **Out of scope:** the ChatGPT sign-in control (the CLI's `signin` covers it), changes/diff, lifecycle actions, new UI features or restyling, a browser e2e dependency.
+- **Touch:** `ui/src/**`, `src/session/view.ts`, `src/http/api.ts`, `docs/design.md` ("API the UI needs"), `.agents/skills/verify-scotty/features/ui.md`, `.agents/skills/verify-scotty/SKILL.md`.
+- **Budget:** +150 added lines outside `ui/`. `ui/` must shrink in net lines.
+- **Done when:**
+  - The checks pass. On `dev`: `npm run --silent e2e -- core` passes.
+  - The `ui` recipe is driven in a real browser on `dev`, with screenshots and results in `work/verify/`.
+  - No UI request returns 404 during the recipe (the browser's network log is saved with the evidence).
+  - `grep -rniE 'claude|pi-console|resources' ui/src` finds nothing that a visible route uses.
 
-## Step 6: GitHub, private repositories and push (provisional)
+## Step 6: GitHub, private repositories and push
 
-- **Depends on:** 5.
+- **Why:** real work happens in private repositories and has to leave the container as a pushed branch. Without this, the trial can only exercise public repositories and loses its work.
+- **Depends on:** 3.
 - **In scope:** clone and push private repositories. The container never sees the GitHub token.
 - **Build:**
   - Creds DO: store one GitHub token (`POST /api/credentials/github`, write-only; `GET` returns only `{status}`).
@@ -173,34 +184,44 @@ Update this table in every commit that moves a step. Keep notes to commands, res
   - `e2e/github.ts`: clone a private test repository (the owner names it; the test reads it from `SCOTTY_PRIVATE_TEST_REPO`), commit, push to `scotty/<id>`, check the branch exists with `gh api`, then delete the branch.
 - **Done when:** `e2e -- github` and `e2e -- core` pass on `dev`; a scan of the container's env, files, process arguments and git config (names only, lengths, hashes) shows no GitHub token.
 
-## Step 7: pause, resume, vaporize (provisional)
+## Step 7: owner trial (gate)
 
-- **Depends on:** 6.
+- **Depends on:** 4, 5, 6. This step is the owner's; an agent only supports it.
+- **In scope:**
+  - The owner uses `dev` for real work for a few days: sessions on their real repositories from the phone UI and from the CLI, steering, interrupting, reconnecting, pushing a branch, and a redeploy mid-session.
+  - An agent fixes only what blocks that use, each fix with a saved log and replay if it is in the fold ("When something breaks").
+  - Record what felt slow, confusing or missing in this step's Status notes, in the owner's words.
+- **Then:** with the owner, rewrite steps 8–12 to the minimum the trial showed is needed. Steps may be cut, merged, reordered or moved to **Later**. No step after this starts before that rewrite is committed.
+- **Done when:** the owner says the trial is done and the rewrite of steps 8–12 is committed.
+
+## Step 8: pause, resume, vaporize (provisional)
+
+- **Depends on:** 7.
 - **Build:** the events already in `design.md` (`pause.requested` … `gone`) with fold deadlines; pause = push WIP branch, save the Codex rollout file to R2, stop the container; resume = start, clone, restore rollout, `thread/resume`; vaporize = destroy the container, delete R2 objects and the branch. `scotty sleep|resume|vaporize <id>`.
 - **Done when:** e2e `pause-resume` (a marker file and the Codex thread survive), `vaporize` (nothing remains; running it twice is safe), and `kill` (container killed mid-turn and mid-pause ends in a correct state with no `invariant.violated`) pass on `dev`, plus `core`. The failed sessions left on `dev` by earlier steps are vaporized.
 
-## Step 8: the rest of the UI API (provisional)
+## Step 9: the rest of the UI API (provisional)
 
-- **Depends on:** 7.
-- **Contract:** the UI's readers in `ui/src/data/*.ts` and `ui/src/protocol/` are the field-level contract. Match them; don't change them. `ui/` changes only to hide routes that have no backend (Devices, Providers-and-runners, Stats) and to add the ChatGPT sign-in control in Settings.
+- **Depends on:** 8.
+- **Contract:** the UI's readers in `ui/src/data/*.ts` and `ui/src/protocol/` are the field-level contract. Match them; don't change them. Step 5 already runs the core flow and hid everything without a backend; this step brings back only the screens the trial asked for, and adds the ChatGPT sign-in control in Settings.
 - **Build:** `view.ts` for every shape the UI reads; the session index; `changes`, `settings`, `repos`, `checkpoint`.
 - **Done when:** `e2e -- ui` (a browser at 390×844: create, watch the answer stream in, steer, open the diff) passes, and the list matches each detail view.
 
-## Step 9: `scotty deploy` and the compiled CLI (provisional)
+## Step 10: `scotty deploy` and the compiled CLI (provisional)
 
-- **Depends on:** 5.
+- **Depends on:** 7.
 - **Build:** `scotty deploy --stage <stage>` replaces `npm run deploy` (same image copy, then the Alchemy apply); `bun build cli/main.ts --compile`; the CLI embeds the default image digest.
 - **Done when:** `scotty deploy --stage dev` then `e2e -- core` pass; `new` twice with the same `--key` creates one session.
 
-## Step 10: previews, terminal, evidence (provisional)
+## Step 11: previews, terminal, evidence (provisional)
 
-- **Depends on:** 8.
+- **Depends on:** 9.
 - **Previews:** `<port>-<id>-<nonce>.<previewBase>` → Session DO → `getTcpPort(port)`, behind Access. **Terminal:** a PTY in the supervisor relayed Worker → DO → container. **Evidence:** results are session events.
 - **Done when:** a preview opens on a phone (HTTP and WebSocket), the terminal shows output, and evidence renders in the UI.
 
-## Step 11: cutover (provisional)
+## Step 12: cutover (provisional)
 
-- **Depends on:** 8, 9.
+- **Depends on:** 9, 10.
 - **In scope:** deploy to the owner's chosen stage and domain, run every e2e, merge `rebuild/core` into `main` with the owner's approval.
 - **Out of scope without explicit approval:** tearing down or changing the old deployment.
 
@@ -238,7 +259,7 @@ The old reliability board (`docs/reliability.md:75-87` @old) counted 229 fix com
 | M3  | Provider contract drift (36)     | Mocks hid real behaviour; SDK shapes leaked into the core.                                   | No mocks; e2e on a real deployment; agent events interpreted only in `view.ts`.         |
 | M4  | Disk backup and restore          | Full-disk backup under a hard time cap.                                                      | No disk backups: WIP branch plus the Codex rollout file.                                |
 | M5  | Deploy and artifact skew (30)    | Two deploy paths, rollout watchers, patched Alchemy.                                         | One deploy path, unpatched Alchemy, image by digest.                                    |
-| M6  | Evidence lifecycle (29)          | Recorder, R2 and UI settled independently.                                                   | Evidence results are session events (step 10).                                          |
+| M6  | Evidence lifecycle (29)          | Recorder, R2 and UI settled independently.                                                   | Evidence results are session events (step 11).                                          |
 | M7  | Credential authority (21)        | Registry, vault, rotation, grants, sync and migrations overlapped.                           | One Creds DO. One documented exception. R3                                              |
 | M8  | UI projection drift (17)         | The list trusted best-effort KV.                                                             | No KV; the list reads the index plus each DO's view.                                    |
 | M9  | CLI (13)                         | Local journals; recovery by matching error text.                                             | The CLI stores nothing; retries use `--key`/`--req`.                                    |
