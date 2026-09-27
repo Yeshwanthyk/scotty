@@ -68,6 +68,7 @@ export const Started = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("failed"),
     stage: Schema.String,
+    httpStatus: Schema.NullOr(Schema.Number),
     code: Schema.NullOr(Schema.String),
   }),
 ]);
@@ -82,6 +83,7 @@ export const Polled = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("failed"),
     stage: Schema.String,
+    httpStatus: Schema.NullOr(Schema.Number),
     code: Schema.NullOr(Schema.String),
   }),
 ]);

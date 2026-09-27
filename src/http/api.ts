@@ -49,7 +49,10 @@ export function apiHandler(
     if (url.pathname === "/api/credentials/chatgpt/poll" && request.method === "POST")
       return yield* HttpServerResponse.json(yield* credential.pollChatGpt());
     if (url.pathname === "/api/sessions" && request.method === "POST") {
-      const body = yield* Schema.decodeUnknownEffect(Create)(yield* request.json);
+      const body = yield* Schema.decodeUnknownEffect(Create)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", (error) => bad(error.message)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
       const baseBranch = yield* defaultBranch(body.repo);
       const idempotency = request.headers["idempotency-key"] ?? crypto.randomUUID();
       const id = yield* credential.reserve(idempotency, crypto.randomUUID().replaceAll("-", ""));
@@ -96,7 +99,10 @@ export function apiHandler(
     if (request.method === "GET" && subpath === "log")
       return yield* HttpServerResponse.json(yield* stub.log());
     if (request.method === "POST" && subpath === "steer") {
-      const body = yield* Schema.decodeUnknownEffect(Steer)(yield* request.json);
+      const body = yield* Schema.decodeUnknownEffect(Steer)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", (error) => bad(error.message)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
       return yield* HttpServerResponse.json(
         yield* stub.request({
           kind: "prompt",
@@ -107,7 +113,10 @@ export function apiHandler(
       );
     }
     if (request.method === "POST" && subpath === "interrupt") {
-      const body = yield* Schema.decodeUnknownEffect(Interrupt)(yield* request.json);
+      const body = yield* Schema.decodeUnknownEffect(Interrupt)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", (error) => bad(error.message)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
       return yield* HttpServerResponse.json(
         yield* stub.request({
           kind: "interrupt",

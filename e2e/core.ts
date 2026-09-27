@@ -3,65 +3,38 @@ import { Effect, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { SessionEvent } from "../src/session/events.js";
 import { acceptedAgentEvents } from "../src/session/view.js";
-import { client, config, E2eError } from "./lib/client.js";
+import {
+  access,
+  ChatGptStatus,
+  CliFailure,
+  client,
+  Conversation,
+  Created,
+  failure,
+  Polled,
+  Reply,
+  Started,
+  target,
+  View,
+} from "../cli/client.js";
 
-const Created = Schema.Struct({
-  id: Schema.String,
-  title: Schema.String,
-  url: Schema.String,
-  branch: Schema.String,
-  provider: Schema.Literal("cloudflare"),
-  status: Schema.Literals(["booting", "warm"]),
-});
-const RequestResult = Schema.Struct({ status: Schema.String });
-const Conversation = Schema.Struct({
-  version: Schema.Literal(1),
-  turns: Schema.Array(Schema.Struct({ assistant: Schema.String })),
-});
 const Log = Schema.Array(SessionEvent);
-const DeviceStart = Schema.Union([
-  Schema.Struct({
-    verificationUrl: Schema.String,
-    userCode: Schema.String,
-    interval: Schema.Number,
-    expiresAt: Schema.Number,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("failed"),
-    stage: Schema.String,
-    httpStatus: Schema.NullOr(Schema.Number),
-    code: Schema.NullOr(Schema.String),
-  }),
-]);
-const DevicePoll = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("pending"), interval: Schema.Number }),
-  Schema.Struct({ status: Schema.Literal("signed-in"), expiresAt: Schema.Number }),
-  Schema.Struct({ status: Schema.Literal("expired") }),
-  Schema.Struct({
-    status: Schema.Literal("failed"),
-    stage: Schema.String,
-    httpStatus: Schema.NullOr(Schema.Number),
-    code: Schema.NullOr(Schema.String),
-  }),
-]);
-const ChatGptStatus = Schema.Struct({
-  status: Schema.Literals(["signed-in", "signed-out", "expiring"]),
-  expiresAt: Schema.NullOr(Schema.Number),
-});
 const signIn = (request: ReturnType<typeof client>) =>
   Effect.gen(function* () {
-    const device = yield* request("/api/credentials/chatgpt/start", DeviceStart, {
+    const device = yield* request("/api/credentials/chatgpt/start", Started, {
       method: "POST",
     });
     if ("status" in device)
-      return yield* new E2eError({
-        message: `ChatGPT sign-in start failed: ${device.stage}, HTTP ${device.httpStatus ?? "unknown"}, code ${device.code ?? "unknown"}`,
-      });
+      return yield* failure(
+        "signin",
+        `ChatGPT sign-in start failed: ${device.stage}, HTTP ${device.httpStatus ?? "unknown"}, code ${device.code ?? "unknown"}`,
+        "scotty signin",
+      );
     console.log(`Open ${device.verificationUrl} and enter code ${device.userCode}`);
     let signedIn = false;
     for (let attempt = 0; attempt < 150; attempt++) {
       yield* Effect.sleep(`${Math.max(1, device.interval)} seconds`);
-      const result = yield* request("/api/credentials/chatgpt/poll", DevicePoll, {
+      const result = yield* request("/api/credentials/chatgpt/poll", Polled, {
         method: "POST",
       });
       if (result.status === "signed-in") {
@@ -69,49 +42,57 @@ const signIn = (request: ReturnType<typeof client>) =>
         break;
       }
       if (result.status === "failed")
-        return yield* new E2eError({
-          message: `ChatGPT sign-in poll failed: ${result.stage}, HTTP ${result.httpStatus ?? "unknown"}, code ${result.code ?? "unknown"}`,
-        });
+        return yield* failure(
+          "signin",
+          `ChatGPT sign-in poll failed: ${result.stage}, HTTP ${result.httpStatus ?? "unknown"}, code ${result.code ?? "unknown"}`,
+          "scotty signin",
+        );
       if (result.status === "expired")
-        return yield* new E2eError({ message: "ChatGPT device authorization expired" });
+        return yield* failure("signin", "ChatGPT device authorization expired", "scotty signin");
     }
-    if (!signedIn) return yield* new E2eError({ message: "ChatGPT sign-in timed out" });
+    if (!signedIn) return yield* failure("signin", "ChatGPT sign-in timed out", "scotty signin");
   });
 const program = Effect.gen(function* () {
-  const settings = yield* config();
+  const url = yield* target(process.env.SCOTTY_URL);
+  const token = yield* access(url);
   const repo = yield* Schema.decodeUnknownEffect(
     Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
   )(process.env.SCOTTY_TEST_REPO).pipe(
-    Effect.mapError(
-      () => new E2eError({ message: "SCOTTY_TEST_REPO must name a public owner/repository" }),
+    Effect.mapError(() =>
+      failure(
+        "setup",
+        "SCOTTY_TEST_REPO must name a public owner/repository",
+        "export SCOTTY_TEST_REPO=<owner/repository>",
+        3,
+      ),
     ),
   );
-  const request = client(settings);
+  const request = client({ url, token });
   // Sign in only when the stored ChatGPT token is missing or near expiry.
   const current = yield* request("/api/credentials/chatgpt", ChatGptStatus);
   if (current.status !== "signed-in") yield* signIn(request);
   const unique = crypto.randomUUID();
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
-    req: unique,
+    key: unique,
     body: {
       title: "Step 2 core",
       repo,
-      // The ChatGPT token is in Codex's env; the agent's commands must not see it.
+      // Commands must not inherit the ChatGPT token from Codex's config.
       prompt:
         "Run `env | grep -c SCOTTY_` and reply with only the word ready followed by the number it printed.",
       provider: "cloudflare",
     },
   });
   const prefix = `/api/sessions/${session.id}`;
-  const poll = <A>(read: () => Effect.Effect<A, E2eError>, done: (value: A) => boolean) =>
+  const poll = <A>(read: () => Effect.Effect<A, CliFailure>, done: (value: A) => boolean) =>
     Effect.gen(function* () {
       for (let attempt = 0; attempt < 150; attempt++) {
         const value = yield* read();
         if (done(value)) return value;
         yield* Effect.sleep("2 seconds");
       }
-      return yield* new E2eError({ message: "Timed out waiting for session outcome" });
+      return yield* failure("timeout", "Timed out waiting for session outcome", "scotty doctor");
     });
   const events = () => request(`${prefix}/log`, Log);
   const first = yield* poll(
@@ -119,14 +100,16 @@ const program = Effect.gen(function* () {
     (conversation) => (conversation.turns[0]?.assistant.length ?? 0) > 0,
   );
   if (!/\bready 0\b/.test(first.turns[0]?.assistant.toLowerCase() ?? ""))
-    return yield* new E2eError({
-      message: "Initial answer missing or SCOTTY_ env visible to commands",
-    });
+    return yield* failure(
+      "core",
+      "Initial answer missing or SCOTTY_ env visible to commands",
+      "scotty doctor",
+    );
   const log = yield* events();
   const start = log.find((event) => event.kind === "container.start");
   const hello = log.find((event) => event.kind === "sup.hello");
   if (!start || !hello || hello.at < start.at)
-    return yield* new E2eError({ message: "Missing cold-start event pair" });
+    return yield* failure("core", "Missing cold-start event pair", "scotty doctor");
   console.log(`Cold start container.start → hello: ${hello.at - start.at} ms`);
   yield* poll(events, (items) =>
     items.some((event) => event.kind === "turn.ended" && event.turn === "0"),
@@ -144,15 +127,18 @@ const program = Effect.gen(function* () {
     );
   }).pipe(
     Effect.provide(BunServices.layer),
-    Effect.mapError(() => new E2eError({ message: "Worker redeploy failed" })),
+    Effect.mapError(() =>
+      failure("deploy", "Worker redeploy failed", "npm run deploy -- --stage dev"),
+    ),
   );
-  if (redeploy !== 0) return yield* new E2eError({ message: "Worker redeploy failed" });
-  yield* request(prefix, Schema.Struct({ version: Schema.Literal(1) }));
+  if (redeploy !== 0)
+    return yield* failure("deploy", "Worker redeploy failed", "npm run deploy -- --stage dev");
+  yield* request(prefix, View);
   const before = yield* events();
   const steerReq = crypto.randomUUID();
-  yield* request(`${prefix}/steer`, RequestResult, {
+  yield* request(`${prefix}/steer`, Reply, {
     method: "POST",
-    req: steerReq,
+    key: steerReq,
     body: { req: steerReq, turn: "1", text: "Answer with the word steered." },
   });
   const after = yield* poll(
@@ -173,17 +159,21 @@ const program = Effect.gen(function* () {
     accepted.length <= prior.length ||
     prior.some((event, index) => accepted[index]?.seq !== event.seq)
   )
-    return yield* new E2eError({ message: "Duplicate or lost messages after Worker redeploy" });
+    return yield* failure(
+      "core",
+      "Duplicate or lost messages after Worker redeploy",
+      "scotty doctor",
+    );
   const longReq = crypto.randomUUID();
-  yield* request(`${prefix}/steer`, RequestResult, {
+  yield* request(`${prefix}/steer`, Reply, {
     method: "POST",
-    req: longReq,
+    key: longReq,
     body: { req: longReq, turn: "2", text: "Count from one to ten thousand, slowly." },
   });
   const interruptReq = crypto.randomUUID();
-  yield* request(`${prefix}/interrupt`, RequestResult, {
+  yield* request(`${prefix}/interrupt`, Reply, {
     method: "POST",
-    req: interruptReq,
+    key: interruptReq,
     body: { req: interruptReq, turn: "2" },
   });
   yield* poll(
@@ -199,6 +189,6 @@ const program = Effect.gen(function* () {
 });
 
 Effect.runPromise(program).catch((error: unknown) => {
-  console.error(error instanceof E2eError ? error.message : "Core e2e failed");
+  console.error(error instanceof CliFailure ? error.message : "Core e2e failed");
   process.exitCode = 1;
 });
