@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Exit, Schema } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
@@ -97,7 +97,14 @@ export function apiHandler(
     }
     if (url.pathname === "/api/sessions" && request.method === "GET") {
       const ids = yield* credential.sessions();
-      const views = yield* Effect.forEach(ids, (entry) => sessions.getByName(entry.id).view());
+      // Each view may wake a cold Durable Object; one at a time, a long list outlasts the CLI.
+      // A session that cannot open is left out rather than failing the whole list.
+      const opened = yield* Effect.forEach(
+        ids,
+        (entry) => Effect.exit(sessions.getByName(entry.id).view()),
+        { concurrency: 16 },
+      );
+      const views = opened.flatMap((exit) => (Exit.isSuccess(exit) ? [exit.value] : []));
       return yield* HttpServerResponse.json({
         version: 1,
         sessions: views.map((view) => ({

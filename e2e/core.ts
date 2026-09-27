@@ -226,6 +226,7 @@ const program = Effect.gen(function* () {
       "CLI read did not report the latest aborted turn within its default bound",
       `scotty read ${session.id}`,
     );
+  yield* request(`${prefix}/stop`, View, { method: "POST" });
   console.log("Core: create, answer, redeploy, steer, interrupt, bounded read recorded");
 });
 

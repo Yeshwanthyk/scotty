@@ -152,6 +152,7 @@ const program = Effect.gen(function* () {
   yield* request(`${prefix}/resume`, View, { method: "POST" });
   const after = yield* answer("3", "What was the marker? Reply with the marker only.");
   yield* check(after.includes(marker), "Marker lost after crash and resume");
+  yield* request(`${prefix}/stop`, View, { method: "POST" });
   console.log("Crash: stopped without invariant violations; resume recalled the marker");
 });
 
