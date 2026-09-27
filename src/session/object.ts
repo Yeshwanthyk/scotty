@@ -1,13 +1,14 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
-import { Config, Effect, Semaphore } from "effect";
+import { Config, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
 import { deadline } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
+import { live } from "./state.js";
 import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
 import { supervisorEvent } from "./supervisor-events.js";
 import { conversationView, sessionView } from "./view.js";
@@ -26,6 +27,11 @@ export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
 ) {}
 
 export const SessionArtifacts = Cloudflare.R2.Bucket("SessionArtifacts");
+
+class ContainerStartFailed extends Schema.TaggedError<ContainerStartFailed>()(
+  "ContainerStartFailed",
+  {},
+) {}
 
 export default class SessionObject extends Cloudflare.DurableObject<SessionObject>()(
   "SessionObject",
@@ -64,6 +70,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         );
 
       let link: SupervisorLink;
+      // Work queued for an older generation, or for a session that has ended, does nothing.
+      const current = (gen: number) => log.state.gen === gen && live(log.state);
+      const port = () => Cloudflare.fromCloudflareFetcher(container.getTcpPort(7000));
       // Container work runs after the caller returns, one operation at a time, so a resume
       // waits for the stop's destroy. Its outcome arrives as a later event.
       const lifecycle = yield* Semaphore.make(1);
@@ -77,6 +86,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           if (!action) return;
           switch (action.kind) {
             case "container.start": {
+              if (!current(action.gen)) return;
               if (action.fresh && container.running)
                 yield* Effect.promise(() => container.destroy());
               if (!container.running) {
@@ -87,25 +97,56 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 const fetcher = loopback({ props: { session: id(), repo } });
                 yield* Effect.tryPromise(() =>
                   container.interceptOutboundHttp("github.internal", fetcher),
-                );
+                ).pipe(Effect.mapError(() => new ContainerStartFailed()));
                 yield* Effect.try({
                   try: () => container.start({ enableInternet: true }),
-                  catch: () => new Error("Container start failed"),
+                  catch: () => new ContainerStartFailed(),
                 });
               }
-              const port = Cloudflare.fromCloudflareFetcher(container.getTcpPort(7000));
-              yield* link.dial(port, action.gen, 0);
+              // A new container takes a moment to listen; retry here before reporting dial.failed.
+              yield* link
+                .dial(port(), action.gen, 0, () => current(action.gen))
+                .pipe(
+                  Effect.timeout("10 seconds"),
+                  Effect.retry({
+                    schedule: Schedule.spaced("500 millis"),
+                    times: 20,
+                    while: () => container.running && current(action.gen),
+                  }),
+                );
               return;
             }
             case "dial": {
-              const port = Cloudflare.fromCloudflareFetcher(container.getTcpPort(7000));
-              yield* link.dial(port, action.gen, action.after);
+              // A dial queued behind the start may find the socket already connected.
+              if (!current(action.gen) || log.state.connected) return;
+              yield* link
+                .dial(port(), action.gen, action.after, () => current(action.gen))
+                .pipe(Effect.timeout("10 seconds"));
               return;
             }
             case "start": {
+              if (!current(action.gen)) return;
               // Sent over the socket only; never appended to the event log.
-              const chatgpt = yield* credentials.getByName("owner").sessionToken();
-              const git = yield* credentials.getByName("owner").gitIdentity();
+              const signedIn = yield* Effect.exit(
+                Effect.all([
+                  credentials.getByName("owner").sessionToken(),
+                  credentials.getByName("owner").gitIdentity(),
+                ]),
+              );
+              if (Exit.isFailure(signedIn)) {
+                if (current(action.gen))
+                  yield* append(
+                    {
+                      kind: "failed",
+                      phase: "credentials",
+                      code: "signin_required",
+                      retryable: true,
+                    },
+                    "session",
+                  );
+                return;
+              }
+              const [chatgpt, git] = signedIn.value;
               // Resume only when the save reached the new container; otherwise start clean.
               const restored =
                 action.resume === undefined
@@ -141,7 +182,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 git,
                 ...(restored && action.resume !== undefined ? { resume: action.resume } : {}),
               };
-              link.send(message);
+              if (current(action.gen)) link.send(message);
               return;
             }
             case "ack":
@@ -184,20 +225,26 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
           }
         }).pipe(
+          // A start that hangs (an R2 read, a supervisor PUT) must not hold the lifecycle permit.
+          action?.kind === "start" ? Effect.timeout("30 seconds") : (effect) => effect,
+          Effect.catchTag("ContainerStartFailed", () =>
+            action?.kind === "container.start" && current(action.gen)
+              ? append(
+                  { kind: "failed", phase: "container", code: "container_start", retryable: true },
+                  "session",
+                ).pipe(Effect.asVoid)
+              : Effect.void,
+          ),
           Effect.catchCause(() =>
             Effect.gen(function* () {
-              if (action?.kind === "container.start" || action?.kind === "dial") {
+              if (action === undefined || !("gen" in action) || !current(action.gen)) return;
+              if (action.kind === "container.start" || action.kind === "dial") {
                 // A dial that fails because the container is gone is a stop, not a retry.
                 const kind = container.running ? "dial.failed" : "container.stopped";
                 yield* dispatch(yield* append({ kind, gen: action.gen }, "session"));
-              } else if (action?.kind === "start") {
+              } else if (action.kind === "start") {
                 yield* append(
-                  {
-                    kind: "failed",
-                    phase: "credentials",
-                    code: "signin_required",
-                    retryable: false,
-                  },
+                  { kind: "failed", phase: "start", code: "start_failed", retryable: true },
                   "session",
                 );
               }
@@ -225,8 +272,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         log.state.gen !== undefined &&
         (log.state.phase === "provisioning" || log.state.phase === "running")
       ) {
-        const restart = yield* append({ kind: "sup.redial", gen: log.state.gen }, "session");
-        yield* storage.waitUntil(dispatch(restart));
+        yield* dispatch(yield* append({ kind: "sup.redial", gen: log.state.gen }, "session"));
       }
       return {
         create: (input: {

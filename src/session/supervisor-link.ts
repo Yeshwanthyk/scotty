@@ -5,6 +5,9 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { FromSupervisor, type ToSupervisorMessage } from "../../protocol/supervisor.js";
 
 const Incoming = Schema.fromJsonString(FromSupervisor);
+export class DialError extends Schema.TaggedError<DialError>()("DialError", {
+  message: Schema.String,
+}) {}
 export type SocketInput =
   | { readonly kind: "message"; readonly value: typeof FromSupervisor.Type }
   | { readonly kind: "closed"; readonly gen: number };
@@ -23,11 +26,15 @@ export class SupervisorLink {
     socket.send(JSON.stringify({ ...message, n: ++this.outgoing }));
   }
 
-  dial(port: Cloudflare.Fetcher, gen: number, after: number) {
+  /** `stillWanted` is checked once the socket opens; a stale dial closes it and changes nothing. */
+  dial(port: Cloudflare.Fetcher, gen: number, after: number, stillWanted: () => boolean) {
     const enqueue = (operation: () => Promise<void>) => this.enqueue(operation);
     const consume = this.consume;
+    // The replaced socket is no longer current, so its close is not reported.
     const setSocket = (socket: WebSocket) => {
+      const old = this.socket;
       this.socket = socket;
+      old?.close();
     };
     const isCurrent = (socket: WebSocket) => this.socket === socket;
     return Effect.gen(function* () {
@@ -45,9 +52,13 @@ export class SupervisorLink {
         !("accept" in candidate) ||
         typeof candidate.accept !== "function"
       ) {
-        throw new Error("Supervisor websocket upgrade failed");
+        return yield* new DialError({ message: "Supervisor websocket upgrade failed" });
       }
       candidate.accept();
+      if (!stillWanted()) {
+        candidate.close();
+        return;
+      }
       setSocket(candidate);
       candidate.addEventListener("message", (event: MessageEvent) => {
         if (!isCurrent(candidate)) return;
