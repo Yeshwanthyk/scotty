@@ -1,16 +1,23 @@
-import { Deferred, Effect, Option, Queue, Result, Schema, Stream } from "effect";
+import { Cause, Deferred, Effect, Exit, Option, Queue, Result, Schema, Stream } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { AgentError, type AgentOutput } from "./runner.js";
 import { serverReply } from "./codex-server-requests.js";
 import { decodeRpcLine, RpcFailure } from "./codex-rpc-schema.js";
 
 type Outgoing = { line: string; written: Deferred.Deferred<void, AgentError> };
+// Codex's stderr tail goes into the event log; bearer tokens and JWTs never do.
+const redact = (line: string) =>
+  line
+    .replace(/eyJ[\w-]+\.[\w-]+\.[\w-]*/g, "[redacted]")
+    .replace(/bearer\s+\S+/gi, "Bearer [redacted]")
+    .slice(0, 300);
 export class CodexRpc {
   private nextId = 1;
   private readonly pending = new Map<number, Deferred.Deferred<unknown, AgentError>>();
   private readonly outgoing: Queue.Queue<Outgoing>;
   private readonly writes = new Set<Deferred.Deferred<void, AgentError>>();
   private failed = false;
+  private readonly stderr: string[] = [];
   private readonly eventsQueue: Queue.Queue<AgentOutput>;
   readonly events: Stream.Stream<AgentOutput>;
 
@@ -44,6 +51,18 @@ export class CodexRpc {
       ),
       Effect.forkScoped,
     );
+    yield* this.child.stderr.pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.runForEach((line) =>
+        Effect.sync(() => {
+          this.stderr.push(redact(line));
+          if (this.stderr.length > 20) this.stderr.shift();
+        }),
+      ),
+      Effect.ignore,
+      Effect.forkScoped,
+    );
     yield* this.child.stdout.pipe(
       Stream.decodeText(),
       Stream.splitLines,
@@ -51,17 +70,32 @@ export class CodexRpc {
       // A clean end of stdout also means Codex is gone.
       Effect.exit,
       Effect.andThen(
-        this.failAll(new AgentError({ code: "exit", message: "Codex stdout closed" })),
+        this.exited("Codex stdout closed", this.child.exitCode.pipe(Effect.timeout("5 seconds"))),
       ),
       Effect.forkScoped,
     );
-    yield* this.child.exitCode.pipe(
-      // exitCode fails when a signal kills Codex, which is still an exit.
-      Effect.exit,
-      Effect.andThen(this.failAll(new AgentError({ code: "exit", message: "Codex exited" }))),
-      Effect.forkScoped,
-    );
+    yield* this.exited("Codex exited", this.child.exitCode).pipe(Effect.forkScoped);
   });
+
+  // The error says how Codex ended and what it last said.
+  private exited(what: string, status: Effect.Effect<number, unknown>): Effect.Effect<void> {
+    return status.pipe(
+      Effect.exit,
+      Effect.flatMap((exit) => {
+        // exitCode fails when a signal kills Codex, which is still an exit.
+        const ended = Exit.isSuccess(exit)
+          ? `code ${exit.value}`
+          : (/SIG[A-Z0-9]+/.exec(Cause.pretty(exit.cause))?.[0] ?? "status unknown");
+        const tail = this.stderr.slice(-5).join(" | ");
+        return this.failAll(
+          new AgentError({
+            code: "exit",
+            message: `${what} (${ended})${tail ? `: ${tail}` : ""}`.slice(0, 1000),
+          }),
+        );
+      }),
+    );
+  }
 
   private failAll(error: AgentError): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {

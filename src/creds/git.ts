@@ -51,16 +51,18 @@ export const gitHandler = (
     let body: ReadableStream | ArrayBuffer | null = raw.body;
     if (route === "git-receive-pack") {
       if (raw.headers.has("content-encoding")) return forbidden();
-      const bytes = yield* Effect.promise(() => raw.arrayBuffer());
+      const bytes = yield* Effect.tryPromise(() => raw.arrayBuffer());
       if (!scottyRefsOnly(new Uint8Array(bytes))) return forbidden();
       body = bytes;
     }
     const token = yield* credentials.getByName("owner").gitHubToken();
-    if (token === null) return forbidden();
+    // 401, not 403: the workspace retries a 403 as GitHub throttling.
+    if (token === null)
+      return HttpServerResponse.text("GitHub is not signed in\n", { status: 401 });
     const headers = new Headers(raw.headers);
     for (const name of dropped) headers.delete(name);
     headers.set("authorization", `Basic ${btoa(`x-access-token:${token}`)}`);
-    const upstream = yield* Effect.promise(() =>
+    const upstream = yield* Effect.tryPromise(() =>
       fetch(`https://github.com/${repo}.git/${route}${url.search}`, {
         method: request.method,
         headers,
@@ -68,4 +70,9 @@ export const gitHandler = (
       }),
     );
     return HttpServerResponse.fromWeb(upstream);
-  });
+  }).pipe(
+    // A body or upstream that fails mid-request is a bad gateway git can report, not a crash.
+    Effect.catchTag("UnknownError", () =>
+      Effect.succeed(HttpServerResponse.text("Bad gateway\n", { status: 502 })),
+    ),
+  );

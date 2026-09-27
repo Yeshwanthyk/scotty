@@ -45,25 +45,28 @@ const exec = (args: string[], cwd: string) =>
 // The container holds no GitHub token, so git's last stderr line is safe to report.
 const described = (error: unknown) => {
   const line =
-    error instanceof CommandFailed ? error.stderr.trim().split("\n").at(-1)?.trim() : undefined;
+    error instanceof CommandFailed
+      ? error.stderr.trim().split("\n").at(-1)?.trim()
+      : error instanceof Error
+        ? error.name
+        : undefined;
   return line
     ? new WorkspaceError({ message: `workspace command failed: ${line.slice(0, 300)}` })
     : failure();
 };
 const run = (args: string[], cwd: string) => exec(args, cwd).pipe(Effect.mapError(described));
 
-// GitHub throttles Cloudflare's shared egress for minutes at a time (429, Retry-After 300).
-// The Worker passes the 429 through; waiting it out here turns a failed start into a slow one.
-const rateLimited = (error: unknown) =>
-  error instanceof CommandFailed && error.stderr.includes("error: 429");
+// GitHub throttles Cloudflare's shared egress for minutes at a time (429 or 403, Retry-After
+// 300), and a proxied transfer can drop. Waiting these out turns a failed start into a slow
+// one; a 401 or 404 is a real answer.
+const transient = (error: unknown) =>
+  error instanceof CommandFailed &&
+  /error: (429|403|5\d\d)|RPC failed|early EOF|Connection reset/.test(error.stderr) &&
+  !/error: (401|404)/.test(error.stderr);
 const fromGitHub = (args: string[], cwd: string) =>
   exec(args, cwd).pipe(
-    Effect.retry({ while: rateLimited, schedule: Schedule.spaced("20 seconds"), times: 15 }),
-    Effect.mapError((error) =>
-      rateLimited(error)
-        ? new WorkspaceError({ message: "GitHub is rate limiting this network; try again later" })
-        : described(error),
-    ),
+    Effect.retry({ while: transient, schedule: Schedule.spaced("30 seconds"), times: 10 }),
+    Effect.mapError(described),
   );
 
 const workspaceRoot = () => processEnv("SCOTTY_WORKSPACE_ROOT") || "/workspace";
