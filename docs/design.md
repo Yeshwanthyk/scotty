@@ -64,32 +64,32 @@ State is `fold(events)`. Every handler does the same three things:
 
 A handler never awaits an outside party while changing state. An outside action is recorded as an intent event, and its result arrives as a later event. An unknown result leaves the intent pending until an outcome or a timeout event settles it; it is never reported as success.
 
-| Event                                          | Fields                                                                                                                                                          |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `created`                                      | `repo, baseBranch, branch, title, prompt, image, agentKind` (`branch` is the work branch `scotty/<session id>`, chosen at create time)                          |
-| `container.start` / `sup.hello`                | `gen` / `gen, n, version, boot` (`boot` identifies one supervisor process)                                                                                      |
-| `workspace.ready`                              | `gen, n, base, branch, commit`                                                                                                                                  |
-| `agent.ready`                                  | `gen, n, agentKind, session` (the agent's session id)                                                                                                           |
-| `prompt.requested` / `prompt.delivered`        | `req, turn, text, images` / `gen, n, req` (delivery settles a prompt or interrupt; client `req` cannot start with `initial:`)                                   |
-| `interrupt.requested`                          | `req, turn`                                                                                                                                                     |
-| `agent.event`                                  | `gen, n, agentKind, event` (the raw agent notification; the fold does not interpret it)                                                                         |
-| `turn.ended`                                   | `gen, n, turn, codexTurn, state` (`turn` is the DO turn; `codexTurn` is recorded, not matched)                                                                  |
-| `sup.error`                                    | `gen, n, code, message, req?` (a pending `req` fails except on `timeout`; `stale` fails it too; req-less `exit` fails the session as `agent_exited`, retryable) |
-| `failed`                                       | `phase, code, retryable`                                                                                                                                        |
-| `socket.closed` / `dial.failed`                | `gen`                                                                                                                                                           |
-| `sup.redial`                                   | `gen` (on wake, start if no hello; otherwise dial)                                                                                                              |
-| `invariant.violated`                           | `code, detail`                                                                                                                                                  |
-| `timeout`                                      | `op`: `container`, `workspace`, `dial`, `redial`, or `req:<req>`; lifecycle expiry fails with `<op>_timeout`, retryable                                         |
-| `save.requested` / `save.done` / `save.failed` | `turn` / `ref, rollout` / `code` (step 6: after every turn)                                                                                                     |
-| `container.stopped`                            | `gen` (step 6: any cause; folds to `stopped`)                                                                                                                   |
-| `resume.requested` / `agent.restored`          | `op` / `threadId` (step 6)                                                                                                                                      |
+| Event                                   | Fields                                                                                                                                 |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `created`                               | `repo, baseBranch, branch, title, prompt, image, agentKind` (`branch` is the work branch `scotty/<session id>`, chosen at create time) |
+| `container.start` / `sup.hello`         | `gen` / `gen, n, version, boot` (`boot` identifies one supervisor process)                                                             |
+| `workspace.ready`                       | `gen, n, base, branch, commit`                                                                                                         |
+| `agent.ready`                           | `gen, n, agentKind, session` (the agent's session id)                                                                                  |
+| `prompt.requested` / `prompt.delivered` | `req, turn, text, images` / `gen, n, req` (delivery settles a prompt or interrupt; client `req` cannot start with `initial:`)          |
+| `interrupt.requested`                   | `req, turn`                                                                                                                            |
+| `agent.event`                           | `gen, n, agentKind, event` (the raw agent notification; the fold does not interpret it)                                                |
+| `turn.ended`                            | `gen, n, turn, codexTurn, state` (`turn` is the DO turn; `codexTurn` is recorded, not matched)                                         |
+| `sup.error`                             | `gen, n, code, message, req?` (a pending `req` fails except on `timeout`; `stale` fails it too; req-less `exit` stops the session)     |
+| `failed`                                | `phase, code, retryable`                                                                                                               |
+| `socket.closed` / `dial.failed`         | `gen`                                                                                                                                  |
+| `sup.redial`                            | `gen` (on wake, start if no hello; otherwise dial)                                                                                     |
+| `invariant.violated`                    | `code, detail`                                                                                                                         |
+| `timeout`                               | `op`: `container`, `workspace`, `dial`, `redial`, or `req:<req>`; lifecycle expiry fails with `<op>_timeout`, retryable                |
+| `save.done` / `save.failed`             | `turn` / `turn, code` (step 6: an accepted `turn.ended` is the save intent)                                                            |
+| `container.stopped`                     | `gen` (step 6: any cause; folds to `stopped`)                                                                                          |
+| `resume.requested`                      | (step 6; a steer to a stopped session resumes in the same fold)                                                                        |
 
 Fold states, and the status the UI shows for each:
 
 | State                      | UI status |
 | -------------------------- | --------- |
 | `provisioning`, `resuming` | `booting` |
-| `running`                  | `warm`    |
+| `running`                  | `running` |
 | `stopped`                  | `stopped` |
 | `failed`                   | `failed`  |
 
@@ -117,15 +117,14 @@ The fold, its invariants, and saved-log replays are the only unit-tested session
 
 There are no disk snapshots and no vaporize. A session is `running` or `stopped`.
 
-- **Save after every turn.** When a turn ends, the supervisor commits the workspace to the hidden ref `refs/scotty/<id>` and pushes it (private repositories, step 7), and uploads `$CODEX_HOME/sessions/**/rollout-*.jsonl` and the thread ID to R2 at `rollouts/<id>.jsonl` through the Worker, overwriting the previous save. One R2 object per session.
-- **Stopped** is one event whatever the cause: `scotty stop`, idle, crash, redeploy. Work since the last finished turn is lost.
+- **Save after every turn.** An accepted turn end is the save intent. The Session DO pulls one tar from the supervisor (`GET /save` on port 7000) and writes it to R2 at `saves/<id>.tar`, overwriting the previous save. The tar holds the thread's rollout file (`codex/`), every file that differs from the base commit, committed or not, excluding ignored files (`repo/`), and the deleted paths (`deleted`). Nothing is committed for the save and nothing is pushed. Unpushed agent commits come back as uncommitted changes.
+- **Stopped** is one event whatever the cause: `scotty stop`, idle, crash, redeploy, Codex exiting. Work since the last finished turn is lost.
 - **Resume** (`scotty resume`, or a steer to a stopped session):
-  1. Start a new container.
-  2. Clone the repository and fetch `refs/scotty/<id>` if it exists.
-  3. Restore the rollout file.
-  4. Reinstall dependencies.
-  5. Resume Codex with `thread/resume <threadId>`.
-- `scotty push <id>` (step 7) publishes the hidden ref as a visible branch.
+  1. Destroy any running container and start a new one (a new gen).
+  2. `PUT /save` the tar, then `start` with `resume: {threadId, commit}`.
+  3. Clone, check out the base commit on `scotty/<id>`, unpack `repo/`, delete the `deleted` paths.
+  4. Unpack `codex/` into `CODEX_HOME` and resume Codex with `thread/resume`.
+- Pushing to GitHub is the agent's own `git push` (step 7), when asked or needed.
 
 Old reference for the Codex state files: `worker/src/agent/codex/persistence-format.ts` and `worker/src/agent/codex/session.ts:996-1044` at `3042018`.
 
@@ -172,13 +171,13 @@ The conversation snapshot includes top-level `currentTurn`, the authoritative tu
 
 ### Planned
 
-| Step  | Endpoints and routing                                                        |
-| ----- | ---------------------------------------------------------------------------- |
-| 6     | `POST /api/sessions/:id/{stop,resume}`                                       |
-| 7     | `POST /api/credentials/github`, `POST /api/sessions/:id/push`, `/p/github/*` |
-| 8     | Hatch preview routing                                                        |
-| 9     | Captured images and video in the conversation, and their download            |
-| Later | `changes[/patch]`, `settings`, `repos`, the terminal WebSocket               |
+| Step  | Endpoints and routing                                             |
+| ----- | ----------------------------------------------------------------- |
+| 6     | `POST /api/sessions/:id/{stop,resume}`                            |
+| 7     | `POST /api/credentials/github`, `/p/github/*`                     |
+| 8     | Hatch preview routing                                             |
+| 9     | Captured images and video in the conversation, and their download |
+| Later | `changes[/patch]`, `settings`, `repos`, the terminal WebSocket    |
 
 ## CLI
 
@@ -215,7 +214,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - **End to end,** against a real deployment:
   1. `deploy` → create → Codex answers → `steer` → `interrupt`.
   2. The real token never appears in the container (scan env, files and process arguments).
-  3. `stop` → `resume`: the Codex thread continues, and (step 7) a marker file on `refs/scotty/<id>` survives.
+  3. `stop` → `resume`: the Codex thread continues, and a marker file written in the first turn survives.
   4. Killing the container mid-turn ends `stopped` and resumes from the last finished turn.
 
 ## Slices
