@@ -1,272 +1,251 @@
 # Rebuild plan
 
-This is the work queue for the rebuild. Any session should be able to pick up the next step from this file alone and finish it.
+This is the work queue. A fresh agent session should be able to pick up the next step from this file alone, finish it, and prove it.
 
-- [design.md](design.md) describes what is being built.
-- This file describes the order, the proof for each step, and the mistakes not to repeat.
-- `@old` means the old implementation at commit `3042018` on `main`. Read an old file with `git show 3042018:<path>`.
-- **Simple, with great ergonomics.** Every step is judged first by how simple it is and how good it feels to use: fewer moving parts, fewer steps for the owner, clear errors, fast feedback. Cut complexity that doesn't buy that.
-- **Minimal shape, not parity.** Build the smallest thing the owner can use, then let real use decide what comes next. Parity with @old is not a goal; an @old feature comes back only when use shows it's needed.
+- [design.md](design.md) says what is being built. [setup.md](setup.md) says how to get a machine able to deploy and test.
+- `@old` means the old implementation at commit `3042018` on `main`. Read an old file with `git show 3042018:<path>`. It is reference only.
+
+## Rule zero: build the least code that passes the step
+
+The old implementation died from weight: 229 fix commits, ~74k lines of tests, custom lint plugins, fences on fences. This rebuild wins only by staying small. **Every rule below is a reason to reject a diff, including your own.**
+
+### What to write
+
+1. **Only what the step's Done when needs.** If no Done-when item fails without a line of code, delete that line. "Might be useful later" is a rejection.
+2. **Touch only the files the step lists.** Touching another file needs one sentence in the step's Status notes saying why. A step that grows past its **Budget** (added lines, excluding docs and saved logs) stops and asks the owner before continuing.
+3. **No new abstraction without two real callers today.** No new interface, class, service, `Layer`, `Context.Tag`, factory, registry, plugin point, generic helper or wrapper module for one use. Inline it.
+4. **No options nobody sets.** No flags, config keys, env vars, parameters with defaults "for flexibility", or feature toggles unless the step names them.
+5. **No defensive code for impossible states.** Decode input once at the boundary (Schema), then trust the types. No re-validation, no `try/catch` around code that can't throw, no fallbacks for cases the fold already rules out.
+6. **No retries, timers or backoff** except the deadlines in the fold's table (`src/session/fold.ts`). The DO has one alarm. Don't add a second.
+7. **No new dependencies** unless the step names them. No `@effect/platform`, `@effect/schema`, `@cloudflare/sandbox`, fast-check, mocking or HTTP-stub libraries, ever.
+8. **No compatibility code.** No shims for @old formats, no migration of old event logs, no dual code paths. A log-format change ships with a reset note in the commit.
+9. **Reuse before adding.** Before writing a helper, `grep` for one. Before a new error class, reuse `CliFailure`, `AgentError`, `CredentialStoreError` or the API's `bad(...)`.
+10. **Deleting beats adding.** If the step can be done by removing code, remove it.
+11. **Comments say why, never what.** No JSDoc on obvious functions. No banner comments. No TODOs; open items go under **Later** here.
+12. **Small files.** A file over ~250 lines or a function over ~60 lines needs a reason in the commit message.
+
+### What to test
+
+13. **Three kinds of test, no others:** (a) unit tests of `src/session/fold.ts`; (b) replays of saved event logs in `e2e/logs/`; (c) e2e against a real deployment in `e2e/`. Nothing else goes in `npm test`.
+14. **No mocks** of Cloudflare, Codex, GitHub, ChatGPT or the network. No fake servers, no stubbed `fetch`, no in-memory DO doubles.
+15. **No unit tests for** the CLI, the supervisor, the Worker routes, the Creds DO, `view.ts` or helpers. They are proved by e2e and the verify-scotty recipes.
+16. **One test per behaviour.** Don't add a test that repeats what an existing test already fails on. No snapshot tests, no tests that read source text, no tests of private helpers.
+17. **A bug gets exactly one new test:** its saved log plus a failing replay (see "When something breaks"), or one e2e assertion if the bug isn't in the fold.
+18. **Scratch stays scratch.** Probes, fuzzers, spikes and mutation checks go in `work/` and are never committed.
+
+### How to check yourself before committing
+
+Run through this list and write the answers in your final report:
+
+- `git diff --stat`: is every file in the step's **Touch** list? Is the added-line count within **Budget**?
+- For every new exported symbol: `grep -rn '<name>' src cli container e2e protocol`. Does it have a caller outside its own file? If not, un-export or delete it.
+- For every new test: which Done-when item or which bug does it prove? If none, delete it.
+- For every new `if`, `catch` or `Option`: which real input reaches it? If none, delete it.
+- Did you add anything the step didn't ask for? Move it under **Later** and remove it from the diff.
 
 ## Start here (every session)
 
-1. Read `AGENTS.md`, then `docs/design.md`, then this file.
+1. Read `AGENTS.md`, `docs/design.md`, this file, and `docs/setup.md` if the machine isn't set up.
 2. Run `git submodule update --init vendor/effect vendor/alchemy` if `vendor/` is empty. It is read-only reference source.
-3. In **Status**, pick the first step that is `todo` and whose dependencies are all `done`. If a step is `in progress`, read its notes and continue it rather than starting another.
-4. Set that step to `in progress` in **Status**. Work directly on `rebuild/core`; don't create a branch per step. Commit each finished piece of work as you go, with the step id in the message (for example `Step 3: ...`).
-5. Do only what the step's **In scope** list says. Anything else you find goes on a new line under **Later**; don't build it now.
-6. The step counts as done only when every **Done when** item has passed. Record the commands you ran and their results in **Status** notes and in the commit message.
-7. Before committing, check the diff against **Review rules**.
-8. If a design decision changes, update `docs/design.md` in the same commit. If a spike changes the plan, update the affected steps here.
+3. In **Status**, pick the first step that is `todo` and whose dependencies are all `done`. If a step is `in progress`, read its notes and continue it.
+4. Set it to `in progress` in **Status** and commit that line with your first piece of work. Work directly on `rebuild/core`; never commit to `main`; never create a branch per step.
+5. Before using any Effect or Alchemy API, find it in `vendor/effect` or `vendor/alchemy` and look at one test or example that uses it. Don't rely on memory or on Effect v3 docs.
+6. Do only the step's **In scope** list. Anything else you notice goes on a new line under **Later**.
+7. The step is done only when every **Done when** item has passed. Record the exact commands and results in **Status** notes and in the commit message.
+8. If a design decision changes, update `docs/design.md` in the same commit.
+9. Stop and report (don't work around) when: a check fails for a reason outside the step; a vendor API doesn't behave as its source says; a dependency conflict appears; the step needs an owner action (a browser sign-in, a secret, a paid-plan setting); or the budget is exceeded.
+
+## Checks
+
+Run all of these before every commit, in this order, and report each result. A check you couldn't run is reported as not run, with the reason.
+
+```sh
+npm run fmt              # oxfmt, rewrites files; commit the result
+npm run lint             # oxlint, built-in rules only
+npm run typecheck        # root tsc + ui
+npm run ui:build         # builds ui/dist (the Worker serves it)
+npm test                 # fold unit tests + replays (vitest)
+```
+
+Against the `dev` deployment (needs the env from `docs/setup.md`):
+
+```sh
+. work/dev-env.sh                        # your untracked env file (setup.md)
+npm run deploy -- --stage dev            # copies the image, applies alchemy.run.ts
+npm run --silent e2e -- core             # create, answer, redeploy, steer, interrupt
+npm run --silent scotty -- doctor        # exit 0 with access/worker/chatgpt "ok"
+```
+
+- A change under `container/**` or `protocol/supervisor.ts` needs a new image: push `rebuild/core`, wait for the `image` workflow (`gh run watch`), take the digest from the run summary, set `SCOTTY_SOURCE_IMAGE=index.docker.io/yeshwanthyk/scotty@sha256:<digest>`, then deploy.
+- Only stage `dev`. Never `production`, never `scotty-baseline-*`, never a derived name.
+- Never print or save a token (ChatGPT, GitHub, Cloudflare, Docker Hub, Access JWT). Print variable names, lengths, SHA-256 prefixes or expiry only.
+- Use a temp `CODEX_HOME` for any local Codex run; never touch `~/.codex`.
+- Stage explicit paths (`git add <paths>`). Never `git commit -a`, never bare `git stash`.
 
 ## Status
 
-Update this table in every commit that moves a step.
+Update this table in every commit that moves a step. Keep notes to commands, results and commit ids.
 
-| Step | Title                                    | Depends on | Status      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ---- | ---------------------------------------- | ---------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Repository setup                         | none       | done        | On `rebuild/core`: `742aa85` commits the cleared tree, then the setup commit. `git submodule update --init` → `vendor/effect` `14a3f14` (tag `effect@4.0.0-rc.117`), `vendor/alchemy` `473c395` (`v2.0.0-beta.79`). Pinned exact: effect, @effect/sql-sqlite-do, @effect/platform-bun, @effect/vitest `4.0.0-rc.117`; alchemy `2.0.0-beta.79`; vitest `5.0.2`; oxfmt `0.70.0`; oxlint `1.85.0`; typescript `7.0.2`. No peer conflicts; `npm audit` reports 12 transitive advisories (hono, @hono/node-server, lodash), left as is. `npm install`, `npm run fmt:check` (81 files), `npm run lint`, `npm run typecheck` (root + ui) and `npm run ui:build` pass. `test`/`e2e`/`deploy` are stubs that print "not yet" and exit 1. oxfmt and oxlint run with `--disable-nested-config`, otherwise they load `vendor/*` configs (oxfmt reformatted `vendor/alchemy`; reverted). Root tsconfig adds lib `DOM` for `TextEncoder` in `protocol/` until step 2 sets runtime types. |
-| 1a   | Spike: ChatGPT sign-in on the Worker     | 0          | done        | PASS: deployed Worker ran device-code sign-in and one refresh (refresh token rotated); no bot check. First exchange failed with 400 `text/plain` because `bodyText` overrides the content type; fixed with `bodyUrlParams`. Evidence in `work/spikes/1a/RESULT.md` (not committed); reviewed by an Opus subagent (accept with changes, applied). Findings in `design.md` "Credentials" and Open questions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| 1b   | Spike: DO → container WebSocket          | 0          | done        | PASS: DO upgraded a WebSocket through `getTcpPort(7000)` on beta.79; pings and ticks both ways for 600.8 s, no reconnect, 43–71 ms echo. Stack destroyed. Opus review: accept with changes (cold-start figure in RESULT.md was wrong; `Containers.layer` starts the container on every DO activation). Findings in `design.md` "Supervisor" and open questions. Evidence in `work/spikes/1b/RESULT.md` (not committed).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 1c   | Spike: Codex network use                 | 0          | done        | PASS with `[features] plugins = false`: 3/3 model requests via `/p/chatgpt/responses`, zero other connections; with plugins on, one direct `chatgpt.com` and two `github.com` connections (plugin sync). `chatgptAuthTokens` rejects a sentinel. Evidence in `work/spikes/1c/RESULT.md` (not committed); reviewed by an Opus subagent (accept with changes, applied). Findings in `design.md` Open questions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| 1d   | Spike: deploy without local Docker       | 0          | done        | PASS (approach 2): an Effect OCI-HTTP copy of `hashicorp/http-echo` (linux/amd64, by digest) into `registry.cloudflare.com/<account>/scotty-spike-1d`, deployed via Alchemy `prepushed` with no docker on PATH; DO got HTTP 200 `ok` on port 5678. Apply 5.6–8.4 s (rollout still converging); 22.7 s first request on a fresh DO after rollout, 640 ms warm restart. Approach 1 (direct `docker.io` pull) inconclusive: nginx crashed identically from both registries; Cloudflare docs list Docker Hub as supported but uncached. Stack destroyed; the registry repo (2 manifests, ~31 MB) remains. Evidence in `work/spikes/1d/RESULT.md` (not committed); Opus review: accept with changes (`REVIEW.md`). Findings in `design.md` "Deploy" and Open questions.                                                                                                                                                                                                         |
-| 2    | Slice 1: core loop                       | 1b, 1c     | in progress | Session events, fold and commands committed (17 unit tests; Opus review accepted after three rounds, mutants M1–M8 killed). Supervisor, Worker and e2e next.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |     |
-| 2b   | Owner trial (gate)                       | 2          | todo        | Owner uses `dev`; then steps 3–8 are rewritten to the minimum the trial shows is needed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| 3    | Slice 2: ChatGPT credentials             | 1a, 2b     | todo        |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| 4    | Slice 3: GitHub, pause, resume, vaporize | 3          | todo        |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| 5    | Slice 4: rest of the UI API              | 4          | todo        |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| 6    | CLI                                      | 2b         | todo        | Starts as soon as step 2 is done; `deploy` and `up` grow with each slice.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 7    | Slice 5: previews, terminal, evidence    | 5          | todo        |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| 8    | Cutover                                  | 5, 6       | todo        | Needs the owner's approval before touching the old deployment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Step | Title                                | Depends on | Status | Notes                                                                                                                                                                                                                                                                                      |
+| ---- | ------------------------------------ | ---------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Repository setup                     | none       | done   | `742aa85`, `45fbc2c`. Pins: effect family `4.0.0-rc.117`, alchemy `2.0.0-beta.79`, vitest `5.0.2`, oxfmt `0.70.0`, oxlint `1.85.0`, typescript `7.0.2`.                                                                                                                                    |
+| 1    | Spikes 1a–1e                         | 0          | done   | Results in `design.md` Open questions. 1e: chatgpt.com rejects all Worker/DO egress with 403; container egress works, so Codex calls chatgpt.com directly.                                                                                                                                 |
+| 2    | Core loop                            | 1          | done   | `c68623e`…`f82cdb9`. On `dev`: `npm run e2e -- core` passes (create → `ready 0` → redeploy → steer → interrupt; cold start 2.3 s). verify-scotty core-loop C1–C5 pass (`work/verify/`). 27 tests (`npm test`) incl. replays `e2e/logs/reconnect-before-ready.jsonl`, `redial-alarm.jsonl`. |
+| 2b   | Agent-first CLI slice, verify skill  | 2          | done   | `7413f66`, `f82cdb9`: `doctor signin new ls show steer interrupt watch log`; `.agents/skills/verify-scotty` proven on `dev`.                                                                                                                                                               |
+| 3    | Tidy what exists                     | 2b         | todo   |                                                                                                                                                                                                                                                                                            |
+| 4    | ChatGPT refresh and sign-out         | 3          | todo   |                                                                                                                                                                                                                                                                                            |
+| 5    | Owner trial (gate)                   | 4          | todo   | Owner action. Steps 6–11 are provisional until this step rewrites them.                                                                                                                                                                                                                    |
+| 6    | GitHub: private repos and push       | 5          | todo   |                                                                                                                                                                                                                                                                                            |
+| 7    | Pause, resume, vaporize              | 6          | todo   |                                                                                                                                                                                                                                                                                            |
+| 8    | The rest of the UI API               | 7          | todo   |                                                                                                                                                                                                                                                                                            |
+| 9    | `scotty deploy` and the compiled CLI | 5          | todo   |                                                                                                                                                                                                                                                                                            |
+| 10   | Previews, terminal, evidence         | 8          | todo   |                                                                                                                                                                                                                                                                                            |
+| 11   | Cutover                              | 8, 9       | todo   | Needs the owner's approval before touching the old deployment.                                                                                                                                                                                                                             |
 
-## Commands every step uses
+## Step 3: tidy what exists
 
-| Command                             | What it does                                                                    | Added in |
-| ----------------------------------- | ------------------------------------------------------------------------------- | -------- |
-| `npm run fmt` / `npm run fmt:check` | oxfmt, excluding `vendor/**` and `work/**`                                      | exists   |
-| `npm run lint`                      | oxlint, built-in rules only, excluding `vendor/**` and `work/**`                | step 0   |
-| `npm run typecheck`                 | TypeScript across the repository                                                | exists   |
-| `npm run ui:build`                  | Builds `ui/dist`                                                                | exists   |
-| `npm test`                          | Fold unit tests and log replays (`@effect/vitest`)                              | step 2   |
-| `npm run e2e -- <name>`             | Runs `e2e/<name>.ts` against `SCOTTY_URL` (a deployment)                        | step 2   |
-| `scotty deploy --stage <stage>`     | Builds and applies the stack. Until step 6, `npm run deploy -- --stage <stage>` | step 2   |
-
-Deployment uses the Alchemy OAuth profile (`--profile default`), or `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the environment. Use an explicit test stage such as `dev`; never derive one. If you have no credentials, stop at the last local check and say so in **Status**. Don't mark the step done.
-
-## Mistake ledger
-
-The old reliability board (`docs/reliability.md:75-87` @old) counted 229 fix commits. Each row gives the cause, the rule that removes it, and the check that proves the rule holds. Review rules R1–R8 are defined in the next section.
-
-| #   | Old failure class                         | Example commits @old                                                                   | Cause                                                                                                                                 | Rule now                                                                                                               | Checked by                                                           |
-| --- | ----------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| M1  | Lifecycle fencing and recovery (79 fixes) | `adc5e63` scheduling races; `43f0545` stranded transitions                             | Handlers awaited the SDK, R2 and sidecars mid-transition, while alarms, callbacks and retries ran in between. Each got its own fence. | A handler appends, folds and sends. An outside action is an intent event, and its result is a later event.             | R1, R2; fold invariants; e2e `kill`                                  |
-| M2  | Several timers                            | `fade743` early alarms lost; `3be0300`, `e81ada3`, `9c7ecfc` hard-cap budgets          | Alarms and timeouts were tuned independently.                                                                                         | One alarm, derived from state as the earliest pending deadline. Deadlines come from one table in `fold.ts`.            | Fold test: after every event, the alarm equals the minimum deadline. |
-| M3  | Provider and host contract drift (36)     | `709f04e` Codex notification shape; `597096a` Hatch quotas                             | Mocks hid real behavior, and SDK shapes leaked into the core.                                                                         | No mocks of Cloudflare, Codex or GitHub. Codex notifications are stored as received and interpreted only in `view.ts`. | R7; e2e on a real deployment; replays of real logs                   |
-| M4  | Disk backup and restore                   | `patches/@cloudflare+sandbox+0.12.9.patch`; hard-cap reserve `docs/reliability.md:108` | Full-disk backup ran under a hard time cap using a promise that couldn't be cancelled.                                                | No disk backups. Pause saves a WIP branch plus the Codex rollout file.                                                 | e2e `pause-resume`                                                   |
-| M5  | Deploy and artifact skew (30)             | `f1b6dd3` rollout convergence; `1bc84c9` rollout gate; `a09f256` packaging             | Two deploy paths, rollout watchers, patched Alchemy.                                                                                  | One deploy path on unpatched Alchemy. The supervisor reports its version in `hello`; a mismatch is a `failed` event.   | e2e `core` on a fresh deploy                                         |
-| M6  | Evidence lifecycle (29)                   | `d12116b` upload retries; `c017f4a` revert; `803364e` reload loop                      | The recorder, R2 and UI settled independently.                                                                                        | Deferred to step 7. Evidence results are session events.                                                               | Step 7 e2e                                                           |
-| M7  | Credential authority (21)                 | `893ed14` fail closed; `f30b21c` fresh epoch; `94c42e3` revert                         | A registry, vault, rotation, grants, local sync and migrations overlapped.                                                            | One Creds DO holds every real secret. Sign-in and refresh run on the Worker. Containers get sentinels only.            | R3; e2e `secrets`                                                    |
-| M8  | UI and projection drift (17)              | `db4bac4` lifecycle reconcile; `47b5cc0` replay after refresh                          | The list trusted KV, which was only best-effort.                                                                                      | No KV. The list reads an index plus each Session DO's view.                                                            | Step 5 e2e: the list matches the detail views                        |
-| M9  | CLI (13)                                  | `cc5bf74` stale pending-up markers; `2215715` atomic plans                             | Local journals, and recovery by matching error text.                                                                                  | The CLI stores only `{url, stage}`. Retries are safe through `Idempotency-Key`.                                        | e2e `cli`: `up` twice → one session                                  |
-| M10 | Compatibility code (4 reverts)            | `6a5f0e9`, `c017f4a`, `94c42e3`, `6f4210a`                                             | Contract changes went through compatibility branches.                                                                                 | No compatibility with @old. A log-format change ships with a reset note.                                               | R6                                                                   |
-| M11 | Process heavier than the product          | Custom lint skills, Quint models, the board, ~74k lines of tests                       | Every fix paid for all the tooling.                                                                                                   | Fold unit tests plus a few e2e tests. No custom lint plugin.                                                           | R7                                                                   |
-
-## Review rules
-
-Check every commit against these.
-
-- **R1.** In `src/session/object.ts` and `src/creds/object.ts`, nothing awaits or `yield*`s an outside call (container, R2, fetch, another DO) between reading state and appending the event.
-- **R2.** Every outside action has an intent event, a result event, and a deadline in the fold.
-- **R3.** Real secrets appear only under `src/creds/`. Search the diff for `access_token`, `refresh_token`, `ghp_`, `github_pat_` and `Authorization` elsewhere.
-- **R4.** Boundary input is decoded with Schema: HTTP, WebSocket messages, R2 objects, OAuth responses, CLI arguments. No `any`, no casts that hide a type, no `!`.
-- **R5.** Stage, account and installation names come from explicit input only.
-- **R6.** No compatibility code for @old formats.
-- **R7.** A test is either a fold or replay unit test or an e2e test against a deployment. Reject mocks and tests that match source text.
-- **R8.** The step's e2e ran on a deployment, and the commit message records the command and result.
-
-## Step 0: repository setup
-
-- **Depends on:** nothing.
+- **Why:** three rough edges hit during step 2. Fix them before anything new is built on top.
+- **Depends on:** 2b.
 - **In scope:**
-  - Commit the staged tree on `rebuild/core`.
-  - Pin exact versions (checked 2026-09-26; these are the latest releases, the same commits as `vendor/`):
-    - `effect`, `@effect/sql-sqlite-do`, `@effect/vitest`, `@effect/platform-bun`: `4.0.0-rc.117` (npm tag `rc`; `latest` is still v3, so never install untagged).
-    - `alchemy`: `2.0.0-beta.79`.
-    - `vitest` `5.x` (required by `@effect/vitest`), `oxfmt` `0.70.0`, `oxlint` `1.85.0`, `typescript` `7.0.2`.
-  - Add `oxlint` with only built-in rules: `no-explicit-any`, no non-null assertions, no unused code. No custom plugin.
-  - To move to a newer Effect or Alchemy later, bump the npm version and the `vendor/` submodule to the same release commit in one commit, then rerun every check and e2e.
-  - Create the empty folders `src/session`, `src/creds`, `container/supervisor`, `cli`, `e2e`, `e2e/logs`.
-  - Make `npm run typecheck` cover `src/`, `container/`, `cli/`, `e2e/` and `protocol/` as well as `ui/`.
-  - Add the scripts `test`, `e2e` and `deploy` as stubs that exit with a clear "not yet" message.
-- **Out of scope:** any runtime code.
+  1. **Delete compiled leftovers.** `deploy/run.js`, `deploy/image.js` and `deploy/oci.js` are committed build output with no importer (`grep -rn 'run.js\|image.js\|oci.js' --exclude-dir=node_modules --exclude-dir=vendor --exclude-dir=work .` finds nothing). Delete them. Add `deploy/*.js` to `.gitignore` only if something regenerates them.
+  2. **One HTTP client.** `e2e/lib/client.ts` duplicates `cli/client.ts` (Access token via `cloudflared`, JSON requests, error decoding). Make `e2e/core.ts` use `cli/client.ts`'s request function and schemas, and delete `e2e/lib/client.ts`. Change `cli/client.ts` only as much as the e2e needs (for example, exporting a function that already exists).
+  3. **API 400s say what's wrong.** `POST /api/sessions` with a missing field returns a generic `bad_request`. In `src/http/api.ts`, when a body fails Schema decoding, put the decoder's message (field path and expectation) in `error.message`. Don't echo the body back. Use the existing `bad(...)` helper; add no new error type.
+- **Out of scope:** any new command, any new route, refactors of files not listed.
+- **Touch:** `deploy/*.js` (delete), `e2e/core.ts`, `e2e/lib/client.ts` (delete), `cli/client.ts`, `src/http/api.ts`.
+- **Budget:** +60 added lines net; the step should delete more than it adds.
 - **Done when:**
-  - `npm install`, `npm run fmt:check`, `npm run lint`, `npm run typecheck` and `npm run ui:build` pass.
-  - `git submodule status` shows `vendor/effect` at `14a3f14` (`effect@4.0.0-rc.117`) and `vendor/alchemy` at `473c395` (`v2.0.0-beta.79`).
+  - The checks pass.
+  - `curl` (with the Access header from `cloudflared access token -app=$SCOTTY_URL`, not saved) `POST $SCOTTY_URL/api/sessions` with body `{"repo":"octocat/Hello-World"}` returns 400 and a message naming the missing field. Paste the response body (not the header) in Status notes.
+  - After deploy, `npm run --silent e2e -- core` passes on `dev`.
+  - `git ls-files deploy e2e/lib` lists no `.js` file and no `client.ts` under `e2e/lib`.
 
-## Step 1: spikes
+## Step 4: ChatGPT refresh and sign-out
 
-Spike code lives in `work/spikes/<id>/` and is never committed. Record the result, with evidence (commands and output), under "Open questions" in `design.md`. If a spike fails, apply its fallback to `design.md` and to the affected steps here.
-
-### 1a: ChatGPT sign-in on the Worker
-
-- **Read first:** Codex's login code in the `openai/codex` repository (`codex-rs/login`), and the device-auth flow behind `codex login --device-auth`.
-- **Pass:** a deployed Worker completes the device-code flow, receives access and refresh tokens and the account ID, and refreshes once.
-- **Fallback:** the CLI runs sign-in once and uploads the token to the Creds DO. Refresh still runs on the Worker.
-
-### 1b: DO → container WebSocket
-
-- **Read first:** `vendor/alchemy/packages/alchemy/src/Cloudflare/Containers/Container.ts:137-155` and `ContainerPlatform.ts:186-199`; the Containers guide under `vendor/alchemy/website/src/content/docs/`.
-- **Pass:** on beta.79, a DO opens a WebSocket through `container.getTcpPort(7000)` to a server in the container, and messages flow both ways for 10 minutes.
-- **Fallback:** the supervisor dials in to `wss://<host>/sup/<id>` with a per-session secret passed at start. Access bypasses that one path.
-
-### 1c: Codex network use
-
-- **Read first:** `worker/src/agent/codex/process.ts:204-270` @old, which already pointed Codex at a proxy base URL.
-- **Pass:** with `base_url` set to a logging proxy, a full Codex turn with tool use sends every `chatgpt.com` request through that proxy.
-- **Fallback:** add a `/p/chatgpt` sub-route for each extra host found, or allow the host directly if it carries no credential.
-
-## Step 2: slice 1, the core loop
-
-- **Depends on:** 1b, 1c.
-- **Read first:** `design.md` sections "Session", "Supervisor" and "Deploy".
-- **In scope:**
-  - Create a session from a public repository, get a Codex answer, steer it, and interrupt it.
-  - Codex uses the owner's ChatGPT sign-in, swapped at `/p/chatgpt`, so no real secret enters the container. Step 2 takes the minimal sign-in from spike 1a (device-code start, poll, exchange, stored in the Creds DO) behind a temporary `POST /api/credentials/chatgpt/{start,poll}`; step 3 adds refresh, the credential events, sign-out and the UI control.
-- **Out of scope:** ChatGPT, GitHub push, pause, the UI beyond what already renders, the CLI.
-- **Build:**
-  - `alchemy.run.ts`: the Worker (assets from `ui/dist`, Access), the Session DO hosting the Container, the Creds DO, R2.
-  - `src/session/events.ts`, `src/session/fold.ts` (states, invariants, deadline table), `src/session/object.ts`.
-  - `src/session/object.ts` dials the supervisor with the container handle, not `Containers.layer`, and re-dials on activation when the fold has a live `gen` (see `design.md` "Supervisor").
-  - `src/worker.ts`: `POST /api/sessions`, `GET /api/sessions/:id`, `/steer`, `/interrupt`, `/p/chatgpt`.
-  - `container/Dockerfile`, trimmed from `worker/container/Dockerfile` @old, without the Sandbox SDK base image.
-  - `container/supervisor/`: the WebSocket protocol from `design.md`, cloning, and `codex app-server --listen stdio://`.
-  - `e2e/core.ts`; `npm test`; `npm run e2e`; `npm run deploy`.
-  - A CI workflow that builds and publishes the default image by digest, and the Docker-free copy into `registry.cloudflare.com` in `npm run deploy` (see `design.md` "Deploy").
-- **Port from @old:**
-  - Codex `config.toml` and launch: `worker/src/agent/codex/process.ts:204-270`.
-  - Thread start and resume: `worker/src/agent/codex/session.ts:996-1044`.
-  - Header cleanup and ChatGPT swap: `worker/src/egress/worker.ts:95-123`, `164-240`.
-- **Do not port:** `worker/src/session/object.ts`, `worker/src/session-actor/**`, `worker/src/sandbox/runtime.ts`, `@cloudflare/sandbox`.
-- **Done when:**
-  - `npm test` passes, covering every invariant and the alarm-equals-earliest-deadline property.
-  - `npm run deploy -- --stage dev` succeeds on a fresh stage.
-  - `npm run e2e -- core` passes: create → answer → steer → interrupt.
-  - The e2e records cold start from `container.start` to `hello`.
-  - `npm run e2e -- core` survives a Worker redeploy mid-session: the DO re-dials and no message is lost or duplicated.
-  - A replay covers a socket close followed by a reconnect.
-  - The standard checks pass.
-- **Guards:** M1, M2, M3, M5.
-
-## Step 2b: owner trial (gate)
-
-- **Depends on:** 2.
-- **In scope:** the owner uses stage `dev` for real work: create sessions on real repositories, steer, interrupt, reconnect from the phone, redeploy mid-session. Fix only what blocks that use. Record what felt slow, confusing or missing (cold start, answer latency, what the UI shows) under this step's Status notes.
-- **Agent-first CLI, first slice:** `scotty doctor | signin | new | ls | show | steer | interrupt | watch | log` against `SCOTTY_URL` (see `design.md` "CLI"). It is the driver for the owner, for agents and for `.agents/skills/verify-scotty`; the e2e uses its client. Deploy stays `npm run deploy` until step 6.
-- **Verification skill:** `.agents/skills/verify-scotty/` (launch, doctor, drive, evidence, cleanup, feature map) is proven on `dev` here, then kept current: every later step's **Done when** includes updating it and re-driving the features it touched.
-- **Then shape it:** before any new feature, tighten what exists until it feels very good: cold start and answer latency, what the UI shows, error messages, and the code itself.
-- **Then the features, one at a time, each tight:** Codex (polished first), GitHub and `gh`, Hatch previews, evidence, and Claude as a second agent. Steps 3–8 are rewritten around this list in the order the trial suggests; each lands small, end to end and very good before the next starts.
-- **Out of scope:** new features before the shaping pass.
-- **Done when:** the owner has used it, the shaping pass is done, and, with the orchestrator, rewritten steps 3–8 around the feature list above, as the trial showed. Steps may be cut, merged, reordered or moved to **Later**. No step after this starts before that rewrite.
-
-## Step 3: slice 2, ChatGPT credentials
-
-- **Depends on:** 1a, 2b.
-- **In scope:** sign in to ChatGPT from the UI's Settings; the Creds DO stores and refreshes the tokens; Codex uses `/p/chatgpt` (from step 2). Replace step 2's temporary sign-in endpoints.
-- **Out of scope:** GitHub, other providers.
-- **Build:**
-  - `src/creds/oauth.ts`: plain Effect HttpClient calls for start, poll, exchange, refresh, revoke (endpoints and encodings from `design.md` "Credentials"), each returning a typed result with HTTP status and upstream error code. Schema-decoded; no `orDie`.
-  - `src/creds/object.ts`: sign-in and refresh as events (`signin.started`, `signin.polled`, `signin.completed|failed`, `refresh.requested`, `refresh.succeeded|failed|unknown`).
-    - Clear the device record before the code exchange; never POST a code twice.
-    - One refresh at a time: a request while one is pending waits for its result.
-    - The rotated tokens replace the old in one storage write, and only if the refresh token sent is still the stored one.
-    - The alarm for the next refresh is 5 minutes before the access token's `exp`; time comes from event `at`, not `Date.now()` in the flow.
-    - Per-session sentinels.
-  - `src/creds/swap.ts`: an explicit path allowlist (only `/p/chatgpt/responses` is known to be needed, from spike 1c), a constant-time sentinel check, removal of hop-by-hop and incoming auth headers, and a log line for every outcome including upstream failures.
-  - A ChatGPT sign-in control in the UI's Settings. This is the only UI change here.
-  - `e2e/secrets.ts`.
-- **Port from @old:** the ChatGPT swap and host check, `worker/src/egress/worker.ts:164-240`.
-- **Do not port:** `cli/src/pi-auth.ts` (local auth-file import), `scotty sync`, the credential registry, vault or rotation code.
-- **Done when:**
-  - `npm run e2e -- secrets` passes: the real tokens are absent from container env, files, process arguments and git config.
-  - A refresh forced during a turn lets the turn finish, and the container never sees the new token.
-  - `npm test` covers the credential fold: pending only on `deviceauth_authorization_pending`; an unknown refresh result means sign-in is required and the old refresh token is never sent again; a second refresh request while one is pending adds no second call.
-  - `npm run e2e -- secrets` also shows: two refreshes in a row both succeed (the rotated token is used); two concurrent refresh requests cause one upstream refresh; a failed OAuth call logs its status and code with no token field.
-  - Sign-out revokes the refresh token, and a later refresh fails as permanent.
-  - `npm run e2e -- core` still passes.
-- **Guards:** M7.
-
-## Step 4: slice 3, GitHub, pause, resume, vaporize
-
+- **Why:** the access token lives 10 days and the Creds DO refuses to hand out one with under 24 hours left. Today, when it expires, the owner must run `scotty signin` again.
 - **Depends on:** 3.
-- **In scope:** clone and push private repositories through `/p/github`; `sleep`, `resume` and `vaporize`.
-- **Build:**
-  - The git credential helper and `url.insteadOf` in the supervisor.
-  - `/p/github`: only smart-HTTP paths for the session's repository.
-  - Pause (WIP push → rollout file to R2 → stop), resume, vaporize.
-  - `e2e/pause-resume.ts`, `e2e/vaporize.ts`, `e2e/kill.ts`.
-- **Port from @old:**
-  - The credential-helper idea: `worker/src/sandbox/workspace.ts:70-76`. It changes to return the sentinel.
-  - The rollout-file format: `worker/src/agent/codex/persistence-format.ts:5-24` (keep only the rollout path pattern and file list; drop the sidecar history).
+- **Read first:** `design.md` "Credentials"; `src/creds/object.ts`, `src/creds/oauth.ts`; `work/spikes/1a/RESULT.md` (refresh request shape and rotation, if present locally); Codex `codex-rs/login/src/auth/manager.rs` refresh (`https://github.com/openai/codex`, tag `rust-v0.157.1`).
+- **In scope:**
+  1. `src/creds/oauth.ts`: add `refreshTokens(refreshToken)`: JSON `POST https://auth.openai.com/oauth/token` with `{grant_type: "refresh_token", client_id, refresh_token}`, Schema-decoded. Return the new access token, refresh token, ID token and expiry, or an `OAuthFailure` with HTTP status and upstream `error`/`code` (never token fields). Add `revoke(refreshToken)` for `https://auth.openai.com/oauth/revoke`. Follow the style of `exchangeCode`.
+  2. `src/creds/object.ts`:
+     - The DO's alarm fires at `expiresAt − 48h`, so `sessionToken()` (which needs ≥24h) always has a fresh token. On the alarm: mark a refresh as pending in storage, call `refreshTokens`, then in one storage write replace all tokens, **only if the stored refresh token is still the one that was sent**. Clear pending.
+     - One refresh at a time: if a refresh is pending, `sessionToken()` does not start another. It returns the stored token if that still has ≥24h, otherwise `CredentialStoreError("ChatGPT sign-in expiring")`.
+     - Permanent failure (401; 400 `invalid_grant`; `refresh_token_expired|reused|invalidated`) or an unclear result (lost reply, 200 without both tokens): delete the tokens, so status becomes `signed-out`. Never send the old refresh token again.
+     - Transient failure (5xx, network): keep the tokens and set the alarm 15 minutes later.
+     - Add `signOut()`: revoke the refresh token (ignore revoke failures), then delete the tokens.
+  3. `src/http/api.ts`: `DELETE /api/credentials/chatgpt` → `signOut()`, and `POST /api/credentials/chatgpt/refresh` → run one refresh now and return `{status, expiresAt}` (this route exists so the e2e can prove refresh without waiting 8 days; it is Access-protected like every route).
+  4. `cli/commands/setup.ts`: `scotty signout`. `doctor` already reports sign-in status (step 2b).
+  5. `e2e/signin.ts` (register it in `e2e/run.ts`), which assumes a signed-in stage:
+     - Call `/refresh` twice in a row: both succeed, `expiresAt` doesn't decrease, and the status stays `signed-in` (proves the rotated refresh token is stored and used).
+     - After the refreshes, `npm run e2e -- core`'s create-and-answer part still works (the new access token works from the container). Reuse the core flow; don't copy it.
+     - Fire two `/refresh` calls concurrently: both return `signed-in` and neither leaves the store signed out.
+  6. Update `design.md` "Credentials": refresh at `exp − 48h` (it currently says 5 minutes), the transient and permanent rules above, and the `/refresh` route.
+- **Out of scope:** a UI sign-in control (step 8), refreshing tokens already handed to a running session, GitHub.
+- **Touch:** `src/creds/oauth.ts`, `src/creds/object.ts`, `src/http/api.ts`, `cli/commands/setup.ts`, `cli/main.ts`, `e2e/signin.ts`, `e2e/run.ts`, `docs/design.md`, `.agents/skills/verify-scotty/features/signin.md`.
+- **Budget:** +250 lines.
 - **Done when:**
-  - `pause-resume`: a marker file and the Codex thread survive sleep and resume.
-  - `vaporize`: no container, R2 objects or branch remain, and running it twice is safe.
-  - `kill`: killing the container mid-turn, and mid-pause, ends in a correct state with no invariant violation.
-  - `core` and `secrets` still pass.
-- **Guards:** M1, M4.
+  - The checks pass. No new unit tests: the Creds DO is proved by e2e (rule 15).
+  - On `dev`: `npm run --silent e2e -- signin` passes, then `npm run --silent e2e -- core` passes.
+  - `scotty signout`, then `scotty doctor` exits 3 with the hint `npm run --silent scotty -- signin`. The owner then signs in again (a browser step: stop and ask), and `doctor` exits 0.
+  - `grep -rn 'access_token\|refresh_token' src cli e2e container | grep -v '^src/creds/'` finds nothing new.
+  - The verify-scotty `signin` recipe is updated for `signout` and re-driven, with evidence in `work/verify/`.
 
-## Step 5: slice 4, the rest of the UI API
+## Step 5: owner trial (gate)
 
-- **Depends on:** 4.
-- **In scope:** the existing UI works on a phone without changes, apart from hiding screens.
-- **Build:**
-  - `src/session/view.ts` for every shape the UI reads.
-  - The session index.
-  - `changes`, `settings`, `repos`, `checkpoint`.
-  - Hide the Devices, Providers-and-runners and Stats routes.
-  - `e2e/ui.ts`, a browser test at 390×844.
-- **Contract:** the UI's readers in `ui/src/data/*.ts` and `protocol/` are the field-level contract. Match them; don't change them.
-- **Done when:**
-  - `npm run e2e -- ui` passes: create, watch the conversation stream in, steer, open the diff.
-  - The list matches each session's detail view.
-  - All earlier e2e tests still pass.
-- **Guards:** M3, M8.
+- **Depends on:** 4. This step is the owner's; an agent only supports it.
+- **In scope:**
+  - The owner uses `dev` for real work for a few days: sessions on real public repositories from the phone UI and from the CLI, steering, interrupting, reconnecting, a redeploy mid-session.
+  - An agent fixes only what blocks that use, each fix with a saved log and replay if it is in the fold ("When something breaks").
+  - Record what felt slow, confusing or missing in this step's Status notes, in the owner's words.
+- **Then:** with the owner, rewrite steps 6–11 to the minimum the trial showed is needed. Steps may be cut, merged, reordered or moved to **Later**. No step after this starts before that rewrite is committed.
+- **Done when:** the owner says the trial is done and the rewrite of steps 6–11 is committed.
 
-## Step 6: CLI
-
-- **Depends on:** 2b. Grows with each later slice.
-- **In scope:** grows the step 2b CLI: `deploy --stage` (replacing `npm run deploy`), then `sleep`, `resume`, `vaporize` and `replay` as their slices land. Built with `bun build --compile`. `deploy` embeds `alchemy.run.ts`, the built UI and the default image digest.
-- **Done when:**
-  - `npm run e2e -- cli` passes: `up` twice with the same key produces one session.
-  - `scotty replay` on a saved log in `e2e/logs/` reproduces its recorded invariant failure.
-  - `bun build cli/main.ts --compile --outfile /tmp/scotty` succeeds.
-- **Guards:** M5, M9.
-
-## Step 7: slice 5, previews, terminal, evidence
+## Step 6: GitHub, private repositories and push (provisional)
 
 - **Depends on:** 5.
-- **Previews:** `<port>-<id>-<nonce>.<previewBase>` → Session DO → `getTcpPort(port)`, behind Access. Old URL shape: `worker/src/hatch/contracts.ts:489-492` @old.
-- **Terminal:** a PTY in the supervisor, relayed Worker → DO → container.
-- **Evidence:** port `worker/container/pi-packages/sources/scotty-browser-test/runner.ts` @old. Results are session events.
-- **Done when:** a preview opens on a phone (HTTP and WebSocket); the terminal shows output; evidence frames render in the UI.
-- **Guards:** M6.
+- **In scope:** clone and push private repositories. The container never sees the GitHub token.
+- **Build:**
+  - Creds DO: store one GitHub token (`POST /api/credentials/github`, write-only; `GET` returns only `{status}`).
+  - `/p/github/*` in `src/creds/swap.ts`: only smart-HTTP paths (`info/refs`, `git-upload-pack`, `git-receive-pack`) for the session's own repository; check a per-session sentinel in constant time; strip incoming auth and hop-by-hop headers; add the real token; forward to `https://github.com`. Port header cleanup from `git show 3042018:worker/src/egress/worker.ts` lines 95–123 and 428–443.
+  - Supervisor: `git config url."https://<host>/p/github/".insteadOf https://github.com/` and a credential helper that prints the sentinel.
+  - How the container reaches `/p/github` behind Access is an open question. Try `interceptOutboundHttp` (`vendor/alchemy/packages/alchemy/src/Cloudflare/Containers/Container.ts:149`) with a plain-http internal host first. Spike it in `work/spikes/6a/` and write the result into `design.md` before building.
+  - `e2e/github.ts`: clone a private test repository (the owner names it; the test reads it from `SCOTTY_PRIVATE_TEST_REPO`), commit, push to `scotty/<id>`, check the branch exists with `gh api`, then delete the branch.
+- **Done when:** `e2e -- github` and `e2e -- core` pass on `dev`; a scan of the container's env, files, process arguments and git config (names only, lengths, hashes) shows no GitHub token.
 
-## Step 8: cutover
+## Step 7: pause, resume, vaporize (provisional)
 
-- **Depends on:** 5, 6.
-- **In scope:** deploy to the real domain on the owner's chosen stage; run every e2e test; merge `rebuild/core` into `main`.
+- **Depends on:** 6.
+- **Build:** the events already in `design.md` (`pause.requested` … `gone`) with fold deadlines; pause = push WIP branch, save the Codex rollout file to R2, stop the container; resume = start, clone, restore rollout, `thread/resume`; vaporize = destroy the container, delete R2 objects and the branch. `scotty sleep|resume|vaporize <id>`.
+- **Done when:** e2e `pause-resume` (a marker file and the Codex thread survive), `vaporize` (nothing remains; running it twice is safe), and `kill` (container killed mid-turn and mid-pause ends in a correct state with no `invariant.violated`) pass on `dev`, plus `core`. The failed sessions left on `dev` by earlier steps are vaporized.
+
+## Step 8: the rest of the UI API (provisional)
+
+- **Depends on:** 7.
+- **Contract:** the UI's readers in `ui/src/data/*.ts` and `protocol/` are the field-level contract. Match them; don't change them. `ui/` changes only to hide routes that have no backend (Devices, Providers-and-runners, Stats) and to add the ChatGPT sign-in control in Settings.
+- **Build:** `view.ts` for every shape the UI reads; the session index; `changes`, `settings`, `repos`, `checkpoint`.
+- **Done when:** `e2e -- ui` (a browser at 390×844: create, watch the answer stream in, steer, open the diff) passes, and the list matches each detail view.
+
+## Step 9: `scotty deploy` and the compiled CLI (provisional)
+
+- **Depends on:** 5.
+- **Build:** `scotty deploy --stage <stage>` replaces `npm run deploy` (same image copy, then the Alchemy apply); `bun build cli/main.ts --compile`; the CLI embeds the default image digest.
+- **Done when:** `scotty deploy --stage dev` then `e2e -- core` pass; `new` twice with the same `--key` creates one session.
+
+## Step 10: previews, terminal, evidence (provisional)
+
+- **Depends on:** 8.
+- **Previews:** `<port>-<id>-<nonce>.<previewBase>` → Session DO → `getTcpPort(port)`, behind Access. **Terminal:** a PTY in the supervisor relayed Worker → DO → container. **Evidence:** results are session events.
+- **Done when:** a preview opens on a phone (HTTP and WebSocket), the terminal shows output, and evidence renders in the UI.
+
+## Step 11: cutover (provisional)
+
+- **Depends on:** 8, 9.
+- **In scope:** deploy to the owner's chosen stage and domain, run every e2e, merge `rebuild/core` into `main` with the owner's approval.
 - **Out of scope without explicit approval:** tearing down or changing the old deployment.
 
 ## Later
 
-Each item gets its own step here before anyone builds it.
+Each item gets its own step before anyone builds it.
 
-- Claude, Pi and custom providers: new Creds DO rows and swap routes.
+- A running session whose ChatGPT token expires mid-session (sessions longer than ~24h): hand it a fresh token on reconnect.
+- The agent can read the ChatGPT token from `config.toml` (accepted risk, `design.md` "Credentials"). Revisit if chatgpt.com ever accepts Worker egress again.
+- Claude, Pi and custom providers.
 - `gh` inside the container.
 - User-supplied images, checked against the supervisor contract at `hello`.
 
+## Review rules
+
+Every commit is checked against these and Rule zero.
+
+- **R1.** In `src/session/object.ts` and `src/creds/object.ts`, nothing awaits an outside call (container, R2, fetch, another DO) between reading state and appending the event.
+- **R2.** Every outside action has an intent event, a result event and a deadline in the fold.
+- **R3.** Real secrets appear only under `src/creds/`, plus the one documented exception (the ChatGPT access token in the container's `config.toml`). Search the diff for `access_token`, `refresh_token`, `ghp_`, `github_pat_`, `Authorization`.
+- **R4.** Boundary input is decoded with Schema: HTTP, WebSocket messages, R2 objects, OAuth responses, CLI arguments. No `any`, no casts that hide a type, no `!`.
+- **R5.** Stage, account and repository names come from explicit input only.
+- **R6.** No compatibility code for @old formats.
+- **R7.** Tests follow rules 13–18.
+- **R8.** The step's e2e ran on `dev`, and the commit message records the command and result.
+
+## Mistake ledger
+
+The old reliability board (`docs/reliability.md:75-87` @old) counted 229 fix commits. Each row names the cause and the rule that removes it.
+
+| #   | Old failure class                | Cause                                                                                        | Rule now                                                                                |
+| --- | -------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| M1  | Lifecycle fencing (79 fixes)     | Handlers awaited outside calls mid-transition; alarms, callbacks and retries ran in between. | Append → fold → at most one command. Outside actions are intent + result events. R1, R2 |
+| M2  | Several timers                   | Alarms and timeouts tuned independently.                                                     | One alarm, derived from the fold's deadline table.                                      |
+| M3  | Provider contract drift (36)     | Mocks hid real behaviour; SDK shapes leaked into the core.                                   | No mocks; e2e on a real deployment; agent events interpreted only in `view.ts`.         |
+| M4  | Disk backup and restore          | Full-disk backup under a hard time cap.                                                      | No disk backups: WIP branch plus the Codex rollout file.                                |
+| M5  | Deploy and artifact skew (30)    | Two deploy paths, rollout watchers, patched Alchemy.                                         | One deploy path, unpatched Alchemy, image by digest.                                    |
+| M6  | Evidence lifecycle (29)          | Recorder, R2 and UI settled independently.                                                   | Evidence results are session events (step 10).                                          |
+| M7  | Credential authority (21)        | Registry, vault, rotation, grants, sync and migrations overlapped.                           | One Creds DO. One documented exception. R3                                              |
+| M8  | UI projection drift (17)         | The list trusted best-effort KV.                                                             | No KV; the list reads the index plus each DO's view.                                    |
+| M9  | CLI (13)                         | Local journals; recovery by matching error text.                                             | The CLI stores nothing; retries use `--key`/`--req`.                                    |
+| M10 | Compatibility code (4 reverts)   | Contract changes went through compatibility branches.                                        | No compatibility code. R6                                                               |
+| M11 | Process heavier than the product | Custom lint skills, formal models, the board, ~74k lines of tests.                           | Rule zero.                                                                              |
+
 ## When something breaks
 
-1. Save the session's event log to `e2e/logs/<date>-<short-name>.jsonl` before fixing anything.
-2. Add a replay test that fails on it.
-3. Fix the bug. The fix is done when the replay passes and the relevant e2e test passes on a deployment.
-4. If the bug fits a ledger row, add its commit to that row. If it fits none, add a new row.
+1. Save the session's event log (`npm run --silent scotty -- log <id>`) to `e2e/logs/<yyyy-mm-dd>-<short-name>.jsonl` before fixing anything. Check it holds no token first.
+2. If the bug is in the fold: add one replay test that fails on it. Otherwise: add one e2e assertion that fails on it.
+3. Fix the bug. It is fixed when that test passes and `npm run e2e -- core` passes on `dev`.
+4. If the bug fits a ledger row, name the row in the commit message.

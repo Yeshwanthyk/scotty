@@ -193,10 +193,16 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - Later, user-supplied images use the same digest-pinned copy and are checked against the supervisor contract at `hello`.
 - Don't use Alchemy's local `dev` Container runtime; it runs Docker (`vendor/alchemy/website/src/content/docs/cloudflare/local-development.mdx:79-80`).
 - **Stage:** explicit, default `personal`. It is never derived from the user, machine or account.
-- **State:** Alchemy local state under `~/.scotty/state/`.
+- **State:** Alchemy local state (`Alchemy.localState()`) in `.alchemy/` at the repository root, git-ignored. Deleting it orphans the deployed stage; back it up if the stage matters.
 - **Cloudflare credentials:** the Alchemy OAuth profile (`--profile default`) or `CLOUDFLARE_API_TOKEN` with the account ID from the environment; never deployed.
 - **Updates:** each CLI release embeds its own stack, so updating is a new CLI followed by `scotty deploy`.
 - No patches on Alchemy or other dependencies unless a beta.79 failure is shown.
+
+### Alchemy beta.79 workarounds (shown on `dev`, 2026-09-26)
+
+- **Props run at runtime too.** A resource's props `Effect` (for example `Config.String("SCOTTY_OWNER_EMAIL")` in `src/worker.ts`, `SCOTTY_IMAGE` in `src/session/object.ts`) is evaluated again inside the deployed bundle, where deploy-time env vars are absent. A missing `Config` there crashed every request with error 1101. Fix: `Config.withDefault("")` on those props; `alchemy.run.ts` rejects a missing value before any deploy, so the default is reached only at runtime (`5e5cdcc`).
+- **DO migrations are computed per logical ID.** Binding the session Container under a second logical ID re-added `new_sqlite_class` for the Session DO and the deploy failed; sharing the env key instead dropped the container metadata. Fix: `src/session/container-binding.ts` binds the container application from the Session DO's own outer phase, mirroring `ContainerPlatform.bind` (`vendor/alchemy/packages/alchemy/src/Cloudflare/Containers/ContainerPlatform.ts:143-172`) without `Containers.layer`, which would start the container on every DO construction (`5551360`).
+- Remove each workaround when an Alchemy upgrade makes it unnecessary, and prove it with `npm run deploy -- --stage dev` plus `npm run e2e -- core`.
 
 ## Tests
 
@@ -211,7 +217,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 ## Slices
 
 1. Stack plus the Session DO event log plus the supervisor, running a hard-coded prompt through Codex with the owner's ChatGPT sign-in (minimal, no refresh yet) → proof: e2e 1.
-2. ChatGPT sign-in and refresh in the Creds DO, and the `/p/chatgpt` swap → e2e 2.
+2. ChatGPT refresh and sign-out in the Creds DO; the token reaches Codex through `config.toml` only (see "Credentials") → e2e 2.
 3. GitHub token, `/p/github`, WIP branch pause and resume → e2e 3 and 4.
 4. The rest of the UI contract: changes, settings, repos, and hiding the unused screens.
 5. Hatch previews, terminal, evidence.
@@ -221,7 +227,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - ~~Can the Worker run the ChatGPT device-code sign-in itself (Codex's `login --device-auth` flow), and what does the refresh endpoint look like?~~ **Answered by spike 1a (deployed, 2026-09-26): yes.** No bot check on Worker egress to `auth.openai.com`. The refresh token rotated on the one refresh. The ID token lives one hour; the access token's lifetime was not measured. The first run failed because Effect's `bodyText` sets `text/plain` over an explicit content type (`HttpClientRequest.ts:693-700`, `internal/httpBody.ts:9-11`); the code exchange must use `bodyUrlParams`. The fallback (CLI sign-in) is not needed. Not covered: a second refresh with the rotated token, a refresh that races another, and whether re-polling after a successful exchange is safe.
 - ~~Does `getTcpPort(...).fetch` support a WebSocket upgrade from the DO to the container on Alchemy beta.79?~~ **Answered by spike 1b (deployed, 2026-09-26): yes.** The DO sends `port.fetch` with `Upgrade: websocket`, takes `webSocket` from the 101 response and calls `accept()`. Pings and ticks flowed both ways for 600 s with no reconnect, 43–71 ms echo latency. The `/sup/<id>` fallback is not needed. Not covered: a DO restart or redeploy closes the socket and nothing reconnects it; cold start was not measured; an open outbound socket keeps the DO resident (no hibernation).
 - ~~Does Codex send anything to `chatgpt.com` outside `base_url`?~~ **Answered by spike 1c (Codex 0.157.0, run locally, 2026-09-26):**
-  - With the provider config under "Credentials", a full turn with tool use (write `hello.txt`, run `cat hello.txt`) sent all 3 model requests as `POST <base_url>/responses` through the swap proxy, with only a sentinel in Codex's environment. No login or refresh call was needed.
+  - (Historical: this was the `/p/chatgpt` swap design that spike 1e replaced.) With the provider config of that time, a full turn with tool use (write `hello.txt`, run `cat hello.txt`) sent all 3 model requests as `POST <base_url>/responses` through the swap proxy, with only a sentinel in Codex's environment. No login or refresh call was needed.
   - With plugins enabled (the default), Codex also opened one direct `chatgpt.com:443` connection and two `github.com:443` connections: the curated-plugin startup sync (`git ls-remote`/`fetch` of `openai/plugins`, and most likely `chatgpt.com/backend-api/plugins/export/curated`). With `[features] plugins = false`, a fresh run made no connection outside `base_url`.
   - Limit: the egress observer saw only traffic that honours `HTTPS_PROXY`/`HTTP_PROXY`. The container's own egress rules are the backstop.
   - `account/login/start` with `type: "chatgptAuthTokens"` (seen in t3code) rejects an opaque sentinel with `invalid ID token format`; it needs a real JWT and is marked internal-only. Scotty does not use it.
