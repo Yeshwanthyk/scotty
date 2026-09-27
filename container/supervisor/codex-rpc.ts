@@ -8,7 +8,8 @@ type Outgoing = { line: string; written: Deferred.Deferred<void, AgentError> };
 // Codex's stderr tail goes into the event log; bearer tokens and JWTs never do.
 const redact = (line: string) =>
   line
-    .replace(/\u001b\[[0-9;]*m/g, "")
+    .replaceAll(String.fromCharCode(27), "")
+    .replace(/\[[0-9;]*m/g, "")
     .replace(/eyJ[\w-]+\.[\w-]+\.[\w-]*/g, "[redacted]")
     .replace(/bearer\s+\S+/gi, "Bearer [redacted]")
     .slice(0, 300);
