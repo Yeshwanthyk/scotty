@@ -28,7 +28,7 @@ const signIn = (request: ReturnType<typeof client>) =>
       return yield* failure(
         "signin",
         `ChatGPT sign-in start failed: ${device.stage}, HTTP ${device.httpStatus ?? "unknown"}, code ${device.code ?? "unknown"}`,
-        "scotty signin",
+        "scotty auth login chatgpt",
       );
     console.log(`Open ${device.verificationUrl} and enter code ${device.userCode}`);
     let signedIn = false;
@@ -45,12 +45,17 @@ const signIn = (request: ReturnType<typeof client>) =>
         return yield* failure(
           "signin",
           `ChatGPT sign-in poll failed: ${result.stage}, HTTP ${result.httpStatus ?? "unknown"}, code ${result.code ?? "unknown"}`,
-          "scotty signin",
+          "scotty auth login chatgpt",
         );
       if (result.status === "expired")
-        return yield* failure("signin", "ChatGPT device authorization expired", "scotty signin");
+        return yield* failure(
+          "signin",
+          "ChatGPT device authorization expired",
+          "scotty auth login chatgpt",
+        );
     }
-    if (!signedIn) return yield* failure("signin", "ChatGPT sign-in timed out", "scotty signin");
+    if (!signedIn)
+      return yield* failure("signin", "ChatGPT sign-in timed out", "scotty auth login chatgpt");
   });
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);

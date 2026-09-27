@@ -108,11 +108,11 @@ cloudflared access login "$SCOTTY_URL"     # browser; once per ~24h
 
 ```sh
 npm run --silent scotty -- doctor     # exit 3 with a hint if not signed in
-npm run --silent scotty -- signin     # prints a URL and code; open it and enter the code
+npm run --silent scotty -- auth login chatgpt     # prints a URL and code; open it and enter the code
 npm run --silent scotty -- doctor     # now {"access":"ok","worker":"ok","chatgpt":"ok",...}
 ```
 
-The Creds DO keeps the tokens. Sign-in lasts about 10 days; `doctor` reports `chatgptExpiresAt`. Manual `signin` remains the owner-trial path; refresh and sign-out are deferred until after the trial. Don't sign in again while `doctor` says `ok`.
+The Creds DO keeps the tokens. Sign-in lasts about 10 days; `doctor` reports `chatgptExpiresAt`. Manual `auth login chatgpt` remains the owner-trial path; refresh and sign-out are deferred until after the trial. Don't sign in again while `doctor` says `ok`.
 
 ## 9. Run the checks
 
@@ -122,14 +122,14 @@ npm run --silent e2e -- core          # create, answer, redeploy, steer, interru
 
 For agents: the `.agents/skills/verify-scotty` skill drives the CLI through feature recipes (`features/*.md`) and saves evidence to `work/verify/`.
 
-Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `signin`, `new`, `ls`, `show <id>`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Output and errors are JSON on stdout; errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
+Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `auth login chatgpt|github`, `auth status`, `new`, `ls`, `show <id>`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Output and errors are JSON on stdout; errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
 
 ## Troubleshooting
 
 | Symptom                                         | Fix                                                                             |
 | ----------------------------------------------- | ------------------------------------------------------------------------------- |
 | `access_login` error, exit 3                    | `cloudflared access login "$SCOTTY_URL"`                                        |
-| `doctor` says ChatGPT not signed in or expiring | `npm run --silent scotty -- signin`                                             |
+| `doctor` says ChatGPT not signed in or expiring | `npm run --silent scotty -- auth login chatgpt`                                 |
 | Deploy fails before Alchemy runs                | Check `SCOTTY_SOURCE_IMAGE` is a `@sha256:` ref and the Docker Hub image exists |
 | Deploy fails with a Cloudflare auth error       | `npx alchemy profile edit --add Cloudflare` again                               |
 | `vendor/` is empty                              | `git submodule update --init vendor/effect vendor/alchemy`                      |

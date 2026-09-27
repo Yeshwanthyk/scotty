@@ -33,7 +33,7 @@ npm run --silent scotty -- doctor
 Passes when it exits 0 and reports `access`, `worker` and `chatgpt` as `ok` (`chatgptExpiresAt`
 is the token expiry; doctor exits 3 when the token is missing or has under a day left). On exit 3, run the
 `hint` it prints. Access needs `cloudflared access login $SCOTTY_URL` once (a browser step for
-the owner); ChatGPT needs `scotty signin` once (the owner approves a device code). An agent
+the owner); ChatGPT needs `scotty auth login chatgpt` once (the owner approves a device code). An agent
 cannot do either browser step: stop and ask the owner, quoting the hint.
 
 Record existing sessions as unowned before driving: `npm run --silent scotty -- ls > $EVIDENCE/before.json`.

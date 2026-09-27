@@ -5,7 +5,7 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 ## Scope of v1
 
 - **Single user.** Cloudflare Access for the owner's email is the only login. No pairing, devices, owner transfer or root token.
-- **Credentials live on the Worker.** ChatGPT sign-in is `scotty signin` today; the UI control comes in step 12. Nothing is copied from a local machine.
+- **Credentials live on the Worker.** ChatGPT sign-in is `scotty auth login chatgpt` today; the UI control comes in step 12. Nothing is copied from a local machine.
   - ChatGPT subscription, used by Codex.
   - A GitHub token, used by git.
 
@@ -38,7 +38,7 @@ container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
   supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; per-turn save and resume
 cli/
-  main.ts             Effect CLI: doctor, signin, new, ls, show, read, steer, interrupt, log (deploy later)
+  main.ts             Effect CLI: doctor, auth, new, ls, show, read, steer, interrupt, log (deploy later)
   client.ts           typed API client behind Access; shared with e2e/
 protocol/
   supervisor.ts       the only protocol file; wire schema shared by the Session DO and supervisor
@@ -131,7 +131,7 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
 ## Credentials
 
 - **One store.** The Creds DO holds the ChatGPT access token, refresh token, expiry and account ID, plus the GitHub token. Only the ChatGPT access token ever leaves it (below).
-  - Today the owner runs `scotty signin` when `doctor` reports sign-in missing or expiring. Automatic refresh and sign-out are deferred until after the owner trial (step 4).
+  - Today the owner runs `scotty auth login chatgpt` when `doctor` reports sign-in missing or expiring. Automatic refresh and sign-out are deferred until after the owner trial (step 4).
 - **Sign-in runs on the Worker** (spike 1a). The Creds DO runs Codex's device-code flow against `https://auth.openai.com` with client ID `app_EMoamEEZ73f0CkXaXp7hrann`:
   1. `POST /api/accounts/deviceauth/usercode` (JSON `client_id`) → `device_auth_id`, `user_code`, string `interval`. The user opens `/codex/device`.
   2. `POST /api/accounts/deviceauth/token` (JSON `device_auth_id`, `user_code`). Only 403 `deviceauth_authorization_pending` means pending; any other non-200 fails with its status and error code. A 200 returns `authorization_code`, `code_verifier`, `code_challenge`.
@@ -150,9 +150,9 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
   - `config.toml` (mode 0600) sets `base_url = "https://chatgpt.com/backend-api/codex"`, `experimental_bearer_token = <token>`, `http_headers = { "chatgpt-account-id" = … }`, `wire_api = "responses"`, `requires_openai_auth = false`, `supports_websockets = false`, zero retries, and `[features] plugins = false` (spike 1c). Codex runs with an explicit environment allowlist.
   - The token is in no environment variable, so commands the agent runs don't inherit it. An env var did not work: in Codex 0.157.1, `[shell_environment_policy] exclude = ["SCOTTY_*"]` still let commands see it (e2e run 4, `work/step2/env-names.out`). e2e `core` checks with `env | grep -c SCOTTY_`.
   - Risk accepted for a single user: code in the container can read `config.toml` and use the token until it expires. The refresh token never leaves the Creds DO.
-- **git (spike 7a, `work/spikes/7a/RESULT.md`).** One GitHub token, set once with `scotty github set`; any repository it can reach works, with no repository list.
+- **git (spike 7a, `work/spikes/7a/RESULT.md`).** One GitHub token, set once with `gh auth token | scotty auth login github`; any repository it can reach works, with no repository list.
   - The supervisor sets `url."http://github.internal/api/git/".insteadOf https://github.com/`, plus `user.name` and `user.email` from `start.git`. The container has no GitHub credential and no credential helper.
-  - The Creds DO checks the token with `GET https://api.github.com/user` when it is set and stores `login`, `name` (falls back to `login`) and `email` (falls back to `<id>+<login>@users.noreply.github.com`). `new` resolves the default branch with the token; no token, or a GitHub error, is a 400 with the hint `scotty github set`.
+  - The Creds DO checks the token with `GET https://api.github.com/user` when it is set and stores `login`, `name` (falls back to `login`) and `email` (falls back to `<id>+<login>@users.noreply.github.com`). `new` resolves the default branch with the token; no token, or a GitHub error, is a 400 with the hint `scotty auth login github`.
   - Before each `container.start` that starts a container, the Session DO awaits the raw `storage.container.interceptOutboundHttp("github.internal", ctx.exports.default({ props: { session, repo } }))`. `ctx.exports.default` is the Worker's own loopback (Alchemy's entry is `export default makeWorkerBridge(WorkerEntrypoint, …)`, `Workers/Sources/Rolldown.ts:259`). A new container needs a fresh install; a DO restart with the container still running keeps it. Alchemy's `interceptOutboundHttp` wrapper drops the promise (`Containers/ContainerPlatform.ts:196-200`), so the raw call is used.
   - The Worker reads identity only from `ctx.props` (`WorkerExecutionContext.raw.props`), never from `Host` or anything the container sends. A request without props, such as a public one through Access, gets 404. The path is under `/api/` because the static-assets layer answers everything outside `runWorkerFirst: ["/api/*"]`, loopback traffic included.
   - The handler allows only smart-HTTP paths for the session's own repository, and in `git-receive-pack` only updates to `refs/heads/scotty/*` (it buffers the push body to read the commands; a body that is only a flush-pkt is git's auth probe and passes). It strips incoming auth and hop-by-hop headers, adds the real token, and forwards to `https://github.com`.
@@ -191,7 +191,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - **Output:** stdout carries exactly one JSON value per command. Progress and hints go to stderr. No colour codes, no prompts, no pager.
 - **Errors:** `{"error":{"code","message","hint"}}` on stdout, with a non-zero exit: 1 for a request or agent failure, 2 for bad usage, 3 when setup is missing (no `SCOTTY_URL`, no Access login, not signed in to ChatGPT). `hint` is the exact command that fixes it.
 - **Target:** `SCOTTY_URL` or `--url`, never derived. Access through `cloudflared access token` at run time; nothing stored by the CLI.
-- **Commands:** `doctor` checks the URL, Access, the Worker's reply, ChatGPT sign-in and the GitHub token, and prints what to fix. `signin` runs the device code (prints the URL and code to stderr, polls, prints the result). `github set` reads the GitHub token from stdin (`gh auth token | scotty github set`) and prints `{status, login}`. `new <owner/repo> [--prompt text] [--key k]` is idempotent on `--key` and uses the repository's default branch. `show <id>` prints the session view and conversation; `log <id>` the raw events. `read <id> [--last N] [--role user|assistant]` returns recent messages (default 1, maximum 500), session authority and the latest turn's ID/state. Messages have stable IDs, role, turn state and text; role filtering precedes the limit, and empty assistant text is omitted. The latest turn is independent of the selected messages; it is null before any prompt appears. Callers choose when to read again: there is no `watch` command. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries.
+- **Commands:** `doctor` checks the URL, Access, the Worker's reply, ChatGPT sign-in and the GitHub token, and prints what to fix. `auth login chatgpt` runs the device code (prints the URL and code to stderr, polls, prints the result). `auth login github` reads the GitHub token from stdin (`gh auth token | scotty auth login github`) and prints `{status, login}`. `auth status` prints `{chatgpt: {status, expiresAt}, github: {status, login}}`. The account is exactly `chatgpt` or `github`. `new <owner/repo> [--prompt text] [--key k]` is idempotent on `--key` and uses the repository's default branch. `show <id>` prints the session view and conversation; `log <id>` the raw events. `read <id> [--last N] [--role user|assistant]` returns recent messages (default 1, maximum 500), session authority and the latest turn's ID/state. Messages have stable IDs, role, turn state and text; role filtering precedes the limit, and empty assistant text is omitted. The latest turn is independent of the selected messages; it is null before any prompt appears. Callers choose when to read again: there is no `watch` command. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries.
 - **Help:** `--help` on every command is short and ends with one runnable example.
 
 ## Deploy

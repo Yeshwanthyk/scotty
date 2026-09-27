@@ -31,7 +31,7 @@ const path =
 const GitHubToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{20,255}$/)),
 });
-const githubHint = "scotty github set";
+const githubHint = "scotty auth login github";
 const bad = (message: string, status = 400, hint?: string) =>
   HttpServerResponse.json(
     { error: { message, code: status === 404 ? "not_found" : "bad_request", hint } },
