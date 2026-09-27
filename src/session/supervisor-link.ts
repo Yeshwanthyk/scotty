@@ -38,13 +38,21 @@ export class SupervisorLink {
     };
     const isCurrent = (socket: WebSocket) => this.socket === socket;
     return Effect.gen(function* () {
-      const response = yield* port.fetch(
-        HttpServerRequest.fromWeb(
-          new Request(`http://container/?gen=${gen}&after=${after}`, {
-            headers: { Upgrade: "websocket" },
-          }),
-        ),
-      );
+      const response = yield* port
+        .fetch(
+          HttpServerRequest.fromWeb(
+            new Request(`http://container/?gen=${gen}&after=${after}`, {
+              headers: { Upgrade: "websocket" },
+            }),
+          ),
+        )
+        .pipe(
+          // The fetcher surfaces a refused connection as a defect; a container still booting
+          // refuses, and the caller retries a DialError.
+          Effect.catchDefect(() =>
+            Effect.fail(new DialError({ message: "Supervisor not reachable" })),
+          ),
+        );
       const web = HttpServerResponse.toWeb(response);
       const candidate: unknown = Reflect.get(web, "webSocket");
       if (
