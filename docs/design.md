@@ -20,7 +20,7 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 ```
 alchemy.run.ts        the whole stack: Worker, Session DO + Container, Creds DO, R2, Access
 src/
-  worker.ts           Effect HttpRouter: /api/* and UI assets; /p/github is step 7, Hatch previews step 8
+  worker.ts           Effect HttpRouter: /api/* and UI assets; /api/git for the container (step 7), Hatch previews step 8
   session/
     events.ts         event Schemas (the log format)
     fold.ts           pure fold(state, event); the only transition function
@@ -33,7 +33,7 @@ src/
     view.ts           state → UI API shapes (sessions, conversation, changes)
   creds/
     object.ts         Creds DO: ChatGPT sign-in, session access token, GitHub token; refresh deferred
-    swap.ts           /p/github/* handler (planned, step 7)
+    git.ts            git smart-HTTP handler for github.internal (step 7)
 container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
   supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; per-turn save and resume
@@ -150,9 +150,13 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
   - `config.toml` (mode 0600) sets `base_url = "https://chatgpt.com/backend-api/codex"`, `experimental_bearer_token = <token>`, `http_headers = { "chatgpt-account-id" = … }`, `wire_api = "responses"`, `requires_openai_auth = false`, `supports_websockets = false`, zero retries, and `[features] plugins = false` (spike 1c). Codex runs with an explicit environment allowlist.
   - The token is in no environment variable, so commands the agent runs don't inherit it. An env var did not work: in Codex 0.157.1, `[shell_environment_policy] exclude = ["SCOTTY_*"]` still let commands see it (e2e run 4, `work/step2/env-names.out`). e2e `core` checks with `env | grep -c SCOTTY_`.
   - Risk accepted for a single user: code in the container can read `config.toml` and use the token until it expires. The refresh token never leaves the Creds DO.
-- **git:** `url."https://<host>/p/github/".insteadOf https://github.com/`, with a credential helper that returns the sentinel. `/p/github` allows only smart-HTTP paths for the session's repository and swaps in the real token.
-- **No HTTPS interception.** Alchemy beta.79 exposes only `interceptOutboundHttp`, and routing by base URL needs no TLS tricks.
-- **Port from `3042018`:** the header cleanup and host checks for `/p/github` in `worker/src/egress/worker.ts:95-123,164-240,428-443`, and the Codex config shape in `worker/src/agent/codex/process.ts:204-270`.
+- **git (spike 7a, `work/spikes/7a/RESULT.md`).** One GitHub token, set once with `scotty github set`; any repository it can reach works, with no repository list.
+  - The supervisor sets `url."http://github.internal/api/git/".insteadOf https://github.com/`. The container has no GitHub credential and no credential helper.
+  - Before each `container.start` that starts a container, the Session DO awaits the raw `storage.container.interceptOutboundHttp("github.internal", ctx.exports.default({ props: { session, repo } }))`. `ctx.exports.default` is the Worker's own loopback (Alchemy's entry is `export default makeWorkerBridge(WorkerEntrypoint, …)`, `Workers/Sources/Rolldown.ts:259`). A new container needs a fresh install; a DO restart with the container still running keeps it. Alchemy's `interceptOutboundHttp` wrapper drops the promise (`Containers/ContainerPlatform.ts:196-200`), so the raw call is used.
+  - The Worker reads identity only from `ctx.props` (`WorkerExecutionContext.raw.props`), never from `Host` or anything the container sends. A request without props, such as a public one through Access, gets 404. The path is under `/api/` because the static-assets layer answers everything outside `runWorkerFirst: ["/api/*"]`, loopback traffic included.
+  - The handler allows only smart-HTTP paths for the session's own repository, and in `git-receive-pack` only updates to `refs/heads/scotty/*`. It strips incoming auth and hop-by-hop headers, adds the real token, and forwards to `https://github.com`.
+- **No HTTPS interception.** Git goes over plain HTTP to `github.internal`. The raw Container API also has `interceptOutboundHttps` (workers-types `index.d.ts:4001`), which Alchemy doesn't wrap; it isn't needed.
+- **Port from `3042018`:** the header cleanup for the git handler in `worker/src/egress/worker.ts:95-123,164-240,428-443`, and the Codex config shape in `worker/src/agent/codex/process.ts:204-270`.
 
 ## API the UI needs
 
@@ -174,7 +178,7 @@ The conversation snapshot includes top-level `currentTurn`, the authoritative tu
 | Step  | Endpoints and routing                                             |
 | ----- | ----------------------------------------------------------------- |
 | 6     | `POST /api/sessions/:id/{stop,resume}`                            |
-| 7     | `POST /api/credentials/github`, `/p/github/*`                     |
+| 7     | `GET/POST /api/credentials/github`; `/api/git/*` (loopback only)  |
 | 8     | Hatch preview routing                                             |
 | 9     | Captured images and video in the conversation, and their download |
 | Later | `changes[/patch]`, `settings`, `repos`, the terminal WebSocket    |
