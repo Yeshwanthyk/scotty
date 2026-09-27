@@ -1,0 +1,4 @@
+interface:
+  display_name: "Model Effect CLIs"
+  short_description: "Add or change scotty CLI commands"
+  default_prompt: "Use $modeling-effect-cli to add or change a scotty CLI command."
