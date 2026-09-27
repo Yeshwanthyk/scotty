@@ -125,6 +125,16 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               }),
             ),
           ),
+        chatGptStatus: () =>
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`SELECT access_token, account_id, expires_at FROM credentials WHERE provider = 'chatgpt'`;
+            const row = rows[0];
+            if (row === undefined) return { status: "signed-out" as const, expiresAt: null };
+            const { expires_at } = yield* Schema.decodeUnknownEffect(CredentialRow)(row);
+            const status = expires_at <= Date.now() + tokenMargin ? "expiring" : "signed-in";
+            return { status, expiresAt: expires_at };
+          }),
         // The refresh token never leaves this object; a session gets only the access token.
         sessionToken: () =>
           Effect.gen(function* () {

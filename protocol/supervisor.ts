@@ -20,13 +20,11 @@ const credentialString = tomlString.check(
     }),
   ),
 );
-const environmentKey = Schema.String.check(Schema.isPattern(/^SCOTTY_[A-Z0-9_]{1,64}$/));
 const CodexAgent = Schema.Struct({
   kind: Schema.Literal("codex"),
   model: tomlString,
   effort: tomlString,
   baseUrl: credentialString,
-  envKey: environmentKey,
   token: credentialString,
   accountId: credentialString,
 });

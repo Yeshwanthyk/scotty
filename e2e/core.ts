@@ -44,6 +44,39 @@ const DevicePoll = Schema.Union([
     code: Schema.NullOr(Schema.String),
   }),
 ]);
+const ChatGptStatus = Schema.Struct({
+  status: Schema.Literals(["signed-in", "signed-out", "expiring"]),
+  expiresAt: Schema.NullOr(Schema.Number),
+});
+const signIn = (request: ReturnType<typeof client>) =>
+  Effect.gen(function* () {
+    const device = yield* request("/api/credentials/chatgpt/start", DeviceStart, {
+      method: "POST",
+    });
+    if ("status" in device)
+      return yield* new E2eError({
+        message: `ChatGPT sign-in start failed: ${device.stage}, HTTP ${device.httpStatus ?? "unknown"}, code ${device.code ?? "unknown"}`,
+      });
+    console.log(`Open ${device.verificationUrl} and enter code ${device.userCode}`);
+    let signedIn = false;
+    for (let attempt = 0; attempt < 150; attempt++) {
+      yield* Effect.sleep(`${Math.max(1, device.interval)} seconds`);
+      const result = yield* request("/api/credentials/chatgpt/poll", DevicePoll, {
+        method: "POST",
+      });
+      if (result.status === "signed-in") {
+        signedIn = true;
+        break;
+      }
+      if (result.status === "failed")
+        return yield* new E2eError({
+          message: `ChatGPT sign-in poll failed: ${result.stage}, HTTP ${result.httpStatus ?? "unknown"}, code ${result.code ?? "unknown"}`,
+        });
+      if (result.status === "expired")
+        return yield* new E2eError({ message: "ChatGPT device authorization expired" });
+    }
+    if (!signedIn) return yield* new E2eError({ message: "ChatGPT sign-in timed out" });
+  });
 const program = Effect.gen(function* () {
   const settings = yield* config();
   const repo = yield* Schema.decodeUnknownEffect(
@@ -54,28 +87,9 @@ const program = Effect.gen(function* () {
     ),
   );
   const request = client(settings);
-  const device = yield* request("/api/credentials/chatgpt/start", DeviceStart, { method: "POST" });
-  if ("status" in device)
-    return yield* new E2eError({
-      message: `ChatGPT sign-in start failed: ${device.stage}, HTTP ${device.httpStatus ?? "unknown"}, code ${device.code ?? "unknown"}`,
-    });
-  console.log(`Open ${device.verificationUrl} and enter code ${device.userCode}`);
-  let signedIn = false;
-  for (let attempt = 0; attempt < 150; attempt++) {
-    yield* Effect.sleep(`${Math.max(1, device.interval)} seconds`);
-    const result = yield* request("/api/credentials/chatgpt/poll", DevicePoll, { method: "POST" });
-    if (result.status === "signed-in") {
-      signedIn = true;
-      break;
-    }
-    if (result.status === "failed")
-      return yield* new E2eError({
-        message: `ChatGPT sign-in poll failed: ${result.stage}, HTTP ${result.httpStatus ?? "unknown"}, code ${result.code ?? "unknown"}`,
-      });
-    if (result.status === "expired")
-      return yield* new E2eError({ message: "ChatGPT device authorization expired" });
-  }
-  if (!signedIn) return yield* new E2eError({ message: "ChatGPT sign-in timed out" });
+  // Sign in only when the stored ChatGPT token is missing or near expiry.
+  const current = yield* request("/api/credentials/chatgpt", ChatGptStatus);
+  if (current.status !== "signed-in") yield* signIn(request);
   const unique = crypto.randomUUID();
   const session = yield* request("/api/sessions", Created, {
     method: "POST",

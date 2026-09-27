@@ -42,6 +42,8 @@ export function apiHandler(
   return Effect.gen(function* () {
     const url = new URL(request.url, "https://scotty.internal");
     const credential = credentials.getByName("owner");
+    if (url.pathname === "/api/credentials/chatgpt" && request.method === "GET")
+      return yield* HttpServerResponse.json(yield* credential.chatGptStatus());
     if (url.pathname === "/api/credentials/chatgpt/start" && request.method === "POST")
       return yield* HttpServerResponse.json(yield* credential.startChatGpt());
     if (url.pathname === "/api/credentials/chatgpt/poll" && request.method === "POST")

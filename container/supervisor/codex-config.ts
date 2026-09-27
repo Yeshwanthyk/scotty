@@ -15,7 +15,7 @@ export const launchCodex = (config: Extract<Agent, { kind: "codex" }>, cwd: stri
       try: () => new URL(config.baseUrl),
       catch: () => new AgentError({ code: "config", message: "invalid base URL" }),
     });
-    if (url.protocol !== "https:" || !/^SCOTTY_[A-Z0-9_]{1,64}$/.test(config.envKey))
+    if (url.protocol !== "https:")
       return yield* new AgentError({ code: "config", message: "invalid provider settings" });
     const fs = yield* FileSystem.FileSystem;
     const home = codexHome();
@@ -29,7 +29,7 @@ export const launchCodex = (config: Extract<Agent, { kind: "codex" }>, cwd: stri
     yield* fs
       .writeFileString(
         `${home}/config.toml`,
-        `model = ${toml(config.model)}\nmodel_provider = "scotty-managed"\nmodel_reasoning_effort = ${toml(config.effort)}\n[features]\nplugins = false\n[analytics]\nenabled = false\n[shell_environment_policy]\nignore_default_excludes = false\nexclude = ["SCOTTY_*"]\n[model_providers.scotty-managed]\nname = "Scotty managed Codex"\nbase_url = ${toml(config.baseUrl)}\nwire_api = "responses"\nenv_key = ${toml(config.envKey)}\nhttp_headers = { "chatgpt-account-id" = ${toml(config.accountId)} }\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`,
+        `model = ${toml(config.model)}\nmodel_provider = "scotty-managed"\nmodel_reasoning_effort = ${toml(config.effort)}\n[features]\nplugins = false\n[analytics]\nenabled = false\n[model_providers.scotty-managed]\nname = "Scotty managed Codex"\nbase_url = ${toml(config.baseUrl)}\nwire_api = "responses"\nexperimental_bearer_token = ${toml(config.token)}\nhttp_headers = { "chatgpt-account-id" = ${toml(config.accountId)} }\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`,
         { mode: 0o600 },
       )
       .pipe(
@@ -51,7 +51,6 @@ export const launchCodex = (config: Extract<Agent, { kind: "codex" }>, cwd: stri
             CODEX_HOME: home,
             LANG: "C.UTF-8",
             TERM: "xterm-256color",
-            [config.envKey]: config.token,
           },
         }),
       )

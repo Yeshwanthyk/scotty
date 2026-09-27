@@ -76,7 +76,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   model: "gpt-5.5",
                   effort: "medium",
                   baseUrl: "https://chatgpt.com/backend-api/codex",
-                  envKey: "SCOTTY_CHATGPT_TOKEN",
                   token: chatgpt.token,
                   accountId: chatgpt.accountId,
                 },
