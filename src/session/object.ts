@@ -14,7 +14,9 @@ import { conversationView, sessionView } from "./view.js";
 
 export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
   "SessionContainer",
+  // Runtime-only default; alchemy.run.ts rejects a missing SCOTTY_IMAGE before any deploy.
   Config.String("SCOTTY_IMAGE").pipe(
+    Config.withDefault(""),
     Effect.map((image) => ({
       image,
       registryId: "registry.cloudflare.com",

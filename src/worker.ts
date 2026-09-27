@@ -10,7 +10,9 @@ import SessionObject, { SessionContainer } from "./session/object.js";
 export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
   "ScottyWorker",
   Effect.gen(function* () {
-    const email = yield* Config.String("SCOTTY_OWNER_EMAIL");
+    // Props are evaluated in the deployed bundle too, where deploy env vars are absent.
+    // alchemy.run.ts rejects a missing value before any deploy, so the default is runtime-only.
+    const email = yield* Config.String("SCOTTY_OWNER_EMAIL").pipe(Config.withDefault(""));
     return {
       main: import.meta.url,
       compatibility: { date: "2026-09-01" },
