@@ -1,6 +1,8 @@
 import { Effect, Exit, Schema } from "effect";
 
-const ChatGptPath = Schema.String.check(Schema.isPattern(/^\/p\/chatgpt\/responses$/));
+const ChatGptPath = Schema.String.check(
+  Schema.isPattern(/^\/p\/chatgpt\/[a-z0-9-]{6,32}\/responses$/),
+);
 const decodePath = Schema.decodeUnknownExit(ChatGptPath);
 
 export class SwapFailure extends Schema.TaggedError<SwapFailure>()("SwapFailure", {

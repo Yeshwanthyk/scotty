@@ -50,13 +50,13 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   try: () => container.start({ enableInternet: true }),
                   catch: () => new Error("Container start failed"),
                 });
-              yield* installChatGptEgress(container, credentials, id());
+              yield* installChatGptEgress(container, storage.raw);
               const port = Cloudflare.fromCloudflareFetcher(container.getTcpPort(7000));
               yield* link.dial(port, action.gen, 0);
               return;
             }
             case "dial": {
-              yield* installChatGptEgress(container, credentials, id());
+              yield* installChatGptEgress(container, storage.raw);
               const port = Cloudflare.fromCloudflareFetcher(container.getTcpPort(7000));
               yield* link.dial(port, action.gen, action.after);
               return;
@@ -74,7 +74,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   kind: "codex",
                   model: "gpt-5.5",
                   effort: "medium",
-                  baseUrl: chatGptBaseUrl,
+                  baseUrl: chatGptBaseUrl(id()),
                   envKey: "SCOTTY_CHATGPT",
                   sentinel,
                 },
