@@ -32,7 +32,7 @@ src/
     object.ts         Session DO: append → fold → maybe send a command; one derived alarm
     view.ts           state → UI API shapes (sessions, conversation, changes)
   creds/
-    object.ts         Creds DO: ChatGPT sign-in and refresh, session access token, GitHub token
+    object.ts         Creds DO: ChatGPT sign-in, session access token, GitHub token; refresh deferred
     swap.ts           /p/github/* handler (planned, step 6)
 container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
@@ -136,21 +136,20 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
 ## Credentials
 
 - **One store.** The Creds DO holds the ChatGPT access token, refresh token, expiry and account ID, plus the GitHub token. Only the ChatGPT access token ever leaves it (below).
-  - It refreshes the ChatGPT token itself before expiry: a refresh intent, a call outside the state change, then the result.
-  - If a refresh result is unclear, it asks for a new sign-in rather than retrying.
+  - Today the owner runs `scotty signin` when `doctor` reports sign-in missing or expiring. Automatic refresh and sign-out are deferred until after the owner trial (step 4).
 - **Sign-in runs on the Worker** (spike 1a). The Creds DO runs Codex's device-code flow against `https://auth.openai.com` with client ID `app_EMoamEEZ73f0CkXaXp7hrann`:
   1. `POST /api/accounts/deviceauth/usercode` (JSON `client_id`) → `device_auth_id`, `user_code`, string `interval`. The user opens `/codex/device`.
   2. `POST /api/accounts/deviceauth/token` (JSON `device_auth_id`, `user_code`). Only 403 `deviceauth_authorization_pending` means pending; any other non-200 fails with its status and error code. A 200 returns `authorization_code`, `code_verifier`, `code_challenge`.
   3. `POST /oauth/token`, **form-encoded** (`grant_type=authorization_code`, `client_id`, `code`, `redirect_uri=https://auth.openai.com/deviceauth/callback`, `code_verifier`), sent once: the code may be consumed even if the reply is lost.
-  - The account ID is `["https://api.openai.com/auth"].chatgpt_account_id` in the ID token. Expiry is the access token's `exp` (refresh 5 minutes before it).
-- **Refresh:** `POST /oauth/token`, **JSON** `{grant_type: "refresh_token", client_id, refresh_token}`.
+  - The account ID is `["https://api.openai.com/auth"].chatgpt_account_id` in the ID token. Expiry is the access token's `exp`.
+- **Refresh (deferred, provisional step 4):** `POST /oauth/token`, **JSON** `{grant_type: "refresh_token", client_id, refresh_token}`. Reassess the schedule and lost-reply/network retry policy after the trial before implementation.
   - The refresh token rotates on every refresh, so the old one is dead once the call succeeds.
   - Only one refresh runs at a time.
   - The new tokens replace the old in one storage write.
   - A lost reply, or a 200 without both tokens, is unknown: sign-in is required, and the old token is never retried.
   - 401, 400 `invalid_grant` and `refresh_token_{expired,reused,invalidated}` are permanent; other failures are transient.
 - **OAuth errors** record the HTTP status and upstream `error`/`code`, never token fields.
-- **Sign-out** revokes at `https://auth.openai.com/oauth/revoke`.
+- **Sign-out (deferred, step 4)** would revoke at `https://auth.openai.com/oauth/revoke`.
 - **ChatGPT token in Codex's config** (spike 1e, `work/spikes/1e/RESULT.md`). chatgpt.com answers 403 to every request from a Worker or DO, but not to requests from the container. So the model call goes from the container directly:
   - At `start` the Session DO asks the Creds DO for `{token, accountId}` and sends them over the supervisor socket only; they never enter the event log. The Creds DO refuses a token with less than 24 hours left (the access token lives 10 days), and the session fails with `signin_required`.
   - `config.toml` (mode 0600) sets `base_url = "https://chatgpt.com/backend-api/codex"`, `experimental_bearer_token = <token>`, `http_headers = { "chatgpt-account-id" = … }`, `wire_api = "responses"`, `requires_openai_auth = false`, `supports_websockets = false`, zero retries, and `[features] plugins = false` (spike 1c). Codex runs with an explicit environment allowlist.
@@ -223,7 +222,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 ## Slices
 
 1. Stack plus the Session DO event log plus the supervisor, running a hard-coded prompt through Codex with the owner's ChatGPT sign-in (minimal, no refresh yet) → proof: e2e 1.
-2. ChatGPT refresh and sign-out in the Creds DO; the token reaches Codex through `config.toml` only (see "Credentials") → e2e 2.
+2. ChatGPT refresh and sign-out in the Creds DO (deferred until after the owner trial); the token reaches Codex through `config.toml` only (see "Credentials") → e2e 2.
 3. GitHub token, `/p/github`, WIP branch pause and resume → e2e 3 and 4.
 4. The rest of the UI contract: changes, settings, repos, and hiding the unused screens.
 5. Hatch previews, terminal, evidence.

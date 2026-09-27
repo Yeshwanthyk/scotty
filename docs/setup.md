@@ -112,7 +112,7 @@ npm run --silent scotty -- signin     # prints a URL and code; open it and enter
 npm run --silent scotty -- doctor     # now {"access":"ok","worker":"ok","chatgpt":"ok",...}
 ```
 
-The Creds DO keeps the tokens. Sign-in lasts about 10 days (until step 4 in the plan adds refresh); `doctor` reports `chatgptExpiresAt`. Don't sign in again while `doctor` says `ok`.
+The Creds DO keeps the tokens. Sign-in lasts about 10 days; `doctor` reports `chatgptExpiresAt`. Manual `signin` remains the owner-trial path; refresh and sign-out are deferred until after the trial. Don't sign in again while `doctor` says `ok`.
 
 ## 9. Run the checks
 
