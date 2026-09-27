@@ -5,7 +5,6 @@ import globalCss from "../global.css?url";
 import { colors } from "../theme/tokens.stylex";
 import scottyFavicon from "../assets/brand/scotty-favicon-32.png?url";
 import scottyMark from "../assets/brand/scotty-mark-128.png?url";
-import { SessionCatalogProvider } from "../data/session-catalog";
 
 const styles = stylex.create({
   body: {
@@ -42,9 +41,7 @@ function RootDocument() {
         <HeadContent />
       </head>
       <body {...stylex.props(styles.body)}>
-        <SessionCatalogProvider>
-          <Outlet />
-        </SessionCatalogProvider>
+        <Outlet />
         <Scripts />
       </body>
     </html>

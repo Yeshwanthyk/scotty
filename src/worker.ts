@@ -15,7 +15,11 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
     return {
       main: import.meta.url,
       compatibility: { date: "2026-09-01" },
-      assets: { directory: "./ui/dist" },
+      assets: {
+        directory: "./ui/dist",
+        notFoundHandling: "single-page-application",
+        runWorkerFirst: ["/api/*"],
+      },
       access: {
         policies: [{ decision: "allow" as const, include: [{ email: { email } }] }],
       },

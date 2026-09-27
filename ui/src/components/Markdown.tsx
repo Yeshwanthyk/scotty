@@ -3,7 +3,6 @@ import { Marked, type MarkedToken, type Token, type Tokens } from "marked";
 import { createElement, Fragment, type ReactNode, useMemo } from "react";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { colors, spacing } from "../theme/tokens.stylex";
-import { MarkdownImage, MarkdownImageContext, type MarkdownEvidence } from "./MarkdownImage";
 
 const markdown = new Marked({ breaks: false, gfm: true, pedantic: false });
 const SAFE_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
@@ -21,7 +20,6 @@ const KNOWN_TOKEN_TYPES = new Set([
   "heading",
   "hr",
   "html",
-  "image",
   "link",
   "list",
   "list_item",
@@ -216,15 +214,6 @@ const renderInline = (tokens: readonly Token[] | undefined): ReadonlyArray<React
         </a>
       );
     }
-    if (token.type === "image")
-      return (
-        <MarkdownImage
-          key={key}
-          href={token.href}
-          alt={token.text}
-          title={token.title ?? undefined}
-        />
-      );
     if (token.type === "html")
       return (
         <span key={key} {...stylex.props(styles.raw)}>
@@ -388,21 +377,11 @@ function renderBlocks(
   });
 }
 
-export function Markdown({
-  source,
-  sessionId,
-  evidence,
-}: {
-  readonly source: string;
-  readonly sessionId?: string;
-  readonly evidence?: MarkdownEvidence;
-}) {
+export function Markdown({ source }: { readonly source: string }) {
   const blocks = useMemo(() => renderBlocks(markdown.lexer(source)), [source]);
   return (
-    <MarkdownImageContext.Provider value={{ sessionId, evidence }}>
-      <div data-markdown {...stylex.props(styles.root)}>
-        {blocks}
-      </div>
-    </MarkdownImageContext.Provider>
+    <div data-markdown {...stylex.props(styles.root)}>
+      {blocks}
+    </div>
   );
 }

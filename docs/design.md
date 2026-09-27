@@ -5,7 +5,7 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 ## Scope of v1
 
 - **Single user.** Cloudflare Access for the owner's email is the only login. No pairing, devices, owner transfer or root token.
-- **Credentials live on the Worker.** ChatGPT sign-in is `scotty signin` today; the UI control comes in step 9. Nothing is copied from a local machine.
+- **Credentials live on the Worker.** ChatGPT sign-in is `scotty signin` today; the UI control comes in step 12. Nothing is copied from a local machine.
   - ChatGPT subscription, used by Codex.
   - A GitHub token, used by git.
 
@@ -13,14 +13,14 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 
 - **One agent: Codex** (`codex app-server` over stdio). The contracts are agent-neutral so Claude and pi can be added later as a new case, not a breaking change: the supervisor's `start` carries `agent: {kind: "codex", ...}`, agent output is `agent {n, kind, event}`, the supervisor runs Codex behind an agent-runner interface, and only `view.ts` interprets agent events, per `kind`.
 - **One runtime: a Cloudflare Container.** It runs the default image this repository ships, or an image the user supplies that meets the supervisor contract.
-- **The UI is reduced to the core flow in step 5.** Later steps add back only what the owner trial needs.
+- **The UI is reduced to the core flow in step 5.** Step 12 rebuilds the old style and improvements bottom-up; every feature ships its CLI command first.
 
 ## Layout
 
 ```
 alchemy.run.ts        the whole stack: Worker, Session DO + Container, Creds DO, R2, Access
 src/
-  worker.ts           Effect HttpRouter: /api/* and UI assets; /p/github is step 6, previews step 11
+  worker.ts           Effect HttpRouter: /api/* and UI assets; /p/github is step 7, Hatch previews step 8
   session/
     events.ts         event Schemas (the log format)
     fold.ts           pure fold(state, event); the only transition function
@@ -33,10 +33,10 @@ src/
     view.ts           state → UI API shapes (sessions, conversation, changes)
   creds/
     object.ts         Creds DO: ChatGPT sign-in, session access token, GitHub token; refresh deferred
-    swap.ts           /p/github/* handler (planned, step 6)
+    swap.ts           /p/github/* handler (planned, step 7)
 container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
-  supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; pause/resume
+  supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; per-turn save and resume
 cli/
   main.ts             Effect CLI: doctor, signin, new, ls, show, read, steer, interrupt, log (deploy later)
   client.ts           typed API client behind Access; shared with e2e/
@@ -64,36 +64,34 @@ State is `fold(events)`. Every handler does the same three things:
 
 A handler never awaits an outside party while changing state. An outside action is recorded as an intent event, and its result arrives as a later event. An unknown result leaves the intent pending until an outcome or a timeout event settles it; it is never reported as success.
 
-| Event                                                                  | Fields                                                                                                                                                          |
-| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `created`                                                              | `repo, baseBranch, branch, title, prompt, image, agentKind` (`branch` is the work branch `scotty/<session id>`, chosen at create time)                          |
-| `container.start` / `sup.hello`                                        | `gen` / `gen, n, version, boot` (`boot` identifies one supervisor process)                                                                                      |
-| `workspace.ready`                                                      | `gen, n, base, branch, commit`                                                                                                                                  |
-| `agent.ready`                                                          | `gen, n, agentKind, session` (the agent's session id)                                                                                                           |
-| `prompt.requested` / `prompt.delivered`                                | `req, turn, text, images` / `gen, n, req` (delivery settles a prompt or interrupt; client `req` cannot start with `initial:`)                                   |
-| `interrupt.requested`                                                  | `req, turn`                                                                                                                                                     |
-| `agent.event`                                                          | `gen, n, agentKind, event` (the raw agent notification; the fold does not interpret it)                                                                         |
-| `turn.ended`                                                           | `gen, n, turn, codexTurn, state` (`turn` is the DO turn; `codexTurn` is recorded, not matched)                                                                  |
-| `sup.error`                                                            | `gen, n, code, message, req?` (a pending `req` fails except on `timeout`; `stale` fails it too; req-less `exit` fails the session as `agent_exited`, retryable) |
-| `failed`                                                               | `phase, code, retryable`                                                                                                                                        |
-| `socket.closed` / `dial.failed`                                        | `gen`                                                                                                                                                           |
-| `sup.redial`                                                           | `gen` (on wake, start if no hello; otherwise dial)                                                                                                              |
-| `invariant.violated`                                                   | `code, detail`                                                                                                                                                  |
-| `timeout`                                                              | `op`: `container`, `workspace`, `dial`, `redial`, or `req:<req>`; lifecycle expiry fails with `<op>_timeout`, retryable                                         |
-| `pause.requested` / `wip.pushed` / `agent.saved` / `container.stopped` | `op` / `commit` / `r2Key, sha` / `gen` (later)                                                                                                                  |
-| `resume.requested` / `agent.restored`                                  | `op` / `threadId` (later)                                                                                                                                       |
-| `vaporize.requested` / `gone`                                          | `op` (later)                                                                                                                                                    |
+| Event                                          | Fields                                                                                                                                                          |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `created`                                      | `repo, baseBranch, branch, title, prompt, image, agentKind` (`branch` is the work branch `scotty/<session id>`, chosen at create time)                          |
+| `container.start` / `sup.hello`                | `gen` / `gen, n, version, boot` (`boot` identifies one supervisor process)                                                                                      |
+| `workspace.ready`                              | `gen, n, base, branch, commit`                                                                                                                                  |
+| `agent.ready`                                  | `gen, n, agentKind, session` (the agent's session id)                                                                                                           |
+| `prompt.requested` / `prompt.delivered`        | `req, turn, text, images` / `gen, n, req` (delivery settles a prompt or interrupt; client `req` cannot start with `initial:`)                                   |
+| `interrupt.requested`                          | `req, turn`                                                                                                                                                     |
+| `agent.event`                                  | `gen, n, agentKind, event` (the raw agent notification; the fold does not interpret it)                                                                         |
+| `turn.ended`                                   | `gen, n, turn, codexTurn, state` (`turn` is the DO turn; `codexTurn` is recorded, not matched)                                                                  |
+| `sup.error`                                    | `gen, n, code, message, req?` (a pending `req` fails except on `timeout`; `stale` fails it too; req-less `exit` fails the session as `agent_exited`, retryable) |
+| `failed`                                       | `phase, code, retryable`                                                                                                                                        |
+| `socket.closed` / `dial.failed`                | `gen`                                                                                                                                                           |
+| `sup.redial`                                   | `gen` (on wake, start if no hello; otherwise dial)                                                                                                              |
+| `invariant.violated`                           | `code, detail`                                                                                                                                                  |
+| `timeout`                                      | `op`: `container`, `workspace`, `dial`, `redial`, or `req:<req>`; lifecycle expiry fails with `<op>_timeout`, retryable                                         |
+| `save.requested` / `save.done` / `save.failed` | `turn` / `ref, rollout` / `code` (step 6: after every turn)                                                                                                     |
+| `container.stopped`                            | `gen` (step 6: any cause; folds to `stopped`)                                                                                                                   |
+| `resume.requested` / `agent.restored`          | `op` / `threadId` (step 6)                                                                                                                                      |
 
 Fold states, and the status the UI shows for each:
 
-| State                      | UI status              |
-| -------------------------- | ---------------------- |
-| `provisioning`, `resuming` | `booting`              |
-| `running`                  | `warm`                 |
-| `pausing`                  | `warm` (transitioning) |
-| `paused`                   | `sleeping`             |
-| `failed`                   | `failed`               |
-| `deleting`, `gone`         | `gone`                 |
+| State                      | UI status |
+| -------------------------- | --------- |
+| `provisioning`, `resuming` | `booting` |
+| `running`                  | `warm`    |
+| `stopped`                  | `stopped` |
+| `failed`                   | `failed`  |
 
 Invariants are checked on every append. A violation appends an `invariant.violated` event and alerts; it does not throw. `scotty log <id>` shows the timeline. `scotty replay <id>` downloads the events and runs the same fold locally, stopping at the first bad event.
 
@@ -115,21 +113,19 @@ Duplicate requests (the same `req`) do nothing. A prompt whose `turn` no longer 
 
 The fold, its invariants, and saved-log replays are the only unit-tested session behavior. Supervisor transport, request deduplication, frame limits, workspace cloning and Codex integration are proved against a deployment, not mocked.
 
-## Pause and resume
+## Stop and resume (step 6)
 
-There are no disk snapshots.
+There are no disk snapshots and no vaporize. A session is `running` or `stopped`.
 
-- **Pause:**
-  1. The supervisor stops Codex cleanly.
-  2. It commits everything and pushes `scotty/<id>/wip`.
-  3. It uploads `$CODEX_HOME/sessions/**/rollout-*.jsonl` and the thread ID to R2 through the Worker.
-  4. The DO appends the results and stops the container.
-- **Resume:**
+- **Save after every turn.** When a turn ends, the supervisor commits the workspace to the hidden ref `refs/scotty/<id>` and pushes it (private repositories, step 7), and uploads `$CODEX_HOME/sessions/**/rollout-*.jsonl` and the thread ID to R2 at `rollouts/<id>.jsonl` through the Worker, overwriting the previous save. One R2 object per session.
+- **Stopped** is one event whatever the cause: `scotty stop`, idle, crash, redeploy. Work since the last finished turn is lost.
+- **Resume** (`scotty resume`, or a steer to a stopped session):
   1. Start a new container.
-  2. Clone the repository and check out the WIP branch.
+  2. Clone the repository and fetch `refs/scotty/<id>` if it exists.
   3. Restore the rollout file.
   4. Reinstall dependencies.
   5. Resume Codex with `thread/resume <threadId>`.
+- `scotty push <id>` (step 7) publishes the hidden ref as a visible branch.
 
 Old reference for the Codex state files: `worker/src/agent/codex/persistence-format.ts` and `worker/src/agent/codex/session.ts:996-1044` at `3042018`.
 
@@ -163,6 +159,8 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
 
 The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{message,code?,hint?}}`.
 
+The conversation snapshot includes top-level `currentTurn`, the authoritative turn identity for steer and interrupt writes. `turns[].id` remains the stable message identity.
+
 ### Served now
 
 | Endpoint                                                                     | Source                                            |
@@ -174,11 +172,13 @@ The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{me
 
 ### Planned
 
-| Step | Endpoints and routing                                                                |
-| ---- | ------------------------------------------------------------------------------------ |
-| 8    | `DELETE /api/sessions/:id`, `POST /api/sessions/:id/{sleep,resume,checkpoint}`       |
-| 9    | `GET /api/sessions/:id/changes[/patch]`, `GET /api/settings`, `GET /api/repos`       |
-| 11   | `/hatch`, preview routing, `/evidence`, the terminal WebSocket, and `/api/resources` |
+| Step  | Endpoints and routing                                                        |
+| ----- | ---------------------------------------------------------------------------- |
+| 6     | `POST /api/sessions/:id/{stop,resume}`                                       |
+| 7     | `POST /api/credentials/github`, `POST /api/sessions/:id/push`, `/p/github/*` |
+| 8     | Hatch preview routing                                                        |
+| 9     | Captured images and video in the conversation, and their download            |
+| Later | `changes[/patch]`, `settings`, `repos`, the terminal WebSocket               |
 
 ## CLI
 
@@ -215,17 +215,12 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - **End to end,** against a real deployment:
   1. `deploy` → create → Codex answers → `steer` → `interrupt`.
   2. The real token never appears in the container (scan env, files and process arguments).
-  3. `sleep` → `resume`: a marker file on the WIP branch survives, and the Codex thread continues.
-  4. `vaporize` leaves no container, R2 objects or branch, and running it twice is safe.
-  5. Killing the container mid-turn, or during a pause, ends in a correct state.
+  3. `stop` → `resume`: the Codex thread continues, and (step 7) a marker file on `refs/scotty/<id>` survives.
+  4. Killing the container mid-turn ends `stopped` and resumes from the last finished turn.
 
 ## Slices
 
-1. Stack plus the Session DO event log plus the supervisor, running a hard-coded prompt through Codex with the owner's ChatGPT sign-in (minimal, no refresh yet) → proof: e2e 1.
-2. ChatGPT refresh and sign-out in the Creds DO (deferred until after the owner trial); the token reaches Codex through `config.toml` only (see "Credentials") → e2e 2.
-3. GitHub token, `/p/github`, WIP branch pause and resume → e2e 3 and 4.
-4. The rest of the UI contract: changes, settings, repos, and hiding the unused screens.
-5. Hatch previews, terminal, evidence.
+The order of work is in `plan.md` ("Order of work"): stop and resume, private repositories and push, Hatch, images and video in chat, Claude, Pi, then the UI. ChatGPT refresh, `scotty deploy` and cutover are deferred.
 
 ## Open questions to settle early
 

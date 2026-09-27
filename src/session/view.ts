@@ -17,17 +17,11 @@ export function sessionView(id: string, state: State) {
   const branch = created?.branch ?? "main";
   const base = {
     identity: { id },
-    runtime: {
-      provider: "cloudflare" as const,
-      readiness: state.phase === "running" ? ("unchecked" as const) : ("not-applicable" as const),
-    },
     display: {
       title,
       repository: created?.repo ?? "",
       branch,
-      defaultBranch: created?.baseBranch ?? null,
     },
-    times: { capRemainingSeconds: 0 },
   };
   if (state.phase === "provisioning") {
     return {
@@ -39,14 +33,6 @@ export function sessionView(id: string, state: State) {
         mode: "executing" as const,
         startedAt: new Date(created?.at ?? 0).toISOString(),
       },
-      capabilities: {
-        create: false,
-        checkpoint: false,
-        sleep: false,
-        resume: false,
-        work: false,
-        vaporize: false,
-      },
     };
   }
   const warm = state.phase === "running";
@@ -56,14 +42,6 @@ export function sessionView(id: string, state: State) {
       kind: "stable" as const,
       lifecycle: warm ? ("warm" as const) : ("failed" as const),
       failure: warm ? null : { code: "session_failed", recovery: "create" as const },
-    },
-    capabilities: {
-      create: !warm,
-      checkpoint: false,
-      sleep: false,
-      resume: false,
-      work: warm,
-      vaporize: false,
     },
   };
 }
@@ -92,7 +70,7 @@ function codexText(event: unknown): { text: string; complete: boolean } | undefi
   return typeof text === "string" ? { text, complete: method === "item/completed" } : undefined;
 }
 
-export function conversationView(id: string, state: State, events: readonly SessionEvent[]) {
+export function conversationView(state: State, events: readonly SessionEvent[]) {
   const answers = new Map<string, string>();
   let replay: State = initial;
   for (const event of events) {
@@ -109,12 +87,7 @@ export function conversationView(id: string, state: State, events: readonly Sess
   }
   return {
     version: 1 as const,
-    transport: {
-      epoch: id,
-      baseSequence: 0,
-      sequence: state.lastN,
-      sessionRevision: state.lastSeq,
-    },
+    currentTurn: state.currentTurn,
     turns: state.requests
       .filter((request) => request.kind === "prompt")
       .map((request) => ({
@@ -122,9 +95,6 @@ export function conversationView(id: string, state: State, events: readonly Sess
         state: turnState(state.turns.find((turn) => turn.turn === request.turn)?.state),
         user: request.text,
         assistant: answers.get(request.turn) ?? "",
-        tools: [],
       })),
-    queue: { steer: [], followUp: [] },
-    truncated: { turns: false, values: false },
   };
 }

@@ -23,7 +23,7 @@ export default defineConfig({
     tanstackStart({
       spa: {
         enabled: true,
-        prerender: { outputPath: "/_shell.html" },
+        prerender: { outputPath: "/index.html" },
       },
     }),
     viteReact(),

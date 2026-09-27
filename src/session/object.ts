@@ -196,7 +196,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             };
           }),
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
-        conversation: () => Effect.sync(() => conversationView(id(), log.state, log.history)),
+        conversation: () => Effect.sync(() => conversationView(log.state, log.history)),
         log: () => Effect.sync(() => log.history),
         alarm: () =>
           Effect.gen(function* () {

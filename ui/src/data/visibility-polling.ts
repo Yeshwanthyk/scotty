@@ -1,18 +1,10 @@
-export interface VisibilitySource {
+interface VisibilitySource {
   visibilityState: DocumentVisibilityState;
   addEventListener(type: "visibilitychange", listener: () => void): void;
   removeEventListener(type: "visibilitychange", listener: () => void): void;
 }
 
-export type VisibilityPoll = (signal: AbortSignal) => Promise<number | undefined>;
-
-export function publishUnlessAborted<T>(
-  signal: AbortSignal,
-  value: T,
-  publish: (value: T) => void,
-): void {
-  if (!signal.aborted) publish(value);
-}
+type VisibilityPoll = (signal: AbortSignal) => Promise<number | undefined>;
 
 export function startVisibilityPolling(
   visibility: VisibilitySource,
