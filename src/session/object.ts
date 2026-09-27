@@ -1,7 +1,7 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
-import { Config, Effect } from "effect";
+import { Config, Effect, Semaphore } from "effect";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
 import type { Command } from "./commands.js";
@@ -64,7 +64,15 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         );
 
       let link: SupervisorLink;
+      // Container work runs after the caller returns, one operation at a time, so a resume
+      // waits for the stop's destroy. Its outcome arrives as a later event.
+      const lifecycle = yield* Semaphore.make(1);
+      const outside = new Set<Command["kind"]>(["container.start", "dial", "start", "destroy"]);
       const dispatch = (action: Command | undefined): Effect.Effect<void, never, RuntimeContext> =>
+        action !== undefined && outside.has(action.kind)
+          ? storage.waitUntil(lifecycle.withPermit(perform(action)))
+          : perform(action);
+      const perform = (action: Command | undefined): Effect.Effect<void, never, RuntimeContext> =>
         Effect.gen(function* () {
           if (!action) return;
           switch (action.kind) {

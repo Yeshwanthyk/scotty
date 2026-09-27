@@ -229,6 +229,15 @@ describe("session fold", () => {
     }
   });
 
+  it("fails at once when the supervisor reports a failed start", () => {
+    const started = fold(fold(fold(initial, created), start), hello);
+    const failed = fold(started, make(4, "sup.error", { code: "workspace" }));
+    expect(failed.phase).toBe("failed");
+    expect(failed.failure).toEqual({ code: "workspace", retryable: true });
+    expect(deadline(failed)).toBeUndefined();
+    check(failed);
+  });
+
   it("stops, not fails, when the dial deadline passes", () => {
     const closed = fold(boot(), make(6, "socket.closed", { gen: 1 }));
     const due = closed.pending.find((p) => p.op === "dial")?.due;

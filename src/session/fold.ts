@@ -196,6 +196,17 @@ export function fold(state: State, event: SessionEvent): State {
           { ...advance(next, event.n), lastAckN: state.lastAckN, lastAckSeq: state.lastAckSeq },
           "stopped",
         );
+      // The supervisor reports a failed start once; waiting out the workspace deadline adds nothing.
+      if (event.req === undefined && !state.ready)
+        return endAll(
+          {
+            ...advance(next, event.n),
+            lastAckN: state.lastAckN,
+            lastAckSeq: state.lastAckSeq,
+            failure: { code: event.code, retryable: true },
+          },
+          "failed",
+        );
       if (
         event.req === undefined ||
         event.code === "timeout" ||

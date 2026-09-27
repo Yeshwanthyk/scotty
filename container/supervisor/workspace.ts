@@ -42,7 +42,15 @@ const exec = (args: string[], cwd: string) =>
       }),
     );
   });
-const run = (args: string[], cwd: string) => exec(args, cwd).pipe(Effect.mapError(() => failure()));
+// The container holds no GitHub token, so git's last stderr line is safe to report.
+const described = (error: unknown) => {
+  const line =
+    error instanceof CommandFailed ? error.stderr.trim().split("\n").at(-1)?.trim() : undefined;
+  return line
+    ? new WorkspaceError({ message: `workspace command failed: ${line.slice(0, 300)}` })
+    : failure();
+};
+const run = (args: string[], cwd: string) => exec(args, cwd).pipe(Effect.mapError(described));
 
 // GitHub throttles Cloudflare's shared egress for minutes at a time (429, Retry-After 300).
 // The Worker passes the 429 through; waiting it out here turns a failed start into a slow one.
@@ -54,7 +62,7 @@ const fromGitHub = (args: string[], cwd: string) =>
     Effect.mapError((error) =>
       rateLimited(error)
         ? new WorkspaceError({ message: "GitHub is rate limiting this network; try again later" })
-        : failure(),
+        : described(error),
     ),
   );
 
