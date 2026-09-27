@@ -2,7 +2,8 @@ import type { State } from "./state.js";
 
 export const deadlines = {
   container: 120_000,
-  workspace: 120_000,
+  // Covers the supervisor waiting out a GitHub rate limit on the clone.
+  workspace: 360_000,
   dial: 30_000,
   redial: 2_000,
   prompt: 30_000,

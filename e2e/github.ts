@@ -106,13 +106,16 @@ const program = Effect.gen(function* () {
   );
   console.log("Refused: push to scotty-e2e-forbidden failed and no branch exists");
 
-  // 3. No GitHub token anywhere the agent can look.
+  // 3. No GitHub token anywhere the agent can look. Codex refuses to print env or config
+  // verbatim, so the command reports only match counts. /usr is image content, and the Codex
+  // binary there holds its own secret-detection patterns.
   const scan = yield* answer(
     "2",
-    `Run exactly: \`env; git config --list --show-origin; echo TOKEN_FILES=$(grep -rlE '${tokenPattern}' / --exclude-dir=proc --exclude-dir=sys 2>/dev/null | wc -l)\` and reply with its full output.`,
+    `Run exactly: \`p='${tokenPattern}'; echo REWRITE=$(git config --global --get-regexp '^url\\..*github\\.internal' | wc -l); echo ENV=$(env | grep -cE "$p"); echo CONFIG=$(git config --list | grep -cE "$p"); echo ARGS=$(cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -cE "$p"); echo FILES=$(grep -rlE "$p" / --exclude-dir=proc --exclude-dir=sys --exclude-dir=usr 2>/dev/null | wc -l)\` and reply with its output only.`,
   );
-  yield* check(scan.includes("github.internal"), "The reply lacks the git config output");
-  yield* check(/TOKEN_FILES=0\b/.test(scan), "A file in the container holds a GitHub token");
+  yield* check(/REWRITE=1\b/.test(scan), "The reply lacks the github.internal rewrite");
+  for (const place of ["ENV", "CONFIG", "ARGS", "FILES"])
+    yield* check(new RegExp(`${place}=0\\b`).test(scan), `GitHub token pattern found in ${place}`);
   yield* check(!new RegExp(tokenPattern).test(scan), "The reply holds a GitHub token");
   console.log("Clean: no GitHub token in env, git config or files");
 

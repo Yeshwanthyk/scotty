@@ -1,4 +1,4 @@
-import { Effect, FileSystem, Schema, Stream } from "effect";
+import { Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { codexHome } from "./codex-config.js";
 import { processEnv } from "./runtime.js";
@@ -7,7 +7,10 @@ export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()("Worksp
   message: Schema.String,
 }) {}
 const failure = () => new WorkspaceError({ message: "workspace command failed" });
-const run = (args: string[], cwd: string) =>
+class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandFailed", {
+  stderr: Schema.String,
+}) {}
+const exec = (args: string[], cwd: string) =>
   Effect.gen(function* () {
     const [command, ...parameters] = args;
     if (command === undefined) return yield* failure();
@@ -26,14 +29,34 @@ const run = (args: string[], cwd: string) =>
             },
           }),
         );
-        yield* child.stderr.pipe(Stream.runDrain, Effect.forkScoped);
+        const stderr = yield* child.stderr.pipe(
+          Stream.decodeText(),
+          Stream.mkString,
+          Effect.forkScoped,
+        );
         const output = yield* child.stdout.pipe(Stream.decodeText(), Stream.runCollect);
         const code = yield* child.exitCode;
-        if (code !== ChildProcessSpawner.ExitCode(0)) return yield* failure();
+        if (code !== ChildProcessSpawner.ExitCode(0))
+          return yield* new CommandFailed({ stderr: (yield* Fiber.join(stderr)).slice(-2000) });
         return output.join("").trim();
       }),
-    ).pipe(Effect.mapError(() => failure()));
+    );
   });
+const run = (args: string[], cwd: string) => exec(args, cwd).pipe(Effect.mapError(() => failure()));
+
+// GitHub throttles Cloudflare's shared egress for minutes at a time (429, Retry-After 300).
+// The Worker passes the 429 through; waiting it out here turns a failed start into a slow one.
+const rateLimited = (error: unknown) =>
+  error instanceof CommandFailed && error.stderr.includes("error: 429");
+const fromGitHub = (args: string[], cwd: string) =>
+  exec(args, cwd).pipe(
+    Effect.retry({ while: rateLimited, schedule: Schedule.spaced("20 seconds"), times: 15 }),
+    Effect.mapError((error) =>
+      rateLimited(error)
+        ? new WorkspaceError({ message: "GitHub is rate limiting this network; try again later" })
+        : failure(),
+    ),
+  );
 
 const workspaceRoot = () => processEnv("SCOTTY_WORKSPACE_ROOT") || "/workspace";
 const saveFile = () => `${workspaceRoot()}/save.tar`;
@@ -98,13 +121,13 @@ export const prepareWorkspace = (
     };
     for (const [key, value] of Object.entries(config))
       yield* run(["git", "config", "--global", key, value], root);
-    yield* run(
+    yield* fromGitHub(
       ["git", "clone", "--depth", "1", "--branch", base, `https://github.com/${repo}`, dir],
       root,
     );
     if (resume === undefined) yield* run(["git", "checkout", "-b", branch], dir);
     else {
-      yield* run(["git", "fetch", "--depth", "1", "origin", resume.commit], dir);
+      yield* fromGitHub(["git", "fetch", "--depth", "1", "origin", resume.commit], dir);
       yield* run(["git", "checkout", "-b", branch, resume.commit], dir);
       yield* run(["sh", "-c", restoreScript, "restore", restoreFile(), codexHome()], dir);
     }
