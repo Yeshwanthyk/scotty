@@ -229,6 +229,8 @@ The owner trial gate is gone; the owner set this order instead: sessions that st
 
 **CLI first.** Every feature ships its `scotty` command and its e2e before any UI. The UI (step 12) is built on commands that already work, so the owner and agents control everything from the CLI.
 
+**UI: just enough until step 12.** Before step 12, touch `ui/` only to keep the step 5 flow working (list, create, conversation, steer, interrupt) when an API change would break it, and to add a bare control only where a step needs one to prove itself. No styling, layout or new screens; the redesign waits for step 12, once everything else works.
+
 Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope, Touch, Budget, Done when) before it starts.
 
 ## Step 6: sessions that stop and resume
