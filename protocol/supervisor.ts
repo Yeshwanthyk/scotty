@@ -12,14 +12,22 @@ const identifier = Schema.String.check(Schema.isMaxLength(256));
 const tomlString = Schema.String.check(
   Schema.isPattern(/^(?:[^\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])*$/),
 );
+const credentialString = tomlString.check(
+  Schema.makeFilter((value: string) =>
+    Array.from(value).every((character) => {
+      const point = character.codePointAt(0);
+      return point !== undefined && point > 31 && (point < 127 || point > 159);
+    }),
+  ),
+);
 const environmentKey = Schema.String.check(Schema.isPattern(/^SCOTTY_[A-Z0-9_]{1,64}$/));
 const CodexAgent = Schema.Struct({
   kind: Schema.Literal("codex"),
   model: tomlString,
   effort: tomlString,
-  baseUrl: Schema.String,
+  baseUrl: credentialString,
   envKey: environmentKey,
-  sentinel: Schema.String,
+  sentinel: credentialString,
 });
 export const AgentConfig = Schema.Union([CodexAgent]);
 // n remains in the DO envelope for callers that number their sends; it is never
@@ -38,7 +46,7 @@ export const ToSupervisor = Schema.Union([
     ...envelope,
     type: Schema.Literal("prompt"),
     req: identifier,
-    turn: Schema.String,
+    turn: identifier,
     text: Schema.String,
   }),
   Schema.Struct({ ...envelope, type: Schema.Literal("interrupt"), req: identifier }),

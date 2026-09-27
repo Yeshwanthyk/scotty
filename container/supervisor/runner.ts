@@ -28,5 +28,4 @@ export interface Runner {
   >;
   send(req: string, turn: string, text: string): Effect.Effect<Delivered, AgentError>;
   interrupt(req: string): Effect.Effect<void, AgentError>;
-  stop(): Effect.Effect<void, AgentError>;
 }

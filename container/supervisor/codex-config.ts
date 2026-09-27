@@ -5,7 +5,7 @@ import { AgentError } from "./runner.js";
 import { processEnv } from "./runtime.js";
 
 // JSON basic-string escapes also satisfy TOML except for DEL (U+007F).
-// The agent schema rejects lone surrogates before this boundary.
+// The agent schema rejects lone surrogates in every string written to this config.
 export const toml = (value: string) => JSON.stringify(value).replace(/\u007f/g, "\\u007f");
 // Match the literal authority too: URL normalizes an explicit :80 away.
 export const allowedProviderUrl = (raw: string, url: URL): boolean =>

@@ -9,7 +9,6 @@ export class CodexRpc {
   private nextId = 1;
   private readonly pending = new Map<number, Deferred.Deferred<unknown, AgentError>>();
   private readonly outgoing: Queue.Queue<Outgoing>;
-  private readonly replies = new Set<Deferred.Deferred<void, AgentError>>();
   private readonly writes = new Set<Deferred.Deferred<void, AgentError>>();
   private failed = false;
   private readonly eventsQueue: Queue.Queue<AgentOutput>;
@@ -94,16 +93,7 @@ export class CodexRpc {
           event: raw,
         });
         if (message.id !== undefined) {
-          const reply = yield* Deferred.make<void, AgentError>();
-          this.replies.add(reply);
           yield* this.write(`${serverReply(message.method, message.id)}\n`).pipe(
-            Effect.tap(() => Deferred.succeed(reply, undefined)),
-            Effect.tapError((error) => Deferred.fail(reply, error)),
-            Effect.ensuring(
-              Effect.sync(() => {
-                this.replies.delete(reply);
-              }),
-            ),
             Effect.uninterruptible,
           );
           return;
@@ -148,11 +138,6 @@ export class CodexRpc {
           }),
         ),
       );
-    });
-  }
-  drainReplies(): Effect.Effect<void, AgentError> {
-    return Effect.gen({ self: this }, function* () {
-      for (const reply of this.replies) yield* Deferred.await(reply);
     });
   }
   notify(method: string): Effect.Effect<void, AgentError> {

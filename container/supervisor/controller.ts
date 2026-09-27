@@ -1,5 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
-import { Effect, Exit, Scope, Semaphore, Stream } from "effect";
+import { Effect, Exit, Scope, Stream } from "effect";
+import { Actions } from "./actions.js";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
 import { makeRunner } from "./agent.js";
 import { Requests } from "./requests.js";
@@ -22,9 +23,9 @@ export class Controller {
   private gen: number | undefined;
   private startState: StartState | undefined;
   private runner: Runner | undefined;
+  private actions: Actions | undefined;
   private scope: Scope.Closeable | undefined;
   private readonly requests = new Requests();
-  private readonly agentPermit = Semaphore.makeUnsafe(1);
   bind(send: Sender): void {
     this.send = send;
   }
@@ -59,6 +60,9 @@ export class Controller {
         this.scope = scope;
         const runner = yield* makeRunner(message.agent, workspace.dir);
         this.runner = runner;
+        const actions = yield* Actions.make();
+        this.actions = actions;
+        yield* actions.drain.pipe(Effect.forkScoped, Scope.provide(scope));
         yield* runner.events.pipe(
           Stream.runForEach((event) => Effect.sync(() => this.send(event, message.gen))),
           Effect.forkScoped,
@@ -90,6 +94,7 @@ export class Controller {
         this.send({ type: "error", ...mapped }, message.gen);
         if (this.scope !== undefined) yield* Scope.close(this.scope, Exit.void);
         this.runner = undefined;
+        this.actions = undefined;
         this.scope = undefined;
         return;
       }
@@ -115,7 +120,7 @@ export class Controller {
     action: Effect.Effect<void, AgentError>,
     gen: number,
   ): Effect.Effect<void> {
-    return this.requests.run(req, this.agentPermit.withPermit(action)).pipe(
+    return this.requests.run(req, action).pipe(
       Effect.matchEffect({
         onFailure: (error) =>
           Effect.sync(() =>
@@ -129,16 +134,16 @@ export class Controller {
     if (message.type === "start") return this.start(message);
     if (message.type === "ack") return Effect.void;
     const req = message.req;
-    if (this.runner === undefined || this.gen !== message.gen) {
+    if (this.runner === undefined || this.actions === undefined || this.gen !== message.gen) {
       const code = "not_ready";
       return Effect.sync(() => this.send({ type: "error", req, code, message: code }, message.gen));
     }
     return message.type === "prompt"
       ? this.request(
           req,
-          this.runner.send(req, message.turn, message.text).pipe(Effect.asVoid),
+          this.actions.run(this.runner.send(req, message.turn, message.text).pipe(Effect.asVoid)),
           message.gen,
         )
-      : this.request(req, this.runner.interrupt(req), message.gen);
+      : this.request(req, this.actions.run(this.runner.interrupt(req)), message.gen);
   }
 }

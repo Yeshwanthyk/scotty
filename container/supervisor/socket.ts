@@ -133,7 +133,7 @@ export const serve = (receive: (message: ToSupervisorMessage) => Effect.Effect<v
             wire = acknowledge(wire, parsed.value.ack);
             return;
           }
-          // Actions run in child fibers: a stuck clone/turn cannot block an ack or interrupt.
+          // Acks and dials bypass slow actions; runner actions use their own FIFO queue.
           yield* receive(parsed.value).pipe(
             Effect.catchCause(() =>
               Effect.sync(() =>

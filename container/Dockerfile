@@ -2,7 +2,7 @@ FROM oven/bun:1.3.13 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY ui/package.json ./ui/package.json
-RUN bun install --no-save --ignore-scripts
+RUN bun install --frozen-lockfile --no-save --ignore-scripts
 COPY container/supervisor ./container/supervisor
 COPY protocol/supervisor.ts ./protocol/supervisor.ts
 RUN bun build --compile container/supervisor/main.ts --outfile /out/scotty-sup

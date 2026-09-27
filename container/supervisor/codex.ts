@@ -170,7 +170,4 @@ export class CodexRunner implements Runner {
       });
     });
   }
-  stop(): Effect.Effect<void, AgentError> {
-    return this.rpc?.drainReplies() ?? Effect.void;
-  }
 }
