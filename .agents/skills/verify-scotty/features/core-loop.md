@@ -44,6 +44,9 @@ nothing else." --key $RANDOM-$$ > $EVIDENCE/01-new.json`: exit 0, an `id` (C1).
    stable across reads, and the latest `turn` stays the same regardless of filtering. Bounds
    `0`, `501`, `1.5`, and role `tool` must exit 2. Root help must list `read` and omit `watch`;
    invoking `watch <id>` must exit 2. Record these commands and results too.
+7. `npm run --silent scotty -- new octocat/Hello-World --base main` must exit 2;
+   `npm run --silent scotty -- new --help` must exit 0 and omit `--base`. Record both
+   outputs and exit codes.
 
 ## Proof
 

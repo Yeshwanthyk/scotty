@@ -27,7 +27,6 @@
     "effect": "4.0.0-rc.117"
   },
   "devDependencies": {
-    "@effect/platform-node": "4.0.0-rc.117",
     "@effect/vitest": "4.0.0-rc.117",
     "oxfmt": "0.70.0",
     "oxlint": "1.85.0",

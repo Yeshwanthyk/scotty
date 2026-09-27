@@ -191,5 +191,3 @@ export const copyLayer = Cloudflare.CloudflareApiLive().pipe(
   Layer.provideMerge(FetchHttpClient.layer),
   Layer.provideMerge(Layer.succeed(AuthProviders, {})),
 );
-export const copy = (input: { source: string; account: string; repository: string }) =>
-  Effect.runPromise(copyImage(input).pipe(Effect.provide(copyLayer)));

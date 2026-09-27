@@ -19,7 +19,6 @@ const Create = Schema.Struct({
   repo: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
   prompt: Prompt,
   provider: Schema.Literal("cloudflare"),
-  hardCapSeconds: Schema.optional(Schema.Number),
 });
 const Steer = Schema.Struct({
   text: Prompt,

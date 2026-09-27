@@ -1,6 +1,6 @@
 import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
-import { Conversation, Created, List, Log, View, failure } from "../client.js";
+import { Conversation, Created, List, Log, View } from "../client.js";
 import { output, sessionPath, url, usage, withClient } from "./common.js";
 
 const id = Argument.String("id");
@@ -21,20 +21,12 @@ export const create = Command.make(
   {
     url,
     repository,
-    base: Flag.String("base").pipe(Flag.optional),
     prompt: Flag.String("prompt").pipe(Flag.optional),
     key: Flag.String("key").pipe(Flag.optional),
   },
-  ({ url: target, repository: input, base, prompt, key }) =>
+  ({ url: target, repository: input, prompt, key }) =>
     Effect.gen(function* () {
       const repo = repoName(input);
-      if (Option.isSome(base))
-        return yield* failure(
-          "unsupported",
-          "--base is not supported by this Worker yet",
-          `scotty new ${repo} --prompt 'Inspect this repository'`,
-          2,
-        );
       const api = yield* withClient(target);
       const body = {
         repo,

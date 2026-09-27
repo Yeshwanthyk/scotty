@@ -14,7 +14,7 @@ const help: Record<string, string> = {
     "Usage: scotty doctor [--url https://host]\nCheck Access and Worker connectivity.\nExample: scotty doctor",
   signin:
     "Usage: scotty signin [--url https://host]\nSign in to ChatGPT with a device code.\nExample: scotty signin",
-  new: "Usage: scotty new <owner/repo|https://github.com/owner/repo> [--base branch] [--prompt text] [--key key] [--url https://host]\nCreate a session; --key makes retries idempotent.\nExample: scotty new octocat/Hello-World --prompt 'Describe the code'",
+  new: "Usage: scotty new <owner/repo|https://github.com/owner/repo> [--prompt text] [--key key] [--url https://host]\nCreate a session; --key makes retries idempotent.\nExample: scotty new octocat/Hello-World --prompt 'Describe the code'",
   ls: "Usage: scotty ls [--url https://host]\nList sessions.\nExample: scotty ls",
   show: "Usage: scotty show <id> [--url https://host]\nShow a session.\nExample: scotty show abcdef",
   steer:

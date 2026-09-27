@@ -5,7 +5,7 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 ## Scope of v1
 
 - **Single user.** Cloudflare Access for the owner's email is the only login. No pairing, devices, owner transfer or root token.
-- **Credentials live on the Worker.** You sign in from the web UI; nothing is copied from a local machine.
+- **Credentials live on the Worker.** ChatGPT sign-in is `scotty signin` today; the UI control comes in step 9. Nothing is copied from a local machine.
   - ChatGPT subscription, used by Codex.
   - A GitHub token, used by git.
 
@@ -13,14 +13,14 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 
 - **One agent: Codex** (`codex app-server` over stdio). The contracts are agent-neutral so Claude and pi can be added later as a new case, not a breaking change: the supervisor's `start` carries `agent: {kind: "codex", ...}`, agent output is `agent {n, kind, event}`, the supervisor runs Codex behind an agent-runner interface, and only `view.ts` interprets agent events, per `kind`.
 - **One runtime: a Cloudflare Container.** It runs the default image this repository ships, or an image the user supplies that meets the supervisor contract.
-- **The UI stays as it is.** It talks to the API contract below.
+- **The UI is reduced to the core flow in step 5.** Later steps add back only what the owner trial needs.
 
 ## Layout
 
 ```
-alchemy.run.ts        the whole stack: Worker, Session DO + Container, Creds DO, R2, Access, preview route
+alchemy.run.ts        the whole stack: Worker, Session DO + Container, Creds DO, R2, Access
 src/
-  worker.ts           Effect HttpRouter: /api/*, /p/github credential swap, preview host routing, UI assets
+  worker.ts           Effect HttpRouter: /api/* and UI assets; /p/github is step 6, previews step 11
   session/
     events.ts         event Schemas (the log format)
     fold.ts           pure fold(state, event); the only transition function
@@ -33,7 +33,7 @@ src/
     view.ts           state → UI API shapes (sessions, conversation, changes)
   creds/
     object.ts         Creds DO: ChatGPT sign-in and refresh, session access token, GitHub token
-    swap.ts           /p/github/* handler
+    swap.ts           /p/github/* handler (planned, step 6)
 container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
   supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; pause/resume
@@ -41,7 +41,7 @@ cli/
   main.ts             Effect CLI: doctor, signin, new, ls, show, read, steer, interrupt, log (deploy later)
   client.ts           typed API client behind Access; shared with e2e/
 protocol/
-  supervisor.ts       wire schema shared by the Session DO and the supervisor
+  supervisor.ts       the only protocol file; wire schema shared by the Session DO and supervisor
 ui/                   the web app (kept; its old API schemas are in ui/src/protocol/ until it is rewired)
 e2e/                  tests against a real deployment
 ```
@@ -162,19 +162,24 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
 
 ## API the UI needs
 
-The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{message,code?,hint?}}`. The full field-level contract is in the old UI's readers (`ui/src/data/*.ts`) and `ui/src/protocol/`.
+The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{message,code?,hint?}}`.
 
-| Endpoint                                                                  | Source                                                                                    |
-| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `GET /api/sessions`, `GET/DELETE /api/sessions/:id`, `POST /api/sessions` | Session index (one small table in the Creds DO or a Sessions DO) + each Session DO's view |
-| `POST /api/sessions/:id/{sleep,resume,checkpoint}`                        | Pause, resume, WIP push                                                                   |
-| `GET /api/sessions/:id/conversation`                                      | Turns folded from `agent.event` (the UI polls every 750 ms to 2.5 s)                      |
-| `POST /api/sessions/:id/{steer,interrupt}`                                | `prompt.requested` / `interrupt.requested`                                                |
-| `GET /api/sessions/:id/changes[/patch]`                                   | A supervisor command that runs `git diff`                                                 |
-| `GET /api/settings`, `/api/repos`                                         | A settings row in the Creds DO                                                            |
-| `GET /api/credentials` + sign-in                                          | The Creds DO (the UI change for ChatGPT sign-in comes in slice 2)                         |
+### Served now
 
-Later: `/hatch` and preview routing (`<port>-<id>-<nonce>.<previewBase>` → Session DO → `getTcpPort(port)`), `/evidence`, the terminal WebSocket, and `/api/resources`. The Devices, Providers-and-runners and Stats screens get hidden.
+| Endpoint                                                                     | Source                                            |
+| ---------------------------------------------------------------------------- | ------------------------------------------------- |
+| `GET/POST /api/sessions`, `GET /api/sessions/:id`                            | Creds DO session index and each Session DO's view |
+| `GET /api/sessions/:id/conversation`, `GET /api/sessions/:id/log`            | Folded agent events and the raw event log         |
+| `POST /api/sessions/:id/steer`, `POST /api/sessions/:id/interrupt`           | `prompt.requested` and `interrupt.requested`      |
+| `GET /api/credentials/chatgpt`, `POST /api/credentials/chatgpt/{start,poll}` | Creds DO ChatGPT status and device-code sign-in   |
+
+### Planned
+
+| Step | Endpoints and routing                                                                |
+| ---- | ------------------------------------------------------------------------------------ |
+| 8    | `DELETE /api/sessions/:id`, `POST /api/sessions/:id/{sleep,resume,checkpoint}`       |
+| 9    | `GET /api/sessions/:id/changes[/patch]`, `GET /api/settings`, `GET /api/repos`       |
+| 11   | `/hatch`, preview routing, `/evidence`, the terminal WebSocket, and `/api/resources` |
 
 ## CLI
 
@@ -183,7 +188,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - **Output:** stdout carries exactly one JSON value per command. Progress and hints go to stderr. No colour codes, no prompts, no pager.
 - **Errors:** `{"error":{"code","message","hint"}}` on stdout, with a non-zero exit: 1 for a request or agent failure, 2 for bad usage, 3 when setup is missing (no `SCOTTY_URL`, no Access login, not signed in to ChatGPT). `hint` is the exact command that fixes it.
 - **Target:** `SCOTTY_URL` or `--url`, never derived. Access through `cloudflared access token` at run time; nothing stored by the CLI.
-- **Commands:** `doctor` checks the URL, Access, the Worker's reply and ChatGPT sign-in, and prints what to fix. `signin` runs the device code (prints the URL and code to stderr, polls, prints the result). `new <owner/repo> [--base b] [--prompt text] [--key k]` is idempotent on `--key`. `show <id>` prints the session view and conversation; `log <id>` the raw events. `read <id> [--last N] [--role user|assistant]` returns recent messages (default 1, maximum 500), session authority and the latest turn's ID/state. Messages have stable IDs, role, turn state and text; role filtering precedes the limit, and empty assistant text is omitted. The latest turn is independent of the selected messages; it is null before any prompt appears. Callers choose when to read again: there is no `watch` command. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries.
+- **Commands:** `doctor` checks the URL, Access, the Worker's reply and ChatGPT sign-in, and prints what to fix. `signin` runs the device code (prints the URL and code to stderr, polls, prints the result). `new <owner/repo> [--prompt text] [--key k]` is idempotent on `--key` and uses the repository's default branch. `show <id>` prints the session view and conversation; `log <id>` the raw events. `read <id> [--last N] [--role user|assistant]` returns recent messages (default 1, maximum 500), session authority and the latest turn's ID/state. Messages have stable IDs, role, turn state and text; role filtering precedes the limit, and empty assistant text is omitted. The latest turn is independent of the selected messages; it is null before any prompt appears. Callers choose when to read again: there is no `watch` command. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries.
 - **Help:** `--help` on every command is short and ends with one runnable example.
 
 ## Deploy
