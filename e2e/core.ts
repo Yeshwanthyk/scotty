@@ -83,7 +83,9 @@ const program = Effect.gen(function* () {
     body: {
       title: "Step 2 core",
       repo,
-      prompt: "Answer with the word ready.",
+      // The ChatGPT token is in Codex's env; the agent's commands must not see it.
+      prompt:
+        "Run `env | grep -c SCOTTY_` and reply with only the word ready followed by the number it printed.",
       provider: "cloudflare",
     },
   });
@@ -102,8 +104,10 @@ const program = Effect.gen(function* () {
     () => request(`${prefix}/conversation`, Conversation),
     (conversation) => (conversation.turns[0]?.assistant.length ?? 0) > 0,
   );
-  if (!first.turns[0]?.assistant.toLowerCase().includes("ready"))
-    return yield* new E2eError({ message: "Initial Codex answer missing" });
+  if (!/\bready 0\b/.test(first.turns[0]?.assistant.toLowerCase() ?? ""))
+    return yield* new E2eError({
+      message: "Initial answer missing or SCOTTY_ env visible to commands",
+    });
   const log = yield* events();
   const start = log.find((event) => event.kind === "container.start");
   const hello = log.find((event) => event.kind === "sup.hello");

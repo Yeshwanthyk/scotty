@@ -4,7 +4,6 @@ import { Config, Effect } from "effect";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import CredsObject from "./creds/object.js";
 import { apiHandler } from "./http/api.js";
-import { chatGptHandler } from "./http/chatgpt.js";
 import SessionObject from "./session/object.js";
 
 export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
@@ -31,9 +30,6 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
         Effect.orDie,
         Effect.provide(RuntimeContext.phantom),
       ),
-    );
-    yield* router.add("*", "/p/chatgpt/*", (request) =>
-      chatGptHandler(request, credentials).pipe(Effect.provide(RuntimeContext.phantom)),
     );
     return { fetch: router.asHttpEffect().pipe(Effect.orDie) };
   }),

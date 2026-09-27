@@ -7,13 +7,6 @@ import { processEnv } from "./runtime.js";
 // JSON basic-string escapes also satisfy TOML except for DEL (U+007F).
 // The agent schema rejects lone surrogates in every string written to this config.
 export const toml = (value: string) => JSON.stringify(value).replace(/\u007f/g, "\\u007f");
-// Match the literal authority too: URL normalizes an explicit :80 away.
-export const allowedProviderUrl = (raw: string, url: URL): boolean =>
-  url.protocol === "https:" ||
-  (url.protocol === "http:" &&
-    url.origin === "http://scotty.internal" &&
-    /^http:\/\/scotty\.internal(?:[/?#]|$)/.test(raw) &&
-    url.hostname === "scotty.internal");
 export const codexHome = () => processEnv("SCOTTY_CODEX_HOME") || "/home/scotty/.codex";
 
 export const launchCodex = (config: Extract<Agent, { kind: "codex" }>, cwd: string) =>
@@ -22,7 +15,7 @@ export const launchCodex = (config: Extract<Agent, { kind: "codex" }>, cwd: stri
       try: () => new URL(config.baseUrl),
       catch: () => new AgentError({ code: "config", message: "invalid base URL" }),
     });
-    if (!allowedProviderUrl(config.baseUrl, url) || !/^SCOTTY_[A-Z0-9_]{1,64}$/.test(config.envKey))
+    if (url.protocol !== "https:" || !/^SCOTTY_[A-Z0-9_]{1,64}$/.test(config.envKey))
       return yield* new AgentError({ code: "config", message: "invalid provider settings" });
     const fs = yield* FileSystem.FileSystem;
     const home = codexHome();
@@ -36,7 +29,7 @@ export const launchCodex = (config: Extract<Agent, { kind: "codex" }>, cwd: stri
     yield* fs
       .writeFileString(
         `${home}/config.toml`,
-        `model = ${toml(config.model)}\nmodel_provider = "scotty-managed"\nmodel_reasoning_effort = ${toml(config.effort)}\n[features]\nplugins = false\n[analytics]\nenabled = false\n[model_providers.scotty-managed]\nname = "Scotty managed Codex"\nbase_url = ${toml(config.baseUrl)}\nwire_api = "responses"\nenv_key = ${toml(config.envKey)}\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`,
+        `model = ${toml(config.model)}\nmodel_provider = "scotty-managed"\nmodel_reasoning_effort = ${toml(config.effort)}\n[features]\nplugins = false\n[analytics]\nenabled = false\n[shell_environment_policy]\nignore_default_excludes = false\nexclude = ["SCOTTY_*"]\n[model_providers.scotty-managed]\nname = "Scotty managed Codex"\nbase_url = ${toml(config.baseUrl)}\nwire_api = "responses"\nenv_key = ${toml(config.envKey)}\nhttp_headers = { "chatgpt-account-id" = ${toml(config.accountId)} }\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`,
         { mode: 0o600 },
       )
       .pipe(
@@ -58,7 +51,7 @@ export const launchCodex = (config: Extract<Agent, { kind: "codex" }>, cwd: stri
             CODEX_HOME: home,
             LANG: "C.UTF-8",
             TERM: "xterm-256color",
-            [config.envKey]: config.sentinel,
+            [config.envKey]: config.token,
           },
         }),
       )

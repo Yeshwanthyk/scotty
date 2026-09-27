@@ -11,7 +11,7 @@ Scotty runs Codex sessions in Cloudflare Containers, driven from a phone-friendl
   - A handler appends an event, folds it, and maybe sends one command. It never awaits an outside party while changing state.
   - An outside action is an intent event; its result is a later event. An unknown result stays pending and is never reported as success.
 - **`fold.ts` is pure.** It does no I/O, and it reads no clock or random numbers; time comes from each event's `at`. The DO's one alarm is derived from the state.
-- **Real credentials live only in the Creds DO.** Containers get per-session sentinels and `https://<host>/p/<provider>` base URLs. A real token never goes into container env, files, process arguments, logs, git config, R2, API responses, or Alchemy props, outputs or state.
+- **Real credentials live in the Creds DO.** The one exception: a session's Codex process gets the short-lived ChatGPT access token in its env (chatgpt.com blocks Worker traffic, spike 1e); commands the agent runs never see it. The refresh token and every other real token stay in the Creds DO. A real token never goes into container files, process arguments, logs, the event log, git config, R2, API responses, or Alchemy props, outputs or state.
 - **Single user.** Cloudflare Access is the login. Don't add pairing, roles or multi-tenant machinery.
 - **Names are explicit.** Never derive a stage or account name from a username, machine, repository or Cloudflare account.
 - **`ui/` stays as it is** unless a plan step says to change it.

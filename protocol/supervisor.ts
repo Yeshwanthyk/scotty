@@ -27,7 +27,8 @@ const CodexAgent = Schema.Struct({
   effort: tomlString,
   baseUrl: credentialString,
   envKey: environmentKey,
-  sentinel: credentialString,
+  token: credentialString,
+  accountId: credentialString,
 });
 export const AgentConfig = Schema.Union([CodexAgent]);
 // n remains in the DO envelope for callers that number their sends; it is never

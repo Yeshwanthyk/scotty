@@ -8,7 +8,6 @@ import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
 import { deadline } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
-import { installChatGptEgress, chatGptBaseUrl } from "./chatgpt-egress.js";
 import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
 import { supervisorEvent } from "./supervisor-events.js";
 import { conversationView, sessionView } from "./view.js";
@@ -53,19 +52,18 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   try: () => container.start({ enableInternet: true }),
                   catch: () => new Error("Container start failed"),
                 });
-              yield* installChatGptEgress(container, storage.raw);
               const port = Cloudflare.fromCloudflareFetcher(container.getTcpPort(7000));
               yield* link.dial(port, action.gen, 0);
               return;
             }
             case "dial": {
-              yield* installChatGptEgress(container, storage.raw);
               const port = Cloudflare.fromCloudflareFetcher(container.getTcpPort(7000));
               yield* link.dial(port, action.gen, action.after);
               return;
             }
             case "start": {
-              const sentinel = yield* credentials.getByName("owner").grant(id());
+              // Sent over the socket only; never appended to the event log.
+              const chatgpt = yield* credentials.getByName("owner").sessionToken();
               const message: ToSupervisorMessage = {
                 type: "start",
                 gen: action.gen,
@@ -77,9 +75,10 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   kind: "codex",
                   model: "gpt-5.5",
                   effort: "medium",
-                  baseUrl: chatGptBaseUrl(id()),
-                  envKey: "SCOTTY_CHATGPT",
-                  sentinel,
+                  baseUrl: "https://chatgpt.com/backend-api/codex",
+                  envKey: "SCOTTY_CHATGPT_TOKEN",
+                  token: chatgpt.token,
+                  accountId: chatgpt.accountId,
                 },
               };
               link.send(message);
@@ -111,7 +110,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 yield* append({ kind: "dial.failed", gen: action.gen }, "session");
               } else if (action?.kind === "start") {
                 yield* append(
-                  { kind: "failed", phase: "credentials", code: "grant_failed", retryable: false },
+                  {
+                    kind: "failed",
+                    phase: "credentials",
+                    code: "signin_required",
+                    retryable: false,
+                  },
                   "session",
                 );
               }

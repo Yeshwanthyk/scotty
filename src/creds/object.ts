@@ -1,8 +1,7 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Exit, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
-import { swapChatGpt } from "./swap.js";
 
 const CredentialRow = Schema.Struct({
   access_token: Schema.String,
@@ -15,8 +14,9 @@ const DeviceRow = Schema.Struct({
   interval: Schema.Number,
   expires_at: Schema.Number,
 });
-const GrantRow = Schema.Struct({ sentinel: Schema.String });
 const SessionRow = Schema.Struct({ id: Schema.String });
+// Sessions can run for hours; refuse a token that could expire mid-session.
+const tokenMargin = 24 * 60 * 60 * 1000;
 class CredentialStoreError extends Schema.TaggedError<CredentialStoreError>()(
   "CredentialStoreError",
   { message: Schema.String },
@@ -30,7 +30,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       const sql = yield* SqliteClient.SqliteClient;
       yield* sql`CREATE TABLE IF NOT EXISTS credentials (provider TEXT PRIMARY KEY, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, id_token TEXT NOT NULL, account_id TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), device_auth_id TEXT NOT NULL, user_code TEXT NOT NULL, interval INTEGER NOT NULL, expires_at INTEGER NOT NULL)`;
-      yield* sql`CREATE TABLE IF NOT EXISTS grants (session TEXT PRIMARY KEY, sentinel TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS sessions (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
 
       return {
@@ -126,45 +125,18 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               }),
             ),
           ),
-        grant: (session: string) =>
+        // The refresh token never leaves this object; a session gets only the access token.
+        sessionToken: () =>
           Effect.gen(function* () {
-            const id = yield* Schema.decodeUnknownEffect(
-              Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9-]{1,128}$/)),
-            )(session);
-            const rows = yield* sql`SELECT sentinel FROM grants WHERE session = ${id}`;
-            const existing = rows[0];
-            if (existing !== undefined) {
-              return (yield* Schema.decodeUnknownEffect(GrantRow)(existing)).sentinel;
-            }
-            const sentinel = crypto.randomUUID() + crypto.randomUUID();
-            yield* sql`INSERT OR IGNORE INTO grants (session, sentinel) VALUES (${id}, ${sentinel})`;
-            const stored = yield* sql`SELECT sentinel FROM grants WHERE session = ${id}`;
-            const grant = stored[0];
-            if (grant === undefined)
-              return yield* new CredentialStoreError({ message: "Grant missing" });
-            return (yield* Schema.decodeUnknownEffect(GrantRow)(grant)).sentinel;
-          }),
-        proxy: (session: string, request: Request) =>
-          Effect.gen(function* () {
-            const id = yield* Schema.decodeUnknownEffect(
-              Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9-]{1,128}$/)),
-            )(session);
-            const grants = yield* sql`SELECT sentinel FROM grants WHERE session = ${id}`;
-            const credentials =
+            const rows =
               yield* sql`SELECT access_token, account_id, expires_at FROM credentials WHERE provider = 'chatgpt'`;
-            const grant = grants[0];
-            const credential = credentials[0];
-            if (grant === undefined || credential === undefined) {
-              return new Response(null, { status: 403 });
-            }
-            const sentinel = (yield* Schema.decodeUnknownEffect(GrantRow)(grant)).sentinel;
-            const tokens = yield* Schema.decodeUnknownEffect(CredentialRow)(credential);
-            if (tokens.expires_at <= Date.now())
-              return new Response("ChatGPT sign-in expired", { status: 401 });
-            const response = yield* Effect.exit(
-              swapChatGpt(request, sentinel, tokens.access_token, tokens.account_id),
-            );
-            return Exit.isSuccess(response) ? response.value : new Response(null, { status: 403 });
+            const row = rows[0];
+            if (row === undefined)
+              return yield* new CredentialStoreError({ message: "ChatGPT sign-in required" });
+            const tokens = yield* Schema.decodeUnknownEffect(CredentialRow)(row);
+            if (tokens.expires_at <= Date.now() + tokenMargin)
+              return yield* new CredentialStoreError({ message: "ChatGPT sign-in expiring" });
+            return { token: tokens.access_token, accountId: tokens.account_id };
           }),
       };
     }).pipe(Effect.provide(SqliteClient.layer({ storage: state.raw.storage })), Effect.orDie);

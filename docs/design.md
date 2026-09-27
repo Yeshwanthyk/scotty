@@ -20,7 +20,7 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 ```
 alchemy.run.ts        the whole stack: Worker, Session DO + Container, Creds DO, R2, Access, preview route
 src/
-  worker.ts           Effect HttpRouter: /api/*, /p/* credential swap, preview host routing, UI assets
+  worker.ts           Effect HttpRouter: /api/*, /p/github credential swap, preview host routing, UI assets
   session/
     events.ts         event Schemas (the log format)
     fold.ts           pure fold(state, event); the only transition function
@@ -32,8 +32,8 @@ src/
     object.ts         Session DO: append → fold → maybe send a command; one derived alarm
     view.ts           state → UI API shapes (sessions, conversation, changes)
   creds/
-    object.ts         Creds DO: ChatGPT sign-in and refresh, GitHub token, per-session sentinels
-    swap.ts           /p/chatgpt/* and /p/github/* handlers
+    object.ts         Creds DO: ChatGPT sign-in and refresh, session access token, GitHub token
+    swap.ts           /p/github/* handler
 container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
   supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; pause/resume
@@ -134,7 +134,7 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
 
 ## Credentials
 
-- **One store.** The Creds DO holds the ChatGPT access token, refresh token, expiry and account ID, plus the GitHub token. It is the only place a real secret exists.
+- **One store.** The Creds DO holds the ChatGPT access token, refresh token, expiry and account ID, plus the GitHub token. Only the ChatGPT access token ever leaves it (below).
   - It refreshes the ChatGPT token itself before expiry: a refresh intent, a call outside the state change, then the result.
   - If a refresh result is unclear, it asks for a new sign-in rather than retrying.
 - **Sign-in runs on the Worker** (spike 1a). The Creds DO runs Codex's device-code flow against `https://auth.openai.com` with client ID `app_EMoamEEZ73f0CkXaXp7hrann`:
@@ -150,15 +150,14 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
   - 401, 400 `invalid_grant` and `refresh_token_{expired,reused,invalidated}` are permanent; other failures are transient.
 - **OAuth errors** record the HTTP status and upstream `error`/`code`, never token fields.
 - **Sign-out** revokes at `https://auth.openai.com/oauth/revoke`.
-- **Sentinels only in the container.** Each session gets a random sentinel per provider. No real secret ever enters the container.
-- **Codex:** `config.toml` sets `model_provider` to use `base_url = "https://<host>/p/chatgpt"` and `env_key = "SCOTTY_CHATGPT"`, with the sentinel in that variable. The provider also sets `wire_api = "responses"`, `requires_openai_auth = false`, `supports_websockets = false` and zero retries, and `config.toml` sets `[features] plugins = false`, so `/p/chatgpt/responses` is the only ChatGPT path (spike 1c). Codex runs with an explicit environment allowlist, never the supervisor's whole environment. The `/p/chatgpt` route:
-  - checks the sentinel;
-  - removes the incoming auth headers;
-  - sets the `Authorization: Bearer` and ChatGPT account headers;
-  - forwards the request to `https://chatgpt.com/backend-api/codex`.
+- **ChatGPT token in Codex's env** (spike 1e, `work/spikes/1e/RESULT.md`). chatgpt.com answers 403 to every request from a Worker or DO, but not to requests from the container. So the model call goes from the container directly:
+  - At `start` the Session DO asks the Creds DO for `{token, accountId}` and sends them over the supervisor socket only; they never enter the event log. The Creds DO refuses a token with less than 24 hours left (the access token lives 10 days), and the session fails with `signin_required`.
+  - `config.toml` sets `base_url = "https://chatgpt.com/backend-api/codex"`, `env_key = "SCOTTY_CHATGPT_TOKEN"`, `http_headers = { "chatgpt-account-id" = … }`, `wire_api = "responses"`, `requires_openai_auth = false`, `supports_websockets = false`, zero retries, and `[features] plugins = false` (spike 1c). Codex runs with an explicit environment allowlist.
+  - `[shell_environment_policy]` sets `ignore_default_excludes = false` and `exclude = ["SCOTTY_*"]`, so commands the agent runs never see the token (Codex's default passes the whole env). e2e `core` checks this with `env | grep -c SCOTTY_`.
+  - Risk accepted for a single user: code in the container that reads Codex's process env can use the token until it expires. The refresh token never leaves the Creds DO.
 - **git:** `url."https://<host>/p/github/".insteadOf https://github.com/`, with a credential helper that returns the sentinel. `/p/github` allows only smart-HTTP paths for the session's repository and swaps in the real token.
 - **No HTTPS interception.** Alchemy beta.79 exposes only `interceptOutboundHttp`, and routing by base URL needs no TLS tricks.
-- **Port from `3042018`:** the header cleanup and host checks in `worker/src/egress/worker.ts:95-123,164-240,428-443`, and the Codex config shape in `worker/src/agent/codex/process.ts:204-270`.
+- **Port from `3042018`:** the header cleanup and host checks for `/p/github` in `worker/src/egress/worker.ts:95-123,164-240,428-443`, and the Codex config shape in `worker/src/agent/codex/process.ts:204-270`.
 
 ## API the UI needs
 
