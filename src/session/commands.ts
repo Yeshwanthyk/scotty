@@ -12,7 +12,8 @@ const toResend = (request: Request): Resend =>
     : { req: request.req, kind: "interrupt", turn: request.turn };
 
 export type Command =
-  | { readonly kind: "container.start"; readonly gen: number }
+  // fresh replaces a container left from an older generation.
+  | { readonly kind: "container.start"; readonly gen: number; readonly fresh?: true }
   | { readonly kind: "dial"; readonly gen: number; readonly after: number }
   | {
       readonly kind: "start";
@@ -21,6 +22,7 @@ export type Command =
       readonly base: string;
       readonly branch: string;
       readonly agentKind: typeof AgentKind.Type;
+      readonly resume?: { readonly threadId: string; readonly commit: string };
     }
   | {
       readonly kind: "resend";
@@ -45,6 +47,10 @@ export function command(state: State, event: SessionEvent): Command | undefined 
     return state.stopSeq === event.seq ? { kind: "destroy" } : undefined;
   if (state.phase === "failed") return undefined;
   switch (event.kind) {
+    case "resume.requested":
+      return state.gen !== undefined && state.startSeq === event.seq
+        ? { kind: "container.start", gen: state.gen, fresh: true }
+        : undefined;
     case "container.start":
       return state.gen === event.gen && state.startSeq === event.seq
         ? { kind: "container.start", gen: event.gen }
@@ -80,6 +86,9 @@ export function command(state: State, event: SessionEvent): Command | undefined 
             base: state.created.baseBranch,
             branch: state.created.branch,
             agentKind: state.created.agentKind,
+            ...(state.agentSession !== undefined && state.commit !== undefined
+              ? { resume: { threadId: state.agentSession, commit: state.commit } }
+              : {}),
           };
     case "workspace.ready": {
       const request = state.requests.find(
@@ -88,19 +97,26 @@ export function command(state: State, event: SessionEvent): Command | undefined 
           item.seq === event.seq &&
           item.status === "pending",
       );
-      return state.gen === event.gen && request?.kind === "prompt"
-        ? { kind: "prompt", req: request.req, turn: request.turn, text: request.text }
+      if (state.gen === event.gen && request?.kind === "prompt")
+        return { kind: "prompt", req: request.req, turn: request.turn, text: request.text };
+      const waiting = state.requests.filter((item) => item.status === "pending");
+      return state.gen === event.gen && state.readySeq === event.seq && waiting.length > 0
+        ? { kind: "resend", gen: event.gen, requests: waiting.map(toResend) }
         : ackFor(state, event);
     }
     case "prompt.requested":
-      return state.connected &&
+      if (state.gen !== undefined && state.startSeq === event.seq)
+        return { kind: "container.start", gen: state.gen, fresh: true };
+      return state.ready &&
+        state.connected &&
         state.requests.some(
           (item) => item.req === event.req && item.seq === event.seq && item.status === "pending",
         )
         ? { kind: "prompt", req: event.req, turn: event.turn, text: event.text }
         : undefined;
     case "interrupt.requested":
-      return state.connected &&
+      return state.ready &&
+        state.connected &&
         state.requests.some(
           (item) => item.req === event.req && item.seq === event.seq && item.status === "pending",
         )

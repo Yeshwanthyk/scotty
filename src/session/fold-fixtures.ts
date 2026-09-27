@@ -67,7 +67,9 @@ export const check = (state: State): void => {
   );
   expect(pending.some((p) => p.op === "dial")).toBe(state.hello && !state.connected && live(state));
   for (const request of state.requests)
-    expect(pending.some((p) => p.op === `req:${request.req}`)).toBe(request.status === "pending");
+    expect(pending.some((p) => p.op === `req:${request.req}`)).toBe(
+      request.status === "pending" && state.ready,
+    );
 };
 
 export const kinds = [

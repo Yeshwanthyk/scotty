@@ -40,6 +40,12 @@ export const ToSupervisor = Schema.Union([
     base: Schema.String,
     branch: Schema.String,
     agent: AgentConfig,
+    resume: Schema.optionalKey(
+      Schema.Struct({
+        threadId: identifier,
+        commit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
+      }),
+    ),
   }),
   Schema.Struct({
     ...envelope,

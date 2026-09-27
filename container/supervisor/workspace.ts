@@ -59,7 +59,27 @@ export const saveWorkspace = (base: string, thread: string) =>
     return yield* fs.readFile(saveFile()).pipe(Effect.mapError(() => failure()));
   });
 
-export const prepareWorkspace = (repo: string, base: string, branch: string) =>
+const restoreFile = () => `${workspaceRoot()}/restore.tar`;
+const restoreScript = `set -e
+tarfile="$1"; home="$2"; s=$(mktemp -d)
+tar -xf "$tarfile" -C "$s"
+if [ -d "$s/repo" ]; then cp -a "$s/repo/." .; fi
+xargs -0 -r rm -f -- < "$s/deleted"
+mkdir -p "$home" && cp -a "$s/codex/." "$home/"
+rm -rf "$s" "$tarfile"`;
+
+export const storeSave = (tar: Uint8Array) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFile(restoreFile(), tar).pipe(Effect.mapError(() => failure()));
+  });
+
+export const prepareWorkspace = (
+  repo: string,
+  base: string,
+  branch: string,
+  resume?: { readonly commit: string },
+) =>
   Effect.gen(function* () {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || repo.includes(".."))
       return yield* new WorkspaceError({ message: "invalid repository" });
@@ -73,7 +93,12 @@ export const prepareWorkspace = (repo: string, base: string, branch: string) =>
       ["git", "clone", "--depth", "1", "--branch", base, `https://github.com/${repo}`, dir],
       root,
     );
-    yield* run(["git", "checkout", "-b", branch], dir);
+    if (resume === undefined) yield* run(["git", "checkout", "-b", branch], dir);
+    else {
+      yield* run(["git", "fetch", "--depth", "1", "origin", resume.commit], dir);
+      yield* run(["git", "checkout", "-b", branch, resume.commit], dir);
+      yield* run(["sh", "-c", restoreScript, "restore", restoreFile(), codexHome()], dir);
+    }
     const commit = yield* run(["git", "rev-parse", "HEAD"], dir);
     return { dir, commit };
   });

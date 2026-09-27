@@ -27,6 +27,22 @@ const endAll = (state: State, phase: "stopped" | "failed"): State => ({
   ),
 });
 
+// A new generation on a fresh container; pending requests wait for its workspace.
+const resume = (state: State, at: number): State => ({
+  ...state,
+  phase: "provisioning",
+  gen: (state.gen ?? 0) + 1,
+  startSeq: state.lastSeq,
+  hello: false,
+  connected: false,
+  ready: false,
+  lastN: 0,
+  lastAckN: 0,
+  lastAckSeq: 0,
+  boot: undefined,
+  pending: [{ op: "container", due: at + deadlines.container }],
+});
+
 const accepts = (state: State, event: { readonly gen: number; readonly n: number }): boolean =>
   state.gen === event.gen && state.connected && live(state) && event.n > state.lastN;
 const advance = (state: State, n: number, forceAck = false): State => ({
@@ -81,11 +97,27 @@ export function fold(state: State, event: SessionEvent): State {
         ? advance(next, event.n)
         : { ...advance(next, event.n), lastAckN: state.lastAckN, lastAckSeq: state.lastAckSeq };
       if (state.ready || state.created === undefined) return accepted;
+      if (state.commit !== undefined)
+        return {
+          ...accepted,
+          ready: true,
+          phase: "running",
+          readySeq: event.seq,
+          pending: state.requests.reduce(
+            (pending, item) =>
+              item.status === "pending"
+                ? addOnce(pending, reqOp(item.req), event.at + deadlines[item.kind])
+                : pending,
+            remove(state.pending, "workspace"),
+          ),
+        };
       const req = `initial:${event.gen}`;
       return {
         ...accepted,
         ready: true,
         phase: "running",
+        readySeq: event.seq,
+        commit: event.commit,
         requests: [
           ...state.requests,
           {
@@ -108,7 +140,13 @@ export function fold(state: State, event: SessionEvent): State {
     case "interrupt.requested": {
       if (state.requests.some((item) => item.req === event.req)) return next;
       const kind = event.kind === "prompt.requested" ? "prompt" : "interrupt";
-      const valid = state.phase === "running" && event.turn === state.currentTurn;
+      // A prompt to a stopped session resumes it; requests wait for a resumed workspace.
+      const valid =
+        event.turn === state.currentTurn &&
+        (state.phase === "running" ||
+          (state.phase === "provisioning" && state.commit !== undefined) ||
+          (state.phase === "stopped" && kind === "prompt"));
+      const base = valid && state.phase === "stopped" ? resume(next, event.at) : next;
       const request: Request =
         event.kind === "prompt.requested"
           ? {
@@ -127,11 +165,12 @@ export function fold(state: State, event: SessionEvent): State {
               seq: event.seq,
             };
       return {
-        ...next,
+        ...base,
         requests: [...state.requests, request],
-        pending: valid
-          ? addOnce(state.pending, reqOp(event.req), event.at + deadlines[kind])
-          : state.pending,
+        pending:
+          valid && base.ready
+            ? addOnce(base.pending, reqOp(event.req), event.at + deadlines[kind])
+            : base.pending,
       };
     }
     case "prompt.delivered":
@@ -256,6 +295,8 @@ export function fold(state: State, event: SessionEvent): State {
         requests: settle(state.requests, requestFromOp(event.op), "timed_out"),
         pending: remove(state.pending, event.op),
       };
+    case "resume.requested":
+      return state.phase === "stopped" ? resume(next, event.at) : next;
     case "container.stopped":
       return event.gen === state.gen && live(state) ? endAll(next, "stopped") : next;
     case "failed":

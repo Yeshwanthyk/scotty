@@ -39,7 +39,10 @@ type Event =
   | { type: "input"; peer: Peer; data: string | Uint8Array }
   | { type: "output"; output: Output; gen?: number };
 
-type Saves = { save: (gen: number) => Effect.Effect<Uint8Array, Error> };
+type Saves = {
+  save: (gen: number) => Effect.Effect<Uint8Array, Error>;
+  load: (tar: Uint8Array) => Effect.Effect<void, Error>;
+};
 
 export const serve = (
   receive: (message: ToSupervisorMessage) => Effect.Effect<void, Error>,
@@ -175,6 +178,16 @@ export const serve = (
         const gen = wire.gen;
         if (gen === undefined || url.searchParams.get("gen") !== String(gen))
           return new Response("generation conflict", { status: 409 });
+        if (request.method === "PUT")
+          return Effect.runPromise(
+            Effect.tryPromise(() => request.arrayBuffer()).pipe(
+              Effect.flatMap((body) => saves.load(new Uint8Array(body))),
+              Effect.match({
+                onSuccess: () => new Response(null, { status: 204 }),
+                onFailure: () => new Response("load failed", { status: 500 }),
+              }),
+            ),
+          );
         if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
         return Effect.runPromise(
           saves.save(gen).pipe(

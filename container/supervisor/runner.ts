@@ -21,7 +21,9 @@ export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
 
 export interface Runner {
   readonly events: Stream.Stream<AgentOutput>;
-  start(): Effect.Effect<
+  start(
+    threadId?: string,
+  ): Effect.Effect<
     AgentReady,
     AgentError,
     Scope.Scope | FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner

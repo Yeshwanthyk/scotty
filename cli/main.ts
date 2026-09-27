@@ -4,12 +4,12 @@ import { Command, CliError } from "effect/unstable/cli";
 import { CliFailure, failure } from "./client.js";
 import { doctor, signin } from "./commands/setup.js";
 import { create, ls, show, log } from "./commands/sessions.js";
-import { steer, interrupt, stop } from "./commands/actions.js";
+import { steer, interrupt, stop, resume } from "./commands/actions.js";
 import { read } from "./commands/read.js";
 
 const help: Record<string, string> = {
   scotty:
-    "Usage: scotty <command> [--url https://host]\nCommands: doctor, signin, new, ls, show, steer, interrupt, stop, read, log\nRun scotty <command> --help for options.\nExample: scotty doctor",
+    "Usage: scotty <command> [--url https://host]\nCommands: doctor, signin, new, ls, show, steer, interrupt, stop, resume, read, log\nRun scotty <command> --help for options.\nExample: scotty doctor",
   doctor:
     "Usage: scotty doctor [--url https://host]\nCheck Access and Worker connectivity.\nExample: scotty doctor",
   signin:
@@ -22,12 +22,26 @@ const help: Record<string, string> = {
   interrupt:
     "Usage: scotty interrupt <id> [--req id] [--url https://host]\nInterrupt the current turn.\nExample: scotty interrupt abcdef",
   stop: "Usage: scotty stop <id> [--url https://host]\nStop a session's container; a later steer resumes it.\nExample: scotty stop abcdef",
+  resume:
+    "Usage: scotty resume <id> [--url https://host]\nResume a stopped session from its last save.\nExample: scotty resume abcdef",
   read: "Usage: scotty read <id> [--last N] [--role user|assistant] [--url https://host]\nRead one snapshot with session authority and latest turn status. --last defaults to 1 (integer 1–500); filter by role before selecting the last messages. Empty assistant messages are omitted.\nExample: scotty read abcdef --last 5 --role assistant",
   log: "Usage: scotty log <id> [--url https://host]\nShow raw events.\nExample: scotty log abcdef",
 };
 
 const root = Command.make("scotty").pipe(
-  Command.withSubcommands([doctor, signin, create, ls, show, steer, interrupt, stop, read, log]),
+  Command.withSubcommands([
+    doctor,
+    signin,
+    create,
+    ls,
+    show,
+    steer,
+    interrupt,
+    stop,
+    resume,
+    read,
+    log,
+  ]),
 );
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {

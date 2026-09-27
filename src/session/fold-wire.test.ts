@@ -177,7 +177,7 @@ describe("supervisor outputs", () => {
       turns: [{ turn: "2", codexTurn: "codex-2", state: "wrong" }],
       connected: true,
       hello: false,
-      ready: false,
+      ready: true,
       requests: [
         { req: "x", kind: "prompt", turn: "0", text: "a", status: "pending", seq: 3 },
         { req: "x", kind: "prompt", turn: "0", text: "b", status: "stale", seq: 4 },

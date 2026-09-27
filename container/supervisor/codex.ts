@@ -81,7 +81,9 @@ export class CodexRunner implements Runner {
       }
     });
   }
-  start(): Effect.Effect<
+  start(
+    threadId?: string,
+  ): Effect.Effect<
     AgentReady,
     AgentError,
     Scope.Scope | FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
@@ -100,7 +102,10 @@ export class CodexRunner implements Runner {
         capabilities: { experimentalApi: false },
       });
       yield* rpc.notify("initialized");
-      const result = yield* rpc.request("thread/start", {
+      // thread/resume reads the restored rollout under CODEX_HOME for this thread id.
+      const method = threadId === undefined ? "thread/start" : "thread/resume";
+      const result = yield* rpc.request(method, {
+        ...(threadId === undefined ? {} : { threadId }),
         model: this.agent.model,
         modelProvider: "scotty-managed",
         cwd: this.cwd,
@@ -109,7 +114,7 @@ export class CodexRunner implements Runner {
       });
       const thread = yield* Schema.decodeUnknownEffect(Thread)(result).pipe(
         Effect.mapError(
-          () => new AgentError({ code: "protocol", message: "invalid thread/start reply" }),
+          () => new AgentError({ code: "protocol", message: `invalid ${method} reply` }),
         ),
       );
       this.thread = thread.thread.id;

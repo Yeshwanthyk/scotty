@@ -61,6 +61,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           if (!action) return;
           switch (action.kind) {
             case "container.start": {
+              if (action.fresh && container.running)
+                yield* Effect.promise(() => container.destroy());
               if (!container.running)
                 yield* Effect.try({
                   try: () => container.start({ enableInternet: true }),
@@ -78,6 +80,23 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             case "start": {
               // Sent over the socket only; never appended to the event log.
               const chatgpt = yield* credentials.getByName("owner").sessionToken();
+              // Resume only when the save reached the new container; otherwise start clean.
+              const restored =
+                action.resume === undefined
+                  ? false
+                  : yield* bucket.get(saveKey()).pipe(
+                      Effect.flatMap((saved) =>
+                        saved === null
+                          ? Effect.succeed(false)
+                          : saved.arrayBuffer().pipe(
+                              Effect.flatMap((body) =>
+                                supervisor(`/save?gen=${action.gen}`, { method: "PUT", body }),
+                              ),
+                              Effect.as(true),
+                            ),
+                      ),
+                      Effect.orElseSucceed(() => false),
+                    );
               const message: ToSupervisorMessage = {
                 type: "start",
                 gen: action.gen,
@@ -93,6 +112,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   token: chatgpt.token,
                   accountId: chatgpt.accountId,
                 },
+                ...(restored && action.resume !== undefined ? { resume: action.resume } : {}),
               };
               link.send(message);
               return;
@@ -240,6 +260,11 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               yield* dispatch(
                 yield* append({ kind: "container.stopped", gen: log.state.gen }, "api"),
               );
+            return { version: 1, session: sessionView(id(), log.state) };
+          }),
+        resume: () =>
+          Effect.gen(function* () {
+            yield* dispatch(yield* append({ kind: "resume.requested" }, "api"));
             return { version: 1, session: sessionView(id(), log.state) };
           }),
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),

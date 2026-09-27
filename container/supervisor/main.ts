@@ -6,6 +6,7 @@ function main(): void {
   controller.bind(
     serve((message) => controller.receive(message), {
       save: (gen) => controller.save(gen),
+      load: (tar) => controller.load(tar),
     }),
   );
 }

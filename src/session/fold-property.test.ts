@@ -102,8 +102,13 @@ it.prop(
         state = fold(before, event);
         const issued = command(state, event);
         check(state);
-        expect(state.lastN).toBeGreaterThanOrEqual(before.lastN);
-        if (!live(before)) expect(issued).toBeUndefined();
+        // Output numbering restarts with each resumed generation.
+        if (state.gen === before.gen) expect(state.lastN).toBeGreaterThanOrEqual(before.lastN);
+        if (!live(before) && !live(state)) expect(issued).toBeUndefined();
+        if (!live(before) && live(state)) {
+          expect(issued).toEqual({ kind: "container.start", gen: state.gen, fresh: true });
+          bump("resume");
+        }
         if (supervisor.has(event.kind) && "n" in event) {
           const accepted =
             live(before) && event.gen === before.gen && before.connected && event.n > before.lastN;
@@ -143,7 +148,7 @@ it.prop(
               state.requests.filter((r) => r.status === "pending").map((r) => r.req),
             );
         }
-        if (state.lastAckN !== before.lastAckN)
+        if (state.lastAckN !== before.lastAckN && state.gen === before.gen)
           expect(
             issued?.kind === "save" ? { kind: "ack", gen: issued.gen, ack: issued.ack } : issued,
           ).toEqual({ kind: "ack", gen: state.gen, ack: state.lastN });
@@ -208,6 +213,7 @@ it("covers generated paths", () => {
   expect(hits["ack threshold"]).toBeGreaterThan(0);
   expect(hits["ack turn"]).toBeGreaterThan(0);
   expect(hits["save"]).toBeGreaterThan(0);
+  expect(hits["resume"]).toBeGreaterThan(0);
   expect(hits["error pending failed"]).toBeGreaterThan(0);
   expect(hits["error settled request"]).toBeGreaterThan(0);
 });

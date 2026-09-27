@@ -6,7 +6,7 @@ import { makeRunner } from "./agent.js";
 import { Requests } from "./requests.js";
 import { AgentError, type Runner } from "./runner.js";
 import type { Output } from "./wire.js";
-import { prepareWorkspace, saveWorkspace, WorkspaceError } from "./workspace.js";
+import { prepareWorkspace, saveWorkspace, storeSave, WorkspaceError } from "./workspace.js";
 
 type Start = Extract<ToSupervisorMessage, { type: "start" }>;
 type Ready = { base: string; branch: string; commit: string; kind: "codex"; session: string };
@@ -55,7 +55,12 @@ export class Controller {
       this.gen = message.gen;
       this.startState = { status: "inflight" };
       const outcome = yield* Effect.gen({ self: this }, function* () {
-        const workspace = yield* prepareWorkspace(message.repo, message.base, message.branch);
+        const workspace = yield* prepareWorkspace(
+          message.repo,
+          message.base,
+          message.branch,
+          message.resume,
+        );
         const scope = yield* Scope.make();
         this.scope = scope;
         const runner = yield* makeRunner(message.agent, workspace.dir);
@@ -68,7 +73,7 @@ export class Controller {
           Effect.forkScoped,
           Scope.provide(scope),
         );
-        const agent = yield* runner.start().pipe(Scope.provide(scope));
+        const agent = yield* runner.start(message.resume?.threadId).pipe(Scope.provide(scope));
         return {
           base: message.base,
           branch: message.branch,
@@ -137,6 +142,11 @@ export class Controller {
     return saveWorkspace(state.ready.commit, state.ready.session).pipe(
       Effect.provide(BunServices.layer),
     );
+  }
+  load(tar: Uint8Array): Effect.Effect<void, WorkspaceError> {
+    return this.startState === undefined
+      ? storeSave(tar).pipe(Effect.provide(BunServices.layer))
+      : Effect.fail(new WorkspaceError({ message: "workspace already started" }));
   }
   receive(message: ToSupervisorMessage): Effect.Effect<void> {
     if (message.type === "start") return this.start(message);

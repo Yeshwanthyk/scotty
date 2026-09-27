@@ -46,3 +46,10 @@ export const stop = Command.make("stop", { url, id }, ({ url: target, id: value 
     return yield* output(yield* api(`${sessionPath(value)}/stop`, View, { method: "POST" }));
   }),
 ).pipe(Command.withDescription("Stop a session's container"));
+
+export const resume = Command.make("resume", { url, id }, ({ url: target, id: value }) =>
+  Effect.gen(function* () {
+    const api = yield* withClient(target);
+    return yield* output(yield* api(`${sessionPath(value)}/resume`, View, { method: "POST" }));
+  }),
+).pipe(Command.withDescription("Resume a stopped session from its last save"));

@@ -19,6 +19,9 @@ export type State = {
   readonly startSeq: number;
   readonly stopSeq: number;
   readonly saveSeq: number;
+  readonly readySeq: number;
+  // The base commit from the first workspace; set means later generations resume.
+  readonly commit: string | undefined;
   readonly hello: boolean;
   readonly connected: boolean;
   readonly ready: boolean;
@@ -48,6 +51,8 @@ export const initial: State = {
   startSeq: 0,
   stopSeq: 0,
   saveSeq: 0,
+  readySeq: 0,
+  commit: undefined,
   hello: false,
   connected: false,
   ready: false,

@@ -52,7 +52,11 @@ export function invariants(state: State): Violation[] {
   );
   check(
     state.requests.every(
-      (item) => (item.status === "pending") === has(state.pending, reqOp(item.req)),
+      // Before a resumed workspace is ready, pending requests have no deadline yet.
+      (item) =>
+        item.status === "pending"
+          ? has(state.pending, reqOp(item.req)) || !state.ready
+          : !has(state.pending, reqOp(item.req)),
     ),
     "pending",
     "request and deadline disagree",

@@ -285,4 +285,45 @@ describe("session fold", () => {
     expect(state.pending.some((p) => p.op === "save")).toBe(false);
     check(state);
   });
+
+  const stoppedWithThread = () =>
+    [
+      make(6, "agent.ready", { gen: 1, n: 6, agentKind: "codex", session: "thread-1" }),
+      make(7, "container.stopped", { gen: 1 }),
+    ].reduce(fold, boot());
+
+  it("resumes a stopped session on request with a fresh container and the saved thread", () => {
+    const requested = make(8, "resume.requested");
+    let state = fold(stoppedWithThread(), requested);
+    expect(state).toMatchObject({ phase: "provisioning", gen: 2, lastN: 0, hello: false });
+    expect(command(state, requested)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    const greeting = make(9, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" });
+    state = fold(state, greeting);
+    expect(command(state, greeting)).toMatchObject({
+      kind: "start",
+      gen: 2,
+      resume: { threadId: "thread-1", commit: "abc" },
+    });
+    check(state);
+  });
+
+  it("resumes on a steer to a stopped session and resends it once the workspace is ready", () => {
+    const steer = make(8, "prompt.requested", { req: "s1", turn: "0", text: "again", images: [] });
+    let state = fold(stoppedWithThread(), steer);
+    expect(command(state, steer)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    expect(state.requests.find((r) => r.req === "s1")?.status).toBe("pending");
+    check(state);
+    state = fold(state, make(9, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" }));
+    const resumed = make(10, "workspace.ready", { gen: 2, n: 2, branch: "main", commit: "abc" });
+    state = fold(state, resumed);
+    expect(state.phase).toBe("running");
+    expect(state.requests.some((r) => r.req === "initial:2")).toBe(false);
+    expect(state.pending.find((p) => p.op === "req:s1")?.due).toBe(10_000 + deadlines.prompt);
+    expect(command(state, resumed)).toEqual({
+      kind: "resend",
+      gen: 2,
+      requests: [{ req: "s1", kind: "prompt", turn: "0", text: "again" }],
+    });
+    check(state);
+  });
 });
