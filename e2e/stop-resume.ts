@@ -129,11 +129,21 @@ const program = Effect.gen(function* () {
       text: "Run exactly: `sleep 5 && pkill -9 -f 'codex app-server'`",
     },
   });
-  yield* poll(
+  const ended = yield* poll(
+    () => Effect.all([request(prefix, View), events()]),
+    ([view, log]) =>
+      lifecycle(view) === "stopped" ||
+      lifecycle(view) === "failed" ||
+      log.some((e) => e.kind === "turn.ended" && e.turn === "3"),
+  );
+  yield* check(
+    !ended[1].some((e) => e.kind === "turn.ended" && e.turn === "3" && e.state === "completed"),
+    "Crash turn completed: the kill command did not stop Codex",
+  );
+  const crashed = yield* poll(
     () => request(prefix, View),
     (view) => lifecycle(view) === "stopped" || lifecycle(view) === "failed",
   );
-  const crashed = yield* request(prefix, View);
   yield* check(lifecycle(crashed) === "stopped", "Crash did not end the session stopped");
   yield* check(
     !(yield* events()).some((e) => e.kind === "invariant.violated"),
