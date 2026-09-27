@@ -187,7 +187,7 @@ Update this table in every commit that moves a step. Keep notes to commands, res
   - Create: `ui/src/data/session-creator.ts` sends `hardCapSeconds` and Pi images; the API takes `{title, repo, prompt, provider}`. The create response already matches.
   - The new-session form reads `/api/settings` and `/api/repos` (not served) for its repository list.
 - **In scope:**
-  1. **Confirm in the browser first.** Deploy `dev`, open it in a real browser at 390×844, and record in Status notes each screen and request that fails.
+  1. **Confirm in the browser first.** Deploy `dev`, open it in a real browser at 390×844, and record in Status notes each screen and request that fails. Drive the browser with the `computer-use` skill. The page is behind Cloudflare Access: if the browser shows an Access login, stop and ask the owner to log in there (a browser step). Don't add Playwright or another browser dependency.
   2. **Fix the core flow:** the session list, the new-session form (public repository and prompt; Codex only; no base branch, no images, no hard cap, no repository picker), and the session page with the conversation, steer and interrupt. Fix the mismatches above in the UI's data layer; don't change the API to accept old shapes.
   3. **Delete old-only screens and their components:**
      - Routes: `routes/devices.tsx`, `routes/providers.tsx`, `routes/stats.tsx`, `routes/settings.tsx`. Regenerate `routeTree.gen.ts` with `npm run generate-routes --workspace @scotty/ui`; don't edit it by hand.
@@ -210,7 +210,7 @@ Update this table in every commit that moves a step. Keep notes to commands, res
 - **Done when:**
   - The checks pass. On `dev`: `npm run --silent e2e -- core` passes.
   - The `ui` recipe is driven in a real browser on `dev`, with screenshots and results in `work/verify/`.
-  - No UI request returns 404 during the recipe (save the browser's network log with the evidence).
+  - No UI request returns 404. Prove it one of two ways: save the browser's network log with the evidence; or list every path the UI still calls (`rg -o "/api/[^\`\"?]*" ui/src | sort -u`) and `curl` each with the Access header (`cf-access-token: $(cloudflared access token -app=$SCOTTY_URL)`, never saved), recording each status code.
   - Every file listed for deletion in items 3 and 5 is gone; `ls ui/src/protocol` shows only `session/`.
   - `rg -niE 'claude|pi-console|resource|hatch|evidence|runner|pairing|principal|sleep|vaporize' ui/src` finds nothing, or each remaining hit is explained in Status notes.
 
