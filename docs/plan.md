@@ -210,7 +210,7 @@ Update this table in every commit that moves a step. Keep notes to commands, res
 - **Done when:**
   - The checks pass. On `dev`: `npm run --silent e2e -- core` passes.
   - The `ui` recipe is driven in a real browser on `dev`, with screenshots and results in `work/verify/`.
-  - No UI request returns 404. Prove it one of two ways: save the browser's network log with the evidence; or list every path the UI still calls (`rg -o "/api/[^\`\"?]*" ui/src | sort -u`) and `curl` each with the Access header (`cf-access-token: $(cloudflared access token -app=$SCOTTY_URL)`, never saved), recording each status code.
+  - No UI request returns 404. Prove it one of two ways: save the browser's network log with the evidence; or list every path the UI still calls (`rg -o "/api/[A-Za-z0-9/_.{}$()-]*" ui/src | sort -u`) and `curl` each with the Access header (`cf-access-token: $(cloudflared access token -app=$SCOTTY_URL)`, never saved), recording each status code.
   - Every file listed for deletion in items 3 and 5 is gone; `ls ui/src/protocol` shows only `session/`.
   - `rg -niE 'claude|pi-console|resource|hatch|evidence|runner|pairing|principal|sleep|vaporize' ui/src` finds nothing, or each remaining hit is explained in Status notes.
 
