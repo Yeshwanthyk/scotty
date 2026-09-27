@@ -1,7 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { SessionEvent } from "../src/session/events.js";
 import { acceptedAgentEvents } from "../src/session/view.js";
 import {
   access,
@@ -17,8 +16,8 @@ import {
   target,
   View,
 } from "../cli/client.js";
+import { Log, waiter } from "./lib/wait.js";
 
-const Log = Schema.Array(SessionEvent);
 const signIn = (request: ReturnType<typeof client>) =>
   Effect.gen(function* () {
     const device = yield* request("/api/credentials/chatgpt/start", Started, {
@@ -90,15 +89,7 @@ const program = Effect.gen(function* () {
     },
   });
   const prefix = `/api/sessions/${session.id}`;
-  const poll = <A>(read: () => Effect.Effect<A, CliFailure>, done: (value: A) => boolean) =>
-    Effect.gen(function* () {
-      for (let attempt = 0; attempt < 150; attempt++) {
-        const value = yield* read();
-        if (done(value)) return value;
-        yield* Effect.sleep("2 seconds");
-      }
-      return yield* failure("timeout", "Timed out waiting for session outcome", "scotty doctor");
-    });
+  const poll = waiter(request, prefix);
   const events = () => request(`${prefix}/log`, Log);
   const first = yield* poll(
     () => request(`${prefix}/conversation`, Conversation),

@@ -1,7 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { SessionEvent } from "../src/session/events.js";
 import {
   access,
   CliFailure,
@@ -14,8 +13,8 @@ import {
   target,
   View,
 } from "../cli/client.js";
+import { Log, waiter } from "./lib/wait.js";
 
-const Log = Schema.Array(SessionEvent);
 const Instances = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.String })),
 );
@@ -58,15 +57,7 @@ const program = Effect.gen(function* () {
   });
   const prefix = `/api/sessions/${session.id}`;
   console.log(`Session ${session.id}`);
-  const poll = <A>(read: () => Effect.Effect<A, CliFailure>, done: (value: A) => boolean) =>
-    Effect.gen(function* () {
-      for (let attempt = 0; attempt < 150; attempt++) {
-        const value = yield* read();
-        if (done(value)) return value;
-        yield* Effect.sleep("2 seconds");
-      }
-      return yield* failure("timeout", "Timed out waiting for session outcome", "scotty doctor");
-    });
+  const poll = waiter(request, prefix);
   const events = () => request(`${prefix}/log`, Log);
   const saved = (turn: string) =>
     poll(events, (log) => log.some((e) => e.kind === "save.done" && e.turn === turn));
@@ -99,6 +90,7 @@ const program = Effect.gen(function* () {
   yield* poll(
     () => instances,
     (items) => items.every((item) => item.name !== session.id || item.state !== "running"),
+    { stopped: "expected" },
   );
   console.log("Stopped: ls shows stopped and the instance is not running");
 

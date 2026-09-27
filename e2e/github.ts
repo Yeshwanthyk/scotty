@@ -1,7 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { SessionEvent } from "../src/session/events.js";
 import {
   access,
   CliFailure,
@@ -13,8 +12,8 @@ import {
   target,
   View,
 } from "../cli/client.js";
+import { Log, waiter } from "./lib/wait.js";
 
-const Log = Schema.Array(SessionEvent);
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("github", message, "scotty doctor"));
 // Patterns chosen so the command text itself, echoed in a reply or a rollout, never matches.
@@ -59,15 +58,12 @@ const program = Effect.gen(function* () {
   const prefix = `/api/sessions/${session.id}`;
   const branch = `scotty/${session.id}`;
   console.log(`Session ${session.id}`);
+  const poll = waiter(request, prefix);
   const ended = (turn: string) =>
-    Effect.gen(function* () {
-      for (let attempt = 0; attempt < 150; attempt++) {
-        const log = yield* request(`${prefix}/log`, Log);
-        if (log.some((e) => e.kind === "turn.ended" && e.turn === turn)) return;
-        yield* Effect.sleep("2 seconds");
-      }
-      return yield* failure("timeout", "Timed out waiting for the turn", "scotty doctor");
-    });
+    poll(
+      () => request(`${prefix}/log`, Log),
+      (log) => log.some((e) => e.kind === "turn.ended" && e.turn === turn),
+    );
   const answer = (turn: string, text: string) =>
     Effect.gen(function* () {
       const req = crypto.randomUUID();
