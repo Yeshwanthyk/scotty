@@ -15,6 +15,18 @@ const DeviceRow = Schema.Struct({
   expires_at: Schema.Number,
 });
 const SessionRow = Schema.Struct({ id: Schema.String });
+const GitHubRow = Schema.Struct({
+  token: Schema.String,
+  login: Schema.String,
+  name: Schema.String,
+  email: Schema.String,
+});
+const GitHubUser = Schema.Struct({
+  id: Schema.Number,
+  login: Schema.String,
+  name: Schema.NullOr(Schema.String),
+  email: Schema.NullOr(Schema.String),
+});
 // Sessions can run for hours; refuse a token that could expire mid-session.
 const tokenMargin = 24 * 60 * 60 * 1000;
 class CredentialStoreError extends Schema.TaggedError<CredentialStoreError>()(
@@ -30,7 +42,13 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       const sql = yield* SqliteClient.SqliteClient;
       yield* sql`CREATE TABLE IF NOT EXISTS credentials (provider TEXT PRIMARY KEY, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, id_token TEXT NOT NULL, account_id TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), device_auth_id TEXT NOT NULL, user_code TEXT NOT NULL, interval INTEGER NOT NULL, expires_at INTEGER NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS github (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, login TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
+
+      const gitHub = Effect.gen(function* () {
+        const row = (yield* sql`SELECT token, login, name, email FROM github WHERE id = 1`)[0];
+        return row === undefined ? null : yield* Schema.decodeUnknownEffect(GitHubRow)(row);
+      });
 
       return {
         reserve: (req: string, id: string) =>
@@ -135,6 +153,45 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const status = expires_at <= Date.now() + tokenMargin ? "expiring" : "signed-in";
             return { status, expiresAt: expires_at };
           }),
+        setGitHub: (token: string) =>
+          Effect.gen(function* () {
+            const response = yield* Effect.tryPromise(() =>
+              fetch("https://api.github.com/user", {
+                headers: {
+                  accept: "application/vnd.github+json",
+                  authorization: `Bearer ${token}`,
+                  "user-agent": "scotty-rebuild",
+                },
+              }),
+            );
+            if (response.status !== 200)
+              return { status: "refused" as const, httpStatus: response.status };
+            const user = yield* Schema.decodeUnknownEffect(GitHubUser)(
+              yield* Effect.tryPromise(() => response.json()),
+            );
+            const name = user.name ?? user.login;
+            const email = user.email ?? `${user.id}+${user.login}@users.noreply.github.com`;
+            yield* sql`INSERT OR REPLACE INTO github (id, token, login, name, email) VALUES (1, ${token}, ${user.login}, ${name}, ${email})`;
+            return { status: "set" as const, login: user.login };
+          }),
+        gitHubStatus: () =>
+          gitHub.pipe(
+            Effect.map((row) =>
+              row === null
+                ? { status: "missing" as const, login: null }
+                : { status: "set" as const, login: row.login },
+            ),
+          ),
+        // Only the Worker asks for the token; it never reaches a session or its container.
+        gitHubToken: () => gitHub.pipe(Effect.map((row) => row?.token ?? null)),
+        gitIdentity: () =>
+          gitHub.pipe(
+            Effect.flatMap((row) =>
+              row === null
+                ? new CredentialStoreError({ message: "GitHub token missing" })
+                : Effect.succeed({ name: row.name, email: row.email }),
+            ),
+          ),
         // The refresh token never leaves this object; a session gets only the access token.
         sessionToken: () =>
           Effect.gen(function* () {

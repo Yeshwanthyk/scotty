@@ -13,7 +13,11 @@ export const failure = (code: string, message: string, hint: string, exit = 1) =
   new CliFailure({ code, message, hint, exit });
 
 const ApiError = Schema.Struct({
-  error: Schema.Struct({ message: Schema.String, code: Schema.optional(Schema.String) }),
+  error: Schema.Struct({
+    message: Schema.String,
+    code: Schema.optional(Schema.String),
+    hint: Schema.optional(Schema.String),
+  }),
 });
 const Url = Schema.String.check(Schema.isPattern(/^https:\/\/[^/]+/));
 
@@ -75,6 +79,10 @@ export const Started = Schema.Union([
 export const ChatGptStatus = Schema.Struct({
   status: Schema.Literals(["signed-in", "signed-out", "expiring"]),
   expiresAt: Schema.NullOr(Schema.Number),
+});
+export const GitHubStatus = Schema.Struct({
+  status: Schema.Literals(["set", "missing"]),
+  login: Schema.NullOr(Schema.String),
 });
 export const Polled = Schema.Union([
   Schema.Struct({ status: Schema.Literal("signed-in"), expiresAt: Schema.Number }),
@@ -174,9 +182,10 @@ export function client(settings: { readonly url: string; readonly token: string 
         return yield* failure(
           error?.code ?? "http_error",
           error?.message ?? `HTTP ${response.status}`,
-          response.status === 401 || response.status === 403
-            ? `cloudflared access login ${settings.url}`
-            : `Check the request and retry: scotty doctor`,
+          error?.hint ??
+            (response.status === 401 || response.status === 403
+              ? `cloudflared access login ${settings.url}`
+              : `Check the request and retry: scotty doctor`),
           response.status === 401 || response.status === 403 ? 3 : 1,
         );
       }

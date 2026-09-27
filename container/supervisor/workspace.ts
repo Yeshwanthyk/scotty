@@ -78,6 +78,7 @@ export const prepareWorkspace = (
   repo: string,
   base: string,
   branch: string,
+  git: { readonly name: string; readonly email: string },
   resume?: { readonly commit: string },
 ) =>
   Effect.gen(function* () {
@@ -89,6 +90,14 @@ export const prepareWorkspace = (
     yield* run(["git", "check-ref-format", "--branch", base], root);
     yield* run(["git", "check-ref-format", "--branch", branch], root);
     const dir = `${root}/repo`;
+    // The Session DO routes github.internal to the Worker, which adds the token; git here has none.
+    const config = {
+      "url.http://github.internal/api/git/.insteadOf": "https://github.com/",
+      "user.name": git.name,
+      "user.email": git.email,
+    };
+    for (const [key, value] of Object.entries(config))
+      yield* run(["git", "config", "--global", key, value], root);
     yield* run(
       ["git", "clone", "--depth", "1", "--branch", base, `https://github.com/${repo}`, dir],
       root,

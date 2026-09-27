@@ -38,6 +38,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       // The container handle exists only at run time, not while Alchemy plans the deploy.
       const container = storage.container;
       if (container === undefined) return yield* Effect.die("Session container binding missing");
+      // ctx.exports is typed {} without a GlobalProps declaration; its default export is the
+      // Worker's loopback, which takes props (work/spikes/7a/RESULT.md).
+      const isLoopback = (
+        value: unknown,
+      ): value is (options: {
+        props: { session: string; repo: string };
+      }) => Parameters<NonNullable<typeof container>["interceptOutboundHttp"]>[1] =>
+        typeof value === "function";
       const log = yield* openLog(storage);
       const id = () => log.state.created?.branch.slice("scotty/".length) ?? "";
       const context = yield* Effect.context<RuntimeContext | Cloudflare.DurableObjectState>();
@@ -63,11 +71,20 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             case "container.start": {
               if (action.fresh && container.running)
                 yield* Effect.promise(() => container.destroy());
-              if (!container.running)
+              if (!container.running) {
+                // A new container needs the interceptor; Alchemy's wrapper drops this promise.
+                const loopback: unknown = Reflect.get(storage.raw.exports, "default");
+                if (!isLoopback(loopback)) return yield* Effect.die("no ctx.exports.default");
+                const repo = log.state.created?.repo ?? "";
+                const fetcher = loopback({ props: { session: id(), repo } });
+                yield* Effect.tryPromise(() =>
+                  container.interceptOutboundHttp("github.internal", fetcher),
+                );
                 yield* Effect.try({
                   try: () => container.start({ enableInternet: true }),
                   catch: () => new Error("Container start failed"),
                 });
+              }
               const port = Cloudflare.fromCloudflareFetcher(container.getTcpPort(7000));
               yield* link.dial(port, action.gen, 0);
               return;
@@ -80,6 +97,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             case "start": {
               // Sent over the socket only; never appended to the event log.
               const chatgpt = yield* credentials.getByName("owner").sessionToken();
+              const git = yield* credentials.getByName("owner").gitIdentity();
               // Resume only when the save reached the new container; otherwise start clean.
               const restored =
                 action.resume === undefined
@@ -112,6 +130,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   token: chatgpt.token,
                   accountId: chatgpt.accountId,
                 },
+                git,
                 ...(restored && action.resume !== undefined ? { resume: action.resume } : {}),
               };
               link.send(message);

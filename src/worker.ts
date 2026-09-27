@@ -1,10 +1,15 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
-import { Config, Effect } from "effect";
+import { Config, Effect, Option, Schema } from "effect";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import { gitHandler } from "./creds/git.js";
 import CredsObject from "./creds/object.js";
 import { apiHandler } from "./http/api.js";
 import SessionObject from "./session/object.js";
+
+// Set by the Session DO when it routes its container's github.internal traffic here.
+const LoopbackProps = Schema.Struct({ session: Schema.String, repo: Schema.String });
 
 export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
   "ScottyWorker",
@@ -35,6 +40,15 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
         Effect.provide(RuntimeContext.phantom),
       ),
     );
-    return { fetch: router.asHttpEffect().pipe(Effect.orDie) };
+    const api = router.asHttpEffect().pipe(Effect.orDie);
+    return {
+      fetch: Effect.gen(function* () {
+        const exec = yield* Cloudflare.WorkerExecutionContext;
+        const props = Schema.decodeUnknownOption(LoopbackProps)(exec.raw.props);
+        if (Option.isNone(props)) return yield* api;
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        return yield* gitHandler(request, props.value.repo, credentials).pipe(Effect.orDie);
+      }),
+    };
   }),
 ) {}

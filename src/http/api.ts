@@ -28,9 +28,13 @@ const Steer = Schema.Struct({
 const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(Schema.String) });
 const path =
   /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log))?$/;
-const bad = (message: string, status = 400) =>
+const GitHubToken = Schema.Struct({
+  token: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{20,255}$/)),
+});
+const githubHint = "scotty github set";
+const bad = (message: string, status = 400, hint?: string) =>
   HttpServerResponse.json(
-    { error: { message, code: status === 404 ? "not_found" : "bad_request" } },
+    { error: { message, code: status === 404 ? "not_found" : "bad_request", hint } },
     { status },
   );
 
@@ -48,12 +52,29 @@ export function apiHandler(
       return yield* HttpServerResponse.json(yield* credential.startChatGpt());
     if (url.pathname === "/api/credentials/chatgpt/poll" && request.method === "POST")
       return yield* HttpServerResponse.json(yield* credential.pollChatGpt());
+    if (url.pathname === "/api/credentials/github" && request.method === "GET")
+      return yield* HttpServerResponse.json(yield* credential.gitHubStatus());
+    if (url.pathname === "/api/credentials/github" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(GitHubToken)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () => bad("Expected a GitHub token", 400, githubHint)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const result = yield* credential.setGitHub(body.token);
+      if (result.status === "refused")
+        return yield* bad(`GitHub answered HTTP ${result.httpStatus}`, 400, githubHint);
+      return yield* HttpServerResponse.json(result);
+    }
     if (url.pathname === "/api/sessions" && request.method === "POST") {
       const body = yield* Schema.decodeUnknownEffect(Create)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
-      const baseBranch = yield* defaultBranch(body.repo);
+      const token = yield* credential.gitHubToken();
+      if (token === null) return yield* bad("GitHub token missing", 400, githubHint);
+      const baseBranch = yield* defaultBranch(body.repo, token).pipe(
+        Effect.catchTag("RepositoryFailure", (error) => bad(error.message, 400, githubHint)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(baseBranch)) return baseBranch;
       const idempotency = request.headers["idempotency-key"] ?? crypto.randomUUID();
       const id = yield* credential.reserve(idempotency, crypto.randomUUID().replaceAll("-", ""));
       const stub = sessions.getByName(id);

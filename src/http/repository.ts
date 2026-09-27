@@ -8,19 +8,23 @@ export class RepositoryFailure extends Schema.TaggedError<RepositoryFailure>()(
   },
 ) {}
 
-/** Resolve a public repository before recording a created event in the Session DO. */
-export const defaultBranch = (repo: string) =>
+/** Resolve a repository the token can reach before recording a created event in the Session DO. */
+export const defaultBranch = (repo: string, token: string) =>
   Effect.gen(function* () {
     const response = yield* Effect.tryPromise({
       try: () =>
         fetch(`https://api.github.com/repos/${repo}`, {
-          headers: { accept: "application/vnd.github+json", "user-agent": "scotty-rebuild" },
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${token}`,
+            "user-agent": "scotty-rebuild",
+          },
         }),
       catch: () => new RepositoryFailure({ message: "GitHub repository lookup unavailable" }),
     });
     if (!response.ok)
       return yield* new RepositoryFailure({
-        message: `Public repository lookup returned HTTP ${response.status}`,
+        message: `GitHub repository lookup returned HTTP ${response.status}`,
       });
     const json: unknown = yield* Effect.tryPromise({
       try: () => response.json(),

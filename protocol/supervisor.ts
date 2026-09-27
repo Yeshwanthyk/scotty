@@ -40,6 +40,7 @@ export const ToSupervisor = Schema.Union([
     base: Schema.String,
     branch: Schema.String,
     agent: AgentConfig,
+    git: Schema.Struct({ name: tomlString, email: tomlString }),
     resume: Schema.optionalKey(
       Schema.Struct({
         threadId: identifier,

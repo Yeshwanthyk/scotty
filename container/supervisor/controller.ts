@@ -59,6 +59,7 @@ export class Controller {
           message.repo,
           message.base,
           message.branch,
+          message.git,
           message.resume,
         );
         const scope = yield* Scope.make();

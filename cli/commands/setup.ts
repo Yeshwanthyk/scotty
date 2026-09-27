@@ -1,6 +1,6 @@
-import { Effect, Option } from "effect";
+import { Effect, Option, Stdio, Stream } from "effect";
 import { Command } from "effect/unstable/cli";
-import { ChatGptStatus, Polled, Started, List, failure } from "../client.js";
+import { ChatGptStatus, GitHubStatus, Polled, Started, List, failure } from "../client.js";
 import { output, url, withClient } from "./common.js";
 
 export const doctor = Command.make("doctor", { url }, ({ url: target }) =>
@@ -17,6 +17,9 @@ export const doctor = Command.make("doctor", { url }, ({ url: target }) =>
         "npm run --silent scotty -- signin",
         3,
       );
+    const github = yield* api("/api/credentials/github", GitHubStatus);
+    if (github.status !== "set")
+      return yield* failure("setup", "GitHub token is not set", "scotty github set", 3);
     yield* output({
       url: Option.getOrElse(target, () => process.env.SCOTTY_URL ?? ""),
       access: "ok",
@@ -24,9 +27,23 @@ export const doctor = Command.make("doctor", { url }, ({ url: target }) =>
       sessions: reply.sessions.length,
       chatgpt: "ok",
       chatgptExpiresAt: chatgpt.expiresAt,
+      github: "ok",
+      githubLogin: github.login,
     });
   }),
-).pipe(Command.withDescription("Check URL, Access, Worker and ChatGPT sign-in"));
+).pipe(Command.withDescription("Check URL, Access, Worker, ChatGPT sign-in and GitHub"));
+
+const set = Command.make("set", { url }, ({ url: target }) =>
+  Effect.gen(function* () {
+    const stdio = yield* Stdio.Stdio;
+    const token = (yield* stdio.stdin.pipe(Stream.decodeText(), Stream.mkString)).trim();
+    const api = yield* withClient(target);
+    yield* output(
+      yield* api("/api/credentials/github", GitHubStatus, { method: "POST", body: { token } }),
+    );
+  }),
+).pipe(Command.withDescription("Store the GitHub token read from stdin"));
+export const github = Command.make("github").pipe(Command.withSubcommands([set]));
 
 export const signin = Command.make("signin", { url }, ({ url: target }) =>
   Effect.gen(function* () {

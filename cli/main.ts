@@ -2,18 +2,20 @@ import { BunServices } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
 import { Command, CliError } from "effect/unstable/cli";
 import { CliFailure, failure } from "./client.js";
-import { doctor, signin } from "./commands/setup.js";
+import { doctor, github, signin } from "./commands/setup.js";
 import { create, ls, show, log } from "./commands/sessions.js";
 import { steer, interrupt, stop, resume } from "./commands/actions.js";
 import { read } from "./commands/read.js";
 
 const help: Record<string, string> = {
   scotty:
-    "Usage: scotty <command> [--url https://host]\nCommands: doctor, signin, new, ls, show, steer, interrupt, stop, resume, read, log\nRun scotty <command> --help for options.\nExample: scotty doctor",
+    "Usage: scotty <command> [--url https://host]\nCommands: doctor, signin, github, new, ls, show, steer, interrupt, stop, resume, read, log\nRun scotty <command> --help for options.\nExample: scotty doctor",
   doctor:
-    "Usage: scotty doctor [--url https://host]\nCheck Access and Worker connectivity.\nExample: scotty doctor",
+    "Usage: scotty doctor [--url https://host]\nCheck Access, the Worker, ChatGPT sign-in and the GitHub token.\nExample: scotty doctor",
   signin:
     "Usage: scotty signin [--url https://host]\nSign in to ChatGPT with a device code.\nExample: scotty signin",
+  github:
+    "Usage: scotty github set [--url https://host]\nStore the GitHub token read from stdin.\nExample: gh auth token | scotty github set",
   new: "Usage: scotty new <owner/repo|https://github.com/owner/repo> [--prompt text] [--key key] [--url https://host]\nCreate a session; --key makes retries idempotent.\nExample: scotty new octocat/Hello-World --prompt 'Describe the code'",
   ls: "Usage: scotty ls [--url https://host]\nList sessions.\nExample: scotty ls",
   show: "Usage: scotty show <id> [--url https://host]\nShow a session.\nExample: scotty show abcdef",
@@ -32,6 +34,7 @@ const root = Command.make("scotty").pipe(
   Command.withSubcommands([
     doctor,
     signin,
+    github,
     create,
     ls,
     show,
