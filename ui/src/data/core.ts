@@ -14,7 +14,10 @@ const Session = Schema.Struct({
     title: Schema.String,
     repository: Schema.String,
     branch: Schema.String,
+    agentKind: Schema.String,
+    createdAt: Schema.String,
   }),
+  progress: Schema.Struct({ working: Schema.Boolean, turns: Schema.Number }),
 });
 const List = Schema.Struct({ version: Schema.Literal(1), sessions: Schema.Array(Session) });
 const Detail = Schema.Struct({ version: Schema.Literal(1), session: Session });
@@ -37,9 +40,10 @@ async function request(
   body?: object,
   signal?: AbortSignal,
   key?: string,
+  method?: "DELETE",
 ): Promise<unknown> {
   const response = await fetch(path, {
-    method: body === undefined ? "GET" : "POST",
+    method: method ?? (body === undefined ? "GET" : "POST"),
     headers: {
       accept: "application/json",
       ...(body === undefined ? {} : { "content-type": "application/json" }),
@@ -110,4 +114,24 @@ export async function write(
   );
   if (result === undefined) throw new Error("Unreadable write response");
   return result.status;
+}
+
+const sessionPath = (id: string) => "/api/sessions/" + encodeURIComponent(id);
+
+// Stop and resume answer with the session; the next poll shows it, so the body is not read.
+export async function lifecycle(id: string, action: "stop" | "resume"): Promise<void> {
+  await request(sessionPath(id) + "/" + action, {});
+}
+
+export async function remove(id: string): Promise<void> {
+  await request(sessionPath(id), undefined, undefined, undefined, "DELETE");
+}
+
+const Hatch = Schema.Struct({ url: Schema.String });
+export async function hatch(id: string, port: number): Promise<string> {
+  const result = Option.getOrUndefined(
+    Schema.decodeUnknownOption(Hatch)(await request(sessionPath(id) + "/hatch/" + port)),
+  );
+  if (result === undefined) throw new Error("Unreadable preview response");
+  return result.url;
 }

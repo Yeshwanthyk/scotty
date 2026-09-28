@@ -8,6 +8,7 @@ import type { Plugin } from "vite";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
 import { fold, initial, type State } from "../../src/session/fold.ts";
 import { conversationView, sessionView } from "../../src/session/view.ts";
+import { codexLog, dummies } from "./dummy.ts";
 
 const here = new URL(".", import.meta.url);
 const speed = 4;
@@ -195,6 +196,7 @@ function seed() {
     const id = created.branch.replace(/^scotty\//, "");
     sessions.set(id, make(id, history));
   }
+  for (const spec of dummies) sessions.set(spec.id, make(spec.id, codexLog(spec)));
   // Waiting for the owner: the two-turn log cut before its stop.
   const waiting = readLog("two-turns");
   const cut = waiting.findIndex((event) => event.kind === "container.stopped");

@@ -48,61 +48,97 @@ const styles = stylex.create({
   },
 });
 
-// Rendered SVGs are displayed as images so diagram content cannot join the app DOM.
-const renderer = () =>
-  import("mermaid").then(({ default: mermaid }) => {
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: "strict",
-      suppressErrorRendering: true,
-      theme: "base",
-      fontFamily: "ui-sans-serif, system-ui, sans-serif",
-      htmlLabels: false,
-      secure: [
-        "secure",
-        "securityLevel",
-        "startOnLoad",
-        "maxTextSize",
-        "maxEdges",
-        "suppressErrorRendering",
-        "htmlLabels",
-        "theme",
-        "themeVariables",
-        "fontFamily",
-      ],
-      themeVariables: {
-        darkMode: true,
-        background: "#101010",
-        primaryColor: "#202b2e",
-        primaryTextColor: "#f5f5f5",
-        primaryBorderColor: "#64949d",
-        secondaryColor: "#242424",
-        tertiaryColor: "#181818",
-        lineColor: "#a6b6ba",
-        textColor: "#f5f5f5",
-        nodeTextColor: "#f5f5f5",
-        mainBkg: "#202b2e",
-        edgeLabelBackground: "#101010",
-        actorBkg: "#202b2e",
-        actorBorder: "#64949d",
-        actorTextColor: "#f5f5f5",
-        actorLineColor: "#a6b6ba",
-        signalColor: "#a6b6ba",
-        signalTextColor: "#f5f5f5",
-        labelBoxBkgColor: "#242424",
-        labelTextColor: "#f5f5f5",
-        noteBkgColor: "#242424",
-        noteTextColor: "#f5f5f5",
-      },
-    });
-    return mermaid;
+const palette = (dark: boolean) =>
+  dark
+    ? {
+        bg: "#161616",
+        node: "#232323",
+        border: "#4a4a4a",
+        line: "#8a8a8a",
+        text: "#ececec",
+        soft: "#1c1c1c",
+      }
+    : {
+        bg: "#ffffff",
+        node: "#f4f4f5",
+        border: "#c9c9ce",
+        line: "#6e6e76",
+        text: "#1d1d1f",
+        soft: "#fafafa",
+      };
+
+// Mermaid's config is global, so each render sets it for the scheme it draws in.
+const configure = (mermaid: typeof import("mermaid").default, dark: boolean) => {
+  const color = palette(dark);
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    suppressErrorRendering: true,
+    theme: "base",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    htmlLabels: false,
+    secure: [
+      "secure",
+      "securityLevel",
+      "startOnLoad",
+      "maxTextSize",
+      "maxEdges",
+      "suppressErrorRendering",
+      "htmlLabels",
+      "theme",
+      "themeVariables",
+      "fontFamily",
+    ],
+    themeVariables: {
+      darkMode: dark,
+      background: color.bg,
+      primaryColor: color.node,
+      primaryTextColor: color.text,
+      primaryBorderColor: color.border,
+      secondaryColor: color.soft,
+      tertiaryColor: color.soft,
+      lineColor: color.line,
+      textColor: color.text,
+      nodeTextColor: color.text,
+      mainBkg: color.node,
+      edgeLabelBackground: color.bg,
+      actorBkg: color.node,
+      actorBorder: color.border,
+      actorTextColor: color.text,
+      actorLineColor: color.line,
+      signalColor: color.line,
+      signalTextColor: color.text,
+      labelBoxBkgColor: color.soft,
+      labelTextColor: color.text,
+      noteBkgColor: color.soft,
+      noteTextColor: color.text,
+    },
   });
+};
+
+// Rendered SVGs are displayed as images so diagram content cannot join the app DOM.
+const renderer = () => import("mermaid").then(({ default: mermaid }) => mermaid);
+
+const darkQuery = "(prefers-color-scheme: dark)";
+function useDark() {
+  const [dark, setDark] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(darkQuery).matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia(darkQuery);
+    const onChange = () => setDark(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return dark;
+}
 let mermaidRenderer: ReturnType<typeof renderer> | undefined;
 
 export function MermaidDiagram({ source }: { readonly source: string }) {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [result, setResult] = useState<{ readonly source: string; readonly image?: string }>();
   const [enlarged, setEnlarged] = useState(false);
+  const dark = useDark();
   const current = result?.source === source ? result : undefined;
 
   useEffect(() => {
@@ -119,6 +155,7 @@ export function MermaidDiagram({ source }: { readonly source: string }) {
           container.setAttribute("aria-hidden", "true");
           document.body.append(container);
           try {
+            configure(mermaid, dark);
             const { svg } = await mermaid.render(`mermaid-${id}`, source, container);
             if (!cancelled)
               setResult({
@@ -137,7 +174,7 @@ export function MermaidDiagram({ source }: { readonly source: string }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [id, source]);
+  }, [id, source, dark]);
 
   return (
     <figure data-mermaid {...stylex.props(styles.figure)}>
