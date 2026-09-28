@@ -9,7 +9,9 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
   - ChatGPT subscription, used by Codex.
   - A GitHub token, used by git.
 
-  Claude, Pi providers, custom providers and `gh` come later, with the same providers shape.
+  - A Claude setup token (step 10), used by Claude Code. The owner signs in on a laptop with the official `claude setup-token` and pushes the token once, like the GitHub token.
+
+  Pi providers, custom providers and `gh` come later, with the same providers shape.
 
 - **One agent: Codex** (`codex app-server` over stdio). The contracts are agent-neutral so Claude and pi can be added later as a new case, not a breaking change: the supervisor's `start` carries `agent: {kind: "codex", ...}`, agent output is `agent {n, kind, event}`, the supervisor runs Codex behind an agent-runner interface, and only `view.ts` interprets agent events, per `kind`.
 - **One runtime: a Cloudflare Container.** It runs the default image this repository ships, or an image the user supplies that meets the supervisor contract.
@@ -159,6 +161,10 @@ The dev environment (step 8b) belongs to the agent, and nothing in an agent adap
   - `config.toml` (mode 0600) sets `base_url = "https://chatgpt.com/backend-api/codex"`, `experimental_bearer_token = <token>`, `http_headers = { "chatgpt-account-id" = … }`, `wire_api = "responses"`, `requires_openai_auth = false`, `supports_websockets = false`, zero retries, and `[features] plugins = false` (spike 1c). Codex runs with an explicit environment allowlist.
   - The token is in no environment variable, so commands the agent runs don't inherit it. An env var did not work: in Codex 0.157.1, `[shell_environment_policy] exclude = ["SCOTTY_*"]` still let commands see it (e2e run 4, `work/step2/env-names.out`). e2e `core` checks with `env | grep -c SCOTTY_`.
   - Risk accepted for a single user: code in the container can read `config.toml` and use the token until it expires. The refresh token never leaves the Creds DO.
+- **Claude (step 10, owner, 2026-09-28).** Claude runs only on the owner's Claude subscription, the way t3code runs it: the official Agent SDK drives the real `claude` binary, and Scotty never runs a Claude login itself.
+  - **Sign-in happens on the owner's laptop.** `scotty auth login claude` runs `claude setup-token`: the browser opens and the owner signs in. The CLI takes the `sk-ant-oat01-…` token from its output and sends it to the Creds DO. If it can't read the output, the owner pipes the token in on stdin, as with `gh auth token | scotty auth login github`. Settings → Accounts has a paste field for the phone.
+  - **Pushed once, not synced.** The setup token lasts a year and never rotates, and the laptop's own `claude` login is untouched. `doctor` and `auth status` show its expiry. Copying the laptop's normal Claude login isn't an option: it is a token that expires within hours plus a refresh token that rotates on use, so the laptop and Scotty would log each other out.
+  - **Delivery:** at `start`, the Session DO sends the token over the supervisor socket only, never through the event log. The supervisor starts Claude with `CLAUDE_CODE_OAUTH_TOKEN` in that process's environment, and Claude calls `api.anthropic.com` directly. Claude Code 2.1.284 strips the variable from the commands it runs: a Bash tool call saw `ANTHROPIC_BASE_URL` but not the token (spike 10a). Accepted risk, as with Codex: code in the container can read it from the Claude process.
 - **git (spike 7a, `work/spikes/7a/RESULT.md`).** One GitHub token, set once with `gh auth token | scotty auth login github`; any repository it can reach works, with no repository list.
   - The supervisor sets `url."http://github.internal/api/git/".insteadOf https://github.com/`, plus `user.name` and `user.email` from `start.git`. The container has no GitHub credential and no credential helper.
   - The Creds DO checks the token with `GET https://api.github.com/user` when it is set and stores `login`, `name` (falls back to `login`) and `email` (falls back to `<id>+<login>@users.noreply.github.com`). `new` resolves the default branch with the token; no token, or a GitHub error, is a 400 with the hint `scotty auth login github`.
