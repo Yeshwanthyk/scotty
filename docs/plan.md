@@ -371,18 +371,19 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
   4. **Conversation:** each turn in `conversationView` gains `files: [{id, name, type, size, caption?}]`, in attach order. `GET /api/sessions/:id/files/:file` streams from R2 with the stored type; Access gates it like every other API route.
   5. **Chat UI (the one `ui/` change):** `ui/src/routes/s.$sessionId.tsx` shows a turn's files under its assistant text. Images show as `<img>` (tap opens the full file); videos as `<video controls playsinline>`. Nothing else in `ui/` changes.
   6. **CLI:** `scotty read` lists each file under its turn as `name (type, size) <url>`. There is no new command.
-  7. **Capture tools:** the image adds Chromium through Playwright (a pinned version, browsers in a shared path, `playwright` on PATH). `container/AGENTS.md` tells the agent:
+  7. **Capture tools (owner, 2026-09-28: keep the image small):** the image gains no browser. `container/AGENTS.md` tells the agent:
+     - install Playwright's Chromium on demand the first time it needs one (`npx -y playwright@<pinned> install --with-deps chromium`);
      - screenshot a local server directly at `localhost:<port>`, not through the preview URL, at 390×844 unless asked otherwise;
      - record a video with Playwright's `recordVideo`;
      - attach every image or video it makes for the user with `scotty-attach`, then mention it in its reply.
 - **Out of scope:** images the owner sends into the chat (`prompt.requested.images` stays `[]`), agent-specific image items (Codex `imageView` and similar), thumbnails or transcoding, deleting files, quotas beyond the per-file cap, the full UI (step 12), and Claude or Pi (steps 10 and 11; the command already works for them).
 - **Touch:** `container/Dockerfile`, `container/AGENTS.md`, `container/scotty-attach`, `src/worker.ts`, `src/session/{object,events,fold,view}.ts`, `src/session/fold.test.ts`, `src/http/api.ts`, `cli/`, `ui/src/routes/s.$sessionId.tsx`, `e2e/files.ts`, `e2e/run.ts`, `alchemy.run.ts` (only if R2 needs a new binding), `docs/design.md`, `docs/plan.md`.
-- **Budget:** +300 excluding docs and e2e (image and AGENTS.md 25, attach script 25, Worker route 60, DO, event and fold 50, view and API 50, UI 50, CLI 20). Past that, stop and ask.
+- **Budget:** +300 excluding docs and e2e (Dockerfile and AGENTS.md 20, attach script 25, Worker route 60, DO, event and fold 50, view and API 50, UI 50, CLI 20). Past that, stop and ask.
 - **Done when:**
   - The checks pass. The fold tests cover `file.attached` both during a turn and after a stop. A new image is built and deployed to `dev`.
   - `npm run --silent e2e -- files` on `dev`, using `$SCOTTY_HATCH_TEST_REPO`:
     1. Prompt: "Start the dev server, take a 390×844 screenshot of the page and a 5 second video of clicking the counter, and attach both to this chat."
-    2. Turn 0's `files` holds one `image/png` and one `video/webm`.
+    2. Turn 0's `files` holds one `image/png` and one `video/webm`. The e2e prints the time from the prompt to the end of the turn, which includes installing Chromium on demand.
     3. Each file answers 200 with its type and its event's size. The PNG starts with the PNG signature; the webm starts with the EBML header `1A 45 DF A3`.
     4. A PUT to `files.internal` whose type is not on the list gets 415, and one over 25 MB gets 413; neither writes an event. Test this with a steer that runs `curl` in the container.
     5. After `stop`, the conversation still lists both files and both still download, because they come from R2, not the container.
