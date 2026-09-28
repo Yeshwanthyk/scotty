@@ -581,6 +581,13 @@ Each item gets its own step before anyone builds it.
 - **Dev-environment cache (step 8b review):** Build it when post-resume setup is > ~3 min on a real repo, or registry throttling makes item 3 flaky: `cache.internal` via `interceptOutboundHttp`, R2 `cache/<owner>/<repo>/<key>.tar` streamed by the Worker, a 15-line `scotty-cache restore|save` script, key chosen by the agent from the lockfile hash.
 - Warm per-repository environments: a setup script run once per repository, its result cached (for example a workspace tar in R2) so sessions start with dependencies installed.
 - User-supplied images, checked against the supervisor contract at `hello`.
+- **Sessions on the owner's own machines (owner, 2026-09-28; a later session plans it, after step 10 runs):** besides Cloudflare Containers, run sessions on a VPS or a home Linux box. Questions for that session:
+  - **What moves.** Likely only the container: the Worker, the DOs, the UI, Access and R2 stay on Cloudflare. The supervisor socket (`protocol/supervisor.ts`) is the seam. How does a session pick where it runs?
+  - **Connecting.** A home box is behind NAT, so the machine probably dials out to the Worker instead of the DO starting a container. How is a machine enrolled and authenticated? Does it run each session in its own Docker container from the same image?
+  - **Hatch.** Previews reach the DO's `getTcpPort(N)` today (`design.md` "Hatch"). On a machine, preview traffic, WebSockets included, needs a path over the machine's outbound connection or a Cloudflare Tunnel, still behind Access.
+  - **Credentials.** Tokens reach the machine only as they reach a container now (the `AGENTS.md` exceptions). Nothing is left on disk after the session stops.
+  - **Stop and resume.** Save to and restore from R2 as now, or keep the workspace on the machine.
+  - **The terminal and files.** The same relays over the new connection.
 
 ## Review rules
 
