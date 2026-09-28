@@ -404,13 +404,14 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
   - t3code never handles a credential. It uses the host's own `claude auth login` and maps the SDK's `authentication_failed` to "run `claude auth login`". Its maintainers turned down an unofficial SDK in favour of "the official ones" (PR #1756).
   - Anthropic's Agent SDK docs say third parties may not offer claude.ai login or rate limits in their products "unless previously approved". `claude setup-token` mints a one-year `CLAUDE_CODE_OAUTH_TOKEN`, meant for "CI pipelines and scripts where browser login isn't available". Scotty is the owner's own single-user deployment of the owner's own subscription, and it offers no login to anyone else.
   - @old used the Agent SDK too (`0.3.281`, `worker/src/agent/claude/host.ts`), with a `claude setup-token` token (`sk-ant-oat01-…`) synced by the CLI. The container held a placeholder, and the egress Worker swapped in the real token for `api.anthropic.com` (`worker/src/egress/worker.ts:110-123`).
-- **Login (decision pending, owner, 2026-09-28):**
+- **Login (owner chose the recommended option, 2026-09-28):**
   - **Recommended:** the owner runs `claude setup-token` locally and pipes the token to `scotty auth login claude`, the same shape as `auth login github`. The token lives only in the Creds DO. The container gets `ANTHROPIC_BASE_URL=http://anthropic.internal` and a placeholder token. The Worker, through the same loopback interceptor as `github.internal`, forwards to `https://api.anthropic.com` with the real token. The token never enters the container, so this needs no new exception to the credentials rule. It depends on `api.anthropic.com` accepting Worker egress; spike 10a (a) decides.
   - If Worker egress is refused (as chatgpt.com's is), the token goes in a mode-0600 Claude config file, like Codex's `config.toml`. That extends the one documented exception, so it needs the owner's approval and an `AGENTS.md` change.
   - **Rejected:**
     - Syncing `~/.claude/.credentials.json`: its refresh token rotates, so the laptop and Scotty would log each other out.
     - `claude auth login` inside the container: the refresh token would live in the container.
-    - An API key: per-token billing instead of the subscription. It stays open as a later provider.
+    - An API key, or any other provider: Claude runs only on the owner's Claude subscription (owner, 2026-09-28).
+    - Scotty running the claude.ai OAuth itself: that would reuse Claude Code's client ID, which Anthropic's Agent SDK docs don't allow without approval. The official `claude setup-token` mints the token. The owner can run it on a laptop, or on the phone in any session's terminal, and paste the result.
 - **In scope:**
   1. **Spike 10a** (`work/spikes/10a/`, not committed; results go in `design.md`):
      - (a) Does a deployed Worker's `POST https://api.anthropic.com/v1/messages` with the setup token return 200?
@@ -419,6 +420,7 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
      - (d) Which folders does it load global instructions (`~/.claude/CLAUDE.md`) and skills (`~/.claude/skills/<name>`) from?
   2. **Credentials:**
      - `scotty auth login claude` reads the token from stdin and checks its shape (`sk-ant-oat01-…`). The Creds DO stores it.
+     - Settings → Accounts gets a Claude field to paste the token from the phone, with the hint to run `claude setup-token`.
      - `auth status` and `doctor` report `claude`. No refresh and no sign-out.
   3. **Route:** `anthropic.internal` on the loopback interceptor.
      - The Worker allows only `POST /v1/messages` and `/v1/messages/count_tokens`.
@@ -441,7 +443,7 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
      - The new-session page gets a Codex/Claude control, and the session header shows the agent.
   9. **Image:** `@anthropic-ai/claude-code` pinned in `container/Dockerfile`. `@anthropic-ai/claude-agent-sdk` pinned in the root `package.json` (named here, per rule 7).
 - **Out of scope:**
-  - An API key or any other Claude login.
+  - An API key, `ANTHROPIC_API_KEY`, other providers, or any login except the subscription setup token.
   - Claude.ai OAuth inside Scotty.
   - Syncing local Claude credentials.
   - Token refresh or sign-out.
@@ -455,7 +457,7 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
   - `src/creds/object.ts`, a new `src/creds/anthropic.ts`, `src/worker.ts`, `src/http/api.ts`
   - `src/session/{events,object,view,items}.ts`
   - `cli/commands/{setup,sessions}.ts`, `cli/main.ts`
-  - `ui/src/routes/sessions.create.tsx`, the session header component, `ui/src/protocol/session/*` for the kind literal
+  - `ui/src/routes/sessions.create.tsx`, `ui/src/routes/settings.$section.tsx`, the session header component, `ui/src/protocol/session/*` for the kind literal
   - `e2e/{core,stop-resume,run}.ts`, `package.json`, `package-lock.json`
   - `docs/design.md`, `docs/plan.md`, `docs/setup.md`, `.agents/skills/verify-scotty` (the `auth login claude` recipe)
 - **Budget:** +600 excluding docs, spikes and saved logs:
