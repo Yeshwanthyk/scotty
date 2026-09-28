@@ -24,6 +24,8 @@ export const supervisorEvent = (
           base: message.base,
           branch: message.branch,
           commit: message.commit,
+          ms: message.ms,
+          retried: message.retried,
         };
       case "agent_ready":
         return {

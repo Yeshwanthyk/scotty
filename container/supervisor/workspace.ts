@@ -1,4 +1,4 @@
-import { Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effect";
+import { Clock, Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { codexHome } from "./codex-config.js";
 import { processEnv } from "./runtime.js";
@@ -58,14 +58,22 @@ const run = (args: string[], cwd: string) => exec(args, cwd).pipe(Effect.mapErro
 
 // GitHub throttles Cloudflare's shared egress for minutes at a time (429 or 403, Retry-After
 // 300), and a proxied transfer can drop. Waiting these out turns a failed start into a slow
-// one; a 401 or 404 is a real answer.
+// one; a 401 or 404 is a real answer. A retry often succeeds at once, so waits start at 1 s
+// and grow to 30 s; the ~5 minutes they cover fit the workspace deadline.
 const transient = (error: unknown) =>
   error instanceof CommandFailed &&
   /error: (429|403|5\d\d)|RPC failed|early EOF|Connection reset/.test(error.stderr) &&
   !/error: (401|404)/.test(error.stderr);
-const fromGitHub = (args: string[], cwd: string) =>
+const backoff = Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]);
+// Each retried failure is reported in workspace.ready, so a slow start shows why.
+const fromGitHub = (args: string[], cwd: string, retried: string[]) =>
   exec(args, cwd).pipe(
-    Effect.retry({ while: transient, schedule: Schedule.spaced("30 seconds"), times: 10 }),
+    Effect.tapError((error) =>
+      Effect.sync(() => {
+        if (transient(error)) retried.push(described(error).message);
+      }),
+    ),
+    Effect.retry({ while: transient, schedule: backoff, times: 14 }),
     Effect.mapError(described),
   );
 
@@ -116,6 +124,8 @@ export const prepareWorkspace = (
   resume?: { readonly commit: string },
 ) =>
   Effect.gen(function* () {
+    const started = yield* Clock.currentTimeMillis;
+    const retried: string[] = [];
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || repo.includes(".."))
       return yield* new WorkspaceError({ message: "invalid repository" });
     if (base.startsWith("-") || branch.startsWith("-"))
@@ -135,13 +145,15 @@ export const prepareWorkspace = (
     yield* fromGitHub(
       ["git", "clone", "--depth", "1", "--branch", base, `https://github.com/${repo}`, dir],
       root,
+      retried,
     );
     if (resume === undefined) yield* run(["git", "checkout", "-b", branch], dir);
     else {
-      yield* fromGitHub(["git", "fetch", "--depth", "1", "origin", resume.commit], dir);
+      yield* fromGitHub(["git", "fetch", "--depth", "1", "origin", resume.commit], dir, retried);
       yield* run(["git", "checkout", "-b", branch, resume.commit], dir);
       yield* run(["sh", "-c", restoreScript, "restore", restoreFile(), codexHome()], dir);
     }
     const commit = yield* run(["git", "rev-parse", "HEAD"], dir);
-    return { dir, commit };
+    const ms = (yield* Clock.currentTimeMillis) - started;
+    return { dir, commit, ms, retried };
   });

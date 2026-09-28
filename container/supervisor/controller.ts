@@ -9,7 +9,15 @@ import type { Output } from "./wire.js";
 import { prepareWorkspace, saveWorkspace, storeSave, WorkspaceError } from "./workspace.js";
 
 type Start = Extract<ToSupervisorMessage, { type: "start" }>;
-type Ready = { base: string; branch: string; commit: string; kind: "codex"; session: string };
+type Ready = {
+  base: string;
+  branch: string;
+  commit: string;
+  ms: number;
+  retried: string[];
+  kind: "codex";
+  session: string;
+};
 type StartState =
   | { status: "inflight" }
   | { status: "ready"; ready: Ready }
@@ -41,6 +49,8 @@ export class Controller {
               base: ready.base,
               branch: ready.branch,
               commit: ready.commit,
+              ms: ready.ms,
+              retried: ready.retried,
             },
             message.gen,
           );
@@ -81,6 +91,8 @@ export class Controller {
           base: message.base,
           branch: message.branch,
           commit: workspace.commit,
+          ms: workspace.ms,
+          retried: workspace.retried,
           kind: agent.kind,
           session: agent.session,
         };
@@ -113,6 +125,8 @@ export class Controller {
           base: outcome.value.base,
           branch: outcome.value.branch,
           commit: outcome.value.commit,
+          ms: outcome.value.ms,
+          retried: outcome.value.retried,
         },
         message.gen,
       );

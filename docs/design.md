@@ -68,7 +68,7 @@ A handler never awaits an outside party while changing state. An outside action 
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `created`                               | `repo, baseBranch, branch, title, prompt, image, agentKind` (`branch` is the work branch `scotty/<session id>`, chosen at create time) |
 | `container.start` / `sup.hello`         | `gen` / `gen, n, version, boot` (`boot` identifies one supervisor process)                                                             |
-| `workspace.ready`                       | `gen, n, base, branch, commit`                                                                                                         |
+| `workspace.ready`                       | `gen, n, base, branch, commit, ms?, retried?` (`ms`: clone/fetch time; `retried`: git's error for each retried GitHub failure)         |
 | `agent.ready`                           | `gen, n, agentKind, session` (the agent's session id)                                                                                  |
 | `prompt.requested` / `prompt.delivered` | `req, turn, text, images` / `gen, n, req` (delivery settles a prompt or interrupt; client `req` cannot start with `initial:`)          |
 | `interrupt.requested`                   | `req, turn`                                                                                                                            |

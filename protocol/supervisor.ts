@@ -73,6 +73,8 @@ export const FromSupervisor = Schema.Union([
     base: Schema.String,
     branch: Schema.String,
     commit: Schema.String,
+    ms: Schema.Number,
+    retried: Schema.Array(Schema.String),
   }),
   Schema.Struct({
     ...envelope,
