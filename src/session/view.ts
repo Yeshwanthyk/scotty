@@ -24,6 +24,7 @@ export function sessionView(id: string, state: State) {
       branch,
       agentKind: created?.agentKind ?? "codex",
       createdAt: new Date(created?.at ?? 0).toISOString(),
+      activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
     },
     // Working while the current turn has a prompt; `turns` lets a client notice unseen answers.
     progress: {

@@ -57,7 +57,7 @@ export function fold(state: State, event: SessionEvent): State {
   const next = { ...state, lastSeq: event.seq };
   switch (event.kind) {
     case "created":
-      return state.created === undefined ? { ...next, created: event } : next;
+      return state.created === undefined ? { ...next, created: event, activeAt: event.at } : next;
     case "container.start":
       if (state.created === undefined || !live(state) || state.gen !== undefined) return next;
       return {
@@ -70,7 +70,10 @@ export function fold(state: State, event: SessionEvent): State {
       if (event.gen !== state.gen || !live(state)) return next;
       if (state.boot !== undefined && state.boot !== event.boot)
         return endAll(
-          { ...next, failure: { code: "supervisor_restarted", retryable: true } },
+          {
+            ...next,
+            failure: { code: "supervisor_restarted", retryable: true },
+          },
           "failed",
         );
       if (state.connected || (!has(state.pending, "container") && !has(state.pending, "dial")))
@@ -95,7 +98,11 @@ export function fold(state: State, event: SessionEvent): State {
       if (!accepts(state, event)) return next;
       const accepted = state.ready
         ? advance(next, event.n)
-        : { ...advance(next, event.n), lastAckN: state.lastAckN, lastAckSeq: state.lastAckSeq };
+        : {
+            ...advance(next, event.n),
+            lastAckN: state.lastAckN,
+            lastAckSeq: state.lastAckSeq,
+          };
       if (state.ready || state.created === undefined) return accepted;
       if (state.commit !== undefined)
         return {
@@ -166,6 +173,7 @@ export function fold(state: State, event: SessionEvent): State {
             };
       return {
         ...base,
+        activeAt: kind === "prompt" ? event.at : state.activeAt,
         requests: [...state.requests, request],
         pending:
           valid && base.ready
@@ -193,7 +201,11 @@ export function fold(state: State, event: SessionEvent): State {
       // A lone agent exit (crash or OOM) leaves the session resumable, not broken.
       if (event.req === undefined && event.code === "exit")
         return endAll(
-          { ...advance(next, event.n), lastAckN: state.lastAckN, lastAckSeq: state.lastAckSeq },
+          {
+            ...advance(next, event.n),
+            lastAckN: state.lastAckN,
+            lastAckSeq: state.lastAckSeq,
+          },
           "stopped",
         );
       // The supervisor reports a failed start once; waiting out the workspace deadline adds nothing.
@@ -224,6 +236,7 @@ export function fold(state: State, event: SessionEvent): State {
       if (state.phase !== "running" || event.turn !== state.currentTurn) return ended;
       return {
         ...ended,
+        activeAt: event.at,
         currentTurn: String(state.turns.length + 1),
         turns: [
           ...state.turns,
@@ -294,30 +307,45 @@ export function fold(state: State, event: SessionEvent): State {
       if (event.op === "dial") return endAll(next, "stopped");
       if (event.op === "container" || event.op === "workspace")
         return endAll(
-          { ...next, failure: { code: `${event.op}_timeout`, retryable: true } },
+          {
+            ...next,
+            failure: { code: `${event.op}_timeout`, retryable: true },
+          },
           "failed",
         );
       // A lost save leaves the previous save in place; the session carries on.
       if (event.op === "save") return { ...next, pending: remove(state.pending, "save") };
       if (event.op === "redial")
-        return { ...next, lastRedialSeq: event.seq, pending: remove(state.pending, "redial") };
+        return {
+          ...next,
+          lastRedialSeq: event.seq,
+          pending: remove(state.pending, "redial"),
+        };
       return {
         ...next,
         requests: settle(state.requests, requestFromOp(event.op), "timed_out"),
         pending: remove(state.pending, event.op),
       };
     case "resume.requested":
-      return state.phase === "stopped" ? resume(next, event.at) : next;
+      return state.phase === "stopped" ? resume({ ...next, activeAt: event.at }, event.at) : next;
     case "container.stopped":
       return event.gen === state.gen && live(state) ? endAll(next, "stopped") : next;
     case "failed":
       return endAll(
-        { ...next, failure: { code: event.code, retryable: event.retryable } },
+        {
+          ...next,
+          activeAt: event.at,
+          failure: { code: event.code, retryable: event.retryable },
+        },
         "failed",
       );
     case "file.attached": {
       const { seq: _seq, at: _at, src: _src, kind: _kind, ...file } = event;
-      return { ...next, files: [...state.files, { ...file, turn: state.currentTurn }] };
+      return {
+        ...next,
+        activeAt: event.at,
+        files: [...state.files, { ...file, turn: state.currentTurn }],
+      };
     }
     case "invariant.violated":
       return next;

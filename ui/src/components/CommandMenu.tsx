@@ -39,7 +39,7 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
     const sessions: Command[] = (list ?? []).map((session) => ({
       id: session.identity.id,
       label: session.display.title,
-      detail: `${session.display.repository} · ${ago(session.display.createdAt)}`,
+      detail: `${session.display.repository} · ${ago(session.display.activeAt)}`,
       section: "Sessions",
       mark: <StatusMark status={statusOf(session)} />,
       run: go(() => navigate({ to: "/s/$sessionId", params: { sessionId: session.identity.id } })),

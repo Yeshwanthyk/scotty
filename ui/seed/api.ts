@@ -201,17 +201,18 @@ function seed() {
   const waiting = readLog("two-turns");
   const cut = waiting.findIndex((event) => event.kind === "container.stopped");
   const id = "5eed0000000000000000000000000001";
+  const kept = waiting.slice(0, cut);
+  // Moved in time as a whole so its last answer landed a minute ago.
+  const shift = Date.now() - 60_000 - (kept.at(-1)?.at ?? 0);
   sessions.set(
     id,
     make(
       id,
-      waiting
-        .slice(0, cut)
-        .map((event) =>
-          event.kind === "created"
-            ? { ...event, title: "Waiting for you", branch: `scotty/${id}`, at: Date.now() - 60000 }
-            : event,
-        ),
+      kept.map((event) =>
+        event.kind === "created"
+          ? { ...event, title: "Waiting for you", branch: `scotty/${id}`, at: event.at + shift }
+          : { ...event, at: event.at + shift },
+      ),
     ),
   );
   // Live: a session that boots and streams its answer from the moment the server starts.

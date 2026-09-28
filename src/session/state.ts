@@ -19,6 +19,8 @@ type Turn = { readonly turn: string; readonly codexTurn: string; readonly state:
 export type State = {
   readonly phase: "provisioning" | "running" | "stopped" | "failed";
   readonly lastSeq: number;
+  // When the owner or the agent last did something worth sorting by: a prompt, a turn's end.
+  readonly activeAt: number;
   readonly gen: number | undefined;
   readonly startSeq: number;
   readonly stopSeq: number;
@@ -52,6 +54,7 @@ export const live = (state: State): boolean =>
 export const initial: State = {
   phase: "provisioning",
   lastSeq: 0,
+  activeAt: 0,
   gen: undefined,
   startSeq: 0,
   stopSeq: 0,

@@ -16,6 +16,7 @@ const Session = Schema.Struct({
     branch: Schema.String,
     agentKind: Schema.String,
     createdAt: Schema.String,
+    activeAt: Schema.String,
   }),
   progress: Schema.Struct({ working: Schema.Boolean, turns: Schema.Number }),
 });

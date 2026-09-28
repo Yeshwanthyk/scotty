@@ -38,7 +38,7 @@ function Meta({ session, status }: { session: Session; status: Status }) {
         </>
       ) : (
         <>
-          {repo || "No repository"} · {ago(session.display.createdAt)}
+          {repo || "No repository"} · {ago(session.display.activeAt)}
         </>
       )}
     </span>

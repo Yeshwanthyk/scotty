@@ -85,8 +85,12 @@ export function groupOf(iso: string, now = new Date()): (typeof groups)[number] 
 
 export function grouped(list: ReadonlyArray<Session>) {
   const buckets = new Map<string, Session[]>();
-  for (const session of list) {
-    const group = groupOf(session.display.createdAt);
+  // Most recently active first: a session with a fresh answer rises to the top.
+  const recent = [...list].sort(
+    (a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt),
+  );
+  for (const session of recent) {
+    const group = groupOf(session.display.activeAt);
     buckets.set(group, [...(buckets.get(group) ?? []), session]);
   }
   return groups.flatMap((group) => {
