@@ -1,4 +1,4 @@
-import { Effect, Exit, Schema } from "effect";
+import { Effect, Exit, Result, Schema } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
@@ -38,6 +38,30 @@ const bad = (message: string, status = 400, hint?: string) =>
     { error: { message, code: status === 404 ? "not_found" : "bad_request", hint } },
     { status },
   );
+
+type ByteRange = { offset: number; length?: number } | { suffix: number };
+
+// One `bytes=a-b`, `bytes=a-` or `bytes=-n` range; anything else is served whole, as RFC 9110 allows.
+const byteRange = (header: string | undefined): ByteRange | undefined => {
+  const parts = /^bytes=(\d*)-(\d*)$/.exec(header ?? "");
+  if (parts === null) return undefined;
+  const [, first = "", last = ""] = parts;
+  if (first === "") return last === "" ? undefined : { suffix: Number(last) };
+  const offset = Number(first);
+  if (last === "") return { offset };
+  return Number(last) < offset ? undefined : { offset, length: Number(last) - offset + 1 };
+};
+
+// The start and length R2 serves for that range, clamped to the object.
+const served = (range: ByteRange | undefined, size: number) => {
+  if (range === undefined) return [0, size] as const;
+  if ("suffix" in range)
+    return [Math.max(0, size - range.suffix), Math.min(range.suffix, size)] as const;
+  return [
+    range.offset,
+    Math.min(range.length ?? size - range.offset, size - range.offset),
+  ] as const;
+};
 
 // Port 7000 is the supervisor's; a preview never reaches it.
 export const hatchPort = (port: number) =>
@@ -159,12 +183,29 @@ export function apiHandler(
       return yield* HttpServerResponse.json({ url: `https://${hatchHost(hatchBase, port, id)}` });
     }
     if (request.method === "GET" && match[4] !== undefined) {
-      const object = yield* bucket.get(`files/${id}/${match[4]}`);
+      // iOS Safari plays a video only when a Range request gets a 206 with Content-Length.
+      const wanted = byteRange(request.headers["range"]);
+      const got = yield* bucket
+        .get(`files/${id}/${match[4]}`, wanted === undefined ? {} : { range: wanted })
+        .pipe(Effect.result);
+      if (Result.isFailure(got))
+        return yield* wanted === undefined
+          ? bad("Could not read the file", 502)
+          : bad("Range not satisfiable", 416);
+      const object = got.success;
       if (object === null) return yield* bad("Not found", 404);
-      return HttpServerResponse.stream(object.body, {
-        contentType: object.httpMetadata?.contentType,
-        contentLength: object.size,
-      });
+      const [start, length] = served(wanted, object.size);
+      const status = wanted === undefined ? 200 : 206;
+      const headers = {
+        "content-type": object.httpMetadata?.contentType ?? "application/octet-stream",
+        "accept-ranges": "bytes",
+        ...(status === 206
+          ? { "content-range": `bytes ${start}-${start + length - 1}/${object.size}` }
+          : {}),
+      };
+      // A stream is sent chunked, without the Content-Length Safari needs; files are at most 25 MB.
+      const bytes = yield* object.bytes().pipe(Effect.orDie);
+      return HttpServerResponse.uint8Array(bytes, { status, headers });
     }
     if (request.method === "POST" && subpath === "stop")
       return yield* HttpServerResponse.json(yield* stub.stop());
