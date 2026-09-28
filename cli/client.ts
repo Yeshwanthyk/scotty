@@ -52,6 +52,15 @@ export const Conversation = Schema.Struct({
       state: Schema.String,
       user: Schema.String,
       assistant: Schema.String,
+      files: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          name: Schema.String,
+          type: Schema.String,
+          size: Schema.Number,
+          caption: Schema.optionalKey(Schema.String),
+        }),
+      ),
     }),
   ),
 });

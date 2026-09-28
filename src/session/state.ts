@@ -10,6 +10,10 @@ type RequestBase = {
 export type Request =
   | (RequestBase & { readonly kind: "prompt"; readonly text: string })
   | (RequestBase & { readonly kind: "interrupt" });
+type AttachedFile = Omit<
+  Extract<SessionEvent, { kind: "file.attached" }>,
+  "seq" | "at" | "src" | "kind"
+>;
 type Turn = { readonly turn: string; readonly codexTurn: string; readonly state: string };
 
 export type State = {
@@ -36,6 +40,7 @@ export type State = {
   readonly currentTurn: string;
   readonly turns: readonly Turn[];
   readonly requests: readonly Request[];
+  readonly files: readonly (AttachedFile & { readonly turn: string })[];
   readonly pending: readonly Pending[];
   readonly created: Extract<SessionEvent, { kind: "created" }> | undefined;
 };
@@ -67,6 +72,7 @@ export const initial: State = {
   currentTurn: "0",
   turns: [],
   requests: [],
+  files: [],
   pending: [],
   created: undefined,
 };

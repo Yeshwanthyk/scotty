@@ -19,11 +19,12 @@ export const read = Command.make(
       const api = yield* withClient(target);
       const view = yield* api(path, View);
       const conversation = yield* api(`${path}/conversation`, Conversation);
+      const origin = Option.getOrElse(target, () => process.env.SCOTTY_URL ?? "");
       const latest = conversation.turns.at(-1);
       const messages = conversation.turns
         .flatMap((turn) => [
           { id: `${turn.id}:user`, role: "user", state: turn.state, text: turn.user },
-          ...(turn.assistant === ""
+          ...(turn.assistant === "" && turn.files.length === 0
             ? []
             : [
                 {
@@ -31,6 +32,10 @@ export const read = Command.make(
                   role: "assistant",
                   state: turn.state,
                   text: turn.assistant,
+                  files: turn.files.map(
+                    (file) =>
+                      `${file.name} (${file.type}, ${file.size} bytes) ${new URL(`${path}/files/${file.id}`, origin).href}`,
+                  ),
                 },
               ]),
         ])

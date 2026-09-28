@@ -315,6 +315,10 @@ export function fold(state: State, event: SessionEvent): State {
         { ...next, failure: { code: event.code, retryable: event.retryable } },
         "failed",
       );
+    case "file.attached": {
+      const { seq: _seq, at: _at, src: _src, kind: _kind, ...file } = event;
+      return { ...next, files: [...state.files, { ...file, turn: state.currentTurn }] };
+    }
     case "invariant.violated":
       return next;
   }

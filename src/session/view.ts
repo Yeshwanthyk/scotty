@@ -97,6 +97,9 @@ export function conversationView(state: State, events: readonly SessionEvent[]) 
         state: turnState(state.turns.find((turn) => turn.turn === request.turn)?.state),
         user: request.text,
         assistant: answers.get(request.turn) ?? "",
+        files: state.files
+          .filter((file) => file.turn === request.turn)
+          .map(({ turn: _turn, file: id, ...file }) => ({ id, ...file })),
       })),
   };
 }

@@ -1,0 +1,34 @@
+#!/usr/bin/env node
+// scotty-attach <path> [caption]: shows an image or video in the user's chat, in this turn.
+// The Session DO routes files.internal to the Worker, which stores the file; no token here.
+const types = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".webm": "video/webm",
+  ".mp4": "video/mp4",
+};
+
+async function main([path, caption]) {
+  // Dynamic imports work whether Node loads this file as CommonJS or as a module.
+  const { readFile } = await import("node:fs/promises");
+  const { basename, extname } = await import("node:path");
+  if (path === undefined) throw new Error("usage: scotty-attach <path> [caption]");
+  const name = basename(path);
+  const headers = {
+    "content-type": types[extname(path).toLowerCase()] ?? "application/octet-stream",
+    "x-scotty-name": encodeURIComponent(name),
+  };
+  if (caption) headers["x-scotty-caption"] = encodeURIComponent(caption);
+  const body = await readFile(path);
+  const response = await fetch("http://files.internal/", { method: "PUT", headers, body });
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).trim()}`);
+  console.log(`Attached: ${name}`);
+}
+
+main(process.argv.slice(2)).catch((error) => {
+  console.error(`scotty-attach: ${error.message}`);
+  process.exitCode = 1;
+});

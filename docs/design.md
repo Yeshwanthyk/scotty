@@ -78,6 +78,7 @@ A handler never awaits an outside party while changing state. An outside action 
 | `failed`                                | `phase, code, retryable`                                                                                                               |
 | `socket.closed` / `dial.failed`         | `gen`                                                                                                                                  |
 | `sup.redial`                            | `gen` (on wake, start if no hello; otherwise dial)                                                                                     |
+| `file.attached`                         | `file, name, type, size, caption?` (bytes already in R2 at `files/<session>/<file>`; shown in the current turn)                        |
 | `invariant.violated`                    | `code, detail`                                                                                                                         |
 | `timeout`                               | `op`: `container`, `workspace`, `dial`, `redial`, or `req:<req>`; lifecycle expiry fails with `<op>_timeout`, retryable                |
 | `save.done` / `save.failed`             | `turn` / `turn, code` (step 6: an accepted `turn.ended` is the save intent)                                                            |
@@ -176,22 +177,22 @@ The conversation snapshot includes top-level `currentTurn`, the authoritative tu
 
 ### Served now
 
-| Endpoint                                                                     | Source                                            |
-| ---------------------------------------------------------------------------- | ------------------------------------------------- |
-| `GET/POST /api/sessions`, `GET /api/sessions/:id`                            | Creds DO session index and each Session DO's view |
-| `GET /api/sessions/:id/conversation`, `GET /api/sessions/:id/log`            | Folded agent events and the raw event log         |
-| `POST /api/sessions/:id/steer`, `POST /api/sessions/:id/interrupt`           | `prompt.requested` and `interrupt.requested`      |
-| `GET /api/credentials/chatgpt`, `POST /api/credentials/chatgpt/{start,poll}` | Creds DO ChatGPT status and device-code sign-in   |
-| `GET/POST /api/credentials/github`; `/api/git/*` (loopback only)             | Creds DO GitHub token; git handler (step 7)       |
+| Endpoint                                                                     | Source                                                |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `GET/POST /api/sessions`, `GET /api/sessions/:id`                            | Creds DO session index and each Session DO's view     |
+| `GET /api/sessions/:id/conversation`, `GET /api/sessions/:id/log`            | Folded agent events and the raw event log             |
+| `POST /api/sessions/:id/steer`, `POST /api/sessions/:id/interrupt`           | `prompt.requested` and `interrupt.requested`          |
+| `GET /api/credentials/chatgpt`, `POST /api/credentials/chatgpt/{start,poll}` | Creds DO ChatGPT status and device-code sign-in       |
+| `GET/POST /api/credentials/github`; `/api/git/*` (loopback only)             | Creds DO GitHub token; git handler (step 7)           |
+| `GET /api/sessions/:id/files/:file`; `PUT files.internal` (loopback only)    | R2 `files/<session>/<file>`; `file.attached` (step 9) |
 
 ### Planned
 
-| Step  | Endpoints and routing                                             |
-| ----- | ----------------------------------------------------------------- |
-| 6     | `POST /api/sessions/:id/{stop,resume}`                            |
-| 8     | Hatch preview routing                                             |
-| 9     | Captured images and video in the conversation, and their download |
-| Later | `changes[/patch]`, `settings`, `repos`, the terminal WebSocket    |
+| Step  | Endpoints and routing                                          |
+| ----- | -------------------------------------------------------------- |
+| 6     | `POST /api/sessions/:id/{stop,resume}`                         |
+| 8     | Hatch preview routing                                          |
+| Later | `changes[/patch]`, `settings`, `repos`, the terminal WebSocket |
 
 ## CLI
 

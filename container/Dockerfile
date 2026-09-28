@@ -24,6 +24,7 @@ RUN git init -q --bare -b main /opt/scotty/fixture.git && mkdir /tmp/fixture \
     && git -C /tmp/fixture push -q /opt/scotty/fixture.git main && rm -rf /tmp/fixture \
     && chown -R scotty:scotty /opt/scotty/fixture.git
 COPY container/AGENTS.md /etc/scotty/AGENTS.md
+COPY --chmod=755 container/scotty-attach /usr/local/bin/scotty-attach
 # Each agent reads its global instructions from its own path; all point at one file.
 RUN mkdir -m 700 /home/scotty/.codex && ln -s /etc/scotty/AGENTS.md /home/scotty/.codex/AGENTS.md \
     && chown -R scotty:scotty /home/scotty/.codex

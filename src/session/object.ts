@@ -99,7 +99,10 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 const repo = log.state.created?.repo ?? "";
                 const fetcher = loopback({ props: { session: id(), repo } });
                 yield* Effect.tryPromise(() =>
-                  container.interceptOutboundHttp("github.internal", fetcher),
+                  Promise.all([
+                    container.interceptOutboundHttp("github.internal", fetcher),
+                    container.interceptOutboundHttp("files.internal", fetcher),
+                  ]),
                 ).pipe(Effect.mapError(() => new ContainerStartFailed()));
                 yield* Effect.try({
                   try: () => container.start({ enableInternet: true }),
@@ -350,6 +353,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             yield* dispatch(yield* append({ kind: "resume.requested" }, "api"));
             return { version: 1, session: sessionView(id(), log.state) };
           }),
+        // The Worker calls this only after the bytes are in R2.
+        attach: (file: {
+          file: string;
+          name: string;
+          type: string;
+          size: number;
+          caption?: string;
+        }) => append({ kind: "file.attached", ...file }, "files").pipe(Effect.asVoid),
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
         conversation: () => Effect.sync(() => conversationView(log.state, log.history)),
         log: () => Effect.sync(() => log.history),

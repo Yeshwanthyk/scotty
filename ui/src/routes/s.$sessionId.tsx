@@ -104,6 +104,22 @@ function SessionView({ sessionId }: { sessionId: string }) {
                   <Markdown source={turn.assistant} />
                 </div>
               ) : null}
+              {turn.files.map((file) => {
+                const href = `/api/sessions/${encodeURIComponent(sessionId)}/files/${file.id}`;
+                const label = file.caption ?? file.name;
+                return (
+                  <figure key={file.id} className="message assistant">
+                    {file.type.startsWith("video/") ? (
+                      <video src={href} controls playsInline style={{ maxWidth: "100%" }} />
+                    ) : (
+                      <a href={href} target="_blank" rel="noreferrer">
+                        <img src={href} alt={label} style={{ maxWidth: "100%" }} />
+                      </a>
+                    )}
+                    <figcaption className="hint">{label}</figcaption>
+                  </figure>
+                );
+              })}
               <span className="hint">{turn.state}</span>
             </li>
           ))}

@@ -28,7 +28,7 @@ const Steer = Schema.Struct({
 });
 const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(Schema.String) });
 const path =
-  /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log|hatch\/(\d{1,5})))?$/;
+  /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log|hatch\/(\d{1,5})|files\/([a-f0-9]{32})))?$/;
 const GitHubToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{20,255}$/)),
 });
@@ -48,6 +48,7 @@ export function apiHandler(
   request: HttpServerRequest.HttpServerRequest,
   sessions: Cloudflare.DurableObject<SessionObject>,
   credentials: Cloudflare.DurableObject<CredsObject>,
+  bucket: Cloudflare.R2.ReadWriteBucketClient,
   hatchBase: string,
 ) {
   return Effect.gen(function* () {
@@ -156,6 +157,14 @@ export function apiHandler(
           { status: 409 },
         );
       return yield* HttpServerResponse.json({ url: `https://${hatchHost(hatchBase, port, id)}` });
+    }
+    if (request.method === "GET" && match[4] !== undefined) {
+      const object = yield* bucket.get(`files/${id}/${match[4]}`);
+      if (object === null) return yield* bad("Not found", 404);
+      return HttpServerResponse.stream(object.body, {
+        contentType: object.httpMetadata?.contentType,
+        contentLength: object.size,
+      });
     }
     if (request.method === "POST" && subpath === "stop")
       return yield* HttpServerResponse.json(yield* stub.stop());

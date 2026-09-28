@@ -22,3 +22,19 @@ Give the user the `Ready:` URL.
 
 A stopped session resumes with only tracked and untracked non-ignored files; installed
 dependencies and running servers are gone. After a resume, run `.agents/setup` first.
+
+## Images and video for the user
+
+The user reads the chat on a phone. To show them a screenshot, a recording or a chart, attach it:
+`scotty-attach <file> [caption]` (png, jpeg, webp, gif, webm or mp4, at most 25 MB). It appears
+in this turn of the chat. Attach every image or video you make for the user, then mention it in
+your reply.
+
+- The image has no browser. The first time you need one, install Playwright and its Chromium
+  outside the repository:
+  `mkdir -p /workspace/.scotty/capture && cd /workspace/.scotty/capture && npm init -y > /dev/null && npm install playwright@1.63.0 && npx playwright install --with-deps chromium`.
+  Run capture scripts from that directory.
+- Screenshot a local server at `http://localhost:<port>`, not the public URL, at a 390×844
+  viewport unless asked otherwise.
+- Record video with the context option `recordVideo: { dir, size }`; the file is saved as webm when
+  the context closes.

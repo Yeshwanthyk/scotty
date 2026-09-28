@@ -335,4 +335,27 @@ describe("session fold", () => {
     });
     check(state);
   });
+
+  it("gives an attached file to the current turn, during a turn and after a stop", () => {
+    const shot = { file: "f1", name: "shot.png", type: "image/png", size: 10, caption: "home" };
+    let state = fold(boot(), make(6, "file.attached", shot));
+    expect(state.files).toEqual([{ ...shot, turn: "0" }]);
+    state = fold(state, make(7, "turn.ended", { gen: 1, turn: "0", state: "completed" }));
+    const stopped = make(8, "container.stopped", { gen: 1 });
+    state = fold(state, stopped);
+    const late = make(9, "file.attached", {
+      file: "f2",
+      name: "a.webm",
+      type: "video/webm",
+      size: 5,
+    });
+    state = fold(state, late);
+    expect(state.phase).toBe("stopped");
+    expect(state.files.map((file) => [file.file, file.turn])).toEqual([
+      ["f1", "0"],
+      ["f2", "1"],
+    ]);
+    expect(command(state, late)).toBeUndefined();
+    check(state);
+  });
 });

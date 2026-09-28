@@ -107,6 +107,16 @@ export const SessionEvent = Schema.Union([
     turn: Schema.String,
     code: Schema.String,
   }),
+  // The bytes are already in R2 at files/<session>/<file> when this is written.
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("file.attached"),
+    file: Schema.String,
+    name: Schema.String,
+    type: Schema.String,
+    size: Schema.Natural,
+    caption: Schema.optionalKey(Schema.String),
+  }),
   Schema.Struct({
     ...envelope,
     kind: Schema.Literal("invariant.violated"),
