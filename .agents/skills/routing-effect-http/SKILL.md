@@ -7,11 +7,11 @@ description: Routes Scotty HTTP with Effect's unstable HTTP modules inside Alche
 
 ## Inbound
 
-- The Worker's `HttpRouter` (`src/worker.ts`) sends `/api/*` to `apiHandler`; add a route there, not a second router. Static assets answer every other path, so any route the Worker must see lives under `/api/`.
+- The Worker's `HttpRouter` (`src/worker.ts`) sends `/api/*` to `apiHandler`; add a route there, not a second router. Static assets answer every other path on the Worker's own host, so a new route lives under `/api/`. Routing by Host happens before that and only for: Hatch preview hosts (`<port>-<id>.<base>`), and loopback traffic from a container (`files.internal` to the attach handler, everything else to the git handler).
 - A handler takes an `HttpServerRequest` and returns an `HttpServerResponse`. Decode path, query, headers and body at the top of the handler (see `decoding-effect-boundaries`).
 - Map typed failures to the stable error body `{ error: { code, message, hint } }` in one place per handler.
 - Native `Request`, `Response`, WebSocket upgrades, streams and DO methods keep their host signatures; convert with `HttpServerRequest.toWeb` / `HttpServerResponse.fromWeb` at the edge.
-- Identity for loopback traffic (the container's `github.internal`) comes only from the execution context's `props`, never from the request.
+- Identity for loopback traffic (the container's `github.internal` and `files.internal`) comes only from the execution context's `props`, never from the request.
 
 ## Outbound
 

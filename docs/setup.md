@@ -63,7 +63,7 @@ The image is public on Docker Hub. It contains no secrets.
 ```sh
 gh run list --workflow image.yml --limit 1
 gh run watch <run-id>
-gh run view <run-id>          # the summary shows "linux/amd64 digest: sha256:…"
+docker buildx imagetools inspect <repository>:rebuild-<full sha> | grep -m1 Digest   # gh run view does not print the job summary
 ```
 
 Use it as `SCOTTY_SOURCE_IMAGE=index.docker.io/<repository>@sha256:<digest>`. If nothing under those paths changed, reuse the digest from the latest successful run.
@@ -120,11 +120,16 @@ The Creds DO keeps the tokens. Sign-in lasts about 10 days; `doctor` reports `ch
 
 ```sh
 npm run --silent e2e -- core          # create, answer, redeploy, steer, interrupt on dev
+npm run --silent e2e -- stop-resume   # stop, resume, crash mid-turn (SCOTTY_CONTAINER_APP_ID)
+npm run --silent e2e -- github        # private clone, push scotty/<id> only, no token (SCOTTY_PRIVATE_TEST_REPO)
+npm run --silent e2e -- hatch         # preview routing (SCOTTY_HATCH_BASE)
+npm run --silent e2e -- hatch-env     # agent sets up the dev env and brings it back (SCOTTY_HATCH_TEST_REPO)
+npm run --silent e2e -- files         # screenshot and video in chat, from R2 (SCOTTY_HATCH_TEST_REPO)
 ```
 
 For agents: the `.agents/skills/verify-scotty` skill drives the CLI through feature recipes (`features/*.md`) and saves evidence to `work/verify/`.
 
-Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `auth login chatgpt|github`, `auth status`, `new`, `ls`, `show <id>`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Output and errors are JSON on stdout; errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
+Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `auth login chatgpt|github`, `auth status`, `new`, `ls`, `show <id>`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `stop <id>`, `resume <id>`, `hatch <id> <port>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Output and errors are JSON on stdout; errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
 
 ## Troubleshooting
 

@@ -1,6 +1,6 @@
 ---
 name: verify-scotty
-description: Verify a deployed Scotty stage end to end through the scotty CLI (sign-in, create a session, answer, steer, interrupt, reconnect). Use after any change to the Worker, Session or Creds DO, supervisor, image or CLI, and before calling a plan step done.
+description: Verify a deployed Scotty stage end to end through the scotty CLI (sign-in, create a session, answer, steer, interrupt, reconnect, stop and resume, GitHub push, previews, files in chat). Use after any change to the Worker, Session or Creds DO, supervisor, image or CLI, and before calling a plan step done.
 ---
 
 # Verify Scotty
@@ -15,14 +15,15 @@ The stage must already be deployed; this skill does not deploy. To deploy the de
 authorized, never `production` or `scotty-baseline-*`):
 
 ```sh
-SCOTTY_SOURCE_IMAGE=index.docker.io/yeshwanthyk/scotty@sha256:<digest from the image workflow> \
-CLOUDFLARE_ACCOUNT_ID=<explicit account> SCOTTY_REGISTRY_REPOSITORY=scotty \
-SCOTTY_OWNER_EMAIL=<owner email> npm run deploy -- --stage dev
+source work/dev-env.sh          # account, owner email, image digest, SCOTTY_URL, test repos
+npm run --silent deploy -- --stage dev
 ```
 
-The image digest is in the job summary of the latest `image` workflow run on `rebuild/core`
-(`gh run list --workflow image.yml --branch rebuild/core`). The deploy prints the Worker `url`.
-Set it for every command below: `export SCOTTY_URL=<url>`.
+`work/dev-env.sh` is never committed; `docs/setup.md` lists its variables. After a change under
+`container/**`, get the new digest from the `image` workflow run for the pushed commit
+(`docker buildx imagetools inspect yeshwanthyk/scotty:rebuild-<full sha>`; `gh run view` does not
+print the job summary) and update `SCOTTY_SOURCE_IMAGE` there. Wait about 2 minutes after a deploy
+before driving.
 
 ## Doctor
 
@@ -66,9 +67,10 @@ token` output or headers to files.
 
 ## Cleanup
 
-Each `read` exits after one snapshot. Sessions stay on the stage (vaporize arrives in a later step);
-list the IDs this run created in `$EVIDENCE/owned.json` so later runs treat them as owned. Never
-touch sessions from `before.json`. Evidence under `work/verify/` stays (it is never committed).
+Each `read` exits after one snapshot. List the IDs this run created in `$EVIDENCE/owned.json`, and
+`scotty stop <id>` each one that is still running when the run ends (a stopped session costs no
+container). Never touch sessions from `before.json`. Evidence under `work/verify/` stays (it is
+never committed).
 
 ## Features
 

@@ -11,6 +11,8 @@ The phone UI runs the core loop and agrees with the API.
 - **U4** Interrupt during a running turn ends it as `aborted`.
 - **U5** After reload, the session page and the session list show the same title, repository,
   branch and state as `scotty show <id>`.
+- **U6** A turn whose agent ran `scotty-attach` shows each image (tapping opens it full size) and
+  each video (plays inline) under its reply.
 
 ## Entry points
 
@@ -33,5 +35,7 @@ The phone UI runs the core loop and agrees with the API.
    is streaming, and screenshot the turn once it shows `aborted` (U4).
 5. Reload the session page, then open `/sessions`. Save `scotty show <id>` into `05-show.json`
    and compare it with both screenshots (U5). Save `scotty log <id>` into `06-log.json`.
+6. In a session on `$SCOTTY_HATCH_TEST_REPO`, ask for a screenshot and a short video of the app.
+   Screenshot the turn with both, tap the image, and play the video (U6).
 
 If the browser shows an Access login, stop and ask the owner to sign in there.
