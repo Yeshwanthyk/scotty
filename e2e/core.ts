@@ -82,9 +82,10 @@ const program = Effect.gen(function* () {
     body: {
       title: "Step 2 core",
       repo,
-      // Commands must not inherit the ChatGPT token from Codex's config.
+      // Commands must not inherit the ChatGPT token from Codex's config. SCOTTY_HATCH, the public
+      // preview URL template, is the one variable they are meant to see.
       prompt:
-        "Run `env | grep -c SCOTTY_` and reply with only the word ready followed by the number it printed.",
+        "Run `env | grep SCOTTY_ | grep -vc ^SCOTTY_HATCH=` and reply with only the word ready followed by the number it printed.",
       provider: "cloudflare",
     },
   });
