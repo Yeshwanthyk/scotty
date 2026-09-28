@@ -75,7 +75,7 @@ export class Controller {
           Scope.provide(scope),
         );
         const agent = yield* runner
-          .start(message.hatch, message.resume?.threadId)
+          .start({ SCOTTY_HATCH: message.hatch }, message.resume?.threadId)
           .pipe(Scope.provide(scope));
         return {
           base: message.base,

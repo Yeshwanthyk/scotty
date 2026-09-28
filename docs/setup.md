@@ -81,6 +81,7 @@ export SCOTTY_HATCH_BASE=<zone>                     # previews at https://<port>
 export SCOTTY_HATCH_ZONE_ID=<32-hex zone id>        # that zone's id
 export SCOTTY_URL=https://<worker host>             # printed by the first deploy (section 6)
 export SCOTTY_TEST_REPO=octocat/Hello-World         # any public owner/repo; e2e clones it
+export SCOTTY_HATCH_TEST_REPO=<owner>/<repo>       # a small Vite + React repo without .agents/setup; e2e hatch-env
 ```
 
 Load it in every shell that deploys or tests: `. work/dev-env.sh`.

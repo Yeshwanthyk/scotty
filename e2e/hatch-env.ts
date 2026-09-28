@@ -86,13 +86,11 @@ const program = Effect.gen(function* () {
   const setup = Math.round((Date.now() - started) / 1000);
   console.log(`Setup: ${yield* serves(first)} in ${setup} s`);
 
-  // 2. It left a committed-ready setup script behind.
-  const script = yield* answer(
-    "1",
-    "Run `test -x .agents/setup && echo SETUP_OK` and reply with the output",
-  );
-  yield* check(script.includes("SETUP_OK"), `No executable .agents/setup: ${script}`);
-  console.log("Setup script: .agents/setup is executable");
+  // 2. It left a setup script behind that ends by printing the ready URL.
+  const script = yield* answer("1", "Run `.agents/setup` and reply with only its last line");
+  const ready = /^Ready: (\S+)$/m.exec(script)?.[1] ?? "";
+  yield* check(preview.test(ready), `.agents/setup did not print a Ready URL: ${script}`);
+  console.log(`Setup script: ${ready}`);
 
   // 3. After a stop, a steer brings the dev server back.
   yield* request(`${prefix}/stop`, View, { method: "POST" });

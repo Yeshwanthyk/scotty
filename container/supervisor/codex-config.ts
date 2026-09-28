@@ -9,7 +9,11 @@ import { processEnv } from "./runtime.js";
 export const toml = (value: string) => JSON.stringify(value).replace(/\u007f/g, "\\u007f");
 export const codexHome = () => processEnv("SCOTTY_CODEX_HOME") || "/home/scotty/.codex";
 
-export const launchCodex = (config: Extract<Agent, { kind: "codex" }>, cwd: string) =>
+export const launchCodex = (
+  config: Extract<Agent, { kind: "codex" }>,
+  cwd: string,
+  env: Record<string, string>,
+) =>
   Effect.gen(function* () {
     const url = yield* Effect.try({
       try: () => new URL(config.baseUrl),
@@ -46,6 +50,7 @@ export const launchCodex = (config: Extract<Agent, { kind: "codex" }>, cwd: stri
           forceKillAfter: "2 seconds",
           stdin: { stream: "pipe", endOnDone: false },
           env: {
+            ...env,
             PATH: processEnv("PATH"),
             HOME: processEnv("HOME") || "/home/scotty",
             CODEX_HOME: home,

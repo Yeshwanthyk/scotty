@@ -14,6 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && useradd --create-home --home-dir /home/scotty scotty \
     && echo "scotty ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/scotty && chmod 0440 /etc/sudoers.d/scotty \
     && mkdir /workspace && chown scotty:scotty /workspace
+COPY container/AGENTS.md /etc/scotty/AGENTS.md
+# Each agent reads its global instructions from its own path; all point at one file.
+RUN mkdir -m 700 /home/scotty/.codex && ln -s /etc/scotty/AGENTS.md /home/scotty/.codex/AGENTS.md \
+    && chown -R scotty:scotty /home/scotty/.codex
 COPY --from=build /out/scotty-sup /usr/local/bin/scotty-sup
 USER scotty
 WORKDIR /workspace

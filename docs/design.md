@@ -134,6 +134,8 @@ A server in a running session on port N is at `https://N-<id>.<SCOTTY_HATCH_BASE
 
 Spike 8a (2026-09-27): (a) `runWorkerFirst: true` still serves `/`, `/sessions`, `/s/<id>` and `/api/*`; (b) without a token a preview host gets Access's 302, and with the Worker's token it reaches the Worker; (c) a WebSocket echo passes through Worker → DO → `getTcpPort`, and the server sees `Host: localhost:8080`; (d) `setsid nohup <cmd> > log 2>&1 < /dev/null &` from a Codex command survives the command and the turn in Codex 0.157.1. A process does not survive the container sleeping.
 
+The dev environment (step 8b) belongs to the agent, and nothing in an agent adapter knows about it. The image adds `curl`, `sudo` and `xz-utils`, gives `scotty` passwordless sudo, and runs on `standard-1` (4 GiB). `container/AGENTS.md` is installed as `/etc/scotty/AGENTS.md`, and each agent's global-instructions path links to it (Codex: `~/.codex/AGENTS.md`, loaded on start and resume). The supervisor gives the agent process one variable, `SCOTTY_HATCH=https://{port}-<id>.<base>`, from `start.hatch`. The contract: setup goes through `.agents/setup`, an idempotent bash script in the repository that the agent writes if missing and runs again after a resume, and that ends by printing `Ready: <URL>` once the dev server answers. Scotty never parses or runs it. The DO reads `SCOTTY_HATCH_BASE` through `Config`: the raw env holds Alchemy's redacted marker, and the agent once got `https://N-<id>.[redacted]`.
+
 ## Credentials
 
 - **One store.** The Creds DO holds the ChatGPT access token, refresh token, expiry and account ID, plus the GitHub token. Only the ChatGPT access token ever leaves it (below).
