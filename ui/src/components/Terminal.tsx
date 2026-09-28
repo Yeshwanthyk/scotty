@@ -15,6 +15,9 @@ const theme = (): ITheme => {
     cursor: token("--ink"),
     cursorAccent: token("--sunken"),
     selectionBackground: token("--selected"),
+    scrollbarSliderBackground: token("--line"),
+    scrollbarSliderHoverBackground: token("--line-strong"),
+    scrollbarSliderActiveBackground: token("--line-hover"),
   };
 };
 
