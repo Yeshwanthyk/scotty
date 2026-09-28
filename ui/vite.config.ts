@@ -2,6 +2,7 @@ import stylex from "@stylexjs/unplugin";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { seedApi } from "./seed/api.ts";
 
 export default defineConfig({
   base: "/",
@@ -16,6 +17,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    seedApi(),
     stylex.vite({
       cssInjectionTarget: (fileName) => /(^|\/)global-[^/]+\.css$/u.test(fileName),
       useCSSLayers: true,

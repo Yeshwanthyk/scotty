@@ -1,0 +1,40 @@
+[
+  {
+    "seq": 1,
+    "at": 1790526372942,
+    "src": "api",
+    "kind": "created",
+    "agentKind": "codex",
+    "repo": "Yeshwanthyk/scotty-e2e-private",
+    "baseBranch": "main",
+    "branch": "scotty/1429412b6508411b94464c6d75edbd70",
+    "title": "Yeshwanthyk/scotty-e2e-private",
+    "prompt": "reply ok",
+    "image": "default"
+  },
+  { "seq": 2, "at": 1790526372942, "src": "session", "kind": "container.start", "gen": 1 },
+  { "seq": 3, "at": 1790526373301, "src": "session", "kind": "dial.failed", "gen": 1 },
+  { "seq": 4, "at": 1790526375301, "src": "alarm", "kind": "timeout", "op": "redial" },
+  {
+    "seq": 5,
+    "at": 1790526375348,
+    "src": "supervisor",
+    "gen": 1,
+    "n": 1,
+    "kind": "sup.hello",
+    "version": "step-2",
+    "boot": "e94c867f-b1f6-413e-9e33-213ec50d24b3"
+  },
+  {
+    "seq": 6,
+    "at": 1790526390901,
+    "src": "supervisor",
+    "gen": 1,
+    "n": 2,
+    "kind": "sup.error",
+    "code": "workspace",
+    "message": "workspace command failed"
+  },
+  { "seq": 7, "at": 1790526399273, "src": "api", "kind": "container.stopped", "gen": 1 },
+  { "seq": 8, "at": 1790526399387, "src": "supervisor", "kind": "socket.closed", "gen": 1 }
+]
