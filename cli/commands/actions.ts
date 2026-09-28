@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { Log, Reply, View, failure } from "../client.js";
 import { output, sessionPath, turnFrom, url, withClient } from "./common.js";
@@ -53,3 +53,14 @@ export const resume = Command.make("resume", { url, id }, ({ url: target, id: va
     return yield* output(yield* api(`${sessionPath(value)}/resume`, View, { method: "POST" }));
   }),
 ).pipe(Command.withDescription("Resume a stopped session from its last save"));
+
+const Hatch = Schema.Struct({ url: Schema.String });
+export const hatch = Command.make(
+  "hatch",
+  { url, id, port: Argument.Int("port") },
+  ({ url: target, id: value, port }) =>
+    Effect.gen(function* () {
+      const api = yield* withClient(target);
+      return yield* output(yield* api(`${sessionPath(value)}/hatch/${port}`, Hatch));
+    }),
+).pipe(Command.withDescription("Print the preview URL for a port in a running session"));

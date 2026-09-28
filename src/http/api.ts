@@ -27,7 +27,7 @@ const Steer = Schema.Struct({
 });
 const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(Schema.String) });
 const path =
-  /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log))?$/;
+  /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log|hatch\/(\d{1,5})))?$/;
 const GitHubToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{20,255}$/)),
 });
@@ -38,10 +38,16 @@ const bad = (message: string, status = 400, hint?: string) =>
     { status },
   );
 
+// Port 7000 is the supervisor's; a preview never reaches it.
+export const hatchPort = (port: number) =>
+  Number.isInteger(port) && port >= 1024 && port <= 65535 && port !== 7000;
+export const hatchHost = (base: string, port: number, id: string) => `${port}-${id}.${base}`;
+
 export function apiHandler(
   request: HttpServerRequest.HttpServerRequest,
   sessions: Cloudflare.DurableObject<SessionObject>,
   credentials: Cloudflare.DurableObject<CredsObject>,
+  hatchBase: string,
 ) {
   return Effect.gen(function* () {
     const url = new URL(request.url, "https://scotty.internal");
@@ -126,6 +132,23 @@ export function apiHandler(
       return yield* HttpServerResponse.json(yield* stub.conversation());
     if (request.method === "GET" && subpath === "log")
       return yield* HttpServerResponse.json(yield* stub.log());
+    if (request.method === "GET" && match[3] !== undefined) {
+      const port = Number(match[3]);
+      if (!hatchPort(port)) return yield* bad("Port must be 1024–65535 and not 7000");
+      const { session } = yield* stub.view();
+      if (session.authority.kind !== "stable" || session.authority.lifecycle !== "running")
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: "Session is not running",
+              code: "not_running",
+              hint: `scotty resume ${id}`,
+            },
+          },
+          { status: 409 },
+        );
+      return yield* HttpServerResponse.json({ url: `https://${hatchHost(hatchBase, port, id)}` });
+    }
     if (request.method === "POST" && subpath === "stop")
       return yield* HttpServerResponse.json(yield* stub.stop());
     if (request.method === "POST" && subpath === "resume")

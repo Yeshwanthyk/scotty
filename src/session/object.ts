@@ -2,6 +2,8 @@ import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import { Config, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
 import type { Command } from "./commands.js";
@@ -344,6 +346,29 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
         conversation: () => Effect.sync(() => conversationView(log.state, log.history)),
         log: () => Effect.sync(() => log.history),
+        // A preview request from the Worker, whose Host is `<port>-<id>.<base>`. It never
+        // starts a container and appends nothing.
+        fetch: Effect.gen(function* () {
+          const unavailable = HttpServerResponse.text("Session not running", { status: 502 });
+          if (log.state.phase !== "running") return unavailable;
+          const request = yield* HttpServerRequest.toWeb(
+            yield* HttpServerRequest.HttpServerRequest,
+          ).pipe(Effect.orDie);
+          const url = new URL(request.url);
+          const port = Number(url.hostname.split("-", 1)[0]);
+          // Dev servers such as Vite refuse a Host they don't know, so the target is localhost.
+          const headers = new Headers(request.headers);
+          headers.delete("host");
+          const target = `http://localhost:${port}${url.pathname}${url.search}`;
+          const init = { method: request.method, headers, body: request.body, redirect: "manual" };
+          return yield* Effect.tryPromise(() =>
+            container.getTcpPort(port).fetch(target, init),
+          ).pipe(
+            // raw hands the Response back untouched, so a 101 keeps its webSocket.
+            Effect.map((response) => HttpServerResponse.raw(response)),
+            Effect.orElseSucceed(() => unavailable),
+          );
+        }),
         alarm: () =>
           Effect.gen(function* () {
             const due = deadline(log.state);

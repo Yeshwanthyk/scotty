@@ -77,6 +77,8 @@ export SCOTTY_SOURCE_IMAGE=index.docker.io/yeshwanthyk/scotty@sha256:<digest>   
 export CLOUDFLARE_ACCOUNT_ID=<32-hex account id>                                # section 3
 export SCOTTY_REGISTRY_REPOSITORY=scotty            # repository name in registry.cloudflare.com
 export SCOTTY_OWNER_EMAIL=<owner email>             # the only identity Access lets in
+export SCOTTY_HATCH_BASE=<zone>                     # previews at https://<port>-<id>.<zone>; a bare zone, since Universal SSL covers one level
+export SCOTTY_HATCH_ZONE_ID=<32-hex zone id>        # that zone's id
 export SCOTTY_URL=https://<worker host>             # printed by the first deploy (section 6)
 export SCOTTY_TEST_REPO=octocat/Hello-World         # any public owner/repo; e2e clones it
 ```
