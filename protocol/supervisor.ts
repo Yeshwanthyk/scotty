@@ -111,3 +111,7 @@ export const FromSupervisor = Schema.Union([
 ]);
 export type ToSupervisorMessage = Schema.Schema.Type<typeof ToSupervisor>;
 export type FromSupervisorMessage = Schema.Schema.Type<typeof FromSupervisor>;
+
+// A repository baked into the container image, so e2e sessions don't depend on GitHub. GitHub
+// owner names cannot contain "_", so no real repository has this name.
+export const fixtureRepo = "_scotty/fixture";

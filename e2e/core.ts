@@ -1,3 +1,4 @@
+import { fixtureRepo } from "../protocol/supervisor.js";
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -59,18 +60,6 @@ const signIn = (request: ReturnType<typeof client>) =>
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const token = yield* access(url);
-  const repo = yield* Schema.decodeUnknownEffect(
-    Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
-  )(process.env.SCOTTY_TEST_REPO).pipe(
-    Effect.mapError(() =>
-      failure(
-        "setup",
-        "SCOTTY_TEST_REPO must name a public owner/repository",
-        "export SCOTTY_TEST_REPO=<owner/repository>",
-        3,
-      ),
-    ),
-  );
   const request = client({ url, token });
   // Sign in only when the stored ChatGPT token is missing or near expiry.
   const current = yield* request("/api/credentials/chatgpt", ChatGptStatus);
@@ -81,7 +70,7 @@ const program = Effect.gen(function* () {
     key: unique,
     body: {
       title: "Step 2 core",
-      repo,
+      repo: fixtureRepo,
       // Commands must not inherit the ChatGPT token from Codex's config. SCOTTY_HATCH, the public
       // preview URL template, is the one variable they are meant to see.
       prompt:

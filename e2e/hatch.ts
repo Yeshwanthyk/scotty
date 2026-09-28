@@ -1,3 +1,4 @@
+import { fixtureRepo } from "../protocol/supervisor.js";
 import { connect } from "node:tls";
 import { Effect, Schema } from "effect";
 import {
@@ -97,7 +98,7 @@ const program = Effect.gen(function* () {
     key: crypto.randomUUID(),
     body: {
       title: "Step 8 hatch",
-      repo: process.env.SCOTTY_TEST_REPO ?? "",
+      repo: fixtureRepo,
       prompt:
         `Run exactly: \`echo ${script} | base64 -d > /workspace/server.mjs && mkdir -p /workspace/.scotty/logs && ` +
         `setsid nohup node /workspace/server.mjs > /workspace/.scotty/logs/server.log 2>&1 < /dev/null &\`, ` +

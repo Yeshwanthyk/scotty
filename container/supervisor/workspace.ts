@@ -1,5 +1,6 @@
 import { Clock, Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { fixtureRepo } from "../../protocol/supervisor.js";
 import { codexHome } from "./codex-config.js";
 import { processEnv } from "./runtime.js";
 
@@ -143,7 +144,16 @@ export const prepareWorkspace = (
     for (const [key, value] of Object.entries(config))
       yield* run(["git", "config", "--global", key, value], root);
     yield* fromGitHub(
-      ["git", "clone", "--depth", "1", "--branch", base, `https://github.com/${repo}`, dir],
+      [
+        "git",
+        "clone",
+        "--depth",
+        "1",
+        "--branch",
+        base,
+        repo === fixtureRepo ? "file:///opt/scotty/fixture.git" : `https://github.com/${repo}`,
+        dir,
+      ],
       root,
       retried,
     );

@@ -4,6 +4,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
+import { fixtureRepo } from "../../protocol/supervisor.js";
 import { defaultBranch } from "./repository.js";
 
 const Prompt = Schema.String.check(
@@ -75,11 +76,18 @@ export function apiHandler(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
-      const token = yield* credential.gitHubToken();
-      if (token === null) return yield* bad("GitHub token missing", 400, githubHint);
-      const baseBranch = yield* defaultBranch(body.repo, token).pipe(
-        Effect.catchTag("RepositoryFailure", (error) => bad(error.message, 400, githubHint)),
-      );
+      const baseBranch =
+        body.repo === fixtureRepo
+          ? "main"
+          : yield* Effect.gen(function* () {
+              const token = yield* credential.gitHubToken();
+              if (token === null) return yield* bad("GitHub token missing", 400, githubHint);
+              return yield* defaultBranch(body.repo, token).pipe(
+                Effect.catchTag("RepositoryFailure", (error) =>
+                  bad(error.message, 400, githubHint),
+                ),
+              );
+            });
       if (HttpServerResponse.isHttpServerResponse(baseBranch)) return baseBranch;
       const idempotency = request.headers["idempotency-key"] ?? crypto.randomUUID();
       const id = yield* credential.reserve(idempotency, crypto.randomUUID().replaceAll("-", ""));

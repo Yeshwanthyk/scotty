@@ -224,7 +224,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 ## Tests
 
 - **Unit:** only `fold.ts`, covering its invariants, plus replays of real event logs saved as files. Each fixed bug adds its log.
-- **End to end,** against a real deployment:
+- **End to end,** against a real deployment. Sessions in these tests use `fixtureRepo` (`_scotty/fixture`, `main`): a bare repository at `/opt/scotty/fixture.git` in the image, cloned without GitHub; the API skips the GitHub lookup for it. Only `github` and `hatch-env` reach GitHub.
   1. `deploy` → create → Codex answers → `steer` → `interrupt`.
   2. The real token never appears in the container (scan env, files and process arguments).
   3. `stop` → `resume`: the Codex thread continues, and a marker file written in the first turn survives.

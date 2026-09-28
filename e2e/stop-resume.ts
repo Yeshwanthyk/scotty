@@ -1,3 +1,4 @@
+import { fixtureRepo } from "../protocol/supervisor.js";
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -43,14 +44,13 @@ const instances = Effect.gen(function* () {
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const request = client({ url, token: yield* access(url) });
-  const repo = process.env.SCOTTY_TEST_REPO ?? "";
   const marker = `MARK-${crypto.randomUUID().slice(0, 8)}`;
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
       title: "Step 6 stop-resume",
-      repo,
+      repo: fixtureRepo,
       prompt: `Run exactly: \`echo ${marker} > marker.txt && rm README\`, then reply with only the word done.`,
       provider: "cloudflare",
     },
