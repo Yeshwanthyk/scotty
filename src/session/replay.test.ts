@@ -4,6 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Schema } from "effect";
 import { command } from "./commands.js";
+import { deadlines } from "./deadlines.js";
 import { SessionEvent } from "./events.js";
 import { fold, initial, invariants, type State } from "./fold.js";
 
@@ -108,5 +109,25 @@ describe("saved session event logs", () => {
     expect(state.phase).toBe("stopped");
     expect(state.failure).toBeUndefined();
     expect(state.pending).toEqual([]);
+  });
+  it("replays a resume the Session DO gave up on before the container deadline", async () => {
+    // The fold is right for these events; the defect was the DO appending container.stopped
+    // after ~10 s of dial retries while this deadline still had ~110 s left.
+    const file = "2026-09-28-resume-dial-gave-up.jsonl";
+    const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
+    let state = initial;
+    let containerDue: number | undefined;
+    for (const [index, line] of lines.entries()) {
+      const event = decodeLine(line);
+      state = replayLine(state, line, file, index + 1);
+      if (event.kind === "prompt.requested") {
+        expect(command(state, event)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+        containerDue = state.pending.find((p) => p.op === "container")?.due;
+        expect(containerDue).toBe(event.at + deadlines.container);
+      }
+      if (event.kind === "container.stopped" && event.gen === 2)
+        expect(event.at).toBeLessThan(containerDue ?? 0);
+    }
+    expect(state.phase).toBe("stopped");
   });
 });

@@ -1,13 +1,14 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
-import { Config, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
+import { Config, Duration, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
+import { deadlines } from "./deadlines.js";
 import { deadline } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
@@ -105,14 +106,16 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   catch: () => new ContainerStartFailed(),
                 });
               }
-              // A new container takes a moment to listen; retry here before reporting dial.failed.
+              // A new container takes a moment to listen, longer on a new host; retry until the
+              // fold's container deadline before reporting dial.failed.
               yield* link
                 .dial(port(), action.gen, 0, () => current(action.gen))
                 .pipe(
                   Effect.timeout("10 seconds"),
                   Effect.retry({
-                    schedule: Schedule.spaced("500 millis"),
-                    times: 20,
+                    schedule: Schedule.spaced("500 millis").pipe(
+                      Schedule.upTo({ duration: Duration.millis(deadlines.container) }),
+                    ),
                     // Not container.running: it can still read false just after start().
                     while: () => current(action.gen),
                   }),
