@@ -40,6 +40,8 @@ export const hash = (bytes: Uint8Array) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 const headerTimeoutMs = 15_000;
+// A blob upload's response arrives only after its whole body, which for a 339 MB layer is minutes.
+const uploadTimeoutMs = 600_000;
 const idleTimeoutMs = 15_000;
 const controllers = new WeakMap<Response, AbortController>();
 const reading = <T>(response: Response, operation: () => Promise<T>): Promise<T> => {
@@ -92,6 +94,7 @@ export const registry = (base: string, credential: Redacted.Redacted<string>) =>
         step,
         { authorization: Redacted.value(credential), "content-type": "application/octet-stream" },
         body,
+        uploadTimeoutMs,
       );
     },
   };
@@ -102,6 +105,7 @@ export const call = (
   step: string,
   headers: Record<string, string>,
   body?: () => BodyInit,
+  timeoutMs = headerTimeoutMs,
 ) =>
   Effect.gen(function* () {
     for (let attempt = 0; ; attempt++) {
@@ -120,7 +124,7 @@ export const call = (
             timer = setTimeout(() => {
               controller.abort();
               reject(fail(`${step} timeout`));
-            }, headerTimeoutMs);
+            }, timeoutMs);
           });
           return Promise.race([fetch(url, init), timeout]).finally(() => clearTimeout(timer));
         },
