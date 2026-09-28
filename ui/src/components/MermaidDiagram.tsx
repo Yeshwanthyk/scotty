@@ -30,7 +30,8 @@ const styles = stylex.create({
     ":hover": { backgroundColor: colors.panelRaised },
   },
   viewport: { overflow: "auto", padding: spacing.lg },
-  image: { display: "block", width: "100%", height: "auto" },
+  // Never larger than mermaid drew it: a tall, narrow flowchart stretched to the column is huge.
+  image: { display: "block", maxWidth: "100%", height: "auto", marginInline: "auto" },
   enlarged: { width: "max(100%, 1000px)", maxWidth: "none" },
   status: { padding: spacing.md, margin: 0, color: colors.muted, fontSize: "13px" },
   source: {
@@ -91,6 +92,9 @@ const configure = (mermaid: typeof import("mermaid").default, dark: boolean) => 
     ],
     themeVariables: {
       darkMode: dark,
+      // Mermaid 12's base theme glows every node; flat reads calmer.
+      dropShadow: "none",
+      fontSize: "14px",
       background: color.bg,
       primaryColor: color.node,
       primaryTextColor: color.text,
@@ -119,6 +123,13 @@ const configure = (mermaid: typeof import("mermaid").default, dark: boolean) => 
 // Rendered SVGs are displayed as images so diagram content cannot join the app DOM.
 const renderer = () => import("mermaid").then(({ default: mermaid }) => mermaid);
 
+// The drawn width, from the viewBox mermaid writes on its root <svg>.
+const naturalWidth = (svg: string) => {
+  const box = /viewBox="[\d.-]+ [\d.-]+ ([\d.]+) [\d.]+"/.exec(svg);
+  const width = Number(box?.[1]);
+  return Number.isFinite(width) && width > 0 ? Math.ceil(width) : undefined;
+};
+
 const darkQuery = "(prefers-color-scheme: dark)";
 function useDark() {
   const [dark, setDark] = useState(
@@ -136,7 +147,11 @@ let mermaidRenderer: ReturnType<typeof renderer> | undefined;
 
 export function MermaidDiagram({ source }: { readonly source: string }) {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
-  const [result, setResult] = useState<{ readonly source: string; readonly image?: string }>();
+  const [result, setResult] = useState<{
+    readonly source: string;
+    readonly image?: string;
+    readonly width?: number;
+  }>();
   const [enlarged, setEnlarged] = useState(false);
   const dark = useDark();
   const current = result?.source === source ? result : undefined;
@@ -161,6 +176,7 @@ export function MermaidDiagram({ source }: { readonly source: string }) {
               setResult({
                 source,
                 image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+                width: naturalWidth(svg),
               });
           } finally {
             container.remove();
@@ -207,6 +223,7 @@ export function MermaidDiagram({ source }: { readonly source: string }) {
           <img
             alt="Mermaid diagram; text description available in diagram source below"
             src={current.image}
+            width={current.width}
             {...stylex.props(styles.image, enlarged && styles.enlarged)}
           />
         </div>
