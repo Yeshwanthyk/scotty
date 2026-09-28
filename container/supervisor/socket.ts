@@ -1,15 +1,17 @@
 import { Effect, Option, Queue, Result, Schema } from "effect";
 import { ToSupervisor, type ToSupervisorMessage } from "../../protocol/supervisor.js";
 import { processEnv } from "./runtime.js";
+import { closeTerminal, decodeSize, openTerminal, type Size, terminalInput } from "./terminal.js";
 import { acknowledge, dial, emit, initialWire, type Output } from "./wire.js";
 
+// A terminal socket carries its size; every other socket is the Session DO's wire.
 interface Peer {
-  data: { gen: number; after: number };
-  send(message: string): void;
+  data: { gen: number; after: number; terminal?: Size };
+  send(message: string | Uint8Array): void;
   close(): void;
 }
 interface Server {
-  upgrade(request: Request, options: { data: { gen: number; after: number } }): boolean;
+  upgrade(request: Request, options: { data: Peer["data"] }): boolean;
 }
 declare const Bun: {
   serve(options: {
@@ -215,6 +217,19 @@ export const serve = (
           ),
         );
       }
+      if (url.pathname === "/terminal") {
+        const gen = wire.gen;
+        if (gen === undefined || url.searchParams.get("gen") !== String(gen))
+          return new Response("generation conflict", { status: 409 });
+        const size = decodeSize({
+          cols: Number(url.searchParams.get("cols")),
+          rows: Number(url.searchParams.get("rows")),
+        });
+        if (Option.isNone(size)) return new Response("invalid size", { status: 400 });
+        if (server.upgrade(request, { data: { gen, after: 0, terminal: size.value } }))
+          return undefined;
+        return new Response("upgrade required", { status: 426 });
+      }
       if (url.pathname !== "/") return new Response("not found", { status: 404 });
       const rawGen = url.searchParams.get("gen") ?? "";
       const rawAfter = url.searchParams.get("after") ?? "";
@@ -238,13 +253,16 @@ export const serve = (
     },
     websocket: {
       open(socket) {
-        enqueue({ type: "open", peer: socket });
+        if (socket.data.terminal) openTerminal(socket, socket.data.terminal);
+        else enqueue({ type: "open", peer: socket });
       },
       message(socket, data) {
-        enqueue({ type: "input", peer: socket, data });
+        if (socket.data.terminal) terminalInput(socket, data);
+        else enqueue({ type: "input", peer: socket, data });
       },
       close(socket) {
-        enqueue({ type: "close", peer: socket });
+        if (socket.data.terminal) closeTerminal(socket);
+        else enqueue({ type: "close", peer: socket });
       },
     },
   });

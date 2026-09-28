@@ -1,8 +1,19 @@
 import { Exit, Schema } from "effect";
 
 const testName = Schema.decodeUnknownExit(
-  Schema.Literals(["core", "stop-resume", "github", "hatch", "hatch-env", "files", "settings"]),
+  Schema.Literals([
+    "core",
+    "stop-resume",
+    "github",
+    "hatch",
+    "hatch-env",
+    "files",
+    "settings",
+    "terminal",
+  ]),
 )(process.argv[2]);
 if (Exit.isFailure(testName))
-  throw new Error("Usage: npm run e2e -- core|stop-resume|github|hatch|hatch-env|files|settings");
+  throw new Error(
+    "Usage: npm run e2e -- core|stop-resume|github|hatch|hatch-env|files|settings|terminal",
+  );
 await import(`./${testName.value}.js`);

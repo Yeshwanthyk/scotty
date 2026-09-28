@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { hatch, message } from "../data/core";
 import type { FileDiff } from "../data/diff";
 import type { Turn } from "../protocol/session/conversation";
 import { DiffFile, DiffStat } from "./DiffLines";
 import { Icon, Spinner, type IconName } from "./Icon";
 
-export type PanelTab = "changes" | "preview" | "files";
+// xterm loads only when the terminal tab opens.
+const Terminal = lazy(() => import("./Terminal"));
+
+export type PanelTab = "changes" | "preview" | "terminal" | "files";
 
 export function SidePanel({
   sessionId,
@@ -26,6 +29,7 @@ export function SidePanel({
   const tabs: { id: PanelTab; label: string; count?: number }[] = [
     { id: "changes", label: "Changes", count: changes.length },
     { id: "preview", label: "Preview" },
+    { id: "terminal", label: "Terminal" },
     { id: "files", label: "Files", count: files.length },
   ];
   return (
@@ -48,6 +52,19 @@ export function SidePanel({
       <div className="panel-body" data-scroll>
         {tab === "changes" ? <Changes changes={changes} /> : null}
         {tab === "preview" ? <Preview sessionId={sessionId} running={running} /> : null}
+        {tab === "terminal" ? (
+          running ? (
+            <Suspense fallback={null}>
+              <Terminal sessionId={sessionId} />
+            </Suspense>
+          ) : (
+            <Empty
+              icon="terminal"
+              title="Start the session to use the terminal"
+              detail="Send a message to resume it; the shell opens in the repository."
+            />
+          )
+        ) : null}
         {tab === "files" ? <FileList sessionId={sessionId} files={files} /> : null}
       </div>
     </aside>

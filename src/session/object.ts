@@ -1,7 +1,7 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
-import { Config, Duration, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
+import { Cause, Config, Duration, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
@@ -276,9 +276,11 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 ).pipe(Effect.asVoid)
               : Effect.void,
           ),
-          Effect.catchCause(() =>
+          Effect.catchCause((cause) =>
             Effect.gen(function* () {
               if (action === undefined || !("gen" in action) || !current(action.gen)) return;
+              // Error text only: R2, RPC and supervisor failures carry no credentials.
+              if (action.kind === "start") console.error(`start failed: ${Cause.pretty(cause)}`);
               if (action.kind === "container.start" || action.kind === "dial") {
                 // A dial that fails because the container is gone is a stop, not a retry.
                 const kind = container.running ? "dial.failed" : "container.stopped";
@@ -404,8 +406,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
         conversation: () => Effect.sync(() => conversationView(log.state, log.history)),
         log: () => Effect.sync(() => log.history),
-        // A preview request from the Worker, whose Host is `<port>-<id>.<base>`. It never
-        // starts a container and appends nothing.
+        // A preview request from the Worker, whose Host is `<port>-<id>.<base>`, or the
+        // terminal socket at `/api/sessions/<id>/terminal`. It never starts a container and
+        // appends nothing.
         fetch: Effect.gen(function* () {
           const unavailable = HttpServerResponse.text("Session not running", { status: 502 });
           if (log.state.phase !== "running") return unavailable;
@@ -413,7 +416,18 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             yield* HttpServerRequest.HttpServerRequest,
           ).pipe(Effect.orDie);
           const url = new URL(request.url);
-          const port = Number(url.hostname.split("-", 1)[0]);
+          const label = /^(\d{1,5})-/.exec(url.hostname);
+          if (label?.[1] === undefined) {
+            const size = `cols=${url.searchParams.get("cols")}&rows=${url.searchParams.get("rows")}`;
+            const target = `http://container/terminal?gen=${log.state.gen}&${size}`;
+            return yield* Effect.tryPromise(() =>
+              container.getTcpPort(7000).fetch(target, { headers: request.headers }),
+            ).pipe(
+              Effect.map((response) => HttpServerResponse.raw(response)),
+              Effect.orElseSucceed(() => unavailable),
+            );
+          }
+          const port = Number(label[1]);
           // Dev servers such as Vite refuse a Host they don't know, so the target is localhost.
           const headers = new Headers(request.headers);
           headers.delete("host");

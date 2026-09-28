@@ -14,6 +14,7 @@ import SessionObject, { SessionArtifacts } from "./session/object.js";
 const LoopbackProps = Schema.Struct({ session: Schema.String, repo: Schema.String });
 // A preview host is `<port>-<session id>.<SCOTTY_HATCH_BASE>`.
 const hatchLabel = /^(\d{1,5})-([a-z0-9-]{6,32})$/;
+const terminalPath = /^\/api\/sessions\/([a-z0-9-]{6,32})\/terminal$/;
 // scotty-attach uploads: one of these types, at most 25 MB, name and caption URI-encoded.
 const FileType = Schema.Literals([
   "image/png",
@@ -126,8 +127,16 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
             return HttpServerResponse.text("Not found", { status: 404 });
           return yield* sessions.getByName(label[2]).fetch(request).pipe(Effect.orDie);
         }
-        if (new URL(request.url, "https://scotty.internal").pathname.startsWith("/api/"))
-          return yield* api;
+        const url = new URL(request.url, "https://scotty.internal");
+        const terminal = terminalPath.exec(url.pathname)?.[1];
+        if (terminal !== undefined) {
+          // A page on another site can't open a shell with the owner's Access cookie.
+          const origin = request.headers["origin"];
+          if (origin !== undefined && origin !== `https://${host}`)
+            return HttpServerResponse.text("Forbidden", { status: 403 });
+          return yield* sessions.getByName(terminal).fetch(request).pipe(Effect.orDie);
+        }
+        if (url.pathname.startsWith("/api/")) return yield* api;
         const assets: unknown = env["ASSETS"];
         if (!isFetcher(assets)) return yield* Effect.die("ASSETS binding missing");
         return yield* Cloudflare.fromCloudflareFetcher(assets).fetch(request).pipe(Effect.orDie);

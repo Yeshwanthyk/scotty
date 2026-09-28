@@ -33,7 +33,9 @@ const panelKey = "scotty.panel";
 const readPanel = (): PanelTab | undefined => {
   try {
     const value = localStorage.getItem(panelKey);
-    return value === "changes" || value === "preview" || value === "files" ? value : undefined;
+    return value === "changes" || value === "preview" || value === "terminal" || value === "files"
+      ? value
+      : undefined;
   } catch {
     return undefined;
   }
