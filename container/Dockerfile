@@ -14,12 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && useradd --create-home --home-dir /home/scotty scotty \
     && echo "scotty ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/scotty && chmod 0440 /etc/sudoers.d/scotty \
     && mkdir /workspace && chown scotty:scotty /workspace
-# The e2e fixture repository (fixtureRepo in protocol/supervisor.ts): one README on main.
+# The e2e fixture repository (fixtureRepo in protocol/supervisor.ts): one README on main. It is
+# owned by scotty because git won't serve a repository owned by another user.
 RUN git init -q --bare -b main /opt/scotty/fixture.git && mkdir /tmp/fixture \
     && git -C /tmp/fixture init -q -b main && echo "Scotty e2e fixture" > /tmp/fixture/README \
     && git -C /tmp/fixture add README \
     && git -C /tmp/fixture -c user.name=scotty -c user.email=scotty@localhost commit -q -m fixture \
-    && git -C /tmp/fixture push -q /opt/scotty/fixture.git main && rm -rf /tmp/fixture
+    && git -C /tmp/fixture push -q /opt/scotty/fixture.git main && rm -rf /tmp/fixture \
+    && chown -R scotty:scotty /opt/scotty/fixture.git
 COPY container/AGENTS.md /etc/scotty/AGENTS.md
 # Each agent reads its global instructions from its own path; all point at one file.
 RUN mkdir -m 700 /home/scotty/.codex && ln -s /etc/scotty/AGENTS.md /home/scotty/.codex/AGENTS.md \
