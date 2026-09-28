@@ -12,6 +12,8 @@ const dropped =
   "host authorization proxy-authorization cookie x-api-key x-github-token x-forwarded-for connection keep-alive proxy-connection te trailer transfer-encoding upgrade".split(
     " ",
   );
+const rateLimited = (headers: Headers) =>
+  headers.has("retry-after") || headers.get("x-ratelimit-remaining") === "0";
 const forbidden = () => HttpServerResponse.text("Forbidden\n", { status: 403 });
 
 // A push's ref-update commands are the pkt-lines before the first flush-pkt; every one must
@@ -56,7 +58,6 @@ export const gitHandler = (
       body = bytes;
     }
     const token = yield* credentials.getByName("owner").gitHubToken();
-    // 401, not 403: the workspace retries a 403 as GitHub throttling.
     if (token === null)
       return HttpServerResponse.text("GitHub is not signed in\n", { status: 401 });
     const headers = new Headers(raw.headers);
@@ -69,6 +70,10 @@ export const gitHandler = (
         body,
       }),
     );
+    // GitHub signals some rate limits with 403; the workspace retries only 429, so a 403 that
+    // means "no access" fails at once.
+    if (upstream.status === 403 && rateLimited(upstream.headers))
+      return HttpServerResponse.text("GitHub rate limit\n", { status: 429 });
     return HttpServerResponse.fromWeb(upstream);
   }).pipe(
     // A body or upstream that fails mid-request is a bad gateway git can report, not a crash.
