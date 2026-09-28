@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && mkdir /workspace && chown scotty:scotty /workspace
 # The e2e fixture repository (fixtureRepo in protocol/supervisor.ts): one README on main. It is
 # owned by scotty because git won't serve a repository owned by another user.
+# Pushes to it skip the Worker's refs/heads/scotty/* check; it lives only as long as the container.
 RUN git init -q --bare -b main /opt/scotty/fixture.git && mkdir /tmp/fixture \
     && git -C /tmp/fixture init -q -b main && echo "Scotty e2e fixture" > /tmp/fixture/README \
     && git -C /tmp/fixture add README \

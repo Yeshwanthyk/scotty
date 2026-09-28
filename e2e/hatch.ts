@@ -1,4 +1,3 @@
-import { fixtureRepo } from "../protocol/supervisor.js";
 import { connect } from "node:tls";
 import { Effect, Schema } from "effect";
 import {
@@ -12,6 +11,7 @@ import {
   View,
 } from "../cli/client.js";
 import { Log, waiter } from "./lib/wait.js";
+import { fixtureRepo } from "../protocol/supervisor.js";
 
 const Hatch = Schema.Struct({ url: Schema.String });
 const check = (ok: boolean, message: string) =>

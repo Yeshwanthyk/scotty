@@ -1,4 +1,3 @@
-import { fixtureRepo } from "../protocol/supervisor.js";
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -15,6 +14,7 @@ import {
   View,
 } from "../cli/client.js";
 import { Log, waiter } from "./lib/wait.js";
+import { fixtureRepo } from "../protocol/supervisor.js";
 
 const Instances = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.String })),

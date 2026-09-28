@@ -27,6 +27,9 @@ const exec = (args: string[], cwd: string) =>
               PATH: processEnv("PATH"),
               HOME: processEnv("HOME") || "/home/scotty",
               GIT_TERMINAL_PROMPT: "0",
+              // A transfer stalled for 30 s fails as "RPC failed", which is retried.
+              GIT_HTTP_LOW_SPEED_LIMIT: "1000",
+              GIT_HTTP_LOW_SPEED_TIME: "30",
             },
           }),
         );
@@ -66,8 +69,9 @@ const transient = (error: unknown) =>
   /error: (429|5\d\d)|RPC failed|early EOF|Connection reset/.test(error.stderr) &&
   !/error: 4(?!29)\d\d/.test(error.stderr);
 const backoff = Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]);
-// Clone and fetch share one budget, so the last attempt still ends inside the DO's workspace
-// deadline (deadlines.ts).
+// Clone and fetch share one budget: no attempt starts after ~270 s (the budget plus one 30 s
+// wait), leaving ~90 s of the DO's 360 s workspace deadline (deadlines.ts) for that attempt,
+// the restore and Codex's start.
 const retryBudget = 240_000;
 // Each retried failure is reported in workspace.ready, so a slow start shows why.
 const fromGitHub = (args: string[], cwd: string, retried: string[], until: number) =>

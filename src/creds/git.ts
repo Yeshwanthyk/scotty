@@ -72,8 +72,12 @@ export const gitHandler = (
     );
     // GitHub signals some rate limits with 403; the workspace retries only 429, so a 403 that
     // means "no access" fails at once.
-    if (upstream.status === 403 && rateLimited(upstream.headers))
+    if (upstream.status === 403 && rateLimited(upstream.headers)) {
+      yield* Effect.tryPromise(() => upstream.body?.cancel() ?? Promise.resolve()).pipe(
+        Effect.ignore,
+      );
       return HttpServerResponse.text("GitHub rate limit\n", { status: 429 });
+    }
     return HttpServerResponse.fromWeb(upstream);
   }).pipe(
     // A body or upstream that fails mid-request is a bad gateway git can report, not a crash.
