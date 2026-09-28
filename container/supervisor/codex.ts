@@ -19,11 +19,10 @@ const instructions = (
 passwordless sudo and internet access. Run \`sudo apt-get update\` before installing system packages.
 The repository is at /workspace/repo.
 
-Its dev environment is \`.agents/setup\`: a committed, idempotent bash script.
-- If it exists, run it before working on the app.
-- If the task needs the app running and it doesn't exist, write it: install the toolchains the
-  repository's files pin (link them into /usr/local/bin so they are on PATH), install dependencies,
-  start services and dev servers.
+Its dev environment is \`.agents/setup\`: an executable, idempotent bash script in the repository.
+Whenever you set up, install or start the app, do it through that script: if it doesn't exist,
+write it first (install the toolchains the repository's files pin, linked into /usr/local/bin so
+they are on PATH; install dependencies; start services and dev servers), then run it.
 - Bind servers to 0.0.0.0. Start long-lived ones detached so they outlive your command:
   mkdir -p /workspace/.scotty/logs && setsid nohup <cmd> > /workspace/.scotty/logs/<name>.log 2>&1 < /dev/null &
 - A server on port N is reachable at ${hatch.replace("{port}", "N")}; give the user that URL.
