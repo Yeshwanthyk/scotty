@@ -1,7 +1,7 @@
 // Dev tool, not a test: `vite dev` answers `/api/*` from real event logs (saved from `dev`)
 // through the real fold and views, so the UI can be iterated on without a deployment.
 // Writes append events the way the Session DO would and play back segments of real logs.
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Schema } from "effect";
 import type { Plugin } from "vite";
@@ -198,6 +198,26 @@ function seed() {
     sessions.set(id, make(id, history));
   }
   for (const spec of dummies) sessions.set(spec.id, make(spec.id, codexLog(spec)));
+  // The owner's own sessions, imported by `bun ui/seed/local.ts` (git-ignored).
+  const local = new URL("local/", here);
+  const imported = (() => {
+    try {
+      return readdirSync(local).filter((name) => name.endsWith(".json"));
+    } catch {
+      return [];
+    }
+  })();
+  for (const name of imported) {
+    const raw: unknown = JSON.parse(readFileSync(new URL(name, local), "utf8"));
+    const history = Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(raw).map((event) =>
+      decodeSessionEvent(event),
+    );
+    const created = history[0];
+    if (created?.kind === "created") {
+      const id = created.branch.replace(/^scotty\//, "");
+      sessions.set(id, make(id, history));
+    }
+  }
   // Waiting for the owner: the two-turn log cut before its stop.
   const waiting = readLog("two-turns");
   const cut = waiting.findIndex((event) => event.kind === "container.stopped");

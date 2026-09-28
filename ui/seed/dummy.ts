@@ -4,7 +4,7 @@ import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.
 
 type Json = Record<string, unknown>;
 
-type Spec =
+export type Spec =
   | { type: "think"; summary?: string[] }
   | { type: "say"; text: string; phase?: "commentary" | "final_answer" }
   | {
