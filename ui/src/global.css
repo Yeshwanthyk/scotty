@@ -1608,6 +1608,78 @@ button.diff-line {
   }
 }
 
+/* ---------- Menu ---------- */
+
+.menu {
+  position: relative;
+}
+
+.menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 15;
+  min-width: 200px;
+  padding: 4px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow);
+  transform-origin: top right;
+  animation: menu-in var(--fast) var(--ease-out);
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+.menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  text-align: left;
+  color: var(--ink);
+}
+
+.menu-item .icon {
+  color: var(--muted);
+  flex: none;
+}
+
+.menu-item[data-tone="danger"],
+.menu-item[data-tone="danger"] .icon {
+  color: var(--danger);
+}
+
+.menu-text {
+  display: grid;
+  gap: 1px;
+}
+
+.menu-detail {
+  font-size: 11.5px;
+  color: var(--quiet);
+}
+
+.menu-item:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .menu-item:hover {
+    background: var(--hover);
+  }
+}
+
 /* ---------- Command menu ---------- */
 
 .overlay {

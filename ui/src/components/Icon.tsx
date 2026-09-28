@@ -33,7 +33,7 @@ const paths = {
   trash: "M3 4.5h10M6.25 4.5V3h3.5v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5",
   stop: "M4.5 4.5h7v7h-7z",
   resume: "M13.25 8a5.25 5.25 0 1 1-1.54-3.71M13.25 2.75v2.5h-2.5",
-  more: "M3.5 8h.01M8 8h.01M12.5 8h.01",
+  more: "M2.5 8a1.25 1.25 0 1 0 2.5 0a1.25 1.25 0 1 0-2.5 0M6.75 8a1.25 1.25 0 1 0 2.5 0a1.25 1.25 0 1 0-2.5 0M11 8a1.25 1.25 0 1 0 2.5 0a1.25 1.25 0 1 0-2.5 0",
   image:
     "M2.75 3.25h10.5v9.5H2.75zM2.75 10.5l3-3 3.5 3.5M9.25 9.5l1.25-1.25 2.75 2.75M10.25 6a.25.25 0 1 0 0-.5.25.25 0 0 0 0 .5Z",
   list: "M5.75 4.25h7.5M5.75 8h7.5M5.75 11.75h7.5M2.75 4.25h.01M2.75 8h.01M2.75 11.75h.01",
@@ -49,7 +49,7 @@ const paths = {
 export type IconName = keyof typeof paths;
 
 // Filled glyphs read better than outlines at this size.
-const filled = new Set<IconName>(["stop", "play"]);
+const filled = new Set<IconName>(["stop", "play", "more"]);
 
 export function Icon({
   name,

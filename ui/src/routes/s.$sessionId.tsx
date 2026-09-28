@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AgentChip, Composer } from "../components/Composer";
 import { DiffStat } from "../components/DiffLines";
 import { Icon, Spinner } from "../components/Icon";
+import { Menu } from "../components/Menu";
 import { SidebarButton } from "../components/Layout";
 import { SidePanel, type PanelTab } from "../components/SidePanel";
 import { Thread } from "../components/Thread";
@@ -198,41 +199,6 @@ function SessionView({ sessionId }: { sessionId: string }) {
               {statusLabel[status]}
             </span>
           ) : null}
-          {running ? (
-            <button
-              type="button"
-              className="button pressable"
-              data-tone="ghost"
-              disabled={busy}
-              onClick={() => void act("stop")}
-            >
-              <Icon name="stop" size={11} />
-              <span className="desktop-only">Stop</span>
-            </button>
-          ) : null}
-          {stopped ? (
-            <button
-              type="button"
-              className="button pressable"
-              data-tone="ghost"
-              disabled={busy}
-              onClick={() => void act("resume")}
-            >
-              <Icon name="resume" size={14} />
-              <span className="desktop-only">Resume</span>
-            </button>
-          ) : null}
-          {stopped || failed ? (
-            <button
-              type="button"
-              className="icon-button pressable"
-              aria-label="Delete session"
-              disabled={busy}
-              onClick={() => void act("delete")}
-            >
-              <Icon name="trash" />
-            </button>
-          ) : null}
           {/* The diff stat is the way into the panel: the header says what changed at a glance. */}
           {added > 0 || removed > 0 ? (
             <button
@@ -255,6 +221,42 @@ function SessionView({ sessionId }: { sessionId: string }) {
               <Icon name="panel" />
             </button>
           )}
+          <Menu
+            label="Session actions"
+            disabled={busy}
+            items={[
+              ...(stopped
+                ? [
+                    {
+                      label: "Resume",
+                      icon: "resume" as const,
+                      detail: "Start its container again",
+                      onSelect: () => void act("resume"),
+                    },
+                  ]
+                : []),
+              ...(running
+                ? [
+                    {
+                      label: "Stop session",
+                      icon: "stop" as const,
+                      detail: "Shut down its container",
+                      onSelect: () => void act("stop"),
+                    },
+                  ]
+                : []),
+              ...(stopped || failed
+                ? [
+                    {
+                      label: "Delete session",
+                      icon: "trash" as const,
+                      tone: "danger" as const,
+                      onSelect: () => void act("delete"),
+                    },
+                  ]
+                : []),
+            ]}
+          />
         </div>
       </header>
       <div className="workspace" data-panel={panel === undefined ? "closed" : "open"}>
