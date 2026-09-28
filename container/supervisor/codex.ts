@@ -12,6 +12,26 @@ import {
   type Runner,
 } from "./runner.js";
 
+// Sent on thread/start and thread/resume. Scotty never runs `.agents/setup`; the agent owns it.
+const instructions = (
+  hatch: string,
+) => `You are the user \`scotty\` in a Scotty container: Debian bookworm, Node 22, git, curl,
+passwordless sudo and internet access. Run \`sudo apt-get update\` before installing system packages.
+The repository is at /workspace/repo.
+
+Its dev environment is \`.agents/setup\`: a committed, idempotent bash script.
+- If it exists, run it before working on the app.
+- If the task needs the app running and it doesn't exist, write it: install the toolchains the
+  repository's files pin (link them into /usr/local/bin so they are on PATH), install dependencies,
+  start services and dev servers.
+- Bind servers to 0.0.0.0. Start long-lived ones detached so they outlive your command:
+  mkdir -p /workspace/.scotty/logs && setsid nohup <cmd> > /workspace/.scotty/logs/<name>.log 2>&1 < /dev/null &
+- A server on port N is reachable at ${hatch.replace("{port}", "N")}; give the user that URL.
+- Keep dependency and build directories git-ignored.
+
+A stopped session resumes with only tracked and untracked non-ignored files; installed
+dependencies and running servers are gone. After a resume, run \`.agents/setup\` first.`;
+
 const Thread = Schema.Struct({ thread: Schema.Struct({ id: Schema.String }) });
 const Started = Schema.Struct({ turn: Schema.Struct({ id: Schema.String }) });
 const Steered = Schema.Struct({ turnId: Schema.String });
@@ -82,6 +102,7 @@ export class CodexRunner implements Runner {
     });
   }
   start(
+    hatch: string,
     threadId?: string,
   ): Effect.Effect<
     AgentReady,
@@ -111,6 +132,7 @@ export class CodexRunner implements Runner {
         cwd: this.cwd,
         approvalPolicy: "never",
         sandbox: "danger-full-access",
+        developerInstructions: instructions(hatch),
       });
       const thread = yield* Schema.decodeUnknownEffect(Thread)(result).pipe(
         Effect.mapError(

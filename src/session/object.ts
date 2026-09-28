@@ -23,7 +23,7 @@ export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
     Effect.map((image) => ({
       image,
       registryId: "registry.cloudflare.com",
-      instanceType: "basic" as const,
+      instanceType: "standard-1" as const,
     })),
   ),
 ) {}
@@ -42,10 +42,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
     const credentials = yield* CredsObject;
     yield* bindSessionContainer(SessionContainer);
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(SessionArtifacts);
+    const env = yield* Cloudflare.WorkerEnvironment;
     return Effect.gen(function* () {
       // The container handle exists only at run time, not while Alchemy plans the deploy.
       const container = storage.container;
       if (container === undefined) return yield* Effect.die("Session container binding missing");
+      // Bound by the Worker's Config read; alchemy.run.ts rejects a missing value.
+      const hatchBase: unknown = env["SCOTTY_HATCH_BASE"];
+      if (typeof hatchBase !== "string") return yield* Effect.die("SCOTTY_HATCH_BASE missing");
       // ctx.exports is typed {} without a GlobalProps declaration; its default export is the
       // Worker's loopback, which takes props (work/spikes/7a/RESULT.md).
       const isLoopback = (
@@ -183,6 +187,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   accountId: chatgpt.accountId,
                 },
                 git,
+                hatch: `https://{port}-${id()}.${hatchBase}`,
                 ...(restored && action.resume !== undefined ? { resume: action.resume } : {}),
               };
               if (current(action.gen)) link.send(message);

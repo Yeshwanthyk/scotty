@@ -8,10 +8,11 @@ COPY protocol/supervisor.ts ./protocol/supervisor.ts
 RUN bun build --compile container/supervisor/main.ts --outfile /out/scotty-sup
 
 FROM node:22-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates procps \
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates procps curl sudo xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global --ignore-scripts --no-audit --no-fund @openai/codex@0.157.1 \
     && useradd --create-home --home-dir /home/scotty scotty \
+    && echo "scotty ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/scotty && chmod 0440 /etc/sudoers.d/scotty \
     && mkdir /workspace && chown scotty:scotty /workspace
 COPY --from=build /out/scotty-sup /usr/local/bin/scotty-sup
 USER scotty

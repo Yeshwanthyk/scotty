@@ -41,6 +41,8 @@ export const ToSupervisor = Schema.Union([
     branch: Schema.String,
     agent: AgentConfig,
     git: Schema.Struct({ name: tomlString, email: tomlString }),
+    // Preview URL for a port in this session, with `{port}` to fill in.
+    hatch: Schema.String,
     resume: Schema.optionalKey(
       Schema.Struct({
         threadId: identifier,
