@@ -36,21 +36,25 @@ export type Conversation = CanonicalConversationSnapshot;
 export const message = (failure: unknown, fallback: string): string =>
   failure instanceof Error ? failure.message : fallback;
 
-async function request(
+// A Blob body (a skill zip) goes as it is; any other body is JSON.
+export async function request(
   path: string,
   body?: object,
   signal?: AbortSignal,
   key?: string,
-  method?: "DELETE",
+  method?: "PUT" | "PATCH" | "DELETE",
 ): Promise<unknown> {
+  const raw = body instanceof Blob;
   const response = await fetch(path, {
     method: method ?? (body === undefined ? "GET" : "POST"),
     headers: {
       accept: "application/json",
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
+      ...(body === undefined
+        ? {}
+        : { "content-type": raw ? "application/zip" : "application/json" }),
       ...(key === undefined ? {} : { "idempotency-key": key }),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
     credentials: "same-origin",
     cache: "no-store",
     signal,

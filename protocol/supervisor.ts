@@ -43,6 +43,9 @@ export const ToSupervisor = Schema.Union([
     git: Schema.Struct({ name: tomlString, email: tomlString }),
     // Preview URL for a port in this session, with `{port}` to fill in.
     hatch: Schema.String,
+    // The owner's instructions, appended to Scotty's; skills already PUT to /skill.
+    instructions: Schema.String,
+    skills: Schema.Array(Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/))),
     resume: Schema.optionalKey(
       Schema.Struct({
         threadId: identifier,

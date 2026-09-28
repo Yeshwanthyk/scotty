@@ -185,3 +185,44 @@ export const prepareWorkspace = (
     const ms = (yield* Clock.currentTimeMillis) - started;
     return { dir, commit, ms, retried };
   });
+
+// Skills arrive over HTTP before start, like a save; start installs the ones it names.
+const skillsDir = () => `${workspaceRoot()}/skills`;
+const skillFile = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+export const storeSkill = (name: string, zip: Uint8Array) =>
+  Effect.gen(function* () {
+    if (!skillFile.test(name)) return yield* new WorkspaceError({ message: "invalid skill name" });
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(skillsDir(), { recursive: true }).pipe(Effect.mapError(failure));
+    yield* fs.writeFile(`${skillsDir()}/${name}.zip`, zip).pipe(Effect.mapError(failure));
+  });
+
+// Each skill's folder (the one holding SKILL.md) goes to ~/.agents/skills/<name>. Codex's
+// AGENTS.md becomes Scotty's instructions followed by the owner's.
+const settingsScript = `set -e
+home="$1"; codex="$2"; incoming="$3"; owner="$4"; shift 4
+rm -rf "$home/.agents/skills" && mkdir -p "$home/.agents/skills"
+for name in "$@"; do
+  t=$(mktemp -d); unzip -q "$incoming/$name.zip" -d "$t" -x '__MACOSX/*'
+  file=$(find "$t" -maxdepth 2 -name SKILL.md | head -n 1); test -n "$file"
+  mv "$(dirname "$file")" "$home/.agents/skills/$name"; rm -rf "$t"
+done
+mkdir -p "$codex" && rm -f "$codex/AGENTS.md"
+{ cat /etc/scotty/AGENTS.md; if [ -n "$owner" ]; then printf '\\n\\n# From the owner\\n\\n%s\\n' "$owner"; fi; } > "$codex/AGENTS.md"`;
+
+export const installSettings = (instructions: string, skills: ReadonlyArray<string>) =>
+  run(
+    [
+      "sh",
+      "-c",
+      settingsScript,
+      "settings",
+      processEnv("HOME") || "/home/scotty",
+      codexHome(),
+      skillsDir(),
+      instructions,
+      ...skills.filter((name) => skillFile.test(name)),
+    ],
+    workspaceRoot(),
+  );

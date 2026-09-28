@@ -42,6 +42,7 @@ type Event =
 type Saves = {
   save: (gen: number) => Effect.Effect<Uint8Array, Error>;
   load: (tar: Uint8Array) => Effect.Effect<void, Error>;
+  skill: (name: string, zip: Uint8Array) => Effect.Effect<void, Error>;
 };
 
 export const serve = (
@@ -194,6 +195,22 @@ export const serve = (
             Effect.match({
               onSuccess: (tar) => new Response(new Uint8Array(tar)),
               onFailure: () => new Response("save failed", { status: 500 }),
+            }),
+          ),
+        );
+      }
+      if (url.pathname === "/skill") {
+        const gen = wire.gen;
+        if (gen === undefined || url.searchParams.get("gen") !== String(gen))
+          return new Response("generation conflict", { status: 409 });
+        if (request.method !== "PUT") return new Response("method not allowed", { status: 405 });
+        const name = url.searchParams.get("name") ?? "";
+        return Effect.runPromise(
+          Effect.tryPromise(() => request.arrayBuffer()).pipe(
+            Effect.flatMap((body) => saves.skill(name, new Uint8Array(body))),
+            Effect.match({
+              onSuccess: () => new Response(null, { status: 204 }),
+              onFailure: () => new Response("skill failed", { status: 500 }),
             }),
           ),
         );

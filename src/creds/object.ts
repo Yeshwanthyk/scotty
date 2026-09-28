@@ -27,6 +27,14 @@ const GitHubUser = Schema.Struct({
   name: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
 });
+const SkillRow = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+  enabled: Schema.Number,
+  sha256: Schema.String,
+  size: Schema.Number,
+  updated: Schema.Number,
+});
 // Sessions can run for hours; refuse a token that could expire mid-session.
 const tokenMargin = 24 * 60 * 60 * 1000;
 class CredentialStoreError extends Schema.TaggedError<CredentialStoreError>()(
@@ -43,6 +51,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS credentials (provider TEXT PRIMARY KEY, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, id_token TEXT NOT NULL, account_id TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), device_auth_id TEXT NOT NULL, user_code TEXT NOT NULL, interval INTEGER NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS github (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, login TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS skills (name TEXT PRIMARY KEY, description TEXT NOT NULL, enabled INTEGER NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, updated INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
 
       const gitHub = Effect.gen(function* () {
@@ -82,6 +91,29 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               Schema.decodeUnknownEffect(SessionRow)(row),
             );
           }),
+        // The zip itself is in R2 at skills/<name>.zip before its row is written.
+        skills: () =>
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`SELECT name, description, enabled, sha256, size, updated FROM skills ORDER BY name`;
+            const skills = yield* Effect.forEach(rows, (row) =>
+              Schema.decodeUnknownEffect(SkillRow)(row),
+            );
+            return skills.map((skill) => ({ ...skill, enabled: skill.enabled === 1 }));
+          }),
+        // Replacing a skill keeps whether it is on.
+        putSkill: (skill: { name: string; description: string; sha256: string; size: number }) =>
+          sql`INSERT INTO skills (name, description, enabled, sha256, size, updated) VALUES (${skill.name}, ${skill.description}, 1, ${skill.sha256}, ${skill.size}, ${Date.now()}) ON CONFLICT(name) DO UPDATE SET description = excluded.description, sha256 = excluded.sha256, size = excluded.size, updated = excluded.updated`.pipe(
+            Effect.asVoid,
+          ),
+        setSkill: (name: string, enabled: boolean) =>
+          sql`UPDATE skills SET enabled = ${enabled ? 1 : 0}, updated = ${Date.now()} WHERE name = ${name} RETURNING name`.pipe(
+            Effect.map((rows) => rows.length > 0),
+          ),
+        removeSkill: (name: string) =>
+          sql`DELETE FROM skills WHERE name = ${name} RETURNING name`.pipe(
+            Effect.map((rows) => rows.length > 0),
+          ),
         startChatGpt: () =>
           Effect.gen(function* () {
             const device = yield* startDevice;

@@ -97,6 +97,9 @@ export function Sidebar({
         >
           <Icon name="search" />
         </button>
+        <Link to="/settings" className="icon-button pressable mobile-only" aria-label="Settings">
+          <Icon name="settings" />
+        </Link>
         <button
           type="button"
           className="icon-button pressable desktop-only"
@@ -140,6 +143,16 @@ export function Sidebar({
           </section>
         ))}
       </div>
+      <nav className="sidebar-foot desktop-only">
+        <Link
+          to="/settings"
+          className="nav-item pressable"
+          activeProps={{ "aria-current": "page" }}
+        >
+          <Icon name="settings" />
+          Settings
+        </Link>
+      </nav>
       <div className="sidebar-bottom mobile-only-block">
         <Link to="/sessions/create" className="phone-compose pressable">
           <span>Ask Codex to build, fix, explain…</span>

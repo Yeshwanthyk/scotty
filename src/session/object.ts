@@ -6,6 +6,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
+import { instructionsKey, skillKey } from "../settings/skill.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
 import { deadlines } from "./deadlines.js";
@@ -176,6 +177,31 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                       ),
                       Effect.orElseSucceed(() => false),
                     );
+              // Settings as they are now; a running session keeps what it started with.
+              // A failed read fails the start (start_failed, retryable) rather than drop a setting.
+              const saved = yield* Effect.orDie(bucket.get(instructionsKey));
+              const instructions = saved === null ? "" : yield* Effect.orDie(saved.text());
+              const skills = (yield* credentials.getByName("owner").skills()).filter(
+                (skill) => skill.enabled,
+              );
+              const installed = yield* Effect.forEach(skills, (skill) =>
+                bucket.get(skillKey(skill.name)).pipe(
+                  Effect.flatMap((zip) =>
+                    zip === null
+                      ? Effect.succeed([])
+                      : zip.arrayBuffer().pipe(
+                          Effect.flatMap((body) =>
+                            supervisor(
+                              `/skill?gen=${action.gen}&name=${encodeURIComponent(skill.name)}`,
+                              { method: "PUT", body },
+                            ),
+                          ),
+                          Effect.as([skill.name]),
+                        ),
+                  ),
+                  Effect.orDie,
+                ),
+              );
               const message: ToSupervisorMessage = {
                 type: "start",
                 gen: action.gen,
@@ -193,6 +219,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 },
                 git,
                 hatch: `https://{port}-${id()}.${hatchBase}`,
+                instructions,
+                skills: installed.flat(),
                 ...(restored && action.resume !== undefined ? { resume: action.resume } : {}),
               };
               if (current(action.gen)) link.send(message);

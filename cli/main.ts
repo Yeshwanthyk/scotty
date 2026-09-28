@@ -6,10 +6,11 @@ import { auth, doctor } from "./commands/setup.js";
 import { create, ls, show, log } from "./commands/sessions.js";
 import { steer, interrupt, stop, resume, rm, hatch } from "./commands/actions.js";
 import { read } from "./commands/read.js";
+import { skill } from "./commands/skills.js";
 
 const help: Record<string, string> = {
   scotty:
-    "Usage: scotty <command> [--url https://host]\nCommands: doctor, auth, new, ls, show, steer, interrupt, stop, resume, hatch, read, log\nRun scotty <command> --help for options.\nExample: scotty doctor",
+    "Usage: scotty <command> [--url https://host]\nCommands: doctor, auth, new, ls, show, steer, interrupt, stop, resume, hatch, read, log, skill\nRun scotty <command> --help for options.\nExample: scotty doctor",
   doctor:
     "Usage: scotty doctor [--url https://host]\nCheck Access, the Worker, ChatGPT sign-in and the GitHub token.\nExample: scotty doctor",
   auth: "Usage: scotty auth login chatgpt|github | scotty auth status [--url https://host]\nlogin chatgpt signs in with a device code; login github stores the token read from stdin; status prints both.\nExample: gh auth token | scotty auth login github",
@@ -27,6 +28,8 @@ const help: Record<string, string> = {
     "Usage: scotty resume <id> [--url https://host]\nResume a stopped session from its last save.\nExample: scotty resume abcdef",
   rm: "Usage: scotty rm <id> [--url https://host]\nDelete a stopped session with its save and files. A running session must be stopped first.\nExample: scotty rm abcdef",
   read: "Usage: scotty read <id> [--last N] [--role user|assistant] [--url https://host]\nRead one snapshot with session authority and latest turn status. --last defaults to 1 (integer 1–500); filter by role before selecting the last messages. Empty assistant messages are omitted.\nExample: scotty read abcdef --last 5 --role assistant",
+  skill:
+    "Usage: scotty skill add <folder|zip> | scotty skill ls [--url https://host]\nadd uploads a skill (a folder or zip with SKILL.md), replacing one with the same name; ls lists skills. New sessions get the enabled skills.\nExample: scotty skill add ./skills/review",
   log: "Usage: scotty log <id> [--url https://host]\nShow raw events.\nExample: scotty log abcdef",
 };
 
@@ -45,6 +48,7 @@ const root = Command.make("scotty").pipe(
     hatch,
     read,
     log,
+    skill,
   ]),
 );
 const args = process.argv.slice(2);
@@ -67,7 +71,9 @@ if (args.includes("--help") || args.includes("-h")) {
           ? failure("usage", "Invalid command or arguments", "scotty --help", 2)
           : failure("request_failed", "Command failed", "scotty doctor");
     console.log(
-      JSON.stringify({ error: { code: error.code, message: error.message, hint: error.hint } }),
+      JSON.stringify({
+        error: { code: error.code, message: error.message, hint: error.hint },
+      }),
     );
     process.exitCode = error.exit;
   }

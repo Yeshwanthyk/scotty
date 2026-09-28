@@ -6,7 +6,14 @@ import { makeRunner } from "./agent.js";
 import { Requests } from "./requests.js";
 import { AgentError, type Runner } from "./runner.js";
 import type { Output } from "./wire.js";
-import { prepareWorkspace, saveWorkspace, storeSave, WorkspaceError } from "./workspace.js";
+import {
+  installSettings,
+  prepareWorkspace,
+  saveWorkspace,
+  storeSave,
+  storeSkill,
+  WorkspaceError,
+} from "./workspace.js";
 
 type Start = Extract<ToSupervisorMessage, { type: "start" }>;
 type Ready = {
@@ -72,6 +79,7 @@ export class Controller {
           message.git,
           message.resume,
         );
+        yield* installSettings(message.instructions, message.skills);
         const scope = yield* Scope.make();
         this.scope = scope;
         const runner = yield* makeRunner(message.agent, workspace.dir);
@@ -164,6 +172,12 @@ export class Controller {
     return this.startState === undefined
       ? storeSave(tar).pipe(Effect.provide(BunServices.layer))
       : Effect.fail(new WorkspaceError({ message: "workspace already started" }));
+  }
+  // A start sent again after a reconnect finds the skills already installed.
+  skill(name: string, zip: Uint8Array): Effect.Effect<void, WorkspaceError> {
+    return this.startState === undefined
+      ? storeSkill(name, zip).pipe(Effect.provide(BunServices.layer))
+      : Effect.void;
   }
   receive(message: ToSupervisorMessage): Effect.Effect<void> {
     if (message.type === "start") return this.start(message);

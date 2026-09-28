@@ -153,7 +153,11 @@ export function client(settings: { readonly url: string; readonly token: string 
   return <S extends Schema.Top>(
     path: string,
     schema: S,
-    options?: { method?: "GET" | "POST" | "DELETE"; body?: unknown; key?: string },
+    options?: {
+      method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+      body?: unknown;
+      key?: string;
+    },
   ) =>
     Effect.gen(function* () {
       const url = new URL(path, origin);
@@ -163,7 +167,11 @@ export function client(settings: { readonly url: string; readonly token: string 
         "cf-access-token": settings.token,
         accept: "application/json",
       });
-      if (options?.body !== undefined) headers.set("content-type", "application/json");
+      // Bytes go as they are (a skill zip); anything else is JSON.
+      const raw =
+        options?.body instanceof Uint8Array ? new Blob([new Uint8Array(options.body)]) : undefined;
+      if (options?.body !== undefined)
+        headers.set("content-type", raw ? "application/zip" : "application/json");
       if (options?.key) headers.set("idempotency-key", options.key);
       const response = yield* Effect.tryPromise({
         try: () =>
@@ -171,7 +179,7 @@ export function client(settings: { readonly url: string; readonly token: string 
             method: options?.method ?? "GET",
             headers,
             signal: AbortSignal.timeout(15000),
-            ...(options?.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+            ...(options?.body === undefined ? {} : { body: raw ?? JSON.stringify(options.body) }),
           }),
         catch: () =>
           failure(

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSessions } from "../data/sessions-store";
 import { ago, statusOf } from "../data/status";
 import { Icon } from "./Icon";
+import { sections } from "./Settings";
 import { StatusMark } from "./Sidebar";
 
 type Command = {
@@ -35,6 +36,14 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
         mark: <Icon name="plus" />,
         run: go(() => navigate({ to: "/sessions/create" })),
       },
+      ...sections.map((item) => ({
+        id: `settings-${item.id}`,
+        label: `Settings: ${item.label}`,
+        detail: item.detail,
+        section: "Actions",
+        mark: <Icon name={item.icon} />,
+        run: go(() => navigate({ to: "/settings/$section", params: { section: item.id } })),
+      })),
     ];
     const sessions: Command[] = (list ?? []).map((session) => ({
       id: session.identity.id,

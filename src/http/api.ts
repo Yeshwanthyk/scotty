@@ -6,6 +6,15 @@ import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { fixtureRepo } from "../../protocol/supervisor.js";
 import { defaultBranch } from "./repository.js";
+import {
+  instructionsKey,
+  maxInstructionBytes,
+  maxSkillBytes,
+  readSkill,
+  sha256,
+  skillKey,
+  skillName,
+} from "../settings/skill.js";
 
 const Prompt = Schema.String.check(
   Schema.isMinLength(1),
@@ -33,6 +42,16 @@ const GitHubToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{20,255}$/)),
 });
 const githubHint = "scotty auth login github";
+const Instructions = Schema.Struct({
+  text: Schema.String.check(
+    Schema.makeFilter((text) => new TextEncoder().encode(text).byteLength <= maxInstructionBytes, {
+      expected: "at most 64 KiB of UTF-8 text",
+    }),
+  ),
+});
+const SkillSwitch = Schema.Struct({ enabled: Schema.Boolean });
+const skillPath = /^\/api\/skills\/([^/]+)$/;
+
 const bad = (message: string, status = 400, hint?: string) =>
   HttpServerResponse.json(
     { error: { message, code: status === 404 ? "not_found" : "bad_request", hint } },
@@ -95,6 +114,54 @@ export function apiHandler(
       if (result.status === "refused")
         return yield* bad(`GitHub answered HTTP ${result.httpStatus}`, 400, githubHint);
       return yield* HttpServerResponse.json(result);
+    }
+    if (url.pathname === "/api/settings" && request.method === "GET") {
+      const saved = yield* bucket.get(instructionsKey);
+      return yield* HttpServerResponse.json({
+        instructions: saved === null ? "" : yield* saved.text(),
+        skills: yield* credential.skills(),
+        email: request.headers["cf-access-authenticated-user-email"] ?? null,
+      });
+    }
+    if (url.pathname === "/api/settings/instructions" && request.method === "PUT") {
+      const body = yield* Schema.decodeUnknownEffect(Instructions)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () => bad("Instructions must be at most 64 KiB of text")),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      if (body.text.trim() === "") yield* bucket.delete(instructionsKey);
+      else yield* bucket.put(instructionsKey, body.text);
+      return yield* HttpServerResponse.json({ saved: true });
+    }
+    if (url.pathname === "/api/skills" && request.method === "PUT") {
+      if (Number(request.headers["content-length"] ?? maxSkillBytes + 1) > maxSkillBytes)
+        return yield* bad("A skill zip must be at most 5 MiB", 413);
+      const zip = new Uint8Array(yield* request.arrayBuffer);
+      if (zip.byteLength > maxSkillBytes)
+        return yield* bad("A skill zip must be at most 5 MiB", 413);
+      const skill = yield* Effect.promise(() => readSkill(zip));
+      if (typeof skill === "string") return yield* bad(skill);
+      const digest = yield* Effect.promise(() => sha256(zip));
+      yield* bucket.put(skillKey(skill.name), zip);
+      yield* credential.putSkill({ ...skill, sha256: digest, size: zip.byteLength });
+      return yield* HttpServerResponse.json({ ...skill, sha256: digest, size: zip.byteLength });
+    }
+    const skillMatch = skillPath.exec(url.pathname);
+    if (skillMatch !== null) {
+      const name = skillMatch[1] ?? "";
+      if (!skillName.test(name)) return yield* bad("Not found", 404);
+      if (request.method === "PATCH") {
+        const body = yield* Schema.decodeUnknownEffect(SkillSwitch)(yield* request.json).pipe(
+          Effect.catchTag("SchemaError", () => bad("Expected {enabled: true|false}")),
+        );
+        if (HttpServerResponse.isHttpServerResponse(body)) return body;
+        if (!(yield* credential.setSkill(name, body.enabled))) return yield* bad("Not found", 404);
+        return yield* HttpServerResponse.json({ name, enabled: body.enabled });
+      }
+      if (request.method === "DELETE") {
+        if (!(yield* credential.removeSkill(name))) return yield* bad("Not found", 404);
+        yield* bucket.delete(skillKey(name));
+        return yield* HttpServerResponse.json({ name, removed: true });
+      }
     }
     if (url.pathname === "/api/sessions" && request.method === "POST") {
       const body = yield* Schema.decodeUnknownEffect(Create)(yield* request.json).pipe(
