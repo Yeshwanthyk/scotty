@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AgentChip, Composer } from "../components/Composer";
+import { DiffStat } from "../components/DiffLines";
 import { Icon, Spinner } from "../components/Icon";
 import { SidebarButton } from "../components/Layout";
 import { SidePanel, type PanelTab } from "../components/SidePanel";
@@ -15,6 +16,7 @@ import {
   type Conversation,
   type Session,
 } from "../data/core";
+import { sessionChanges } from "../data/diff";
 import { useSessions } from "../data/sessions-store";
 import { markSeen, statusLabel, statusOf } from "../data/status";
 import { startVisibilityPolling } from "../data/visibility-polling";
@@ -159,7 +161,10 @@ function SessionView({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (!working) setNote((current) => (current === "Stopping this turn…" ? "" : current));
   }, [working]);
-  const turns = snapshot?.turns ?? [];
+  const turns = useMemo(() => snapshot?.turns ?? [], [snapshot]);
+  const changes = useMemo(() => sessionChanges(turns), [turns]);
+  const added = changes.reduce((sum, file) => sum + file.added, 0);
+  const removed = changes.reduce((sum, file) => sum + file.removed, 0);
   return (
     <>
       <header className="header">
@@ -228,15 +233,28 @@ function SessionView({ sessionId }: { sessionId: string }) {
               <Icon name="trash" />
             </button>
           ) : null}
-          <button
-            type="button"
-            className="icon-button pressable"
-            aria-label="Changes, preview and files"
-            aria-pressed={panel !== undefined}
-            onClick={togglePanel}
-          >
-            <Icon name={panel === undefined ? "panel" : "x"} />
-          </button>
+          {/* The diff stat is the way into the panel: the header says what changed at a glance. */}
+          {added > 0 || removed > 0 ? (
+            <button
+              type="button"
+              className="button pressable changes-button"
+              aria-label={`Changes: ${changes.length} ${changes.length === 1 ? "file" : "files"}, ${added} added, ${removed} removed`}
+              aria-pressed={panel !== undefined}
+              onClick={togglePanel}
+            >
+              <DiffStat added={added} removed={removed} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="icon-button pressable"
+              aria-label="Changes, preview and files"
+              aria-pressed={panel !== undefined}
+              onClick={togglePanel}
+            >
+              <Icon name="panel" />
+            </button>
+          )}
         </div>
       </header>
       <div className="workspace" data-panel={panel === undefined ? "closed" : "open"}>
@@ -316,6 +334,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
           <SidePanel
             sessionId={sessionId}
             turns={turns}
+            changes={changes}
             running={running}
             tab={panel}
             onTab={(tab) => {

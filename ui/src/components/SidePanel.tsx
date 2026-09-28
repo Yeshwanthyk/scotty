@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { hatch, message } from "../data/core";
-import { sessionChanges } from "../data/diff";
+import type { FileDiff } from "../data/diff";
 import type { Turn } from "../protocol/session/conversation";
 import { DiffFile, DiffStat } from "./DiffLines";
 import { Icon, Spinner, type IconName } from "./Icon";
@@ -10,17 +10,18 @@ export type PanelTab = "changes" | "preview" | "files";
 export function SidePanel({
   sessionId,
   turns,
+  changes,
   running,
   tab,
   onTab,
 }: {
   sessionId: string;
   turns: ReadonlyArray<Turn>;
+  changes: ReadonlyArray<FileDiff>;
   running: boolean;
   tab: PanelTab;
   onTab: (tab: PanelTab) => void;
 }) {
-  const changes = useMemo(() => sessionChanges(turns), [turns]);
   const files = turns.flatMap((turn) => turn.files);
   const tabs: { id: PanelTab; label: string; count?: number }[] = [
     { id: "changes", label: "Changes", count: changes.length },
@@ -63,7 +64,7 @@ function Empty({ icon, title, detail }: { icon: IconName; title: string; detail:
   );
 }
 
-function Changes({ changes }: { changes: ReturnType<typeof sessionChanges> }) {
+function Changes({ changes }: { changes: ReadonlyArray<FileDiff> }) {
   if (changes.length === 0)
     return (
       <Empty icon="diff" title="No changes yet" detail="Files the agent edits show up here." />

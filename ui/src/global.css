@@ -313,6 +313,17 @@ a {
   white-space: nowrap;
 }
 
+.changes-button {
+  padding: 0 8px;
+  font-size: 12px;
+  background: transparent;
+}
+
+.changes-button[aria-pressed="true"] {
+  background: var(--selected);
+  border-color: transparent;
+}
+
 .button[data-tone="primary"] {
   background: var(--ink);
   color: var(--bg);
@@ -409,6 +420,7 @@ kbd {
   display: flex;
   flex-direction: column;
   background: var(--bg);
+  container: main / inline-size;
 }
 
 /* ---------- Sidebar ---------- */
@@ -663,6 +675,21 @@ kbd {
 
 .workspace[data-panel="open"] {
   grid-template-columns: minmax(0, 1fr) minmax(360px, 44%);
+}
+
+/* Too narrow for chat and panel side by side: the panel takes the chat's place, as on the phone. */
+@container main (max-width: 860px) {
+  .workspace[data-panel="open"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace[data-panel="open"] .chat {
+    display: none;
+  }
+
+  .workspace .panel {
+    border-left: 0;
+  }
 }
 
 .chat {
