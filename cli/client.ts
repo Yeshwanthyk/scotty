@@ -153,7 +153,7 @@ export function client(settings: { readonly url: string; readonly token: string 
   return <S extends Schema.Top>(
     path: string,
     schema: S,
-    options?: { method?: "GET" | "POST"; body?: unknown; key?: string },
+    options?: { method?: "GET" | "POST" | "DELETE"; body?: unknown; key?: string },
   ) =>
     Effect.gen(function* () {
       const url = new URL(path, origin);

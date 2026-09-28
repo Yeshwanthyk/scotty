@@ -4,7 +4,7 @@ import { Command, CliError } from "effect/unstable/cli";
 import { CliFailure, failure } from "./client.js";
 import { auth, doctor } from "./commands/setup.js";
 import { create, ls, show, log } from "./commands/sessions.js";
-import { steer, interrupt, stop, resume, hatch } from "./commands/actions.js";
+import { steer, interrupt, stop, resume, rm, hatch } from "./commands/actions.js";
 import { read } from "./commands/read.js";
 
 const help: Record<string, string> = {
@@ -25,6 +25,7 @@ const help: Record<string, string> = {
     "Usage: scotty hatch <id> <port> [--url https://host]\nPrint the preview URL for a server on <port> in a running session.\nExample: scotty hatch abcdef 8080",
   resume:
     "Usage: scotty resume <id> [--url https://host]\nResume a stopped session from its last save.\nExample: scotty resume abcdef",
+  rm: "Usage: scotty rm <id> [--url https://host]\nDelete a stopped session with its save and files. A running session must be stopped first.\nExample: scotty rm abcdef",
   read: "Usage: scotty read <id> [--last N] [--role user|assistant] [--url https://host]\nRead one snapshot with session authority and latest turn status. --last defaults to 1 (integer 1–500); filter by role before selecting the last messages. Empty assistant messages are omitted.\nExample: scotty read abcdef --last 5 --role assistant",
   log: "Usage: scotty log <id> [--url https://host]\nShow raw events.\nExample: scotty log abcdef",
 };
@@ -40,6 +41,7 @@ const root = Command.make("scotty").pipe(
     interrupt,
     stop,
     resume,
+    rm,
     hatch,
     read,
     log,

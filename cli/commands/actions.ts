@@ -54,6 +54,14 @@ export const resume = Command.make("resume", { url, id }, ({ url: target, id: va
   }),
 ).pipe(Command.withDescription("Resume a stopped session from its last save"));
 
+const Removed = Schema.Struct({ id: Schema.String, removed: Schema.Boolean });
+export const rm = Command.make("rm", { url, id }, ({ url: target, id: value }) =>
+  Effect.gen(function* () {
+    const api = yield* withClient(target);
+    return yield* output(yield* api(sessionPath(value), Removed, { method: "DELETE" }));
+  }),
+).pipe(Command.withDescription("Delete a stopped session, its save and its files"));
+
 const Hatch = Schema.Struct({ url: Schema.String });
 export const hatch = Command.make(
   "hatch",

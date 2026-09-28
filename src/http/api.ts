@@ -161,6 +161,21 @@ export function apiHandler(
     const subpath = match[2];
     if (request.method === "GET" && subpath === undefined)
       return yield* HttpServerResponse.json(yield* stub.view());
+    if (request.method === "DELETE" && subpath === undefined) {
+      if (!(yield* stub.remove()))
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: "Session is still running",
+              code: "running",
+              hint: `scotty stop ${id}`,
+            },
+          },
+          { status: 409 },
+        );
+      yield* credential.forget(id);
+      return yield* HttpServerResponse.json({ id, removed: true });
+    }
     if (request.method === "GET" && subpath === "conversation")
       return yield* HttpServerResponse.json(yield* stub.conversation());
     if (request.method === "GET" && subpath === "log")

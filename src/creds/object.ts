@@ -74,6 +74,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session}`;
             return rows.length > 0;
           }),
+        forget: (id: string) => sql`DELETE FROM session_index WHERE id = ${id}`.pipe(Effect.asVoid),
         sessions: () =>
           Effect.gen(function* () {
             const rows = yield* sql`SELECT id FROM session_index`;

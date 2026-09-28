@@ -361,6 +361,18 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           size: number;
           caption?: string;
         }) => append({ kind: "file.attached", ...file }, "files").pipe(Effect.asVoid),
+        // Deleting drops the log, the save and the files; a live session must be stopped first.
+        // A log with no `created` is left by a delete that stopped partway, and goes too.
+        remove: () =>
+          Effect.gen(function* () {
+            const live = log.state.phase !== "stopped" && log.state.phase !== "failed";
+            if (live && log.state.created !== undefined) return false;
+            const files = yield* bucket.list({ prefix: `files/${id()}/` });
+            yield* bucket.delete([saveKey(), ...files.objects.map((file) => file.key)]);
+            yield* storage.storage.deleteAlarm();
+            yield* storage.storage.deleteAll();
+            return true;
+          }),
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
         conversation: () => Effect.sync(() => conversationView(log.state, log.history)),
         log: () => Effect.sync(() => log.history),
