@@ -8,6 +8,8 @@ const Stage = Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-z][a-z0-9-]{
 const error = (step: string) => new CopyError({ step, status: 0 });
 const args = process.argv.slice(2);
 const stages: string[] = [];
+// Destroy removes what Alchemy's state records for the stage; nothing is copied.
+const destroy = args.includes("--destroy");
 const forwarded: string[] = [];
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -15,7 +17,7 @@ for (let i = 0; i < args.length; i++) {
     stages.push(args[++i] ?? "");
   } else if (arg?.startsWith("--stage=")) {
     stages.push(arg.slice("--stage=".length));
-  } else {
+  } else if (arg !== "--destroy") {
     forwarded.push(arg ?? "");
   }
 }
@@ -43,14 +45,17 @@ const program = Effect.gen(function* () {
     try: () => import("./image.ts"),
     catch: () => error("image copier unavailable"),
   });
-  const image = yield* copyImage(valid).pipe(Effect.provide(copyLayer));
+  // alchemy.run.ts checks the image ref even when destroying.
+  const image = destroy
+    ? `registry.cloudflare.com/${valid.account}/${valid.repository}@${valid.source.split("@")[1] ?? ""}`
+    : yield* copyImage(valid).pipe(Effect.provide(copyLayer));
   const exit = yield* Effect.tryPromise({
     try: () =>
       new Promise<number>((resolve, reject) => {
         const child = spawn(
           "./node_modules/.bin/alchemy",
           [
-            "deploy",
+            destroy ? "destroy" : "deploy",
             "--profile",
             "default",
             "--yes",
@@ -69,7 +74,7 @@ const program = Effect.gen(function* () {
       }),
     catch: () => error("alchemy launch/exit"),
   });
-  if (exit !== 0) return yield* error("alchemy deploy");
+  if (exit !== 0) return yield* error(destroy ? "alchemy destroy" : "alchemy deploy");
 });
 Effect.runPromise(program).catch((cause: unknown) => {
   console.error(

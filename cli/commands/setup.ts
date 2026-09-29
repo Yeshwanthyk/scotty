@@ -104,7 +104,11 @@ const checks = Effect.gen(function* () {
     Exit.isFailure(github)
       ? failed("GitHub", github, "scotty doctor")
       : github.value.status === "set"
-        ? { name: "GitHub", status: "ok", detail: `token for ${github.value.login ?? "unknown"}` }
+        ? {
+            name: "GitHub",
+            status: "ok",
+            detail: `token for ${github.value.login ?? "unknown"}`,
+          }
         : fail("GitHub", "no token", "scotty login github"),
   );
   // Claude is optional: Codex sessions don't need it.
@@ -131,32 +135,42 @@ const expiring = (
   fix: string,
 ): Check =>
   status.status === "expiring"
-    ? { name, status: "warn", detail: `${detail}${until(status.expiresAt)}`, fix }
+    ? {
+        name,
+        status: "warn",
+        detail: `${detail}${until(status.expiresAt)}`,
+        fix,
+      }
     : { name, status: "ok", detail: `${detail}${until(status.expiresAt)}` };
 
-const mark = { ok: green("✓"), warn: yellow("!"), fail: red("✗"), skip: dim("–") };
+const mark = {
+  ok: green("✓"),
+  warn: yellow("!"),
+  fail: red("✗"),
+  skip: dim("–"),
+};
 
-export const doctor = Command.make("doctor", {}, () =>
-  Effect.gen(function* () {
-    const result = yield* checks;
-    const ok = result.every((check) => check.status !== "fail");
-    const width = Math.max(...result.map((check) => check.name.length));
-    yield* output(
-      { ok, version, checks: result },
-      [
-        ...result.map(
-          (check) =>
-            `${mark[check.status]} ${check.name.padEnd(width)}  ${check.detail}${check.fix ? dim(`  → ${check.fix}`) : ""}`,
-        ),
-        "",
-        ok
-          ? `${green("Ready.")} Start a session: scotty new owner/repo "What to do"`
-          : `Fix the ${red("✗")} items above, then run scotty doctor again.`,
-      ].join("\n"),
-    );
-    if (!ok) process.exitCode = 3;
-  }),
-);
+export const runDoctor = Effect.gen(function* () {
+  const result = yield* checks;
+  const ok = result.every((check) => check.status !== "fail");
+  const width = Math.max(...result.map((check) => check.name.length));
+  yield* output(
+    { ok, version, checks: result },
+    [
+      ...result.map(
+        (check) =>
+          `${mark[check.status]} ${check.name.padEnd(width)}  ${check.detail}${check.fix ? dim(`  → ${check.fix}`) : ""}`,
+      ),
+      "",
+      ok
+        ? `${green("Ready.")} Start a session: scotty new owner/repo "What to do"`
+        : `Fix the ${red("✗")} items above, then run scotty doctor again.`,
+    ].join("\n"),
+  );
+  if (!ok) process.exitCode = 3;
+});
+
+export const doctor = Command.make("doctor", {}, () => runDoctor);
 
 const run = (command: string, args: readonly string[]) =>
   Effect.gen(function* () {
@@ -224,7 +238,10 @@ const loginClaude = (api: Api) =>
       Effect.gen(function* () {
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
         const child = yield* spawner.spawn(
-          ChildProcess.make("claude", ["setup-token"], { stdin: "inherit", stderr: "inherit" }),
+          ChildProcess.make("claude", ["setup-token"], {
+            stdin: "inherit",
+            stderr: "inherit",
+          }),
         );
         const printed = yield* child.stdout.pipe(
           Stream.decodeText(),
@@ -271,7 +288,9 @@ const loginClaude = (api: Api) =>
 // Device-code sign-in: the browser opens on the page, the code is printed to type in.
 const loginChatGpt = (api: Api) =>
   Effect.gen(function* () {
-    const start = yield* api("/api/credentials/chatgpt/start", Started, { method: "POST" });
+    const start = yield* api("/api/credentials/chatgpt/start", Started, {
+      method: "POST",
+    });
     if ("status" in start)
       return yield* failure(
         "signin",
@@ -282,7 +301,9 @@ const loginChatGpt = (api: Api) =>
     if (process.stdout.isTTY) yield* Effect.ignore(launch(start.verificationUrl));
     while (Date.now() < start.expiresAt) {
       yield* Effect.sleep(`${Math.max(1, start.interval)} seconds`);
-      const result = yield* api("/api/credentials/chatgpt/poll", Polled, { method: "POST" });
+      const result = yield* api("/api/credentials/chatgpt/poll", Polled, {
+        method: "POST",
+      });
       if (result.status === "pending") continue;
       if (result.status === "signed-in")
         return yield* output(
@@ -301,7 +322,7 @@ const loginChatGpt = (api: Api) =>
     return yield* failure("signin", "The code expired", "scotty login chatgpt", 3);
   });
 
-const loginTo = (account: "chatgpt" | "github" | "claude") =>
+export const loginTo = (account: "chatgpt" | "github" | "claude") =>
   Effect.gen(function* () {
     const api = yield* withClient;
     return yield* account === "chatgpt"

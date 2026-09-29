@@ -9,7 +9,7 @@ import { type Config, readConfig } from "../config.js";
 import { dim, green, json, output } from "./common.js";
 
 // Deploying runs from a Scotty checkout until the CLI carries its own release.
-const root = fileURLToPath(new URL("../..", import.meta.url));
+export const root = fileURLToPath(new URL("../..", import.meta.url));
 
 export const loadConfig = Effect.gen(function* () {
   const config = yield* readConfig;
@@ -18,13 +18,13 @@ export const loadConfig = Effect.gen(function* () {
   return config;
 });
 
-const progress = (text: string) =>
+export const progress = (text: string) =>
   Effect.sync(() => {
     if (!json) console.error(dim(`· ${text}`));
   });
 
 // Quiet unless it fails; then the last lines of its output say why.
-const step = (
+export const step = (
   text: string,
   command: string,
   args: readonly string[],
@@ -52,6 +52,15 @@ const step = (
     ),
   );
 
+// What alchemy.run.ts reads, for deploying and destroying alike.
+export const stageEnv = (config: Config) => ({
+  CLOUDFLARE_ACCOUNT_ID: config.accountId,
+  SCOTTY_OWNER_EMAIL: config.email,
+  SCOTTY_HATCH_BASE: config.domain,
+  SCOTTY_HATCH_ZONE_ID: config.zoneId,
+  SCOTTY_HOST: config.host,
+});
+
 // Builds the UI, copies the pinned image and applies the stack; asks nothing.
 export const deployWith = (config: Config) =>
   Effect.gen(function* () {
@@ -60,13 +69,7 @@ export const deployWith = (config: Config) =>
       `Deploying stage ${config.stage} (a few minutes)`,
       "bun",
       ["deploy/run.ts", "--stage", config.stage],
-      {
-        CLOUDFLARE_ACCOUNT_ID: config.accountId,
-        SCOTTY_OWNER_EMAIL: config.email,
-        SCOTTY_HATCH_BASE: config.domain,
-        SCOTTY_HATCH_ZONE_ID: config.zoneId,
-        SCOTTY_HOST: config.host,
-      },
+      stageEnv(config),
     );
     return `https://${config.host}`;
   });
