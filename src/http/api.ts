@@ -5,6 +5,7 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { fixtureRepo } from "../../protocol/supervisor.js";
+import { AgentKind } from "../session/events.js";
 import { defaultBranch } from "./repository.js";
 import {
   instructionsKey,
@@ -29,6 +30,7 @@ const Create = Schema.Struct({
   repo: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
   prompt: Prompt,
   provider: Schema.Literal("cloudflare"),
+  agent: Schema.optional(AgentKind),
 });
 const Steer = Schema.Struct({
   text: Prompt,
@@ -42,6 +44,10 @@ const GitHubToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{20,255}$/)),
 });
 const githubHint = "scotty auth login github";
+const ClaudeToken = Schema.Struct({
+  token: Schema.String.check(Schema.isPattern(/^sk-ant-oat01-[A-Za-z0-9_-]{20,300}$/)),
+});
+const claudeHint = "scotty auth login claude";
 const Instructions = Schema.Struct({
   text: Schema.String.check(
     Schema.makeFilter((text) => new TextEncoder().encode(text).byteLength <= maxInstructionBytes, {
@@ -114,6 +120,17 @@ export function apiHandler(
       if (result.status === "refused")
         return yield* bad(`GitHub answered HTTP ${result.httpStatus}`, 400, githubHint);
       return yield* HttpServerResponse.json(result);
+    }
+    if (url.pathname === "/api/credentials/claude" && request.method === "GET")
+      return yield* HttpServerResponse.json(yield* credential.claudeStatus());
+    if (url.pathname === "/api/credentials/claude" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(ClaudeToken)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () =>
+          bad("Expected a token from claude setup-token (sk-ant-oat01-…)", 400, claudeHint),
+        ),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      return yield* HttpServerResponse.json(yield* credential.setClaude(body.token));
     }
     if (url.pathname === "/api/settings" && request.method === "GET") {
       const saved = yield* bucket.get(instructionsKey);
@@ -190,6 +207,7 @@ export function apiHandler(
         baseBranch,
         title: body.title,
         prompt: body.prompt,
+        agentKind: body.agent ?? "codex",
         image: "default",
       });
       return yield* HttpServerResponse.json({

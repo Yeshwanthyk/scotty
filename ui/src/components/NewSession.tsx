@@ -1,13 +1,17 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { create, message } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { AgentChip, Composer } from "./Composer";
+import { claudeStatus } from "../data/settings";
+import { Composer } from "./Composer";
 import { Icon } from "./Icon";
 import { SidebarButton } from "./Layout";
 
 const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const lastRepoKey = "scotty.repo";
+const lastAgentKey = "scotty.agent";
+type Agent = "codex" | "claude";
+const agentName = { codex: "Codex", claude: "Claude" } as const;
 
 // A title from the prompt's first line; the owner can rename later.
 const titleOf = (prompt: string) => {
@@ -15,18 +19,58 @@ const titleOf = (prompt: string) => {
   return line.length <= 60 ? line : `${line.slice(0, 57).trimEnd()}…`;
 };
 
-const readRepo = () => {
+const read = (key: string) => {
   try {
-    return localStorage.getItem(lastRepoKey) ?? "";
+    return localStorage.getItem(key) ?? "";
   } catch {
     return "";
   }
 };
+const remember = (key: string, value: string) => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Remembering choices is a convenience only.
+  }
+};
+
+function AgentSwitch({
+  value,
+  claudeReady,
+  onChange,
+}: {
+  value: Agent;
+  claudeReady: boolean;
+  onChange: (agent: Agent) => void;
+}) {
+  return (
+    <div className="agent-switch" role="group" aria-label="Agent">
+      {(["codex", "claude"] as const).map((agent) => (
+        <button
+          type="button"
+          key={agent}
+          className="pressable"
+          aria-pressed={value === agent}
+          data-locked={agent === "claude" && !claudeReady ? "" : undefined}
+          onClick={() => onChange(agent)}
+        >
+          {agentName[agent]}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function NewSession() {
   const navigate = useNavigate();
   const { list, refresh } = useSessions();
-  const [repo, setRepo] = useState(readRepo);
+  const [repo, setRepo] = useState(() => read(lastRepoKey));
+  const [agent, setAgent] = useState<Agent>(() =>
+    read(lastAgentKey) === "claude" ? "claude" : "codex",
+  );
+  // Unknown until the status loads; Claude can be picked only with its token set.
+  const [claudeReady, setClaudeReady] = useState<boolean | undefined>(undefined);
+  const [claudeHint, setClaudeHint] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -35,11 +79,30 @@ export function NewSession() {
     () =>
       [...new Set((list ?? []).map((session) => session.display.repository).filter(Boolean))].slice(
         0,
-        4,
+        3,
       ),
     [list],
   );
+  useEffect(() => {
+    const abort = new AbortController();
+    claudeStatus(abort.signal).then(
+      (status) => setClaudeReady(status.status !== "signed-out"),
+      () => setClaudeReady(false),
+    );
+    return () => abort.abort();
+  }, []);
+  const chosen: Agent = agent === "claude" && claudeReady === false ? "codex" : agent;
+  const others = recent.filter((name) => name !== repo.trim());
   const validRepo = repoPattern.test(repo.trim());
+  function pick(next: Agent) {
+    if (next === "claude" && claudeReady === false) {
+      setClaudeHint(true);
+      return;
+    }
+    setClaudeHint(false);
+    setAgent(next);
+    remember(lastAgentKey, next);
+  }
   async function submit() {
     if (!validRepo) {
       setError("Pick a repository as owner/name");
@@ -48,14 +111,16 @@ export function NewSession() {
     setBusy(true);
     setError("");
     try {
-      const input = JSON.stringify([repo.trim(), prompt.trim()]);
+      const input = JSON.stringify([repo.trim(), prompt.trim(), chosen]);
       if (attempt.current?.input !== input) attempt.current = { input, key: crypto.randomUUID() };
-      const id = await create(titleOf(prompt), repo.trim(), prompt.trim(), attempt.current.key);
-      try {
-        localStorage.setItem(lastRepoKey, repo.trim());
-      } catch {
-        // Remembering the repository is a convenience only.
-      }
+      const id = await create(
+        titleOf(prompt),
+        repo.trim(),
+        prompt.trim(),
+        attempt.current.key,
+        chosen,
+      );
+      remember(lastRepoKey, repo.trim());
       refresh();
       await navigate({ to: "/s/$sessionId", params: { sessionId: id } });
     } catch (failure) {
@@ -87,7 +152,7 @@ export function NewSession() {
             value={prompt}
             onChange={setPrompt}
             onSubmit={() => void submit()}
-            placeholder="Ask Codex to build, fix or explain…"
+            placeholder={`Ask ${agentName[chosen]} to build, fix or explain…`}
             busy={busy}
             autoFocus
           >
@@ -102,24 +167,36 @@ export function NewSession() {
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
+                style={{ width: `${Math.max(10, repo.length + 1)}ch` }}
               />
             </label>
-            <AgentChip kind="codex" />
+            <AgentSwitch value={chosen} claudeReady={claudeReady !== false} onChange={pick} />
           </Composer>
+          {claudeHint ? (
+            <p className="composer-note">
+              <Icon name="alert" size={13} />
+              <span>
+                Claude needs its token.{" "}
+                <Link to="/settings/$section" params={{ section: "accounts" }}>
+                  Add it in Settings
+                </Link>
+              </span>
+            </p>
+          ) : null}
           {error ? (
             <p className="composer-note" data-tone="error" role="alert">
               <Icon name="alert" size={13} />
               {error}
             </p>
           ) : null}
-          {recent.length > 0 ? (
+          {others.length > 0 ? (
             <div className="suggestions">
-              {recent.map((name) => (
+              <span className="suggestions-label">Recent</span>
+              {others.map((name) => (
                 <button
                   type="button"
                   key={name}
                   className="suggestion pressable"
-                  aria-pressed={repo === name}
                   onClick={() => setRepo(name)}
                 >
                   <Icon name="repo" size={13} />

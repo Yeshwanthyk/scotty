@@ -44,7 +44,11 @@ const GitHubSet = Schema.Union([
 
 export type Settings = typeof Settings.Type;
 export type Skill = typeof Skill.Type;
-export type Accounts = { chatgpt: typeof ChatGpt.Type; github: typeof GitHub.Type };
+export type Accounts = {
+  chatgpt: typeof ChatGpt.Type;
+  claude: typeof ChatGpt.Type;
+  github: typeof GitHub.Type;
+};
 export type Device = typeof Device.Type;
 
 function decode<S extends Schema.Top & { readonly DecodingServices: never }>(
@@ -62,12 +66,14 @@ export async function settings(signal?: AbortSignal): Promise<Settings> {
 }
 
 export async function accounts(signal?: AbortSignal): Promise<Accounts> {
-  const [chatgpt, github] = await Promise.all([
+  const [chatgpt, claude, github] = await Promise.all([
     request("/api/credentials/chatgpt", undefined, signal),
+    request("/api/credentials/claude", undefined, signal),
     request("/api/credentials/github", undefined, signal),
   ]);
   return {
     chatgpt: decode(ChatGpt, chatgpt, "ChatGPT status"),
+    claude: decode(ChatGpt, claude, "Claude status"),
     github: decode(GitHub, github, "GitHub status"),
   };
 }
@@ -109,6 +115,19 @@ export async function startChatGpt(): Promise<Device> {
 
 export async function pollChatGpt(): Promise<typeof Poll.Type> {
   return decode(Poll, await request("/api/credentials/chatgpt/poll", {}), "sign-in status");
+}
+
+// Only the status comes back; the token is never shown again.
+export async function claudeStatus(signal?: AbortSignal): Promise<typeof ChatGpt.Type> {
+  return decode(
+    ChatGpt,
+    await request("/api/credentials/claude", undefined, signal),
+    "Claude status",
+  );
+}
+
+export async function setClaude(token: string): Promise<typeof ChatGpt.Type> {
+  return decode(ChatGpt, await request("/api/credentials/claude", { token }), "reply");
 }
 
 export async function setGitHub(token: string): Promise<string> {

@@ -6,7 +6,7 @@ const fromSupervisor = {
   gen: Schema.Natural,
   n: Schema.Natural.check(Schema.isGreaterThan(0)),
 };
-export const AgentKind = Schema.Literals(["codex"]);
+export const AgentKind = Schema.Literals(["codex", "claude"]);
 const ClientReq = Schema.String.check(Schema.isPattern(/^(?!initial:)/));
 const TimeoutOp = Schema.Union([
   Schema.Literals(["container", "workspace", "dial", "redial", "save"]),

@@ -12,9 +12,9 @@ const help: Record<string, string> = {
   scotty:
     "Usage: scotty <command> [--url https://host]\nCommands: doctor, auth, new, ls, show, steer, interrupt, stop, resume, hatch, read, log, skill\nRun scotty <command> --help for options.\nExample: scotty doctor",
   doctor:
-    "Usage: scotty doctor [--url https://host]\nCheck Access, the Worker, ChatGPT sign-in and the GitHub token.\nExample: scotty doctor",
-  auth: "Usage: scotty auth login chatgpt|github | scotty auth status [--url https://host]\nlogin chatgpt signs in with a device code; login github stores the token read from stdin; status prints both.\nExample: gh auth token | scotty auth login github",
-  new: "Usage: scotty new <owner/repo|https://github.com/owner/repo> [--prompt text] [--key key] [--url https://host]\nCreate a session; --key makes retries idempotent.\nExample: scotty new octocat/Hello-World --prompt 'Describe the code'",
+    "Usage: scotty doctor [--url https://host]\nCheck Access, the Worker, ChatGPT sign-in, the GitHub token and the Claude token.\nExample: scotty doctor",
+  auth: "Usage: scotty auth login chatgpt|github|claude | scotty auth status [--url https://host]\nlogin chatgpt signs in with a device code; login github stores the token read from stdin; login claude runs claude setup-token, or reads the token from stdin; status prints all three.\nExample: gh auth token | scotty auth login github",
+  new: "Usage: scotty new <owner/repo|https://github.com/owner/repo> [--prompt text] [--agent codex|claude] [--key key] [--url https://host]\nCreate a session with Codex (default) or Claude; --key makes retries idempotent.\nExample: scotty new octocat/Hello-World --prompt 'Describe the code'",
   ls: "Usage: scotty ls [--url https://host]\nList sessions.\nExample: scotty ls",
   show: "Usage: scotty show <id> [--url https://host]\nShow a session.\nExample: scotty show abcdef",
   steer:

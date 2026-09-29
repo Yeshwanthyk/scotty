@@ -1,10 +1,11 @@
 import type { SessionEvent } from "./events.js";
 import { fold, initial, type State } from "./fold.js";
+import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
 import type { TurnItems } from "./items.js";
 
 // Each agent reads its own events; nothing else here knows their format.
-const agents = { codex };
+const agents = { codex, claude };
 
 // Codex ends a turn as completed, interrupted or failed; the view has no pending "ended" state.
 const turnState = (ended: string | undefined) =>

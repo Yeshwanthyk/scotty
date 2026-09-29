@@ -13,6 +13,7 @@ import {
   target,
   View,
 } from "../cli/client.js";
+import { agent } from "./lib/agent.js";
 import { Log, waiter } from "./lib/wait.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 
@@ -49,8 +50,9 @@ const program = Effect.gen(function* () {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: "Step 6 stop-resume",
+      title: `Step 6 stop-resume (${agent})`,
       repo: fixtureRepo,
+      agent,
       prompt: `Run exactly: \`echo ${marker} > marker.txt && rm README\`, then reply with only the word done.`,
       provider: "cloudflare",
     },

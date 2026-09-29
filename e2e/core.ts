@@ -5,6 +5,7 @@ import { acceptedAgentEvents } from "../src/session/view.js";
 import {
   access,
   ChatGptStatus,
+  ClaudeStatus,
   CliFailure,
   client,
   Conversation,
@@ -16,6 +17,7 @@ import {
   target,
   View,
 } from "../cli/client.js";
+import { agent } from "./lib/agent.js";
 import { Log, waiter } from "./lib/wait.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 
@@ -62,19 +64,24 @@ const program = Effect.gen(function* () {
   const token = yield* access(url);
   const request = client({ url, token });
   // Sign in only when the stored ChatGPT token is missing or near expiry.
-  const current = yield* request("/api/credentials/chatgpt", ChatGptStatus);
-  if (current.status !== "signed-in") yield* signIn(request);
+  if (agent === "codex") {
+    const current = yield* request("/api/credentials/chatgpt", ChatGptStatus);
+    if (current.status !== "signed-in") yield* signIn(request);
+  } else if ((yield* request("/api/credentials/claude", ClaudeStatus)).status === "signed-out")
+    return yield* failure("signin", "Claude token is not set", "scotty auth login claude");
   const unique = crypto.randomUUID();
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
     key: unique,
     body: {
-      title: "Step 2 core",
+      title: `Step 2 core (${agent})`,
       repo: fixtureRepo,
-      // Commands must not inherit the ChatGPT token from Codex's config. SCOTTY_HATCH, the public
-      // preview URL template, is the one variable they are meant to see.
+      agent,
+      // Commands must not inherit the ChatGPT token from Codex's config or Claude's token from
+      // its environment. SCOTTY_HATCH, the public preview URL template, is the one variable
+      // they are meant to see.
       prompt:
-        "Run `env | grep SCOTTY_ | grep -vc ^SCOTTY_HATCH=` and reply with only the word ready followed by the number it printed.",
+        "Run `env | grep -e SCOTTY_ -e CLAUDE_CODE_OAUTH_TOKEN -e sk-ant- | grep -vc ^SCOTTY_HATCH=` and reply with only the word ready followed by the number it printed.",
       provider: "cloudflare",
     },
   });
@@ -88,7 +95,7 @@ const program = Effect.gen(function* () {
   if (!/\bready 0\b/.test(first.turns[0]?.assistant.toLowerCase() ?? ""))
     return yield* failure(
       "core",
-      "Initial answer missing or SCOTTY_ env visible to commands",
+      "Initial answer missing, or SCOTTY_ or Claude token env visible to commands",
       "scotty doctor",
     );
   const log = yield* events();
@@ -150,17 +157,55 @@ const program = Effect.gen(function* () {
       "Duplicate or lost messages after Worker redeploy",
       "scotty doctor",
     );
+  // A steer sent while turn 2 runs joins it: turn 2 ends once, and its answer takes the steer.
+  const slowReq = crypto.randomUUID();
+  yield* request(`${prefix}/steer`, Reply, {
+    method: "POST",
+    key: slowReq,
+    body: {
+      req: slowReq,
+      turn: "2",
+      text: "Run `sleep 20` in the shell, then reply with the word first.",
+    },
+  });
+  yield* poll(events, (items) =>
+    items.some((event) => event.kind === "prompt.delivered" && event.req === slowReq),
+  );
+  yield* Effect.sleep("5 seconds");
+  const joinReq = crypto.randomUUID();
+  yield* request(`${prefix}/steer`, Reply, {
+    method: "POST",
+    key: joinReq,
+    body: { req: joinReq, turn: "2", text: "Also put the word joined in your final reply." },
+  });
+  const joined = yield* poll(
+    events,
+    (items) =>
+      items.some((event) => event.kind === "turn.ended" && event.turn === "2") &&
+      items.some((event) => event.kind === "prompt.delivered" && event.req === joinReq),
+  );
+  yield* Effect.sleep("5 seconds");
+  const endings = (yield* events()).filter(
+    (event) => event.kind === "turn.ended" && event.turn === "2",
+  );
+  const turn2 = (yield* request(`${prefix}/conversation`, Conversation)).turns[2]?.assistant;
+  if (
+    endings.length !== 1 ||
+    !joined.some((event) => event.kind === "prompt.delivered" && event.req === joinReq) ||
+    !(turn2?.toLowerCase().includes("joined") ?? false)
+  )
+    return yield* failure("core", "A steer during a running turn did not join it", "scotty doctor");
   const longReq = crypto.randomUUID();
   yield* request(`${prefix}/steer`, Reply, {
     method: "POST",
     key: longReq,
-    body: { req: longReq, turn: "2", text: "Count from one to ten thousand, slowly." },
+    body: { req: longReq, turn: "3", text: "Count from one to ten thousand, slowly." },
   });
   const interruptReq = crypto.randomUUID();
   yield* request(`${prefix}/interrupt`, Reply, {
     method: "POST",
     key: interruptReq,
-    body: { req: interruptReq, turn: "2" },
+    body: { req: interruptReq, turn: "3" },
   });
   yield* poll(
     events,
@@ -168,7 +213,7 @@ const program = Effect.gen(function* () {
       items.some((event) => event.kind === "interrupt.requested" && event.req === interruptReq) &&
       items.some(
         (event) =>
-          event.kind === "turn.ended" && event.turn === "2" && event.state === "interrupted",
+          event.kind === "turn.ended" && event.turn === "3" && event.state === "interrupted",
       ),
   );
   const snapshot = yield* Effect.gen(function* () {
@@ -208,7 +253,9 @@ const program = Effect.gen(function* () {
       `scotty read ${session.id}`,
     );
   yield* request(`${prefix}/stop`, View, { method: "POST" });
-  console.log("Core: create, answer, redeploy, steer, interrupt, bounded read recorded");
+  console.log(
+    `Core (${agent}): create, answer, redeploy, steer, mid-turn steer, interrupt, bounded read recorded`,
+  );
 });
 
 Effect.runPromise(program).catch((error: unknown) => {

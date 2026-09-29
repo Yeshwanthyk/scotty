@@ -155,7 +155,7 @@ export function Sidebar({
       </nav>
       <div className="sidebar-bottom mobile-only-block">
         <Link to="/sessions/create" className="phone-compose pressable">
-          <span>Ask Codex to build, fix, explain…</span>
+          <span>Build, fix or explain…</span>
           <span className="send-button" aria-hidden>
             <Icon name="arrowUp" size={14} />
           </span>

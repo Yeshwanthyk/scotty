@@ -23,8 +23,9 @@ export const create = Command.make(
     repository,
     prompt: Flag.String("prompt").pipe(Flag.optional),
     key: Flag.String("key").pipe(Flag.optional),
+    agent: Flag.Literals("agent", ["codex", "claude"]).pipe(Flag.withDefault("codex")),
   },
-  ({ url: target, repository: input, prompt, key }) =>
+  ({ url: target, repository: input, prompt, key, agent }) =>
     Effect.gen(function* () {
       const repo = repoName(input);
       const api = yield* withClient(target);
@@ -33,6 +34,7 @@ export const create = Command.make(
         title: repo,
         prompt: Option.getOrElse(prompt, () => "Inspect this repository and report what you find."),
         provider: "cloudflare",
+        agent,
       };
       return yield* output(
         yield* api("/api/sessions", Created, {

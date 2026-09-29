@@ -11,6 +11,7 @@ FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates procps curl sudo unzip xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global --ignore-scripts --no-audit --no-fund @openai/codex@0.157.1 \
+       @anthropic-ai/claude-agent-sdk-linux-x64@0.3.284 \
     && useradd --create-home --home-dir /home/scotty scotty \
     && echo "scotty ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/scotty && chmod 0440 /etc/sudoers.d/scotty \
     && mkdir /workspace && chown scotty:scotty /workspace
@@ -27,7 +28,8 @@ COPY container/AGENTS.md /etc/scotty/AGENTS.md
 COPY --chmod=755 container/scotty-attach /usr/local/bin/scotty-attach
 # Each agent reads its global instructions from its own path; all point at one file.
 RUN mkdir -m 700 /home/scotty/.codex && ln -s /etc/scotty/AGENTS.md /home/scotty/.codex/AGENTS.md \
-    && chown -R scotty:scotty /home/scotty/.codex
+    && mkdir -m 700 /home/scotty/.claude && ln -s /etc/scotty/AGENTS.md /home/scotty/.claude/CLAUDE.md \
+    && chown -R scotty:scotty /home/scotty/.codex /home/scotty/.claude
 COPY --from=build /out/scotty-sup /usr/local/bin/scotty-sup
 USER scotty
 WORKDIR /workspace

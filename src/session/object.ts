@@ -6,7 +6,9 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
+import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
+import type { AgentKind } from "./events.js";
 import { instructionsKey, skillKey } from "../settings/skill.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
@@ -138,10 +140,13 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             case "start": {
               if (!current(action.gen)) return;
               // Sent over the socket only; never appended to the event log.
+              const owner = credentials.getByName("owner");
               const signedIn = yield* Effect.exit(
                 Effect.all([
-                  credentials.getByName("owner").sessionToken(),
-                  credentials.getByName("owner").gitIdentity(),
+                  action.agentKind === "claude"
+                    ? owner.claudeToken().pipe(Effect.map(claude.startConfig))
+                    : owner.sessionToken().pipe(Effect.map(codex.startConfig)),
+                  owner.gitIdentity(),
                 ]),
               );
               if (Exit.isFailure(signedIn)) {
@@ -157,7 +162,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   );
                 return;
               }
-              const [chatgpt, git] = signedIn.value;
+              const [agent, git] = signedIn.value;
               // Read through Config: the raw env holds Alchemy's redacted marker, not the value.
               // alchemy.run.ts rejects a missing SCOTTY_HATCH_BASE before any deploy.
               const hatchBase = yield* Effect.orDie(Config.String("SCOTTY_HATCH_BASE"));
@@ -210,7 +215,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 repo: action.repo,
                 base: action.base,
                 branch: action.branch,
-                agent: codex.startConfig(chatgpt),
+                agent,
                 git,
                 hatch: `https://{port}-${id()}.${hatchBase}`,
                 instructions,
@@ -318,6 +323,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           baseBranch: string;
           title: string;
           prompt: string;
+          agentKind: typeof AgentKind.Type;
           image: string;
         }) =>
           Effect.gen(function* () {
@@ -326,7 +332,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               yield* append(
                 {
                   kind: "created",
-                  agentKind: "codex",
+                  agentKind: input.agentKind,
                   branch: `scotty/${input.id}`,
                   repo: input.repo,
                   baseBranch: input.baseBranch,

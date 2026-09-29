@@ -28,7 +28,15 @@ const CodexAgent = Schema.Struct({
   token: credentialString,
   accountId: credentialString,
 });
-export const AgentConfig = Schema.Union([CodexAgent]);
+// The token is Claude's setup token; it goes only into the Claude process's environment.
+const ClaudeAgent = Schema.Struct({
+  kind: Schema.Literal("claude"),
+  model: Schema.String,
+  effort: Schema.Literals(["low", "medium", "high", "xhigh", "max"]),
+  token: credentialString,
+});
+export const AgentConfig = Schema.Union([CodexAgent, ClaudeAgent]);
+const Kind = Schema.Literals(["codex", "claude"]);
 // n remains in the DO envelope for callers that number their sends; it is never
 // used by the supervisor to deduplicate, order, or acknowledge commands.
 export const ToSupervisor = Schema.Union([
@@ -82,14 +90,14 @@ export const FromSupervisor = Schema.Union([
   Schema.Struct({
     ...envelope,
     type: Schema.Literal("agent_ready"),
-    kind: Schema.Literal("codex"),
+    kind: Kind,
     session: Schema.String,
   }),
   Schema.Struct({ ...envelope, type: Schema.Literal("delivered"), req: Schema.String }),
   Schema.Struct({
     ...envelope,
     type: Schema.Literal("agent"),
-    kind: Schema.Literal("codex"),
+    kind: Kind,
     event: Schema.Unknown,
   }),
   Schema.Struct({

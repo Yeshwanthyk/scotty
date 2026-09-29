@@ -6,6 +6,7 @@ import {
   pollChatGpt,
   removeSkill,
   saveInstructions,
+  setClaude,
   setGitHub,
   settings,
   startChatGpt,
@@ -19,7 +20,7 @@ import { Icon, Spinner, type IconName } from "./Icon";
 import { SidebarButton } from "./Layout";
 
 export const sections = [
-  { id: "accounts", label: "Accounts", icon: "globe", detail: "ChatGPT and GitHub" },
+  { id: "accounts", label: "Accounts", icon: "globe", detail: "ChatGPT, Claude and GitHub" },
   { id: "instructions", label: "Instructions", icon: "file", detail: "Added to every session" },
   { id: "skills", label: "Skills", icon: "list", detail: "Installed in new sessions" },
   { id: "signed-in", label: "Signed in", icon: "circle", detail: "Cloudflare Access" },
@@ -153,7 +154,8 @@ function Problem({ text }: { text: string }) {
 
 function Accounts({ accounts: state, reload }: { accounts: AccountState; reload: () => void }) {
   const [device, setDevice] = useState<Device>();
-  const [token, setToken] = useState<string>();
+  // The account whose token is being entered, and what has been typed.
+  const [token, setToken] = useState<{ account: "github" | "claude"; value: string }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const polling = useRef(0);
@@ -191,11 +193,12 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
     }
   }
   async function saveToken() {
-    if (!token?.trim()) return;
+    const value = token?.value.trim();
+    if (token === undefined || !value) return;
     setBusy(true);
     setError("");
     try {
-      await setGitHub(token.trim());
+      await (token.account === "claude" ? setClaude(value) : setGitHub(value));
       setToken(undefined);
       reload();
     } catch (failure) {
@@ -205,6 +208,45 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
     }
   }
   const chatgpt = state.chatgpt.status;
+  const tokenForm = (
+    <form
+      className="token-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void saveToken();
+      }}
+    >
+      <input
+        className="field"
+        type="password"
+        autoComplete="off"
+        placeholder={token?.account === "claude" ? "sk-ant-oat01-…" : "github_pat_…"}
+        aria-label={token?.account === "claude" ? "Claude token" : "GitHub token"}
+        value={token?.value ?? ""}
+        onChange={(event) =>
+          setToken(token && { account: token.account, value: event.target.value })
+        }
+        autoFocus
+      />
+      <button
+        type="submit"
+        className="button pressable"
+        data-tone="primary"
+        disabled={busy || !token?.value.trim()}
+      >
+        {busy ? <Spinner size={12} /> : null}
+        Save
+      </button>
+      <button
+        type="button"
+        className="button pressable"
+        data-tone="ghost"
+        onClick={() => setToken(undefined)}
+      >
+        Cancel
+      </button>
+    </form>
+  );
   return (
     <div className="settings-card">
       <Row
@@ -214,7 +256,7 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
             ? "Signed in. Codex runs on this account."
             : chatgpt === "expiring"
               ? "Sign-in expires soon; sign in again."
-              : "Not signed in. Sessions can't start until you are."
+              : "Not signed in. Codex sessions can't start until you are."
         }
         tone={chatgpt === "signed-in" ? "good" : "warn"}
       >
@@ -260,6 +302,28 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
         </div>
       ) : null}
       <Row
+        title="Claude"
+        detail={
+          state.claude.status === "signed-in"
+            ? "Token set. Claude sessions run on your subscription."
+            : state.claude.status === "expiring"
+              ? "Token expires soon; add a new one."
+              : "No token. Run claude setup-token and paste what it prints."
+        }
+        tone={state.claude.status === "signed-in" ? "good" : "warn"}
+      >
+        {token?.account !== "claude" ? (
+          <button
+            type="button"
+            className="button pressable"
+            onClick={() => setToken({ account: "claude", value: "" })}
+          >
+            {state.claude.status === "signed-out" ? "Add token" : "Replace"}
+          </button>
+        ) : null}
+      </Row>
+      {token?.account === "claude" ? tokenForm : null}
+      <Row
         title="GitHub"
         detail={
           state.github.status === "set"
@@ -268,49 +332,17 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
         }
         tone={state.github.status === "set" ? "good" : "warn"}
       >
-        {token === undefined ? (
-          <button type="button" className="button pressable" onClick={() => setToken("")}>
+        {token?.account !== "github" ? (
+          <button
+            type="button"
+            className="button pressable"
+            onClick={() => setToken({ account: "github", value: "" })}
+          >
             {state.github.status === "set" ? "Replace" : "Add token"}
           </button>
         ) : null}
       </Row>
-      {token !== undefined ? (
-        <form
-          className="token-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void saveToken();
-          }}
-        >
-          <input
-            className="field"
-            type="password"
-            autoComplete="off"
-            placeholder="github_pat_…"
-            aria-label="GitHub token"
-            value={token}
-            onChange={(event) => setToken(event.target.value)}
-            autoFocus
-          />
-          <button
-            type="submit"
-            className="button pressable"
-            data-tone="primary"
-            disabled={busy || !token.trim()}
-          >
-            {busy ? <Spinner size={12} /> : null}
-            Save
-          </button>
-          <button
-            type="button"
-            className="button pressable"
-            data-tone="ghost"
-            onClick={() => setToken(undefined)}
-          >
-            Cancel
-          </button>
-        </form>
-      ) : null}
+      {token?.account === "github" ? tokenForm : null}
       <Problem text={error} />
     </div>
   );

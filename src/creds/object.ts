@@ -27,6 +27,7 @@ const GitHubUser = Schema.Struct({
   name: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
 });
+const ClaudeRow = Schema.Struct({ token: Schema.String, expires_at: Schema.Number });
 const SkillRow = Schema.Struct({
   name: Schema.String,
   description: Schema.String,
@@ -37,6 +38,10 @@ const SkillRow = Schema.Struct({
 });
 // Sessions can run for hours; refuse a token that could expire mid-session.
 const tokenMargin = 24 * 60 * 60 * 1000;
+const day = 24 * 60 * 60 * 1000;
+// `claude setup-token` makes a token that lasts a year and doesn't say when it expires.
+const claudeLifetime = 365 * day;
+const claudeWarning = 14 * day;
 class CredentialStoreError extends Schema.TaggedError<CredentialStoreError>()(
   "CredentialStoreError",
   { message: Schema.String },
@@ -51,12 +56,18 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS credentials (provider TEXT PRIMARY KEY, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, id_token TEXT NOT NULL, account_id TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), device_auth_id TEXT NOT NULL, user_code TEXT NOT NULL, interval INTEGER NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS github (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, login TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS claude (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS skills (name TEXT PRIMARY KEY, description TEXT NOT NULL, enabled INTEGER NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, updated INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
 
       const gitHub = Effect.gen(function* () {
         const row = (yield* sql`SELECT token, login, name, email FROM github WHERE id = 1`)[0];
         return row === undefined ? null : yield* Schema.decodeUnknownEffect(GitHubRow)(row);
+      });
+
+      const claude = Effect.gen(function* () {
+        const row = (yield* sql`SELECT token, expires_at FROM claude WHERE id = 1`)[0];
+        return row === undefined ? null : yield* Schema.decodeUnknownEffect(ClaudeRow)(row);
       });
 
       return {
@@ -215,6 +226,34 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 : { status: "set" as const, login: row.login },
             ),
           ),
+        setClaude: (token: string) =>
+          Effect.gen(function* () {
+            const expiresAt = Date.now() + claudeLifetime;
+            yield* sql`INSERT OR REPLACE INTO claude (id, token, expires_at) VALUES (1, ${token}, ${expiresAt})`;
+            return { status: "signed-in" as const, expiresAt };
+          }),
+        claudeStatus: () =>
+          claude.pipe(
+            Effect.map((row) =>
+              row === null
+                ? { status: "signed-out" as const, expiresAt: null }
+                : {
+                    status:
+                      row.expires_at <= Date.now() + claudeWarning
+                        ? ("expiring" as const)
+                        : ("signed-in" as const),
+                    expiresAt: row.expires_at,
+                  },
+            ),
+          ),
+        // Goes only to a Claude session's agent process (AGENTS.md, credential exceptions).
+        claudeToken: () =>
+          Effect.gen(function* () {
+            const row = yield* claude;
+            if (row === null || row.expires_at <= Date.now() + tokenMargin)
+              return yield* new CredentialStoreError({ message: "Claude sign-in required" });
+            return { token: row.token };
+          }),
         // Only the Worker asks for the token; it never reaches a session or its container.
         gitHubToken: () => gitHub.pipe(Effect.map((row) => row?.token ?? null)),
         gitIdentity: () =>

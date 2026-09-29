@@ -94,8 +94,9 @@ export async function create(
   repo: string,
   prompt: string,
   key: string,
+  agent: "codex" | "claude" = "codex",
 ): Promise<string> {
-  const body = { title, repo, prompt, provider: "cloudflare" };
+  const body = { title, repo, prompt, agent, provider: "cloudflare" };
   const result = Option.getOrUndefined(
     decodeCreated(await request("/api/sessions", body, undefined, key)),
   );

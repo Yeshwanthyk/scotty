@@ -287,6 +287,7 @@ const owner = {
   >(),
   github: "octocat" as string | null,
   chatgpt: "signed-in" as "signed-in" | "signed-out",
+  claude: null as number | null,
   device: 0,
 };
 async function bytes(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {
@@ -355,6 +356,15 @@ async function settingsApi(
     if (Date.now() - owner.device < 6000) return json(res, { status: "pending", interval: 2 });
     owner.chatgpt = "signed-in";
     return json(res, { status: "signed-in", expiresAt: Date.now() + 9e8 });
+  }
+  if (path === "/api/credentials/claude" && method === "GET")
+    return json(res, {
+      status: owner.claude === null ? "signed-out" : "signed-in",
+      expiresAt: owner.claude,
+    });
+  if (path === "/api/credentials/claude" && method === "POST") {
+    owner.claude = Date.now() + 365 * 864e5;
+    return json(res, { status: "signed-in", expiresAt: owner.claude });
   }
   if (path === "/api/credentials/github" && method === "GET")
     return json(

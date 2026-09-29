@@ -89,6 +89,7 @@ export const ChatGptStatus = Schema.Struct({
   status: Schema.Literals(["signed-in", "signed-out", "expiring"]),
   expiresAt: Schema.NullOr(Schema.Number),
 });
+export const ClaudeStatus = ChatGptStatus;
 export const GitHubStatus = Schema.Struct({
   status: Schema.Literals(["set", "missing"]),
   login: Schema.NullOr(Schema.String),
