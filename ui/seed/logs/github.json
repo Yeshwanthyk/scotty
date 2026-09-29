@@ -8,7 +8,7 @@
     "repo": "Yeshwanthyk/scotty-e2e-private",
     "baseBranch": "main",
     "branch": "scotty/0673687a5f594aeb95b6543057e2b06d",
-    "title": "Step 7 github",
+    "title": "e2e github",
     "prompt": "Run exactly: `echo MARK-c4c5d335 > marker.txt && git add marker.txt && git commit -m 'e2e marker' && git push origin HEAD`, then reply with only the word done.",
     "image": "default"
   },

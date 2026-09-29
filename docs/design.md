@@ -5,24 +5,24 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 ## Scope of v1
 
 - **Single user.** Cloudflare Access for the owner's email is the only login. No pairing, devices, owner transfer or root token: any device signed in through Access is the owner.
-- **Credentials live on the Worker.** ChatGPT sign-in is `scotty auth login chatgpt` today; the UI control comes in step 12. Nothing is copied from a local machine.
+- **Credentials live on the Worker.** ChatGPT sign-in is `scotty login chatgpt`; Settings → Accounts also has a UI control. Nothing is copied from a local machine.
   - ChatGPT subscription, used by Codex.
   - A GitHub token, used by git.
 
-  - A Claude setup token (step 10), used by Claude Code. The owner signs in on a laptop with the official `claude setup-token` and pushes the token once, like the GitHub token.
+  - A Claude setup token, used by Claude Code. The owner signs in on a laptop with the official `claude setup-token` and pushes the token once, like the GitHub token.
 
   Pi providers, custom providers and `gh` come later, with the same providers shape.
 
-- **Two agents: Codex and Claude** (step 10). Codex runs as `codex app-server` over stdio; Claude through the Agent SDK. The supervisor's `start` carries `agent: {kind, ...}`, agent output is `agent {n, kind, event}`, and each agent lives in its own folder: `container/supervisor/agents/<kind>/` (runner and files, picked by `makeAgent`, the only switch on kind) and `src/session/agents/<kind>.ts` (its events as items and text, and its start config). Pi is added the same way.
+- **Two agents: Codex and Claude.** Codex runs as `codex app-server` over stdio; Claude through the Agent SDK. The supervisor's `start` carries `agent: {kind, ...}`, agent output is `agent {n, kind, event}`, and each agent lives in its own folder: `container/supervisor/agents/<kind>/` (runner and files, picked by `makeAgent`, the only switch on kind) and `src/session/agents/<kind>.ts` (its events as items and text, and its start config). Pi is added the same way.
 - **One runtime: a Cloudflare Container.** It runs the default image this repository ships, or an image the user supplies that meets the supervisor contract.
-- **The UI is reduced to the core flow in step 5.** Step 12 rebuilds the old style and improvements bottom-up; every feature ships its CLI command first.
+- **The UI has the core flow plus settings, terminal, files and hatch previews.** Every feature ships its CLI command first.
 
 ## Layout
 
 ```
 alchemy.run.ts        the whole stack: Worker, Session DO + Container, Creds DO, R2, Access
 src/
-  worker.ts           Effect HttpRouter: /api/* and UI assets; /api/git for the container (step 7), Hatch previews step 8
+  worker.ts           Effect HttpRouter: /api/* and UI assets; /api/git for the container, Hatch previews
   session/
     events.ts         event Schemas (the log format)
     fold.ts           pure fold(state, event); the only transition function
@@ -35,12 +35,12 @@ src/
     view.ts           state → UI API shapes (sessions, conversation, changes)
   creds/
     object.ts         Creds DO: ChatGPT sign-in, session access token, GitHub token; refresh deferred
-    git.ts            git smart-HTTP handler for github.internal (step 7)
+    git.ts            git smart-HTTP handler for github.internal
 container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
   supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; per-turn save and resume
 cli/
-  main.ts             Effect CLI: doctor, auth, new, ls, show, read, steer, interrupt, log (deploy later)
+  main.ts             Effect CLI: doctor, login, new, ls, read, steer, interrupt, log (deploy later)
   client.ts           typed API client behind Access; shared with e2e/
 protocol/
   supervisor.ts       the only protocol file; wire schema shared by the Session DO and supervisor
@@ -83,9 +83,9 @@ A handler never awaits an outside party while changing state. An outside action 
 | `file.attached`                         | `file, name, type, size, caption?` (bytes already in R2 at `files/<session>/<file>`; shown in the current turn)                        |
 | `invariant.violated`                    | `code, detail`                                                                                                                         |
 | `timeout`                               | `op`: `container`, `workspace`, `dial`, `redial`, or `req:<req>`; lifecycle expiry fails with `<op>_timeout`, retryable                |
-| `save.done` / `save.failed`             | `turn` / `turn, code` (step 6: an accepted `turn.ended` is the save intent)                                                            |
-| `container.stopped`                     | `gen` (step 6: any cause; folds to `stopped`)                                                                                          |
-| `resume.requested`                      | (step 6; a steer to a stopped session resumes in the same fold)                                                                        |
+| `save.done` / `save.failed`             | `turn` / `turn, code` (an accepted `turn.ended` is the save intent)                                                                    |
+| `container.stopped`                     | `gen` (any cause; folds to `stopped`)                                                                                                  |
+| `resume.requested`                      | (a steer to a stopped session resumes in the same fold)                                                                                |
 
 Fold states, and the status the UI shows for each:
 
@@ -116,7 +116,7 @@ Duplicate requests (the same `req`) do nothing. A prompt whose `turn` no longer 
 
 The fold, its invariants, and saved-log replays are the only unit-tested session behavior. Supervisor transport, request deduplication, frame limits, workspace cloning and Codex integration are proved against a deployment, not mocked.
 
-## Stop and resume (step 6)
+## Stop and resume
 
 There are no disk snapshots and no vaporize. A session is `running` or `stopped`.
 
@@ -127,49 +127,49 @@ There are no disk snapshots and no vaporize. A session is `running` or `stopped`
   2. `PUT /save` the tar, then `start` with `resume: {threadId, commit}`.
   3. Clone, check out the base commit on `scotty/<id>`, unpack `repo/`, delete the `deleted` paths.
   4. Unpack `codex/` into `CODEX_HOME` at the rollout's original relative path and resume Codex with `thread/resume {threadId, cwd, approvalPolicy, sandbox}`. Codex 0.157.1 takes no path; it finds the rollout under `CODEX_HOME` by thread ID (spike 6a, `work/spikes/6a/RESULT.md`).
-- Pushing to GitHub is the agent's own `git push` (step 7), when asked or needed.
+- Pushing to GitHub is the agent's own `git push`, when asked or needed.
 
 Old reference for the Codex state files: `worker/src/agent/codex/persistence-format.ts` and `worker/src/agent/codex/session.ts:996-1044` at `3042018`.
 
-## Hatch (step 8)
+## Hatch
 
 A server in a running session on port N is at `https://N-<id>.<SCOTTY_HATCH_BASE>`. `alchemy.run.ts` adopts a proxied AAAA `100::` record for `*.<base>` and the route `*.<base>/*`. The Worker has `runWorkerFirst: true`: it serves the UI itself through `ASSETS`, sends `/api/*` to the router, and sends a preview host to the Session DO's `fetch`. Port 7000 and ports outside 1024–65535 get a 404. The DO answers 502 unless the phase is `running`, so a preview never starts a container. Otherwise it forwards to `getTcpPort(N)` at `http://localhost:N` without the incoming `Host` (Vite refuses unknown hosts), and returns `HttpServerResponse.raw(response)` so a 101 keeps its WebSocket. There is no nonce, cookie, quota or event: the Worker's own Access application gates the route (spike 8a b), so one token covers the UI and previews.
 
 Spike 8a (2026-09-27): (a) `runWorkerFirst: true` still serves `/`, `/sessions`, `/s/<id>` and `/api/*`; (b) without a token a preview host gets Access's 302, and with the Worker's token it reaches the Worker; (c) a WebSocket echo passes through Worker → DO → `getTcpPort`, and the server sees `Host: localhost:8080`; (d) `setsid nohup <cmd> > log 2>&1 < /dev/null &` from a Codex command survives the command and the turn in Codex 0.157.1. A process does not survive the container sleeping.
 
-The dev environment (step 8b) belongs to the agent, and nothing in an agent adapter knows about it. The image adds `curl`, `sudo` and `xz-utils`, gives `scotty` passwordless sudo, and runs on `standard-1` (4 GiB). `container/AGENTS.md` is installed as `/etc/scotty/AGENTS.md`, and each agent's global-instructions path links to it (Codex: `~/.codex/AGENTS.md`, loaded on start and resume). The supervisor gives the agent process one variable, `SCOTTY_HATCH=https://{port}-<id>.<base>`, from `start.hatch`. The contract: setup goes through `.agents/setup`, an idempotent bash script in the repository that the agent writes if missing and runs again after a resume, and that ends by printing `Ready: <URL>` once the dev server answers. Scotty never parses or runs it. The DO reads `SCOTTY_HATCH_BASE` through `Config`: the raw env holds Alchemy's redacted marker, and the agent once got `https://N-<id>.[redacted]`. On `dev` with a Vite + React repo, the URL came back 45–104 s after `new`; after a stop, most of the wait is Scotty preparing the workspace (34–186 s), not setup (about 12 s).
+The dev environment belongs to the agent, and nothing in an agent adapter knows about it. The image adds `curl`, `sudo` and `xz-utils`, gives `scotty` passwordless sudo, and runs on `standard-1` (4 GiB). `container/AGENTS.md` is installed as `/etc/scotty/AGENTS.md`, and each agent's global-instructions path links to it (Codex: `~/.codex/AGENTS.md`, loaded on start and resume). The supervisor gives the agent process one variable, `SCOTTY_HATCH=https://{port}-<id>.<base>`, from `start.hatch`. The contract: setup goes through `.agents/setup`, an idempotent bash script in the repository that the agent writes if missing and runs again after a resume, and that ends by printing `Ready: <URL>` once the dev server answers. Scotty never parses or runs it. The DO reads `SCOTTY_HATCH_BASE` through `Config`: the raw env holds Alchemy's redacted marker, and the agent once got `https://N-<id>.[redacted]`. On `dev` with a Vite + React repo, the URL came back 45–104 s after `new`; after a stop, most of the wait is Scotty preparing the workspace (34–186 s), not setup (about 12 s).
 
 ## Credentials
 
 - **One store.** The Creds DO holds the ChatGPT access token, refresh token, expiry and account ID, plus the GitHub token. Only the ChatGPT access token ever leaves it (below).
-  - Today the owner runs `scotty auth login chatgpt` when `doctor` reports sign-in missing or expiring. Automatic refresh and sign-out are deferred until after the owner trial (step 4).
+  - Today the owner runs `scotty login chatgpt` when `doctor` reports sign-in missing or expiring. Automatic refresh and sign-out are deferred until after the owner trial.
 - **Sign-in runs on the Worker** (spike 1a). The Creds DO runs Codex's device-code flow against `https://auth.openai.com` with client ID `app_EMoamEEZ73f0CkXaXp7hrann`:
   1. `POST /api/accounts/deviceauth/usercode` (JSON `client_id`) → `device_auth_id`, `user_code`, string `interval`. The user opens `/codex/device`.
   2. `POST /api/accounts/deviceauth/token` (JSON `device_auth_id`, `user_code`). Only 403 `deviceauth_authorization_pending` means pending; any other non-200 fails with its status and error code. A 200 returns `authorization_code`, `code_verifier`, `code_challenge`.
   3. `POST /oauth/token`, **form-encoded** (`grant_type=authorization_code`, `client_id`, `code`, `redirect_uri=https://auth.openai.com/deviceauth/callback`, `code_verifier`), sent once: the code may be consumed even if the reply is lost.
   - The account ID is `["https://api.openai.com/auth"].chatgpt_account_id` in the ID token. Expiry is the access token's `exp`.
-- **Refresh (deferred, provisional step 4):** `POST /oauth/token`, **JSON** `{grant_type: "refresh_token", client_id, refresh_token}`. Reassess the schedule and lost-reply/network retry policy after the trial before implementation.
+- **Refresh (deferred, provisional):** `POST /oauth/token`, **JSON** `{grant_type: "refresh_token", client_id, refresh_token}`. Reassess the schedule and lost-reply/network retry policy after the trial before implementation.
   - The refresh token rotates on every refresh, so the old one is dead once the call succeeds.
   - Only one refresh runs at a time.
   - The new tokens replace the old in one storage write.
   - A lost reply, or a 200 without both tokens, is unknown: sign-in is required, and the old token is never retried.
   - 401, 400 `invalid_grant` and `refresh_token_{expired,reused,invalidated}` are permanent; other failures are transient.
 - **OAuth errors** record the HTTP status and upstream `error`/`code`, never token fields.
-- **Sign-out (deferred, step 4)** would revoke at `https://auth.openai.com/oauth/revoke`.
+- **Sign-out (deferred)** would revoke at `https://auth.openai.com/oauth/revoke`.
 - **ChatGPT token in Codex's config** (spike 1e, `work/spikes/1e/RESULT.md`). chatgpt.com answers 403 to every request from a Worker or DO, but not to requests from the container. So the model call goes from the container directly:
   - At `start` the Session DO asks the Creds DO for `{token, accountId}` and sends them over the supervisor socket only; they never enter the event log. The Creds DO refuses a token with less than 24 hours left (the access token lives 10 days), and the session fails with `signin_required`.
   - `config.toml` (mode 0600) sets `base_url = "https://chatgpt.com/backend-api/codex"`, `experimental_bearer_token = <token>`, `http_headers = { "chatgpt-account-id" = … }`, `wire_api = "responses"`, `requires_openai_auth = false`, `supports_websockets = false`, zero retries, and `[features] plugins = false` (spike 1c). Codex runs with an explicit environment allowlist.
   - The token is in no environment variable, so commands the agent runs don't inherit it. An env var did not work: in Codex 0.157.1, `[shell_environment_policy] exclude = ["SCOTTY_*"]` still let commands see it (e2e run 4, `work/step2/env-names.out`). e2e `core` checks with `env | grep -c SCOTTY_`.
   - Risk accepted for a single user: code in the container can read `config.toml` and use the token until it expires. The refresh token never leaves the Creds DO.
-- **Claude (step 10, owner, 2026-09-28).** Claude runs only on the owner's Claude subscription, the way t3code runs it: the official Agent SDK drives the real `claude` binary, and Scotty never runs a Claude login itself.
-  - **Sign-in happens on the owner's laptop.** `scotty auth login claude` runs `claude setup-token`: the browser opens and the owner signs in. The CLI takes the `sk-ant-oat01-…` token from its output and sends it to the Creds DO. If it can't read the output, the owner pipes the token in on stdin, as with `gh auth token | scotty auth login github`. Settings → Accounts has a paste field for the phone.
-  - **Pushed once, not synced.** The setup token lasts a year and never rotates, and the laptop's own `claude` login is untouched. `doctor` and `auth status` show its expiry. Copying the laptop's normal Claude login isn't an option: it is a token that expires within hours plus a refresh token that rotates on use, so the laptop and Scotty would log each other out.
+- **Claude (owner, 2026-09-28).** Claude runs only on the owner's Claude subscription, the way t3code runs it: the official Agent SDK drives the real `claude` binary, and Scotty never runs a Claude login itself.
+  - **Sign-in happens on the owner's laptop.** `scotty login claude` runs `claude setup-token`: the browser opens and the owner signs in. The CLI takes the `sk-ant-oat01-…` token from its output and sends it to the Creds DO. If it can't read the output, the owner pipes the token in on stdin, as with `gh auth token | scotty login github`. Settings → Accounts has a paste field for the phone.
+  - **Pushed once, not synced.** The setup token lasts a year and never rotates, and the laptop's own `claude` login is untouched. `doctor` shows its expiry. Copying the laptop's normal Claude login isn't an option: it is a token that expires within hours plus a refresh token that rotates on use, so the laptop and Scotty would log each other out.
   - **Delivery:** at `start`, the Session DO sends the token over the supervisor socket only, never through the event log. The supervisor starts Claude with `CLAUDE_CODE_OAUTH_TOKEN` in that process's environment, and Claude calls `api.anthropic.com` directly. Claude Code 2.1.284 strips the variable from the commands it runs: a Bash tool call saw `ANTHROPIC_BASE_URL` but not the token (spike 10a). Accepted risk, as with Codex: code in the container can read it from the Claude process. Through the Agent SDK (0.3.284, compiled with Bun, a real setup token), neither a tool call's env, a file under HOME nor stderr held the token.
   - **Runtime (spike 10a, SDK 0.3.284, claude 2.1.284, local and in a Linux container as `scotty`):** `ClaudeRunner` keeps one `query()` per session with streaming input. A new session passes `sessionId`, a resume `resume`; Claude sends nothing before the first prompt. Steers are pushed into the running query and fold into its turn; the DO turn ends on the `result` with no queued messages that answers one of its messages (`queued_turn_count`, `user_message_uuids`). `interrupt()` keeps the process; with no `result` in 3 s the runner ends the turn and relaunches with `resume`. `env` is an allowlist. Frames keep only text and thinking deltas and Edit/Write patches. The save tar holds only `~/.claude/projects/-workspace-repo/<id>.jsonl`.
   - **Claude Code guards itself:** it refuses a `pkill` whose pattern matches its own process. The crash check in `e2e/stop-resume.ts` has the shell kill its parent (`kill -9 $PPID`) instead.
-- **git (spike 7a, `work/spikes/7a/RESULT.md`).** One GitHub token, set once with `gh auth token | scotty auth login github`; any repository it can reach works, with no repository list.
+- **git (spike 7a, `work/spikes/7a/RESULT.md`).** One GitHub token, set once with `gh auth token | scotty login github`; any repository it can reach works, with no repository list.
   - The supervisor sets `url."http://github.internal/api/git/".insteadOf https://github.com/`, plus `user.name` and `user.email` from `start.git`. The container has no GitHub credential and no credential helper.
-  - The Creds DO checks the token with `GET https://api.github.com/user` when it is set and stores `login`, `name` (falls back to `login`) and `email` (falls back to `<id>+<login>@users.noreply.github.com`). `new` resolves the default branch with the token; no token, or a GitHub error, is a 400 with the hint `scotty auth login github`.
+  - The Creds DO checks the token with `GET https://api.github.com/user` when it is set and stores `login`, `name` (falls back to `login`) and `email` (falls back to `<id>+<login>@users.noreply.github.com`). `new` resolves the default branch with the token; no token, or a GitHub error, is a 400 with the hint `scotty login github`.
   - Before each `container.start` that starts a container, the Session DO awaits the raw `storage.container.interceptOutboundHttp("github.internal", ctx.exports.default({ props: { session, repo } }))`. `ctx.exports.default` is the Worker's own loopback (Alchemy's entry is `export default makeWorkerBridge(WorkerEntrypoint, …)`, `Workers/Sources/Rolldown.ts:259`). A new container needs a fresh install; a DO restart with the container still running keeps it. Alchemy's `interceptOutboundHttp` wrapper drops the promise (`Containers/ContainerPlatform.ts:196-200`), so the raw call is used.
   - The Worker reads identity only from `ctx.props` (`WorkerExecutionContext.raw.props`), never from `Host` or anything the container sends. A request without props, such as a public one through Access, gets 404. The path is under `/api/` because the static-assets layer answers everything outside `runWorkerFirst: ["/api/*"]`, loopback traffic included.
   - The handler allows only smart-HTTP paths for the session's own repository, and in `git-receive-pack` only updates to `refs/heads/scotty/*` (it buffers the push body to read the commands; a body that is only a flush-pkt is git's auth probe and passes). It strips incoming auth and hop-by-hop headers, adds the real token, and forwards to `https://github.com`.
@@ -185,33 +185,39 @@ The conversation snapshot includes top-level `currentTurn`, the authoritative tu
 
 ### Served now
 
-| Endpoint                                                                     | Source                                                |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `GET/POST /api/sessions`, `GET /api/sessions/:id`                            | Creds DO session index and each Session DO's view     |
-| `GET /api/sessions/:id/conversation`, `GET /api/sessions/:id/log`            | Folded agent events and the raw event log             |
-| `POST /api/sessions/:id/steer`, `POST /api/sessions/:id/interrupt`           | `prompt.requested` and `interrupt.requested`          |
-| `GET /api/credentials/chatgpt`, `POST /api/credentials/chatgpt/{start,poll}` | Creds DO ChatGPT status and device-code sign-in       |
-| `GET/POST /api/credentials/github`; `/api/git/*` (loopback only)             | Creds DO GitHub token; git handler (step 7)           |
-| `GET /api/sessions/:id/files/:file`; `PUT files.internal` (loopback only)    | R2 `files/<session>/<file>`; `file.attached` (step 9) |
-| `DELETE /api/sessions/:id`                                                   | A stopped or failed session: log, save, files, index  |
+| Endpoint                                                                     | Source                                               |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `GET/POST /api/sessions`, `GET /api/sessions/:id`                            | Creds DO session index and each Session DO's view    |
+| `GET /api/sessions/:id/conversation`, `GET /api/sessions/:id/log`            | Folded agent events and the raw event log            |
+| `POST /api/sessions/:id/steer`, `POST /api/sessions/:id/interrupt`           | `prompt.requested` and `interrupt.requested`         |
+| `GET /api/credentials/chatgpt`, `POST /api/credentials/chatgpt/{start,poll}` | Creds DO ChatGPT status and device-code sign-in      |
+| `GET/POST /api/credentials/github`; `/api/git/*` (loopback only)             | Creds DO GitHub token; git handler                   |
+| `GET /api/sessions/:id/files/:file`; `PUT files.internal` (loopback only)    | R2 `files/<session>/<file>`; `file.attached`         |
+| `DELETE /api/sessions/:id`                                                   | A stopped or failed session: log, save, files, index |
+| `POST /api/sessions/:id/{stop,resume}`                                       | Session DO stop, and `resume.requested`              |
+| `GET /api/sessions/:id/hatch/:port`; `<port>-<id>.<hatch base>`              | Hatch preview URL and routing                        |
+| `GET /api/sessions/:id/terminal` (WebSocket)                                 | A shell in the session's container                   |
+| `GET/POST /api/credentials/claude`                                           | Creds DO Claude token status                         |
+| `GET /api/settings`, `PUT /api/settings/instructions`                        | Creds DO instructions and skill list                 |
+| `PUT /api/skills`, `PATCH/DELETE /api/skills/:name`                          | R2 `skills/<name>` and the Creds DO skill list       |
+| `GET /api/version`                                                           | The deployed Worker's version                        |
 
-### Planned
+### Later
 
-| Step  | Endpoints and routing                                          |
-| ----- | -------------------------------------------------------------- |
-| 6     | `POST /api/sessions/:id/{stop,resume}`                         |
-| 8     | Hatch preview routing                                          |
-| Later | `changes[/patch]`, `settings`, `repos`, the terminal WebSocket |
+`changes[/patch]` and `repos`.
 
 ## CLI
 
 Agent-first: an agent or a script is the primary user, and a person reading it gets the same clarity.
 
-- **Output:** stdout carries exactly one JSON value per command. Progress and hints go to stderr. No colour codes, no prompts, no pager.
-- **Errors:** `{"error":{"code","message","hint"}}` on stdout, with a non-zero exit: 1 for a request or agent failure, 2 for bad usage, 3 when setup is missing (no `SCOTTY_URL`, no Access login, not signed in to ChatGPT). `hint` is the exact command that fixes it.
-- **Target:** `SCOTTY_URL` or `--url`, never derived. Access through `cloudflared access token` at run time; nothing stored by the CLI.
-- **Commands:** `doctor` checks the URL, Access, the Worker's reply, ChatGPT sign-in and the GitHub token, and prints what to fix. `auth login chatgpt` runs the device code (prints the URL and code to stderr, polls, prints the result). `auth login github` reads the GitHub token from stdin (`gh auth token | scotty auth login github`) and prints `{status, login}`. `auth status` prints `{chatgpt: {status, expiresAt}, github: {status, login}}`. The account is exactly `chatgpt` or `github`. `new <owner/repo> [--prompt text] [--key k]` is idempotent on `--key` and uses the repository's default branch. `show <id>` prints the session view and conversation; `log <id>` the raw events. `read <id> [--last N] [--role user|assistant]` returns recent messages (default 1, maximum 500), session authority and the latest turn's ID/state. Messages have stable IDs, role, turn state and text; role filtering precedes the limit, and empty assistant text is omitted. The latest turn is independent of the selected messages; it is null before any prompt appears. Callers choose when to read again: there is no `watch` command. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries. `rm <id>` deletes a stopped or failed session with its save and files; a running one answers 409 with the hint `scotty stop <id>`.
-- **Help:** `--help` on every command is short and ends with one runnable example.
+- **Output:** one JSON value on stdout with `--json`, or when stdout is not a terminal. In a terminal the output is readable text, coloured unless `NO_COLOR` is set. Progress and prompts go to stderr.
+- **Errors:** `{"error":{"code","message","hint"}}` on stdout in JSON mode, otherwise `✗ message` and `→ hint` on stderr. The exit code is 1 for a request or agent failure, 2 for bad usage, and 3 when setup is missing (no address, no Access login, not signed in). `hint` is the exact command that fixes it.
+- **Target:** `SCOTTY_URL`, else the `url` in the CLI config file; never derived. Access comes through `cloudflared access token` at run time; the CLI stores no token.
+- **Ids:** a session id can be given as its first 4+ characters; an ambiguous or unknown prefix is an error.
+- **Setup:** `doctor` checks the address, Access, the Worker's version, and each sign-in (ChatGPT, GitHub, Claude), with each account's expiry and the fix for each problem. `login chatgpt` runs the device code: it prints the code, opens the page, and polls. `login github` saves the token from stdin, or from `gh auth token`. `login claude` runs `claude setup-token` and saves the token, or reads it from stdin.
+- **Sessions:** `new <owner/repo> <prompt> [--agent codex|claude] [--key k]` is idempotent on `--key` and uses the repository's default branch. `ls` lists sessions. `read <id> [--last N] [--role user|assistant]` prints the session state and recent messages (default 1, maximum 500; role filtering precedes the limit; empty assistant text is omitted). `log <id>` prints the raw events. There is no `watch`: callers choose when to read again. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries. `stop`, `resume`, `open [id]` and `hatch <id> <port>` do what they say. `rm <id…>` deletes stopped or failed sessions with their saves and files, after resolving every id; a running one answers 409 with the hint `scotty stop <id>`.
+- **What sessions get:** `push skill <folder|zip…>`, `push instructions <file|->`, `ls skills` and `rm skill <name>`.
+- **Help:** `scotty --help` lists every command; `scotty <command> --help` is short and most end with one runnable example.
 
 ## Deploy
 
@@ -256,4 +262,4 @@ The order of work is in `plan.md` ("Order of work"): stop and resume, private re
   - `account/login/start` with `type: "chatgptAuthTokens"` (seen in t3code) rejects an opaque sentinel with `invalid ID token format`; it needs a real JWT and is marked internal-only. Scotty does not use it.
   - The model must be one the ChatGPT account allows: `gpt-5.5` worked; `gpt-5.1-codex` and `gpt-5.4` returned HTTP 400. The model is a setting, not a constant.
 - ~~Can Scotty deploy its Container from a prebuilt image without a local Docker?~~ **Answered by spike 1d (deployed, 2026-09-26): yes, by copy.** An Effect script copied a digest-pinned linux/amd64 image into `registry.cloudflare.com/<account>/<repo>` over the OCI HTTP API with `Containers.createContainerRegistryCredentials` (account-wide, pull+push, 60 min), and Alchemy deployed it as pre-pushed with no docker on PATH; the DO got HTTP 200. Not covered: a direct `docker.io` pull (the nginx test image crashed the same way from both registries; Cloudflare documents Docker Hub as supported but uncached); digest verification, streaming and retries for a multi-GB image; registry size limits; first boot of the real image (a 4.6 MB image took 22.7 s after a rollout); garbage collection of copied images.
-- How does container development work without local Docker? Each `container/` change otherwise needs a CI image build before a dev deploy. Options: a CI workflow on push to `rebuild/core`; a stable base image with the compiled supervisor fetched at start by digest; a remote builder. Settle before step 2 deploys.
+- How does container development work without local Docker? Each `container/` change otherwise needs a CI image build before a dev deploy. Options: a CI workflow on push to `rebuild/core`; a stable base image with the compiled supervisor fetched at start by digest; a remote builder. Settle this before deploying.

@@ -57,7 +57,7 @@ const program = Effect.gen(function* () {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: `Step 6 stop-resume (${agent})`,
+      title: `e2e stop-resume (${agent})`,
       repo: fixtureRepo,
       agent,
       prompt: `Run exactly: \`echo ${marker} > marker.txt && rm README\`, then reply with only the word done.`,

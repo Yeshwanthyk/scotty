@@ -427,7 +427,7 @@ function Skills({ skills, reload }: { skills: SettingsState["skills"]; reload: (
     <div className="settings-card">
       <p className="settings-intro">
         A skill is a zip with SKILL.md at its root or in one folder. Uploading one with the same
-        name replaces it. From a terminal: <code>scotty skill add ./folder</code>
+        name replaces it. From a terminal: <code>scotty push skill ./folder</code>
       </p>
       {skills.length === 0 ? (
         <div className="settings-empty">No skills yet.</div>

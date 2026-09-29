@@ -141,13 +141,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (!current(action.gen)) return;
               // Sent over the socket only; never appended to the event log.
               const owner = credentials.getByName("owner");
+              const agentConfig = {
+                codex: () => owner.sessionToken().pipe(Effect.map(codex.startConfig)),
+                claude: () => owner.claudeToken().pipe(Effect.map(claude.startConfig)),
+              } satisfies Record<typeof AgentKind.Type, unknown>;
               const signedIn = yield* Effect.exit(
-                Effect.all([
-                  action.agentKind === "claude"
-                    ? owner.claudeToken().pipe(Effect.map(claude.startConfig))
-                    : owner.sessionToken().pipe(Effect.map(codex.startConfig)),
-                  owner.gitIdentity(),
-                ]),
+                Effect.all([agentConfig[action.agentKind](), owner.gitIdentity()]),
               );
               if (Exit.isFailure(signedIn)) {
                 if (current(action.gen))

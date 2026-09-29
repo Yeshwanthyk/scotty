@@ -90,7 +90,7 @@ function assistant(turn: TurnItems, message: Json): TurnItems {
   });
   const next = { ...turn, items };
   return message["error"] === "authentication_failed"
-    ? notice(next, "Claude is signed out. Run scotty auth login claude.", "error")
+    ? notice(next, "Claude is signed out. Run scotty login claude.", "error")
     : next;
 }
 

@@ -30,7 +30,7 @@ const signIn = (request: ReturnType<typeof client>) =>
       return yield* failure(
         "signin",
         `ChatGPT sign-in start failed: ${device.stage}, HTTP ${device.httpStatus ?? "unknown"}, code ${device.code ?? "unknown"}`,
-        "scotty auth login chatgpt",
+        "scotty login chatgpt",
       );
     console.log(`Open ${device.verificationUrl} and enter code ${device.userCode}`);
     let signedIn = false;
@@ -47,17 +47,17 @@ const signIn = (request: ReturnType<typeof client>) =>
         return yield* failure(
           "signin",
           `ChatGPT sign-in poll failed: ${result.stage}, HTTP ${result.httpStatus ?? "unknown"}, code ${result.code ?? "unknown"}`,
-          "scotty auth login chatgpt",
+          "scotty login chatgpt",
         );
       if (result.status === "expired")
         return yield* failure(
           "signin",
           "ChatGPT device authorization expired",
-          "scotty auth login chatgpt",
+          "scotty login chatgpt",
         );
     }
     if (!signedIn)
-      return yield* failure("signin", "ChatGPT sign-in timed out", "scotty auth login chatgpt");
+      return yield* failure("signin", "ChatGPT sign-in timed out", "scotty login chatgpt");
   });
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
@@ -68,13 +68,13 @@ const program = Effect.gen(function* () {
     const current = yield* request("/api/credentials/chatgpt", ChatGptStatus);
     if (current.status !== "signed-in") yield* signIn(request);
   } else if ((yield* request("/api/credentials/claude", ClaudeStatus)).status === "signed-out")
-    return yield* failure("signin", "Claude token is not set", "scotty auth login claude");
+    return yield* failure("signin", "Claude token is not set", "scotty login claude");
   const unique = crypto.randomUUID();
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
     key: unique,
     body: {
-      title: `Step 2 core (${agent})`,
+      title: `e2e core (${agent})`,
       repo: fixtureRepo,
       agent,
       // Commands must not inherit the ChatGPT token from Codex's config or Claude's token from

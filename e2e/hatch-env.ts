@@ -38,7 +38,7 @@ const program = Effect.gen(function* () {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: "Step 8b hatch-env",
+      title: "e2e hatch-env",
       repo: process.env.SCOTTY_HATCH_TEST_REPO ?? "",
       prompt:
         "Set up this repo's dev environment, start the dev server, and reply with only its URL.",

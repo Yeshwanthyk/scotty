@@ -1,74 +1,124 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect, Exit, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
-import { Log, Reply, View, failure } from "../client.js";
-import { output, sessionPath, turnFrom, url, withClient } from "./common.js";
+import { Log, Removed, Reply, View, failure } from "../client.js";
+import { removeSkill } from "./push.js";
+import {
+  dim,
+  green,
+  output,
+  sessionIds,
+  sessionPath,
+  short,
+  state,
+  usage,
+  withClient,
+} from "./common.js";
 
 const id = Argument.String("id");
 const req = Flag.String("req").pipe(Flag.optional);
+
 export const steer = Command.make(
   "steer",
-  { url, id, text: Argument.String("text"), req },
-  ({ url: target, id: value, text, req: retry }) =>
+  { id, text: Argument.String("text"), req },
+  ({ id: value, text, req: retry }) =>
     Effect.gen(function* () {
-      if (!text.trim())
-        return yield* failure("usage", "Steer text cannot be empty", "scotty steer --help", 2);
-      const path = sessionPath(value);
-      const api = yield* withClient(target);
+      if (!text.trim()) return yield* usage("Steer text cannot be empty", "steer");
+      const api = yield* withClient;
+      const path = yield* sessionPath(api, value, "steer");
       const events = yield* api(`${path}/log`, Log);
       const body = {
         text,
         turn: turnFrom(events),
         ...(Option.isSome(retry) ? { req: retry.value } : {}),
       };
-      return yield* output(yield* api(`${path}/steer`, Reply, { method: "POST", body }));
+      const reply = yield* api(`${path}/steer`, Reply, { method: "POST", body });
+      yield* output(reply, `${green("✓")} Sent ${dim(`(${reply.status})`)}`);
     }),
-).pipe(Command.withDescription("Send text to a session"));
+);
 
-export const interrupt = Command.make(
-  "interrupt",
-  { url, id, req },
-  ({ url: target, id: value, req: retry }) =>
+export const interrupt = Command.make("interrupt", { id, req }, ({ id: value, req: retry }) =>
+  Effect.gen(function* () {
+    const api = yield* withClient;
+    const path = yield* sessionPath(api, value, "interrupt");
+    const events = yield* api(`${path}/log`, Log);
+    const body = {
+      turn: turnFrom(events),
+      ...(Option.isSome(retry) ? { req: retry.value } : {}),
+    };
+    const reply = yield* api(`${path}/interrupt`, Reply, { method: "POST", body });
+    yield* output(reply, `${green("✓")} Interrupted ${dim(`(${reply.status})`)}`);
+  }),
+);
+
+const lifecycle = (name: "stop" | "resume", past: string) =>
+  Command.make(name, { id }, ({ id: value }) =>
     Effect.gen(function* () {
-      const path = sessionPath(value);
-      const api = yield* withClient(target);
-      const events = yield* api(`${path}/log`, Log);
-      const body = {
-        turn: turnFrom(events),
-        ...(Option.isSome(retry) ? { req: retry.value } : {}),
-      };
-      return yield* output(yield* api(`${path}/interrupt`, Reply, { method: "POST", body }));
+      const api = yield* withClient;
+      const path = yield* sessionPath(api, value, name);
+      const view = yield* api(`${path}/${name}`, View, { method: "POST" });
+      yield* output(
+        view,
+        `${green("✓")} ${past} ${short(view.session.identity.id)} ${dim(`(${state(view.session)})`)}`,
+      );
     }),
-).pipe(Command.withDescription("Interrupt the current turn"));
+  );
+export const stop = lifecycle("stop", "Stopping");
+export const resume = lifecycle("resume", "Resuming");
 
-export const stop = Command.make("stop", { url, id }, ({ url: target, id: value }) =>
-  Effect.gen(function* () {
-    const api = yield* withClient(target);
-    return yield* output(yield* api(`${sessionPath(value)}/stop`, View, { method: "POST" }));
-  }),
-).pipe(Command.withDescription("Stop a session's container"));
-
-export const resume = Command.make("resume", { url, id }, ({ url: target, id: value }) =>
-  Effect.gen(function* () {
-    const api = yield* withClient(target);
-    return yield* output(yield* api(`${sessionPath(value)}/resume`, View, { method: "POST" }));
-  }),
-).pipe(Command.withDescription("Resume a stopped session from its last save"));
-
-const Removed = Schema.Struct({ id: Schema.String, removed: Schema.Boolean });
-export const rm = Command.make("rm", { url, id }, ({ url: target, id: value }) =>
-  Effect.gen(function* () {
-    const api = yield* withClient(target);
-    return yield* output(yield* api(sessionPath(value), Removed, { method: "DELETE" }));
-  }),
-).pipe(Command.withDescription("Delete a stopped session, its save and its files"));
+// `rm <id…>` deletes sessions; `rm skill <name>` deletes a skill.
+// Every id is resolved before anything is deleted.
+export const rm = Command.make(
+  "rm",
+  { ids: Argument.String("id").pipe(Argument.atLeast(1)) },
+  ({ ids }) =>
+    Effect.gen(function* () {
+      if (ids[0] === "skill") {
+        const [, name, ...rest] = ids;
+        if (name === undefined || rest.length > 0)
+          return yield* usage("Name one skill: scotty rm skill <name>", "rm");
+        return yield* removeSkill(yield* withClient, name);
+      }
+      const api = yield* withClient;
+      // Two prefixes of one id would delete it twice.
+      const full = [...new Set(yield* sessionIds(api, ids, "rm"))];
+      const removed: (typeof Removed.Type)[] = [];
+      for (const id of full) {
+        const result = yield* Effect.exit(
+          api(`/api/sessions/${id}`, Removed, { method: "DELETE" }),
+        );
+        if (Exit.isFailure(result)) {
+          if (removed.length === 0) return yield* result;
+          // One error, naming what was already removed, so --json prints one document.
+          const error = Option.getOrUndefined(Exit.findErrorOption(result));
+          return yield* failure(
+            error?.code ?? "request_failed",
+            `Removed ${removed.map((entry) => short(entry.id)).join(", ")}, then ${short(id)} failed: ${error?.message ?? "unknown error"}`,
+            error?.hint ?? "scotty ls",
+            error?.exit ?? 1,
+          );
+        }
+        removed.push(result.value);
+      }
+      yield* output(
+        removed,
+        removed.map((entry) => `${green("✓")} Removed ${short(entry.id)}`).join("\n"),
+      );
+    }),
+);
 
 const Hatch = Schema.Struct({ url: Schema.String });
 export const hatch = Command.make(
   "hatch",
-  { url, id, port: Argument.Int("port") },
-  ({ url: target, id: value, port }) =>
+  { id, port: Argument.Int("port") },
+  ({ id: value, port }) =>
     Effect.gen(function* () {
-      const api = yield* withClient(target);
-      return yield* output(yield* api(`${sessionPath(value)}/hatch/${port}`, Hatch));
+      const api = yield* withClient;
+      const path = yield* sessionPath(api, value, "hatch");
+      const preview = yield* api(`${path}/hatch/${port}`, Hatch);
+      yield* output(preview, preview.url);
     }),
-).pipe(Command.withDescription("Print the preview URL for a port in a running session"));
+);
+
+// The turn the next steer or interrupt is aimed at: one past the last ended turn.
+const turnFrom = (log: readonly { kind: string }[]) =>
+  String(log.filter((event) => event.kind === "turn.ended").length);

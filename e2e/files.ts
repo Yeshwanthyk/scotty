@@ -44,7 +44,7 @@ const program = Effect.gen(function* () {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: "Step 9 files",
+      title: "e2e files",
       repo: process.env.SCOTTY_HATCH_TEST_REPO ?? "",
       prompt:
         "Start the dev server, take a 390×844 screenshot of the page and a 5 second video of clicking the counter, and attach both to this chat.",

@@ -49,7 +49,7 @@ const program = Effect.gen(function* () {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: "Step 7 github",
+      title: "e2e github",
       repo,
       prompt: `Run exactly: \`echo ${marker} > marker.txt && git add marker.txt && git commit -m 'e2e marker' && git push origin HEAD\`, then reply with only the word done.`,
       provider: "cloudflare",

@@ -1,7 +1,7 @@
 // Dev tool: turns the owner's own recent agent sessions (Codex, Claude, Pi) into seed event logs
 // in `ui/seed/local/`, which is git-ignored: they hold private work and are never committed.
-// Every import goes through `codexLog`, so Claude and Pi sessions render in the Codex shape
-// until steps 10 and 11 give them their own events; their titles say which agent ran them.
+// Every import goes through `codexLog`, so Claude and Pi sessions render in the Codex shape;
+// their titles say which agent ran them.
 //   bun ui/seed/local.ts [count per agent, default 4]
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";

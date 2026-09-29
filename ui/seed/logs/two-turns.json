@@ -8,7 +8,7 @@
     "repo": "Yeshwanthyk/scotty-hatch-test",
     "baseBranch": "main",
     "branch": "scotty/372e0a23a2854e72885247c0ea93f4ff",
-    "title": "Step 9 files",
+    "title": "e2e files",
     "prompt": "Start the dev server, take a 390×844 screenshot of the page and a 5 second video of clicking the counter, and attach both to this chat.",
     "image": "default"
   },

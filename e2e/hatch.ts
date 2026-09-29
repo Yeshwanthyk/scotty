@@ -97,7 +97,7 @@ const program = Effect.gen(function* () {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: "Step 8 hatch",
+      title: "e2e hatch",
       repo: fixtureRepo,
       prompt:
         `Run exactly: \`echo ${script} | base64 -d > /workspace/server.mjs && mkdir -p /workspace/.scotty/logs && ` +

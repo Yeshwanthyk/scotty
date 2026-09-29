@@ -8,7 +8,7 @@
     "repo": "_scotty/fixture",
     "baseBranch": "main",
     "branch": "scotty/2778e7e69fdb4a3e9283ac5967177abb",
-    "title": "Step 8 hatch",
+    "title": "e2e hatch",
     "prompt": "Run exactly: `echo aW1wb3J0IGh0dHAgZnJvbSAibm9kZTpodHRwIjsKaW1wb3J0IHsgY3JlYXRlSGFzaCB9IGZyb20gIm5vZGU6Y3J5cHRvIjsKY29uc3Qgc2VydmVyID0gaHR0cC5jcmVhdGVTZXJ2ZXIoKHEsIHMpID0+IHMuZW5kKCJIQVRDSC0yZmEwZWMwYSAiICsgcS5oZWFkZXJzLmhvc3QpKTsKc2VydmVyLm9uKCJ1cGdyYWRlIiwgKHEsIHNvY2spID0+IHsKICBjb25zdCBrZXkgPSBjcmVhdGVIYXNoKCJzaGExIikudXBkYXRlKHEuaGVhZGVyc1sic2VjLXdlYnNvY2tldC1rZXkiXSArICIyNThFQUZBNS1FOTE0LTQ3REEtOTVDQS1DNUFCMERDODVCMTEiKS5kaWdlc3QoImJhc2U2NCIpOwogIHNvY2sud3JpdGUoIkhUVFAvMS4xIDEwMSBTd2l0Y2hpbmcgUHJvdG9jb2xzXHJcblVwZ3JhZGU6IHdlYnNvY2tldFxyXG5Db25uZWN0aW9uOiBVcGdyYWRlXHJcblNlYy1XZWJTb2NrZXQtQWNjZXB0OiAiICsga2V5ICsgIlxyXG5cclxuIik7CiAgc29jay5vbigiZGF0YSIsIChiKSA9PiB7CiAgICBjb25zdCBuID0gYlsxXSAmIDEyNywgbWFzayA9IGIuc3ViYXJyYXkoMiwgNiksIGRhdGEgPSBiLnN1YmFycmF5KDYsIDYgKyBuKS5tYXAoKHgsIGkpID0+IHggXiBtYXNrW2kgJSA0XSk7CiAgICBpZiAoKGJbMF0gJiAxNSkgPT09IDEpIHNvY2sud3JpdGUoQnVmZmVyLmNvbmNhdChbQnVmZmVyLmZyb20oWzB4ODEsIG5dKSwgZGF0YV0pKTsKICB9KTsKfSk7CnNlcnZlci5saXN0ZW4oODA4MCwgIjAuMC4wLjAiKTsK | base64 -d > /workspace/server.mjs && mkdir -p /workspace/.scotty/logs && setsid nohup node /workspace/server.mjs > /workspace/.scotty/logs/server.log 2>&1 < /dev/null &`, then reply with only the word done.",
     "image": "default"
   },

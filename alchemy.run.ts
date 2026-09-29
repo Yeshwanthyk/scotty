@@ -13,7 +13,7 @@ const stage = process.argv.find(
     index > 0 && arguments_[index - 1] === "--stage" && argument !== "--stage",
 );
 if (Exit.isFailure(Schema.decodeUnknownExit(Schema.Literal("dev"))(stage)))
-  throw new Error("Step 2 deploy requires explicit --stage dev");
+  throw new Error("Deploy requires explicit --stage dev");
 if (
   Exit.isFailure(Schema.decodeUnknownExit(Schema.String.check(Schema.isMinLength(1)))(ownerEmail))
 )

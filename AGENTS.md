@@ -27,6 +27,7 @@ Scotty runs Codex sessions in Cloudflare Containers, driven from a phone-friendl
   - Platform and Schema APIs come from `effect` and `effect/unstable/*`. Don't add `@effect/platform`, `@effect/schema` or `@cloudflare/sandbox`.
 - Use Effect where typed errors, services, scopes or Schema help: the Worker, the DOs, the supervisor and the CLI. Write pure code as plain functions.
 - Decode untrusted input with Schema where it enters: HTTP, WebSocket messages, R2 objects, OAuth responses, CLI arguments. No `any`, no casts that hide a type, no non-null assertions.
+- Don't put plan step numbers in code, titles or messages; the plan's numbering changes.
 - All infrastructure lives in `alchemy.run.ts`. Don't patch dependencies unless a failure is shown and written down in `docs/design.md`.
 
 ## Tests
@@ -47,9 +48,9 @@ Run these before every commit. Report what ran and what didn't.
 
 ```sh
 npm run fmt
-npm run lint             # from step 0
-npm run typecheck        # covers only ui/ until step 0 adds the root project
+npm run lint
+npm run typecheck
 npm run ui:build
-npm test                 # from step 2
-npm run e2e -- <name>    # from step 2, against a deployment
+npm test
+npm run e2e -- <name>    # against a deployment
 ```

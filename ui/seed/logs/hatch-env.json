@@ -8,7 +8,7 @@
     "repo": "Yeshwanthyk/scotty-hatch-test",
     "baseBranch": "main",
     "branch": "scotty/42c3d140e5f54a0895f20a8972d41c1c",
-    "title": "Step 8b hatch-env",
+    "title": "e2e hatch-env",
     "prompt": "Set up this repo's dev environment, start the dev server, and reply with only its URL.",
     "image": "default"
   },

@@ -7,6 +7,7 @@ import type * as Cloudflare from "alchemy/Cloudflare";
 import { fixtureRepo } from "../../protocol/supervisor.js";
 import { AgentKind } from "../session/events.js";
 import { defaultBranch } from "./repository.js";
+import { version } from "../version.js";
 import {
   instructionsKey,
   maxInstructionBytes,
@@ -43,11 +44,11 @@ const path =
 const GitHubToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{20,255}$/)),
 });
-const githubHint = "scotty auth login github";
+const githubHint = "scotty login github";
 const ClaudeToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^sk-ant-oat01-[A-Za-z0-9_-]{20,300}$/)),
 });
-const claudeHint = "scotty auth login claude";
+const claudeHint = "scotty login claude";
 const Instructions = Schema.Struct({
   text: Schema.String.check(
     Schema.makeFilter((text) => new TextEncoder().encode(text).byteLength <= maxInstructionBytes, {
@@ -132,6 +133,8 @@ export function apiHandler(
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
       return yield* HttpServerResponse.json(yield* credential.setClaude(body.token));
     }
+    if (url.pathname === "/api/version" && request.method === "GET")
+      return yield* HttpServerResponse.json({ version });
     if (url.pathname === "/api/settings" && request.method === "GET") {
       const saved = yield* bucket.get(instructionsKey);
       return yield* HttpServerResponse.json({

@@ -23,7 +23,7 @@ const check = (ok: boolean, message: string) =>
 const Saved = Schema.Struct({ saved: Schema.Boolean });
 const Switched = Schema.Struct({ name: Schema.String, enabled: Schema.Boolean });
 const Removed = Schema.Struct({ removed: Schema.Boolean });
-const Added = Schema.fromJsonString(Schema.Struct({ name: Schema.String }));
+const Added = Schema.Struct({ name: Schema.String });
 
 const name = "scotty-e2e";
 const id = crypto.randomUUID().slice(0, 8).toUpperCase();
@@ -31,7 +31,7 @@ const skillMark = `SKILLMARK-${id}`;
 const firstMark = `OWNERMARK-A-${id}`;
 const secondMark = `OWNERMARK-B-${id}`;
 
-// `scotty skill add` zips the folder and uploads it, as the owner would.
+// `scotty push skill` zips the folder and uploads it, as the owner would.
 const addSkill = (url: string) =>
   Effect.gen(function* () {
     const folder = mkdtempSync(join(tmpdir(), "scotty-skill-"));
@@ -41,21 +41,26 @@ const addSkill = (url: string) =>
     );
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
-      ChildProcess.make("bun", ["cli/main.ts", "skill", "add", folder, "--url", url], {
+      ChildProcess.make("bun", ["cli/main.ts", "push", "skill", folder, "--json"], {
+        env: { SCOTTY_URL: url },
+        extendEnv: true,
         stdin: "ignore",
         stderr: "inherit",
       }),
     );
     const out = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
-    if ((yield* child.exitCode) !== 0) return yield* failure("settings", out, "scotty skill add");
-    return yield* Schema.decodeUnknownEffect(Added)(out.trim());
+    if ((yield* child.exitCode) !== 0) return yield* failure("settings", out, "scotty push skill");
+    const [added] = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Tuple([Added])))(
+      out.trim(),
+    );
+    return added;
   }).pipe(
     Effect.scoped,
     Effect.provide(BunServices.layer),
     Effect.mapError((error) =>
       error instanceof CliFailure
         ? error
-        : failure("settings", "scotty skill add failed", "scotty skill add --help"),
+        : failure("settings", "scotty push skill failed", "scotty push --help"),
     ),
   );
 
@@ -69,7 +74,7 @@ const program = Effect.gen(function* () {
 
   // 1. A skill added with the CLI and owner instructions.
   const added = yield* addSkill(url);
-  yield* check(added.name === name, `skill add returned ${added.name}`);
+  yield* check(added.name === name, `push skill returned ${added.name}`);
   yield* request("/api/settings/instructions", Saved, {
     method: "PUT",
     body: { text: `The owner marker is ${firstMark}.` },
@@ -80,7 +85,7 @@ const program = Effect.gen(function* () {
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
     key: crypto.randomUUID(),
-    body: { title: "Step 12 settings", repo: fixtureRepo, prompt: probe, provider: "cloudflare" },
+    body: { title: "e2e settings", repo: fixtureRepo, prompt: probe, provider: "cloudflare" },
   });
   const prefix = `/api/sessions/${session.id}`;
   console.log(`Session ${session.id}`);

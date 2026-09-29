@@ -50,7 +50,7 @@ const program = Effect.gen(function* () {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: "Step 12 terminal",
+      title: "e2e terminal",
       repo: fixtureRepo,
       prompt: "Reply with only the word ready.",
       provider: "cloudflare",

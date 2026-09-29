@@ -19,7 +19,7 @@ const ApiError = Schema.Struct({
     hint: Schema.optional(Schema.String),
   }),
 });
-const Url = Schema.String.check(Schema.isPattern(/^https:\/\/[^/]+/));
+export const Url = Schema.String.check(Schema.isPattern(/^https:\/\/[^/]+\/?$/));
 
 export const Session = Schema.Struct({
   identity: Schema.Struct({ id: Schema.String }),
@@ -31,7 +31,10 @@ export const Session = Schema.Struct({
     title: Schema.String,
     repository: Schema.String,
     branch: Schema.String,
+    agentKind: Schema.String,
+    activeAt: Schema.String,
   }),
+  progress: Schema.Struct({ working: Schema.Boolean }),
 });
 export const View = Schema.Struct({ version: Schema.Number, session: Session });
 export const List = Schema.Struct({ version: Schema.Number, sessions: Schema.Array(Session) });
@@ -44,6 +47,26 @@ export const Created = Schema.Struct({
   url: Schema.String,
 });
 export const Reply = Schema.Struct({ status: Schema.String });
+export const Removed = Schema.Struct({ id: Schema.String, removed: Schema.Boolean });
+export const Settings = Schema.Struct({
+  instructions: Schema.String,
+  skills: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      description: Schema.String,
+      enabled: Schema.Boolean,
+      size: Schema.Number,
+    }),
+  ),
+});
+export const Skill = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+  sha256: Schema.String,
+  size: Schema.Number,
+});
+export const Saved = Schema.Struct({ saved: Schema.Boolean });
+export const SkillRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
 export const Conversation = Schema.Struct({
   version: Schema.Number,
   turns: Schema.Array(
@@ -109,45 +132,59 @@ export const Polled = Schema.Union([
 export const target = (input: unknown) =>
   Schema.decodeUnknownEffect(Url)(input).pipe(
     Effect.mapError(() =>
-      failure(
-        "setup",
-        "SCOTTY_URL must be an https URL",
-        "export SCOTTY_URL=https://<your-access-host>",
-        3,
-      ),
+      failure("setup", "Scotty is not set up on this machine", "scotty init", 3),
     ),
   );
 
 export const access = (url: string) =>
   Effect.gen(function* () {
     const hint = `cloudflared access login ${url}`;
-    const token = yield* Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const child = yield* spawner.spawn(
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const child = yield* spawner
+      .spawn(
         ChildProcess.make("cloudflared", ["access", "token", `-app=${url}`], {
           stdin: "ignore",
           stderr: "ignore",
         }),
-      );
-      const value = yield* child.stdout.pipe(
-        Stream.decodeText(),
-        Stream.runFold(
-          () => "",
-          (all, part) => all + part,
+      )
+      .pipe(
+        Effect.mapError(() =>
+          failure(
+            "cloudflared_missing",
+            "cloudflared is not installed",
+            "brew install cloudflared",
+            3,
+          ),
         ),
       );
-      if ((yield* child.exitCode) !== 0)
-        return yield* failure("access_login", "Access token unavailable", hint, 3);
-      return value.trim();
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(BunServices.layer),
-      Effect.timeout("15 seconds"),
+    const token = yield* child.stdout.pipe(
+      Stream.decodeText(),
+      Stream.mkString,
+      Effect.map((text) => text.trim()),
       Effect.mapError(() => failure("access_login", "Access token unavailable", hint, 3)),
     );
-    if (!token) return yield* failure("access_login", "Access token unavailable", hint, 3);
+    const code = yield* child.exitCode.pipe(
+      Effect.mapError(() => failure("access_login", "Access token unavailable", hint, 3)),
+    );
+    if (code !== 0 || !token)
+      return yield* failure("access_login", "Not signed in to Cloudflare Access", hint, 3);
     return token;
-  });
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(BunServices.layer),
+    Effect.timeoutOrElse({
+      duration: "15 seconds",
+      orElse: () =>
+        Effect.fail(
+          failure(
+            "access_login",
+            "cloudflared did not answer",
+            `cloudflared access login ${url}`,
+            3,
+          ),
+        ),
+    }),
+  );
 
 export function client(settings: { readonly url: string; readonly token: string }) {
   const origin = new URL(settings.url);
@@ -189,11 +226,7 @@ export function client(settings: { readonly url: string; readonly token: string 
             `Check ${settings.url} and try again`,
           ),
       });
-      const body: unknown = yield* Effect.tryPromise({
-        try: () => response.json().catch(() => null),
-        catch: () =>
-          failure("invalid_reply", `HTTP ${response.status} was not JSON`, `Check ${settings.url}`),
-      });
+      const body: unknown = yield* Effect.promise(() => response.json().catch(() => null));
       if (!response.ok) {
         const parsed = Schema.decodeUnknownOption(ApiError)(body);
         const error = Option.isSome(parsed) ? parsed.value.error : undefined;
@@ -203,7 +236,9 @@ export function client(settings: { readonly url: string; readonly token: string 
           error?.hint ??
             (response.status === 401 || response.status === 403
               ? `cloudflared access login ${settings.url}`
-              : `Check the request and retry: scotty doctor`),
+              : response.status === 404
+                ? "scotty ls"
+                : "scotty doctor"),
           response.status === 401 || response.status === 403 ? 3 : 1,
         );
       }
