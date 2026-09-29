@@ -524,6 +524,37 @@ kbd {
   gap: 1px;
 }
 
+.stopped-group {
+  display: grid;
+  gap: 1px;
+  margin-top: 8px;
+}
+
+.stopped-group summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius-md);
+}
+
+.stopped-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.stopped-group summary:hover {
+  color: var(--muted);
+}
+
+.stopped-group summary .icon {
+  transition: transform 120ms ease;
+}
+
+.stopped-group[open] summary .icon {
+  transform: rotate(90deg);
+}
+
 .session-row {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);

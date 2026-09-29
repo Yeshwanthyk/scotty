@@ -75,6 +75,27 @@ function useMinuteTick() {
   }, []);
 }
 
+const stoppedKey = "scotty.stoppedOpen";
+function useStoppedOpen() {
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(stoppedKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = (next: boolean) => {
+    if (next === open) return;
+    setOpen(next);
+    try {
+      localStorage.setItem(stoppedKey, next ? "1" : "0");
+    } catch {
+      // Private windows can refuse storage; the section then starts closed.
+    }
+  };
+  return [open, toggle] as const;
+}
+
 export function Sidebar({
   onSearch,
   onCollapse,
@@ -86,6 +107,14 @@ export function Sidebar({
   const params = useParams({ strict: false });
   const currentId = "sessionId" in params ? params.sessionId : undefined;
   useMinuteTick();
+  const [showStopped, toggleStopped] = useStoppedOpen();
+  // Stopped sessions hold no container; they fold away below the ones still running.
+  const all = list ?? [];
+  const live = grouped(all.filter((session) => statusOf(session) !== "stopped"));
+  const stopped = all
+    .filter((session) => statusOf(session) === "stopped")
+    .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
+  const viewingStopped = stopped.some((session) => session.identity.id === currentId);
   return (
     <aside className="sidebar" aria-label="Sessions">
       <div className="sidebar-top">
@@ -134,7 +163,7 @@ export function Sidebar({
         {list?.length === 0 ? (
           <p className="sidebar-empty">No sessions yet. Start one and it shows up here.</p>
         ) : null}
-        {grouped(list ?? []).map(({ group, sessions }) => (
+        {live.map(({ group, sessions }) => (
           <section key={group}>
             <div className="group-label">{group}</div>
             {sessions.map((session) => (
@@ -146,6 +175,31 @@ export function Sidebar({
             ))}
           </section>
         ))}
+        {list !== undefined && list.length > 0 && live.length === 0 ? (
+          <p className="sidebar-empty">Nothing running.</p>
+        ) : null}
+        {stopped.length > 0 ? (
+          <details
+            className="stopped-group"
+            open={showStopped || viewingStopped}
+            onToggle={(event) => {
+              // Opening for the session on screen doesn't change what the owner chose.
+              if (!viewingStopped) toggleStopped(event.currentTarget.open);
+            }}
+          >
+            <summary className="group-label">
+              <Icon name="chevronRight" size={12} />
+              Stopped · {stopped.length}
+            </summary>
+            {stopped.map((session) => (
+              <Row
+                key={session.identity.id}
+                session={session}
+                current={session.identity.id === currentId}
+              />
+            ))}
+          </details>
+        ) : null}
       </div>
       <nav className="sidebar-foot desktop-only">
         <Link
