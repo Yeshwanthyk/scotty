@@ -432,17 +432,22 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
      - (e) The same in the container on `dev`: the linux-x64 binary as `scotty`, the path `~/.claude/projects/-workspace-repo/`, and the token grep.
      - (f) Does `claude setup-token` still print its token when the CLI captures its output? If not: a prompt that hides what you type, stdin, or the Settings field.
 
-  2. **Credentials:**
+  2. **Adapter seam first (no behaviour change):** one folder per agent. Nothing outside it knows the agent's files or event format.
+     - `container/supervisor/agents/agent.ts`: the `Agent` contract (`kind`, `runner(cwd)`, and `files`: `home`, `instructions`, `skills`, `state(session)`) and `makeAgent`, the only switch on kind. The Codex files move as they are to `agents/codex/`.
+     - `workspace.ts` and `controller.ts` ask the agent for paths and kind instead of importing `codexHome` or naming `"codex"`.
+     - `src/session/agents/codex.ts` holds `codexStep`, `codexText` and the start config (now in `object.ts`). `items.ts` keeps the item types and the shared tool mapping. `view.ts` and `object.ts` look the agent up by `agentKind`.
+     - Proven by `e2e core`, `stop-resume`, `settings` and `terminal` on `dev`, unchanged, before any Claude code lands. Moves count only their changed lines.
+  3. **Credentials:**
      - The Creds DO stores the Claude token and its expiry (one year from when it's set).
      - `POST /api/credentials/claude` checks the token's shape (`sk-ant-oat01-…`); `GET` returns status and expiry.
      - `scotty auth login claude` runs `claude setup-token` and takes the token from its output; with stdin not a terminal, it reads the token from stdin.
      - `auth status` and `doctor` report `claude` and warn in its last 14 days.
      - The Session DO asks the Creds DO for the token at a Claude start. With none, the session fails `signin_required` with the hint `scotty auth login claude`.
-  3. **Protocol and events:**
+  4. **Protocol and events:**
      - `AgentConfig` gains `{kind: "claude", model, effort, token}`, with the model and effort as constants in `object.ts`.
      - The kind literal becomes `codex | claude` in `agent_ready`, `agent` and `created.agentKind`.
      - `turn_end.codexTurn` keeps its name (saved logs and fold fixtures use it) and means "the agent's result ID"; for Claude it is the result's UUID. It is recorded, not matched.
-  4. **`ClaudeRunner`** (`container/supervisor/claude.ts`), implementing `Runner`, with no change to `Runner`. What the Codex flow needs, and how Claude does it (checked against t3code's `ClaudeAdapter.ts`, 2026-09-28):
+  5. **`ClaudeRunner`** (`container/supervisor/agents/claude/runner.ts`), implementing `Runner`, with no change to `Runner`. What the Codex flow needs, and how Claude does it (checked against t3code's `ClaudeAdapter.ts`, 2026-09-28):
 
      | Need                                | Claude                                                                                                                                                                                                                                                                                                                                                                                                                              |
      | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -460,17 +465,17 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
 
      Model and effort go in as `model` and `effort` (an `EffortLevel` literal, not a free string). `agent.ts` gains one `case`.
 
-  5. **Workspace:**
+  6. **Workspace:**
      - The save tar holds the agent's state file: `codex/<rollout>` as now, or only `claude/<id>.jsonl` from `~/.claude/projects/-workspace-repo/`. Nothing else under `~/.claude` (`debug/`, `shell-snapshots/`, `history.jsonl`) goes into it. Resume restores it to the same place.
      - Instructions go to `~/.claude/CLAUDE.md`, the same way as Codex's `AGENTS.md`, and skills to `~/.claude/skills/<name>`.
-  6. **View:** `items.ts` gains `claudeStep` beside `codexStep`, and `view.ts` picks one by `agentKind`. No other file reads agent events.
+  7. **View:** `src/session/agents/claude.ts` gains `claudeStep` and `claudeText` beside Codex's, and `view.ts` picks one by `agentKind`. No other file reads agent events.
      - Text and thinking come from deltas and `assistant` blocks.
      - A `tool_use` is matched to its `tool_result` by ID and named by the existing tool mapping (`bash`, `edit`, `todowrite`, ...). `TodoWrite` becomes the plan.
      - A change's diff comes from the tool result's `structuredPatch`.
      - Output from a subagent (`parent_tool_use_id` set) shows only as its `Task` row.
      - `compact_boundary` and rejected rate limits show as notices.
      - Claude sends no turn diff (t3code takes it from git), so the turn diff stays empty for Claude. The Changes tab reads git and still works.
-  7. **Choosing the agent, and the UI:**
+  8. **Choosing the agent, and the UI:**
      - `scotty new <repo> --agent codex|claude` (default `codex`), and `POST /api/sessions` gets `agent`.
      - **New session** (`NewSession.tsx`): a Codex/Claude choice in place of the fixed `AgentChip`, remembered in this browser. Claude is disabled until Settings has its token, with a link to Accounts. The prompt placeholder names the chosen agent.
      - **Sidebar:** "Ask Codex to build…" becomes agent-neutral.
@@ -478,7 +483,7 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
      - **Settings → Accounts** (`Settings.tsx`, `data/settings.ts`): a Claude row beside ChatGPT and GitHub, with status ("Signed in. Claude sessions run on this subscription."), expiry and a 14-day warning. A paste field shows what's typed as dots and hints to run `claude setup-token` or `scotty auth login claude`. The section's detail becomes "ChatGPT, Claude and GitHub".
      - **Settings → Instructions and Skills:** the copy says they go to both agents (`AGENTS.md` for Codex, `CLAUDE.md` for Claude).
      - The diff and tool views take `claudeStep`'s items in the shape `codexStep` makes, so `Thread.tsx` and `data/diff.ts` don't change.
-  8. **Image and dependencies:**
+  9. **Image and dependencies:**
      - `container/Dockerfile` installs `@anthropic-ai/claude-agent-sdk-linux-x64` at the SDK's pinned version (its native `claude`), and creates `~/.claude` for `scotty`.
      - `@anthropic-ai/claude-agent-sdk` is pinned in the root `package.json` (named here, per rule 7).
 - **Review (Fable, 2026-09-28):** folded in above: the steer end, the resume handshake, keeping the process alive after interrupt, the native binary under Bun, the env allowlist, `sk-ant` redaction, the save tar's contents, the mid-turn steer check and the frame cap. Not taken: dropping the `claude setup-token` wrapper for paste-only. The owner asked for a laptop login like `gh`, and the stdin fallback stays.
@@ -494,8 +499,8 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
   - Changes to the files, Hatch or terminal routes.
 - **Touch:**
   - `AGENTS.md` (credential exception)
-  - `container/Dockerfile`, `container/supervisor/{agent,runner,claude,workspace,controller,codex-rpc}.ts`, `protocol/supervisor.ts`
-  - `src/creds/object.ts`, `src/http/api.ts`, `src/session/{events,object,view,items}.ts`
+  - `container/Dockerfile`, `container/supervisor/{agent,runner,workspace,controller}.ts`, `container/supervisor/agents/{agent.ts,codex/*,claude/*}` (the Codex files move there), `protocol/supervisor.ts`
+  - `src/creds/object.ts`, `src/http/api.ts`, `src/session/{events,object,view,items}.ts`, `src/session/agents/{codex,claude}.ts`
   - `cli/commands/{setup,sessions}.ts`, `cli/main.ts`
   - `ui/src/components/{NewSession,Sidebar,Settings}.tsx`, `ui/src/data/settings.ts`, `ui/src/protocol/session/*` for the kind literal
   - `e2e/{core,stop-resume,run}.ts`, `package.json`, `package-lock.json`
