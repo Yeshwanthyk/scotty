@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Exit, Option, Schema } from "effect";
 import { Command, Flag, Prompt } from "effect/unstable/cli";
@@ -93,14 +94,69 @@ const questions = (previous: Config | undefined) =>
     return { stage, email, accountId, domain, zoneId, host };
   });
 
-const spawnInherit = (command: string, args: readonly string[]) =>
+const spawn = (command: string, args: readonly string[], stdio: "inherit" | "ignore") =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
-      ChildProcess.make(command, args, { stdin: "inherit", stdout: "inherit", stderr: "inherit" }),
+      ChildProcess.make(command, args, { cwd: root, stdin: stdio, stdout: stdio, stderr: stdio }),
     );
     return yield* child.exitCode;
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer));
+
+const spawnInherit = (command: string, args: readonly string[]) => spawn(command, args, "inherit");
+
+const onPath = (command: string) =>
+  (process.env.PATH ?? "")
+    .split(delimiter)
+    .some((dir) => dir !== "" && existsSync(join(dir, command)));
+
+// A sign-in init runs for you when it is missing; it stops init if it does not finish.
+const ensure = (
+  name: string,
+  done: Effect.Effect<boolean>,
+  command: string,
+  args: readonly string[],
+) =>
+  Effect.gen(function* () {
+    if (yield* done) return;
+    console.error(`\n${bold(name)}`);
+    const code = yield* spawnInherit(command, args).pipe(Effect.orElseSucceed(() => 1));
+    if (code !== 0 || !(yield* done))
+      return yield* failure(
+        "setup",
+        `${name} did not finish`,
+        `${[command, ...args].join(" ")}, then scotty init again`,
+        3,
+      );
+  });
+
+// What a new machine lacks, fixed or named before any question.
+const preflight = Effect.gen(function* () {
+  const missing = ["cloudflared", "gh"].filter((command) => !onPath(command));
+  if (missing.length > 0)
+    return yield* failure(
+      "setup",
+      `Scotty needs ${missing.join(" and ")}`,
+      `brew install ${missing.join(" ")}, then scotty init again`,
+      3,
+    );
+  yield* ensure(
+    "GitHub CLI sign-in (Scotty clones and pushes as you)",
+    spawn("gh", ["auth", "status"], "ignore").pipe(
+      Effect.map((code) => code === 0),
+      Effect.orElseSucceed(() => false),
+    ),
+    "gh",
+    ["auth", "login"],
+  );
+  const alchemyHome = process.env.ALCHEMY_HOME ?? join(homedir(), ".alchemy");
+  yield* ensure(
+    "Cloudflare sign-in for deploys (a browser opens; allow the account that will host Scotty)",
+    Effect.sync(() => existsSync(join(alchemyHome, "profiles", "default", "cloudflare.json"))),
+    "npx",
+    ["alchemy", "profile", "edit", "--add", "Cloudflare"],
+  );
+});
 
 // A new host needs its DNS record and certificate before Access can sign in to it.
 const reachable = (url: string) =>
@@ -178,6 +234,7 @@ export const init = Command.make("init", {}, () =>
         "",
       ].join("\n"),
     );
+    yield* preflight;
     const previous = yield* readConfig.pipe(Effect.orElseSucceed(() => undefined));
     const config = yield* questions(previous);
     if (
