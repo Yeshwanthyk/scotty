@@ -77,7 +77,9 @@ const program = Effect.gen(function* () {
   yield* term.see("SIZE-30x100");
   term.type("echo PWD-$(pwd)");
   yield* term.see("PWD-/workspace/repo");
-  term.type("echo TOKENS-$(env | grep -ciE 'access_token|refresh_token|chatgpt|openai')");
+  term.type(
+    "echo TOKENS-$(env | grep -ciE 'access_token|refresh_token|chatgpt|openai|claude_code_oauth|sk-ant-')",
+  );
   yield* term.see("TOKENS-0");
   console.log("Shell: TERM-42, 30x100 after resize, in the repo, no token in env");
   term.type("exit");
