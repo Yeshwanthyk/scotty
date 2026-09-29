@@ -116,6 +116,15 @@ npm run --silent scotty -- doctor     # now {"access":"ok","worker":"ok","chatgp
 
 The Creds DO keeps the tokens. Sign-in lasts about 10 days; `doctor` reports `chatgptExpiresAt`. Manual `auth login chatgpt` remains the owner-trial path; refresh and sign-out are deferred until after the trial. Don't sign in again while `doctor` says `ok`.
 
+## 8b. Claude sign-in (optional; Claude sessions only)
+
+```sh
+npm run --silent scotty -- auth login claude     # runs claude setup-token; sign in in the browser
+npm run --silent scotty -- auth login claude < token-file     # or pipe a token made elsewhere
+```
+
+The setup token lasts a year; `doctor` reports `claudeExpiresAt` and warns in its last 14 days. Settings → Accounts also takes it pasted, for the phone.
+
 ## 9. Run the checks
 
 ```sh
@@ -125,11 +134,14 @@ npm run --silent e2e -- github        # private clone, push scotty/<id> only, no
 npm run --silent e2e -- hatch         # preview routing (SCOTTY_HATCH_BASE)
 npm run --silent e2e -- hatch-env     # agent sets up the dev env and brings it back (SCOTTY_HATCH_TEST_REPO)
 npm run --silent e2e -- files         # screenshot and video in chat, from R2 (SCOTTY_HATCH_TEST_REPO)
+npm run --silent e2e -- settings      # skills and instructions reach new and resumed sessions
+npm run --silent e2e -- terminal      # the side panel shell; no token in its env
+# core and stop-resume take --agent claude
 ```
 
 For agents: the `.agents/skills/verify-scotty` skill drives the CLI through feature recipes (`features/*.md`) and saves evidence to `work/verify/`.
 
-Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `auth login chatgpt|github`, `auth status`, `new`, `ls`, `show <id>`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `stop <id>`, `resume <id>`, `hatch <id> <port>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Output and errors are JSON on stdout; errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
+Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `auth login chatgpt|github|claude`, `auth status`, `new [--agent codex|claude]`, `ls`, `show <id>`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `stop <id>`, `resume <id>`, `hatch <id> <port>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Output and errors are JSON on stdout; errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
 
 ## Troubleshooting
 
@@ -137,6 +149,7 @@ Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `auth lo
 | ----------------------------------------------- | ------------------------------------------------------------------------------- |
 | `access_login` error, exit 3                    | `cloudflared access login "$SCOTTY_URL"`                                        |
 | `doctor` says ChatGPT not signed in or expiring | `npm run --silent scotty -- auth login chatgpt`                                 |
+| `doctor` says Claude missing or expiring        | `npm run --silent scotty -- auth login claude`                                  |
 | Deploy fails before Alchemy runs                | Check `SCOTTY_SOURCE_IMAGE` is a `@sha256:` ref and the Docker Hub image exists |
 | Deploy fails with a Cloudflare auth error       | `npx alchemy profile edit --add Cloudflare` again                               |
 | `vendor/` is empty                              | `git submodule update --init vendor/effect vendor/alchemy`                      |

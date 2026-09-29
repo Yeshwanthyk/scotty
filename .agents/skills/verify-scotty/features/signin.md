@@ -1,4 +1,4 @@
-# Sign in to ChatGPT and GitHub
+# Sign in to ChatGPT, GitHub and Claude
 
 The stage holds the owner's ChatGPT sign-in and GitHub token, so Codex can answer and push without
 a real token in the container.
@@ -11,10 +11,14 @@ a real token in the container.
 - **S4** `gh auth token | scotty auth login github` exits 0; the token is read from stdin, never
   from an argument.
 - **S5** `auth status` shows both as signed in, with no token field.
+- **S6** `scotty auth login claude` from a terminal runs `claude setup-token`; after the owner signs
+  in, it exits 0 with `status: "signed-in"` and `expiresAt`. With stdin not a terminal it reads the
+  token from stdin instead.
+- **S7** `doctor` then reports `claude: "ok"` and `claudeExpiresAt`.
 
 ## Entry points
 
-- CLI `scotty auth login chatgpt`, `scotty auth login github` (stdin), `scotty auth status`. (The temporary API behind it is `POST /api/credentials/chatgpt/{start,poll}`.)
+- CLI `scotty auth login chatgpt`, `scotty auth login github` (stdin), `scotty auth login claude` (TTY or stdin), `scotty auth status`. (The temporary API behind it is `POST /api/credentials/chatgpt/{start,poll}`.)
 
 ## Drive
 
@@ -24,6 +28,9 @@ a real token in the container.
 3. `gh auth token | npm run --silent scotty -- auth login github > $EVIDENCE/03-github.json`:
    exit 0 (S4). Never echo the token or pass it as an argument.
 4. `npm run --silent scotty -- auth status > $EVIDENCE/04-status.json`: both signed in (S5).
+5. The owner runs `npm run --silent scotty -- auth login claude > $EVIDENCE/05-claude.json` in a
+   terminal and signs in (S6). An agent without a TTY pipes a token file the owner made instead.
+6. `npm run --silent scotty -- doctor > $EVIDENCE/06-doctor.json`: `claude` `ok` (S7).
 
 ## Proof
 
@@ -34,3 +41,4 @@ a real token in the container.
 
 - The code expires after 15 minutes; a stale code fails with `expired`. Start again.
 - An agent cannot approve the code. Wait for the owner.
+- Never print the Claude token; `claude setup-token` output goes to stderr for the owner only.
