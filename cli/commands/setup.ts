@@ -60,7 +60,7 @@ const failed = (name: string, exit: Exit.Failure<unknown, CliFailure>, fix: stri
 };
 
 // Every check runs, so one run shows everything left to do.
-const checks = Effect.gen(function* () {
+export const checks = Effect.gen(function* () {
   const found = yield* Effect.exit(address);
   if (Exit.isFailure(found)) return [failed("Setup", found, "scotty init")];
   const url = found.value;
@@ -150,17 +150,21 @@ const mark = {
   skip: dim("–"),
 };
 
+export const checkLines = (result: ReadonlyArray<Check>) => {
+  const width = Math.max(...result.map((check) => check.name.length));
+  return result.map(
+    (check) =>
+      `${mark[check.status]} ${check.name.padEnd(width)}  ${check.detail}${check.fix ? dim(`  → ${check.fix}`) : ""}`,
+  );
+};
+
 export const runDoctor = Effect.gen(function* () {
   const result = yield* checks;
   const ok = result.every((check) => check.status !== "fail");
-  const width = Math.max(...result.map((check) => check.name.length));
   yield* output(
     { ok, version, checks: result },
     [
-      ...result.map(
-        (check) =>
-          `${mark[check.status]} ${check.name.padEnd(width)}  ${check.detail}${check.fix ? dim(`  → ${check.fix}`) : ""}`,
-      ),
+      ...checkLines(result),
       "",
       ok
         ? `${green("Ready.")} Start a session: scotty new owner/repo "What to do"`
@@ -187,7 +191,7 @@ const run = (command: string, args: readonly string[]) =>
   );
 
 // Piped stdin wins; otherwise the token comes from `gh auth token`.
-const loginGitHub = (api: Api) =>
+export const saveGitHub = (api: Api) =>
   Effect.gen(function* () {
     const piped = process.stdin.isTTY ? "" : (yield* readStdin).trim();
     const token = piped === "" ? yield* run("gh", ["auth", "token"]) : piped;
@@ -198,14 +202,10 @@ const loginGitHub = (api: Api) =>
         "gh auth login, then scotty login github",
         3,
       );
-    const saved = yield* api("/api/credentials/github", GitHubStatus, {
+    return yield* api("/api/credentials/github", GitHubStatus, {
       method: "POST",
       body: { token },
     });
-    yield* output(
-      saved,
-      `${green("✓")} GitHub token saved ${dim(`(${saved.login ?? "unknown"})`)}`,
-    );
   });
 
 // Colour and cursor codes, and OSC links ended by BEL or ESC \.
@@ -219,7 +219,10 @@ const tokenPattern = /sk-ant-oat01-[A-Za-z0-9_-]+(?:\r?\n[ \t]*[A-Za-z0-9_-]+[ \
 
 // `claude setup-token` redraws its screen. Only the sign-in link and prompts are shown, each once;
 // nothing else is, so no part of the token can be. A line that follows the token is never shown.
-const loginClaude = (api: Api) =>
+export const saveClaude = (
+  api: Api,
+  say: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
+) =>
   Effect.gen(function* () {
     const shown = new Set<string>();
     let partial = "";
@@ -232,7 +235,7 @@ const loginClaude = (api: Api) =>
       inLink = visible && (/https?:\/\//.test(line) || inLink) && line !== "";
       if (!visible || shown.has(line)) return;
       shown.add(line);
-      process.stderr.write(`${line}\n`);
+      say(line);
     };
     const fromClaude = Effect.scoped(
       Effect.gen(function* () {
@@ -278,15 +281,14 @@ const loginClaude = (api: Api) =>
         "Run scotty login claude again, or pipe the token: scotty login claude < file",
         3,
       );
-    const saved = yield* api("/api/credentials/claude", ClaudeStatus, {
+    return yield* api("/api/credentials/claude", ClaudeStatus, {
       method: "POST",
       body: { token },
     });
-    yield* output(saved, `${green("✓")} Claude token saved${dim(until(saved.expiresAt))}`);
   });
 
-// Device-code sign-in: the browser opens on the page, the code is printed to type in.
-const loginChatGpt = (api: Api) =>
+// Device-code sign-in: the page and code to type in, then polling until it is entered.
+export const startChatGpt = (api: Api) =>
   Effect.gen(function* () {
     const start = yield* api("/api/credentials/chatgpt/start", Started, {
       method: "POST",
@@ -297,19 +299,21 @@ const loginChatGpt = (api: Api) =>
         `ChatGPT sign-in failed: ${start.code ?? start.stage}`,
         "scotty login chatgpt",
       );
-    console.error(`Enter this code at ${start.verificationUrl}\n\n    ${bold(start.userCode)}\n`);
-    if (process.stdout.isTTY) yield* Effect.ignore(launch(start.verificationUrl));
+    return start;
+  });
+
+export const awaitChatGpt = (
+  api: Api,
+  start: { readonly expiresAt: number; readonly interval: number },
+) =>
+  Effect.gen(function* () {
     while (Date.now() < start.expiresAt) {
       yield* Effect.sleep(`${Math.max(1, start.interval)} seconds`);
       const result = yield* api("/api/credentials/chatgpt/poll", Polled, {
         method: "POST",
       });
       if (result.status === "pending") continue;
-      if (result.status === "signed-in")
-        return yield* output(
-          result,
-          `${green("✓")} ChatGPT signed in${dim(until(result.expiresAt))}`,
-        );
+      if (result.status === "signed-in") return result;
       return yield* failure(
         "signin",
         result.status === "expired"
@@ -322,14 +326,30 @@ const loginChatGpt = (api: Api) =>
     return yield* failure("signin", "The code expired", "scotty login chatgpt", 3);
   });
 
+const loginChatGpt = (api: Api) =>
+  Effect.gen(function* () {
+    const start = yield* startChatGpt(api);
+    console.error(`Enter this code at ${start.verificationUrl}\n\n    ${bold(start.userCode)}\n`);
+    if (process.stdout.isTTY) yield* Effect.ignore(launch(start.verificationUrl));
+    const result = yield* awaitChatGpt(api, start);
+    yield* output(result, `${green("✓")} ChatGPT signed in${dim(until(result.expiresAt))}`);
+  });
+
+export { until };
+
 export const loginTo = (account: "chatgpt" | "github" | "claude") =>
   Effect.gen(function* () {
     const api = yield* withClient;
-    return yield* account === "chatgpt"
-      ? loginChatGpt(api)
-      : account === "claude"
-        ? loginClaude(api)
-        : loginGitHub(api);
+    if (account === "chatgpt") return yield* loginChatGpt(api);
+    if (account === "claude") {
+      const saved = yield* saveClaude(api);
+      return yield* output(saved, `${green("✓")} Claude token saved${dim(until(saved.expiresAt))}`);
+    }
+    const saved = yield* saveGitHub(api);
+    yield* output(
+      saved,
+      `${green("✓")} GitHub token saved ${dim(`(${saved.login ?? "unknown"})`)}`,
+    );
   });
 
 export const login = Command.make(

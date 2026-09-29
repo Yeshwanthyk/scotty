@@ -23,15 +23,32 @@ export const progress = (text: string) =>
     if (!json) console.error(dim(`· ${text}`));
   });
 
+// How a slow step shows itself; init draws spinners, other commands print a line.
+export interface Report {
+  readonly start: (text: string) => void;
+  readonly done: (text: string) => void;
+  readonly failed: (text: string, output: string) => void;
+}
+
+const plain: Report = {
+  start: (text) => {
+    if (!json) console.error(dim(`· ${text}`));
+  },
+  done: () => {},
+  failed: (_, printed) => console.error(printed),
+};
+
 // Quiet unless it fails; then the last lines of its output say why.
 export const step = (
   text: string,
   command: string,
   args: readonly string[],
   env: Record<string, string> = {},
+  report: Report = plain,
+  done = text,
 ) =>
   Effect.gen(function* () {
-    yield* progress(text);
+    report.start(text);
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
       ChildProcess.make(command, args, { cwd: root, env, extendEnv: true, stdin: "ignore" }),
@@ -41,15 +58,19 @@ export const step = (
       { concurrency: 2 },
     );
     if (code !== 0) {
-      console.error(printed.trimEnd().split("\n").slice(-30).join("\n"));
+      report.failed(text, printed.trimEnd().split("\n").slice(-30).join("\n"));
       return yield* failure("deploy_failed", `${text} failed`, "Fix the error above, then rerun");
     }
+    report.done(done);
   }).pipe(
     Effect.scoped,
     Effect.provide(BunServices.layer),
-    Effect.catchTag("PlatformError", () =>
-      Effect.fail(failure("deploy_failed", `Could not run ${command}`, `Install ${command}`)),
-    ),
+    Effect.catchTag("PlatformError", () => {
+      report.failed(text, "");
+      return Effect.fail(
+        failure("deploy_failed", `Could not run ${command}`, `Install ${command}`),
+      );
+    }),
   );
 
 // What alchemy.run.ts reads, for deploying and destroying alike.
@@ -62,14 +83,16 @@ export const stageEnv = (config: Config) => ({
 });
 
 // Builds the UI, copies the pinned image and applies the stack; asks nothing.
-export const deployWith = (config: Config) =>
+export const deployWith = (config: Config, report: Report = plain) =>
   Effect.gen(function* () {
-    yield* step("Building the UI", "npm", ["run", "--silent", "ui:build"]);
+    yield* step("Building the UI", "npm", ["run", "--silent", "ui:build"], {}, report, "UI built");
     yield* step(
-      `Deploying stage ${config.stage} (a few minutes)`,
+      `Deploying scotty-${config.stage} (a few minutes)`,
       "bun",
       ["deploy/run.ts", "--stage", config.stage],
       stageEnv(config),
+      report,
+      `Deployed scotty-${config.stage}`,
     );
     return `https://${config.host}`;
   });

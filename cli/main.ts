@@ -129,7 +129,9 @@ const report = (error: CliFailure) => {
     console.log(
       JSON.stringify({ error: { code: error.code, message: error.message, hint: error.hint } }),
     );
-  else console.error(`${red("✗")} ${error.message}\n  ${dim(`→ ${error.hint}`)}`);
+  // A cancelled prompt has already said so on screen.
+  else if (error.code !== "cancelled")
+    console.error(`${red("✗")} ${error.message}\n  ${dim(`→ ${error.hint}`)}`);
   process.exitCode = error.exit;
 };
 
