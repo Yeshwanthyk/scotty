@@ -19,11 +19,10 @@ export const Config = Schema.Struct({
 });
 export type Config = typeof Config.Type;
 
-export const configPath = join(
-  process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
-  "scotty",
-  "config.json",
-);
+// SCOTTY_CONFIG points at another file, so a test can set up a stage beside the owner's.
+export const configPath =
+  process.env.SCOTTY_CONFIG ??
+  join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "scotty", "config.json");
 
 // Undefined when there is no config yet; a config that doesn't decode is a setup error.
 export const readConfig = Effect.gen(function* () {

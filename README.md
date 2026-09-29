@@ -22,7 +22,7 @@ npm install
 bun cli/main.ts init
 ```
 
-`init` signs you in to GitHub and Cloudflare if needed, asks a few questions (stage name, your email, account id, domain, zone id, address, which agents), deploys, and signs you in to the agents you pick. It ends with `doctor`, which says what works and how to fix what doesn't. Run commands from this folder: it keeps the deploy state that `deploy` and `teardown` need.
+`init` signs you in to GitHub and Cloudflare if needed, asks a few questions (stage name, your email, which Cloudflare account and domain, the address, which agents), deploys, and signs you in to the agents you pick. It ends with `doctor`, which says what works and how to fix what doesn't. Run commands from this folder: it keeps the deploy state that `deploy` and `teardown` need. One stage per domain: a stage owns its domain's preview address, so `init` refuses a domain another stage uses.
 
 ```sh
 bun cli/main.ts doctor      # is everything working?

@@ -1,10 +1,13 @@
+import { Resolver, lookup } from "node:dns/promises";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
+import { connect } from "node:tls";
 import * as ui from "@clack/prompts";
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Exit, Option, Schema, Stream } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
+import { renderUnicodeCompact } from "uqr";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { ChatGptStatus, ClaudeStatus, GitHubStatus, failure } from "../client.js";
 import { Config, configPath, readConfig, removeConfig, writeConfig } from "../config.js";
@@ -33,15 +36,33 @@ const terminalOnly = (command: string) =>
       );
   });
 
-// The wordmark, shaded teal to pink one column at a time (256-colour codes).
-const wordmark = ["┌─┐┌─┐┌─┐┌┬┐┌┬┐┬ ┬", "└─┐│  │ │ │  │ └┬┘", "└─┘└─┘└─┘ ┴  ┴  ┴ "];
-const shades = [44, 44, 38, 38, 39, 33, 63, 63, 99, 99, 135, 135, 171, 171, 170, 170, 169, 168];
+// The wordmark in half-block letters, shaded teal to pink across a dim field of stars.
+const letters = ["█▀▀ █▀▀ █▀█ ▀█▀ ▀█▀ █ █", "▄▄█ █▄▄ █▄█  █   █   █ "];
+const sky = ["   ·     ✦          ·       ✧      ·", "      ✧        ·        ✦     ·  "];
+const shades = [44, 38, 39, 33, 63, 99, 135, 171, 170, 169, 168];
+const color = process.env.NO_COLOR === undefined;
+const paint = (code: number, text: string) =>
+  color ? `\u001b[38;5;${code}m${text}\u001b[0m` : text;
 const shade = (line: string) =>
-  process.env.NO_COLOR === undefined
-    ? `${[...line].map((char, i) => `\u001b[38;5;${shades[i] ?? 168}m${char}`).join("")}\u001b[0m`
-    : line;
+  [...line]
+    .map((char, i) =>
+      char === " "
+        ? char
+        : paint(shades[Math.floor((i * shades.length) / line.length)] ?? 168, char),
+    )
+    .join("");
+const stars = (line: string) => paint(240, line);
 
-const banner = () => console.log(`\n${wordmark.map((line) => `  ${shade(line)}`).join("\n")}\n`);
+const banner = () =>
+  console.log(
+    [
+      "",
+      stars(sky[0] ?? ""),
+      ...letters.map((line, i) => `      ${shade(line)}${stars(i === 0 ? "     ·" : "   ✧")}`),
+      stars(sky[1] ?? ""),
+      "",
+    ].join("\n"),
+  );
 
 const cancelled = () => failure("cancelled", "Cancelled", "Run it again when ready", 2);
 
@@ -74,6 +95,93 @@ const field = (
     }),
   ).pipe(Effect.map((value) => value.trim() || (current ?? "")));
 
+// A list from Cloudflare behind a spinner; undefined when it could not be read, so init asks instead.
+const listed = <A, E, R>(text: string, list: Effect.Effect<ReadonlyArray<A>, E, R>) =>
+  Effect.gen(function* () {
+    const spin = ui.spinner();
+    spin.start(text);
+    const found = yield* Effect.exit(list);
+    if (Exit.isSuccess(found)) {
+      spin.clear();
+      return found.value;
+    }
+    spin.error(`${text} failed ${dim("— type it instead")}`);
+    return undefined;
+  });
+
+const cloudflare = Effect.promise(() => import("../../deploy/cloudflare.ts"));
+
+// The account the Cloudflare sign-in can see; one is taken without asking.
+const accountChoice = (current: string | undefined) =>
+  Effect.gen(function* () {
+    const { accounts } = yield* cloudflare;
+    const found = yield* listed("Reading your Cloudflare accounts", accounts);
+    const only = found?.length === 1 ? found[0] : undefined;
+    if (only !== undefined) {
+      ui.log.success(`Cloudflare account ${bold(only.name)}`);
+      return only.id;
+    }
+    if (found === undefined || found.length === 0)
+      return yield* field(
+        `Cloudflare account id ${dim("— 32 characters, in the dashboard URL")}`,
+        Schema.is(Config.fields.accountId),
+        current,
+        "32 lowercase hex characters",
+      );
+    return yield* ask(() =>
+      ui.select({
+        message: "Which Cloudflare account?",
+        options: found.map((account) => ({ value: account.id, label: account.name })),
+        ...(current === undefined ? {} : { initialValue: current }),
+      }),
+    );
+  });
+
+// The domain Scotty runs under, from the account's zones.
+const domainChoice = (accountId: string, current: Config | undefined) =>
+  Effect.gen(function* () {
+    const { zones } = yield* cloudflare;
+    const found = yield* listed("Reading the domains on that account", zones(accountId));
+    if (found !== undefined && found.length === 0) {
+      ui.cancel("That account has no domains.");
+      return yield* failure(
+        "setup",
+        "The Cloudflare account has no domains",
+        "Add a domain to it in the Cloudflare dashboard, then scotty init again",
+        3,
+      );
+    }
+    if (found === undefined) {
+      const domain = yield* field(
+        `Domain on that account ${dim("— e.g. example.com")}`,
+        Schema.is(Config.fields.domain),
+        current?.domain,
+        "A domain like example.com",
+      );
+      const zoneId = yield* field(
+        `Zone id of ${domain} ${dim("— its Overview page, under API")}`,
+        Schema.is(Config.fields.zoneId),
+        current !== undefined && current.domain === domain ? current.zoneId : undefined,
+        "32 lowercase hex characters",
+      );
+      return { domain, zoneId };
+    }
+    const zone = yield* ask(() =>
+      ui.select({
+        message: `Which domain? ${dim("— Scotty runs at a name under it")}`,
+        options: found.map((zone) => ({
+          value: zone,
+          label: zone.name,
+          ...(zone.status === "active" || zone.status == null ? {} : { hint: zone.status }),
+        })),
+        ...(current === undefined
+          ? {}
+          : { initialValue: found.find((zone) => zone.id === current.zoneId) }),
+      }),
+    );
+    return { domain: zone.name, zoneId: zone.id };
+  });
+
 // Every question first, so the slow part runs unattended.
 const questions = (previous: Config | undefined) =>
   Effect.gen(function* () {
@@ -90,23 +198,10 @@ const questions = (previous: Config | undefined) =>
       previous?.email,
       "An email address",
     );
-    const accountId = yield* field(
-      `Cloudflare account id ${dim("— 32 characters, in the dashboard URL")}`,
-      Schema.is(f.accountId),
-      previous?.accountId,
-      "32 lowercase hex characters",
-    );
-    const domain = yield* field(
-      `Domain on that account ${dim("— e.g. example.com")}`,
-      Schema.is(f.domain),
-      previous?.domain,
-      "A domain like example.com",
-    );
-    const zoneId = yield* field(
-      `Zone id of ${domain} ${dim("— its Overview page, under API")}`,
-      Schema.is(f.zoneId),
-      previous !== undefined && previous.domain === domain ? previous.zoneId : undefined,
-      "32 lowercase hex characters",
+    const accountId = yield* accountChoice(previous?.accountId);
+    const { domain, zoneId } = yield* domainChoice(
+      accountId,
+      previous?.accountId === accountId ? previous : undefined,
     );
     const host = yield* field(
       "Scotty's address",
@@ -118,6 +213,23 @@ const questions = (previous: Config | undefined) =>
       `A name under ${domain} that is not <port>-<id>.${domain}`,
     );
     return { stage, email, accountId, domain, zoneId, host };
+  });
+
+// A re-run offers the saved answers whole; Enter keeps them.
+const settings = (previous: Config | undefined) =>
+  Effect.gen(function* () {
+    if (previous === undefined) return yield* questions(previous);
+    ui.note(
+      [
+        `${dim("Stage   ")} ${previous.stage}`,
+        `${dim("Sign-in ")} ${previous.email}`,
+        `${dim("Address ")} https://${previous.host}`,
+        `${dim("Previews")} <port>-<id>.${previous.domain}`,
+      ].join("\n"),
+      "Saved settings",
+    );
+    if (yield* ask(() => ui.confirm({ message: "Use these settings?" }))) return previous;
+    return yield* questions(previous);
   });
 
 type Agent = "chatgpt" | "claude";
@@ -204,42 +316,144 @@ const preflight = Effect.gen(function* () {
   );
 });
 
-// Slow steps as timed spinners; a failure shows the step's last lines of output.
-const spinners = (): Report => {
-  let spin = ui.spinner({ indicator: "timer" });
+// clack's spinner reads keys in raw mode and exits 0 on Ctrl-C without calling onCancel, so Ctrl-C
+// is turned into its abort signal, which does.
+const CtrlC = Schema.Struct({ ctrl: Schema.Literal(true), name: Schema.Literal("c") });
+const stoppable = (cancelMessage: string, onCancel: () => void) => {
+  const abort = new AbortController();
+  const key = (_: unknown, pressed: unknown) => {
+    if (Schema.is(CtrlC)(pressed)) abort.abort();
+  };
+  process.stdin.on("keypress", key);
+  const spin = ui.spinner({ indicator: "timer", cancelMessage, onCancel, signal: abort.signal });
+  return { spin, release: () => process.stdin.off("keypress", key) };
+};
+
+// Slow steps as timed spinners; a failure shows the step's last lines of output. Ctrl-C says what
+// was left behind and how to go on.
+const spinners = (stopped: string): Report => {
+  let running: ReturnType<typeof stoppable> | undefined;
+  let current = "";
+  const end = () => {
+    running?.release();
+    return running?.spin;
+  };
   return {
     start: (text) => {
-      spin = ui.spinner({ indicator: "timer" });
-      spin.start(text);
+      current = text;
+      running = stoppable(`${text} stopped`, () => {
+        ui.cancel(stopped);
+        process.exit(130);
+      });
+      running.spin.start(text);
     },
-    done: (text) => spin.stop(text),
+    done: (text) => end()?.stop(text),
     failed: (text, printed) => {
-      spin.error(`${text} failed`);
+      end()?.error(`${text} failed`);
       if (printed !== "") ui.log.message(dim(printed));
     },
+    progress: (text) => running?.spin.message(`${current} ${dim(`· ${text}`)}`),
   };
 };
 
-// A new host needs its DNS record and certificate before Access can sign in to it.
-const reachable = (url: string) =>
+const cloudflareDns = new Resolver();
+cloudflareDns.setServers(["1.1.1.1", "1.0.0.1"]);
+
+// The address as the world sees it: its DNS record, then a certificate for the name.
+const published = (host: string) =>
+  Effect.tryPromise(() => cloudflareDns.resolve4(host)).pipe(
+    Effect.map((addresses) => addresses[0]),
+    Effect.orElseSucceed(() => undefined),
+  );
+
+const certified = (host: string, address: string) =>
+  Effect.callback<boolean>((resume) => {
+    const socket = connect({ host: address, port: 443, servername: host, timeout: 5000 });
+    const end = (ok: boolean) => {
+      socket.destroy();
+      resume(Effect.succeed(ok));
+    };
+    socket.once("secureConnect", () => end(socket.authorized));
+    socket.once("error", () => end(false));
+    socket.once("timeout", () => end(false));
+  });
+
+// Any record for a name, as Cloudflare's resolver sees it.
+const found = (lookup: () => Promise<ReadonlyArray<string>>) =>
+  Effect.tryPromise(lookup).pipe(
+    Effect.map((records) => records.length > 0),
+    Effect.orElseSucceed(() => false),
+  );
+const answers = (name: string) =>
   Effect.gen(function* () {
-    const spin = ui.spinner({ indicator: "timer" });
-    spin.start(`Waiting for ${url} ${dim("— DNS and certificate")}`);
-    for (let attempt = 0; attempt < 60; attempt++) {
-      const ok = yield* Effect.tryPromise(() =>
-        fetch(url, { redirect: "manual" }).then((response) => response.status < 500),
-      ).pipe(Effect.orElseSucceed(() => false));
-      if (ok) return spin.stop(`${url} is up`);
-      yield* Effect.sleep("5 seconds");
-    }
-    spin.error(`${url} did not answer`);
-    return yield* failure(
-      "setup",
-      `${url} did not answer after 5 minutes`,
-      "Check the domain's DNS in Cloudflare, then scotty init again",
-      3,
+    return (
+      (yield* found(() => cloudflareDns.resolve4(name))) ||
+      (yield* found(() => cloudflareDns.resolve6(name)))
     );
   });
+
+// Alchemy keeps a stage's state in the checkout that deployed it.
+const stateDir = (stage: string) => join(root, ".alchemy", "state", "scotty", stage);
+const deployedHere = (stage: string) =>
+  existsSync(stateDir(stage)) && readdirSync(stateDir(stage)).length > 0;
+
+// A stage takes over the address and the domain's preview record and route, and its teardown
+// deletes them, so a new stage may not share them with another deployment.
+const taken = (config: Config) =>
+  Effect.gen(function* () {
+    if (deployedHere(config.stage)) return undefined;
+    if (yield* answers(config.host)) return `https://${config.host}`;
+    if (yield* answers(`1-scotty-preview-check.${config.domain}`))
+      return `previews on *.${config.domain}`;
+    return undefined;
+  });
+
+// This Mac's own lookup, which can remember the name as missing from before the deploy.
+const resolvesHere = (host: string) =>
+  Effect.tryPromise(() => lookup(host)).pipe(
+    Effect.as(true),
+    Effect.orElseSucceed(() => false),
+  );
+
+// A new host needs its DNS record and certificate before Access can sign in to it. There is no
+// limit: each stage says what it waits for, and Ctrl-C says how to go on.
+const reachable = (host: string, stage: string) =>
+  Effect.gen(function* () {
+    const url = `https://${host}`;
+    const flush = "sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder";
+    const { spin, release } = stoppable("Stopped waiting", () => {
+      ui.cancel(
+        `scotty-${stage} is deployed.\n   ${bold("scotty init")} goes on from here; ${bold("scotty teardown")} removes it.`,
+      );
+      process.exit(130);
+    });
+    const started = performance.now();
+    const slow = () => performance.now() - started > 120_000;
+    spin.start(`Waiting for DNS ${dim(`— ${host}`)}`);
+    while (true) {
+      const address = yield* published(host);
+      if (address === undefined)
+        spin.message(
+          `Waiting for DNS ${dim(`— ${host}${slow() ? "; check the domain's DNS in Cloudflare" : ""}`)}`,
+        );
+      else if (!(yield* certified(host, address)))
+        spin.message(`Waiting for the certificate ${dim(`— ${host}`)}`);
+      else if (!(yield* resolvesHere(host)))
+        spin.message(
+          `Waiting for this Mac's DNS cache ${dim(`— ${url} is live; ${flush} clears it`)}`,
+        );
+      else {
+        release();
+        return spin.stop(`${url} is live`);
+      }
+      yield* Effect.sleep("5 seconds");
+    }
+  });
+
+const elapsed = (since: number) => {
+  const seconds = Math.round((performance.now() - since) / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+};
 
 // cloudflared prints the Access token when it succeeds, so only a line that is just a link is shown.
 const accessLogin = (url: string, email: string) =>
@@ -348,7 +562,7 @@ export const init = Command.make("init", {}, () =>
     );
     yield* preflight;
     const previous = yield* readConfig.pipe(Effect.orElseSucceed(() => undefined));
-    const config = yield* questions(previous);
+    const config = yield* settings(previous);
     if (
       previous !== undefined &&
       (previous.stage !== config.stage || previous.accountId !== config.accountId)
@@ -358,6 +572,16 @@ export const init = Command.make("init", {}, () =>
         "usage",
         `Stage ${previous.stage} is still set up; a new stage or account would leave it running`,
         "scotty teardown, then scotty init",
+        2,
+      );
+    }
+    const inUse = yield* taken(config);
+    if (inUse !== undefined) {
+      ui.cancel(`${inUse} is already in use.`);
+      return yield* failure(
+        "usage",
+        `${inUse} is already in use; deploying scotty-${config.stage} would take it over`,
+        "Tear down the stage that uses it, or pick a domain no other stage uses",
         2,
       );
     }
@@ -376,9 +600,15 @@ export const init = Command.make("init", {}, () =>
       ui.cancel("Nothing was deployed.");
       return yield* cancelled();
     }
+    const started = performance.now();
     yield* writeConfig(config);
-    const url = yield* deployWith(config, spinners());
-    yield* reachable(url);
+    const url = yield* deployWith(
+      config,
+      spinners(
+        `Parts of scotty-${config.stage} may already be in Cloudflare.\n   ${bold("scotty init")} picks up where this stopped; ${bold("scotty teardown")} removes it.`,
+      ),
+    );
+    yield* reachable(config.host, config.stage);
     yield* accessLogin(url, config.email);
     yield* signIns(agents);
     const result = yield* checks;
@@ -387,12 +617,15 @@ export const init = Command.make("init", {}, () =>
       process.exitCode = 3;
       return ui.outro(`Fix the ${red("✗")} items, then ${bold("scotty doctor")}`);
     }
+    ui.note(
+      renderUnicodeCompact(url, { border: 2, invert: true }).trimEnd(),
+      "Scan to open on your phone",
+    );
     ui.outro(
       [
-        `${green("Scotty is up")} at ${bold(url)}`,
+        `${green(`Scotty is up in ${elapsed(started)}`)} at ${bold(url)}`,
         "",
-        `   ${dim("Open it on your phone, or start a session here:")}`,
-        `   scotty new owner/repo "What to do"`,
+        `   ${dim("Start a session from here:")} scotty new owner/repo "What to do"`,
       ].join("\n"),
     );
   }),
@@ -438,9 +671,9 @@ export const teardown = Command.make(
           2,
         );
       }
-      // Alchemy keeps a stage's state in the checkout that deployed it; without it destroy removes nothing.
-      const state = join(root, ".alchemy", "state", "scotty", config.stage);
-      if (!existsSync(state) || readdirSync(state).length === 0)
+      // Without the stage's state, destroy removes nothing.
+      const state = stateDir(config.stage);
+      if (!deployedHere(config.stage))
         return yield* failure(
           "setup",
           `This checkout has no deploy state for stage ${config.stage}; nothing was removed`,
@@ -452,7 +685,11 @@ export const teardown = Command.make(
         "bun",
         ["deploy/run.ts", "--destroy", "--stage", config.stage],
         stageEnv(config),
-        Option.isNone(stage) ? spinners() : undefined,
+        Option.isNone(stage)
+          ? spinners(
+              `Part of stage ${config.stage} may be left.\n   ${bold("scotty teardown")} finishes removing it.`,
+            )
+          : undefined,
         `Removed stage ${config.stage}`,
       );
       yield* removeConfig;

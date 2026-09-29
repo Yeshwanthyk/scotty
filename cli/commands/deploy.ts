@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Stream } from "effect";
 import { Command } from "effect/unstable/cli";
@@ -28,6 +29,7 @@ export interface Report {
   readonly start: (text: string) => void;
   readonly done: (text: string) => void;
   readonly failed: (text: string, output: string) => void;
+  readonly progress?: (text: string) => void;
 }
 
 const plain: Report = {
@@ -36,6 +38,32 @@ const plain: Report = {
   },
   done: () => {},
   failed: (_, printed) => console.error(printed),
+};
+
+// What a deploy is doing, from the lines Alchemy and the image copy print; the names are
+// alchemy.run.ts's resource ids.
+export const deployStage = (line: string): string | undefined => {
+  const text = stripVTControlCharacters(line);
+  const assets = /Uploaded (\d+) of (\d+) assets/.exec(text);
+  if (assets !== null) return `Uploading the web app (${assets[1]}/${assets[2]})`;
+  if (/\b(skip|verified|pushed|published) sha256:/.test(text)) return "Copying the container image";
+  if (text.includes("Reconciling custom domains")) return "Attaching the address";
+  if (text.includes("uploading script")) return "Uploading the Worker";
+  const resource = /\[(\w+(?:\/\w+)?)\] (?:pre-creating|creating|updating|replacing|deleting)/.exec(
+    text,
+  );
+  const named: Record<string, string> = {
+    SessionArtifacts: "the bucket",
+    SessionContainer: "the container app",
+    "ScottyWorker/Access": "the Access app",
+    ScottyWorker: "the Worker",
+    HatchWildcard: "the preview address",
+    HatchRoute: "the preview route",
+  };
+  const name = resource?.[1];
+  if (name === undefined || !Object.hasOwn(named, name)) return undefined;
+  const verb = /\] deleting/.test(text) ? "Removing" : "Setting up";
+  return `${verb} ${named[name]}`;
 };
 
 // Quiet unless it fails; then the last lines of its output say why.
@@ -53,12 +81,39 @@ export const step = (
     const child = yield* spawner.spawn(
       ChildProcess.make(command, args, { cwd: root, env, extendEnv: true, stdin: "ignore" }),
     );
-    const [printed, code] = yield* Effect.all(
-      [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+    // The child runs in its own process group, which a terminal's Ctrl-C does not reach, and an
+    // exit skips this scope's cleanup; so an exit stops it here.
+    const stop = () => {
+      try {
+        process.kill(-child.pid, "SIGINT");
+      } catch {
+        // It has already exited.
+      }
+    };
+    process.once("exit", stop);
+    yield* Effect.addFinalizer(() => Effect.sync(() => process.off("exit", stop)));
+    // The last lines say why a step failed; the others only move the spinner along.
+    const last: string[] = [];
+    const [, code] = yield* Effect.all(
+      [
+        child.all.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.sync(() => {
+              last.push(line);
+              if (last.length > 30) last.shift();
+              const stage = deployStage(line);
+              if (stage !== undefined) report.progress?.(stage);
+            }),
+          ),
+        ),
+        child.exitCode,
+      ],
       { concurrency: 2 },
     );
     if (code !== 0) {
-      report.failed(text, printed.trimEnd().split("\n").slice(-30).join("\n"));
+      report.failed(text, last.join("\n").trimEnd());
       return yield* failure("deploy_failed", `${text} failed`, "Fix the error above, then rerun");
     }
     report.done(done);

@@ -149,7 +149,10 @@ npm run --silent e2e -- files         # screenshot and video in chat, from R2 (S
 npm run --silent e2e -- settings      # skills and instructions reach new and resumed sessions
 npm run --silent e2e -- terminal      # the side panel shell; no token in its env
 # core and stop-resume take --agent claude
+npm run --silent e2e -- init --stage <name>   # scotty init in a terminal: Ctrl-C mid-deploy, again until live, teardown
 ```
+
+`e2e init` deploys a stage of its own at `scotty-<name>.<SCOTTY_HATCH_BASE>` and tears it down at the end. Its domain must have no other stage on it: a stage owns its domain's preview record and route, so `init` refuses a domain another stage uses.
 
 For agents: the `.agents/skills/verify-scotty` skill drives the CLI through feature recipes (`features/*.md`) and saves evidence to `work/verify/`.
 
