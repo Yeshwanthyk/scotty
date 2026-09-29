@@ -470,10 +470,14 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
      - Output from a subagent (`parent_tool_use_id` set) shows only as its `Task` row.
      - `compact_boundary` and rejected rate limits show as notices.
      - Claude sends no turn diff (t3code takes it from git), so the turn diff stays empty for Claude. The Changes tab reads git and still works.
-  7. **Choosing the agent:**
+  7. **Choosing the agent, and the UI:**
      - `scotty new <repo> --agent codex|claude` (default `codex`), and `POST /api/sessions` gets `agent`.
-     - The new-session page gets a Codex/Claude control, and the session header shows the agent.
-     - Settings → Accounts gets Claude: status, expiry, and a paste field with the hint to run `claude setup-token`.
+     - **New session** (`NewSession.tsx`): a Codex/Claude choice in place of the fixed `AgentChip`, remembered in this browser. Claude is disabled until Settings has its token, with a link to Accounts. The prompt placeholder names the chosen agent.
+     - **Sidebar:** "Ask Codex to build…" becomes agent-neutral.
+     - **Session header:** already shows `display.agentKind` through `AgentChip`; no change.
+     - **Settings → Accounts** (`Settings.tsx`, `data/settings.ts`): a Claude row beside ChatGPT and GitHub, with status ("Signed in. Claude sessions run on this subscription."), expiry and a 14-day warning. A paste field shows what's typed as dots and hints to run `claude setup-token` or `scotty auth login claude`. The section's detail becomes "ChatGPT, Claude and GitHub".
+     - **Settings → Instructions and Skills:** the copy says they go to both agents (`AGENTS.md` for Codex, `CLAUDE.md` for Claude).
+     - The diff and tool views take `claudeStep`'s items in the shape `codexStep` makes, so `Thread.tsx` and `data/diff.ts` don't change.
   8. **Image and dependencies:**
      - `container/Dockerfile` installs `@anthropic-ai/claude-agent-sdk-linux-x64` at the SDK's pinned version (its native `claude`), and creates `~/.claude` for `scotty`.
      - `@anthropic-ai/claude-agent-sdk` is pinned in the root `package.json` (named here, per rule 7).
@@ -493,10 +497,10 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
   - `container/Dockerfile`, `container/supervisor/{agent,runner,claude,workspace,controller,codex-rpc}.ts`, `protocol/supervisor.ts`
   - `src/creds/object.ts`, `src/http/api.ts`, `src/session/{events,object,view,items}.ts`
   - `cli/commands/{setup,sessions}.ts`, `cli/main.ts`
-  - `ui/src/routes/sessions.create.tsx`, `ui/src/routes/settings.$section.tsx`, `ui/src/data/settings.ts`, the session header component, `ui/src/protocol/session/*` for the kind literal
+  - `ui/src/components/{NewSession,Sidebar,Settings}.tsx`, `ui/src/data/settings.ts`, `ui/src/protocol/session/*` for the kind literal
   - `e2e/{core,stop-resume,run}.ts`, `package.json`, `package-lock.json`
   - `docs/design.md`, `docs/plan.md`, `docs/setup.md`, `.agents/skills/verify-scotty` (the `auth login claude` recipe)
-- **Budget:** +580 excluding docs, spikes and saved logs:
+- **Budget:** +610 excluding docs, spikes and saved logs:
 
   | Part                | Lines |
   | ------------------- | ----- |
@@ -505,7 +509,7 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
   | Runner              | 210   |
   | Workspace           | 30    |
   | View                | 120   |
-  | UI                  | 60    |
+  | UI                  | 90    |
   | e2e                 | 45    |
 
   Past that, stop and ask.
@@ -516,7 +520,7 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
   - `npm run --silent e2e -- core --agent claude` passes. It covers create, answer, redeploy, steer and interrupt, plus a steer sent while a turn is running (the Codex run doesn't cover that, `e2e/core.ts:124-165`), which ends exactly one DO turn. Its env check finds no `CLAUDE_CODE_OAUTH_TOKEN` and no `sk-ant-` value in the environment of a command the agent runs, and `e2e/terminal.ts`'s check covers the same patterns.
   - `npm run --silent e2e -- stop-resume --agent claude` passes. The Claude session continues after resume, and the first turn's marker file survives.
   - `e2e -- core`, `stop-resume`, `settings` and `terminal` still pass with Codex. `scotty doctor` passes.
-  - The owner's phone check: start a Claude session from the new-session page, and see its reply and tool rows render. Note the result in Status.
+  - The owner's phone check: Settings → Accounts shows Claude signed in with its expiry, a Claude session starts from the new-session page, and its reply and tool rows render. Note the result in Status.
 
 ## Step 11: Pi (provisional)
 
