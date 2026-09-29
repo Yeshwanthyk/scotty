@@ -14,6 +14,13 @@ import {
   View,
 } from "../cli/client.js";
 import { agent } from "./lib/agent.js";
+
+// A command that kills the agent itself. Claude Code refuses a pkill that matches its own
+// process, so for Claude the shell kills its parent, which is Claude.
+const crashCommand = {
+  codex: "sleep 5 && pkill -9 -f 'codex app-server'",
+  claude: "sleep 5 && kill -9 $PPID",
+};
 import { Log, waiter } from "./lib/wait.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 
@@ -120,7 +127,7 @@ const program = Effect.gen(function* () {
     body: {
       req: crash,
       turn: "3",
-      text: "Run exactly: `sleep 5 && pkill -9 -f 'codex app-server'`",
+      text: `Run exactly: \`${crashCommand[agent]}\``,
     },
   });
   const ended = yield* poll(
@@ -132,7 +139,7 @@ const program = Effect.gen(function* () {
   );
   yield* check(
     !ended[1].some((e) => e.kind === "turn.ended" && e.turn === "3" && e.state === "completed"),
-    "Crash turn completed: the kill command did not stop Codex",
+    "Crash turn completed: the kill command did not stop the agent",
   );
   const crashed = yield* poll(
     () => request(prefix, View),
