@@ -27,10 +27,14 @@ export function StatusMark({ status }: { status: Status }) {
 // The subtitle leads with a state only when it asks for attention; otherwise repository and age.
 function Meta({ session, status }: { session: Session; status: Status }) {
   const repo = session.display.repository.split("/").at(-1) ?? session.display.repository;
+  // Codex is the default; only other agents are named.
+  const agent =
+    session.display.agentKind === "claude" ? <span className="agent-tag">Claude</span> : null;
   const loud =
     status === "working" || status === "starting" || status === "failed" || status === "unseen";
   return (
     <span className="meta">
+      {agent}
       {loud ? (
         <>
           <span data-status={status}>{statusLabel[status]}</span>
@@ -91,7 +95,7 @@ export function Sidebar({
         </Link>
         <button
           type="button"
-          className="icon-button pressable"
+          className="icon-button pressable mobile-only"
           aria-label="Search"
           onClick={onSearch}
         >
