@@ -1,8 +1,8 @@
 import { Cause, Deferred, Effect, Exit, Option, Queue, Result, Schema, Stream } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
-import { AgentError, type AgentOutput } from "./runner.js";
-import { serverReply } from "./codex-server-requests.js";
-import { decodeRpcLine, RpcFailure } from "./codex-rpc-schema.js";
+import { AgentError, type AgentOutput } from "../../runner.js";
+import { serverReply } from "./server-requests.js";
+import { decodeRpcLine, RpcFailure } from "./rpc-schema.js";
 
 type Outgoing = { line: string; written: Deferred.Deferred<void, AgentError> };
 // Codex's stderr tail goes into the event log; bearer tokens and JWTs never do.

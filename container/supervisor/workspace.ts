@@ -1,7 +1,7 @@
 import { Clock, Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { fixtureRepo } from "../../protocol/supervisor.js";
-import { codexHome } from "./codex-config.js";
+import type { Agent } from "./agents/agent.js";
 import { processEnv } from "./runtime.js";
 
 export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()("WorkspaceError", {
@@ -93,33 +93,35 @@ const workspaceRoot = () => processEnv("SCOTTY_WORKSPACE_ROOT") || "/workspace";
 const saveFile = () => `${workspaceRoot()}/save.tar`;
 
 // Only what the base commit cannot rebuild: changed and untracked files, deleted paths,
-// and the thread's rollout. Ignored files (dependencies, builds) are left out.
+// and the agent's state file for the session. Ignored files (dependencies, builds) are left out.
 const saveScript = `set -e
-out="$1"; base="$2"; home="$3"; thread="$4"; s=$(mktemp -d)
+out="$1"; base="$2"; home="$3"; kind="$4"; dir="$5"; name="$6"; s=$(mktemp -d)
 git diff -z --name-only --no-renames --diff-filter=D "$base" > "$s/deleted"
 { git diff -z --name-only --no-renames --diff-filter=d "$base"; git ls-files -z --others --exclude-standard; } > "$s/list"
-rollout=$(cd "$home" && find sessions -name "rollout-*$thread*.jsonl" | head -n 1)
-test -n "$rollout"
+state=$(cd "$home" && find "$dir" -name "$name" | head -n 1)
+test -n "$state"
 tar -cf "$out" -C "$s" deleted
 tar -rf "$out" --null -T "$s/list" --transform 's,^,repo/,S'
-tar -rf "$out" -C "$home" --transform 's,^,codex/,S' "$rollout"
+tar -rf "$out" -C "$home" --transform "s,^,$kind/,S" "$state"
 rm -rf "$s"`;
 
-export const saveWorkspace = (base: string, thread: string) =>
+export const saveWorkspace = (base: string, agent: Agent, session: string) =>
   Effect.gen(function* () {
     const dir = `${workspaceRoot()}/repo`;
-    yield* run(["sh", "-c", saveScript, "save", saveFile(), base, codexHome(), thread], dir);
+    const state = agent.files.state(session);
+    const args = [saveFile(), base, agent.files.home, agent.kind, state.dir, state.name];
+    yield* run(["sh", "-c", saveScript, "save", ...args], dir);
     const fs = yield* FileSystem.FileSystem;
     return yield* fs.readFile(saveFile()).pipe(Effect.mapError(() => failure()));
   });
 
 const restoreFile = () => `${workspaceRoot()}/restore.tar`;
 const restoreScript = `set -e
-tarfile="$1"; home="$2"; s=$(mktemp -d)
+tarfile="$1"; home="$2"; kind="$3"; s=$(mktemp -d)
 tar -xf "$tarfile" -C "$s"
 if [ -d "$s/repo" ]; then cp -a "$s/repo/." .; fi
 xargs -0 -r rm -f -- < "$s/deleted"
-mkdir -p "$home" && cp -a "$s/codex/." "$home/"
+mkdir -p "$home" && cp -a "$s/$kind/." "$home/"
 rm -rf "$s" "$tarfile"`;
 
 export const storeSave = (tar: Uint8Array) =>
@@ -133,6 +135,7 @@ export const prepareWorkspace = (
   base: string,
   branch: string,
   git: { readonly name: string; readonly email: string },
+  agent: Agent,
   resume?: { readonly commit: string },
 ) =>
   Effect.gen(function* () {
@@ -179,7 +182,10 @@ export const prepareWorkspace = (
         until,
       );
       yield* run(["git", "checkout", "-b", branch, resume.commit], dir);
-      yield* run(["sh", "-c", restoreScript, "restore", restoreFile(), codexHome()], dir);
+      yield* run(
+        ["sh", "-c", restoreScript, "restore", restoreFile(), agent.files.home, agent.kind],
+        dir,
+      );
     }
     const commit = yield* run(["git", "rev-parse", "HEAD"], dir);
     const ms = (yield* Clock.currentTimeMillis) - started;
@@ -198,28 +204,32 @@ export const storeSkill = (name: string, zip: Uint8Array) =>
     yield* fs.writeFile(`${skillsDir()}/${name}.zip`, zip).pipe(Effect.mapError(failure));
   });
 
-// Each skill's folder (the one holding SKILL.md) goes to ~/.agents/skills/<name>. Codex's
-// AGENTS.md becomes Scotty's instructions followed by the owner's.
+// Each skill's folder (the one holding SKILL.md) goes to the agent's skills folder. The agent's
+// instructions file becomes Scotty's instructions followed by the owner's.
 const settingsScript = `set -e
-home="$1"; codex="$2"; incoming="$3"; owner="$4"; shift 4
-rm -rf "$home/.agents/skills" && mkdir -p "$home/.agents/skills"
+skills="$1"; instructions="$2"; incoming="$3"; owner="$4"; shift 4
+rm -rf "$skills" && mkdir -p "$skills"
 for name in "$@"; do
   t=$(mktemp -d); unzip -q "$incoming/$name.zip" -d "$t" -x '__MACOSX/*'
   file=$(find "$t" -maxdepth 2 -name SKILL.md | head -n 1); test -n "$file"
-  mv "$(dirname "$file")" "$home/.agents/skills/$name"; rm -rf "$t"
+  mv "$(dirname "$file")" "$skills/$name"; rm -rf "$t"
 done
-mkdir -p "$codex" && rm -f "$codex/AGENTS.md"
-{ cat /etc/scotty/AGENTS.md; if [ -n "$owner" ]; then printf '\\n\\n# From the owner\\n\\n%s\\n' "$owner"; fi; } > "$codex/AGENTS.md"`;
+mkdir -p "$(dirname "$instructions")" && rm -f "$instructions"
+{ cat /etc/scotty/AGENTS.md; if [ -n "$owner" ]; then printf '\\n\\n# From the owner\\n\\n%s\\n' "$owner"; fi; } > "$instructions"`;
 
-export const installSettings = (instructions: string, skills: ReadonlyArray<string>) =>
+export const installSettings = (
+  agent: Agent,
+  instructions: string,
+  skills: ReadonlyArray<string>,
+) =>
   run(
     [
       "sh",
       "-c",
       settingsScript,
       "settings",
-      processEnv("HOME") || "/home/scotty",
-      codexHome(),
+      agent.files.skills,
+      `${agent.files.home}/${agent.files.instructions}`,
       skillsDir(),
       instructions,
       ...skills.filter((name) => skillFile.test(name)),

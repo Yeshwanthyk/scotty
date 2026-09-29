@@ -1,6 +1,10 @@
 import type { SessionEvent } from "./events.js";
 import { fold, initial, type State } from "./fold.js";
-import { codexStep, type TurnItems } from "./items.js";
+import * as codex from "./agents/codex.js";
+import type { TurnItems } from "./items.js";
+
+// Each agent reads its own events; nothing else here knows their format.
+const agents = { codex };
 
 // Codex ends a turn as completed, interrupted or failed; the view has no pending "ended" state.
 const turnState = (ended: string | undefined) =>
@@ -72,19 +76,6 @@ export function acceptedAgentEvents(events: readonly SessionEvent[]): SessionEve
   return accepted;
 }
 
-function codexText(event: unknown): { text: string; complete: boolean } | undefined {
-  if (event === null || typeof event !== "object" || Array.isArray(event)) return undefined;
-  const method = Reflect.get(event, "method");
-  const params: unknown = Reflect.get(event, "params");
-  if (method !== "item/completed" && method !== "item/agentMessage/delta") return undefined;
-  if (params === null || typeof params !== "object" || Array.isArray(params)) return undefined;
-  const item: unknown = Reflect.get(params, method === "item/completed" ? "item" : "delta");
-  if (typeof item === "string") return { text: item, complete: false };
-  if (item === null || typeof item !== "object" || Array.isArray(item)) return undefined;
-  const text: unknown = Reflect.get(item, "text");
-  return typeof text === "string" ? { text, complete: method === "item/completed" } : undefined;
-}
-
 const iso = (at: number | undefined) => (at === undefined ? null : new Date(at).toISOString());
 
 export function conversationView(state: State, events: readonly SessionEvent[]) {
@@ -100,12 +91,12 @@ export function conversationView(state: State, events: readonly SessionEvent[]) 
       started.set(event.turn, event.at);
     if (event.kind === "turn.ended" && !ended.has(event.turn)) ended.set(event.turn, event.at);
     if (event.kind === "agent.event" && next.lastN > replay.lastN) {
-      if (event.agentKind === "codex")
-        items.set(
-          replay.currentTurn,
-          codexStep(items.get(replay.currentTurn) ?? { items: [], diff: "" }, event.event),
-        );
-      const text = event.agentKind === "codex" ? codexText(event.event) : undefined;
+      const agent = agents[event.agentKind];
+      items.set(
+        replay.currentTurn,
+        agent.step(items.get(replay.currentTurn) ?? { items: [], diff: "" }, event.event),
+      );
+      const text = agent.text(event.event);
       if (text !== undefined)
         answers.set(
           replay.currentTurn,

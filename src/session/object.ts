@@ -6,6 +6,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
+import * as codex from "./agents/codex.js";
 import { instructionsKey, skillKey } from "../settings/skill.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
@@ -209,14 +210,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 repo: action.repo,
                 base: action.base,
                 branch: action.branch,
-                agent: {
-                  kind: "codex",
-                  model: "gpt-5.5",
-                  effort: "medium",
-                  baseUrl: "https://chatgpt.com/backend-api/codex",
-                  token: chatgpt.token,
-                  accountId: chatgpt.accountId,
-                },
+                agent: codex.startConfig(chatgpt),
                 git,
                 hatch: `https://{port}-${id()}.${hatchBase}`,
                 instructions,

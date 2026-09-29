@@ -2,9 +2,9 @@ import { BunServices } from "@effect/platform-bun";
 import { Effect, Exit, Scope, Stream } from "effect";
 import { Actions } from "./actions.js";
 import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
-import { makeRunner } from "./agent.js";
+import { type Agent, makeAgent } from "./agents/agent.js";
 import { Requests } from "./requests.js";
-import { AgentError, type Runner } from "./runner.js";
+import { AgentError, type AgentReady, type Runner } from "./runner.js";
 import type { Output } from "./wire.js";
 import {
   installSettings,
@@ -22,7 +22,7 @@ type Ready = {
   commit: string;
   ms: number;
   retried: string[];
-  kind: "codex";
+  kind: AgentReady["kind"];
   session: string;
 };
 type StartState =
@@ -37,6 +37,7 @@ export class Controller {
   private send: Sender = () => {};
   private gen: number | undefined;
   private startState: StartState | undefined;
+  private agent: Agent | undefined;
   private runner: Runner | undefined;
   private actions: Actions | undefined;
   private scope: Scope.Closeable | undefined;
@@ -71,18 +72,21 @@ export class Controller {
       }
       this.gen = message.gen;
       this.startState = { status: "inflight" };
+      const agent = makeAgent(message.agent);
+      this.agent = agent;
       const outcome = yield* Effect.gen({ self: this }, function* () {
         const workspace = yield* prepareWorkspace(
           message.repo,
           message.base,
           message.branch,
           message.git,
+          agent,
           message.resume,
         );
-        yield* installSettings(message.instructions, message.skills);
+        yield* installSettings(agent, message.instructions, message.skills);
         const scope = yield* Scope.make();
         this.scope = scope;
-        const runner = yield* makeRunner(message.agent, workspace.dir);
+        const runner = yield* agent.runner(workspace.dir);
         this.runner = runner;
         const actions = yield* Actions.make();
         this.actions = actions;
@@ -92,7 +96,7 @@ export class Controller {
           Effect.forkScoped,
           Scope.provide(scope),
         );
-        const agent = yield* runner
+        const ready = yield* runner
           .start({ SCOTTY_HATCH: message.hatch }, message.resume?.threadId)
           .pipe(Scope.provide(scope));
         return {
@@ -101,8 +105,8 @@ export class Controller {
           commit: workspace.commit,
           ms: workspace.ms,
           retried: workspace.retried,
-          kind: agent.kind,
-          session: agent.session,
+          kind: ready.kind,
+          session: ready.session,
         };
       }).pipe(Effect.provide(BunServices.layer), Effect.exit);
       if (Exit.isFailure(outcome)) {
@@ -162,9 +166,9 @@ export class Controller {
   }
   save(gen: number): Effect.Effect<Uint8Array, WorkspaceError> {
     const state = this.startState;
-    if (state?.status !== "ready" || this.gen !== gen)
+    if (state?.status !== "ready" || this.agent === undefined || this.gen !== gen)
       return Effect.fail(new WorkspaceError({ message: "workspace not ready" }));
-    return saveWorkspace(state.ready.commit, state.ready.session).pipe(
+    return saveWorkspace(state.ready.commit, this.agent, state.ready.session).pipe(
       Effect.provide(BunServices.layer),
     );
   }

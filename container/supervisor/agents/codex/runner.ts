@@ -1,16 +1,16 @@
 import { Effect, Option, Queue, Result, Schema, Stream, type Scope, type FileSystem } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
-import { launchCodex } from "./codex-config.js";
-import { CodexRpc } from "./codex-rpc.js";
-import { TurnNotice } from "./codex-rpc-schema.js";
+import { launchCodex } from "./config.js";
+import { CodexRpc } from "./rpc.js";
+import { TurnNotice } from "./rpc-schema.js";
 import {
   AgentError,
-  type Agent,
+  type Config,
   type AgentOutput,
   type AgentReady,
   type Delivered,
   type Runner,
-} from "./runner.js";
+} from "../../runner.js";
 
 const Thread = Schema.Struct({ thread: Schema.Struct({ id: Schema.String }) });
 const Started = Schema.Struct({ turn: Schema.Struct({ id: Schema.String }) });
@@ -30,13 +30,13 @@ export class CodexRunner implements Runner {
   private readonly endedDo = new Set<string>();
   readonly events: Stream.Stream<AgentOutput>;
   private constructor(
-    private readonly agent: Extract<Agent, { kind: "codex" }>,
+    private readonly agent: Extract<Config, { kind: "codex" }>,
     private readonly cwd: string,
     private readonly output: Queue.Queue<AgentOutput>,
   ) {
     this.events = Stream.fromQueue(output);
   }
-  static make(agent: Extract<Agent, { kind: "codex" }>, cwd: string) {
+  static make(agent: Extract<Config, { kind: "codex" }>, cwd: string) {
     return Effect.gen(function* () {
       return new CodexRunner(agent, cwd, yield* Queue.unbounded<AgentOutput>());
     });

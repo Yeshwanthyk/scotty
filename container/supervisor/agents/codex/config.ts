@@ -1,8 +1,8 @@
 import { Effect, FileSystem } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import type { Agent } from "./runner.js";
-import { AgentError } from "./runner.js";
-import { processEnv } from "./runtime.js";
+import type { Config } from "../../runner.js";
+import { AgentError } from "../../runner.js";
+import { processEnv } from "../../runtime.js";
 
 // JSON basic-string escapes also satisfy TOML except for DEL (U+007F).
 // The agent schema rejects lone surrogates in every string written to this config.
@@ -10,7 +10,7 @@ export const toml = (value: string) => JSON.stringify(value).replace(/\u007f/g, 
 export const codexHome = () => processEnv("SCOTTY_CODEX_HOME") || "/home/scotty/.codex";
 
 export const launchCodex = (
-  config: Extract<Agent, { kind: "codex" }>,
+  config: Extract<Config, { kind: "codex" }>,
   cwd: string,
   env: Record<string, string>,
 ) =>
