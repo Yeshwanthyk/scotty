@@ -76,7 +76,7 @@ npm run --silent e2e -- core             # create, answer, redeploy, steer, inte
 npm run --silent scotty -- doctor        # exit 0 with access/worker/chatgpt "ok"
 ```
 
-- A change under `container/**` or `protocol/supervisor.ts` needs a new image: push `rebuild/core`, wait for the `image` workflow (`gh run watch`), take the digest from the run summary, set `SCOTTY_SOURCE_IMAGE=index.docker.io/yeshwanthyk/scotty@sha256:<digest>`, then deploy.
+- A change under `container/**` or `protocol/supervisor.ts` needs a new image: push `rebuild/core`, wait for the `image` workflow (`gh run watch`), take the digest from the run summary, put `index.docker.io/yeshwanthyk/scotty@sha256:<digest>` in `container/image.digest`, then deploy.
 - Only stage `dev`. Never `production`, never `scotty-baseline-*`, never a derived name.
 - Never print or save a token (ChatGPT, GitHub, Cloudflare, Docker Hub, Access JWT). Print variable names, lengths, SHA-256 prefixes or expiry only.
 - Use a temp `CODEX_HOME` for any local Codex run; never touch `~/.codex`.
@@ -579,7 +579,7 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
   - Session ID prefixes (4+ characters) wherever an ID is taken. `ls` shows the agent and last activity. `new` requires the prompt, titles the session from its first line, and prints the full URL.
   - `doctor` lists every problem with its fix, and warns when the deployed version differs from the CLI's.
   - `login`: `github` uses `gh auth token` when present instead of hanging on stdin; `claude` shows only the sign-in URL and the result.
-  - `init` (terminal only, safe to rerun): asks every question first (stage, owner email, domain and zone), saves `~/.config/scotty/config.json` (names and IDs only), deploys, then runs the Access login and the agent logins back to back, and ends with `doctor`.
+  - `init` (terminal only, safe to rerun): asks every question first (stage, owner email, domain and zone, host), saves `~/.config/scotty/config.json` (names and IDs only), deploys, then runs the Access login and the agent logins back to back, and ends with `doctor`. A Cloudflare zone the owner controls is required (owner, 2026-09-29): Scotty runs on a host in it (default `scotty.<zone>`) and previews on `<port>-<id>.<zone>`, with no workers.dev fallback. `init` says so before the first question.
   - `deploy`: no questions; reads the config; builds the UI, copies the pinned image, applies the stack. `teardown`: shows what it removes, asks for the stage name, destroys the stage, deletes `config.json` only.
   - UI and API on `scotty.<domain>`; previews stay on `<port>-<id>.<domain>`.
   - Ready for step 13: explicit resource names (`scotty-<stage>-…`), the image digest in a committed file, any explicit stage accepted, and the base image labelled with its supervisor version.

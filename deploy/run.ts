@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { CopyError, decode } from "./oci.ts";
 
-const Stage = Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]*$/)));
+const Stage = Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,19}$/)));
 const error = (step: string) => new CopyError({ step, status: 0 });
 const args = process.argv.slice(2);
 const stages: string[] = [];
@@ -18,10 +19,11 @@ for (let i = 0; i < args.length; i++) {
     forwarded.push(arg ?? "");
   }
 }
+// The pinned supervisor image; its registry.cloudflare.com copy is `scotty@<same digest>`.
 const input = {
-  source: process.env.SCOTTY_SOURCE_IMAGE,
+  source: readFileSync(new URL("../container/image.digest", import.meta.url), "utf8").trim(),
   account: process.env.CLOUDFLARE_ACCOUNT_ID,
-  repository: process.env.SCOTTY_REGISTRY_REPOSITORY,
+  repository: "scotty",
 };
 
 const program = Effect.gen(function* () {

@@ -1,5 +1,9 @@
 import { Result, Schema } from "effect";
-import { FromSupervisor, type FromSupervisorMessage } from "../../protocol/supervisor.js";
+import {
+  FromSupervisor,
+  type FromSupervisorMessage,
+  supervisorVersion,
+} from "../../protocol/supervisor.js";
 
 type WithoutEnvelope<T> = T extends { gen: number; n: number } ? Omit<T, "gen" | "n"> : never;
 export type Output = WithoutEnvelope<FromSupervisorMessage>;
@@ -60,7 +64,7 @@ export function dial(
     type: "hello",
     gen,
     n: 1,
-    version: "step-2",
+    version: supervisorVersion,
     boot: state.boot,
   };
   const initialized: Wire =

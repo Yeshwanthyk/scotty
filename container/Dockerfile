@@ -8,6 +8,8 @@ COPY protocol/supervisor.ts ./protocol/supervisor.ts
 RUN bun build --compile container/supervisor/main.ts --outfile /out/scotty-sup
 
 FROM node:22-bookworm-slim
+# supervisorVersion in protocol/supervisor.ts; a custom image built FROM this one must keep it.
+LABEL scotty.supervisor="1"
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates procps curl sudo unzip xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global --ignore-scripts --no-audit --no-fund @openai/codex@0.157.1 \

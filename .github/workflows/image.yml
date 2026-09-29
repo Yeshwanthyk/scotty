@@ -1,12 +1,13 @@
 name: image
 
-# Publishes the default supervisor image and records its linux/amd64 digest.
-# Deploys copy it by digest into registry.cloudflare.com (docs/design.md "Deploy").
+# Publishes the default supervisor image and records its linux/amd64 digest. Deploys copy the
+# ref in container/image.digest into registry.cloudflare.com (docs/design.md "Deploy").
 on:
   push:
     branches: [rebuild/core]
     paths:
       - container/**
+      - "!container/image.digest"
       - protocol/supervisor.ts
       - package-lock.json
       - .github/workflows/image.yml
@@ -59,6 +60,8 @@ jobs:
             echo "- tag: \`$tag\`"
             echo "- linux/amd64 digest: \`$digest\`"
             echo "- ref: \`$REPOSITORY@$digest\`"
+            echo
+            echo "To deploy it, put the ref in \`container/image.digest\` and commit."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Log out
         if: always()

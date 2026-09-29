@@ -8,12 +8,20 @@ const image = process.env.SCOTTY_IMAGE;
 const ownerEmail = process.env.SCOTTY_OWNER_EMAIL;
 const hatchBase = process.env.SCOTTY_HATCH_BASE;
 const hatchZoneId = process.env.SCOTTY_HATCH_ZONE_ID;
+const host = process.env.SCOTTY_HOST;
 const stage = process.argv.find(
   (argument, index, arguments_) =>
     index > 0 && arguments_[index - 1] === "--stage" && argument !== "--stage",
 );
-if (Exit.isFailure(Schema.decodeUnknownExit(Schema.Literal("dev"))(stage)))
-  throw new Error("Deploy requires explicit --stage dev");
+// Every resource is named `scotty-<stage>…`, so the stage is always given, never a default.
+if (
+  Exit.isFailure(
+    Schema.decodeUnknownExit(Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,19}$/)))(
+      stage,
+    ),
+  )
+)
+  throw new Error("Deploy requires an explicit --stage (lowercase, at most 20 characters)");
 if (
   Exit.isFailure(Schema.decodeUnknownExit(Schema.String.check(Schema.isMinLength(1)))(ownerEmail))
 )
@@ -34,6 +42,14 @@ const base = Schema.decodeUnknownExit(HatchBase)(hatchBase);
 const zoneId = Schema.decodeUnknownExit(ZoneId)(hatchZoneId);
 if (Exit.isFailure(base) || Exit.isFailure(zoneId))
   throw new Error("SCOTTY_HATCH_BASE and SCOTTY_HATCH_ZONE_ID (32 hex) are required");
+// The Worker's own host, in the same zone. The preview route below matches it too; the Worker
+// tells them apart by name, and a preview-shaped host would be ambiguous.
+if (
+  Exit.isFailure(Schema.decodeUnknownExit(HatchBase)(host)) ||
+  !host?.endsWith(`.${base.value}`) ||
+  /^\d{1,5}-[a-z0-9-]{6,32}\./.test(host)
+)
+  throw new Error("SCOTTY_HOST must be a host under SCOTTY_HATCH_BASE, not a preview host");
 
 export default Alchemy.Stack(
   "scotty",

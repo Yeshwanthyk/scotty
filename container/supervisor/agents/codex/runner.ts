@@ -1,5 +1,6 @@
 import { Effect, Option, Queue, Result, Schema, Stream, type Scope, type FileSystem } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
+import { supervisorVersion } from "../../../../protocol/supervisor.js";
 import { launchCodex } from "./config.js";
 import { CodexRpc } from "./rpc.js";
 import { TurnNotice } from "./rpc-schema.js";
@@ -99,7 +100,7 @@ export class CodexRunner implements Runner {
         Effect.forkScoped,
       );
       yield* rpc.request("initialize", {
-        clientInfo: { name: "scotty-sup", version: "step-2" },
+        clientInfo: { name: "scotty-sup", version: supervisorVersion },
         capabilities: { experimentalApi: false },
       });
       yield* rpc.notify("initialized");

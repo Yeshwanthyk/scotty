@@ -1,5 +1,5 @@
 import * as Cloudflare from "alchemy/Cloudflare";
-import { RuntimeContext } from "alchemy";
+import { RuntimeContext, Stack } from "alchemy";
 import { Config, Effect, Exit, Option, Schema, SchemaTransformation } from "effect";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -46,10 +46,16 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
   "ScottyWorker",
   Effect.gen(function* () {
     // Props are evaluated in the deployed bundle too, where deploy env vars are absent.
-    // alchemy.run.ts rejects a missing value before any deploy, so the default is runtime-only.
+    // alchemy.run.ts rejects a missing value before any deploy, so the defaults are runtime-only.
     const email = yield* Config.String("SCOTTY_OWNER_EMAIL").pipe(Config.withDefault(""));
+    const host = yield* Config.String("SCOTTY_HOST").pipe(Config.withDefault(""));
+    const zoneId = yield* Config.String("SCOTTY_HATCH_ZONE_ID").pipe(Config.withDefault(""));
+    const { stage } = yield* Stack;
     return {
+      name: `scotty-${stage}`,
       main: import.meta.url,
+      // Alchemy creates the DNS record and certificate; Access covers every host of the Worker.
+      domain: { name: host, zoneId },
       compatibility: { date: "2026-09-01" },
       assets: {
         directory: "./ui/dist",
@@ -68,6 +74,8 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(SessionArtifacts);
     const env = yield* Cloudflare.WorkerEnvironment;
     const hatchBase = yield* Config.String("SCOTTY_HATCH_BASE");
+    // Scotty's own host is under the preview base too, but is never a preview.
+    const selfHost = yield* Config.String("SCOTTY_HOST");
     const router = yield* HttpRouter.make;
     yield* router.add("*", "/api/*", (request) =>
       apiHandler(request, sessions, credentials, bucket, hatchBase).pipe(
@@ -121,7 +129,7 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
         if (Option.isSome(props))
           return yield* gitHandler(request, props.value.repo, credentials).pipe(Effect.orDie);
         const host = request.headers["host"] ?? "";
-        if (host.endsWith(`.${hatchBase}`)) {
+        if (host !== selfHost && host.endsWith(`.${hatchBase}`)) {
           const label = hatchLabel.exec(host.slice(0, -hatchBase.length - 1));
           if (label?.[1] === undefined || label[2] === undefined || !hatchPort(Number(label[1])))
             return HttpServerResponse.text("Not found", { status: 404 });

@@ -4,6 +4,7 @@ import { Command, CliError } from "effect/unstable/cli";
 import { version } from "../src/version.js";
 import { CliFailure, failure } from "./client.js";
 import { bold, dim, json, red } from "./commands/common.js";
+import { deploy } from "./commands/deploy.js";
 import { doctor, login } from "./commands/setup.js";
 import { create, ls, log, open, read } from "./commands/sessions.js";
 import { hatch, interrupt, resume, rm, steer, stop } from "./commands/actions.js";
@@ -12,6 +13,7 @@ import { push } from "./commands/push.js";
 const overview = `${bold("scotty")} — Codex and Claude sessions in Cloudflare Containers
 
 ${bold("Setup")}
+  deploy                          Deploy Scotty from this checkout to the configured stage
   doctor                          Check setup, sign-ins and the deployment
   login chatgpt|github|claude     Sign in to an account sessions use
 
@@ -41,6 +43,9 @@ ${bold("Flags")}
 ${dim("An id can be the first 4+ characters shown by scotty ls.")}`;
 
 const help: Record<string, string> = {
+  deploy: `Usage: scotty deploy
+Build the UI, copy the pinned container image and deploy the stage in the Scotty config.
+Asks nothing; run it from a Scotty checkout after \`scotty init\`.`,
   doctor: `Usage: scotty doctor
 Check the config, Cloudflare Access, the Worker and each sign-in, and print the fix for each problem.
 Exits 3 when something required is missing.`,
@@ -84,6 +89,7 @@ Example: scotty push instructions ./AGENTS.md`,
 
 const root = Command.make("scotty").pipe(
   Command.withSubcommands([
+    deploy,
     doctor,
     login,
     create,

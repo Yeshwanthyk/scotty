@@ -23,7 +23,10 @@ export const output = (value: unknown, text?: string) =>
 // SCOTTY_URL wins, so a broken config file doesn't block it.
 export const address = Effect.gen(function* () {
   const env = process.env.SCOTTY_URL;
-  if (env === undefined || env === "") return yield* target((yield* readConfig)?.url ?? "");
+  if (env === undefined || env === "") {
+    const config = yield* readConfig;
+    return yield* target(config === undefined ? "" : `https://${config.host}`);
+  }
   return yield* Schema.decodeUnknownEffect(Url)(env).pipe(
     Effect.mapError(() =>
       failure("setup", `SCOTTY_URL is not an https origin: ${env}`, "unset SCOTTY_URL", 2),

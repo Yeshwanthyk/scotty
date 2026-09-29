@@ -1,5 +1,6 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
+import { Stack } from "alchemy";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import { Cause, Config, Duration, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -22,18 +23,24 @@ import { conversationView, sessionView } from "./view.js";
 
 export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
   "SessionContainer",
-  // Runtime-only default; alchemy.run.ts rejects a missing SCOTTY_IMAGE before any deploy.
-  Config.String("SCOTTY_IMAGE").pipe(
-    Config.withDefault(""),
-    Effect.map((image) => ({
+  Effect.gen(function* () {
+    // Runtime-only default; alchemy.run.ts rejects a missing SCOTTY_IMAGE before any deploy.
+    const image = yield* Config.String("SCOTTY_IMAGE").pipe(Config.withDefault(""));
+    const { stage } = yield* Stack;
+    return {
+      name: `scotty-${stage}-sessions`,
       image,
       registryId: "registry.cloudflare.com",
       instanceType: "standard-1" as const,
-    })),
-  ),
+    };
+  }),
 ) {}
 
-export const SessionArtifacts = Cloudflare.R2.Bucket("SessionArtifacts");
+export const SessionArtifacts = Cloudflare.R2.Bucket(
+  "SessionArtifacts",
+  // Teardown removes the stage with its files; nothing in it outlives the stage.
+  Effect.map(Stack, ({ stage }) => ({ name: `scotty-${stage}-artifacts`, forceDestroy: true })),
+);
 
 class ContainerStartFailed extends Schema.TaggedError<ContainerStartFailed>()(
   "ContainerStartFailed",

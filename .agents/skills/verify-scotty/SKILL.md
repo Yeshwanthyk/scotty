@@ -15,14 +15,14 @@ The stage must already be deployed; this skill does not deploy. To deploy the de
 authorized, never `production` or `scotty-baseline-*`):
 
 ```sh
-source work/dev-env.sh          # account, owner email, image digest, SCOTTY_URL, test repos
-npm run --silent deploy -- --stage dev
+source work/dev-env.sh          # SCOTTY_URL and test repos for the e2e
+npm run --silent scotty -- deploy   # stage, account and host from ~/.config/scotty/config.json
 ```
 
-`work/dev-env.sh` is never committed; `docs/setup.md` lists its variables. After a change under
+`work/dev-env.sh` is never committed; `docs/setup.md` lists it and the config. After a change under
 `container/**`, get the new digest from the `image` workflow run for the pushed commit
 (`docker buildx imagetools inspect yeshwanthyk/scotty:rebuild-<full sha>`; `gh run view` does not
-print the job summary) and update `SCOTTY_SOURCE_IMAGE` there. Wait about 2 minutes after a deploy
+print the job summary) and put it in `container/image.digest`. Wait about 2 minutes after a deploy
 before driving.
 
 ## Doctor

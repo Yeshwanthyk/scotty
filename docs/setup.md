@@ -66,33 +66,45 @@ gh run watch <run-id>
 docker buildx imagetools inspect <repository>:rebuild-<full sha> | grep -m1 Digest   # gh run view does not print the job summary
 ```
 
-Use it as `SCOTTY_SOURCE_IMAGE=index.docker.io/<repository>@sha256:<digest>`. If nothing under those paths changed, reuse the digest from the latest successful run.
+Put it in `container/image.digest` as `index.docker.io/<repository>@sha256:<digest>` and commit it; every deploy uses that file. If nothing under those paths changed, keep the digest that is there.
 
-## 5. Environment file
+## 5. Config and environment file
 
-Create `work/dev-env.sh` (`work/` is never committed). It holds names and IDs only, no tokens:
+The CLI reads `~/.config/scotty/config.json` (names and IDs only, no tokens):
+
+```json
+{
+  "stage": "dev",
+  "email": "<owner email; the only identity Access lets in>",
+  "accountId": "<32-hex account id (section 3)>",
+  "domain": "<zone; previews at https://<port>-<id>.<zone>>",
+  "zoneId": "<32-hex zone id>",
+  "host": "scotty.<zone>"
+}
+```
+
+Resource names start with `scotty-<stage>`; `host` must be under `domain` and not used by another Worker.
+
+The e2e tests read the environment instead. Create `work/dev-env.sh` (`work/` is never committed):
 
 ```sh
-export SCOTTY_SOURCE_IMAGE=index.docker.io/yeshwanthyk/scotty@sha256:<digest>   # section 4
-export CLOUDFLARE_ACCOUNT_ID=<32-hex account id>                                # section 3
-export SCOTTY_REGISTRY_REPOSITORY=scotty            # repository name in registry.cloudflare.com
-export SCOTTY_OWNER_EMAIL=<owner email>             # the only identity Access lets in
-export SCOTTY_HATCH_BASE=<zone>                     # previews at https://<port>-<id>.<zone>; a bare zone, since Universal SSL covers one level
-export SCOTTY_HATCH_ZONE_ID=<32-hex zone id>        # that zone's id
-export SCOTTY_URL=https://<worker host>             # printed by the first deploy (section 6)
+export CLOUDFLARE_ACCOUNT_ID=<32-hex account id>
+export SCOTTY_OWNER_EMAIL=<owner email>
+export SCOTTY_HATCH_BASE=<zone>
+export SCOTTY_HATCH_ZONE_ID=<32-hex zone id>
+export SCOTTY_URL=https://scotty.<zone>             # the config's host; it overrides the config
 export SCOTTY_HATCH_TEST_REPO=<owner>/<repo>       # a small Vite + React repo without .agents/setup; e2e hatch-env
 ```
 
-Load it in every shell that deploys or tests: `. work/dev-env.sh`.
+Load it in every shell that tests: `. work/dev-env.sh`.
 
 ## 6. Deploy `dev`
 
 ```sh
-. work/dev-env.sh
-npm run deploy -- --stage dev
+npm run --silent scotty -- deploy
 ```
 
-This copies the image into `registry.cloudflare.com`, then runs `alchemy deploy --profile default --stage dev`. `alchemy.run.ts` accepts only `--stage dev` and fails without `SCOTTY_OWNER_EMAIL`. The Worker's URL is in the deploy output; put it in `SCOTTY_URL` after the first deploy. Alchemy also creates the Access application and its policy (owner email only).
+This builds the UI, copies the image in `container/image.digest` into `registry.cloudflare.com`, then runs `alchemy deploy --profile default` for the config's stage. Alchemy creates the Worker on the config's host (DNS record and certificate included) and the Access application and its policy (owner email only).
 
 Never deploy to `production`, to any `scotty-baseline-*` stage, or to a name derived from a user, machine or account.
 
@@ -145,12 +157,12 @@ Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `auth lo
 
 ## Troubleshooting
 
-| Symptom                                         | Fix                                                                             |
-| ----------------------------------------------- | ------------------------------------------------------------------------------- |
-| `access_login` error, exit 3                    | `cloudflared access login "$SCOTTY_URL"`                                        |
-| `doctor` says ChatGPT not signed in or expiring | `npm run --silent scotty -- auth login chatgpt`                                 |
-| `doctor` says Claude missing or expiring        | `npm run --silent scotty -- auth login claude`                                  |
-| Deploy fails before Alchemy runs                | Check `SCOTTY_SOURCE_IMAGE` is a `@sha256:` ref and the Docker Hub image exists |
-| Deploy fails with a Cloudflare auth error       | `npx alchemy profile edit --add Cloudflare` again                               |
-| `vendor/` is empty                              | `git submodule update --init vendor/effect vendor/alchemy`                      |
-| A session fails                                 | `npm run --silent scotty -- log <id>`; then plan.md "When something breaks"     |
+| Symptom                                         | Fix                                                                                |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `access_login` error, exit 3                    | `cloudflared access login "$SCOTTY_URL"`                                           |
+| `doctor` says ChatGPT not signed in or expiring | `npm run --silent scotty -- auth login chatgpt`                                    |
+| `doctor` says Claude missing or expiring        | `npm run --silent scotty -- auth login claude`                                     |
+| Deploy fails before Alchemy runs                | Check `container/image.digest` is a `@sha256:` ref and the Docker Hub image exists |
+| Deploy fails with a Cloudflare auth error       | `npx alchemy profile edit --add Cloudflare` again                                  |
+| `vendor/` is empty                              | `git submodule update --init vendor/effect vendor/alchemy`                         |
+| A session fails                                 | `npm run --silent scotty -- log <id>`; then plan.md "When something breaks"        |

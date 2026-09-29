@@ -40,7 +40,7 @@ container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
   supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; per-turn save and resume
 cli/
-  main.ts             Effect CLI: doctor, login, new, ls, read, steer, interrupt, log (deploy later)
+  main.ts             Effect CLI: deploy, doctor, login, new, ls, read, steer, interrupt, log
   client.ts           typed API client behind Access; shared with e2e/
 protocol/
   supervisor.ts       the only protocol file; wire schema shared by the Session DO and supervisor
@@ -212,7 +212,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 
 - **Output:** one JSON value on stdout with `--json`, or when stdout is not a terminal. In a terminal the output is readable text, coloured unless `NO_COLOR` is set. Progress and prompts go to stderr.
 - **Errors:** `{"error":{"code","message","hint"}}` on stdout in JSON mode, otherwise `✗ message` and `→ hint` on stderr. The exit code is 1 for a request or agent failure, 2 for bad usage, and 3 when setup is missing (no address, no Access login, not signed in). `hint` is the exact command that fixes it.
-- **Target:** `SCOTTY_URL`, else the `url` in the CLI config file; never derived. Access comes through `cloudflared access token` at run time; the CLI stores no token.
+- **Target:** `SCOTTY_URL`, else `https://<host>` from the CLI config (`~/.config/scotty/config.json`: stage, email, accountId, domain, zoneId, host); never derived. Access comes through `cloudflared access token` at run time; the CLI stores no token.
 - **Ids:** a session id can be given as its first 4+ characters; an ambiguous or unknown prefix is an error.
 - **Setup:** `doctor` checks the address, Access, the Worker's version, and each sign-in (ChatGPT, GitHub, Claude), with each account's expiry and the fix for each problem. `login chatgpt` runs the device code: it prints the code, opens the page, and polls. `login github` saves the token from stdin, or from `gh auth token`. `login claude` runs `claude setup-token` and saves the token, or reads it from stdin.
 - **Sessions:** `new <owner/repo> <prompt> [--agent codex|claude] [--key k]` is idempotent on `--key` and uses the repository's default branch. `ls` lists sessions. `read <id> [--last N] [--role user|assistant]` prints the session state and recent messages (default 1, maximum 500; role filtering precedes the limit; empty assistant text is omitted). `log <id>` prints the raw events. There is no `watch`: callers choose when to read again. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries. `stop`, `resume`, `open [id]` and `hatch <id> <port>` do what they say. `rm <id…>` deletes stopped or failed sessions with their saves and files, after resolving every id; a running one answers 409 with the hint `scotty stop <id>`.
@@ -221,12 +221,12 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 
 ## Deploy
 
-- **Image:** CI builds the default image from `container/Dockerfile` (supervisor included), publishes it to a public OCI registry, and records its linux/amd64 manifest digest; each CLI release embeds that digest. No local Docker is needed to deploy or develop.
+- **Image:** CI builds the default image from `container/Dockerfile` (supervisor included), publishes it to a public OCI registry, and records its linux/amd64 manifest digest; `container/image.digest` pins it, and each CLI release will embed it. The image's `scotty.supervisor` label is `supervisorVersion` from `protocol/supervisor.ts`. No local Docker is needed to deploy or develop.
 - `scotty deploy` builds the UI, copies the pinned image into `registry.cloudflare.com/<account>/<explicit repository>@sha256:<digest>` over the OCI distribution API with short-lived registry credentials (verifying every digest, streaming blobs, never logging or persisting the credential), then applies `alchemy.run.ts` with `registryId: "registry.cloudflare.com"` and that digest ref, which Alchemy deploys as pre-pushed with no Docker (`ContainerProvider.ts:442-458,536-542`). The copy runs in the CLI before the apply; only the digest ref reaches Alchemy props or state.
 - Copy rather than pull: Cloudflare can pull public Docker Hub images directly but does not cache them, so every cold start would pull from Docker Hub under its rate limits; GHCR is not a supported pull source.
 - Later, user-supplied images use the same digest-pinned copy and are checked against the supervisor contract at `hello`.
 - Don't use Alchemy's local `dev` Container runtime; it runs Docker (`vendor/alchemy/website/src/content/docs/cloudflare/local-development.mdx:79-80`).
-- **Stage:** explicit, default `personal`. It is never derived from the user, machine or account.
+- **Stage:** explicit, from the CLI config. It is never derived from the user, machine or account. Resources are named `scotty-<stage>` (Worker), `scotty-<stage>-sessions` (container app) and `scotty-<stage>-artifacts` (bucket); the Worker serves the config's `host` as a custom domain. Changing a name replaces the resource: a new Worker has empty Durable Objects (sessions and sign-ins are gone), and a bucket that still holds files can't be deleted until it is emptied.
 - **State:** Alchemy local state (`Alchemy.localState()`) in `.alchemy/` at the repository root, git-ignored. Deleting it orphans the deployed stage; back it up if the stage matters.
 - **Cloudflare credentials:** the Alchemy OAuth profile (`--profile default`) or `CLOUDFLARE_API_TOKEN` with the account ID from the environment; never deployed.
 - **Updates:** each CLI release embeds its own stack, so updating is a new CLI followed by `scotty deploy`.
