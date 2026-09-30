@@ -9,7 +9,7 @@ import type { AgentConfig, ToSupervisorMessage } from "../../protocol/supervisor
 import CredsObject from "../creds/object.js";
 import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
-import type { AgentKind } from "./events.js";
+import type { AgentKind, Origin } from "./events.js";
 import { instructionsKey, skillKey } from "../settings/skill.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
@@ -343,6 +343,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           agentKind: typeof AgentKind.Type;
           image: string;
           scripted?: true;
+          origin?: Origin;
         }) =>
           Effect.gen(function* () {
             if (log.state.created) return sessionView(id(), log.state);
@@ -358,6 +359,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   prompt: input.prompt,
                   image: input.image,
                   ...(input.scripted === true ? { scripted: true } : {}),
+                  ...(input.origin === undefined ? {} : { origin: input.origin }),
                 },
                 "api",
               ),
@@ -368,20 +370,22 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         request: (input: {
           kind: "prompt" | "interrupt";
           req: string;
-          turn: string;
+          // Absent: the session's current turn, for a caller that has not read it.
+          turn?: string;
           text: string;
         }) =>
           Effect.gen(function* () {
+            const turn = input.turn ?? log.state.currentTurn;
             const draft: Draft =
               input.kind === "prompt"
                 ? {
                     kind: "prompt.requested",
                     req: input.req,
-                    turn: input.turn,
+                    turn,
                     text: input.text,
                     images: [],
                   }
-                : { kind: "interrupt.requested", req: input.req, turn: input.turn };
+                : { kind: "interrupt.requested", req: input.req, turn };
             yield* dispatch(yield* append(draft, "api"));
             return {
               status:

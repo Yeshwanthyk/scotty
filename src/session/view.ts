@@ -45,6 +45,7 @@ export function sessionView(id: string, state: State) {
       branch,
       prompt: promptPreview(created?.prompt ?? ""),
       agentKind: created?.agentKind ?? "codex",
+      origin: created?.origin ?? null,
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
     },

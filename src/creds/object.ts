@@ -1,6 +1,9 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Schema } from "effect";
+import { newSecret, verifyWebhook } from "../hooks/signature.js";
+import { ConnectionName, DeliveryOutcome, keptDeliveries } from "./connections.js";
+import { AgentKind } from "../session/events.js";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
 
 const CredentialRow = Schema.Struct({
@@ -27,7 +30,10 @@ const GitHubUser = Schema.Struct({
   name: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
 });
-const ClaudeRow = Schema.Struct({ token: Schema.String, expires_at: Schema.Number });
+const ClaudeRow = Schema.Struct({
+  token: Schema.String,
+  expires_at: Schema.Number,
+});
 const SkillRow = Schema.Struct({
   name: Schema.String,
   description: Schema.String,
@@ -36,6 +42,27 @@ const SkillRow = Schema.Struct({
   size: Schema.Number,
   updated: Schema.Number,
 });
+const KeyRow = Schema.Struct({
+  id: Schema.String,
+  repo: Schema.String,
+  agent: AgentKind,
+});
+const ConnectionRow = Schema.Struct({
+  name: Schema.String,
+  kind: Schema.String,
+  created: Schema.Number,
+});
+const SecretRow = Schema.Struct({ secret: Schema.String });
+const DeliveryRow = Schema.Struct({
+  id: Schema.String,
+  connection: Schema.String,
+  at: Schema.Number,
+  outcome: DeliveryOutcome,
+  reason: Schema.NullOr(Schema.String),
+  session: Schema.NullOr(Schema.String),
+});
+// The newest deliveries a list returns.
+const listedDeliveries = 200;
 // Sessions can run for hours; refuse a token that could expire mid-session.
 const tokenMargin = 24 * 60 * 60 * 1000;
 const day = 24 * 60 * 60 * 1000;
@@ -59,6 +86,10 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS claude (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS skills (name TEXT PRIMARY KEY, description TEXT NOT NULL, enabled INTEGER NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, updated INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, repo TEXT NOT NULL, agent TEXT NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS connections (name TEXT PRIMARY KEY, kind TEXT NOT NULL, secret TEXT NOT NULL, created INTEGER NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, connection TEXT NOT NULL, at INTEGER NOT NULL, outcome TEXT NOT NULL, reason TEXT, session TEXT)`;
+      yield* sql`CREATE INDEX IF NOT EXISTS deliveries_by_id ON deliveries (connection, id)`;
 
       const gitHub = Effect.gen(function* () {
         const row = (yield* sql`SELECT token, login, name, email FROM github WHERE id = 1`)[0];
@@ -83,7 +114,9 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const rows = yield* sql`SELECT id FROM session_index WHERE req = ${key}`;
             const row = rows[0];
             if (row === undefined)
-              return yield* new CredentialStoreError({ message: "Reservation missing" });
+              return yield* new CredentialStoreError({
+                message: "Reservation missing",
+              });
             return (yield* Schema.decodeUnknownEffect(SessionRow)(row)).id;
           }),
         hasSession: (id: string) =>
@@ -94,7 +127,115 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session}`;
             return rows.length > 0;
           }),
-        forget: (id: string) => sql`DELETE FROM session_index WHERE id = ${id}`.pipe(Effect.asVoid),
+        forget: (id: string) =>
+          Effect.gen(function* () {
+            yield* sql`DELETE FROM session_keys WHERE id = ${id}`;
+            yield* sql`DELETE FROM session_index WHERE id = ${id}`;
+          }),
+        // The session a key names, with what it was made for.
+        keyed: (key: string) =>
+          Effect.gen(function* () {
+            const row =
+              (yield* sql`SELECT id, repo, agent FROM session_keys WHERE key = ${key}`)[0];
+            return row === undefined ? null : yield* Schema.decodeUnknownEffect(KeyRow)(row);
+          }),
+        // The first caller to reserve a key names its session; later callers get that one back.
+        reserveKey: (key: string, id: string, repo: string, agent: typeof AgentKind.Type) =>
+          Effect.gen(function* () {
+            const session = yield* Schema.decodeUnknownEffect(
+              Schema.String.check(Schema.isPattern(/^[a-z0-9-]{6,32}$/)),
+            )(id);
+            yield* sql`INSERT OR IGNORE INTO session_keys (key, id, repo, agent) VALUES (${key}, ${session}, ${repo}, ${agent})`;
+            const row =
+              (yield* sql`SELECT id, repo, agent FROM session_keys WHERE key = ${key}`)[0];
+            if (row === undefined)
+              return yield* new CredentialStoreError({
+                message: "Reservation missing",
+              });
+            const reserved = yield* Schema.decodeUnknownEffect(KeyRow)(row);
+            const fresh = reserved.id === session;
+            if (fresh)
+              yield* sql`INSERT OR IGNORE INTO session_index (req, id) VALUES (${`key:${key}`}, ${session})`;
+            return { ...reserved, fresh };
+          }),
+        connections: () =>
+          Effect.gen(function* () {
+            const rows = yield* sql`SELECT name, kind, created FROM connections ORDER BY name`;
+            const found = yield* Effect.forEach(rows, (row) =>
+              Schema.decodeUnknownEffect(ConnectionRow)(row),
+            );
+            return found.map((row) => ({ ...row, kind: "webhook" as const }));
+          }),
+        // The secret is returned here and never again; `connections` shows only metadata.
+        addConnection: (name: string) =>
+          Effect.gen(function* () {
+            const checked = yield* Schema.decodeUnknownEffect(ConnectionName)(name);
+            const secret = newSecret();
+            const created = Date.now();
+            const inserted =
+              yield* sql`INSERT OR IGNORE INTO connections (name, kind, secret, created) VALUES (${checked}, 'webhook', ${secret}, ${created}) RETURNING name`;
+            return inserted.length === 0
+              ? { status: "exists" as const }
+              : {
+                  status: "created" as const,
+                  name: checked,
+                  kind: "webhook" as const,
+                  secret,
+                  created,
+                };
+          }),
+        removeConnection: (name: string) =>
+          sql`DELETE FROM connections WHERE name = ${name} RETURNING name`.pipe(
+            Effect.map((rows) => rows.length > 0),
+          ),
+        // The secret stays in this object: the Worker hands over what the sender signed.
+        verifyDelivery: (input: {
+          connection: string;
+          id: string;
+          timestamp: string;
+          signature: string;
+          body: string;
+        }) =>
+          Effect.gen(function* () {
+            const row =
+              (yield* sql`SELECT secret FROM connections WHERE name = ${input.connection}`)[0];
+            if (row === undefined) return "unknown" as const;
+            const { secret } = yield* Schema.decodeUnknownEffect(SecretRow)(row);
+            return yield* Effect.promise(() =>
+              verifyWebhook({ secret, ...input, now: Date.now() }),
+            );
+          }),
+        // The session an earlier delivery with this id was accepted into.
+        acceptedDelivery: (connection: string, id: string) =>
+          Effect.gen(function* () {
+            const row =
+              (yield* sql`SELECT session FROM deliveries WHERE connection = ${connection} AND id = ${id} AND outcome = 'accepted' ORDER BY seq LIMIT 1`)[0];
+            if (row === undefined) return null;
+            return (yield* Schema.decodeUnknownEffect(
+              Schema.Struct({ session: Schema.NullOr(Schema.String) }),
+            )(row)).session;
+          }),
+        recordDelivery: (delivery: {
+          id: string;
+          connection: string;
+          outcome: typeof DeliveryOutcome.Type;
+          reason?: string;
+          session?: string;
+        }) =>
+          Effect.gen(function* () {
+            yield* sql`INSERT INTO deliveries (id, connection, at, outcome, reason, session) VALUES (${delivery.id}, ${delivery.connection}, ${Date.now()}, ${delivery.outcome}, ${delivery.reason ?? null}, ${delivery.session ?? null})`;
+            yield* sql`DELETE FROM deliveries WHERE seq <= (SELECT MAX(seq) FROM deliveries) - ${keptDeliveries}`;
+          }),
+        deliveries: (connection?: string) =>
+          Effect.gen(function* () {
+            const rows =
+              connection === undefined
+                ? yield* sql`SELECT id, connection, at, outcome, reason, session FROM deliveries ORDER BY seq DESC LIMIT ${listedDeliveries}`
+                : yield* sql`SELECT id, connection, at, outcome, reason, session FROM deliveries WHERE connection = ${connection} ORDER BY seq DESC LIMIT ${listedDeliveries}`;
+            return yield* Effect.forEach(rows, (row) =>
+              Schema.decodeUnknownEffect(DeliveryRow)(row),
+            );
+          }),
         sessions: () =>
           Effect.gen(function* () {
             const rows = yield* sql`SELECT id FROM session_index`;
@@ -110,7 +251,10 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const skills = yield* Effect.forEach(rows, (row) =>
               Schema.decodeUnknownEffect(SkillRow)(row),
             );
-            return skills.map((skill) => ({ ...skill, enabled: skill.enabled === 1 }));
+            return skills.map((skill) => ({
+              ...skill,
+              enabled: skill.enabled === 1,
+            }));
           }),
         // Replacing a skill keeps whether it is on.
         putSkill: (skill: { name: string; description: string; sha256: string; size: number }) =>
@@ -176,7 +320,10 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               };
             const tokens = yield* exchangeCode(result.authorization);
             yield* sql`INSERT INTO credentials (provider, access_token, refresh_token, id_token, account_id, expires_at) VALUES ('chatgpt', ${tokens.access_token}, ${tokens.refresh_token}, ${tokens.id_token}, ${tokens.accountId}, ${tokens.expiresAt}) ON CONFLICT(provider) DO UPDATE SET access_token = excluded.access_token, refresh_token = excluded.refresh_token, id_token = excluded.id_token, account_id = excluded.account_id, expires_at = excluded.expires_at`;
-            return { status: "signed-in" as const, expiresAt: tokens.expiresAt };
+            return {
+              status: "signed-in" as const,
+              expiresAt: tokens.expiresAt,
+            };
           }).pipe(
             Effect.catchTag("OAuthFailure", (error: OAuthFailure) =>
               Effect.succeed({
@@ -209,7 +356,10 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               }),
             );
             if (response.status !== 200)
-              return { status: "refused" as const, httpStatus: response.status };
+              return {
+                status: "refused" as const,
+                httpStatus: response.status,
+              };
             const user = yield* Schema.decodeUnknownEffect(GitHubUser)(
               yield* Effect.tryPromise(() => response.json()),
             );
@@ -251,7 +401,9 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           Effect.gen(function* () {
             const row = yield* claude;
             if (row === null || row.expires_at <= Date.now() + tokenMargin)
-              return yield* new CredentialStoreError({ message: "Claude sign-in required" });
+              return yield* new CredentialStoreError({
+                message: "Claude sign-in required",
+              });
             return { token: row.token };
           }),
         // Only the Worker asks for the token; it never reaches a session or its container.
@@ -271,10 +423,14 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               yield* sql`SELECT access_token, account_id, expires_at FROM credentials WHERE provider = 'chatgpt'`;
             const row = rows[0];
             if (row === undefined)
-              return yield* new CredentialStoreError({ message: "ChatGPT sign-in required" });
+              return yield* new CredentialStoreError({
+                message: "ChatGPT sign-in required",
+              });
             const tokens = yield* Schema.decodeUnknownEffect(CredentialRow)(row);
             if (tokens.expires_at <= Date.now() + tokenMargin)
-              return yield* new CredentialStoreError({ message: "ChatGPT sign-in expiring" });
+              return yield* new CredentialStoreError({
+                message: "ChatGPT sign-in expiring",
+              });
             return { token: tokens.access_token, accountId: tokens.account_id };
           }),
       };

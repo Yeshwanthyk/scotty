@@ -45,6 +45,29 @@ export const Created = Schema.Struct({
   provider: Schema.String,
   status: Schema.String,
   url: Schema.String,
+  // A create with a key already used steers that session instead of making one.
+  steered: Schema.optional(Schema.Boolean),
+});
+export const Connection = Schema.Struct({
+  name: Schema.String,
+  kind: Schema.String,
+  created: Schema.Number,
+  url: Schema.String,
+});
+export const Connections = Schema.Struct({ connections: Schema.Array(Connection) });
+export const ConnectionCreated = Schema.Struct({ ...Connection.fields, secret: Schema.String });
+export const ConnectionRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
+export const Deliveries = Schema.Struct({
+  deliveries: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      connection: Schema.String,
+      at: Schema.Number,
+      outcome: Schema.Literals(["accepted", "rejected", "duplicate"]),
+      reason: Schema.NullOr(Schema.String),
+      session: Schema.NullOr(Schema.String),
+    }),
+  ),
 });
 export const Reply = Schema.Struct({ status: Schema.String });
 export const Removed = Schema.Struct({ id: Schema.String, removed: Schema.Boolean });

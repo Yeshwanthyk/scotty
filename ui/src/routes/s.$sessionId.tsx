@@ -193,6 +193,15 @@ function SessionView({ sessionId }: { sessionId: string }) {
               </span>
             </span>
           ) : null}
+          {detail?.display.origin?.kind === "hook" ? (
+            <span className="crumbs">
+              <Icon name="globe" size={12} />
+              <span>
+                From webhook {detail.display.origin.connection}
+                {detail.display.origin.key ? ` · ${detail.display.origin.key}` : ""}
+              </span>
+            </span>
+          ) : null}
         </div>
         <div className="header-actions">
           {status !== undefined && status !== "idle" && status !== "unseen" ? (

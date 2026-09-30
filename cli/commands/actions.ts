@@ -2,6 +2,7 @@ import { Effect, Exit, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { Log, Removed, Reply, View, failure } from "../client.js";
 import { removeSkill } from "./push.js";
+import { removeConnection } from "./connections.js";
 import {
   dim,
   green,
@@ -65,7 +66,7 @@ const lifecycle = (name: "stop" | "resume", past: string) =>
 export const stop = lifecycle("stop", "Stopping");
 export const resume = lifecycle("resume", "Resuming");
 
-// `rm <id…>` deletes sessions; `rm skill <name>` deletes a skill.
+// `rm <id…>` deletes sessions; `rm skill <name>` and `rm connection <name>` delete those.
 // Every id is resolved before anything is deleted.
 export const rm = Command.make(
   "rm",
@@ -77,6 +78,12 @@ export const rm = Command.make(
         if (name === undefined || rest.length > 0)
           return yield* usage("Name one skill: scotty rm skill <name>", "rm");
         return yield* removeSkill(yield* withClient, name);
+      }
+      if (ids[0] === "connection") {
+        const [, name, ...rest] = ids;
+        if (name === undefined || rest.length > 0)
+          return yield* usage("Name one connection: scotty rm connection <name>", "rm");
+        return yield* removeConnection(yield* withClient, name);
       }
       const api = yield* withClient;
       // Two prefixes of one id would delete it twice.

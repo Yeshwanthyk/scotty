@@ -13,6 +13,18 @@ const TimeoutOp = Schema.Union([
   Schema.String.check(Schema.isPattern(/^req:/)),
 ]);
 
+// What started a session, when it was not a person in the UI or CLI without a key.
+export const Origin = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("hook"),
+    connection: Schema.String,
+    delivery: Schema.String,
+    key: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({ kind: Schema.Literal("api"), key: Schema.String }),
+]);
+export type Origin = typeof Origin.Type;
+
 export const SessionEvent = Schema.Union([
   Schema.Struct({
     ...envelope,
@@ -26,6 +38,7 @@ export const SessionEvent = Schema.Union([
     image: Schema.String,
     // Runs the agent's scripted stand-in instead of the agent; only e2e asks for it.
     scripted: Schema.optionalKey(Schema.Literal(true)),
+    origin: Schema.optionalKey(Origin),
   }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.start"), gen: Schema.Natural }),
   Schema.Struct({

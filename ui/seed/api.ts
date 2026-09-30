@@ -290,6 +290,89 @@ const owner = {
   claude: null as number | null,
   device: 0,
 };
+// Connections and their deliveries, in memory; the seeded deliveries point at seeded sessions.
+const hooks = {
+  connections: new Map<string, { name: string; kind: string; created: number }>([
+    ["sentry", { name: "sentry", kind: "webhook", created: Date.now() - 6 * 864e5 }],
+  ]),
+  deliveries: [
+    {
+      id: "msg_2kQ9fT",
+      connection: "sentry",
+      minutesAgo: 120,
+      outcome: "accepted",
+      reason: null,
+      session: "d0cc0de5000000000000000000000002",
+    },
+    {
+      id: "msg_7aXb1P",
+      connection: "sentry",
+      minutesAgo: 75,
+      outcome: "accepted",
+      reason: null,
+      session: "d0cc0de5000000000000000000000002",
+    },
+    {
+      id: "msg_c3Lm0R",
+      connection: "sentry",
+      minutesAgo: 40,
+      outcome: "rejected",
+      reason: "bad_signature",
+      session: null,
+    },
+    {
+      id: "msg_9dNe5W",
+      connection: "sentry",
+      minutesAgo: 12,
+      outcome: "rejected",
+      reason: "key_conflict",
+      session: null,
+    },
+  ],
+};
+const hookUrl = (req: IncomingMessage, name: string) =>
+  `https://${req.headers.host ?? "localhost"}/hooks/${name}`;
+async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string, method: string) {
+  if (path === "/api/connections" && method === "GET")
+    return json(res, {
+      connections: [...hooks.connections.values()].map((item) => ({
+        ...item,
+        url: hookUrl(req, item.name),
+      })),
+    });
+  if (path === "/api/connections" && method === "POST") {
+    const input = Schema.decodeUnknownOption(
+      Schema.Struct({ kind: Schema.Literal("webhook"), name: Schema.String }),
+    )(await body(req));
+    if (input._tag === "None" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(input.value.name))
+      return fail(res, "Expected a name of lowercase letters, digits and dashes");
+    const { name } = input.value;
+    if (hooks.connections.has(name)) return fail(res, "That name is taken", 409, "exists");
+    const row = { name, kind: "webhook", created: Date.now() };
+    hooks.connections.set(name, row);
+    return json(
+      res,
+      {
+        ...row,
+        url: hookUrl(req, name),
+        secret: `whsec_${Buffer.from(name.padEnd(24, "x")).toString("base64")}`,
+      },
+      201,
+    );
+  }
+  const name = /^\/api\/connections\/([a-z0-9-]+)$/.exec(path)?.[1];
+  if (name !== undefined && method === "DELETE")
+    return json(res, { name, removed: hooks.connections.delete(name) });
+  if (path === "/api/deliveries" && method === "GET") {
+    const only = new URL(req.url ?? "/", "http://localhost").searchParams.get("connection");
+    return json(res, {
+      deliveries: hooks.deliveries
+        .filter((item) => only === null || item.connection === only)
+        .map(({ minutesAgo, ...item }) => ({ ...item, at: Date.now() - minutesAgo * 60_000 })),
+    });
+  }
+  return fail(res, "Not found", 404, "not_found");
+}
 async function bytes(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -383,6 +466,8 @@ async function settingsApi(
 async function handle(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const method = req.method ?? "GET";
+  if (url.pathname.startsWith("/api/connections") || url.pathname.startsWith("/api/deliveries"))
+    return hooksApi(req, res, url.pathname, method);
   if (
     url.pathname.startsWith("/api/settings") ||
     url.pathname.startsWith("/api/skills") ||

@@ -1,0 +1,53 @@
+// Standard Webhooks (https://www.standardwebhooks.com): the signature is
+// base64(HMAC-SHA256(key, `${id}.${timestamp}.${body}`)) under `v1,`, and the key is the base64
+// after `whsec_` in the secret.
+export const secretPrefix = "whsec_";
+export const maxSkewSeconds = 5 * 60;
+export const maxBodyBytes = 64 * 1024;
+
+const encoder = new TextEncoder();
+
+const bytesOf = (base64: string): Uint8Array<ArrayBuffer> | undefined => {
+  try {
+    return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+  } catch {
+    return undefined;
+  }
+};
+
+export const newSecret = () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return `${secretPrefix}${btoa(String.fromCharCode(...bytes))}`;
+};
+
+export type Verdict = "ok" | "bad_signature" | "stale_timestamp";
+
+export async function verifyWebhook(input: {
+  secret: string;
+  id: string;
+  timestamp: string;
+  signature: string;
+  body: string;
+  now: number;
+}): Promise<Verdict> {
+  if (!/^\d{1,12}$/.test(input.timestamp)) return "bad_signature";
+  if (Math.abs(input.now / 1000 - Number(input.timestamp)) > maxSkewSeconds)
+    return "stale_timestamp";
+  const raw = input.secret.startsWith(secretPrefix)
+    ? bytesOf(input.secret.slice(secretPrefix.length))
+    : undefined;
+  if (raw === undefined) return "bad_signature";
+  const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, [
+    "verify",
+  ]);
+  const signed = encoder.encode(`${input.id}.${input.timestamp}.${input.body}`);
+  // The header may carry several signatures (a secret being rotated), each `v1,<base64>`.
+  for (const entry of input.signature.split(" ")) {
+    const [version, value] = entry.split(",");
+    const candidate = version === "v1" && value !== undefined ? bytesOf(value) : undefined;
+    // `verify` compares in constant time.
+    if (candidate !== undefined && (await crypto.subtle.verify("HMAC", key, candidate, signed)))
+      return "ok";
+  }
+  return "bad_signature";
+}
