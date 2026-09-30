@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# The dev environment for a Scotty session (container/AGENTS.md): the pinned Node, dependencies,
+# then the UI dev server on 4173 with its seed API. Idempotent; run it again after a resume.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+node_version="$(tr -d '[:space:]' < .nvmrc)"
+port=4173
+
+# 1. The Node .nvmrc pins, linked into /usr/local/bin.
+if [[ "$(node --version 2>/dev/null || true)" != "v${node_version}" ]]; then
+  case "$(uname -m)" in
+    x86_64) arch=x64 ;;
+    aarch64 | arm64) arch=arm64 ;;
+    *) echo "No Node build for $(uname -m)" >&2; exit 1 ;;
+  esac
+  archive="node-v${node_version}-linux-${arch}.tar.xz"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  echo "Installing Node ${node_version}"
+  curl -fsSL "https://nodejs.org/dist/v${node_version}/${archive}" -o "${tmp}/${archive}"
+  curl -fsSL "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt" -o "${tmp}/SHASUMS256.txt"
+  (cd "$tmp" && grep "  ${archive}\$" SHASUMS256.txt | sha256sum --check --strict --quiet)
+  sudo mkdir -p "/opt/node-v${node_version}"
+  sudo tar -xJf "${tmp}/${archive}" -C "/opt/node-v${node_version}" --strip-components=1
+  for bin in node npm npx corepack; do
+    sudo ln -sfn "/opt/node-v${node_version}/bin/${bin}" "/usr/local/bin/${bin}"
+  done
+fi
+
+# 2. Dependencies, when the lockfile changed since the last install.
+if [[ ! -f node_modules/.package-lock.json || package-lock.json -nt node_modules/.package-lock.json ]]; then
+  npm ci --no-audit --no-fund
+fi
+
+# Outside a Scotty session there is nothing to preview.
+if [[ -z "${SCOTTY_HATCH:-}" ]]; then exit 0; fi
+
+# 3. The UI dev server, which serves seed data at /api.
+logs=/workspace/.scotty/logs
+mkdir -p "$logs"
+if ! curl -fs "localhost:${port}" > /dev/null; then
+  setsid nohup npm run ui:dev -- --host 0.0.0.0 --strictPort > "${logs}/ui.log" 2>&1 < /dev/null &
+fi
+
+# 4. Always last.
+until curl -fs "localhost:${port}" > /dev/null; do sleep 1; done
+echo "Ready: ${SCOTTY_HATCH/\{port\}/${port}}"
