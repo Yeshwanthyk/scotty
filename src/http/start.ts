@@ -4,6 +4,7 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { fixtureRepo } from "../../protocol/supervisor.js";
 import type { AgentKind, Origin } from "../session/events.js";
+import type { PlaceKind } from "../places/place.js";
 import { defaultBranch } from "./repository.js";
 
 export const githubHint = "scotty login github";
@@ -14,6 +15,8 @@ export type StartInput = {
   prompt: string;
   title: string;
   agent: typeof AgentKind.Type;
+  // Where the container runs; hooks leave it to the default.
+  place?: typeof PlaceKind.Type;
   scripted?: true;
   // With a key, a second start steers the session the first one made.
   key?: string;
@@ -70,6 +73,7 @@ export function startSession(
       prompt: input.prompt,
       agentKind: input.agent,
       image: "default",
+      place: input.place ?? "cloudflare",
       ...(input.scripted === true ? { scripted: true } : {}),
       ...(input.origin === undefined ? {} : { origin: input.origin }),
     });

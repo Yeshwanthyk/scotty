@@ -56,6 +56,7 @@ export function sessionView(id: string, state: State) {
       agentKind: created?.agentKind ?? "codex",
       origin: created?.origin ?? null,
       stoppedAt: state.stoppedAt === undefined ? null : new Date(state.stoppedAt).toISOString(),
+      place: created?.place ?? ("cloudflare" as const),
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
     },

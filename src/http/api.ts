@@ -267,6 +267,7 @@ export function apiHandler(
         prompt: body.prompt,
         title: body.title,
         agent: body.agent ?? "codex",
+        place: body.provider,
         ...(body.scripted === true ? { scripted: true } : {}),
         ...(body.key === undefined
           ? {}
@@ -293,7 +294,7 @@ export function apiHandler(
         id: started.id,
         title: created.display.title,
         branch: created.display.branch,
-        provider: "cloudflare",
+        provider: created.display.place,
         status: created.authority.kind === "stable" ? created.authority.lifecycle : "booting",
         url: `/s/${started.id}`,
         steered: started.kind === "steered",
