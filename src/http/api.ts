@@ -37,12 +37,20 @@ const NewConnection = Schema.Struct({
   name: ConnectionName,
 });
 const connectionPath = /^\/api\/connections\/([^/]+)$/;
+const RequestId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
+  Schema.makeFilter((id) => id.trim() !== "" && !id.startsWith("initial:"), {
+    expected: "a non-blank request id that does not start with initial:",
+  }),
+);
+const decodeRequestId = Schema.decodeUnknownEffect(RequestId);
 const Steer = Schema.Struct({
   text: Prompt,
   turn: Schema.String,
-  req: Schema.optional(Schema.String),
+  req: Schema.optional(RequestId),
 });
-const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(Schema.String) });
+const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(RequestId) });
 const path =
   /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log|hatch\/(\d{1,5})|files\/([a-f0-9]{32})))?$/;
 const GitHubToken = Schema.Struct({
@@ -71,6 +79,15 @@ const bad = (message: string, status = 400, hint?: string) =>
   HttpServerResponse.json(
     { error: { message, code: status === 404 ? "not_found" : "bad_request", hint } },
     { status },
+  );
+
+const idempotencyKey = (header: string | undefined) =>
+  decodeRequestId(header ?? crypto.randomUUID()).pipe(
+    Effect.catchTag("SchemaError", () =>
+      bad(
+        "Idempotency-Key must be non-blank, at most 256 characters, and must not start with initial:",
+      ),
+    ),
   );
 
 type ByteRange = { offset: number; length?: number } | { suffix: number };
@@ -324,6 +341,8 @@ export function apiHandler(
       });
     }
     if (url.pathname === "/api/sessions" && request.method === "POST") {
+      const retry = yield* idempotencyKey(request.headers["idempotency-key"]);
+      if (HttpServerResponse.isHttpServerResponse(retry)) return retry;
       const body = yield* Schema.decodeUnknownEffect(Create)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
@@ -338,7 +357,7 @@ export function apiHandler(
         ...(body.key === undefined
           ? {}
           : { key: body.key, origin: { kind: "api", key: body.key } }),
-        retry: request.headers["idempotency-key"] ?? crypto.randomUUID(),
+        retry,
       });
       if (started.kind === "refused") return yield* bad(started.message, 400, started.hint);
       if (started.kind === "conflict")
@@ -474,6 +493,8 @@ export function apiHandler(
     if (request.method === "POST" && subpath === "resume")
       return yield* HttpServerResponse.json(yield* stub.resume());
     if (request.method === "POST" && subpath === "steer") {
+      const retry = yield* idempotencyKey(request.headers["idempotency-key"]);
+      if (HttpServerResponse.isHttpServerResponse(retry)) return retry;
       const body = yield* Schema.decodeUnknownEffect(Steer)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
@@ -481,13 +502,15 @@ export function apiHandler(
       return yield* HttpServerResponse.json(
         yield* stub.request({
           kind: "prompt",
-          req: body.req ?? request.headers["idempotency-key"] ?? crypto.randomUUID(),
+          req: body.req ?? retry,
           turn: body.turn,
           text: body.text,
         }),
       );
     }
     if (request.method === "POST" && subpath === "interrupt") {
+      const retry = yield* idempotencyKey(request.headers["idempotency-key"]);
+      if (HttpServerResponse.isHttpServerResponse(retry)) return retry;
       const body = yield* Schema.decodeUnknownEffect(Interrupt)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
@@ -495,7 +518,7 @@ export function apiHandler(
       return yield* HttpServerResponse.json(
         yield* stub.request({
           kind: "interrupt",
-          req: body.req ?? request.headers["idempotency-key"] ?? crypto.randomUUID(),
+          req: body.req ?? retry,
           turn: body.turn,
           text: "",
         }),

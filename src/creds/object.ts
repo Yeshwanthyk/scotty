@@ -95,6 +95,11 @@ const FireRow = Schema.Struct({
   key: Schema.NullOr(Schema.String),
   scripted: Schema.Number,
 });
+const RunAnswer = Schema.Struct({
+  status: Schema.Literals(["started", "steered", "failed"]),
+  reason: Schema.NullOr(Schema.String),
+  session: Schema.NullOr(Schema.String),
+});
 const DueRow = Schema.Struct({ due: Schema.NullOr(Schema.Number) });
 const IdRow = Schema.Struct({ id: Schema.String });
 // How many runs are kept, and how many a list returns.
@@ -419,20 +424,32 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             yield* rearm;
             return runs;
           }),
-        // What a received run sends; null once it has an answer. Marks it tried, so the alarm
-        // fires it again only if this attempt never answers.
+        // What a received run sends, or its stored answer if another attempt settled it.
+        // Marks it tried, so the alarm fires it again only if this attempt never answers.
         takeRun: (id: string) =>
           Effect.gen(function* () {
             const row =
               (yield* sql`UPDATE runs SET tried = ${Date.now()} WHERE id = ${id} AND status = 'received' RETURNING automation, repo, agent, prompt, key, scripted`)[0];
             yield* rearm;
-            return row === undefined ? null : yield* Schema.decodeUnknownEffect(FireRow)(row);
+            if (row !== undefined)
+              return {
+                kind: "received" as const,
+                ...(yield* Schema.decodeUnknownEffect(FireRow)(row)),
+              };
+            const answer =
+              (yield* sql`SELECT status, reason, session FROM runs WHERE id = ${id} AND status IN ('started', 'steered', 'failed')`)[0];
+            return answer === undefined
+              ? null
+              : {
+                  kind: "settled" as const,
+                  ...(yield* Schema.decodeUnknownEffect(RunAnswer)(answer)),
+                };
           }),
         // The first answer for a run is its answer.
         settleRun: (
           id: string,
           outcome: {
-            status: "started" | "steered" | "failed";
+            status: (typeof RunAnswer.Type)["status"];
             reason?: string;
             session?: string;
           },
@@ -440,6 +457,11 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           Effect.gen(function* () {
             yield* sql`UPDATE runs SET status = ${outcome.status}, reason = ${outcome.reason ?? null}, session = ${outcome.session ?? null} WHERE id = ${id} AND status = 'received'`;
             yield* rearm;
+            const answer =
+              (yield* sql`SELECT status, reason, session FROM runs WHERE id = ${id}`)[0];
+            return answer === undefined
+              ? null
+              : yield* Schema.decodeUnknownEffect(RunAnswer)(answer);
           }),
         runs: (automation?: string) =>
           Effect.gen(function* () {

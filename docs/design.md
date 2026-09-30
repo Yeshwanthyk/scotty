@@ -105,13 +105,15 @@ Invariants are checked on every append. A violation appends an `invariant.violat
 
 Duplicate requests (the same `req`) do nothing. A prompt whose `turn` no longer matches is answered with `stale`, which the UI already understands.
 
+The API decodes `Idempotency-Key` on create, steer and interrupt before sending it to a Session DO. It must be non-blank, at most 256 characters and must not start with the reserved `initial:` prefix; invalid values return 400 with that rule. An explicit steer or interrupt body `req` uses the same schema and still takes precedence over a valid header. Without either, the API generates a UUID.
+
 ## Automations and runs
 
 An automation is created or replaced disabled. Calendar schedules use five cron fields and an explicit IANA zone; intervals count from enablement. A schedule more than ten minutes late is skipped. Event filters compare payload fields for equality or membership, and templates render the prompt and optional session key. A connection with listeners hands each verified delivery to those automations.
 
 Each firing records a run before starting anything. Event run IDs are `delivery:<connection>:<webhook-id>:<automation>`, so the same delivery keeps the same start request even if its run has left the 500-run log. The Session DO answers `created` as a started run and `steered` as a steered run. For `duplicate`, the session log's creator request identifies whether the first attempt started or steered; a retry adds nothing. `unavailable`, `conflict` and `refused` settle as failed with the reason. Only an attempt without an answer remains received and is retried every 60 seconds, for up to an hour.
 
-Deliveries use the plain delivery log. Runs link to sessions and read their turn outcome from the Session DO. Search uses the Creds DO index, including the automation name alongside the session's title, repository, branch, first prompt and key.
+Deliveries use the plain delivery log. Concurrent attempts return the run's stored first answer, including when another attempt settles it before they take it. Runs link to sessions and read their turn outcome from the Session DO. Search uses the Creds DO index, including the automation name alongside the session's title, repository, branch, first prompt and key.
 
 ## Supervisor
 

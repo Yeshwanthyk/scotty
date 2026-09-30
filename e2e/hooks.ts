@@ -25,6 +25,9 @@ const Answer = Schema.fromJsonString(Schema.Struct({ session: Schema.String }));
 const Status = Schema.fromJsonString(
   Schema.Struct({ status: Schema.String, session: Schema.optional(Schema.NullOr(Schema.String)) }),
 );
+const BadRequest = Schema.Struct({
+  error: Schema.Struct({ code: Schema.Literal("bad_request"), message: Schema.String }),
+});
 const answered = (text: string) =>
   Schema.decodeUnknownEffect(Answer)(text).pipe(Effect.map((x) => x.session));
 const base64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
@@ -78,7 +81,8 @@ const deliver = (
 
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
-  const request = client({ url, token: yield* access(url) });
+  const token = yield* access(url);
+  const request = client({ url, token });
   const name = `e2e-${crypto.randomUUID().slice(0, 8)}`;
   const connection = yield* request("/api/connections", ConnectionCreated, {
     method: "POST",
@@ -288,6 +292,57 @@ const program = Effect.gen(function* () {
   );
   const changed = yield* create("say something else").pipe(Effect.flip);
   yield* check(changed.code === "key_conflict", `A changed retry gave ${changed.code}`);
+
+  // Invalid header IDs are rejected before any create, steer or interrupt reaches a session.
+  const cases = [
+    {
+      path: "/api/sessions",
+      body: {
+        title: "invalid request id",
+        repo: fixtureRepo,
+        prompt: "say no",
+        provider: "cloudflare",
+        ...sessionAgent,
+      },
+    },
+    {
+      path: `/api/sessions/${made.id}/steer`,
+      body: { text: "say no", turn: "1", req: "valid-body" },
+    },
+    { path: `/api/sessions/${made.id}/interrupt`, body: { turn: "1", req: "valid-body" } },
+  ];
+  for (const key of ["initial:reserved", "", " ", "x".repeat(257)]) {
+    for (const input of cases) {
+      const answer = yield* Effect.tryPromise({
+        try: async (signal) => {
+          const response = await fetch(`${url}${input.path}`, {
+            method: "POST",
+            signal,
+            headers: {
+              "cf-access-token": token,
+              "content-type": "application/json",
+              "idempotency-key": key,
+            },
+            body: JSON.stringify(input.body),
+          });
+          const body: unknown = await response.json();
+          return { status: response.status, body };
+        },
+        catch: () => failure("hooks", "Invalid-ID request did not answer", "scotty doctor"),
+      });
+      yield* check(
+        answer.status === 400,
+        `${input.path} with an invalid ID answered ${answer.status}`,
+      );
+      const error = yield* Schema.decodeUnknownEffect(BadRequest)(answer.body);
+      yield* check(
+        error.error.message.includes("Idempotency-Key"),
+        "Invalid ID has no clear message",
+      );
+    }
+  }
+  console.log("Invalid Idempotency-Key headers return 400 for create, steer and interrupt");
+
   yield* request(`/api/sessions/${made.id}/stop`, View, { method: "POST" }).pipe(Effect.ignore);
   console.log("A retried keyed create: one turn; with another prompt: 409");
 

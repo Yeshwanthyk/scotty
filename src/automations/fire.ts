@@ -21,6 +21,12 @@ export function fireRun(
   return Effect.gen(function* () {
     const run = yield* credential.takeRun(id);
     if (run === null) return null;
+    if (run.kind === "settled")
+      return {
+        status: run.status,
+        ...(run.reason === null ? {} : { reason: run.reason }),
+        ...(run.session === null ? {} : { session: run.session }),
+      };
     const key = run.key === null ? {} : { key: run.key };
     const started = yield* startSession(sessions, credential, {
       repo: run.repo,
@@ -56,8 +62,14 @@ export function fireRun(
                 session: started.id,
               }
             : { status: "failed", reason: "session not taking prompts", session: started.id };
-    yield* credential.settleRun(id, outcome);
-    return outcome;
+    const settled = yield* credential.settleRun(id, outcome);
+    return settled === null
+      ? null
+      : {
+          status: settled.status,
+          ...(settled.reason === null ? {} : { reason: settled.reason }),
+          ...(settled.session === null ? {} : { session: settled.session }),
+        };
   });
 }
 
