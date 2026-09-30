@@ -677,8 +677,8 @@ kbd {
 .header-title {
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
   margin-right: auto;
 }
 
@@ -695,21 +695,45 @@ kbd {
 .crumbs {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
-  color: var(--quiet);
-  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
 }
 
-.crumbs .icon {
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1;
+}
+
+.chip .icon {
+  flex: none;
   color: var(--quiet);
 }
 
-.crumbs span {
+.chip-text {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.chip-owner {
+  color: var(--quiet);
+}
+
+.chip-name {
+  color: var(--ink);
+  font-weight: 500;
 }
 
 .header-actions {
@@ -2454,8 +2478,14 @@ button.diff-line {
   }
 
   .crumbs {
-    font-size: 11.5px;
     max-width: 100%;
+    margin-top: 2px;
+  }
+
+  .chip {
+    height: 18px;
+    padding: 0 5px;
+    font-size: 11px;
   }
 
   .thread-inner {

@@ -212,14 +212,14 @@ function SessionView({ sessionId }: { sessionId: string }) {
           <h1>{detail?.display.title ?? " "}</h1>
           {detail ? (
             <span className="crumbs">
-              <Icon name="branch" size={12} />
-              <span>
-                {detail.display.repository}
-                {/* Scotty's own branch name is the session id; only a chosen branch is worth showing. */}
-                {detail.display.branch && !detail.display.branch.startsWith("scotty/")
-                  ? ` · ${detail.display.branch}`
-                  : ""}
-              </span>
+              <RepoChip repository={detail.display.repository} />
+              {/* Scotty's own branch name is the session id; only a chosen branch is worth showing. */}
+              {detail.display.branch && !detail.display.branch.startsWith("scotty/") ? (
+                <span className="chip" title={detail.display.branch}>
+                  <Icon name="branch" size={12} />
+                  <span className="chip-text">{detail.display.branch}</span>
+                </span>
+              ) : null}
             </span>
           ) : null}
         </div>
@@ -389,5 +389,21 @@ function ThreadPlaceholder() {
       <div className="skeleton" style={{ height: 10, width: "85%" }} />
       <div className="skeleton" style={{ height: 10, width: "70%" }} />
     </div>
+  );
+}
+
+// "owner / repo", with the repository itself carrying the weight.
+function RepoChip({ repository }: { repository: string }) {
+  const slash = repository.lastIndexOf("/");
+  const owner = slash > 0 ? repository.slice(0, slash) : "";
+  const name = repository.slice(slash + 1) || "No repository";
+  return (
+    <span className="chip" title={repository}>
+      <Icon name="repo" size={12} />
+      <span className="chip-text">
+        {owner ? <span className="chip-owner">{owner}/</span> : null}
+        <span className="chip-name">{name}</span>
+      </span>
+    </span>
   );
 }
