@@ -52,7 +52,12 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+        # A rerun replaces the files of a release the first run published.
         run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/out/* --clobber
+            exit 0
+          fi
           gh release create "$GITHUB_REF_NAME" dist/out/* --title "Scotty $VERSION" \
             --notes "Install with brew install yeshwanthyk/scotty/scotty, or: curl -fsSL https://github.com/Yeshwanthyk/scotty/releases/latest/download/install.sh | sh"
       - name: Update the brew tap
