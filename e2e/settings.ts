@@ -65,12 +65,12 @@ const addSkill = (url: string) =>
     ),
   );
 
-// Lists what start installed: the skill folders and the markers in the agent's instructions.
-const instructions = {
-  codex: '"${CODEX_HOME:-$HOME/.codex}/AGENTS.md"',
-  claude: '"$HOME/.claude/CLAUDE.md"',
+// Lists what start installed: the agent's skill folders and the markers in its instructions.
+const { skills, instructions } = {
+  codex: { skills: "~/.agents/skills", instructions: '"${CODEX_HOME:-$HOME/.codex}/AGENTS.md"' },
+  claude: { skills: "~/.claude/skills", instructions: "~/.claude/CLAUDE.md" },
 }[agent];
-const command = `ls ~/.agents/skills; grep -rho "[A-Z]*MARK-[A-Z0-9-]*" ~/.agents/skills ${instructions}`;
+const command = `ls ${skills}; grep -rho "[A-Z]*MARK-[A-Z0-9-]*" ${skills} ${instructions}`;
 const probe = prompt(
   `Run exactly: \`${command}\` and reply with its full output only.`,
   `run ${command}\nsay {{out}}`,
@@ -113,7 +113,10 @@ const program = Effect.gen(function* () {
     });
   const first = yield* reply("0");
   yield* check(first.includes(name) && first.includes(skillMark), "Skill not installed");
-  yield* check(first.includes(firstMark), "Owner instructions not in AGENTS.md");
+  yield* check(
+    first.includes(firstMark),
+    "Owner instructions not in the agent's instructions file",
+  );
   console.log("Start: skill and owner marker present");
 
   // 3. Skill off and new instructions; a stop and resume picks up both.
