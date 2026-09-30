@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
-import { deadline, deadlines, fold, initial } from "./fold.js";
+import { deadline, deadlines, fold, initial, type State } from "./fold.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
 describe("session fold", () => {
@@ -29,7 +29,8 @@ describe("session fold", () => {
     expect(state.requests[0]?.status).toBe("pending");
     state = fold(state, delivered);
     expect(state.phase).toBe("running");
-    expect(deadline(state)).toBeUndefined();
+    // The open turn stalls only after the agent is silent that long.
+    expect(state.pending).toEqual([{ op: "stalled", due: delivered.at + deadlines.stalled }]);
     check(state);
   });
 
@@ -75,7 +76,7 @@ describe("session fold", () => {
     expect(command(state, interrupt)).toEqual({ kind: "interrupt", req: "i" });
     state = fold(state, make(10, "prompt.delivered", { req: "i" }));
     expect(state.requests.find((item) => item.req === "i")?.status).toBe("delivered");
-    expect(deadline(state)).toBeUndefined();
+    expect(state.pending).toEqual([{ op: "stalled", due: 10_000 + deadlines.stalled }]);
     check(state);
   });
 
@@ -317,21 +318,26 @@ describe("session fold", () => {
   });
 
   it("resumes on a steer to a stopped session and resends it once the workspace is ready", () => {
-    const steer = make(8, "prompt.requested", { req: "s1", turn: "0", text: "again", images: [] });
-    let state = fold(stoppedWithThread(), steer);
+    // The stop interrupted turn 0, so the steer starts turn 1.
+    const stale = make(8, "prompt.requested", { req: "s0", turn: "0", text: "late", images: [] });
+    let state = fold(stoppedWithThread(), stale);
+    expect(state.requests.find((r) => r.req === "s0")?.status).toBe("stale");
+    expect(state.phase).toBe("stopped");
+    const steer = make(9, "prompt.requested", { req: "s1", turn: "1", text: "again", images: [] });
+    state = fold(state, steer);
     expect(command(state, steer)).toEqual({ kind: "container.start", gen: 2, fresh: true });
     expect(state.requests.find((r) => r.req === "s1")?.status).toBe("pending");
     check(state);
-    state = fold(state, make(9, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" }));
-    const resumed = make(10, "workspace.ready", { gen: 2, n: 2, branch: "main", commit: "abc" });
+    state = fold(state, make(10, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" }));
+    const resumed = make(11, "workspace.ready", { gen: 2, n: 2, branch: "main", commit: "abc" });
     state = fold(state, resumed);
     expect(state.phase).toBe("running");
     expect(state.requests.some((r) => r.req === "initial:2")).toBe(false);
-    expect(state.pending.find((p) => p.op === "req:s1")?.due).toBe(10_000 + deadlines.prompt);
+    expect(state.pending.find((p) => p.op === "req:s1")?.due).toBe(11_000 + deadlines.prompt);
     expect(command(state, resumed)).toEqual({
       kind: "resend",
       gen: 2,
-      requests: [{ req: "s1", kind: "prompt", turn: "0", text: "again" }],
+      requests: [{ req: "s1", kind: "prompt", turn: "1", text: "again" }],
     });
     check(state);
   });
@@ -356,6 +362,179 @@ describe("session fold", () => {
       ["f2", "1"],
     ]);
     expect(command(state, late)).toBeUndefined();
+    check(state);
+  });
+
+  it("re-arms the watch deadline on each watch, re-watches when it fires and drops it on a stop", () => {
+    const watches = (state: State) => state.pending.filter((item) => item.op === "watch");
+    let state = fold(boot(), make(6, "container.watched", { gen: 1 }));
+    expect(watches(state)).toEqual([{ op: "watch", due: 6_000 + deadlines.watch }]);
+    state = fold(state, make(7, "container.watched", { gen: 1 }));
+    expect(watches(state)).toEqual([{ op: "watch", due: 7_000 + deadlines.watch }]);
+    const early = decodeSessionEvent({
+      seq: 8,
+      at: 8_000,
+      src: "alarm",
+      kind: "timeout",
+      op: "watch",
+    });
+    state = fold(state, early);
+    expect(watches(state)).toHaveLength(1);
+    const due = decodeSessionEvent({
+      seq: 9,
+      at: 7_000 + deadlines.watch,
+      src: "alarm",
+      kind: "timeout",
+      op: "watch",
+    });
+    state = fold(state, due);
+    expect(watches(state)).toEqual([]);
+    expect(command(state, due)).toEqual({ kind: "watch", gen: 1 });
+    state = fold(state, make(10, "container.watched", { gen: 1 }));
+    const crashed = decodeSessionEvent({
+      seq: 11,
+      at: 11_000,
+      src: "session",
+      kind: "container.stopped",
+      gen: 1,
+      reason: "crashed",
+      exitCode: 137,
+    });
+    state = fold(state, crashed);
+    expect(state.phase).toBe("stopped");
+    expect(state.pending).toEqual([]);
+    expect(command(state, crashed)).toEqual({ kind: "destroy" });
+    state = fold(state, make(12, "container.watched", { gen: 1 }));
+    expect(state.pending).toEqual([]);
+    check(state);
+  });
+
+  it("sleeps an idle session after its window, pushed back by prompts and use", () => {
+    const timeout = (seq: number, at: number) =>
+      decodeSessionEvent({ seq, at, src: "alarm", kind: "timeout", op: "idle" });
+    let state = fold(boot(), make(6, "turn.ended", { gen: 1, turn: "0", state: "completed" }));
+    expect(state.pending.map((item) => item.op)).toEqual(["save"]);
+    state = fold(state, make(7, "save.done", { turn: "0" }));
+    expect(state.pending).toEqual([{ op: "idle", due: 7_000 + deadlines.idle }]);
+    state = fold(state, make(8, "active"));
+    expect(state.pending).toEqual([{ op: "idle", due: 8_000 + deadlines.idle }]);
+    const early = timeout(9, 9_000);
+    state = fold(state, early);
+    expect(command(state, early)).toBeUndefined();
+    state = fold(
+      state,
+      make(10, "prompt.requested", { req: "p", turn: "1", text: "more", images: [] }),
+    );
+    expect(state.pending.map((item) => item.op).sort()).toEqual(["req:p", "stalled"]);
+    state = fold(state, make(11, "prompt.delivered", { req: "p" }));
+    state = fold(state, make(12, "turn.ended", { gen: 1, turn: "1", state: "completed" }));
+    state = fold(state, make(13, "save.failed", { turn: "1", code: "save_failed" }));
+    expect(state.pending).toEqual([{ op: "idle", due: 13_000 + deadlines.idle }]);
+    const settledState = state;
+    const state0 = () => settledState;
+    const due = timeout(14, 13_000 + deadlines.idle);
+    state = fold(state, due);
+    expect(command(state, due)).toEqual({ kind: "idle", gen: 1, seq: 14 });
+    // The next window starts at once, for when the Session DO finds the owner still at it.
+    expect(state.pending).toEqual([{ op: "idle", due: due.at + deadlines.idle }]);
+    const slept = make(15, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 });
+    state = fold(state, slept);
+    expect(state).toMatchObject({ phase: "stopped", stop: { reason: "idle" }, pending: [] });
+    expect(command(state, slept)).toEqual({ kind: "destroy" });
+    check(state);
+    // A steer that lands while the Session DO checks for use keeps the session awake.
+    const woke = fold(
+      fold(
+        fold(state0(), timeout(14, 13_000 + deadlines.idle)),
+        make(15, "prompt.requested", { req: "q", turn: "2", text: "again", images: [] }),
+      ),
+      make(16, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 }),
+    );
+    expect(woke).toMatchObject({ phase: "running", stop: undefined });
+    check(woke);
+    // So does a steer whose turn and save both finish before the check's verdict lands.
+    const checking = () => fold(state0(), timeout(14, 13_000 + deadlines.idle));
+    const finished = [
+      make(15, "prompt.requested", { req: "q", turn: "2", text: "again", images: [] }),
+      make(16, "prompt.delivered", { req: "q" }),
+      make(17, "turn.ended", { gen: 1, turn: "2", state: "completed" }),
+      make(18, "save.done", { turn: "2" }),
+      make(19, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 }),
+    ].reduce(fold, checking());
+    expect(finished).toMatchObject({ phase: "running", stop: undefined });
+    check(finished);
+    // And use the Session DO records during the check.
+    const used = [
+      make(15, "active"),
+      make(16, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 }),
+    ].reduce(fold, checking());
+    expect(used).toMatchObject({ phase: "running", stop: undefined });
+    check(used);
+    const short = make(1, "created", { ...created, idleAfter: 30_000 });
+    const quick = [short, start, hello, ready, delivered].reduce(fold, initial);
+    const settled = fold(
+      fold(quick, make(6, "turn.ended", { gen: 1, turn: "0", state: "completed" })),
+      make(7, "save.done", { turn: "0" }),
+    );
+    expect(settled.pending).toEqual([{ op: "idle", due: 7_000 + 30_000 }]);
+  });
+
+  it("interrupts a stalled turn, then stops once its save settles or it never ends", () => {
+    const timeout = (seq: number, at: number) =>
+      decodeSessionEvent({ seq, at, src: "alarm", kind: "timeout", op: "stalled" });
+    let state = boot();
+    expect(state.pending).toEqual([{ op: "stalled", due: 5_000 + deadlines.stalled }]);
+    const stall = timeout(6, 5_000 + deadlines.stalled);
+    state = fold(state, stall);
+    expect(command(state, stall)).toEqual({ kind: "interrupt", req: "stalled:0" });
+    expect(state.pending).toEqual([
+      { op: "req:stalled:0", due: stall.at + deadlines.interrupt },
+      { op: "stalled", due: stall.at + deadlines.interrupt + deadlines.save },
+    ]);
+    check(state);
+    let ended = fold(state, make(7, "turn.ended", { gen: 1, turn: "0", state: "interrupted" }));
+    expect(ended.pending.map((item) => item.op)).toEqual(["save"]);
+    const saved = make(8, "save.done", { turn: "0" });
+    ended = fold(ended, saved);
+    expect(ended).toMatchObject({ phase: "stopped", stop: { reason: "stalled" }, pending: [] });
+    expect(command(ended, saved)).toEqual({ kind: "destroy" });
+    check(ended);
+    // The owner's next turn outlives the stalled turn's save.
+    const next = fold(
+      fold(
+        fold(state, make(7, "turn.ended", { gen: 1, turn: "0", state: "interrupted" })),
+        make(8, "prompt.requested", { req: "p", turn: "1", text: "go on", images: [] }),
+      ),
+      make(9, "save.done", { turn: "0" }),
+    );
+    expect(next).toMatchObject({ phase: "running", stop: undefined, currentTurn: "1" });
+    check(next);
+    // A turn that ignores the interrupt stops at the next stalled deadline.
+    const again = timeout(7, stall.at + deadlines.interrupt + deadlines.save);
+    state = fold(state, again);
+    expect(state).toMatchObject({
+      phase: "stopped",
+      stop: { reason: "stalled" },
+      currentTurn: "1",
+      pending: [],
+    });
+    expect(command(state, again)).toEqual({ kind: "destroy" });
+    check(state);
+  });
+
+  it("resumes a retryable failure and leaves one that is not retryable failed", () => {
+    const retryable = make(6, "failed", { phase: "start", code: "start_failed", retryable: true });
+    let state = fold(boot(), retryable);
+    expect(state).toMatchObject({ phase: "failed", currentTurn: "1" });
+    expect(state.turns.at(-1)).toEqual({ turn: "0", codexTurn: "", state: "interrupted" });
+    const requested = make(7, "resume.requested");
+    state = fold(state, requested);
+    expect(state).toMatchObject({ phase: "provisioning", gen: 2, failure: undefined });
+    expect(command(state, requested)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    check(state);
+    const fatal = make(6, "failed", { phase: "start", code: "broken", retryable: false });
+    state = fold(fold(boot(), fatal), make(7, "resume.requested"));
+    expect(state.phase).toBe("failed");
     check(state);
   });
 });

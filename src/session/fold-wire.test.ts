@@ -4,14 +4,15 @@ import { fold, initial, invariants, type State } from "./fold.js";
 import { boot, check, created, hello, make, start } from "./fold-fixtures.js";
 
 describe("supervisor outputs", () => {
-  it("fails a generation when its supervisor boot identity changes", () => {
+  it("stops a generation whose container a deploy replaced, and destroys the replacement", () => {
     let state = fold(fold(fold(initial, created), start), hello);
     state = fold(state, make(4, "socket.closed", { gen: 1 }));
     const replacement = make(5, "sup.hello", { gen: 1, n: 1, boot: "boot-2", version: "v1" });
     state = fold(state, replacement);
-    expect(state.phase).toBe("failed");
-    expect(state.failure).toEqual({ code: "supervisor_restarted", retryable: true });
-    expect(command(state, replacement)).toBeUndefined();
+    expect(state.phase).toBe("stopped");
+    expect(state.stop).toEqual({ reason: "deploy" });
+    expect(state.failure).toBeUndefined();
+    expect(command(state, replacement)).toEqual({ kind: "destroy" });
     check(state);
   });
 

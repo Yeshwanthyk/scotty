@@ -3,18 +3,34 @@ import { useEffect, useState } from "react";
 import scottyMark from "../assets/brand/scotty-mark-128.png?url";
 import type { Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { ago, grouped, statusLabel, statusOf, type Status } from "../data/status";
+import {
+  ago,
+  dormant,
+  grouped,
+  statusLabel,
+  statusOf,
+  stopLabel,
+  type Status,
+} from "../data/status";
 import { Icon, Spinner } from "./Icon";
 
-export function StatusMark({ status }: { status: Status }) {
+export function StatusMark({ status, title }: { status: Status; title?: string }) {
   return (
-    <span className="status-mark" data-status={status} title={statusLabel[status]}>
+    <span
+      className="status-mark"
+      data-status={status}
+      title={title ?? statusLabel[status]}
+      role="img"
+      aria-label={title ?? statusLabel[status]}
+    >
       {status === "working" || status === "starting" ? (
         <Spinner size={13} />
       ) : status === "failed" ? (
         <Icon name="alert" size={14} />
       ) : status === "unseen" ? (
         <span className="dot" />
+      ) : status === "asleep" ? (
+        <Icon name="moon" size={13} />
       ) : status === "stopped" ? (
         <Icon name="branch" size={14} />
       ) : (
@@ -30,8 +46,8 @@ function Meta({ session, status }: { session: Session; status: Status }) {
   // Codex is the default; only other agents are named.
   const agent =
     session.display.agentKind === "claude" ? <span className="agent-tag">Claude</span> : null;
-  const loud =
-    status === "working" || status === "starting" || status === "failed" || status === "unseen";
+  // The spinner already says working; starting shares it, so only starting is spelled out.
+  const loud = status === "starting" || status === "failed" || status === "unseen";
   return (
     <span className="meta">
       {agent}
@@ -59,7 +75,14 @@ function Row({ session, current }: { session: Session; current: boolean }) {
       data-status={status}
       aria-current={current ? "page" : undefined}
     >
-      <StatusMark status={status} />
+      <StatusMark
+        status={status}
+        title={
+          status === "stopped" && session.authority.kind === "stable"
+            ? stopLabel(session.authority.stop)
+            : undefined
+        }
+      />
       <span className="title">{session.display.title}</span>
       <Meta session={session} status={status} />
     </Link>
@@ -108,11 +131,11 @@ export function Sidebar({
   const currentId = "sessionId" in params ? params.sessionId : undefined;
   useMinuteTick();
   const [showStopped, toggleStopped] = useStoppedOpen();
-  // Stopped sessions hold no container; they fold away below the ones still running.
+  // Asleep and stopped sessions hold no container; they fold away below the ones still running.
   const all = list ?? [];
-  const live = grouped(all.filter((session) => statusOf(session) !== "stopped"));
+  const live = grouped(all.filter((session) => !dormant(statusOf(session))));
   const stopped = all
-    .filter((session) => statusOf(session) === "stopped")
+    .filter((session) => dormant(statusOf(session)))
     .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
   const viewingStopped = stopped.some((session) => session.identity.id === currentId);
   return (

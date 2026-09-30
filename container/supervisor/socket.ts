@@ -1,7 +1,18 @@
 import { Effect, Option, Queue, Result, Schema } from "effect";
-import { ToSupervisor, type ToSupervisorMessage } from "../../protocol/supervisor.js";
+import {
+  type Terminals,
+  ToSupervisor,
+  type ToSupervisorMessage,
+} from "../../protocol/supervisor.js";
 import { processEnv } from "./runtime.js";
-import { closeTerminal, decodeSize, openTerminal, type Size, terminalInput } from "./terminal.js";
+import {
+  closeTerminal,
+  decodeSize,
+  openTerminal,
+  openTerminals,
+  type Size,
+  terminalInput,
+} from "./terminal.js";
 import { acknowledge, dial, emit, initialWire, type Output } from "./wire.js";
 
 // A terminal socket carries its size; every other socket is the Session DO's wire.
@@ -216,6 +227,10 @@ export const serve = (
             }),
           ),
         );
+      }
+      if (url.pathname === "/terminals") {
+        const reply: typeof Terminals.Type = { open: openTerminals() };
+        return Response.json(reply);
       }
       if (url.pathname === "/terminal") {
         const gen = wire.gen;

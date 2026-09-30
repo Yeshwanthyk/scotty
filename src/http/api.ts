@@ -34,6 +34,10 @@ const Create = Schema.Struct({
   agent: Schema.optional(AgentKind),
   // The agent's scripted stand-in, for e2e: no ChatGPT, Claude or GitHub sign-in needed.
   scripted: Schema.optional(Schema.Literal(true)),
+  // A shorter idle window, so e2e can watch a scripted session sleep.
+  idleAfter: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 10_000, maximum: 600_000 })),
+  ),
 });
 const Steer = Schema.Struct({
   text: Prompt,
@@ -190,6 +194,8 @@ export function apiHandler(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      if (body.idleAfter !== undefined && body.scripted !== true)
+        return yield* bad("idleAfter is only for scripted sessions");
       const baseBranch =
         body.repo === fixtureRepo
           ? "main"
@@ -215,6 +221,7 @@ export function apiHandler(
         agentKind: body.agent ?? "codex",
         image: "default",
         ...(body.scripted === true ? { scripted: true } : {}),
+        ...(body.idleAfter === undefined ? {} : { idleAfter: body.idleAfter }),
       });
       return yield* HttpServerResponse.json({
         id,

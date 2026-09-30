@@ -87,7 +87,7 @@ it.prop(
         }
         if (
           (kind === "prompt.requested" || kind === "interrupt.requested") &&
-          chosen.startsWith("initial:")
+          (chosen.startsWith("initial:") || chosen.startsWith("stalled:"))
         )
           fields.req = "client-p";
         if (kind === "sup.error" && !step.withReq) delete fields.req;
@@ -136,7 +136,8 @@ it.prop(
             before.boot !== undefined &&
             before.boot !== event.boot
           ) {
-            expect(state.failure).toEqual({ code: "supervisor_restarted", retryable: true });
+            expect(state).toMatchObject({ phase: "stopped", stop: { reason: "deploy" } });
+            expect(issued).toEqual({ kind: "destroy" });
             bump("boot changed");
           } else if (before.connected) {
             expect(state).toEqual({ ...before, lastSeq: event.seq });
@@ -187,6 +188,8 @@ it.prop(
         }
         if (event.kind === "turn.ended" && state.turns.length > before.turns.length)
           bump("turn advanced");
+        if (issued?.kind === "idle") bump("idle");
+        if (state.stop?.reason === "stalled" && live(before)) bump("stalled");
         if (event.kind === "sup.hello" && state.connected && !before.connected)
           bump(before.ready ? "reconnect ready" : "hello before ready");
         if (
@@ -216,4 +219,6 @@ it("covers generated paths", () => {
   expect(hits["resume"]).toBeGreaterThan(0);
   expect(hits["error pending failed"]).toBeGreaterThan(0);
   expect(hits["error settled request"]).toBeGreaterThan(0);
+  expect(hits["idle"]).toBeGreaterThan(0);
+  expect(hits["stalled"]).toBeGreaterThan(0);
 });

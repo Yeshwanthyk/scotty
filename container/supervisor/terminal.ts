@@ -59,6 +59,7 @@ export function openTerminal(peer: TerminalPeer, size: Size): void {
       },
     });
     shells.set(peer, shell);
+    open++;
     void shell.exited.then(() => peer.close());
   } catch {
     peer.close();
@@ -76,8 +77,12 @@ export function terminalInput(peer: TerminalPeer, data: string | Uint8Array): vo
   if (resize !== undefined) pty.resize(resize.cols, resize.rows);
 }
 
+let open = 0;
+export const openTerminals = (): number => open;
+
 export function closeTerminal(peer: TerminalPeer): void {
   const shell = shells.get(peer);
+  if (shell !== undefined) open--;
   shells.delete(peer);
   shell?.terminal?.close();
   shell?.kill();
