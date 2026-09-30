@@ -24,7 +24,7 @@ import { conversationView, sessionView } from "./view.js";
 export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
   "SessionContainer",
   Effect.gen(function* () {
-    // Runtime-only default; alchemy.run.ts rejects a missing SCOTTY_IMAGE before any deploy.
+    // deploy/deployer.ts sets SCOTTY_IMAGE on the Worker; the default is never used.
     const image = yield* Config.String("SCOTTY_IMAGE").pipe(Config.withDefault(""));
     const { stage } = yield* Stack;
     return {
@@ -55,7 +55,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
     yield* bindSessionContainer(SessionContainer);
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(SessionArtifacts);
     return Effect.gen(function* () {
-      // The container handle exists only at run time, not while Alchemy plans the deploy.
+      // The container handle exists only at run time.
       const container = storage.container;
       if (container === undefined) return yield* Effect.die("Session container binding missing");
       // ctx.exports is typed {} without a GlobalProps declaration; its default export is the
@@ -169,8 +169,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 return;
               }
               const [agent, git] = signedIn.value;
-              // Read through Config: the raw env holds Alchemy's redacted marker, not the value.
-              // alchemy.run.ts rejects a missing SCOTTY_HATCH_BASE before any deploy.
+              // The deployer always sets SCOTTY_HATCH_BASE to the stage's domain.
               const hatchBase = yield* Effect.orDie(Config.String("SCOTTY_HATCH_BASE"));
               // Resume only when the save reached the new container; otherwise start clean.
               const restored =

@@ -14,7 +14,7 @@ Scotty runs Codex sessions in Cloudflare Containers, driven from a phone-friendl
 - **Real credentials live in the Creds DO.** Two exceptions, each given only to its own agent's process:
   - A Codex process gets the short-lived ChatGPT access token in its `config.toml` (chatgpt.com blocks Worker traffic, spike 1e). It is never in an environment variable, so commands the agent runs don't inherit it.
   - A Claude process gets the owner's `claude setup-token` token as `CLAUDE_CODE_OAUTH_TOKEN` in its own environment. Claude Code strips it from the commands it runs (spike 10a). The owner accepted (2026-09-28) that code in the container can read it.
-  - The ChatGPT refresh token and every other real token stay in the Creds DO. Otherwise a real token never goes into container files, process arguments, logs, the event log, git config, R2, API responses, or Alchemy props, outputs or state.
+  - The ChatGPT refresh token and every other real token stay in the Creds DO. Otherwise a real token never goes into container files, process arguments, logs, the event log, git config, R2, API responses, or Worker bindings.
 - **Single user.** Cloudflare Access is the login. Don't add pairing, roles or multi-tenant machinery.
 - **Names are explicit.** Never derive a stage or account name from a username, machine, repository or Cloudflare account.
 - **`ui/` stays as it is** unless a plan step says to change it.
@@ -28,7 +28,7 @@ Scotty runs Codex sessions in Cloudflare Containers, driven from a phone-friendl
 - Use Effect where typed errors, services, scopes or Schema help: the Worker, the DOs, the supervisor and the CLI. Write pure code as plain functions.
 - Decode untrusted input with Schema where it enters: HTTP, WebSocket messages, R2 objects, OAuth responses, CLI arguments. No `any`, no casts that hide a type, no non-null assertions.
 - Don't put plan step numbers in code, titles or messages; the plan's numbering changes.
-- All infrastructure lives in `alchemy.run.ts`. Don't patch dependencies unless a failure is shown and written down in `docs/design.md`.
+- All infrastructure is made by `deploy/deployer.ts`, by name. Don't patch dependencies unless a failure is shown and written down in `docs/design.md`.
 
 ## Tests
 

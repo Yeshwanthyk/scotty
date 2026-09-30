@@ -31,15 +31,14 @@ npm install
 
 Check the toolchain: `npm run fmt && npm run lint && npm run typecheck && npm run ui:build && npm test`. All should pass on a clean checkout.
 
-## 3. Cloudflare credentials for Alchemy
+## 3. Cloudflare API token
 
-Alchemy (the infrastructure tool, `alchemy.run.ts`) deploys with a local profile named `default`:
+`scotty init`, `deploy` and `teardown` call Cloudflare with an API token. In a terminal they open the dashboard's token page with the permissions filled in; create the token and paste it. The token is used for that run only and never saved. To deploy without a prompt (e2e), set `CLOUDFLARE_API_TOKEN`. Keep it in the macOS Keychain rather than a file:
 
 ```sh
-npx alchemy profile edit --add Cloudflare
+security add-generic-password -a "$USER" -s scotty-cloudflare -w     # prompts for the token
+export CLOUDFLARE_API_TOKEN=$(security find-generic-password -s scotty-cloudflare -w)
 ```
-
-This opens a browser OAuth flow. Grant the account that will host Scotty, including Workers, Durable Objects, R2, Containers and Access. The profile lives under your home directory, not in the repo. Alchemy's deploy state lives in `.alchemy/` at the repository root (git-ignored); keep it, since deleting it makes Alchemy forget what it created.
 
 `CLOUDFLARE_ACCOUNT_ID` (section 5) is the account's 32-character ID from the dashboard URL or `Workers & Pages` overview.
 
@@ -89,6 +88,7 @@ The e2e tests read the environment instead. Create `work/dev-env.sh` (`work/` is
 
 ```sh
 export CLOUDFLARE_ACCOUNT_ID=<32-hex account id>
+export CLOUDFLARE_API_TOKEN=$(security find-generic-password -s scotty-cloudflare -w)   # section 3
 export SCOTTY_OWNER_EMAIL=<owner email>
 export SCOTTY_HATCH_BASE=<zone>
 export SCOTTY_HATCH_ZONE_ID=<32-hex zone id>
@@ -104,7 +104,7 @@ Load it in every shell that tests: `. work/dev-env.sh`.
 npm run --silent scotty -- deploy
 ```
 
-This builds the UI, copies the image in `container/image.digest` into `registry.cloudflare.com`, then runs `alchemy deploy --profile default` for the config's stage. Alchemy creates the Worker on the config's host (DNS record and certificate included) and the Access application and its policy (owner email only).
+This builds the UI and a release, copies the image in `container/image.digest` into `registry.cloudflare.com`, then makes or updates the config's stage over the Cloudflare API: the Worker on the config's host (DNS record and certificate included), its container app and bucket, the Access application (owner email only), and the preview record and route. `scotty teardown` removes them by name.
 
 Never deploy to `production`, to any `scotty-baseline-*` stage, or to a name derived from a user, machine or account.
 
@@ -167,7 +167,7 @@ Useful CLI commands (`scotty --help` lists them all): `doctor`, `login chatgpt|g
 | `access_login` error, exit 3                    | `cloudflared access login "$SCOTTY_URL"`                                           |
 | `doctor` says ChatGPT not signed in or expiring | `npm run --silent scotty -- login chatgpt`                                         |
 | `doctor` says Claude missing or expiring        | `npm run --silent scotty -- login claude`                                          |
-| Deploy fails before Alchemy runs                | Check `container/image.digest` is a `@sha256:` ref and the Docker Hub image exists |
-| Deploy fails with a Cloudflare auth error       | `npx alchemy profile edit --add Cloudflare` again                                  |
+| Deploy fails copying the image                  | Check `container/image.digest` is a `@sha256:` ref and the Docker Hub image exists |
+| Deploy fails with a Cloudflare auth error       | Create a new token from the page `scotty deploy` opens                             |
 | `vendor/` is empty                              | `git submodule update --init vendor/effect vendor/alchemy`                         |
 | A session fails                                 | `npm run --silent scotty -- log <id>`; then plan.md "When something breaks"        |

@@ -11,7 +11,7 @@ is lost or duplicated.
 
 ## Entry points
 
-- CLI `scotty steer | read | log`, plus `npm run deploy -- --stage <stage>` (owner authorized).
+- CLI `scotty steer | read | log`, plus `scotty deploy` for the configured stage (owner authorized).
 
 ## Drive
 

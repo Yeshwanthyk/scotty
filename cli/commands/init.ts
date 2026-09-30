@@ -1,6 +1,5 @@
 import { lookup } from "node:dns/promises";
-import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { connect } from "node:tls";
 import * as ui from "@clack/prompts";
@@ -12,7 +11,16 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { ChatGptStatus, ClaudeStatus, GitHubStatus, failure } from "../client.js";
 import { Config, configPath, readConfig, removeConfig, writeConfig } from "../config.js";
 import { bold, dim, green, launch, output, red, withClient } from "./common.js";
-import { type Report, deployWith, loadConfig, root, stageEnv, step } from "./deploy.js";
+import type { CloudflareLayer } from "../../deploy/cloudflare.ts";
+import {
+  type Report,
+  cloudflareToken,
+  deployWith,
+  leftoversWith,
+  loadConfig,
+  removeWith,
+  root,
+} from "./deploy.js";
 import {
   awaitChatGpt,
   checkLines,
@@ -111,11 +119,14 @@ const listed = <A, E, R>(text: string, list: Effect.Effect<ReadonlyArray<A>, E, 
 
 const cloudflare = Effect.promise(() => import("../../deploy/cloudflare.ts"));
 
-// The account the Cloudflare sign-in can see; one is taken without asking.
-const accountChoice = (current: string | undefined) =>
+// The account the Cloudflare token can see; one is taken without asking.
+const accountChoice = (current: string | undefined, layer: CloudflareLayer) =>
   Effect.gen(function* () {
     const { accounts } = yield* cloudflare;
-    const found = yield* listed("Reading your Cloudflare accounts", accounts);
+    const found = yield* listed(
+      "Reading your Cloudflare accounts",
+      accounts.pipe(Effect.provide(layer)),
+    );
     const only = found?.length === 1 ? found[0] : undefined;
     if (only !== undefined) {
       ui.log.success(`Cloudflare account ${bold(only.name)}`);
@@ -138,10 +149,13 @@ const accountChoice = (current: string | undefined) =>
   });
 
 // The domain Scotty runs under, from the account's zones.
-const domainChoice = (accountId: string, current: Config | undefined) =>
+const domainChoice = (accountId: string, current: Config | undefined, layer: CloudflareLayer) =>
   Effect.gen(function* () {
     const { zones } = yield* cloudflare;
-    const found = yield* listed("Reading the domains on that account", zones(accountId));
+    const found = yield* listed(
+      "Reading the domains on that account",
+      zones(accountId).pipe(Effect.provide(layer)),
+    );
     if (found !== undefined && found.length === 0) {
       ui.cancel("That account has no domains.");
       return yield* failure(
@@ -183,7 +197,7 @@ const domainChoice = (accountId: string, current: Config | undefined) =>
   });
 
 // Every question first, so the slow part runs unattended.
-const questions = (previous: Config | undefined) =>
+const questions = (previous: Config | undefined, layer: CloudflareLayer) =>
   Effect.gen(function* () {
     const f = Config.fields;
     const stage = yield* field(
@@ -198,10 +212,11 @@ const questions = (previous: Config | undefined) =>
       previous?.email,
       "An email address",
     );
-    const accountId = yield* accountChoice(previous?.accountId);
+    const accountId = yield* accountChoice(previous?.accountId, layer);
     const { domain, zoneId } = yield* domainChoice(
       accountId,
       previous?.accountId === accountId ? previous : undefined,
+      layer,
     );
     const host = yield* field(
       "Scotty's address",
@@ -216,9 +231,9 @@ const questions = (previous: Config | undefined) =>
   });
 
 // A re-run offers the saved answers whole; Enter keeps them.
-const settings = (previous: Config | undefined) =>
+const settings = (previous: Config | undefined, layer: CloudflareLayer) =>
   Effect.gen(function* () {
-    if (previous === undefined) return yield* questions(previous);
+    if (previous === undefined) return yield* questions(previous, layer);
     ui.note(
       [
         `${dim("Stage   ")} ${previous.stage}`,
@@ -229,7 +244,7 @@ const settings = (previous: Config | undefined) =>
       "Saved settings",
     );
     if (yield* ask(() => ui.confirm({ message: "Use these settings?" }))) return previous;
-    return yield* questions(previous);
+    return yield* questions(previous, layer);
   });
 
 type Agent = "chatgpt" | "claude";
@@ -305,14 +320,6 @@ const preflight = Effect.gen(function* () {
     ),
     "gh",
     ["auth", "login"],
-  );
-  const alchemyHome = process.env.ALCHEMY_HOME ?? join(homedir(), ".alchemy");
-  yield* ensure(
-    "Cloudflare deploys",
-    "a browser opens; allow the account that will host Scotty",
-    Effect.sync(() => existsSync(join(alchemyHome, "profiles", "default", "cloudflare.json"))),
-    "npx",
-    ["alchemy", "profile", "edit", "--add", "Cloudflare"],
   );
 });
 
@@ -401,16 +408,14 @@ const answers = (name: string) =>
     return (yield* records(name, "A")).length > 0 || (yield* records(name, "AAAA")).length > 0;
   });
 
-// Alchemy keeps a stage's state in the checkout that deployed it.
-const stateDir = (stage: string) => join(root, ".alchemy", "state", "scotty", stage);
-const deployedHere = (stage: string) =>
-  existsSync(stateDir(stage)) && readdirSync(stateDir(stage)).length > 0;
-
 // A stage takes over the address and the domain's preview record and route, and its teardown
 // deletes them, so a new stage may not share them with another deployment.
-const taken = (config: Config) =>
+const taken = (config: Config, layer: CloudflareLayer) =>
   Effect.gen(function* () {
-    if (deployedHere(config.stage)) return undefined;
+    const left = yield* leftoversWith(config, layer).pipe(
+      Effect.orElseSucceed((): ReadonlyArray<string> => []),
+    );
+    if (left.includes(`scotty-${config.stage}`)) return undefined;
     if (yield* answers(config.host)) return `https://${config.host}`;
     if (yield* answers(`1-scotty-preview-check.${config.domain}`))
       return `previews on *.${config.domain}`;
@@ -571,8 +576,9 @@ export const init = Command.make("init", {}, () =>
       "You need",
     );
     yield* preflight;
+    const layer = yield* cloudflareToken;
     const previous = yield* readConfig.pipe(Effect.orElseSucceed(() => undefined));
-    const config = yield* settings(previous);
+    const config = yield* settings(previous, layer);
     if (
       previous !== undefined &&
       (previous.stage !== config.stage || previous.accountId !== config.accountId)
@@ -585,7 +591,7 @@ export const init = Command.make("init", {}, () =>
         2,
       );
     }
-    const inUse = yield* taken(config);
+    const inUse = yield* taken(config, layer);
     if (inUse !== undefined) {
       ui.cancel(`${inUse} is already in use.`);
       return yield* failure(
@@ -614,6 +620,7 @@ export const init = Command.make("init", {}, () =>
     yield* writeConfig(config);
     const url = yield* deployWith(
       config,
+      layer,
       spinners(
         `Parts of scotty-${config.stage} may already be in Cloudflare.\n   ${bold("scotty init")} picks up where this stopped; ${bold("scotty teardown")} removes it.`,
       ),
@@ -681,30 +688,18 @@ export const teardown = Command.make(
           2,
         );
       }
-      // Without the stage's state, destroy removes nothing.
-      const state = stateDir(config.stage);
-      if (!deployedHere(config.stage))
-        return yield* failure(
-          "setup",
-          `This checkout has no deploy state for stage ${config.stage}; nothing was removed`,
-          `Run scotty teardown from the checkout that deployed it (${state} is missing)`,
-          3,
-        );
-      yield* step(
-        `Removing stage ${config.stage} (a minute or two)`,
-        "bun",
-        ["deploy/run.ts", "--destroy", "--stage", config.stage],
-        stageEnv(config),
+      const layer = yield* cloudflareToken;
+      yield* removeWith(
+        config,
+        layer,
         Option.isNone(stage)
           ? spinners(
               `Part of stage ${config.stage} may be left.\n   ${bold("scotty teardown")} finishes removing it.`,
             )
           : undefined,
-        `Removed stage ${config.stage}`,
       );
       // The config stays until Cloudflare shows nothing of the stage, so a rerun can finish it.
-      const { leftovers } = yield* cloudflare;
-      const left = yield* leftovers(config.accountId, config.stage).pipe(
+      const left = yield* leftoversWith(config, layer).pipe(
         Effect.mapError(() =>
           failure("teardown", "Could not check what is left in Cloudflare", "scotty teardown"),
         ),

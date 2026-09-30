@@ -1,15 +1,10 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuthProviders } from "alchemy";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
-import * as Cloudflare from "alchemy/Cloudflare";
-import { PlatformServices } from "alchemy/Util/PlatformServices";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import {
   type Blob,
   CopyError,
@@ -185,9 +180,3 @@ export const copyImage = (raw: { source: string; account: string; repository: st
     });
     return yield* Effect.onExit(transfer, () => remove(temp));
   });
-
-export const copyLayer = Cloudflare.CloudflareApiLive().pipe(
-  Layer.provideMerge(PlatformServices),
-  Layer.provideMerge(FetchHttpClient.layer),
-  Layer.provideMerge(Layer.succeed(AuthProviders, {})),
-);

@@ -1,14 +1,15 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stripVTControlCharacters } from "node:util";
 import { BunServices } from "@effect/platform-bun";
-import { Effect, FileSystem, Stream } from "effect";
+import * as ui from "@clack/prompts";
+import { Effect, Exit, FileSystem, Redacted, Stream } from "effect";
 import { Command } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import type { CloudflareLayer } from "../../deploy/cloudflare.ts";
 import { version } from "../../src/version.js";
 import { failure } from "../client.js";
 import { type Config, readConfig } from "../config.js";
-import { dim, green, json, output } from "./common.js";
+import { dim, green, json, launch, output } from "./common.js";
 
 // Deploying runs from a Scotty checkout until the CLI carries its own release.
 export const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -41,32 +42,6 @@ const plain: Report = {
   failed: (_, printed) => console.error(printed),
 };
 
-// What a deploy is doing, from the lines Alchemy and the image copy print; the names are
-// alchemy.run.ts's resource ids.
-const deployStage = (line: string): string | undefined => {
-  const text = stripVTControlCharacters(line);
-  const assets = /Uploaded (\d+) of (\d+) assets/.exec(text);
-  if (assets !== null) return `Uploading the web app (${assets[1]}/${assets[2]})`;
-  if (/\b(skip|verified|pushed|published) sha256:/.test(text)) return "Copying the container image";
-  if (text.includes("Reconciling custom domains")) return "Attaching the address";
-  if (text.includes("uploading script")) return "Uploading the Worker";
-  const resource = /\[(\w+(?:\/\w+)?)\] (?:pre-creating|creating|updating|replacing|deleting)/.exec(
-    text,
-  );
-  const named: Record<string, string> = {
-    SessionArtifacts: "the bucket",
-    SessionContainer: "the container app",
-    "ScottyWorker/Access": "the Access app",
-    ScottyWorker: "the Worker",
-    HatchWildcard: "the preview address",
-    HatchRoute: "the preview route",
-  };
-  const name = resource?.[1];
-  if (name === undefined || !Object.hasOwn(named, name)) return undefined;
-  const verb = /\] deleting/.test(text) ? "Removing" : "Setting up";
-  return `${verb} ${named[name]}`;
-};
-
 // Quiet unless it fails; then the last lines of its output say why.
 export const step = (
   text: string,
@@ -93,7 +68,7 @@ export const step = (
     };
     process.once("exit", stop);
     yield* Effect.addFinalizer(() => Effect.sync(() => process.off("exit", stop)));
-    // The last lines say why a step failed; the others only move the spinner along.
+    // The last lines say why a step failed.
     const last: string[] = [];
     const [, code] = yield* Effect.all(
       [
@@ -104,8 +79,6 @@ export const step = (
             Effect.sync(() => {
               last.push(line);
               if (last.length > 30) last.shift();
-              const stage = deployStage(line);
-              if (stage !== undefined) report.progress?.(stage);
             }),
           ),
         ),
@@ -129,34 +102,124 @@ export const step = (
     }),
   );
 
-// What alchemy.run.ts reads, for deploying and destroying alike.
-export const stageEnv = (config: Config) => ({
-  CLOUDFLARE_ACCOUNT_ID: config.accountId,
-  SCOTTY_OWNER_EMAIL: config.email,
-  SCOTTY_HATCH_BASE: config.domain,
-  SCOTTY_HATCH_ZONE_ID: config.zoneId,
-  SCOTTY_HOST: config.host,
+const deployer = Effect.promise(() => import("../../deploy/deployer.ts"));
+const cloudflare = Effect.promise(() => import("../../deploy/cloudflare.ts"));
+
+// A Cloudflare step behind the report; a failure shows what Cloudflare said.
+export const cloudflareStep = <A, E, R>(
+  text: string,
+  done: string,
+  work: (progress: (text: string) => void) => Effect.Effect<A, E, R>,
+  report: Report = plain,
+) =>
+  Effect.gen(function* () {
+    report.start(text);
+    const result = yield* work((line) => report.progress?.(line)).pipe(
+      Effect.tapError((error) =>
+        Effect.sync(() =>
+          report.failed(
+            text,
+            error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+          ),
+        ),
+      ),
+      Effect.mapError(() =>
+        failure("deploy_failed", `${text} failed`, "Fix the error above, then rerun"),
+      ),
+    );
+    report.done(done);
+    return result;
+  });
+
+// The owner's Cloudflare API token for this run only: CLOUDFLARE_API_TOKEN, or pasted after the
+// page that creates one opens. It is checked by listing the accounts it can see, and never saved.
+export const cloudflareToken = Effect.gen(function* () {
+  const { accounts, cloudflareLayer, tokenPage } = yield* cloudflare;
+  const fromEnv = process.env.CLOUDFLARE_API_TOKEN;
+  if (fromEnv === undefined && !(process.stdin.isTTY && process.stdout.isTTY))
+    return yield* failure(
+      "setup",
+      "Deploying needs a Cloudflare API token",
+      "Set CLOUDFLARE_API_TOKEN, or run it in a terminal to paste one",
+      3,
+    );
+  const token = Redacted.make(
+    fromEnv ??
+      (yield* Effect.gen(function* () {
+        const page = tokenPage();
+        ui.note(
+          `Create a token with the permissions filled in, then paste it here.\n${dim(page)}`,
+          "Cloudflare API token",
+        );
+        yield* Effect.ignore(launch(page));
+        const pasted = yield* Effect.promise(() =>
+          ui.password({ message: "Cloudflare API token", mask: "•" }),
+        );
+        if (typeof pasted === "symbol") {
+          ui.cancel("Cancelled. Nothing was changed.");
+          return yield* failure("cancelled", "Cancelled", "Run it again when ready", 2);
+        }
+        return pasted.trim();
+      })),
+  );
+  const found = yield* Effect.exit(accounts.pipe(Effect.provide(cloudflareLayer(token))));
+  if (Exit.isFailure(found) || found.value.length === 0)
+    return yield* failure(
+      "setup",
+      "Cloudflare did not accept that API token",
+      fromEnv === undefined
+        ? "Create a token on the page, then paste it"
+        : "Check CLOUDFLARE_API_TOKEN",
+      3,
+    );
+  return cloudflareLayer(token);
 });
 
-// Builds the UI, copies the pinned image and applies the stack; asks nothing.
-export const deployWith = (config: Config, report: Report = plain) =>
+// Builds a release from this checkout and deploys it to the stage; asks nothing.
+export const deployWith = (config: Config, layer: CloudflareLayer, report: Report = plain) =>
   Effect.gen(function* () {
+    const { deployStage } = yield* deployer;
+    const { buildRelease } = yield* Effect.promise(() => import("../../deploy/release.ts"));
+    const dir = join(root, "dist", "release");
     yield* step("Building the UI", "npm", ["run", "--silent", "ui:build"], {}, report, "UI built");
-    yield* step(
-      `Deploying scotty-${config.stage} (a few minutes)`,
-      "bun",
-      ["deploy/run.ts", "--stage", config.stage],
-      stageEnv(config),
+    yield* cloudflareStep(
+      "Building the release",
+      "Release built",
+      () => Effect.tryPromise(() => buildRelease(dir)),
       report,
+    );
+    yield* cloudflareStep(
+      `Deploying scotty-${config.stage} (a few minutes)`,
       `Deployed scotty-${config.stage}`,
+      (progress) => deployStage(config, dir, progress).pipe(Effect.provide(layer)),
+      report,
     );
     return `https://${config.host}`;
+  });
+
+// Removes the stage by name; the caller checks what is left.
+export const removeWith = (config: Config, layer: CloudflareLayer, report: Report = plain) =>
+  Effect.gen(function* () {
+    const { removeStage } = yield* deployer;
+    yield* cloudflareStep(
+      `Removing stage ${config.stage} (a minute or two)`,
+      `Removed stage ${config.stage}`,
+      (progress) => removeStage(config, progress).pipe(Effect.provide(layer)),
+      report,
+    );
+  });
+
+// What of the stage Cloudflare still has.
+export const leftoversWith = (config: Config, layer: CloudflareLayer) =>
+  Effect.gen(function* () {
+    const { leftovers } = yield* deployer;
+    return yield* leftovers(config).pipe(Effect.provide(layer));
   });
 
 export const deploy = Command.make("deploy", {}, () =>
   Effect.gen(function* () {
     const config = yield* loadConfig;
-    const url = yield* deployWith(config);
+    const url = yield* deployWith(config, yield* cloudflareToken);
     yield* output(
       { stage: config.stage, url, version },
       `${green("✓")} Deployed v${version} to ${url}\n${dim("  → scotty doctor")}`,

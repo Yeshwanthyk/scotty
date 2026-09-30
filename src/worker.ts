@@ -45,8 +45,8 @@ const isFetcher = (value: unknown): value is Cloudflare.Fetcher["raw"] =>
 export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
   "ScottyWorker",
   Effect.gen(function* () {
-    // Props are evaluated in the deployed bundle too, where deploy env vars are absent.
-    // alchemy.run.ts rejects a missing value before any deploy, so the defaults are runtime-only.
+    // Props are evaluated in the deployed bundle, where only the runtime uses them; deploy/deployer.ts
+    // makes the resources these describe.
     const email = yield* Config.String("SCOTTY_OWNER_EMAIL").pipe(Config.withDefault(""));
     const host = yield* Config.String("SCOTTY_HOST").pipe(Config.withDefault(""));
     const zoneId = yield* Config.String("SCOTTY_HATCH_ZONE_ID").pipe(Config.withDefault(""));
@@ -54,7 +54,6 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
     return {
       name: `scotty-${stage}`,
       main: import.meta.url,
-      // Alchemy creates the DNS record and certificate; Access covers every host of the Worker.
       domain: { name: host, zoneId },
       compatibility: { date: "2026-09-01" },
       assets: {

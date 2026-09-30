@@ -20,7 +20,6 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 ## Layout
 
 ```
-alchemy.run.ts        the whole stack: Worker, Session DO + Container, Creds DO, R2, Access
 src/
   worker.ts           Effect HttpRouter: /api/* and UI assets; /api/git for the container, Hatch previews
   session/
@@ -42,6 +41,10 @@ container/
 cli/
   main.ts             Effect CLI: deploy, doctor, login, new, ls, read, steer, interrupt, log
   client.ts           typed API client behind Access; shared with e2e/
+deploy/
+  release.ts          builds a release: the Worker bundle, the web app, release.json
+  deployer.ts         deploys a release to a stage, and removes a stage, by name over the Cloudflare API
+  image.ts, oci.ts    copies the pinned image into registry.cloudflare.com
 protocol/
   supervisor.ts       the only protocol file; wire schema shared by the Session DO and supervisor
 ui/                   the web app (kept; its old API schemas are in ui/src/protocol/ until it is rewired)
@@ -133,11 +136,11 @@ Old reference for the Codex state files: `worker/src/agent/codex/persistence-for
 
 ## Hatch
 
-A server in a running session on port N is at `https://N-<id>.<SCOTTY_HATCH_BASE>`. `alchemy.run.ts` adopts a proxied AAAA `100::` record for `*.<base>` and the route `*.<base>/*`. The Worker has `runWorkerFirst: true`: it serves the UI itself through `ASSETS`, sends `/api/*` to the router, and sends a preview host to the Session DO's `fetch`. Port 7000 and ports outside 1024–65535 get a 404. The DO answers 502 unless the phase is `running`, so a preview never starts a container. Otherwise it forwards to `getTcpPort(N)` at `http://localhost:N` without the incoming `Host` (Vite refuses unknown hosts), and returns `HttpServerResponse.raw(response)` so a 101 keeps its WebSocket. There is no nonce, cookie, quota or event: the Worker's own Access application gates the route (spike 8a b), so one token covers the UI and previews.
+A server in a running session on port N is at `https://N-<id>.<SCOTTY_HATCH_BASE>`. The deployer makes a proxied AAAA `100::` record for `*.<base>` and the route `*.<base>/*`. The Worker has `runWorkerFirst: true`: it serves the UI itself through `ASSETS`, sends `/api/*` to the router, and sends a preview host to the Session DO's `fetch`. Port 7000 and ports outside 1024–65535 get a 404. The DO answers 502 unless the phase is `running`, so a preview never starts a container. Otherwise it forwards to `getTcpPort(N)` at `http://localhost:N` without the incoming `Host` (Vite refuses unknown hosts), and returns `HttpServerResponse.raw(response)` so a 101 keeps its WebSocket. There is no nonce, cookie, quota or event: the Worker's own Access application gates the route (spike 8a b), so one token covers the UI and previews.
 
 Spike 8a (2026-09-27): (a) `runWorkerFirst: true` still serves `/`, `/sessions`, `/s/<id>` and `/api/*`; (b) without a token a preview host gets Access's 302, and with the Worker's token it reaches the Worker; (c) a WebSocket echo passes through Worker → DO → `getTcpPort`, and the server sees `Host: localhost:8080`; (d) `setsid nohup <cmd> > log 2>&1 < /dev/null &` from a Codex command survives the command and the turn in Codex 0.157.1. A process does not survive the container sleeping.
 
-The dev environment belongs to the agent, and nothing in an agent adapter knows about it. The image adds `curl`, `sudo` and `xz-utils`, gives `scotty` passwordless sudo, and runs on `standard-1` (4 GiB). `container/AGENTS.md` is installed as `/etc/scotty/AGENTS.md`, and each agent's global-instructions path links to it (Codex: `~/.codex/AGENTS.md`, loaded on start and resume). The supervisor gives the agent process one variable, `SCOTTY_HATCH=https://{port}-<id>.<base>`, from `start.hatch`. The contract: setup goes through `.agents/setup`, an idempotent bash script in the repository that the agent writes if missing and runs again after a resume, and that ends by printing `Ready: <URL>` once the dev server answers. Scotty never parses or runs it. The DO reads `SCOTTY_HATCH_BASE` through `Config`: the raw env holds Alchemy's redacted marker, and the agent once got `https://N-<id>.[redacted]`. On `dev` with a Vite + React repo, the URL came back 45–104 s after `new`; after a stop, most of the wait is Scotty preparing the workspace (34–186 s), not setup (about 12 s).
+The dev environment belongs to the agent, and nothing in an agent adapter knows about it. The image adds `curl`, `sudo` and `xz-utils`, gives `scotty` passwordless sudo, and runs on `standard-1` (4 GiB). `container/AGENTS.md` is installed as `/etc/scotty/AGENTS.md`, and each agent's global-instructions path links to it (Codex: `~/.codex/AGENTS.md`, loaded on start and resume). The supervisor gives the agent process one variable, `SCOTTY_HATCH=https://{port}-<id>.<base>`, from `start.hatch`. The contract: setup goes through `.agents/setup`, an idempotent bash script in the repository that the agent writes if missing and runs again after a resume, and that ends by printing `Ready: <URL>` once the dev server answers. Scotty never parses or runs it. The deployer sets `SCOTTY_HATCH_BASE` to the stage's domain as a plain Worker variable. On `dev` with a Vite + React repo, the URL came back 45–104 s after `new`; after a stop, most of the wait is Scotty preparing the workspace (34–186 s), not setup (about 12 s).
 
 ## Credentials
 
@@ -222,21 +225,22 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 ## Deploy
 
 - **Image:** CI builds the default image from `container/Dockerfile` (supervisor included), publishes it to a public OCI registry, and records its linux/amd64 manifest digest; `container/image.digest` pins it, and each CLI release will embed it. The image's `scotty.supervisor` label is `supervisorVersion` from `protocol/supervisor.ts`. No local Docker is needed to deploy or develop.
-- `scotty deploy` builds the UI, copies the pinned image into `registry.cloudflare.com/<account>/<explicit repository>@sha256:<digest>` over the OCI distribution API with short-lived registry credentials (verifying every digest, streaming blobs, never logging or persisting the credential), then applies `alchemy.run.ts` with `registryId: "registry.cloudflare.com"` and that digest ref, which Alchemy deploys as pre-pushed with no Docker (`ContainerProvider.ts:442-458,536-542`). The copy runs in the CLI before the apply; only the digest ref reaches Alchemy props or state.
+- **Release:** `deploy/release.ts` bundles `deploy/entry.js` (Alchemy's generated Worker entry, reading the stage from the Worker's `ALCHEMY_STAGE`, so one bundle serves every stage) with rolldown and `@alchemy.run/cloudflare-runtime`, copies `ui/dist` without its prerender `server/`, and writes `release.json` (`version`, the pinned image, `supervisor`). Alchemy stays the Worker's runtime; it no longer deploys.
+- **Deployer:** `scotty deploy` builds a release and `deploy/deployer.ts` applies it with direct Cloudflare API calls: it copies the pinned image into `registry.cloudflare.com/<account>/scotty@sha256:<digest>` over the OCI distribution API with short-lived registry credentials (verifying every digest, streaming blobs, never logging or persisting the credential), then makes or updates the bucket, the web app's assets (wrangler's hash: the first 32 hex of sha256(bytes + extension), so unchanged files are skipped), the Worker (both DOs, one migration `v1` only when its `SessionObject` namespace is new, the container binding, and the plain-text vars Alchemy's runtime reads: `ALCHEMY_PHASE=runtime`, `ALCHEMY_WORKER_NAME`, `ALCHEMY_STACK_NAME`, `ALCHEMY_STAGE`, `ALCHEMY_CLOUDFLARE_ACCOUNT_ID`), the container app (a changed image is a 100% rolling rollout), the custom domain, the Access application (owner email only), the preview record and the route. Proved on `main` by a spike (2026-09-29).
+- **Nothing is remembered between runs.** Every resource is found by its name, so `teardown` removes a stage by name and then lists what is left; the config is kept until nothing is.
 - Copy rather than pull: Cloudflare can pull public Docker Hub images directly but does not cache them, so every cold start would pull from Docker Hub under its rate limits; GHCR is not a supported pull source.
 - Later, user-supplied images use the same digest-pinned copy and are checked against the supervisor contract at `hello`.
 - Don't use Alchemy's local `dev` Container runtime; it runs Docker (`vendor/alchemy/website/src/content/docs/cloudflare/local-development.mdx:79-80`).
 - **Stage:** explicit, from the CLI config. It is never derived from the user, machine or account. Resources are named `scotty-<stage>` (Worker), `scotty-<stage>-sessions` (container app) and `scotty-<stage>-artifacts` (bucket); the Worker serves the config's `host` as a custom domain. Changing a name replaces the resource: a new Worker has empty Durable Objects (sessions and sign-ins are gone), and a bucket that still holds files can't be deleted until it is emptied.
-- **State:** Alchemy local state (`Alchemy.localState()`) in `.alchemy/` at the repository root, git-ignored. Deleting it orphans the deployed stage; back it up if the stage matters.
-- **Cloudflare credentials:** the Alchemy OAuth profile (`--profile default`) or `CLOUDFLARE_API_TOKEN` with the account ID from the environment; never deployed.
-- **Updates:** each CLI release embeds its own stack, so updating is a new CLI followed by `scotty deploy`.
+- **Cloudflare credentials:** an API token from `CLOUDFLARE_API_TOKEN`, or pasted after `init`, `deploy` or `teardown` opens the dashboard's token page with the permissions filled in. It is held in memory for that run only, checked by listing its accounts, and never saved or deployed.
+- **Updates:** each CLI release carries its own release, so updating is a new CLI followed by `scotty deploy`.
 - No patches on Alchemy or other dependencies unless a beta.79 failure is shown.
 
-### Alchemy beta.79 workarounds (shown on `dev`, 2026-09-26)
+### Alchemy beta.79 runtime workarounds (shown on `dev`, 2026-09-26)
 
-- **Props run at runtime too.** A resource's props `Effect` (for example `Config.String("SCOTTY_OWNER_EMAIL")` in `src/worker.ts`, `SCOTTY_IMAGE` in `src/session/object.ts`) is evaluated again inside the deployed bundle, where deploy-time env vars are absent. A missing `Config` there crashed every request with error 1101. Fix: `Config.withDefault("")` on those props; `alchemy.run.ts` rejects a missing value before any deploy, so the default is reached only at runtime (`5e5cdcc`).
+- **Props run at runtime too.** A resource's props `Effect` (for example `Config.String("SCOTTY_OWNER_EMAIL")` in `src/worker.ts`, `SCOTTY_IMAGE` in `src/session/object.ts`) is evaluated inside the deployed bundle, where those vars are absent. A missing `Config` there crashed every request with error 1101. Fix: `Config.withDefault("")` on those props (`5e5cdcc`).
 - **DO migrations are computed per logical ID.** Binding the session Container under a second logical ID re-added `new_sqlite_class` for the Session DO and the deploy failed; sharing the env key instead dropped the container metadata. Fix: `src/session/container-binding.ts` binds the container application from the Session DO's own outer phase, mirroring `ContainerPlatform.bind` (`vendor/alchemy/packages/alchemy/src/Cloudflare/Containers/ContainerPlatform.ts:143-172`) without `Containers.layer`, which would start the container on every DO construction (`5551360`).
-- Remove each workaround when an Alchemy upgrade makes it unnecessary, and prove it with `npm run deploy -- --stage dev` plus `npm run e2e -- core`.
+- Remove each workaround when an Alchemy upgrade makes it unnecessary, and prove it with `scotty deploy` plus `npm run e2e -- core`.
 
 ## Tests
 

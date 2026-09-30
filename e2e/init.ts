@@ -2,10 +2,11 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { Effect, Exit, Schema } from "effect";
+import { Effect, Exit, Redacted, Schema } from "effect";
 import { Config } from "../cli/config.js";
 import { root } from "../cli/commands/deploy.js";
-import { leftovers } from "../deploy/cloudflare.js";
+import { cloudflareLayer } from "../deploy/cloudflare.js";
+import { leftovers } from "../deploy/deployer.js";
 
 // Runs `scotty init` as the owner does, in a terminal, on a stage of its own: stops it with Ctrl-C
 // mid-deploy, runs it again until the address is live, checks that a second stage may not take
@@ -168,7 +169,11 @@ try {
       );
     }
     // A deploy stopped by Ctrl-C must not go on creating things after the teardown.
-    const left = await Effect.runPromise(leftovers(config.accountId, stage));
+    const left = await Effect.runPromise(
+      leftovers({ ...config, stage }).pipe(
+        Effect.provide(cloudflareLayer(Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? ""))),
+      ),
+    );
     if (left.length > 0) {
       process.exitCode = 1;
       console.error(`✗ Still in Cloudflare after teardown: ${left.join(", ")}`);
