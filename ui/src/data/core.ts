@@ -7,7 +7,19 @@ import {
 const Session = Schema.Struct({
   identity: Schema.Struct({ id: Schema.String }),
   authority: Schema.Union([
-    Schema.Struct({ kind: Schema.Literal("stable"), lifecycle: Schema.String }),
+    Schema.Struct({
+      kind: Schema.Literal("stable"),
+      lifecycle: Schema.String,
+      // Why a stopped session stopped, and how a failed one recovers; older payloads omit them.
+      stop: Schema.optional(
+        Schema.NullOr(
+          Schema.Struct({ reason: Schema.String, exitCode: Schema.optional(Schema.Number) }),
+        ),
+      ),
+      failure: Schema.optional(
+        Schema.NullOr(Schema.Struct({ code: Schema.String, recovery: Schema.String })),
+      ),
+    }),
     Schema.Struct({ kind: Schema.Literal("transitioning"), phase: Schema.String }),
   ]),
   display: Schema.Struct({
@@ -18,7 +30,12 @@ const Session = Schema.Struct({
     createdAt: Schema.String,
     activeAt: Schema.String,
   }),
-  progress: Schema.Struct({ working: Schema.Boolean, turns: Schema.Number }),
+  progress: Schema.Struct({
+    working: Schema.Boolean,
+    turns: Schema.Number,
+    // When an idle running session sleeps, unless it is used first.
+    sleepsAt: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
 });
 const List = Schema.Struct({ version: Schema.Literal(1), sessions: Schema.Array(Session) });
 const Detail = Schema.Struct({ version: Schema.Literal(1), session: Session });
