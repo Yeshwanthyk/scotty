@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect";
+import { DeliveryOutcome, DeliveryReason } from "../../../src/creds/connections.ts";
 import { request } from "./core";
 
 const Skill = Schema.Struct({
@@ -56,8 +57,8 @@ const Deliveries = Schema.Struct({
       id: Schema.String,
       connection: Schema.String,
       at: Schema.Number,
-      outcome: Schema.Literals(["accepted", "rejected", "duplicate"]),
-      reason: Schema.NullOr(Schema.String),
+      outcome: DeliveryOutcome,
+      reason: Schema.NullOr(DeliveryReason),
       session: Schema.NullOr(Schema.String),
     }),
   ),
@@ -65,6 +66,7 @@ const Deliveries = Schema.Struct({
 
 export type Connection = typeof Connection.Type;
 export type Delivery = (typeof Deliveries.Type)["deliveries"][number];
+export type DeliveryReason = typeof DeliveryReason.Type;
 export type Settings = typeof Settings.Type;
 export type Skill = typeof Skill.Type;
 export type Accounts = {

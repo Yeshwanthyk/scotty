@@ -7,12 +7,8 @@ import { Schema } from "effect";
 import type { Plugin } from "vite";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
 import { fold, initial, type State } from "../../src/session/fold.ts";
-import {
-  conversationView,
-  maxSearch,
-  sessionMatches,
-  sessionView,
-} from "../../src/session/view.ts";
+import { maxSearch, searchText } from "../../src/session/search.ts";
+import { conversationView, sessionView } from "../../src/session/view.ts";
 import { readSkill } from "../../src/settings/skill.ts";
 import { codexLog, dummies } from "./dummy.ts";
 
@@ -301,21 +297,14 @@ const hooks = {
     ["sentry", { name: "sentry", kind: "webhook", created: Date.now() - 6 * 864e5 }],
   ]),
   deliveries: [
+    // Each accepted delivery made its session at the same minute (dummy.ts `minutesAgo`).
     {
-      id: "msg_2kQ9fT",
+      id: "msg_8aB3dX",
       connection: "sentry",
-      minutesAgo: 120,
+      minutesAgo: 60 * 24 * 21,
       outcome: "accepted",
       reason: null,
-      session: "d0cc0de5000000000000000000000002",
-    },
-    {
-      id: "msg_7aXb1P",
-      connection: "sentry",
-      minutesAgo: 75,
-      outcome: "accepted",
-      reason: null,
-      session: "d0cc0de5000000000000000000000002",
+      session: "d0cc0de5000000000000000000000008",
     },
     {
       id: "msg_c3Lm0R",
@@ -332,6 +321,23 @@ const hooks = {
       outcome: "rejected",
       reason: "key_conflict",
       session: null,
+    },
+    {
+      id: "msg_2kQ9fT",
+      connection: "sentry",
+      minutesAgo: 6,
+      outcome: "accepted",
+      reason: null,
+      session: "d0cc0de5000000000000000000000002",
+    },
+    // The sender retried it: the session already had it.
+    {
+      id: "msg_2kQ9fT",
+      connection: "sentry",
+      minutesAgo: 5,
+      outcome: "duplicate",
+      reason: null,
+      session: "d0cc0de5000000000000000000000002",
     },
   ],
 };
@@ -371,8 +377,10 @@ async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string,
   if (path === "/api/deliveries" && method === "GET") {
     const only = new URL(req.url ?? "/", "http://localhost").searchParams.get("connection");
     return json(res, {
+      // Newest first, as the Creds DO lists them.
       deliveries: hooks.deliveries
         .filter((item) => only === null || item.connection === only)
+        .toSorted((a, b) => a.minutesAgo - b.minutesAgo)
         .map(({ minutesAgo, ...item }) => ({ ...item, at: Date.now() - minutesAgo * 60_000 })),
     });
   }
@@ -485,8 +493,20 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     );
     const q = url.searchParams.get("q")?.trim() ?? "";
     if (q.length > maxSearch) return fail(res, `Search text is at most ${maxSearch} characters`);
+    // The Creds DO's search, over the same text it stores at create.
     const matches = list
-      .filter((session) => sessionMatches(session.state, q))
+      .filter((session) => {
+        const created = session.state.created;
+        if (q === "") return true;
+        if (created === undefined) return false;
+        const origin = created.origin;
+        const text = searchText({
+          ...created,
+          ...(origin?.key === undefined ? {} : { key: origin.key }),
+          ...(origin?.kind === "hook" ? { connection: origin.connection } : {}),
+        });
+        return text.includes(q.toLowerCase());
+      })
       .map((session) => view(session).session);
     return json(res, {
       version: 1,
