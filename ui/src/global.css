@@ -2370,6 +2370,10 @@ button.diff-line {
     font-size: 17px;
   }
 
+  .sidebar-search kbd {
+    display: none;
+  }
+
   .session-groups {
     padding-bottom: max(12px, env(safe-area-inset-bottom));
   }
