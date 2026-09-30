@@ -40,9 +40,16 @@ if [[ -z "${SCOTTY_HATCH:-}" ]]; then exit 0; fi
 logs=/workspace/.scotty/logs
 mkdir -p "$logs"
 if ! curl -fs "localhost:${port}" > /dev/null; then
-  setsid nohup npm run ui:dev -- --host 0.0.0.0 --strictPort > "${logs}/ui.log" 2>&1 < /dev/null &
+  # The workspace's own script, so the flags reach vite; through `ui:dev` npm eats them.
+  setsid nohup npm run dev --workspace @scotty/ui -- --host 0.0.0.0 --strictPort \
+    > "${logs}/ui.log" 2>&1 < /dev/null &
 fi
 
 # 4. Always last.
-until curl -fs "localhost:${port}" > /dev/null; do sleep 1; done
+for _ in $(seq 120); do curl -fs "localhost:${port}" > /dev/null && break; sleep 1; done
+if ! curl -fs "localhost:${port}" > /dev/null; then
+  echo "The UI dev server did not answer on ${port} in 120 s:" >&2
+  tail -20 "${logs}/ui.log" >&2
+  exit 1
+fi
 echo "Ready: ${SCOTTY_HATCH/\{port\}/${port}}"
