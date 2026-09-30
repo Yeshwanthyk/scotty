@@ -10,6 +10,7 @@ directory. Conventions, evidence and cleanup: [SKILL.md](../SKILL.md).
 | [redeploy](redeploy.md)       | A session survives a Worker redeploy with no lost or duplicated message                        | R1–R2      | `core`               |
 | [stop-resume](stop-resume.md) | A stopped session resumes with its thread and files                                            | L1–L4      | `stop-resume`        |
 | [lifecycle](lifecycle.md)     | A quiet turn keeps running; an idle session sleeps, frees its container and wakes on a message | W1–W4      | `lifecycle`          |
+| [live](live.md)               | An open page and the session list update by push, without polling                              | V1–V5      | `live`               |
 | [github](github.md)           | A session on a private repo pushes only its own branch, and holds no token                     | G1–G3      | `github`             |
 | [hatch](hatch.md)             | A dev server in a session opens at its preview URL, and comes back on resume                   | H1–H4      | `hatch`, `hatch-env` |
 | [files](files.md)             | Images and video the agent makes show in the turn that made them                               | F1–F4      | `files`              |

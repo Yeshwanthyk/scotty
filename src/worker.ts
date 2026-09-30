@@ -15,6 +15,8 @@ const LoopbackProps = Schema.Struct({ session: Schema.String, repo: Schema.Strin
 // A preview host is `<port>-<session id>.<SCOTTY_HATCH_BASE>`.
 const hatchLabel = /^(\d{1,5})-([a-z0-9-]{6,32})$/;
 const terminalPath = /^\/api\/sessions\/([a-z0-9-]{6,32})\/terminal$/;
+// The session list's live socket, or one session's.
+const livePath = /^\/api\/sessions\/(?:([a-z0-9-]{6,32})\/)?live$/;
 // scotty-attach uploads: one of these types, at most 25 MB, name and caption URI-encoded.
 const FileType = Schema.Literals([
   "image/png",
@@ -136,12 +138,22 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
         }
         const url = new URL(request.url, "https://scotty.internal");
         const terminal = terminalPath.exec(url.pathname)?.[1];
+        const live = livePath.exec(url.pathname);
+        // A page on another site can't open these sockets with the owner's Access cookie.
+        const origin = request.headers["origin"];
+        const foreign = origin !== undefined && origin !== `https://${host}`;
         if (terminal !== undefined) {
-          // A page on another site can't open a shell with the owner's Access cookie.
-          const origin = request.headers["origin"];
-          if (origin !== undefined && origin !== `https://${host}`)
-            return HttpServerResponse.text("Forbidden", { status: 403 });
+          if (foreign) return HttpServerResponse.text("Forbidden", { status: 403 });
           return yield* sessions.getByName(terminal).fetch(request).pipe(Effect.orDie);
+        }
+        if (live !== null && request.method === "GET") {
+          if (foreign) return HttpServerResponse.text("Forbidden", { status: 403 });
+          const owner = credentials.getByName("owner");
+          const id = live[1];
+          if (id === undefined) return yield* owner.fetch(request).pipe(Effect.orDie);
+          if (!(yield* owner.hasSession(id).pipe(Effect.orDie)))
+            return HttpServerResponse.text("Not found", { status: 404 });
+          return yield* sessions.getByName(id).fetch(request).pipe(Effect.orDie);
         }
         if (url.pathname.startsWith("/api/")) return yield* api;
         const assets: unknown = env["ASSETS"];
