@@ -16,7 +16,13 @@ import { Icon, Spinner } from "./Icon";
 
 export function StatusMark({ status, title }: { status: Status; title?: string }) {
   return (
-    <span className="status-mark" data-status={status} title={title ?? statusLabel[status]}>
+    <span
+      className="status-mark"
+      data-status={status}
+      title={title ?? statusLabel[status]}
+      role="img"
+      aria-label={title ?? statusLabel[status]}
+    >
       {status === "working" || status === "starting" ? (
         <Spinner size={13} />
       ) : status === "failed" ? (

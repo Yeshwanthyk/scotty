@@ -62,11 +62,9 @@ export const dormant = (status: Status | undefined) => status === "asleep" || st
 export function stopLabel(stop: { reason: string; exitCode?: number } | null | undefined): string {
   switch (stop?.reason) {
     case "user":
-      return "You stopped it";
-    case "idle":
-      return "Asleep — idle";
+      return "Stopped by you";
     case "stalled":
-      return "Stopped — no output for 30 min";
+      return "Stopped — no output";
     case "crashed":
       return stop.exitCode === undefined ? "Crashed" : `Crashed (exit ${stop.exitCode})`;
     case "exited":
@@ -77,6 +75,18 @@ export function stopLabel(stop: { reason: string; exitCode?: number } | null | u
       return "Restarted by a deploy";
     case "gone":
       return "Container lost";
+    default:
+      return "Stopped";
+  }
+}
+
+// A short word for the phone header, where the full label doesn't fit.
+export function stopWord(stop: { reason: string } | null | undefined): string {
+  switch (stop?.reason) {
+    case "crashed":
+      return "Crashed";
+    case "stalled":
+      return "Stalled";
     default:
       return "Stopped";
   }
@@ -103,6 +113,29 @@ export function stopSentence(stop: { reason: string; exitCode?: number } | null 
       return "The container was lost.";
     default:
       return "This session stopped.";
+  }
+}
+
+// Why a session failed to start, in plain words; the raw code stays in a tooltip.
+export function failureSentence(code: string | undefined): string {
+  switch (code) {
+    case "container_start":
+    case "container_timeout":
+      return "The container didn't start.";
+    case "workspace":
+    case "workspace_timeout":
+      return "The workspace couldn't be prepared.";
+    case "signin_required":
+      return "The agent needs you to sign in again in Settings.";
+    case "start":
+    case "start_failed":
+    case "dial_timeout":
+    case "redial_timeout":
+      return "The agent didn't start.";
+    case "protocol":
+      return "The agent sent something Scotty couldn't read.";
+    default:
+      return "This session failed to start.";
   }
 }
 

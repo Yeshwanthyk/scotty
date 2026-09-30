@@ -1,5 +1,13 @@
 import type { Session } from "../data/core";
-import { statusLabel, stopLabel, stopSentence, until, type Status } from "../data/status";
+import {
+  failureSentence,
+  statusLabel,
+  stopLabel,
+  stopSentence,
+  stopWord,
+  until,
+  type Status,
+} from "../data/status";
 import { Icon, Spinner } from "./Icon";
 import { useNow } from "./Thread";
 
@@ -9,11 +17,16 @@ const stopOf = (session: Session) =>
 // The header pill: what the session is doing, or why it isn't.
 export function StatusPill({ session, status }: { session: Session; status: Status }) {
   if (status === "idle" || status === "unseen") return null;
+  const stop = stopOf(session);
+  const full = status === "stopped" ? stopLabel(stop) : statusLabel[status];
+  // The phone header has room for a word, not a reason.
+  const short = status === "stopped" ? stopWord(stop) : statusLabel[status];
   return (
-    <span className="pill desktop-only" data-status={status}>
+    <span className="pill" data-status={status} title={full}>
       {status === "working" || status === "starting" ? <Spinner size={11} /> : null}
       {status === "asleep" ? <Icon name="moon" size={11} /> : null}
-      {status === "stopped" ? stopLabel(stopOf(session)) : statusLabel[status]}
+      <span className="desktop-only">{full}</span>
+      <span className="mobile-only">{short}</span>
     </span>
   );
 }
@@ -21,14 +34,16 @@ export function StatusPill({ session, status }: { session: Session; status: Stat
 // A quiet countdown while an idle running session waits to sleep.
 export function SleepsIn({ at }: { at: string }) {
   const now = useNow(true, 15_000);
+  const left = Date.parse(at) - now < 60_000 ? "soon" : until(at, now);
   return (
     <span
       className="sleeps tabular"
       title="An idle session sleeps to save cost; a message wakes it"
+      aria-label={`Sleeps ${left === "soon" ? "soon" : `in ${left}`}`}
     >
       <Icon name="moon" size={12} />
-      <span className="desktop-only">Sleeps in </span>
-      {until(at, now)}
+      <span className="desktop-only">Sleeps {left === "soon" ? "" : "in "}</span>
+      {left}
     </span>
   );
 }
@@ -42,7 +57,7 @@ export function BootSteps({ step }: { step: 0 | 1 | 2 }) {
       {bootSteps.map((label, index) => {
         const state = index < step ? "done" : index === step ? "active" : "waiting";
         return (
-          <li key={label} data-state={state}>
+          <li key={label} data-state={state} aria-current={state === "active" ? "step" : undefined}>
             {state === "done" ? (
               <Icon name="check" size={13} />
             ) : state === "active" ? (
@@ -51,6 +66,7 @@ export function BootSteps({ step }: { step: 0 | 1 | 2 }) {
               <Icon name="circle" size={13} />
             )}
             <span className={state === "active" ? "shimmer" : undefined}>{label}</span>
+            {state === "active" ? null : <span className="sr-only">, {state}</span>}
           </li>
         );
       })}
@@ -105,18 +121,17 @@ export function LifecycleNotice({
     return authority.failure?.recovery === "resume" ? (
       <div className="notice lifecycle-notice" data-tone="error" role="alert">
         <Icon name="alert" size={13} />
-        <span>
-          This session failed to start
-          {authority.failure.code ? ` (${authority.failure.code.replaceAll("_", " ")})` : ""}. Its
-          history is kept; resume to try again.
+        <span title={authority.failure.code}>
+          {failureSentence(authority.failure.code)} Its history is kept; resume to try again.
         </span>
         {resume}
       </div>
     ) : (
       <div className="notice" data-tone="error">
         <Icon name="alert" size={13} />
-        <span>
-          This session failed to start. Its history stays here; start a new session to try again.
+        <span title={authority.failure?.code}>
+          {failureSentence(authority.failure?.code)} Its history stays here; start a new session to
+          try again.
         </span>
       </div>
     );
