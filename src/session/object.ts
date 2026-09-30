@@ -21,7 +21,7 @@ import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
 import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
 import { supervisorEvent } from "./supervisor-events.js";
-import { conversationView, sessionMatches, sessionView } from "./view.js";
+import { conversationView, sessionMatches, sessionView, turnOutcome } from "./view.js";
 
 const scriptedStart = (
   kind: typeof AgentKind.Type,
@@ -413,6 +413,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               : undefined,
           ),
         conversation: () => Effect.sync(() => conversationView(log.state, log.history)),
+        // How an automation run's turn went: its steer's, or the first prompt's; null once deleted.
+        outcome: (req?: string) =>
+          Effect.sync(() => (log.state.created === undefined ? null : turnOutcome(log.state, req))),
         log: () => Effect.sync(() => log.history),
         // A preview request from the Worker, whose Host is `<port>-<id>.<base>`, or the
         // terminal socket at `/api/sessions/<id>/terminal`. It never starts a container and

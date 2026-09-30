@@ -202,6 +202,19 @@ function SessionView({ sessionId }: { sessionId: string }) {
               </span>
             </span>
           ) : null}
+          {detail?.display.origin?.kind === "automation" ? (
+            <Link
+              to="/automations/$name"
+              params={{ name: detail.display.origin.automation }}
+              className="crumbs"
+            >
+              <Icon name="refresh" size={12} />
+              <span>
+                From automation {detail.display.origin.automation}
+                {detail.display.origin.key ? ` · ${detail.display.origin.key}` : ""}
+              </span>
+            </Link>
+          ) : null}
         </div>
         <div className="header-actions">
           {status !== undefined && status !== "idle" && status !== "unseen" ? (

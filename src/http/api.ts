@@ -8,6 +8,8 @@ import { AgentKind } from "../session/events.js";
 import { maxSearch } from "../session/view.js";
 import { ConnectionName, connectionName, Key } from "../creds/connections.js";
 import { githubHint, Repo, startSession } from "./start.js";
+import { automationName, AutomationName, Definition } from "../automations/automation.js";
+import { fireRun, runRequest } from "../automations/fire.js";
 import { version } from "../version.js";
 import {
   instructionsKey,
@@ -70,6 +72,11 @@ const Instructions = Schema.Struct({
 });
 const SkillSwitch = Schema.Struct({ enabled: Schema.Boolean });
 const skillPath = /^\/api\/skills\/([^/]+)$/;
+const NewAutomation = Schema.Struct({ name: AutomationName, ...Definition.fields });
+const AutomationSwitch = Schema.Struct({ enabled: Schema.Boolean });
+const automationPath = /^\/api\/automations\/([^/]+)(\/run)?$/;
+const definitionHint =
+  "when is {kind: calendar, cron, tz} | {kind: interval, minutes} | {kind: event, connection}";
 
 const bad = (message: string, status = 400, hint?: string) =>
   HttpServerResponse.json(
@@ -255,6 +262,90 @@ export function apiHandler(
         return yield* bad("Not a connection name");
       return yield* HttpServerResponse.json({
         deliveries: yield* credential.deliveries(connection),
+      });
+    }
+    if (url.pathname === "/api/automations" && request.method === "GET")
+      return yield* HttpServerResponse.json({ automations: yield* credential.automations() });
+    if (url.pathname === "/api/automations" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(NewAutomation)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", (error) => bad(error.message, 400, definitionHint)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const { name, ...definition } = body;
+      if (!(yield* credential.putAutomation(name, definition, false)))
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: `An automation named ${name} exists`,
+              code: "exists",
+              hint: "scotty automation ls",
+            },
+          },
+          { status: 409 },
+        );
+      return yield* HttpServerResponse.json({ name, enabled: false }, { status: 201 });
+    }
+    const automationMatch = automationPath.exec(url.pathname);
+    if (automationMatch !== null) {
+      const name = automationMatch[1] ?? "";
+      if (!automationName.test(name)) return yield* bad("Not found", 404);
+      if (automationMatch[2] !== undefined && request.method === "POST") {
+        const run = yield* credential.runAutomation(name);
+        if (run === null) return yield* bad("Not found", 404);
+        const outcome =
+          run.status === "received" ? yield* fireRun(sessions, credential, run.id) : null;
+        return yield* HttpServerResponse.json({
+          id: run.id,
+          automation: run.automation,
+          status: outcome?.status ?? run.status,
+          reason: outcome === null ? run.reason : (outcome.reason ?? null),
+          session: outcome === null ? run.session : (outcome.session ?? null),
+        });
+      }
+      if (automationMatch[2] === undefined && request.method === "PUT") {
+        const body = yield* Schema.decodeUnknownEffect(Definition)(yield* request.json).pipe(
+          Effect.catchTag("SchemaError", (error) => bad(error.message, 400, definitionHint)),
+        );
+        if (HttpServerResponse.isHttpServerResponse(body)) return body;
+        if (!(yield* credential.putAutomation(name, body, true)))
+          return yield* bad("Not found", 404);
+        return yield* HttpServerResponse.json({ name, enabled: false });
+      }
+      if (automationMatch[2] === undefined && request.method === "PATCH") {
+        const body = yield* Schema.decodeUnknownEffect(AutomationSwitch)(yield* request.json).pipe(
+          Effect.catchTag("SchemaError", () => bad("Expected {enabled: true|false}")),
+        );
+        if (HttpServerResponse.isHttpServerResponse(body)) return body;
+        if (!(yield* credential.enableAutomation(name, body.enabled)))
+          return yield* bad("Not found", 404);
+        return yield* HttpServerResponse.json({ name, enabled: body.enabled });
+      }
+      if (automationMatch[2] === undefined && request.method === "DELETE") {
+        if (!(yield* credential.removeAutomation(name))) return yield* bad("Not found", 404);
+        return yield* HttpServerResponse.json({ name, removed: true });
+      }
+    }
+    // Each run that reached a session carries how its turn went, read from that session.
+    if (url.pathname === "/api/runs" && request.method === "GET") {
+      const automation = url.searchParams.get("automation") ?? undefined;
+      if (automation !== undefined && !automationName.test(automation))
+        return yield* bad("Not an automation name");
+      const runs = yield* credential.runs(automation);
+      return yield* HttpServerResponse.json({
+        runs: yield* Effect.forEach(
+          runs,
+          (run) =>
+            Effect.gen(function* () {
+              const outcome =
+                run.session !== null && (run.status === "started" || run.status === "steered")
+                  ? yield* sessions
+                      .getByName(run.session)
+                      .outcome(run.status === "steered" ? runRequest(run.id) : undefined)
+                  : null;
+              return { ...run, outcome };
+            }),
+          { concurrency: 16 },
+        ),
       });
     }
     if (url.pathname === "/api/sessions" && request.method === "POST") {

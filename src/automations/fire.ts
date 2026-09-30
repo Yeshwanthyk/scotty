@@ -1,0 +1,101 @@
+import { Effect, Option, Schema } from "effect";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import type * as Cloudflare from "alchemy/Cloudflare";
+import type CredsObject from "../creds/object.js";
+import type SessionObject from "../session/object.js";
+import { startSession, titleFrom } from "../http/start.js";
+
+type Credential = ReturnType<Cloudflare.DurableObject<CredsObject>["getByName"]>;
+
+// The start's retry key, and so the request id of the prompt a steered run sends.
+export const runRequest = (id: string) => `run:${id}`;
+
+// Starts or steers the session a received run names, and records the answer on the run. The
+// run id is the start's retry key, so firing a run twice sends it once.
+export function fireRun(
+  sessions: Cloudflare.DurableObject<SessionObject>,
+  credential: Credential,
+  id: string,
+) {
+  return Effect.gen(function* () {
+    const run = yield* credential.takeRun(id);
+    if (run === null) return null;
+    const key = run.key === null ? {} : { key: run.key };
+    const started = yield* startSession(sessions, credential, {
+      repo: run.repo,
+      prompt: run.prompt,
+      title: titleFrom(run.prompt),
+      agent: run.agent,
+      ...(run.scripted === 1 ? { scripted: true } : {}),
+      ...key,
+      retry: runRequest(id),
+      origin: { kind: "automation", automation: run.automation, run: id, ...key },
+    });
+    const outcome: {
+      status: "started" | "steered" | "failed";
+      reason?: string;
+      session?: string;
+    } =
+      started.kind === "started" || started.kind === "steered"
+        ? { status: started.kind, session: started.id }
+        : started.kind === "refused"
+          ? { status: "failed", reason: `repository unavailable: ${started.message}` }
+          : started.kind === "conflict"
+            ? { status: "failed", reason: "key used by another repo or agent", session: started.id }
+            : { status: "failed", reason: "session not taking prompts", session: started.id };
+    yield* credential.settleRun(id, outcome);
+    return outcome;
+  });
+}
+
+// A delivery to a connection that automations listen on goes to them, one run each; the
+// connection then starts nothing itself. Undefined when none listens, or the body is not JSON
+// (the plain hook path rejects that).
+export function automationDelivery(
+  sessions: Cloudflare.DurableObject<SessionObject>,
+  credential: Credential,
+  connection: string,
+  delivery: string,
+  body: string,
+) {
+  return Effect.gen(function* () {
+    const payload = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(body);
+    if (Option.isNone(payload)) return undefined;
+    const runs = yield* credential.receiveEvent(connection, delivery, payload.value);
+    if (runs === null) return undefined;
+    // A received run without an answer yet is fired again; the run id keeps that a no-op.
+    const answered = yield* Effect.forEach(
+      runs,
+      (run) =>
+        run.status === "received"
+          ? fireRun(sessions, credential, run.id).pipe(
+              Effect.map((outcome) => ({
+                ...run,
+                ...outcome,
+                reason: outcome?.reason ?? null,
+                session: outcome?.session ?? null,
+              })),
+            )
+          : Effect.succeed(run),
+      { concurrency: "unbounded" },
+    );
+    const fresh = runs.some((run) => run.fresh);
+    const session = answered.find((run) => run.session !== null)?.session ?? null;
+    yield* credential.recordDelivery({
+      id: delivery,
+      connection,
+      outcome: fresh ? "accepted" : "duplicate",
+      ...(session === null ? {} : { session }),
+    });
+    return yield* HttpServerResponse.json({
+      status: fresh ? "accepted" : "duplicate",
+      runs: answered.map((run) => ({
+        id: run.id,
+        automation: run.automation,
+        status: run.status,
+        reason: run.reason,
+        session: run.session,
+      })),
+    });
+  });
+}

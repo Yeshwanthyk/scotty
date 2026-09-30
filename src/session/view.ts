@@ -24,7 +24,7 @@ const promptPreview = (prompt: string) => prompt.trim().slice(0, 300);
 export const maxSearch = 200;
 
 // Case-insensitive substring over what the owner remembers a session by: title, repository,
-// branch, the whole first prompt, and the key and connection of its origin.
+// branch, the whole first prompt, and the key and connection or automation of its origin.
 export function sessionMatches(state: State, query: string) {
   const needle = query.trim().toLowerCase();
   if (needle === "") return true;
@@ -37,9 +37,31 @@ export function sessionMatches(state: State, query: string) {
     created.branch,
     created.prompt,
     origin === undefined ? "" : (origin.key ?? ""),
-    origin?.kind === "hook" ? origin.connection : "",
+    origin?.kind === "hook"
+      ? origin.connection
+      : origin?.kind === "automation"
+        ? origin.automation
+        : "",
   ];
   return fields.some((field) => field.toLowerCase().includes(needle));
+}
+
+// How the turn a prompt went into ended: the first prompt's when `req` is absent. A prompt the
+// session refused counts as failed; a turn cut short by a stop, as stopped.
+export function turnOutcome(state: State, req?: string) {
+  const request = state.requests.find(
+    (item) => item.kind === "prompt" && (req === undefined || item.req === req),
+  );
+  const ended = state.turns.find((turn) => turn.turn === request?.turn)?.state;
+  if (ended !== undefined) return turnState(ended);
+  if (
+    state.phase === "failed" ||
+    request?.status === "failed" ||
+    request?.status === "stale" ||
+    request?.status === "timed_out"
+  )
+    return "failed" as const;
+  return state.phase === "stopped" ? ("stopped" as const) : ("working" as const);
 }
 
 export function sessionView(id: string, state: State) {

@@ -6,7 +6,8 @@ import { connectionName, Key } from "../creds/connections.js";
 import type CredsObject from "../creds/object.js";
 import { AgentKind } from "../session/events.js";
 import type SessionObject from "../session/object.js";
-import { Repo, startSession } from "../http/start.js";
+import { Repo, startSession, titleFrom } from "../http/start.js";
+import { automationDelivery } from "../automations/fire.js";
 import { maxBodyBytes } from "./signature.js";
 
 export const hookPath = /^\/hooks\/([^/]+)$/;
@@ -19,14 +20,6 @@ const Payload = Schema.Struct({
   title: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))),
 });
 const decodePayload = Schema.decodeUnknownEffect(Schema.fromJsonString(Payload));
-
-// The first line of the prompt, cut at a word near 60 characters.
-const titleFrom = (prompt: string) => {
-  const line = prompt.trim().split("\n")[0] ?? "";
-  if (line.length <= 60) return line;
-  const cut = line.slice(0, 60);
-  return `${cut.slice(0, cut.lastIndexOf(" ") > 30 ? cut.lastIndexOf(" ") : 60)}…`;
-};
 
 // A sender sees only the status and a code; the details are in `scotty deliveries`.
 const refuse = (status: number, code: string) =>
@@ -84,6 +77,9 @@ export function hookHandler(
     });
     if (verdict === "unknown") return yield* refuse(404, "unknown_connection");
     if (verdict !== "ok") return yield* reject(401, verdict);
+    // A connection that automations listen on hands its deliveries to them.
+    const automated = yield* automationDelivery(sessions, credential, name, delivery, body);
+    if (automated !== undefined) return automated;
     const payload = yield* decodePayload(body).pipe(Effect.option);
     if (payload._tag === "None") return yield* reject(400, "bad_body");
     const { repo, prompt, key, agent, title } = payload.value;

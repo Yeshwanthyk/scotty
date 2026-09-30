@@ -10,6 +10,14 @@ import { defaultBranch } from "./repository.js";
 export const githubHint = "scotty login github";
 export const Repo = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/));
 
+// The first line of the prompt, cut at a word near 60 characters.
+export const titleFrom = (prompt: string) => {
+  const line = prompt.trim().split("\n")[0] ?? "";
+  if (line.length <= 60) return line;
+  const cut = line.slice(0, 60);
+  return `${cut.slice(0, cut.lastIndexOf(" ") > 30 ? cut.lastIndexOf(" ") : 60)}…`;
+};
+
 export type StartInput = {
   repo: string;
   prompt: string;

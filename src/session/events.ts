@@ -23,6 +23,12 @@ export const Origin = Schema.Union([
     key: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({ kind: Schema.Literal("api"), key: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("automation"),
+    automation: Schema.String,
+    run: Schema.String,
+    key: Schema.optionalKey(Schema.String),
+  }),
 ]);
 export type Origin = typeof Origin.Type;
 

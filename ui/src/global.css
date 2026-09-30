@@ -2233,6 +2233,53 @@ button.diff-line {
   font-size: 12.5px;
 }
 
+/* ---------- Automations ---------- */
+
+.automations {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  width: 100%;
+  max-width: 44rem;
+  padding: 24px 28px 48px;
+}
+
+.automations-heading {
+  margin: 8px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.automation-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.automation-choices,
+.automation-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.automation-pair label {
+  flex: 1;
+  min-width: 180px;
+}
+
+.automation-form .settings-text {
+  min-height: 110px;
+}
+
+.automation-form .automation-only {
+  min-height: 56px;
+}
+
 .device-code {
   display: grid;
   gap: 8px;
@@ -2433,6 +2480,11 @@ button.diff-line {
 
   .mobile-only-text {
     display: inline;
+  }
+
+  .automations {
+    padding: 12px 12px 32px;
+    padding-bottom: max(32px, env(safe-area-inset-bottom));
   }
 
   .settings {

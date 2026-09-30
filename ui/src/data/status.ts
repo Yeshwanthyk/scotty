@@ -92,12 +92,13 @@ export function archived(session: Session, now = new Date()): boolean {
   return Date.parse(display.stoppedAt) < cutoff.getTime();
 }
 
-// Mine: started by a person, in the UI or CLI or through the API with a key. Automations: a hook.
+// Mine: started by a person, in the UI or CLI or through the API with a key. Automations: a hook
+// or an automation.
 export type Filter = "all" | "mine" | "automations" | "running";
 export function matchesFilter(session: Session, filter: Filter): boolean {
   const origin = session.display.origin;
   if (filter === "mine") return origin === null || origin.kind === "api";
-  if (filter === "automations") return origin !== null && origin.kind === "hook";
+  if (filter === "automations") return origin !== null && origin.kind !== "api";
   if (filter === "running")
     return session.authority.kind === "transitioning" || session.authority.lifecycle === "running";
   return true;
@@ -115,6 +116,7 @@ export function matchesText(session: Session, text: string): boolean {
     prompt,
     origin !== null && "key" in origin ? (origin.key ?? "") : "",
     origin?.kind === "hook" ? origin.connection : "",
+    origin?.kind === "automation" ? origin.automation : "",
   ];
   return fields.some((field) => field.toLowerCase().includes(needle));
 }
