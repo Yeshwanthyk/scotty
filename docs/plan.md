@@ -631,6 +631,91 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
 - **In scope:** deploy to the owner's chosen stage and domain, run every e2e, merge `rebuild/core` into `main` with the owner's approval.
 - **Out of scope without explicit approval:** tearing down or changing the old deployment.
 
+## Track: automations, connections, sleep and runners (owner, 2026-09-30)
+
+Outside systems and schedules start and talk to sessions. Three nouns: **connection** (a secret, a way in, a way out), **automation** (when, only if, key, repo, agent, prompt), **run** (what happened). Anything that needs thought is a session; the Worker only verifies, filters and routes. Scripts in Dynamic Workers, the Slack MCP server and a filter language are out.
+
+These slices are built on one branch, `track/automations-runners`, and land as one PR once the owner is happy with them. They replace Rule zero's **Budget** with one rule: each slice is the tightest complete vertical slice (Worker, UI, CLI, observability, e2e) and nothing else. Every other rule holds, except that this track works on its own branch rather than `rebuild/core`.
+
+**Per slice:** a builder works in a temporary worktree off the track branch, runs every check, and commits. Gate 1: `codex exec` (xhigh) reviews the diff against this section, `AGENTS.md` and the review rules; findings go back to the builder until clean. The orchestrator then merges into the track branch, reruns the checks, and screenshots UI changes against the seed API at phone and desktop width. e2e runs against the test stage `track` (`scotty.yeshyendamuri.com`, previews on `*.yeshyendamuri.com`), never against `main`, once the owner says to deploy. The UI's seed API (`ui/seed/`) serves every new record so the owner can see each change locally.
+
+**Observability in every slice:** each new record (stop reason, delivery, run) is readable as JSON from the CLI and visible in the UI, and each slice adds a recipe to `.agents/skills/verify-scotty/features/` that says how to prove it and how to find out what broke.
+
+| Slice | Title                        | Depends on | Status   | Notes                           |
+| ----- | ---------------------------- | ---------- | -------- | ------------------------------- |
+| S1    | Sessions sleep               | none       | building | owner's `fix/session-lifecycle` |
+| S2    | Find sessions                | none       | todo     |                                 |
+| S3    | Hooks, keys and deliveries   | none       | todo     |                                 |
+| S4    | Automations and runs         | S3         | todo     |                                 |
+| S5    | Reach: `name.internal`       | S3         | todo     |                                 |
+| S6    | Scotty inside sessions       | S1         | todo     |                                 |
+| S7    | Slack bot                    | S4, S5     | todo     |                                 |
+| S8    | GitHub events and babysit    | S4         | todo     |                                 |
+| R1    | Places                       | none       | todo     |                                 |
+| R2    | Runners on the owner's boxes | R1         | todo     |                                 |
+| R3    | Where a session runs         | R2, S4     | todo     |                                 |
+
+### S1: sessions sleep
+
+- **Why:** nothing in Scotty stops an idle container (no `setInactivityTimeout`, no idle deadline in the fold); a stop by Cloudflare is noticed only at the next failed dial, and a hung turn keeps its container forever. Sessions must go to sleep on a rule, wake easily, and record every stop and why.
+- **In scope:** the fold adds an `idle` deadline (10 min) when a turn ends and its save is done, pushed back by any prompt, steer or terminal/hatch use; a `stalled` deadline (30 min with no agent output during a turn) interrupts, then stops. The alarm destroys the container and appends `container.stopped {reason}`; every stop carries `reason: user | idle | stalled | gone | exit`. An open terminal or hatch socket at alarm time appends `active` instead. The view, `scotty ls` and the UI show "warm · sleeps in 7m" / "asleep · idle". The create body's `scripted` sessions may take a short window so e2e can wait it out.
+- **Done when:** fold tests cover idle, pushback, stalled, and each reason; `e2e lifecycle` proves warm → asleep → a message resumes it; the container is gone in Cloudflare after sleep.
+
+### S2: find sessions
+
+- **In scope:** the sessions list groups Today / This week / Older, filters All · Mine · Automations · Running, and puts sessions asleep over 7 days under Archived. Cmd-K searches every session by title, repo, key and first prompt (the Creds DO index gains what it needs), and filters by repo. Titles: the first prompt line, shown whole where there is room.
+- **Done when:** `GET /api/sessions?q=` and `scotty ls --search` return matches from the index; screenshots at phone and desktop width; `e2e` asserts a search finds a created session.
+
+### S3: hooks, keys and deliveries
+
+- **In scope:** a connection table in the Creds DO, first kind `webhook {name, secret}` (secret shown once), from the UI (Settings → Connections), `scotty connect` and the API. `POST /hooks/:name` verifies Standard Webhooks signatures, sits behind an Access bypass the deployer makes for `/hooks/*` only, and records each delivery (accepted or why not). A create with a key already used steers that session (resuming it); the same key with a different payload is 409. `created` records its origin `{connection, delivery, key}`.
+- **Done when:** `e2e hooks`: two signed deliveries with one key give one session with two turns; a bad signature is rejected and listed in `scotty deliveries`; the UI shows the delivery linked to its session.
+
+### S4: automations and runs
+
+- **In scope:** an automation `{when: schedule | event, only, key, repo, agent, prompt, enabled}` in the Creds DO; `only` is equality and one-of on payload fields. Schedules are calendar or interval with an explicit IANA timezone; the Creds DO alarm is the earliest due time; missed runs are skipped; a run id stays the same across retries. Every firing is a run: received → skipped (why) | started or steered session → turn outcome. An automation an agent creates starts disabled. UI: Automations page (plain-sentence list, toggle, last run), editor, runs; CLI `scotty automation add|ls|enable|run` and `scotty runs`.
+- **Done when:** `e2e automations`: a schedule fires once into a session, a non-matching event is a recorded skip, a run links to its session and back.
+
+### S5: reach through `name.internal`
+
+- **Spike first:** does a streamed MCP response pass through `interceptOutboundHttp`? Result goes in `design.md`.
+- **In scope:** connection kinds `token {host, header}` and `mcp {url}`; the agent reaches `http://<name>.internal/…` and the Worker adds the credential from the Creds DO. Both agents get the MCP connections in their config. MCP sign-in: pasted token first; OAuth (client metadata document, then dynamic registration) after the token path works.
+- **Done when:** a scripted session calls a token connection and an MCP connection through `name.internal`; no secret appears in the container, log or event log.
+
+### S6: Scotty inside sessions
+
+- **In scope:** the image carries the `scotty` CLI pointed at `scotty.internal`; the Worker takes the session's identity from props. A session can create, read and steer others; a child's origin is its parent.
+- **Done when:** a scripted session starts a child and reads its answer.
+
+### S7: Slack bot
+
+- **In scope:** a `slack` connection: Scotty shows an app manifest with the events URL; the owner pastes the bot token and signing secret. Mentions and thread replies from the owner's Slack user id only; key `slack:<channel>:<thread>`; repo from `in owner/repo`, else the connection's default, else it asks in the thread. When a turn ends the Session DO posts its answer and link to the thread (intent event, then result). Slack retries are no-ops.
+- **Done when:** `e2e slack` with a signed mention payload creates a session and records the reply intent; the owner sees a real thread reply on `main`.
+
+### S8: GitHub events and babysit
+
+- **In scope:** a `github` connection with a webhook secret; events verified by `x-hub-signature-256`; events authored by Scotty's own GitHub identity are dropped. The babysit automation (`gh:{repo}#{pr}`) is documented as the example.
+- **Done when:** `e2e github` delivers a signed `check_run` failure to an automation and it steers the PR's session.
+
+### R1: places
+
+- **Why:** sessions run only on Cloudflare Containers. The owner wants heavy work on their own Linux boxes, and other providers (Daytona and others) later, each one module.
+- **In scope:** a `Place` the Session DO uses for everything it does to where a session runs: start (with the session's `.internal` egress), running, `port(n)` (a Fetcher for HTTP and WebSocket: supervisor, saves, terminal, hatch) and destroy. `src/places/cloudflare.ts` is today's container code behind it. `created` records `place` (`cloudflare` for now); the fold and commands don't change. No capability flags until a second place needs one.
+- **Done when:** every check passes with no change in behaviour; the existing e2e pass on the test stage.
+
+### R2: runners on the owner's boxes
+
+- **Why:** the owner has Linux machines (first `slumbers`: 16 cores, 27 GB, Docker) and wants sessions on them, with hatch and the terminal working as on Cloudflare.
+- **Shape:** each runner is a name in the deploy config. The deployer makes, by name, a Cloudflare Tunnel `scotty-<stage>-runner-<name>`, the hostname `runner-<name>.<domain>` routed to it, and an Access application that admits only a service token kept in the Creds DO. `scotty runner add <name>` installs `scotty runner` on the box as a systemd service; it runs `cloudflared` in Docker with the tunnel's token, and serves `PUT|GET|DELETE /s/:id` (a Docker container per session from the same image) and `/s/:id/port/:n` (forwarded to the container). The Session DO's runner place is `fetch` to that host: no link protocol of Scotty's own. The container's `github.internal` and `files.internal` go through the daemon to the Worker with a short-lived token for that session only; the real credentials stay in the Creds DO. Sleep keeps the container's disk on the box.
+- **Spike first:** a DO holds the supervisor WebSocket through the tunnel for an hour with the resend protocol intact; result in `design.md`.
+- **In scope:** the above; Settings → Runners (name, online, last seen, sessions running, limit); `scotty runners`; `scotty new --on <name>`; `container.stopped {reason: gone}` when a runner stops answering.
+- **Done when:** `e2e runner` runs a scripted session on `slumbers`, steers it, sleeps and wakes it, and opens a hatch preview through the Worker; no real token appears on the box outside the agents' own exceptions.
+
+### R3: where a session runs
+
+- **In scope:** a default place per repo; an automation's `on:`; `--on runners` picks the least busy online runner; a runner that is offline at create fails fast with a clear message rather than falling back silently. The UI's new-session sheet has a place picker.
+- **Done when:** `e2e runner` creates by repo default and by automation.
+
 ## Later
 
 Each item gets its own step before anyone builds it.
