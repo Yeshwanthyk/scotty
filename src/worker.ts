@@ -4,6 +4,7 @@ import { Config, Effect, Exit, Option, Schema, SchemaTransformation } from "effe
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import { fireRun } from "./automations/fire.js";
 import { gitHandler } from "./creds/git.js";
 import CredsObject from "./creds/object.js";
 import { hookHandler, hookPath } from "./hooks/handler.js";
@@ -13,6 +14,8 @@ import SessionObject, { SessionArtifacts } from "./session/object.js";
 // Set by the Session DO when it routes its container's github.internal and files.internal
 // traffic here.
 const LoopbackProps = Schema.Struct({ session: Schema.String, repo: Schema.String });
+// Set by the Creds DO's alarm when it hands over an automation run to fire.
+const RunProps = Schema.Struct({ run: Schema.String });
 // A preview host is `<port>-<session id>.<SCOTTY_HATCH_BASE>`.
 const hatchLabel = /^(\d{1,5})-([a-z0-9-]{6,32})$/;
 const terminalPath = /^\/api\/sessions\/([a-z0-9-]{6,32})\/terminal$/;
@@ -130,6 +133,12 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
     return {
       fetch: Effect.gen(function* () {
         const exec = yield* Cloudflare.WorkerExecutionContext;
+        const run = Schema.decodeUnknownOption(RunProps)(exec.raw.props);
+        if (Option.isSome(run))
+          return yield* fireRun(sessions, credentials.getByName("owner"), run.value.run).pipe(
+            Effect.as(HttpServerResponse.empty()),
+            Effect.orDie,
+          );
         const props = Schema.decodeUnknownOption(LoopbackProps)(exec.raw.props);
         const request = yield* HttpServerRequest.HttpServerRequest;
         if (Option.isSome(props) && request.headers["host"] === "files.internal")

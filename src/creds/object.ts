@@ -1,10 +1,22 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
+import type * as cf from "@cloudflare/workers-types";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Schema } from "effect";
 import { newSecret, verifyWebhook } from "../hooks/signature.js";
 import { ConnectionName, DeliveryOutcome, DeliveryReason, keptDeliveries } from "./connections.js";
 import { searchText } from "../session/search.js";
+import { AgentKind } from "../session/events.js";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
+import {
+  Definition,
+  giveUpAfterMs,
+  missedAfterMs,
+  nextDue,
+  prepare,
+  refireAfterMs,
+  RunStatus,
+  RunTrigger,
+} from "../automations/automation.js";
 
 const CredentialRow = Schema.Struct({
   access_token: Schema.String,
@@ -57,6 +69,46 @@ const DeliveryRow = Schema.Struct({
   reason: Schema.NullOr(DeliveryReason),
   session: Schema.NullOr(Schema.String),
 });
+const AutomationRow = Schema.Struct({
+  name: Schema.String,
+  definition: Schema.fromJsonString(Definition),
+  enabled: Schema.Number,
+  next_due: Schema.NullOr(Schema.Number),
+  created: Schema.Number,
+});
+const RunRow = Schema.Struct({
+  id: Schema.String,
+  automation: Schema.String,
+  trigger: RunTrigger,
+  at: Schema.Number,
+  status: RunStatus,
+  reason: Schema.NullOr(Schema.String),
+  session: Schema.NullOr(Schema.String),
+  delivery: Schema.NullOr(Schema.String),
+  key: Schema.NullOr(Schema.String),
+});
+const FireRow = Schema.Struct({
+  automation: Schema.String,
+  repo: Schema.String,
+  agent: AgentKind,
+  prompt: Schema.String,
+  key: Schema.NullOr(Schema.String),
+  scripted: Schema.Number,
+});
+const RunAnswer = Schema.Struct({
+  status: Schema.Literals(["started", "steered", "failed"]),
+  reason: Schema.NullOr(Schema.String),
+  session: Schema.NullOr(Schema.String),
+});
+const DueRow = Schema.Struct({ due: Schema.NullOr(Schema.Number) });
+const IdRow = Schema.Struct({ id: Schema.String });
+// How many runs are kept, and how many a list returns.
+const keptRuns = 500;
+const listedRuns = 100;
+// ctx.exports is typed {} without a GlobalProps declaration; its default export is the
+// Worker's loopback, which takes props.
+const isLoopback = (value: unknown): value is (options: { props: { run: string } }) => cf.Fetcher =>
+  typeof value === "function";
 // The newest deliveries a list returns.
 const listedDeliveries = 200;
 // Sessions can run for hours; refuse a token that could expire mid-session.
@@ -88,6 +140,11 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS session_search (id TEXT PRIMARY KEY, text TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS connections (name TEXT PRIMARY KEY, kind TEXT NOT NULL, secret TEXT NOT NULL, created INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, connection TEXT NOT NULL, at INTEGER NOT NULL, outcome TEXT NOT NULL, reason TEXT, session TEXT)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS automations (name TEXT PRIMARY KEY, definition TEXT NOT NULL, enabled INTEGER NOT NULL, next_due INTEGER, created INTEGER NOT NULL)`;
+      // A run's source (the schedule time, delivery or manual request) names it once, so a retried
+      // firing finds the same run. What it fires is fixed when it is received.
+      yield* sql`CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, automation TEXT NOT NULL, source TEXT NOT NULL, trigger TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, session TEXT, delivery TEXT, repo TEXT NOT NULL, agent TEXT NOT NULL, prompt TEXT, key TEXT, scripted INTEGER NOT NULL, tried INTEGER NOT NULL DEFAULT 0, UNIQUE (automation, source))`;
+      yield* sql`CREATE INDEX IF NOT EXISTS runs_by_automation ON runs (automation, seq)`;
 
       const gitHub = Effect.gen(function* () {
         const row = (yield* sql`SELECT token, login, name, email FROM github WHERE id = 1`)[0];
@@ -98,6 +155,52 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         const row = (yield* sql`SELECT token, expires_at FROM claude WHERE id = 1`)[0];
         return row === undefined ? null : yield* Schema.decodeUnknownEffect(ClaudeRow)(row);
       });
+
+      const automations = Effect.gen(function* () {
+        const rows =
+          yield* sql`SELECT name, definition, enabled, next_due, created FROM automations ORDER BY name`;
+        return yield* Effect.forEach(rows, (row) => Schema.decodeUnknownEffect(AutomationRow)(row));
+      });
+
+      const runRow = (row: unknown) => Schema.decodeUnknownEffect(RunRow)(row);
+
+      // The one alarm is the soonest of the enabled schedules and the runs waiting for an answer.
+      const rearm = Effect.gen(function* () {
+        const { due } = yield* Schema.decodeUnknownEffect(DueRow)(
+          (yield* sql`SELECT MIN(due) AS due FROM (SELECT next_due AS due FROM automations WHERE enabled = 1 AND next_due IS NOT NULL UNION ALL SELECT MAX(tried, at) + ${refireAfterMs} AS due FROM runs WHERE status = 'received')`)[0],
+        );
+        if (due === null) yield* state.storage.deleteAlarm();
+        else yield* state.storage.setAlarm(due);
+      });
+
+      // Records a firing as a run: received with what it will send, or skipped with why.
+      const receive = (input: {
+        automation: string;
+        definition: Definition;
+        trigger: typeof RunTrigger.Type;
+        source: string;
+        payload: unknown;
+        skip?: string;
+        delivery?: string;
+      }) =>
+        Effect.gen(function* () {
+          const prepared =
+            input.skip === undefined
+              ? prepare(input.definition, input.payload)
+              : { status: "skipped" as const, reason: input.skip };
+          const received = prepared.status === "received" ? prepared : undefined;
+          const id =
+            input.trigger === "event"
+              ? `${input.source}:${input.automation}`
+              : crypto.randomUUID().replaceAll("-", "");
+          const inserted =
+            yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, scripted) VALUES (${id}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
+          yield* sql`DELETE FROM runs WHERE seq <= (SELECT MAX(seq) FROM runs) - ${keptRuns}`;
+          const run = yield* runRow(
+            (yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs WHERE automation = ${input.automation} AND source = ${input.source}`)[0],
+          );
+          return { ...run, fresh: inserted.length > 0 };
+        });
 
       // The session the first of these rows names; the rows were just written, so there is one.
       const sessionOf = (rows: ReadonlyArray<unknown>) =>
@@ -114,6 +217,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           repo: string;
           prompt: string;
           connection?: string;
+          automation?: string;
         }) =>
           Effect.gen(function* () {
             const fresh = yield* Schema.decodeUnknownEffect(SessionId)(input.id);
@@ -236,6 +340,179 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               Schema.decodeUnknownEffect(DeliveryRow)(row),
             );
           }),
+        automations: () =>
+          Effect.gen(function* () {
+            const found = yield* automations;
+            return yield* Effect.forEach(found, (row) =>
+              Effect.gen(function* () {
+                const last =
+                  (yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs WHERE automation = ${row.name} ORDER BY seq DESC LIMIT 1`)[0];
+                return {
+                  name: row.name,
+                  ...row.definition,
+                  enabled: row.enabled === 1,
+                  nextDue: row.next_due,
+                  created: row.created,
+                  lastRun: last === undefined ? null : yield* runRow(last),
+                };
+              }),
+            );
+          }),
+        // Adding or replacing leaves the automation off, so whoever wrote it (an agent, say)
+        // doesn't also decide that it runs.
+        putAutomation: (name: string, definition: Definition, replace: boolean) =>
+          Effect.gen(function* () {
+            const text = yield* Schema.encodeEffect(Schema.fromJsonString(Definition))(definition);
+            const rows = replace
+              ? yield* sql`UPDATE automations SET definition = ${text}, enabled = 0, next_due = NULL WHERE name = ${name} RETURNING name`
+              : yield* sql`INSERT OR IGNORE INTO automations (name, definition, enabled, next_due, created) VALUES (${name}, ${text}, 0, NULL, ${Date.now()}) RETURNING name`;
+            yield* rearm;
+            return rows.length > 0;
+          }),
+        // A schedule counts from now: nothing it missed while off runs.
+        enableAutomation: (name: string, enabled: boolean) =>
+          Effect.gen(function* () {
+            const row = (yield* automations).find((item) => item.name === name);
+            if (row === undefined) return false;
+            const due = enabled ? nextDue(row.definition.when, Date.now()) : null;
+            yield* sql`UPDATE automations SET enabled = ${enabled ? 1 : 0}, next_due = ${due} WHERE name = ${name}`;
+            yield* rearm;
+            return true;
+          }),
+        removeAutomation: (name: string) =>
+          Effect.gen(function* () {
+            const rows = yield* sql`DELETE FROM automations WHERE name = ${name} RETURNING name`;
+            yield* rearm;
+            return rows.length > 0;
+          }),
+        // Run now, on or off, with the time as its payload.
+        runAutomation: (name: string) =>
+          Effect.gen(function* () {
+            const row = (yield* automations).find((item) => item.name === name);
+            if (row === undefined) return null;
+            const run = yield* receive({
+              automation: name,
+              definition: row.definition,
+              trigger: "manual",
+              source: `manual:${crypto.randomUUID()}`,
+              payload: { at: new Date().toISOString() },
+            });
+            yield* rearm;
+            return run;
+          }),
+        // A verified delivery becomes one run per automation listening on its connection, or
+        // null when none listens. A repeated delivery finds the runs it made the first time.
+        receiveEvent: (connection: string, delivery: string, payload: unknown) =>
+          Effect.gen(function* () {
+            const listening = (yield* automations).filter(
+              (row) =>
+                row.definition.when.kind === "event" &&
+                row.definition.when.connection === connection,
+            );
+            if (listening.length === 0) return null;
+            const runs = yield* Effect.forEach(listening, (row) =>
+              receive({
+                automation: row.name,
+                definition: row.definition,
+                trigger: "event",
+                source: `delivery:${connection}:${delivery}`,
+                payload,
+                delivery,
+                ...(row.enabled === 1 ? {} : { skip: "off" }),
+              }),
+            );
+            yield* rearm;
+            return runs;
+          }),
+        // What a received run sends, or its stored answer if another attempt settled it.
+        // Marks it tried, so the alarm fires it again only if this attempt never answers.
+        takeRun: (id: string) =>
+          Effect.gen(function* () {
+            const row =
+              (yield* sql`UPDATE runs SET tried = ${Date.now()} WHERE id = ${id} AND status = 'received' RETURNING automation, repo, agent, prompt, key, scripted`)[0];
+            yield* rearm;
+            if (row !== undefined)
+              return {
+                kind: "received" as const,
+                ...(yield* Schema.decodeUnknownEffect(FireRow)(row)),
+              };
+            const answer =
+              (yield* sql`SELECT status, reason, session FROM runs WHERE id = ${id} AND status IN ('started', 'steered', 'failed')`)[0];
+            return answer === undefined
+              ? null
+              : {
+                  kind: "settled" as const,
+                  ...(yield* Schema.decodeUnknownEffect(RunAnswer)(answer)),
+                };
+          }),
+        // The first answer for a run is its answer.
+        settleRun: (
+          id: string,
+          outcome: {
+            status: (typeof RunAnswer.Type)["status"];
+            reason?: string;
+            session?: string;
+          },
+        ) =>
+          Effect.gen(function* () {
+            yield* sql`UPDATE runs SET status = ${outcome.status}, reason = ${outcome.reason ?? null}, session = ${outcome.session ?? null} WHERE id = ${id} AND status = 'received'`;
+            yield* rearm;
+            const answer =
+              (yield* sql`SELECT status, reason, session FROM runs WHERE id = ${id}`)[0];
+            return answer === undefined
+              ? null
+              : yield* Schema.decodeUnknownEffect(RunAnswer)(answer);
+          }),
+        runs: (automation?: string) =>
+          Effect.gen(function* () {
+            const rows =
+              automation === undefined
+                ? yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs ORDER BY seq DESC LIMIT ${listedRuns}`
+                : yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs WHERE automation = ${automation} ORDER BY seq DESC LIMIT ${listedRuns}`;
+            return yield* Effect.forEach(rows, runRow);
+          }),
+        // Due schedules become runs and move on; then each received run without an answer is
+        // handed to the Worker, which starts or steers its session. Everything this object
+        // records is written before it hands anything over.
+        alarm: () =>
+          Effect.gen(function* () {
+            const now = Date.now();
+            const fire: string[] = [];
+            for (const row of yield* automations) {
+              if (row.enabled !== 1 || row.next_due === null || row.next_due > now) continue;
+              const run = yield* receive({
+                automation: row.name,
+                definition: row.definition,
+                trigger: "schedule",
+                source: `schedule:${row.next_due}`,
+                payload: { at: new Date(row.next_due).toISOString() },
+                ...(now - row.next_due > missedAfterMs ? { skip: "missed" } : {}),
+              });
+              if (run.fresh && run.status === "received") fire.push(run.id);
+              const following = nextDue(row.definition.when, row.next_due);
+              const due =
+                following !== null && following > now
+                  ? following
+                  : nextDue(row.definition.when, now);
+              yield* sql`UPDATE automations SET next_due = ${due} WHERE name = ${row.name}`;
+            }
+            yield* sql`UPDATE runs SET status = 'failed', reason = 'no answer within an hour' WHERE status = 'received' AND at <= ${now - giveUpAfterMs}`;
+            const waiting =
+              yield* sql`SELECT id FROM runs WHERE status = 'received' AND MAX(tried, at) + ${refireAfterMs} <= ${now}`;
+            for (const row of waiting)
+              fire.push((yield* Schema.decodeUnknownEffect(IdRow)(row)).id);
+            yield* rearm;
+            const loopback: unknown = Reflect.get(state.raw.exports, "default");
+            if (!isLoopback(loopback)) return yield* Effect.die("no ctx.exports.default");
+            yield* Effect.forEach(
+              fire,
+              (run) =>
+                Effect.tryPromise(() =>
+                  loopback({ props: { run } }).fetch("https://run.internal/"),
+                ).pipe(Effect.ignore),
+              { concurrency: "unbounded", discard: true },
+            );
+          }).pipe(Effect.orDie),
         sessions: () =>
           Effect.gen(function* () {
             const rows = yield* sql`SELECT id FROM session_index`;

@@ -12,6 +12,7 @@ export const searchText = (fields: {
   prompt: string;
   key?: string;
   connection?: string;
+  automation?: string;
 }) =>
   [
     fields.title,
@@ -20,6 +21,7 @@ export const searchText = (fields: {
     fields.prompt,
     fields.key ?? "",
     fields.connection ?? "",
+    fields.automation ?? "",
   ]
     .join("\n")
     .toLowerCase();

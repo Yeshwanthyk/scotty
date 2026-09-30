@@ -40,7 +40,7 @@ export type DummySpec = {
   turns: TurnSpec[];
   // Where the session is left: stopped after its turns, waiting on the owner, or failed at boot.
   after?: "stopped" | "waiting" | "boot-failed";
-  // Set when a webhook made the session.
+  // Set when a webhook or an automation made the session.
   origin?: Json;
 };
 
@@ -899,6 +899,35 @@ export const dummies: DummySpec[] = [
         prompt: "Write a migration guide for the v2 webhooks.",
         items: [
           { type: "say", text: "The guide is in docs/webhooks-v2.md.", phase: "final_answer" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "d0cc0de5000000000000000000000009",
+    title: "Summarise yesterday's commits on main",
+    repo: "acme/storefront",
+    minutesAgo: 60 * 5,
+    origin: {
+      kind: "automation",
+      automation: "daily-digest",
+      run: "5eed0000000000000000000000000000",
+    },
+    turns: [
+      {
+        prompt: "Summarise yesterday's commits on main and flag anything risky.",
+        items: [
+          {
+            type: "cmd",
+            command: "git log --since=yesterday --oneline main",
+            output:
+              "4be1c07 Cache product thumbnails for a day\n91d2e3a Drop the legacy checkout flag\n",
+          },
+          {
+            type: "say",
+            text: "Two commits landed yesterday.\n\n- **Cache product thumbnails for a day**: safe.\n- **Drop the legacy checkout flag**: risky; the flag still gates the Apple Pay button in `checkout/pay.tsx`.",
+            phase: "final_answer",
+          },
         ],
       },
     ],

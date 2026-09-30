@@ -12,6 +12,7 @@ import { create, ls, log, open, read } from "./commands/sessions.js";
 import { hatch, interrupt, resume, rm, steer, stop } from "./commands/actions.js";
 import { push } from "./commands/push.js";
 import { connect, connections, deliveries } from "./commands/connections.js";
+import { automation, runs } from "./commands/automations.js";
 
 const overview = `${bold("scotty")} — Codex and Claude sessions in Cloudflare Containers
 
@@ -47,6 +48,16 @@ ${bold("Hooks")}
   connections                     List connections
   deliveries                      List deliveries, newest first (--connection <name>)
   rm connection <name>            Delete a connection
+
+${bold("Automations")}
+  automation add <name> <repo> <prompt>
+                                  Add one, off: --cron "0 9 * * 1" --tz Europe/London,
+                                  --every <minutes> or --on <connection>
+  automation ls                   List automations and their last runs
+  automation enable <name>        Turn one on (--off turns it off)
+  automation run <name>           Run one now
+  automation rm <name>            Delete an automation
+  runs                            List runs, newest first (--automation <name>)
 
 ${bold("Flags")}
   --json      JSON output (the default when piped)
@@ -119,6 +130,22 @@ List connections (names, kinds and URLs; secrets are never shown again).`,
   deliveries: `Usage: scotty deliveries [--connection name]
 List what senders posted, newest first: accepted (with its session), rejected (and why) or
 duplicate. The last 200 are shown.`,
+  automation: `Usage: scotty automation add|ls|enable|run|rm
+add <name> <owner/repo> <prompt> (--cron "<5 fields>" --tz <IANA zone> | --every <minutes> | --on <connection>)
+    [--only field=value[,value…]] [--key template] [--agent codex|claude]
+  Adds an automation, off; enable it to run. A calendar schedule is read in its zone; an interval
+  counts from when it is turned on; --on fires on each delivery to that webhook connection.
+  --only keeps payloads whose field (a.b for nested) is one of the values; repeat it for more.
+  The prompt and --key take {{field}} from the payload (a schedule's payload is {"at": time}).
+  A run whose key already has a session sends the prompt to that session.
+ls                   List automations in plain words, on or off, with the last run.
+enable <name> [--off]  Turn one on or off. A schedule missed while off does not run.
+run <name>           Run one now, on or off; prints the run and its session.
+rm <name>            Delete an automation; its runs stay listed.
+Example: scotty automation add standup octocat/Hello-World "Summarise yesterday's commits" --cron "0 9 * * 1-5" --tz Europe/London`,
+  runs: `Usage: scotty runs [--automation name]
+List runs, newest first: what fired them, skipped (and why), started or steered a session, or
+failed; and how that session's turn went. The last 100 are shown.`,
   push: `Usage: scotty push skill <folder|zip…> | scotty push instructions <file|->
 skill          Upload skills; one with the same name is replaced and keeps its on/off setting.
 instructions   Set the text every session gets; - reads stdin, an empty file clears it.
@@ -149,6 +176,8 @@ const root = Command.make("scotty").pipe(
     connect,
     connections,
     deliveries,
+    automation,
+    runs,
   ]),
 );
 

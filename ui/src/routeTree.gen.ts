@@ -11,6 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SessionsRouteImport } from './routes/sessions'
+import { Route as AutomationsIndexRouteImport } from './routes/automations.index'
+import { Route as AutomationsNameRouteImport } from './routes/automations.$name'
 import { Route as SSessionIdRouteImport } from './routes/s.$sessionId'
 import { Route as SessionsCreateRouteImport } from './routes/sessions.create'
 import { Route as SettingsIndexRouteImport } from './routes/settings.index'
@@ -24,6 +26,16 @@ const IndexRoute = IndexRouteImport.update({
 const SessionsRoute = SessionsRouteImport.update({
   id: '/sessions',
   path: '/sessions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AutomationsIndexRoute = AutomationsIndexRouteImport.update({
+  id: '/automations/',
+  path: '/automations/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AutomationsNameRoute = AutomationsNameRouteImport.update({
+  id: '/automations/$name',
+  path: '/automations/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SSessionIdRoute = SSessionIdRouteImport.update({
@@ -50,26 +62,32 @@ const SettingsSectionRoute = SettingsSectionRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/sessions': typeof SessionsRouteWithChildren
+  '/automations/$name': typeof AutomationsNameRoute
   '/s/$sessionId': typeof SSessionIdRoute
   '/sessions/create': typeof SessionsCreateRoute
   '/settings/$section': typeof SettingsSectionRoute
+  '/automations/': typeof AutomationsIndexRoute
   '/settings/': typeof SettingsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/sessions': typeof SessionsRouteWithChildren
+  '/automations/$name': typeof AutomationsNameRoute
   '/s/$sessionId': typeof SSessionIdRoute
   '/sessions/create': typeof SessionsCreateRoute
   '/settings/$section': typeof SettingsSectionRoute
+  '/automations': typeof AutomationsIndexRoute
   '/settings': typeof SettingsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/sessions': typeof SessionsRouteWithChildren
+  '/automations/$name': typeof AutomationsNameRoute
   '/s/$sessionId': typeof SSessionIdRoute
   '/sessions/create': typeof SessionsCreateRoute
   '/settings/$section': typeof SettingsSectionRoute
+  '/automations/': typeof AutomationsIndexRoute
   '/settings/': typeof SettingsIndexRoute
 }
 export interface FileRouteTypes {
@@ -77,33 +95,41 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/sessions'
+    | '/automations/$name'
     | '/s/$sessionId'
     | '/sessions/create'
     | '/settings/$section'
+    | '/automations/'
     | '/settings/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/sessions'
+    | '/automations/$name'
     | '/s/$sessionId'
     | '/sessions/create'
     | '/settings/$section'
+    | '/automations'
     | '/settings'
   id:
     | '__root__'
     | '/'
     | '/sessions'
+    | '/automations/$name'
     | '/s/$sessionId'
     | '/sessions/create'
     | '/settings/$section'
+    | '/automations/'
     | '/settings/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SessionsRoute: typeof SessionsRouteWithChildren
+  AutomationsNameRoute: typeof AutomationsNameRoute
   SSessionIdRoute: typeof SSessionIdRoute
   SettingsSectionRoute: typeof SettingsSectionRoute
+  AutomationsIndexRoute: typeof AutomationsIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
 }
 
@@ -121,6 +147,20 @@ declare module '@tanstack/react-router' {
       path: '/sessions'
       fullPath: '/sessions'
       preLoaderRoute: typeof SessionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/automations/': {
+      id: '/automations/'
+      path: '/automations'
+      fullPath: '/automations/'
+      preLoaderRoute: typeof AutomationsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/automations/$name': {
+      id: '/automations/$name'
+      path: '/automations/$name'
+      fullPath: '/automations/$name'
+      preLoaderRoute: typeof AutomationsNameRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/s/$sessionId': {
@@ -169,8 +209,10 @@ const SessionsRouteWithChildren = SessionsRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SessionsRoute: SessionsRouteWithChildren,
+  AutomationsNameRoute: AutomationsNameRoute,
   SSessionIdRoute: SSessionIdRoute,
   SettingsSectionRoute: SettingsSectionRoute,
+  AutomationsIndexRoute: AutomationsIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
 }
 export const routeTree = rootRouteImport

@@ -8,6 +8,7 @@ import { AgentKind } from "../session/events.js";
 import type SessionObject from "../session/object.js";
 import { Prompt, Repo, startSession } from "../http/start.js";
 import { titleFrom } from "../session/title.js";
+import { automationDelivery } from "../automations/fire.js";
 import { maxBodyBytes } from "./signature.js";
 
 export const hookPath = /^\/hooks\/([^/]+)$/;
@@ -76,6 +77,9 @@ export function hookHandler(
     });
     if (verdict === "unknown") return yield* refuse(404, "unknown_connection");
     if (verdict !== "ok") return yield* reject(401, verdict);
+    // A connection that automations listen on hands its deliveries to them.
+    const automated = yield* automationDelivery(sessions, credential, name, delivery, body);
+    if (automated !== undefined) return automated;
     const payload = yield* decodePayload(body).pipe(Effect.option);
     if (payload._tag === "None") return yield* reject(400, "bad_body");
     const { repo, prompt, key, agent, title, scripted } = payload.value;

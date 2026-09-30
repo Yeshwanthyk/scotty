@@ -90,6 +90,7 @@ export function startSession(
       repo: input.repo,
       prompt: input.prompt,
       ...(input.origin?.kind === "hook" ? { connection: input.origin.connection } : {}),
+      ...(input.origin?.kind === "automation" ? { automation: input.origin.automation } : {}),
     });
     const answer = yield* sessions.getByName(id).start({
       ...request,

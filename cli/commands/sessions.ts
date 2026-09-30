@@ -18,7 +18,7 @@ import {
   withClient,
 } from "./common.js";
 
-const repoName = (input: string) =>
+export const repoName = (input: string, command: string) =>
   Effect.gen(function* () {
     const value = input.startsWith("https://github.com/")
       ? input
@@ -27,7 +27,7 @@ const repoName = (input: string) =>
           .replace(/\/$/, "")
       : input;
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value))
-      return yield* usage("Expected owner/repo or https://github.com/owner/repo", "new");
+      return yield* usage("Expected owner/repo or https://github.com/owner/repo", command);
     return value;
   });
 
@@ -42,7 +42,7 @@ export const create = Command.make(
   },
   ({ repository, prompt, agent, key, sessionKey }) =>
     Effect.gen(function* () {
-      const repo = yield* repoName(repository);
+      const repo = yield* repoName(repository, "new");
       if (!prompt.trim()) return yield* usage("The prompt cannot be empty", "new");
       const api = yield* withClient;
       const created = yield* api("/api/sessions", Created, {

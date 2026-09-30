@@ -142,6 +142,13 @@ export function Sidebar({
           <img src={scottyMark} alt="" />
           Scotty
         </Link>
+        <Link
+          to="/automations"
+          className="icon-button pressable mobile-only"
+          aria-label="Automations"
+        >
+          <Icon name="refresh" />
+        </Link>
         <Link to="/settings" className="icon-button pressable mobile-only" aria-label="Settings">
           <Icon name="settings" />
         </Link>
@@ -268,6 +275,14 @@ export function Sidebar({
         ) : null}
       </div>
       <nav className="sidebar-foot desktop-only">
+        <Link
+          to="/automations"
+          className="nav-item pressable"
+          activeProps={{ "aria-current": "page" }}
+        >
+          <Icon name="refresh" />
+          Automations
+        </Link>
         <Link
           to="/settings"
           className="nav-item pressable"

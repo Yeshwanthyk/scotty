@@ -8,7 +8,8 @@ import type { Plugin } from "vite";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
 import { fold, initial, type State } from "../../src/session/fold.ts";
 import { maxSearch, searchText } from "../../src/session/search.ts";
-import { conversationView, sessionView } from "../../src/session/view.ts";
+import { conversationView, sessionView, turnOutcome } from "../../src/session/view.ts";
+import { AutomationName, Definition, nextDue, prepare } from "../../src/automations/automation.ts";
 import { readSkill } from "../../src/settings/skill.ts";
 import { codexLog, dummies } from "./dummy.ts";
 
@@ -386,6 +387,189 @@ async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string,
   }
   return fail(res, "Not found", 404, "not_found");
 }
+// Automations and their runs, in memory; the seeded runs point at seeded sessions, and the
+// turn outcome is read from them the way the Worker reads it from the Session DO.
+type SeedRun = {
+  id: string;
+  automation: string;
+  trigger: "schedule" | "event" | "manual";
+  at: number;
+  status: "received" | "skipped" | "failed" | "started" | "steered";
+  reason: string | null;
+  session: string | null;
+  delivery: string | null;
+  key: string | null;
+};
+function seedRun(
+  index: number,
+  automation: string,
+  minutesAgo: number,
+  status: SeedRun["status"],
+  reason: string | null,
+  session: string | null,
+): SeedRun {
+  const event = automation === "triage-sentry";
+  return {
+    id: `5eed${String(index).padStart(28, "0")}`,
+    automation,
+    trigger: event ? "event" : "schedule",
+    at: Date.now() - minutesAgo * 60_000,
+    status,
+    reason,
+    session,
+    delivery: event ? `msg_seed${index}` : null,
+    key: event && status !== "skipped" ? "issue-4821" : null,
+  };
+}
+const flows = {
+  automations: new Map<
+    string,
+    { definition: Definition; enabled: boolean; nextDue: number | null; created: number }
+  >([
+    [
+      "daily-digest",
+      {
+        definition: {
+          when: { kind: "calendar", cron: "0 9 * * 1-5", tz: "Europe/London" },
+          repo: "acme/storefront",
+          agent: "codex",
+          prompt: "Summarise yesterday's commits on main and flag anything risky.",
+        },
+        enabled: true,
+        nextDue: nextDue(
+          { kind: "calendar", cron: "0 9 * * 1-5", tz: "Europe/London" },
+          Date.now(),
+        ),
+        created: Date.now() - 14 * 864e5,
+      },
+    ],
+    [
+      "triage-sentry",
+      {
+        definition: {
+          when: { kind: "event", connection: "sentry" },
+          only: { action: ["created", "reopened"] },
+          key: "issue-{{data.issue.id}}",
+          repo: "acme/storefront",
+          agent: "codex",
+          prompt: "Sentry reports {{data.issue.title}}. Find the cause and propose a fix.",
+        },
+        enabled: true,
+        nextDue: null,
+        created: Date.now() - 6 * 864e5,
+      },
+    ],
+    [
+      "weekly-deps",
+      {
+        definition: {
+          when: { kind: "interval", minutes: 7 * 24 * 60 },
+          repo: "acme/storefront",
+          agent: "claude",
+          prompt: "Check for outdated dependencies and open a branch with safe upgrades.",
+        },
+        enabled: false,
+        nextDue: null,
+        created: Date.now() - 864e5,
+      },
+    ],
+  ]),
+  runs: [
+    seedRun(0, "daily-digest", 60 * 5, "started", null, "d0cc0de5000000000000000000000009"),
+    seedRun(1, "triage-sentry", 120, "started", null, "d0cc0de5000000000000000000000002"),
+    seedRun(2, "triage-sentry", 75, "steered", null, "d0cc0de5000000000000000000000002"),
+    seedRun(3, "triage-sentry", 30, "skipped", 'not matched: action is "resolved"', null),
+    seedRun(4, "daily-digest", 60 * 29, "skipped", "missed", null),
+  ],
+};
+const NewAutomation = Schema.Struct({ name: AutomationName, ...Definition.fields });
+const automationRow = (name: string) => {
+  const row = flows.automations.get(name);
+  if (row === undefined) return undefined;
+  const lastRun = flows.runs.find((run) => run.automation === name) ?? null;
+  return {
+    name,
+    ...row.definition,
+    enabled: row.enabled,
+    nextDue: row.nextDue,
+    created: row.created,
+    lastRun,
+  };
+};
+async function automationsApi(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  method: string,
+) {
+  if (path === "/api/automations" && method === "GET")
+    return json(res, { automations: [...flows.automations.keys()].sort().map(automationRow) });
+  if (path === "/api/automations" && method === "POST") {
+    const input = Schema.decodeUnknownOption(NewAutomation)(await body(req));
+    if (input._tag === "None") return fail(res, "Expected a name and a definition");
+    const { name, ...definition } = input.value;
+    if (flows.automations.has(name))
+      return fail(res, `An automation named ${name} exists`, 409, "exists");
+    flows.automations.set(name, { definition, enabled: false, nextDue: null, created: Date.now() });
+    return json(res, { name, enabled: false }, 201);
+  }
+  if (path === "/api/runs" && method === "GET") {
+    const only = new URL(req.url ?? "/", "http://localhost").searchParams.get("automation");
+    return json(res, {
+      runs: flows.runs
+        .filter((run) => only === null || run.automation === only)
+        .map((run) => {
+          const session = run.session === null ? undefined : sessions.get(run.session);
+          return { ...run, outcome: session === undefined ? null : turnOutcome(session.state) };
+        }),
+    });
+  }
+  const match = /^\/api\/automations\/([a-z0-9-]+)(\/run)?$/.exec(path);
+  const name = match?.[1];
+  const row = name === undefined ? undefined : flows.automations.get(name);
+  if (name === undefined || row === undefined) return fail(res, "Not found", 404, "not_found");
+  if (match?.[2] !== undefined && method === "POST") {
+    const prepared = prepare(row.definition, { at: new Date().toISOString() });
+    const session =
+      prepared.status === "received"
+        ? create({
+            title: prepared.prompt.slice(0, 60),
+            repo: row.definition.repo,
+            prompt: prepared.prompt,
+          })
+        : undefined;
+    const run: SeedRun = {
+      id: crypto.randomUUID().replaceAll("-", ""),
+      automation: name,
+      trigger: "manual",
+      at: Date.now(),
+      status: session === undefined ? "skipped" : "started",
+      reason: prepared.status === "skipped" ? prepared.reason : null,
+      session: session?.id ?? null,
+      delivery: null,
+      key: prepared.status === "received" ? prepared.key : null,
+    };
+    flows.runs.unshift(run);
+    return json(res, run);
+  }
+  if (method === "PUT") {
+    const input = Schema.decodeUnknownOption(Definition)(await body(req));
+    if (input._tag === "None") return fail(res, "Expected a definition");
+    flows.automations.set(name, { ...row, definition: input.value, enabled: false, nextDue: null });
+    return json(res, { name, enabled: false });
+  }
+  if (method === "PATCH") {
+    const input = Schema.decodeUnknownOption(Schema.Struct({ enabled: Schema.Boolean }))(
+      await body(req),
+    );
+    if (input._tag === "None") return fail(res, "Expected {enabled: true|false}");
+    const due = input.value.enabled ? nextDue(row.definition.when, Date.now()) : null;
+    flows.automations.set(name, { ...row, enabled: input.value.enabled, nextDue: due });
+    return json(res, { name, enabled: input.value.enabled });
+  }
+  if (method === "DELETE") return json(res, { name, removed: flows.automations.delete(name) });
+  return fail(res, "Not found", 404, "not_found");
+}
 async function bytes(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -481,6 +665,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   const method = req.method ?? "GET";
   if (url.pathname.startsWith("/api/connections") || url.pathname.startsWith("/api/deliveries"))
     return hooksApi(req, res, url.pathname, method);
+  if (url.pathname.startsWith("/api/automations") || url.pathname === "/api/runs")
+    return automationsApi(req, res, url.pathname, method);
   if (
     url.pathname.startsWith("/api/settings") ||
     url.pathname.startsWith("/api/skills") ||
@@ -504,6 +690,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
           ...created,
           ...(origin?.key === undefined ? {} : { key: origin.key }),
           ...(origin?.kind === "hook" ? { connection: origin.connection } : {}),
+          ...(origin?.kind === "automation" ? { automation: origin.automation } : {}),
         });
         return text.includes(q.toLowerCase());
       })

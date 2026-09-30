@@ -70,6 +70,61 @@ export const Deliveries = Schema.Struct({
     }),
   ),
 });
+export const Run = Schema.Struct({
+  id: Schema.String,
+  automation: Schema.String,
+  trigger: Schema.Literals(["schedule", "event", "manual"]),
+  at: Schema.Number,
+  status: Schema.Literals(["received", "skipped", "failed", "started", "steered"]),
+  reason: Schema.NullOr(Schema.String),
+  session: Schema.NullOr(Schema.String),
+  delivery: Schema.NullOr(Schema.String),
+  key: Schema.NullOr(Schema.String),
+});
+// How the turn a run sent went, read from its session; null when it reached none.
+export const Runs = Schema.Struct({
+  runs: Schema.Array(
+    Schema.Struct({
+      ...Run.fields,
+      outcome: Schema.NullOr(
+        Schema.Literals(["working", "completed", "aborted", "failed", "stopped"]),
+      ),
+    }),
+  ),
+});
+export const RunFired = Schema.Struct({
+  id: Schema.String,
+  automation: Schema.String,
+  status: Run.fields.status,
+  reason: Schema.NullOr(Schema.String),
+  session: Schema.NullOr(Schema.String),
+});
+export const When = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("calendar"), cron: Schema.String, tz: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("interval"), minutes: Schema.Number }),
+  Schema.Struct({ kind: Schema.Literal("event"), connection: Schema.String }),
+]);
+export const Automations = Schema.Struct({
+  automations: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      when: When,
+      only: Schema.optionalKey(
+        Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Array(Schema.String)])),
+      ),
+      key: Schema.optionalKey(Schema.String),
+      repo: Schema.String,
+      agent: Schema.String,
+      prompt: Schema.String,
+      enabled: Schema.Boolean,
+      nextDue: Schema.NullOr(Schema.Number),
+      created: Schema.Number,
+      lastRun: Schema.NullOr(Run),
+    }),
+  ),
+});
+export const AutomationSwitched = Schema.Struct({ name: Schema.String, enabled: Schema.Boolean });
+export const AutomationRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
 export const Reply = Schema.Struct({ status: Schema.String });
 export const Removed = Schema.Struct({ id: Schema.String, removed: Schema.Boolean });
 export const Settings = Schema.Struct({
