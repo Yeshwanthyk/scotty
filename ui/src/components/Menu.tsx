@@ -7,6 +7,7 @@ export type MenuItem = {
   onSelect: () => void;
   tone?: "danger";
   detail?: string;
+  checked?: boolean;
 };
 
 // A small popover of actions behind one "more" button; closes on pick, Escape or an outside press.
@@ -58,7 +59,8 @@ export function Menu({
             <button
               key={item.label}
               type="button"
-              role="menuitem"
+              role={item.checked === undefined ? "menuitem" : "menuitemradio"}
+              aria-checked={item.checked}
               className="menu-item"
               data-tone={item.tone}
               onClick={() => {

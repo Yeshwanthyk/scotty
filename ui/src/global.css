@@ -580,33 +580,52 @@ kbd {
   overflow-wrap: anywhere;
 }
 
-.session-filters {
-  display: grid;
-  grid-template-columns: repeat(4, max-content);
-  gap: 2px;
-  padding: 6px 8px 2px;
-}
-
-.filter-chip {
-  height: 24px;
-  padding: 0 8px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  color: var(--muted);
+.session-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 16px 0;
   white-space: nowrap;
+  flex: none;
 }
 
-.filter-chip[aria-pressed="true"] {
-  background: var(--selected);
-  color: var(--ink);
+.session-heading-filter {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
 }
 
-.filter-chip[aria-label] {
-  grid-column: 1 / -1;
-  justify-self: start;
-  max-width: 100%;
+.session-heading-repo {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.session-heading-repo > span {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.session-filter-clear {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+}
+
+.session-heading .menu {
+  margin-left: auto;
+  flex: none;
+}
+
+.session-heading .icon-button {
+  color: var(--quiet);
+}
+
+.session-heading[data-filtered="true"] .icon-button {
+  color: var(--ink);
 }
 
 .session-row[data-status="stopped"] .title,
@@ -664,12 +683,13 @@ kbd {
 @media (hover: hover) and (pointer: fine) {
   .session-row:hover:not([aria-current="page"]),
   .nav-item:hover:not([aria-current="page"]),
-  .filter-chip:hover:not([aria-pressed="true"]) {
+  .session-filter-clear:hover {
     background: var(--hover);
   }
 
   .nav-item:hover,
-  .filter-chip:hover {
+  .session-filter-clear:hover,
+  .session-heading .icon-button:hover {
     color: var(--ink);
   }
 }
@@ -1852,6 +1872,10 @@ button.diff-line {
   flex: none;
 }
 
+.menu-item[aria-checked="false"] .icon {
+  visibility: hidden;
+}
+
 .menu-item[data-tone="danger"],
 .menu-item[data-tone="danger"] .icon {
   color: var(--danger);
@@ -2368,6 +2392,13 @@ button.diff-line {
 
   .group-label {
     font-size: 12.5px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .session-heading {
+    padding-left: 18px;
+    padding-right: 18px;
   }
 
   .header {

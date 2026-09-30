@@ -14,6 +14,7 @@ import {
   type Status,
 } from "../data/status";
 import { Icon, Spinner } from "./Icon";
+import { Menu } from "./Menu";
 
 export function StatusMark({ status }: { status: Status }) {
   return (
@@ -176,29 +177,45 @@ export function Sidebar({
           <kbd>⌘K</kbd>
         </button>
       </nav>
-      <div className="session-filters" role="group" aria-label="Filter sessions">
-        {filters.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className="filter-chip pressable"
-            aria-pressed={filter === item.id}
-            onClick={() => setFilter(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-        {repo !== "" ? (
-          <button
-            type="button"
-            className="filter-chip pressable"
-            aria-pressed
-            aria-label={`Clear repository ${repo}`}
-            onClick={() => setRepo("")}
-          >
-            {repo.split("/").at(-1)} ×
-          </button>
+      <div className="session-heading group-label" data-filtered={filter !== "all" || repo !== ""}>
+        <span>Sessions</span>
+        {filter !== "all" ? (
+          <span className="session-heading-filter">
+            <span>· {filters.find((item) => item.id === filter)?.label}</span>
+            <button
+              type="button"
+              className="session-filter-clear pressable"
+              aria-label="Clear session filter"
+              onClick={() => setFilter("all")}
+            >
+              <Icon name="x" size={12} />
+            </button>
+          </span>
         ) : null}
+        {repo !== "" ? (
+          <span className="session-heading-filter session-heading-repo">
+            <span title={repo}>· {repo}</span>
+            <button
+              type="button"
+              className="session-filter-clear pressable"
+              aria-label={`Clear repository ${repo}`}
+              onClick={() => setRepo("")}
+            >
+              <Icon name="x" size={12} />
+            </button>
+          </span>
+        ) : null}
+        <Menu
+          label="Filter sessions"
+          items={filters.map((item) => ({
+            label: item.label,
+            icon: "check",
+            checked: filter === item.id,
+            onSelect: () => setFilter(item.id),
+          }))}
+        >
+          <Icon name="filter" size={14} />
+        </Menu>
       </div>
       <div className="session-groups" data-scroll>
         {list === undefined && error === "" ? <Placeholder /> : null}
