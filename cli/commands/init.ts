@@ -428,7 +428,8 @@ const reachable = (host: string, stage: string) =>
       process.exit(130);
     });
     const started = performance.now();
-    const slow = () => performance.now() - started > 120_000;
+    const slow = () => performance.now() - started > 600_000;
+    // A new address's DNS record often takes several minutes to appear.
     spin.start(`Waiting for DNS ${dim(`— ${host}`)}`);
     while (true) {
       const address = yield* published(host);
