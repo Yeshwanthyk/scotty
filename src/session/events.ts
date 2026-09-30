@@ -8,8 +8,20 @@ const fromSupervisor = {
 };
 export const AgentKind = Schema.Literals(["codex", "claude"]);
 const ClientReq = Schema.String.check(Schema.isPattern(/^(?!initial:)/));
+// Why a container stopped: the owner stopped it, it slept (idle) or was stopped for making no
+// progress (stalled), it exited on its own (crashed with an exit code, or exited cleanly), a
+// deploy replaced it, or it was found gone without a recorded exit.
+export const StopReason = Schema.Literals([
+  "user",
+  "idle",
+  "stalled",
+  "crashed",
+  "exited",
+  "deploy",
+  "gone",
+]);
 const TimeoutOp = Schema.Union([
-  Schema.Literals(["container", "workspace", "dial", "redial", "save"]),
+  Schema.Literals(["container", "workspace", "dial", "redial", "save", "watch", "idle", "stalled"]),
   Schema.String.check(Schema.isPattern(/^req:/)),
 ]);
 
@@ -26,6 +38,8 @@ export const SessionEvent = Schema.Union([
     image: Schema.String,
     // Runs the agent's scripted stand-in instead of the agent; only e2e asks for it.
     scripted: Schema.optionalKey(Schema.Literal(true)),
+    // Milliseconds of idleness before the session sleeps, when shorter than the default.
+    idleAfter: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.start"), gen: Schema.Natural }),
   Schema.Struct({
@@ -100,8 +114,19 @@ export const SessionEvent = Schema.Union([
   Schema.Struct({ ...envelope, kind: Schema.Literal("socket.closed"), gen: Schema.Natural }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("dial.failed"), gen: Schema.Natural }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("sup.redial"), gen: Schema.Natural }),
-  Schema.Struct({ ...envelope, kind: Schema.Literal("container.stopped"), gen: Schema.Natural }),
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("container.stopped"),
+    gen: Schema.Natural,
+    // Absent in logs written before stops recorded a reason.
+    reason: Schema.optionalKey(StopReason),
+    exitCode: Schema.optionalKey(Schema.Int),
+  }),
+  // The Session DO watches the running container for this generation until its watch deadline.
+  Schema.Struct({ ...envelope, kind: Schema.Literal("container.watched"), gen: Schema.Natural }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("resume.requested") }),
+  // The owner used the session's terminal or a preview; it pushes back the idle deadline.
+  Schema.Struct({ ...envelope, kind: Schema.Literal("active") }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("save.done"), turn: Schema.String }),
   Schema.Struct({
     ...envelope,

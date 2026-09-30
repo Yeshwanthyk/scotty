@@ -1,6 +1,4 @@
-import { BunServices } from "@effect/platform-bun";
-import { Effect, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Effect } from "effect";
 import {
   access,
   CliFailure,
@@ -22,33 +20,12 @@ const crashCommand = {
   codex: real ? "sleep 5 && pkill -9 -f 'codex app-server'" : "sleep 5 && kill -9 $PPID",
   claude: "sleep 5 && kill -9 $PPID",
 };
+import { instances } from "./lib/instances.js";
 import { Log, waiter } from "./lib/wait.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 
-const Instances = Schema.fromJsonString(
-  Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.String })),
-);
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("stop-resume", message, "scotty doctor"));
-
-const instances = Effect.gen(function* () {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const app = process.env.SCOTTY_CONTAINER_APP_ID ?? "";
-  const child = yield* spawner.spawn(
-    ChildProcess.make("npx", ["wrangler", "containers", "instances", app, "--json"], {
-      stdin: "ignore",
-      stderr: "ignore",
-    }),
-  );
-  const json = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
-  return yield* Schema.decodeUnknownEffect(Instances)(json);
-}).pipe(
-  Effect.scoped,
-  Effect.provide(BunServices.layer),
-  Effect.mapError(() =>
-    failure("setup", "Could not list container instances", "export SCOTTY_CONTAINER_APP_ID=<id>"),
-  ),
-);
 
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
@@ -158,8 +135,14 @@ const program = Effect.gen(function* () {
     !(yield* events()).some((e) => e.kind === "invariant.violated"),
     "Invariant violated during crash",
   );
+  // The crash interrupted turn 3, so the next prompt starts turn 4.
+  const resumed = yield* request(`${prefix}/conversation`, Conversation);
+  yield* check(
+    resumed.currentTurn === "4" && resumed.turns.at(-1)?.state === "aborted",
+    "Crash did not end its turn as interrupted",
+  );
   yield* request(`${prefix}/resume`, View, { method: "POST" });
-  const after = yield* answer("3", recall);
+  const after = yield* answer("4", recall);
   yield* check(after.includes(marker), "Marker lost after crash and resume");
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   console.log("Crash: stopped without invariant violations; resume recalled the marker");

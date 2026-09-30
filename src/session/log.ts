@@ -41,6 +41,9 @@ export const openLog = (storage: Cloudflare.DurableObjectState["Service"]) =>
           yield* sql`INSERT INTO events (seq, at, src, kind, op, data) VALUES (${event.seq}, ${event.at}, ${event.src}, ${event.kind}, ${event.kind}, ${JSON.stringify(event)})`;
           history.push(event);
           current = fold(current, event);
+          // Taken before any incident row, so a violation never swallows the command (a stop's
+          // destroy most of all).
+          const issued = command(current, event);
           for (const violation of invariants(current)) {
             const incident = yield* Schema.decodeUnknownEffect(SessionEvent)({
               kind: "invariant.violated",
@@ -57,7 +60,7 @@ export const openLog = (storage: Cloudflare.DurableObjectState["Service"]) =>
           const due = deadline(current);
           if (due === undefined) yield* storage.storage.deleteAlarm();
           else yield* storage.storage.setAlarm(due);
-          return command(current, event);
+          return issued;
         }),
       );
     return {

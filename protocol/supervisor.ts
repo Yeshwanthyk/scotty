@@ -141,6 +141,9 @@ export type FromSupervisorMessage = Schema.Schema.Type<typeof FromSupervisor>;
 
 // The supervisor protocol this image speaks. container/Dockerfile's `scotty.supervisor` label
 // carries the same value, so an image built FROM ours can be checked before a deploy.
+// GET /terminals: the terminal sockets open now, which keep an idle session awake.
+export const Terminals = Schema.Struct({ open: Schema.Natural });
+
 export const supervisorVersion = "1";
 
 // A repository baked into the container image, so e2e sessions don't depend on GitHub. GitHub

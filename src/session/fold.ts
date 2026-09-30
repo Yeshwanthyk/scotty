@@ -1,6 +1,15 @@
 import { shouldAck } from "./ack.js";
 import type { SessionEvent } from "./events.js";
-import { deadlines, has, remove, addOnce, reqOp, isOp, requestFromOp } from "./deadlines.js";
+import {
+  deadlines,
+  has,
+  remove,
+  addOnce,
+  reqOp,
+  isOp,
+  requestFromOp,
+  idleWindow,
+} from "./deadlines.js";
 import { live, type Request, type State } from "./state.js";
 export { initial } from "./state.js";
 export type { State, Request } from "./state.js";
@@ -16,21 +25,56 @@ const settle = (
   requests.map((item) =>
     item.req === req && item.status === "pending" ? { ...item, status } : item,
   );
-const endAll = (state: State, phase: "stopped" | "failed"): State => ({
+// A turn is open while a live prompt belongs to it and it has not ended.
+const turnOpen = (state: State): boolean =>
+  state.requests.some(
+    (item) =>
+      item.kind === "prompt" &&
+      item.turn === state.currentTurn &&
+      (item.status === "pending" || item.status === "delivered"),
+  );
+// Ending a session interrupts its open turn, so the next prompt starts a new one.
+const endAll = (
+  state: State,
+  phase: "stopped" | "failed",
+  stop: State["stop"] = undefined,
+): State => ({
   ...state,
   phase,
+  stop: phase === "stopped" ? stop : undefined,
   stopSeq: state.lastSeq,
   connected: false,
   pending: [],
   requests: state.requests.map((item) =>
     item.status === "pending" ? { ...item, status: "ended" } : item,
   ),
+  ...(turnOpen(state)
+    ? {
+        currentTurn: String(state.turns.length + 1),
+        turns: [...state.turns, { turn: state.currentTurn, codexTurn: "", state: "interrupted" }],
+      }
+    : {}),
 });
+
+// The turn's own interrupt, sent when it stalled.
+const stallReq = (turn: string): string => `stalled:${turn}`;
+const stalled = (state: State, turn: string): boolean =>
+  state.requests.some((item) => item.req === stallReq(turn));
+// A save settles the last turn; after a stall, the session then stops.
+const saved = (state: State, next: State): State => {
+  const turn = state.turns.at(-1)?.turn;
+  const settled = { ...next, pending: remove(state.pending, "save") };
+  return turn !== undefined && live(state) && stalled(state, turn)
+    ? endAll(settled, "stopped", { reason: "stalled" })
+    : settled;
+};
 
 // A new generation on a fresh container; pending requests wait for its workspace.
 const resume = (state: State, at: number): State => ({
   ...state,
   phase: "provisioning",
+  failure: undefined,
+  stop: undefined,
   gen: (state.gen ?? 0) + 1,
   startSeq: state.lastSeq,
   hello: false,
@@ -52,7 +96,33 @@ const advance = (state: State, n: number, forceAck = false): State => ({
   lastAckSeq: shouldAck(state, n, forceAck) ? state.lastSeq : state.lastAckSeq,
 });
 
+// A running session with no open turn and no save in flight sleeps once its idle window passes.
+// An open turn stalls once the agent is silent for the stalled window; its output pushes that back.
+const pace = (before: State, after: State, event: SessionEvent): State => {
+  if (after === before) return after;
+  const ready = live(after) && after.ready;
+  const idle = ready && !turnOpen(after) && !has(after.pending, "save");
+  const output =
+    (event.kind === "agent.event" || event.kind === "prompt.delivered") &&
+    after.lastN > before.lastN;
+  const paced = idle
+    ? addOnce(after.pending, "idle", event.at + idleWindow(after))
+    : remove(after.pending, "idle");
+  return {
+    ...after,
+    pending: !(ready && turnOpen(after))
+      ? remove(paced, "stalled")
+      : output
+        ? [...remove(paced, "stalled"), { op: "stalled", due: event.at + deadlines.stalled }]
+        : addOnce(paced, "stalled", event.at + deadlines.stalled),
+  };
+};
+
 export function fold(state: State, event: SessionEvent): State {
+  return pace(state, step(state, event), event);
+}
+
+function step(state: State, event: SessionEvent): State {
   if (event.seq <= state.lastSeq) return state;
   const next = { ...state, lastSeq: event.seq };
   switch (event.kind) {
@@ -68,14 +138,10 @@ export function fold(state: State, event: SessionEvent): State {
       };
     case "sup.hello":
       if (event.gen !== state.gen || !live(state)) return next;
+      // A different supervisor for this generation means the container was replaced under
+      // the session, as a deploy does; its work since the last save is gone.
       if (state.boot !== undefined && state.boot !== event.boot)
-        return endAll(
-          {
-            ...next,
-            failure: { code: "supervisor_restarted", retryable: true },
-          },
-          "failed",
-        );
+        return endAll(next, "stopped", { reason: "deploy" });
       if (state.connected || (!has(state.pending, "container") && !has(state.pending, "dial")))
         return next;
       return {
@@ -207,6 +273,7 @@ export function fold(state: State, event: SessionEvent): State {
             lastAckSeq: state.lastAckSeq,
           },
           "stopped",
+          { reason: "agent" },
         );
       // The supervisor reports a failed start once; waiting out the workspace deadline adds nothing.
       if (event.req === undefined && !state.ready)
@@ -264,9 +331,7 @@ export function fold(state: State, event: SessionEvent): State {
     case "save.done":
     case "save.failed":
       // Only the latest turn's save owns the deadline; an older save's result changes nothing.
-      return state.turns.at(-1)?.turn === event.turn
-        ? { ...next, pending: remove(state.pending, "save") }
-        : next;
+      return state.turns.at(-1)?.turn === event.turn ? saved(state, next) : next;
     case "socket.closed":
       if (event.gen !== state.gen || !live(state) || !state.connected) return next;
       return {
@@ -304,7 +369,7 @@ export function fold(state: State, event: SessionEvent): State {
       )
         return next;
       // The container is gone or unreachable; its saved work can still resume.
-      if (event.op === "dial") return endAll(next, "stopped");
+      if (event.op === "dial") return endAll(next, "stopped", { reason: "gone" });
       if (event.op === "container" || event.op === "workspace")
         return endAll(
           {
@@ -313,8 +378,35 @@ export function fold(state: State, event: SessionEvent): State {
           },
           "failed",
         );
+      // The Session DO re-watches the container, or records it gone.
+      if (event.op === "watch") return { ...next, pending: remove(state.pending, "watch") };
       // A lost save leaves the previous save in place; the session carries on.
-      if (event.op === "save") return { ...next, pending: remove(state.pending, "save") };
+      if (event.op === "save") return saved(state, next);
+      // The Session DO stops the container, unless the owner used it within the window; the
+      // idle deadline starts again either way.
+      if (event.op === "idle")
+        return { ...next, idleSeq: event.seq, pending: remove(state.pending, "idle") };
+      // A stalled turn is interrupted once, then stopped if it still hasn't ended.
+      if (event.op === "stalled") {
+        const req = stallReq(state.currentTurn);
+        if (stalled(state, state.currentTurn))
+          return endAll(next, "stopped", { reason: "stalled" });
+        return {
+          ...next,
+          requests: [
+            ...state.requests,
+            { req, turn: state.currentTurn, kind: "interrupt", status: "pending", seq: event.seq },
+          ],
+          pending: [
+            ...addOnce(
+              remove(state.pending, "stalled"),
+              reqOp(req),
+              event.at + deadlines.interrupt,
+            ),
+            { op: "stalled", due: event.at + deadlines.interrupt + deadlines.save },
+          ],
+        };
+      }
       if (event.op === "redial")
         return {
           ...next,
@@ -327,9 +419,36 @@ export function fold(state: State, event: SessionEvent): State {
         pending: remove(state.pending, event.op),
       };
     case "resume.requested":
-      return state.phase === "stopped" ? resume({ ...next, activeAt: event.at }, event.at) : next;
+      return state.phase === "stopped" || (state.phase === "failed" && state.failure?.retryable)
+        ? resume({ ...next, activeAt: event.at }, event.at)
+        : next;
     case "container.stopped":
-      return event.gen === state.gen && live(state) ? endAll(next, "stopped") : next;
+      return event.gen === state.gen && live(state)
+        ? endAll(next, "stopped", {
+            reason: event.reason ?? "gone",
+            ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
+          })
+        : next;
+    case "active":
+      return has(state.pending, "idle")
+        ? {
+            ...next,
+            pending: [
+              ...remove(state.pending, "idle"),
+              { op: "idle", due: event.at + idleWindow(state) },
+            ],
+          }
+        : next;
+    case "container.watched":
+      return event.gen === state.gen && live(state)
+        ? {
+            ...next,
+            pending: [
+              ...remove(state.pending, "watch"),
+              { op: "watch", due: event.at + deadlines.watch },
+            ],
+          }
+        : next;
     case "failed":
       return endAll(
         {

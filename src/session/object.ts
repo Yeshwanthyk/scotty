@@ -2,10 +2,25 @@ import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
-import { Cause, Config, Duration, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
+import {
+  Cause,
+  Config,
+  Duration,
+  Effect,
+  Exit,
+  FiberHandle,
+  Option,
+  Schedule,
+  Schema,
+  Semaphore,
+} from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import type { AgentConfig, ToSupervisorMessage } from "../../protocol/supervisor.js";
+import {
+  Terminals,
+  type AgentConfig,
+  type ToSupervisorMessage,
+} from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
 import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
@@ -13,7 +28,7 @@ import type { AgentKind } from "./events.js";
 import { instructionsKey, skillKey } from "../settings/skill.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
-import { deadlines } from "./deadlines.js";
+import { deadlines, idleWindow, inactivityTimeout } from "./deadlines.js";
 import { deadline } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
@@ -50,6 +65,9 @@ export const SessionArtifacts = Cloudflare.R2.Bucket(
   // Teardown removes the stage with its files; nothing in it outlives the stage.
   Effect.map(Stack, ({ stage }) => ({ name: `scotty-${stage}-artifacts`, forceDestroy: true })),
 );
+
+// workerd rejects monitor() with the exit code when a container exits non-zero.
+const ExitStatus = Schema.Struct({ exitCode: Schema.Int });
 
 class ContainerStartFailed extends Schema.TaggedError<ContainerStartFailed>()(
   "ContainerStartFailed",
@@ -99,7 +117,57 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       // Container work runs after the caller returns, one operation at a time, so a resume
       // waits for the stop's destroy. Its outcome arrives as a later event.
       const lifecycle = yield* Semaphore.make(1);
-      const outside = new Set<Command["kind"]>(["container.start", "dial", "start", "destroy"]);
+      // When the owner last reached the container through the terminal or a preview. Kept in
+      // memory only: a request keeps the Session DO resident until the idle alarm reads it.
+      let used = 0;
+      const outside = new Set<Command["kind"]>([
+        "container.start",
+        "dial",
+        "start",
+        "destroy",
+        "watch",
+      ]);
+      // Awaits the running container's exit, so a crash or exit is recorded when it happens,
+      // not when someone next looks. One watcher at a time; a new one replaces the last.
+      const watcher = yield* FiberHandle.make<void, never>();
+      const exited = (gen: number) =>
+        Effect.tryPromise({
+          try: () => container.monitor(),
+          catch: (cause) => {
+            console.error(`container exited: ${String(cause)}`);
+            return Schema.decodeUnknownOption(ExitStatus)(cause).pipe(
+              Option.match({
+                onNone: () => ({ reason: "crashed" as const }),
+                onSome: ({ exitCode }) => ({ reason: "crashed" as const, exitCode }),
+              }),
+            );
+          },
+        }).pipe(
+          Effect.match({
+            onSuccess: () => ({ reason: "exited" as const }),
+            onFailure: (end) => end,
+          }),
+          Effect.flatMap((end) =>
+            current(gen)
+              ? append({ kind: "container.stopped", gen, ...end }, "session").pipe(
+                  Effect.flatMap(dispatch),
+                )
+              : Effect.void,
+          ),
+          Effect.orDie,
+          Effect.provide(context),
+        );
+      // Called once the supervisor answers, when the container surely exists: monitor() settles at
+      // once for a container not yet placed. The inactivity timeout keeps the container running
+      // while the Session DO is evicted, until the watch deadline's alarm brings it back.
+      const watch = (gen: number) =>
+        Effect.gen(function* () {
+          if (!current(gen)) return;
+          yield* Effect.tryPromise(() => container.setInactivityTimeout(inactivityTimeout));
+          yield* FiberHandle.run(watcher, exited(gen));
+          yield* append({ kind: "container.watched", gen }, "session");
+          // A failed watch is not a failed dial; the next dial or watch deadline tries again.
+        }).pipe(Effect.ignoreCause({ log: "Error", message: "watch failed" }));
       const dispatch = (action: Command | undefined): Effect.Effect<void, never, RuntimeContext> =>
         action !== undefined && outside.has(action.kind)
           ? storage.waitUntil(lifecycle.withPermit(perform(action)))
@@ -143,6 +211,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     while: () => current(action.gen),
                   }),
                 );
+              yield* watch(action.gen);
               return;
             }
             case "dial": {
@@ -151,6 +220,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               yield* link
                 .dial(port(), action.gen, action.after, () => current(action.gen))
                 .pipe(Effect.timeout("10 seconds"));
+              yield* watch(action.gen);
               return;
             }
             case "start": {
@@ -280,6 +350,37 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             case "destroy":
               if (container.running) yield* Effect.promise(() => container.destroy());
               return;
+            case "idle": {
+              if (!current(action.gen)) return;
+              // An unanswered supervisor counts as no terminal: the session sleeps.
+              const terminals = yield* supervisor("/terminals").pipe(
+                Effect.flatMap((response) => Effect.tryPromise(() => response.json())),
+                Effect.flatMap(Schema.decodeUnknownEffect(Terminals)),
+                Effect.map(({ open }) => open),
+                Effect.orElseSucceed(() => 0),
+              );
+              if (terminals > 0 || Date.now() - used < idleWindow(log.state)) {
+                yield* append({ kind: "active" }, "session");
+                return;
+              }
+              yield* dispatch(
+                yield* append(
+                  { kind: "container.stopped", gen: action.gen, reason: "idle" },
+                  "session",
+                ),
+              );
+              return;
+            }
+            case "watch":
+              if (!current(action.gen)) return;
+              if (container.running) return yield* watch(action.gen);
+              yield* dispatch(
+                yield* append(
+                  { kind: "container.stopped", gen: action.gen, reason: "gone" },
+                  "session",
+                ),
+              );
+              return;
           }
         }).pipe(
           // A start that hangs (an R2 read, a supervisor PUT) must not hold the lifecycle permit.
@@ -299,8 +400,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (action.kind === "start") console.error(`start failed: ${Cause.pretty(cause)}`);
               if (action.kind === "container.start" || action.kind === "dial") {
                 // A dial that fails because the container is gone is a stop, not a retry.
-                const kind = container.running ? "dial.failed" : "container.stopped";
-                yield* dispatch(yield* append({ kind, gen: action.gen }, "session"));
+                yield* dispatch(
+                  yield* append(
+                    container.running
+                      ? { kind: "dial.failed", gen: action.gen }
+                      : { kind: "container.stopped", gen: action.gen, reason: "gone" },
+                    "session",
+                  ),
+                );
               } else if (action.kind === "start") {
                 yield* append(
                   { kind: "failed", phase: "start", code: "start_failed", retryable: true },
@@ -343,6 +450,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           agentKind: typeof AgentKind.Type;
           image: string;
           scripted?: true;
+          idleAfter?: number;
         }) =>
           Effect.gen(function* () {
             if (log.state.created) return sessionView(id(), log.state);
@@ -358,6 +466,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   prompt: input.prompt,
                   image: input.image,
                   ...(input.scripted === true ? { scripted: true } : {}),
+                  ...(input.idleAfter === undefined ? {} : { idleAfter: input.idleAfter }),
                 },
                 "api",
               ),
@@ -393,7 +502,10 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           Effect.gen(function* () {
             if (log.state.gen !== undefined)
               yield* dispatch(
-                yield* append({ kind: "container.stopped", gen: log.state.gen }, "api"),
+                yield* append(
+                  { kind: "container.stopped", gen: log.state.gen, reason: "user" },
+                  "api",
+                ),
               );
             return { version: 1, session: sessionView(id(), log.state) };
           }),
@@ -431,6 +543,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         fetch: Effect.gen(function* () {
           const unavailable = HttpServerResponse.text("Session not running", { status: 502 });
           if (log.state.phase !== "running") return unavailable;
+          used = Date.now();
           const request = yield* HttpServerRequest.toWeb(
             yield* HttpServerRequest.HttpServerRequest,
           ).pipe(Effect.orDie);
