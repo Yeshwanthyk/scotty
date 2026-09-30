@@ -2,11 +2,12 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AgentChip, Composer } from "../components/Composer";
 import { DiffStat } from "../components/DiffLines";
-import { Icon, Spinner } from "../components/Icon";
+import { Icon } from "../components/Icon";
+import { BootSteps, LifecycleNotice, SleepsIn, StatusPill } from "../components/Lifecycle";
 import { Menu } from "../components/Menu";
 import { SidebarButton } from "../components/Layout";
 import { SidePanel, type PanelTab } from "../components/SidePanel";
-import { Thread } from "../components/Thread";
+import { Thread, type ThreadMode } from "../components/Thread";
 import {
   conversation,
   lifecycle,
@@ -19,7 +20,7 @@ import {
 } from "../data/core";
 import { sessionChanges } from "../data/diff";
 import { useSessions } from "../data/sessions-store";
-import { markSeen, statusLabel, statusOf } from "../data/status";
+import { dormant, markSeen, statusOf } from "../data/status";
 import { startVisibilityPolling } from "../data/visibility-polling";
 
 export const Route = createFileRoute("/s/$sessionId")({ component: SessionPage });
@@ -105,7 +106,13 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const status = detail === undefined ? undefined : statusOf(detail, true);
   const working = status === "working";
   const failed = status === "failed";
-  const stopped = status === "stopped";
+  // Asleep or stopped: no container, and a message or Resume starts one.
+  const stopped = dormant(status);
+  const resumable =
+    stopped ||
+    (failed &&
+      detail?.authority.kind === "stable" &&
+      detail.authority.failure?.recovery === "resume");
   const running = detail?.authority.kind === "stable" && detail.authority.lifecycle === "running";
   async function send(action: "steer" | "interrupt") {
     if (snapshot === undefined || busy) return;
@@ -168,6 +175,21 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const changes = useMemo(() => sessionChanges(turns), [turns]);
   const added = changes.reduce((sum, file) => sum + file.added, 0);
   const removed = changes.reduce((sum, file) => sum + file.removed, 0);
+  // Booting runs container, then workspace, then the agent's first output on the first turn.
+  const first = turns.length === 1 ? turns[0] : undefined;
+  const agentStarting =
+    running && first?.state === "streaming" && first.items.length === 0 && first.assistant === "";
+  const bootStep =
+    detail?.authority.kind === "transitioning"
+      ? detail.authority.phase === "workspace"
+        ? 1
+        : 0
+      : agentStarting
+        ? 2
+        : undefined;
+  const mode: ThreadMode =
+    bootStep !== undefined ? "booting" : stopped || failed ? "dormant" : "live";
+  const sleepsAt = running && !working ? detail?.progress.sleepsAt : undefined;
   return (
     <>
       <header className="header">
@@ -195,12 +217,10 @@ function SessionView({ sessionId }: { sessionId: string }) {
           ) : null}
         </div>
         <div className="header-actions">
-          {status !== undefined && status !== "idle" && status !== "unseen" ? (
-            <span className="pill desktop-only" data-status={status}>
-              {status === "working" || status === "starting" ? <Spinner size={11} /> : null}
-              {statusLabel[status]}
-            </span>
+          {detail !== undefined && status !== undefined ? (
+            <StatusPill session={detail} status={status} />
           ) : null}
+          {sleepsAt != null ? <SleepsIn at={sleepsAt} /> : null}
           {/* The diff stat is the way into the panel: the header says what changed at a glance. */}
           {added > 0 || removed > 0 ? (
             <button
@@ -227,7 +247,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
             label="Session actions"
             disabled={busy}
             items={[
-              ...(stopped
+              ...(resumable
                 ? [
                     {
                       label: "Resume",
@@ -276,21 +296,17 @@ function SessionView({ sessionId }: { sessionId: string }) {
           >
             <div className="thread-inner">
               {snapshot === undefined && error === "" ? <ThreadPlaceholder /> : null}
-              {snapshot !== undefined ? <Thread sessionId={sessionId} turns={turns} /> : null}
-              {status === "starting" && !turns.some((turn) => turn.state === "streaming") ? (
-                <div className="live">
-                  <Spinner size={13} />
-                  <span className="shimmer">Starting the container</span>
-                </div>
+              {snapshot !== undefined ? (
+                <Thread sessionId={sessionId} turns={turns} mode={mode} />
               ) : null}
-              {failed && detail?.authority.kind === "stable" ? (
-                <div className="notice" data-tone="error">
-                  <Icon name="alert" size={13} />
-                  <span>
-                    This session failed to start. Its history stays here; start a new session to try
-                    again.
-                  </span>
-                </div>
+              {bootStep !== undefined ? <BootSteps step={bootStep} /> : null}
+              {detail !== undefined && status !== undefined ? (
+                <LifecycleNotice
+                  session={detail}
+                  status={status}
+                  busy={busy}
+                  onResume={() => void act("resume")}
+                />
               ) : null}
             </div>
           </div>
@@ -322,7 +338,9 @@ function SessionView({ sessionId }: { sessionId: string }) {
               disabled={failed || snapshot === undefined}
               placeholder={
                 failed
-                  ? "This session can't take messages"
+                  ? resumable
+                    ? "Resume to try again"
+                    : "This session can't take messages"
                   : stopped
                     ? "Send to resume…"
                     : working

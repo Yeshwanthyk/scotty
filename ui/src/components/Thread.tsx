@@ -8,7 +8,19 @@ import { ExploreGroup, ToolRow } from "./ToolRow";
 // The last few turns stay open; older ones fold behind one button, as in pecan.
 const openTurns = 3;
 
-export function Thread({ sessionId, turns }: { sessionId: string; turns: ReadonlyArray<Turn> }) {
+// "live": a streaming turn is working. "booting": the session is still starting, so a streaming
+// turn shows only its prompt. "dormant": the session stopped, so a streaming turn was cut off.
+export type ThreadMode = "live" | "booting" | "dormant";
+
+export function Thread({
+  sessionId,
+  turns,
+  mode = "live",
+}: {
+  sessionId: string;
+  turns: ReadonlyArray<Turn>;
+  mode?: ThreadMode;
+}) {
   const [showAll, setShowAll] = useState(false);
   const hidden = showAll ? 0 : Math.max(0, turns.length - openTurns);
   return (
@@ -22,7 +34,7 @@ export function Thread({ sessionId, turns }: { sessionId: string; turns: Readonl
         </button>
       ) : null}
       {turns.slice(hidden).map((turn) => (
-        <TurnView key={turn.id} sessionId={sessionId} turn={turn} />
+        <TurnView key={turn.id} sessionId={sessionId} turn={turn} mode={mode} />
       ))}
     </>
   );
@@ -54,24 +66,28 @@ function split(turn: Turn) {
   return { log: turn.items, answer: turn.items.length === 0 ? turn.assistant : "" };
 }
 
-function useNow(live: boolean) {
+export function useNow(live: boolean, every = 1000) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!live) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), every);
     return () => clearInterval(timer);
-  }, [live]);
+  }, [live, every]);
   return now;
 }
 
-function TurnView({ sessionId, turn }: { sessionId: string; turn: Turn }) {
-  const live = turn.state === "streaming";
-  const now = useNow(live);
+function TurnView({ sessionId, turn, mode }: { sessionId: string; turn: Turn; mode: ThreadMode }) {
+  // A turn still streaming in a stopped session was cut off; it must not look live.
+  const state = turn.state === "streaming" && mode === "dormant" ? "aborted" : turn.state;
+  const live = state === "streaming";
+  const now = useNow(live && mode === "live");
   const { log, answer } = split(turn);
   const [open, setOpen] = useState(false);
   const started = turn.startedAt === null ? undefined : Date.parse(turn.startedAt);
-  const ended = turn.endedAt === null ? now : Date.parse(turn.endedAt);
-  const took = started === undefined ? undefined : duration(ended - started);
+  // A cut-off turn has no end time, so it has no duration either.
+  const ended = turn.endedAt !== null ? Date.parse(turn.endedAt) : live ? now : undefined;
+  const took = started === undefined || ended === undefined ? undefined : duration(ended - started);
   const errors = log.filter((item) => item.kind === "notice" && item.tone === "error");
   const steps = log.filter((item) => item.kind === "tool").length;
   const [copied, setCopied] = useState(false);
@@ -79,7 +95,7 @@ function TurnView({ sessionId, turn }: { sessionId: string; turn: Turn }) {
     <article className="turn">
       <UserMessage text={turn.user} />
       <div className="assistant">
-        {live ? (
+        {live && mode === "booting" ? null : live ? (
           <>
             <WorkLog items={log} live />
             {answer ? <Markdown source={answer} /> : null}
@@ -100,7 +116,7 @@ function TurnView({ sessionId, turn }: { sessionId: string; turn: Turn }) {
                   onClick={() => setOpen((value) => !value)}
                 >
                   <span>
-                    {turn.state === "completed" ? "Worked" : "Ran"}
+                    {state === "completed" ? "Worked" : "Ran"}
                     {took ? (
                       <>
                         {" for "}
@@ -125,12 +141,12 @@ function TurnView({ sessionId, turn }: { sessionId: string; turn: Turn }) {
               </div>
             ) : null}
             <Files sessionId={sessionId} files={turn.files} />
-            <div className="turn-end" data-state={turn.state}>
-              {turn.state === "aborted" ? (
-                <>
-                  <Icon name="stop" size={11} /> Interrupted
-                </>
-              ) : turn.state === "failed" ? (
+            <div className="turn-end" data-state={state}>
+              {state === "aborted" ? (
+                <span className="interrupted">
+                  <Icon name="stop" size={9} /> Interrupted
+                </span>
+              ) : state === "failed" ? (
                 <>
                   <Icon name="alert" size={13} /> Turn failed
                 </>

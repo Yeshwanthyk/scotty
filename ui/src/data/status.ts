@@ -1,7 +1,8 @@
 import type { Session } from "./core";
 
-// One status per session, in the order the sidebar should draw attention to them.
-export type Status = "starting" | "working" | "unseen" | "idle" | "stopped" | "failed";
+// One status per session, in the order the sidebar should draw attention to them. "asleep" is a
+// session stopped for being idle: it holds no container but wakes on the next message.
+export type Status = "starting" | "working" | "unseen" | "idle" | "asleep" | "stopped" | "failed";
 
 const seenKey = "scotty.seen";
 const readSeen = (): Record<string, number> => {
@@ -37,7 +38,8 @@ export function statusOf(session: Session, current = false): Status {
   if (authority.kind === "transitioning") return "starting";
   if (authority.lifecycle === "failed") return "failed";
   if (session.progress.working) return "working";
-  if (authority.lifecycle === "stopped") return "stopped";
+  if (authority.lifecycle === "stopped")
+    return authority.stop?.reason === "idle" ? "asleep" : "stopped";
   const seen = readSeen()[session.identity.id];
   if (!current && seen !== undefined && session.progress.turns > seen) return "unseen";
   return "idle";
@@ -48,9 +50,67 @@ export const statusLabel: Record<Status, string> = {
   working: "Working",
   unseen: "New reply",
   idle: "Ready",
+  asleep: "Asleep",
   stopped: "Stopped",
   failed: "Failed",
 };
+
+// Neither asleep nor stopped holds a container.
+export const dormant = (status: Status | undefined) => status === "asleep" || status === "stopped";
+
+// Why a session stopped, in plain words; unknown reasons from a newer server read as "Stopped".
+export function stopLabel(stop: { reason: string; exitCode?: number } | null | undefined): string {
+  switch (stop?.reason) {
+    case "user":
+      return "You stopped it";
+    case "idle":
+      return "Asleep — idle";
+    case "stalled":
+      return "Stopped — no output for 30 min";
+    case "crashed":
+      return stop.exitCode === undefined ? "Crashed" : `Crashed (exit ${stop.exitCode})`;
+    case "exited":
+      return "Container exited";
+    case "agent":
+      return "Agent exited";
+    case "deploy":
+      return "Restarted by a deploy";
+    case "gone":
+      return "Container lost";
+    default:
+      return "Stopped";
+  }
+}
+
+// The same, as a sentence for the thread.
+export function stopSentence(stop: { reason: string; exitCode?: number } | null | undefined) {
+  switch (stop?.reason) {
+    case "user":
+      return "You stopped this session.";
+    case "stalled":
+      return "Stopped after 30 minutes with no output from the agent.";
+    case "crashed":
+      return stop.exitCode === undefined
+        ? "The container crashed."
+        : `The container crashed (exit ${stop.exitCode}).`;
+    case "exited":
+      return "The container exited on its own.";
+    case "agent":
+      return "The agent exited.";
+    case "deploy":
+      return "A deploy replaced the container.";
+    case "gone":
+      return "The container was lost.";
+    default:
+      return "This session stopped.";
+  }
+}
+
+// "7m" until an ISO time, never below one minute.
+export function until(iso: string, now = Date.now()): string {
+  const minutes = Math.max(1, Math.ceil((Date.parse(iso) - now) / 60_000));
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
 
 export function ago(iso: string, now = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
