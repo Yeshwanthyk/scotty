@@ -43,7 +43,7 @@ export type State = {
     | undefined;
   readonly lastHelloSeq: number;
   readonly lastRedialSeq: number;
-  // The idle timeout the Session DO acts on.
+  // The idle timeout the Session DO is checking; 0 once a prompt, turn or use overtakes it.
   readonly idleSeq: number;
   readonly currentTurn: string;
   readonly turns: readonly Turn[];

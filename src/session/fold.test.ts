@@ -434,10 +434,10 @@ describe("session fold", () => {
     const state0 = () => settledState;
     const due = timeout(14, 13_000 + deadlines.idle);
     state = fold(state, due);
-    expect(command(state, due)).toEqual({ kind: "idle", gen: 1 });
+    expect(command(state, due)).toEqual({ kind: "idle", gen: 1, seq: 14 });
     // The next window starts at once, for when the Session DO finds the owner still at it.
     expect(state.pending).toEqual([{ op: "idle", due: due.at + deadlines.idle }]);
-    const slept = make(15, "container.stopped", { gen: 1, reason: "idle" });
+    const slept = make(15, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 });
     state = fold(state, slept);
     expect(state).toMatchObject({ phase: "stopped", stop: { reason: "idle" }, pending: [] });
     expect(command(state, slept)).toEqual({ kind: "destroy" });
@@ -448,10 +448,28 @@ describe("session fold", () => {
         fold(state0(), timeout(14, 13_000 + deadlines.idle)),
         make(15, "prompt.requested", { req: "q", turn: "2", text: "again", images: [] }),
       ),
-      make(16, "container.stopped", { gen: 1, reason: "idle" }),
+      make(16, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 }),
     );
     expect(woke).toMatchObject({ phase: "running", stop: undefined });
     check(woke);
+    // So does a steer whose turn and save both finish before the check's verdict lands.
+    const checking = () => fold(state0(), timeout(14, 13_000 + deadlines.idle));
+    const finished = [
+      make(15, "prompt.requested", { req: "q", turn: "2", text: "again", images: [] }),
+      make(16, "prompt.delivered", { req: "q" }),
+      make(17, "turn.ended", { gen: 1, turn: "2", state: "completed" }),
+      make(18, "save.done", { turn: "2" }),
+      make(19, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 }),
+    ].reduce(fold, checking());
+    expect(finished).toMatchObject({ phase: "running", stop: undefined });
+    check(finished);
+    // And use the Session DO records during the check.
+    const used = [
+      make(15, "active"),
+      make(16, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 }),
+    ].reduce(fold, checking());
+    expect(used).toMatchObject({ phase: "running", stop: undefined });
+    check(used);
     const short = make(1, "created", { ...created, idleAfter: 30_000 });
     const quick = [short, start, hello, ready, delivered].reduce(fold, initial);
     const settled = fold(

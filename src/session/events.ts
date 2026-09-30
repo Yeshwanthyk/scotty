@@ -7,7 +7,8 @@ const fromSupervisor = {
   n: Schema.Natural.check(Schema.isGreaterThan(0)),
 };
 export const AgentKind = Schema.Literals(["codex", "claude"]);
-const ClientReq = Schema.String.check(Schema.isPattern(/^(?!initial:)/));
+// `initial:` and `stalled:` ids belong to the Session DO's own requests.
+const ClientReq = Schema.String.check(Schema.isPattern(/^(?!initial:|stalled:)/));
 // Why a container stopped: the owner stopped it, it slept (idle) or was stopped for making no
 // progress (stalled), it exited on its own (crashed with an exit code, or exited cleanly), a
 // deploy replaced it, or it was found gone without a recorded exit.
@@ -121,6 +122,8 @@ export const SessionEvent = Schema.Union([
     // Absent in logs written before stops recorded a reason.
     reason: Schema.optionalKey(StopReason),
     exitCode: Schema.optionalKey(Schema.Int),
+    // An idle stop names the idle timeout it checked; it applies only while that check stands.
+    idleSeq: Schema.optionalKey(Schema.Natural),
   }),
   // The Session DO watches the running container for this generation until its watch deadline.
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.watched"), gen: Schema.Natural }),

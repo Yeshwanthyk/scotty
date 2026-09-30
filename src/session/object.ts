@@ -122,8 +122,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         const view = sessionView(id(), log.state);
         const serialized = JSON.stringify(view);
         if (serialized === listed) return;
-        listed = serialized;
         yield* credentials.getByName("owner").sessionChanged(view);
+        // Only a delivered view counts; a failed one is sent again with the next push.
+        listed = serialized;
       }).pipe(Effect.ignoreCause);
       const changed = Effect.gen(function* () {
         if (pushQueued) return;
@@ -414,7 +415,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               }
               yield* dispatch(
                 yield* append(
-                  { kind: "container.stopped", gen: action.gen, reason: "idle" },
+                  {
+                    kind: "container.stopped",
+                    gen: action.gen,
+                    reason: "idle",
+                    idleSeq: action.seq,
+                  },
                   "session",
                 ),
               );

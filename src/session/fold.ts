@@ -111,6 +111,8 @@ const pace = (before: State, after: State, event: SessionEvent): State => {
     : remove(after.pending, "idle");
   return {
     ...after,
+    // Anything that ends idleness overtakes an idle check in flight.
+    idleSeq: idle ? after.idleSeq : 0,
     pending: !(ready && turnOpen(after))
       ? remove(paced, "stalled")
       : output
@@ -427,7 +429,9 @@ function step(state: State, event: SessionEvent): State {
       // An idle stop decided before a prompt or use landed does not apply.
       return event.gen === state.gen &&
         live(state) &&
-        (event.reason !== "idle" || has(state.pending, "idle"))
+        (event.reason !== "idle" ||
+          (has(state.pending, "idle") &&
+            (event.idleSeq === undefined || event.idleSeq === state.idleSeq)))
         ? endAll(next, "stopped", {
             reason: event.reason ?? "gone",
             ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
@@ -437,6 +441,7 @@ function step(state: State, event: SessionEvent): State {
       return has(state.pending, "idle")
         ? {
             ...next,
+            idleSeq: 0,
             pending: [
               ...remove(state.pending, "idle"),
               { op: "idle", due: event.at + idleWindow(state) },

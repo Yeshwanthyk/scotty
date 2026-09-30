@@ -87,7 +87,7 @@ it.prop(
         }
         if (
           (kind === "prompt.requested" || kind === "interrupt.requested") &&
-          chosen.startsWith("initial:")
+          (chosen.startsWith("initial:") || chosen.startsWith("stalled:"))
         )
           fields.req = "client-p";
         if (kind === "sup.error" && !step.withReq) delete fields.req;
