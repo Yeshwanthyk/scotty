@@ -7,10 +7,10 @@ import {
 
 type WithoutEnvelope<T> = T extends { gen: number; n: number } ? Omit<T, "gen" | "n"> : never;
 export type Output = WithoutEnvelope<FromSupervisorMessage>;
-export class WireError extends Schema.TaggedError<WireError>()("WireError", {
+class WireError extends Schema.TaggedError<WireError>()("WireError", {
   message: Schema.String,
 }) {}
-export type Wire = {
+type Wire = {
   readonly gen: number | undefined;
   readonly boot: string;
   readonly next: number;

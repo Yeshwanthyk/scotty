@@ -156,7 +156,7 @@ npm run --silent e2e -- init --stage <name>   # scotty init in a terminal: Ctrl-
 
 `scotty skill` prints [skills/scotty/SKILL.md](../skills/scotty/SKILL.md), the guide for an owner's own agent; keep it under 150 lines and in step with `scotty --help`.
 
-For agents: the `.agents/skills/verify-scotty` skill drives the CLI through feature recipes (`features/*.md`) and saves evidence to `work/verify/`.
+For agents: the `.agents/skills/verify-scotty` skill drives the CLI through feature recipes (`features/*.md`) and saves evidence to `work/verify/`, scratch that is deleted once the step's notes record the result.
 
 Useful CLI commands (`scotty --help` lists them all): `doctor`, `login chatgpt|github|claude`, `new <repo> <prompt> [--agent codex|claude]`, `ls`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `stop <id>`, `resume <id>`, `hatch <id> <port>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Piped output and errors are JSON on stdout (`--json` forces it); errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
 

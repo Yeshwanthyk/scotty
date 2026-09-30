@@ -24,7 +24,7 @@ declare const Bun: {
     };
   }): Server;
 };
-export class ProtocolError extends Schema.TaggedError<ProtocolError>()("ProtocolError", {
+class ProtocolError extends Schema.TaggedError<ProtocolError>()("ProtocolError", {
   message: Schema.String,
 }) {}
 const positive = Schema.Int.check(

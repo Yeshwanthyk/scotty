@@ -26,7 +26,7 @@ declare const Bun: {
 };
 declare const process: { env: Record<string, string | undefined> };
 
-export interface TerminalPeer {
+interface TerminalPeer {
   send(data: Uint8Array): void;
   close(): void;
 }

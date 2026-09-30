@@ -5,8 +5,8 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-export const Digest = Schema.String.pipe(Schema.check(Schema.isPattern(/^sha256:[a-f0-9]{64}$/)));
-export const Descriptor = Schema.Struct({
+const Digest = Schema.String.pipe(Schema.check(Schema.isPattern(/^sha256:[a-f0-9]{64}$/)));
+const Descriptor = Schema.Struct({
   digest: Digest,
   size: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
   mediaType: Schema.String,

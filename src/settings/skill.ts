@@ -8,7 +8,7 @@ export const maxInstructionBytes = 64 * 1024;
 export const instructionsKey = "settings/instructions.md";
 export const skillKey = (name: string) => `skills/${name}.zip`;
 
-export type SkillInfo = { name: string; description: string };
+type SkillInfo = { name: string; description: string };
 
 const skillPath = /^(?:[^/]+\/)?SKILL\.md$/;
 
@@ -51,7 +51,7 @@ async function readSkillFile(zip: Uint8Array<ArrayBuffer>): Promise<string | und
 
 // `name:` and `description:` from the YAML frontmatter; a folded or literal description
 // (`>` or `|`) joins its indented lines.
-export function frontmatter(text: string): Partial<SkillInfo> {
+function frontmatter(text: string): Partial<SkillInfo> {
   const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
   if (block === undefined) return {};
   const lines = block.split(/\r?\n/);

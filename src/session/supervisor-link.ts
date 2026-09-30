@@ -5,7 +5,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { FromSupervisor, type ToSupervisorMessage } from "../../protocol/supervisor.js";
 
 const Incoming = Schema.fromJsonString(FromSupervisor);
-export class DialError extends Schema.TaggedError<DialError>()("DialError", {
+class DialError extends Schema.TaggedError<DialError>()("DialError", {
   message: Schema.String,
 }) {}
 export type SocketInput =

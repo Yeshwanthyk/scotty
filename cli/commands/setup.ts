@@ -158,7 +158,7 @@ export const checkLines = (result: ReadonlyArray<Check>) => {
   );
 };
 
-export const runDoctor = Effect.gen(function* () {
+const runDoctor = Effect.gen(function* () {
   const result = yield* checks;
   const ok = result.every((check) => check.status !== "fail");
   yield* output(
@@ -337,7 +337,7 @@ const loginChatGpt = (api: Api) =>
 
 export { until };
 
-export const loginTo = (account: "chatgpt" | "github" | "claude") =>
+const loginTo = (account: "chatgpt" | "github" | "claude") =>
   Effect.gen(function* () {
     const api = yield* withClient;
     if (account === "chatgpt") return yield* loginChatGpt(api);

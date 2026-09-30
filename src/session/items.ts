@@ -1,6 +1,6 @@
 // The agent-neutral shape the UI draws a turn from. Each agent's events are mapped here, purely.
 
-export type ToolCategory = "inspect" | "change" | "check" | "research" | "agent" | "run" | "other";
+type ToolCategory = "inspect" | "change" | "check" | "research" | "agent" | "run" | "other";
 export type ToolStatus = "running" | "done" | "failed" | "declined";
 export type Change = { path: string; kind: "add" | "delete" | "update"; diff: string };
 

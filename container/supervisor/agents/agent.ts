@@ -6,7 +6,7 @@ import { CodexRunner } from "./codex/runner.js";
 import { ClaudeRunner } from "./claude/runner.js";
 
 // Where an agent keeps what Scotty installs and saves. Nothing outside agents/ names these.
-export interface AgentFiles {
+interface AgentFiles {
   // The agent's config folder. Its saved state is relative to it.
   readonly home: string;
   // Scotty's and the owner's instructions, as a file name in home.

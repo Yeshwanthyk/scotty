@@ -92,7 +92,7 @@ const served = (range: ByteRange | undefined, size: number) => {
 // Port 7000 is the supervisor's; a preview never reaches it.
 export const hatchPort = (port: number) =>
   Number.isInteger(port) && port >= 1024 && port <= 65535 && port !== 7000;
-export const hatchHost = (base: string, port: number, id: string) => `${port}-${id}.${base}`;
+const hatchHost = (base: string, port: number, id: string) => `${port}-${id}.${base}`;
 
 export function apiHandler(
   request: HttpServerRequest.HttpServerRequest,

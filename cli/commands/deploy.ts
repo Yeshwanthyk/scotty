@@ -43,7 +43,7 @@ const plain: Report = {
 
 // What a deploy is doing, from the lines Alchemy and the image copy print; the names are
 // alchemy.run.ts's resource ids.
-export const deployStage = (line: string): string | undefined => {
+const deployStage = (line: string): string | undefined => {
   const text = stripVTControlCharacters(line);
   const assets = /Uploaded (\d+) of (\d+) assets/.exec(text);
   if (assets !== null) return `Uploading the web app (${assets[1]}/${assets[2]})`;
