@@ -2,7 +2,7 @@ import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Schema } from "effect";
 import { newSecret, verifyWebhook } from "../hooks/signature.js";
-import { ConnectionName, DeliveryOutcome, keptDeliveries } from "./connections.js";
+import { claimTakeoverMs, ConnectionName, DeliveryOutcome, keptDeliveries } from "./connections.js";
 import { AgentKind } from "../session/events.js";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
 
@@ -46,6 +46,14 @@ const KeyRow = Schema.Struct({
   id: Schema.String,
   repo: Schema.String,
   agent: AgentKind,
+  created: Schema.Number,
+});
+const ClaimRow = Schema.Struct({
+  at: Schema.Number,
+  done: Schema.Number,
+  outcome: Schema.NullOr(DeliveryOutcome),
+  reason: Schema.NullOr(Schema.String),
+  session: Schema.NullOr(Schema.String),
 });
 const ConnectionRow = Schema.Struct({
   name: Schema.String,
@@ -86,7 +94,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS claude (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS skills (name TEXT PRIMARY KEY, description TEXT NOT NULL, enabled INTEGER NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, updated INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
-      yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, repo TEXT NOT NULL, agent TEXT NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, repo TEXT NOT NULL, agent TEXT NOT NULL, created INTEGER NOT NULL DEFAULT 0)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS delivery_claims (connection TEXT NOT NULL, id TEXT NOT NULL, at INTEGER NOT NULL, done INTEGER NOT NULL, outcome TEXT, reason TEXT, session TEXT, PRIMARY KEY (connection, id))`;
       yield* sql`CREATE TABLE IF NOT EXISTS connections (name TEXT PRIMARY KEY, kind TEXT NOT NULL, secret TEXT NOT NULL, created INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, connection TEXT NOT NULL, at INTEGER NOT NULL, outcome TEXT NOT NULL, reason TEXT, session TEXT)`;
       yield* sql`CREATE INDEX IF NOT EXISTS deliveries_by_id ON deliveries (connection, id)`;
@@ -136,9 +145,14 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         keyed: (key: string) =>
           Effect.gen(function* () {
             const row =
-              (yield* sql`SELECT id, repo, agent FROM session_keys WHERE key = ${key}`)[0];
-            return row === undefined ? null : yield* Schema.decodeUnknownEffect(KeyRow)(row);
+              (yield* sql`SELECT id, repo, agent, created FROM session_keys WHERE key = ${key}`)[0];
+            if (row === undefined) return null;
+            const found = yield* Schema.decodeUnknownEffect(KeyRow)(row);
+            return { ...found, created: found.created === 1 };
           }),
+        // The session exists now, so a steer can reach it.
+        keyCreated: (key: string) =>
+          sql`UPDATE session_keys SET created = 1 WHERE key = ${key}`.pipe(Effect.asVoid),
         // The first caller to reserve a key names its session; later callers get that one back.
         reserveKey: (key: string, id: string, repo: string, agent: typeof AgentKind.Type) =>
           Effect.gen(function* () {
@@ -147,7 +161,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             )(id);
             yield* sql`INSERT OR IGNORE INTO session_keys (key, id, repo, agent) VALUES (${key}, ${session}, ${repo}, ${agent})`;
             const row =
-              (yield* sql`SELECT id, repo, agent FROM session_keys WHERE key = ${key}`)[0];
+              (yield* sql`SELECT id, repo, agent, created FROM session_keys WHERE key = ${key}`)[0];
             if (row === undefined)
               return yield* new CredentialStoreError({
                 message: "Reservation missing",
@@ -156,7 +170,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const fresh = reserved.id === session;
             if (fresh)
               yield* sql`INSERT OR IGNORE INTO session_index (req, id) VALUES (${`key:${key}`}, ${session})`;
-            return { ...reserved, fresh };
+            return { ...reserved, created: reserved.created === 1, fresh };
           }),
         connections: () =>
           Effect.gen(function* () {
@@ -205,16 +219,48 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               verifyWebhook({ secret, ...input, now: Date.now() }),
             );
           }),
-        // The session an earlier delivery with this id was accepted into.
-        acceptedDelivery: (connection: string, id: string) =>
+        // The first caller for a delivery id gets "fresh"; a concurrent or later one gets what the
+        // first settled, or "pending" while it is still working. A claim nobody settled for a
+        // minute is taken over: what it does is keyed by the delivery id, so a repeat is a no-op.
+        claimDelivery: (connection: string, id: string) =>
           Effect.gen(function* () {
-            const row =
-              (yield* sql`SELECT session FROM deliveries WHERE connection = ${connection} AND id = ${id} AND outcome = 'accepted' ORDER BY seq LIMIT 1`)[0];
-            if (row === undefined) return null;
-            return (yield* Schema.decodeUnknownEffect(
-              Schema.Struct({ session: Schema.NullOr(Schema.String) }),
-            )(row)).session;
+            const now = Date.now();
+            const inserted =
+              yield* sql`INSERT OR IGNORE INTO delivery_claims (connection, id, at, done) VALUES (${connection}, ${id}, ${now}, 0) RETURNING id`;
+            if (inserted.length > 0) return { state: "fresh" as const };
+            const row = yield* Schema.decodeUnknownEffect(ClaimRow)(
+              (yield* sql`SELECT at, done, outcome, reason, session FROM delivery_claims WHERE connection = ${connection} AND id = ${id}`)[0],
+            );
+            if (row.done === 1)
+              return {
+                state: "done" as const,
+                outcome: row.outcome ?? "rejected",
+                reason: row.reason,
+                session: row.session,
+              };
+            if (now - row.at < claimTakeoverMs) return { state: "pending" as const };
+            yield* sql`UPDATE delivery_claims SET at = ${now} WHERE connection = ${connection} AND id = ${id}`;
+            return { state: "fresh" as const };
           }),
+        // Settles the claim and records the outcome in one call.
+        settleDelivery: (delivery: {
+          id: string;
+          connection: string;
+          outcome: typeof DeliveryOutcome.Type;
+          reason?: string;
+          session?: string;
+        }) =>
+          Effect.gen(function* () {
+            yield* sql`UPDATE delivery_claims SET done = 1, outcome = ${delivery.outcome}, reason = ${delivery.reason ?? null}, session = ${delivery.session ?? null} WHERE connection = ${delivery.connection} AND id = ${delivery.id}`;
+            yield* sql`INSERT INTO deliveries (id, connection, at, outcome, reason, session) VALUES (${delivery.id}, ${delivery.connection}, ${Date.now()}, ${delivery.outcome}, ${delivery.reason ?? null}, ${delivery.session ?? null})`;
+            yield* sql`DELETE FROM deliveries WHERE seq <= (SELECT MAX(seq) FROM deliveries) - ${keptDeliveries}`;
+            yield* sql`DELETE FROM delivery_claims WHERE at < ${Date.now() - 7 * 864e5}`;
+          }),
+        // A failure worth retrying leaves no claim behind.
+        releaseDelivery: (connection: string, id: string) =>
+          sql`DELETE FROM delivery_claims WHERE connection = ${connection} AND id = ${id}`.pipe(
+            Effect.asVoid,
+          ),
         recordDelivery: (delivery: {
           id: string;
           connection: string;

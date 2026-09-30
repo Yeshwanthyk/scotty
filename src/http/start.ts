@@ -39,11 +39,25 @@ export function startSession(
         const { status } = yield* sessions
           .getByName(known.id)
           .request({ kind: "prompt", req: input.retry, text: input.prompt });
-        return { kind: "steered" as const, id: known.id, status };
+        // A prompt the session refused (it failed, or its turn moved on) did not go in.
+        return status === "pending" || status === "delivered"
+          ? { kind: "steered" as const, id: known.id, status }
+          : { kind: "unavailable" as const, id: known.id, status };
+      });
+    // The key is reserved before its session is made; a steer that arrives in between waits
+    // for the session to exist, since a session that does not yet exist takes no prompt.
+    const steerKeyed = (key: string) =>
+      Effect.gen(function* () {
+        let known = yield* credential.keyed(key);
+        for (let waited = 0; known !== null && !known.created && waited < 40; waited++) {
+          yield* Effect.sleep("250 millis");
+          known = yield* credential.keyed(key);
+        }
+        return known === null ? null : yield* steer(known);
       });
     if (input.key !== undefined) {
-      const known = yield* credential.keyed(input.key);
-      if (known !== null) return yield* steer(known);
+      const steered = yield* steerKeyed(input.key);
+      if (steered !== null) return steered;
     }
     const branch = yield* Effect.gen(function* () {
       if (input.repo === fixtureRepo) return { ok: true as const, branch: "main" };
@@ -63,7 +77,10 @@ export function startSession(
     if (input.key === undefined) id = yield* credential.reserve(input.retry, fresh);
     else {
       const reserved = yield* credential.reserveKey(input.key, fresh, input.repo, input.agent);
-      if (!reserved.fresh) return yield* steer(reserved);
+      if (!reserved.fresh) {
+        const steered = yield* steerKeyed(input.key);
+        if (steered !== null) return steered;
+      }
     }
     const view = yield* sessions.getByName(id).create({
       id,
@@ -77,6 +94,7 @@ export function startSession(
       ...(input.scripted === true ? { scripted: true } : {}),
       ...(input.origin === undefined ? {} : { origin: input.origin }),
     });
+    if (input.key !== undefined) yield* credential.keyCreated(input.key);
     return { kind: "started" as const, id, view };
   });
 }

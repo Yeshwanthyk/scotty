@@ -140,10 +140,13 @@ export function fold(state: State, event: SessionEvent): State {
             seq: event.seq,
           },
         ],
-        pending: addOnce(
-          remove(state.pending, "workspace"),
-          reqOp(req),
-          event.at + deadlines.prompt,
+        // A prompt that arrived while the workspace was being made waits behind the first.
+        pending: state.requests.reduce(
+          (pending, item) =>
+            item.status === "pending"
+              ? addOnce(pending, reqOp(item.req), event.at + deadlines[item.kind])
+              : pending,
+          addOnce(remove(state.pending, "workspace"), reqOp(req), event.at + deadlines.prompt),
         ),
       };
     }
@@ -151,11 +154,13 @@ export function fold(state: State, event: SessionEvent): State {
     case "interrupt.requested": {
       if (state.requests.some((item) => item.req === event.req)) return next;
       const kind = event.kind === "prompt.requested" ? "prompt" : "interrupt";
-      // A prompt to a stopped session resumes it; requests wait for a resumed workspace.
+      // A prompt to a stopped session resumes it; requests wait for a resumed workspace, or for
+      // the first one's, when the session has been created but has no workspace yet.
       const valid =
         event.turn === state.currentTurn &&
         (state.phase === "running" ||
-          (state.phase === "provisioning" && state.commit !== undefined) ||
+          (state.phase === "provisioning" &&
+            (state.commit !== undefined || (state.created !== undefined && kind === "prompt"))) ||
           (state.phase === "stopped" && kind === "prompt"));
       const base = valid && state.phase === "stopped" ? resume(next, event.at) : next;
       const request: Request =

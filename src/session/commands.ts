@@ -99,9 +99,15 @@ export function command(state: State, event: SessionEvent): Command | undefined 
           item.seq === event.seq &&
           item.status === "pending",
       );
-      if (state.gen === event.gen && request?.kind === "prompt")
-        return { kind: "prompt", req: request.req, turn: request.turn, text: request.text };
       const waiting = state.requests.filter((item) => item.status === "pending");
+      if (state.gen === event.gen && request?.kind === "prompt")
+        return waiting.length > 1
+          ? {
+              kind: "resend",
+              gen: event.gen,
+              requests: [request, ...waiting.filter((item) => item !== request)].map(toResend),
+            }
+          : { kind: "prompt", req: request.req, turn: request.turn, text: request.text };
       return state.gen === event.gen && state.readySeq === event.seq && waiting.length > 0
         ? { kind: "resend", gen: event.gen, requests: waiting.map(toResend) }
         : ackFor(state, event);
