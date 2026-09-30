@@ -1,7 +1,7 @@
 import { shouldAck } from "./ack.js";
 import type { SessionEvent } from "./events.js";
 import { deadlines, has, remove, addOnce, reqOp, isOp, requestFromOp } from "./deadlines.js";
-import { live, type Request, type State } from "./state.js";
+import { firstReq, live, type Request, type State } from "./state.js";
 export { initial } from "./state.js";
 export type { State, Request } from "./state.js";
 export { deadline, deadlines } from "./deadlines.js";
@@ -122,7 +122,7 @@ export function fold(state: State, event: SessionEvent): State {
             remove(state.pending, "workspace"),
           ),
         };
-      const req = `initial:${event.gen}`;
+      const req = firstReq(state.created, event.gen);
       return {
         ...accepted,
         ready: true,
@@ -152,7 +152,9 @@ export function fold(state: State, event: SessionEvent): State {
     }
     case "prompt.requested":
     case "interrupt.requested": {
-      if (state.requests.some((item) => item.req === event.req)) return next;
+      // A request id is used once; the first prompt's is taken before its request exists.
+      if (state.requests.some((item) => item.req === event.req) || state.created?.req === event.req)
+        return next;
       const kind = event.kind === "prompt.requested" ? "prompt" : "interrupt";
       // A prompt to a stopped session resumes it; requests wait for a resumed workspace, or for
       // the first one's, when the session has been created but has no workspace yet.
@@ -363,4 +365,29 @@ export function fold(state: State, event: SessionEvent): State {
     case "invariant.violated":
       return next;
   }
+}
+
+// What a start does to this session: make it, prompt it, or answer from what it already holds.
+// A request id seen before is answered as it was the first time; one reused for another
+// repository, agent or prompt is a conflict.
+export function startStep(
+  state: State,
+  input: {
+    readonly req: string;
+    readonly repo: string;
+    readonly agent: string;
+    readonly prompt: string;
+  },
+): "create" | "prompt" | "duplicate" | "unavailable" | "conflict" {
+  const created = state.created;
+  if (created === undefined) return "create";
+  if (created.repo !== input.repo || created.agentKind !== input.agent) return "conflict";
+  if (created.req === input.req) return created.prompt === input.prompt ? "duplicate" : "conflict";
+  const seen = state.requests.find((item) => item.req === input.req);
+  if (seen === undefined) return "prompt";
+  if (seen.kind !== "prompt" || seen.text !== input.prompt) return "conflict";
+  // Refused, failed or of unknown fate: the session never said it took the prompt.
+  return seen.status === "pending" || seen.status === "delivered" || seen.status === "ended"
+    ? "duplicate"
+    : "unavailable";
 }

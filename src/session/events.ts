@@ -36,6 +36,9 @@ export const SessionEvent = Schema.Union([
     branch: Schema.String,
     title: Schema.String,
     prompt: Schema.String,
+    // The first prompt's request id, so a retried create is known as one. Absent in logs
+    // written before creators named it: those used `initial:<gen>`.
+    req: Schema.optionalKey(ClientReq),
     image: Schema.String,
     // Absent in logs written before places: those ran on Cloudflare.
     place: Schema.optionalKey(PlaceKind),

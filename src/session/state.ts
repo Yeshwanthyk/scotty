@@ -49,6 +49,12 @@ export type State = {
   readonly created: Extract<SessionEvent, { kind: "created" }> | undefined;
 };
 
+// The request id the first prompt goes in under once the first workspace is ready.
+export const firstReq = (
+  created: Extract<SessionEvent, { kind: "created" }>,
+  gen: number,
+): string => created.req ?? `initial:${gen}`;
+
 // Stopped and failed sessions hold no connection, deadline or pending request.
 export const live = (state: State): boolean =>
   state.phase !== "failed" && state.phase !== "stopped";

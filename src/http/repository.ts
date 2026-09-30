@@ -5,6 +5,8 @@ export class RepositoryFailure extends Schema.TaggedError<RepositoryFailure>()(
   "RepositoryFailure",
   {
     message: Schema.String,
+    // GitHub says the repository doesn't exist, or the token can't see it.
+    missing: Schema.optionalKey(Schema.Literal(true)),
   },
 ) {}
 
@@ -25,6 +27,7 @@ export const defaultBranch = (repo: string, token: string) =>
     if (!response.ok)
       return yield* new RepositoryFailure({
         message: `GitHub repository lookup returned HTTP ${response.status}`,
+        ...(response.status === 404 ? { missing: true as const } : {}),
       });
     const json: unknown = yield* Effect.tryPromise({
       try: () => response.json(),

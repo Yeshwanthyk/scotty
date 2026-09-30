@@ -5,9 +5,9 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { AgentKind } from "../session/events.js";
-import { maxSearch } from "../session/view.js";
+import { maxSearch, SearchQuery } from "../session/search.js";
 import { ConnectionName, connectionName, Key } from "../creds/connections.js";
-import { githubHint, Repo, startSession } from "./start.js";
+import { githubHint, Prompt, Repo, startSession } from "./start.js";
 import { version } from "../version.js";
 import {
   instructionsKey,
@@ -18,14 +18,6 @@ import {
   skillKey,
   skillName,
 } from "../settings/skill.js";
-
-const Prompt = Schema.String.check(
-  Schema.isMinLength(1),
-  Schema.isMaxLength(256 * 1024),
-  Schema.makeFilter((text) => new TextEncoder().encode(text).byteLength <= 256 * 1024, {
-    expected: "at most 256 KiB of UTF-8 text",
-  }),
-);
 
 const Create = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
@@ -48,10 +40,7 @@ const Steer = Schema.Struct({
   turn: Schema.String,
   req: Schema.optional(Schema.String),
 });
-const Interrupt = Schema.Struct({
-  turn: Schema.String,
-  req: Schema.optional(Schema.String),
-});
+const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(Schema.String) });
 const path =
   /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log|hatch\/(\d{1,5})|files\/([a-f0-9]{32})))?$/;
 const GitHubToken = Schema.Struct({
@@ -73,13 +62,7 @@ const skillPath = /^\/api\/skills\/([^/]+)$/;
 
 const bad = (message: string, status = 400, hint?: string) =>
   HttpServerResponse.json(
-    {
-      error: {
-        message,
-        code: status === 404 ? "not_found" : "bad_request",
-        hint,
-      },
-    },
+    { error: { message, code: status === 404 ? "not_found" : "bad_request", hint } },
     { status },
   );
 
@@ -180,16 +163,8 @@ export function apiHandler(
       if (typeof skill === "string") return yield* bad(skill);
       const digest = yield* Effect.promise(() => sha256(zip));
       yield* bucket.put(skillKey(skill.name), zip);
-      yield* credential.putSkill({
-        ...skill,
-        sha256: digest,
-        size: zip.byteLength,
-      });
-      return yield* HttpServerResponse.json({
-        ...skill,
-        sha256: digest,
-        size: zip.byteLength,
-      });
+      yield* credential.putSkill({ ...skill, sha256: digest, size: zip.byteLength });
+      return yield* HttpServerResponse.json({ ...skill, sha256: digest, size: zip.byteLength });
     }
     const skillMatch = skillPath.exec(url.pathname);
     if (skillMatch !== null) {
@@ -279,7 +254,8 @@ export function apiHandler(
         return yield* HttpServerResponse.json(
           {
             error: {
-              message: "That key belongs to a session for another repository or agent",
+              message:
+                "That key or idempotency key belongs to a session for another repository, agent or prompt",
               code: "key_conflict",
               hint: `scotty read ${started.id}`,
             },
@@ -297,10 +273,7 @@ export function apiHandler(
           },
           { status: 409 },
         );
-      const created =
-        started.kind === "started"
-          ? started.view
-          : (yield* sessions.getByName(started.id).view()).session;
+      const created = started.session;
       return yield* HttpServerResponse.json({
         id: started.id,
         title: created.display.title,
@@ -312,23 +285,21 @@ export function apiHandler(
       });
     }
     if (url.pathname === "/api/sessions" && request.method === "GET") {
-      const searched = Schema.decodeUnknownExit(Schema.String.check(Schema.isMaxLength(maxSearch)))(
+      const searched = Schema.decodeUnknownExit(SearchQuery)(
         (url.searchParams.get("q") ?? "").trim(),
       );
       if (Exit.isFailure(searched))
         return yield* bad(`Search text is at most ${maxSearch} characters`, 400);
       const query = searched.value;
-      const ids = yield* credential.sessions();
+      const ids = query === "" ? yield* credential.sessions() : yield* credential.search(query);
       // Each view may wake a cold Durable Object; one at a time, a long list outlasts the CLI.
       // A session that cannot open is left out rather than failing the whole list.
       const opened = yield* Effect.forEach(
         ids,
-        (entry) => Effect.exit(sessions.getByName(entry.id).find(query)),
+        (entry) => Effect.exit(sessions.getByName(entry.id).view()),
         { concurrency: 16 },
       );
-      const views = opened.flatMap((exit) =>
-        Exit.isSuccess(exit) && exit.value !== undefined ? [exit.value] : [],
-      );
+      const views = opened.flatMap((exit) => (Exit.isSuccess(exit) ? [exit.value] : []));
       return yield* HttpServerResponse.json({
         version: 1,
         sessions: views.map((view) => ({
@@ -380,9 +351,7 @@ export function apiHandler(
           },
           { status: 409 },
         );
-      return yield* HttpServerResponse.json({
-        url: `https://${hatchHost(hatchBase, port, id)}`,
-      });
+      return yield* HttpServerResponse.json({ url: `https://${hatchHost(hatchBase, port, id)}` });
     }
     if (request.method === "GET" && match[4] !== undefined) {
       // iOS Safari plays a video only when a Range request gets a 206 with Content-Length.
@@ -402,9 +371,7 @@ export function apiHandler(
         "content-type": object.httpMetadata?.contentType ?? "application/octet-stream",
         "accept-ranges": "bytes",
         ...(status === 206
-          ? {
-              "content-range": `bytes ${start}-${start + length - 1}/${object.size}`,
-            }
+          ? { "content-range": `bytes ${start}-${start + length - 1}/${object.size}` }
           : {}),
       };
       // A stream is sent chunked, without the Content-Length Safari needs; files are at most 25 MB.
