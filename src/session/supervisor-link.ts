@@ -39,21 +39,27 @@ export class SupervisorLink {
       // A refused connection rejects; a container still booting refuses, and the caller
       // retries a DialError.
       const web = yield* Effect.tryPromise({
-        try: () =>
-          port.fetch(`http://container/?gen=${gen}&after=${after}`, {
+        // A dial abandoned by its attempt's timeout still resolves later; close that socket.
+        try: (signal) => {
+          const pending = port.fetch(`http://container/?gen=${gen}&after=${after}`, {
             headers: { Upgrade: "websocket" },
-          }),
+          });
+          signal.addEventListener("abort", () =>
+            pending.then(
+              (late) => {
+                accepted(late)?.close();
+              },
+              () => undefined,
+            ),
+          );
+          return pending;
+        },
         catch: () => new DialError({ message: "Supervisor not reachable" }),
       });
-      const candidate: unknown = Reflect.get(web, "webSocket");
-      if (
-        !(candidate instanceof WebSocket) ||
-        !("accept" in candidate) ||
-        typeof candidate.accept !== "function"
-      ) {
+      const candidate = accepted(web);
+      if (candidate === undefined) {
         return yield* new DialError({ message: "Supervisor websocket upgrade failed" });
       }
-      candidate.accept();
       if (!stillWanted()) {
         candidate.close();
         return;
@@ -82,4 +88,17 @@ export class SupervisorLink {
       this.socket?.close();
     });
   }
+}
+
+// Accepts and returns the upgraded socket on a response, if the supervisor accepted the upgrade.
+function accepted(response: object): WebSocket | undefined {
+  const candidate: unknown = Reflect.get(response, "webSocket");
+  if (
+    !(candidate instanceof WebSocket) ||
+    !("accept" in candidate) ||
+    typeof candidate.accept !== "function"
+  )
+    return undefined;
+  candidate.accept();
+  return candidate;
 }
