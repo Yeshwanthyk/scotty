@@ -126,6 +126,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         "start",
         "destroy",
         "watch",
+        "idle",
       ]);
       // Awaits the running container's exit, so a crash or exit is recorded when it happens,
       // not when someone next looks. One watcher at a time; a new one replaces the last.
@@ -154,7 +155,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 )
               : Effect.void,
           ),
-          Effect.orDie,
+          // Nothing joins the watcher, so a failure to record the exit is logged here.
+          Effect.ignoreCause({ log: "Error", message: "recording container exit failed" }),
           Effect.provide(context),
         );
       // Called once the supervisor answers, when the container surely exists: monitor() settles at
@@ -352,11 +354,13 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
             case "idle": {
               if (!current(action.gen)) return;
-              // An unanswered supervisor counts as no terminal: the session sleeps.
+              // An unanswered supervisor counts as no terminal: the session sleeps. The fold
+              // ignores the stop if a prompt or use arrived meanwhile.
               const terminals = yield* supervisor("/terminals").pipe(
                 Effect.flatMap((response) => Effect.tryPromise(() => response.json())),
                 Effect.flatMap(Schema.decodeUnknownEffect(Terminals)),
                 Effect.map(({ open }) => open),
+                Effect.timeout("5 seconds"),
                 Effect.orElseSucceed(() => 0),
               );
               if (terminals > 0 || Date.now() - used < idleWindow(log.state)) {

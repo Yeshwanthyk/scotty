@@ -60,11 +60,12 @@ const endAll = (
 const stallReq = (turn: string): string => `stalled:${turn}`;
 const stalled = (state: State, turn: string): boolean =>
   state.requests.some((item) => item.req === stallReq(turn));
-// A save settles the last turn; after a stall, the session then stops.
+// A save settles the last turn; after a stall, the session then stops unless the owner has
+// started another turn.
 const saved = (state: State, next: State): State => {
   const turn = state.turns.at(-1)?.turn;
   const settled = { ...next, pending: remove(state.pending, "save") };
-  return turn !== undefined && live(state) && stalled(state, turn)
+  return turn !== undefined && live(state) && stalled(state, turn) && !turnOpen(next)
     ? endAll(settled, "stopped", { reason: "stalled" })
     : settled;
 };
@@ -423,7 +424,10 @@ function step(state: State, event: SessionEvent): State {
         ? resume({ ...next, activeAt: event.at }, event.at)
         : next;
     case "container.stopped":
-      return event.gen === state.gen && live(state)
+      // An idle stop decided before a prompt or use landed does not apply.
+      return event.gen === state.gen &&
+        live(state) &&
+        (event.reason !== "idle" || has(state.pending, "idle"))
         ? endAll(next, "stopped", {
             reason: event.reason ?? "gone",
             ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),

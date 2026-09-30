@@ -430,6 +430,8 @@ describe("session fold", () => {
     state = fold(state, make(12, "turn.ended", { gen: 1, turn: "1", state: "completed" }));
     state = fold(state, make(13, "save.failed", { turn: "1", code: "save_failed" }));
     expect(state.pending).toEqual([{ op: "idle", due: 13_000 + deadlines.idle }]);
+    const settledState = state;
+    const state0 = () => settledState;
     const due = timeout(14, 13_000 + deadlines.idle);
     state = fold(state, due);
     expect(command(state, due)).toEqual({ kind: "idle", gen: 1 });
@@ -440,6 +442,16 @@ describe("session fold", () => {
     expect(state).toMatchObject({ phase: "stopped", stop: { reason: "idle" }, pending: [] });
     expect(command(state, slept)).toEqual({ kind: "destroy" });
     check(state);
+    // A steer that lands while the Session DO checks for use keeps the session awake.
+    const woke = fold(
+      fold(
+        fold(state0(), timeout(14, 13_000 + deadlines.idle)),
+        make(15, "prompt.requested", { req: "q", turn: "2", text: "again", images: [] }),
+      ),
+      make(16, "container.stopped", { gen: 1, reason: "idle" }),
+    );
+    expect(woke).toMatchObject({ phase: "running", stop: undefined });
+    check(woke);
     const short = make(1, "created", { ...created, idleAfter: 30_000 });
     const quick = [short, start, hello, ready, delivered].reduce(fold, initial);
     const settled = fold(
@@ -469,6 +481,16 @@ describe("session fold", () => {
     expect(ended).toMatchObject({ phase: "stopped", stop: { reason: "stalled" }, pending: [] });
     expect(command(ended, saved)).toEqual({ kind: "destroy" });
     check(ended);
+    // The owner's next turn outlives the stalled turn's save.
+    const next = fold(
+      fold(
+        fold(state, make(7, "turn.ended", { gen: 1, turn: "0", state: "interrupted" })),
+        make(8, "prompt.requested", { req: "p", turn: "1", text: "go on", images: [] }),
+      ),
+      make(9, "save.done", { turn: "0" }),
+    );
+    expect(next).toMatchObject({ phase: "running", stop: undefined, currentTurn: "1" });
+    check(next);
     // A turn that ignores the interrupt stops at the next stalled deadline.
     const again = timeout(7, stall.at + deadlines.interrupt + deadlines.save);
     state = fold(state, again);

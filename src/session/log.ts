@@ -29,39 +29,42 @@ export const openLog = (storage: Cloudflare.DurableObjectState["Service"]) =>
       current = fold(current, event);
     }
     const mutex = yield* Semaphore.make(1);
+    // Uninterruptible, so a replaced watcher can't stop between the insert and the fold.
     const append = (draft: Draft, src: string) =>
       mutex.withPermits(1)(
-        Effect.gen(function* () {
-          const event = yield* Schema.decodeUnknownEffect(SessionEvent)({
-            ...draft,
-            seq: current.lastSeq + 1,
-            at: Date.now(),
-            src,
-          });
-          yield* sql`INSERT INTO events (seq, at, src, kind, op, data) VALUES (${event.seq}, ${event.at}, ${event.src}, ${event.kind}, ${event.kind}, ${JSON.stringify(event)})`;
-          history.push(event);
-          current = fold(current, event);
-          // Taken before any incident row, so a violation never swallows the command (a stop's
-          // destroy most of all).
-          const issued = command(current, event);
-          for (const violation of invariants(current)) {
-            const incident = yield* Schema.decodeUnknownEffect(SessionEvent)({
-              kind: "invariant.violated",
-              code: violation.code,
-              detail: violation.detail,
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            const event = yield* Schema.decodeUnknownEffect(SessionEvent)({
+              ...draft,
               seq: current.lastSeq + 1,
-              at: event.at,
-              src: "session",
+              at: Date.now(),
+              src,
             });
-            yield* sql`INSERT INTO events (seq, at, src, kind, op, data) VALUES (${incident.seq}, ${incident.at}, ${incident.src}, ${incident.kind}, ${incident.kind}, ${JSON.stringify(incident)})`;
-            history.push(incident);
-            current = fold(current, incident);
-          }
-          const due = deadline(current);
-          if (due === undefined) yield* storage.storage.deleteAlarm();
-          else yield* storage.storage.setAlarm(due);
-          return issued;
-        }),
+            yield* sql`INSERT INTO events (seq, at, src, kind, op, data) VALUES (${event.seq}, ${event.at}, ${event.src}, ${event.kind}, ${event.kind}, ${JSON.stringify(event)})`;
+            history.push(event);
+            current = fold(current, event);
+            // Taken before any incident row, so a violation never swallows the command (a stop's
+            // destroy most of all).
+            const issued = command(current, event);
+            for (const violation of invariants(current)) {
+              const incident = yield* Schema.decodeUnknownEffect(SessionEvent)({
+                kind: "invariant.violated",
+                code: violation.code,
+                detail: violation.detail,
+                seq: current.lastSeq + 1,
+                at: event.at,
+                src: "session",
+              });
+              yield* sql`INSERT INTO events (seq, at, src, kind, op, data) VALUES (${incident.seq}, ${incident.at}, ${incident.src}, ${incident.kind}, ${incident.kind}, ${JSON.stringify(incident)})`;
+              history.push(incident);
+              current = fold(current, incident);
+            }
+            const due = deadline(current);
+            if (due === undefined) yield* storage.storage.deleteAlarm();
+            else yield* storage.storage.setAlarm(due);
+            return issued;
+          }),
+        ),
       );
     return {
       append,
