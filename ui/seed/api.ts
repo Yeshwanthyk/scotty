@@ -11,7 +11,11 @@ import { maxSearch, searchText } from "../../src/session/search.ts";
 import { conversationView, sessionView, turnOutcome } from "../../src/session/view.ts";
 import { AutomationName, Definition, nextDue, prepare } from "../../src/automations/automation.ts";
 import { readSkill } from "../../src/settings/skill.ts";
-import { ConnectionMetadata, NewConnection, connectionView } from "../../src/creds/connections.ts";
+import {
+  type ConnectionMetadata,
+  NewConnection,
+  connectionView,
+} from "../../src/creds/connections.ts";
 import { codexLog, dummies } from "./dummy.ts";
 
 const here = new URL(".", import.meta.url);
@@ -295,7 +299,7 @@ const owner = {
 };
 // Connections and their deliveries, in memory; the seeded deliveries point at seeded sessions.
 const hooks = {
-  connections: new Map<string, typeof ConnectionMetadata.Type>([
+  connections: new Map<string, ConnectionMetadata>([
     ["sentry", { name: "sentry", kind: "webhook", created: Date.now() - 6 * 864e5 }],
     [
       "linear",
@@ -376,7 +380,7 @@ async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string,
     const { name } = input.value;
     if (hooks.connections.has(name)) return fail(res, "That name is taken", 409, "exists");
     const checked = input.value;
-    const row: typeof ConnectionMetadata.Type =
+    const row: ConnectionMetadata =
       checked.kind === "webhook"
         ? { name, kind: checked.kind, created: Date.now() }
         : checked.kind === "token"

@@ -77,26 +77,35 @@ export const NewConnection = Schema.Union([
   }),
 ]);
 const metadata = { name: ConnectionName, created: Schema.Number };
-export const ConnectionMetadata = Schema.Union([
-  Schema.Struct({ ...metadata, ...ConnectionConfig.members[0].fields }),
-  Schema.Struct({ ...metadata, ...ConnectionConfig.members[1].fields }),
-  Schema.Struct({ ...metadata, ...ConnectionConfig.members[2].fields }),
-]);
+export type ConnectionMetadata = typeof ConnectionConfig.Type & {
+  readonly name: string;
+  readonly created: number;
+};
 export const internalUrl = (name: string, kind: "token" | "mcp") =>
   `http://${name}.internal/api/${kind === "mcp" ? "mcp" : ""}`;
-export const connectionView = (connection: typeof ConnectionMetadata.Type, origin: string) =>
+export const connectionView = (connection: ConnectionMetadata, origin: string) =>
   connection.kind === "webhook"
     ? { ...connection, url: `${origin}/hooks/${connection.name}` }
     : { ...connection, internalUrl: internalUrl(connection.name, connection.kind) };
-export const Connection = Schema.Union([
-  Schema.Struct({ ...ConnectionMetadata.members[0].fields, url: Schema.String }),
-  Schema.Struct({ ...ConnectionMetadata.members[1].fields, internalUrl: Schema.String }),
-  Schema.Struct({ ...ConnectionMetadata.members[2].fields, internalUrl: Schema.String }),
-]);
+const Webhook = Schema.Struct({ ...metadata, kind: Schema.Literal("webhook"), url: Schema.String });
+const Token = Schema.Struct({
+  ...metadata,
+  kind: Schema.Literal("token"),
+  host: ConnectionHost,
+  header: ConnectionHeader,
+  internalUrl: Schema.String,
+});
+const Mcp = Schema.Struct({
+  ...metadata,
+  kind: Schema.Literal("mcp"),
+  url: ConnectionUrl,
+  internalUrl: Schema.String,
+});
+export const Connection = Schema.Union([Webhook, Token, Mcp]);
 export const ConnectionCreated = Schema.Union([
-  Schema.Struct({ ...Connection.members[0].fields, secret: Schema.String }),
-  Connection.members[1],
-  Connection.members[2],
+  Schema.Struct({ ...Webhook.fields, secret: Schema.String }),
+  Token,
+  Mcp,
 ]);
 
 // A key ties deliveries (or API creates) to one session.

@@ -234,7 +234,7 @@ export function apiHandler(
         );
       return yield* HttpServerResponse.json({
         ...connectionView(added, origin),
-        ...(added.kind === "webhook" && "secret" in added ? { secret: added.secret } : {}),
+        ...(added.kind === "webhook" ? { secret: added.secret } : {}),
       });
     }
     const connectionMatch = connectionPath.exec(url.pathname);
