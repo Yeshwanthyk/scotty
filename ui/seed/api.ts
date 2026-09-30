@@ -7,7 +7,12 @@ import { Schema } from "effect";
 import type { Plugin } from "vite";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
 import { fold, initial, type State } from "../../src/session/fold.ts";
-import { conversationView, sessionView } from "../../src/session/view.ts";
+import {
+  conversationView,
+  maxSearch,
+  sessionMatches,
+  sessionView,
+} from "../../src/session/view.ts";
 import { readSkill } from "../../src/settings/skill.ts";
 import { codexLog, dummies } from "./dummy.ts";
 
@@ -478,14 +483,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const list = [...sessions.values()].sort(
       (a, b) => (b.state.created?.at ?? 0) - (a.state.created?.at ?? 0),
     );
-    const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
+    const q = url.searchParams.get("q")?.trim() ?? "";
+    if (q.length > maxSearch) return fail(res, `Search text is at most ${maxSearch} characters`);
     const matches = list
-      .map((session) => view(session).session)
-      .filter(({ display }) =>
-        [display.title, display.repository, display.branch, display.prompt].some((field) =>
-          field.toLowerCase().includes(q),
-        ),
-      );
+      .filter((session) => sessionMatches(session.state, q))
+      .map((session) => view(session).session);
     return json(res, {
       version: 1,
       sessions: matches.map((session) => ({

@@ -73,37 +73,50 @@ export function duration(ms: number): string {
 }
 
 const groups = ["Today", "This week", "Older"] as const;
+// Calendar days in local time, so a day that is 23 or 25 hours long still counts as one.
 export function groupOf(iso: string, now = new Date()): (typeof groups)[number] {
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const at = Date.parse(iso);
-  if (at >= start) return "Today";
-  if (at >= start - 6 * 86_400_000) return "This week";
+  const at = new Date(iso).getTime();
+  if (at >= new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) return "Today";
+  if (at >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6).getTime())
+    return "This week";
   return "Older";
 }
 
 // A session asleep (stopped) for over a week moves out of the way, still searchable.
-const archiveAfter = 7 * 86_400_000;
-export function archived(session: Session, now = Date.now()): boolean {
-  return (
-    session.authority.kind === "stable" &&
-    session.authority.lifecycle === "stopped" &&
-    now - Date.parse(session.display.activeAt) > archiveAfter
-  );
+// The week counts from when it went to sleep, not from its last activity.
+export function archived(session: Session, now = new Date()): boolean {
+  const { authority, display } = session;
+  if (authority.kind !== "stable" || authority.lifecycle !== "stopped") return false;
+  if (display.stoppedAt === null) return false;
+  const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7, now.getHours());
+  return Date.parse(display.stoppedAt) < cutoff.getTime();
 }
 
-export type Filter = "all" | "running";
-// Running is a live container: starting up or up. Stopped and failed sessions are not.
+// Mine: started by a person, in the UI or CLI or through the API with a key. Automations: a hook.
+export type Filter = "all" | "mine" | "automations" | "running";
 export function matchesFilter(session: Session, filter: Filter): boolean {
-  if (filter === "all") return true;
-  return session.authority.kind === "transitioning" || session.authority.lifecycle === "running";
+  const origin = session.display.origin;
+  if (filter === "mine") return origin === null || origin.kind === "api";
+  if (filter === "automations") return origin !== null && origin.kind === "hook";
+  if (filter === "running")
+    return session.authority.kind === "transitioning" || session.authority.lifecycle === "running";
+  return true;
 }
 
-// Case-insensitive substring over the same fields the server searches.
+// Case-insensitive substring over what the list already holds; the server adds the whole prompt.
 export function matchesText(session: Session, text: string): boolean {
   const needle = text.trim().toLowerCase();
   if (needle === "") return true;
-  const { title, repository, branch, prompt } = session.display;
-  return [title, repository, branch, prompt].some((field) => field.toLowerCase().includes(needle));
+  const { title, repository, branch, prompt, origin } = session.display;
+  const fields = [
+    title,
+    repository,
+    branch,
+    prompt,
+    origin !== null && "key" in origin ? (origin.key ?? "") : "",
+    origin?.kind === "hook" ? origin.connection : "",
+  ];
+  return fields.some((field) => field.toLowerCase().includes(needle));
 }
 
 export function grouped(list: ReadonlyArray<Session>) {

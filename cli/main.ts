@@ -26,7 +26,7 @@ ${bold("Setup")}
 ${bold("Sessions")}
   new <repo> <prompt>             Start a session (--agent claude, --key <retry key>,
                                   --session-key <key>: a repeat steers that session)
-  ls                              List sessions
+  ls [--search <text>]            List sessions; search title, repo, branch, prompt, key
   read <id>                       Read the latest messages (--last N, --role user|assistant)
   steer <id> <text>               Send text; a stopped session resumes
   interrupt <id>                  Interrupt the current turn
@@ -82,8 +82,9 @@ Start a session with Codex (the default) or Claude. --key makes retries idempote
 --session-key names the session: the same key with the same repository and agent sends the
 prompt to that session (resuming it if stopped); with another repository or agent it is refused.
 Example: scotty new octocat/Hello-World "Describe the code"`,
-  ls: `Usage: scotty ls [skills]
-List sessions, newest activity first; \`ls skills\` lists skills and the instructions.`,
+  ls: `Usage: scotty ls [skills] [--search <text>]
+List sessions, newest activity first; \`ls skills\` lists skills and the instructions.
+--search keeps sessions whose title, repository, branch, first prompt or key contains the text (up to 200 characters, any case).`,
   read: `Usage: scotty read <id> [--last N] [--role user|assistant]
 Print the session state and its last N messages (default 1, at most 500), filtered by role first.
 Example: scotty read 3f2a --last 5 --role assistant`,

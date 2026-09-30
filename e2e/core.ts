@@ -111,18 +111,21 @@ const program = Effect.gen(function* () {
       "Initial answer missing, or SCOTTY_ or Claude token env visible to commands",
       "scotty doctor",
     );
-  // Search finds the session by its title and its first prompt, and not by a word it lacks.
-  const titleHits = yield* request(`/api/sessions?q=${encodeURIComponent("E2E CORE")}`, List);
-  const repoHits = yield* request(`/api/sessions?q=${encodeURIComponent(fixtureRepo)}`, List);
-  const noHits = yield* request(`/api/sessions?q=${encodeURIComponent(`nothing-${unique}`)}`, List);
+  // Search matches by title (any case), repository and a word of the first prompt, and a text
+  // that is nowhere in the session finds nothing.
+  const found = (text: string) =>
+    request(`/api/sessions?q=${encodeURIComponent(text)}`, List).pipe(
+      Effect.map((list) => list.sessions.some((item) => item.identity.id === session.id)),
+    );
   if (
-    !titleHits.sessions.some((item) => item.identity.id === session.id) ||
-    !repoHits.sessions.some((item) => item.identity.id === session.id) ||
-    noHits.sessions.length !== 0
+    !(yield* found("E2E CORE")) ||
+    !(yield* found(fixtureRepo)) ||
+    !(yield* found("READY")) ||
+    (yield* found(`nothing-${unique}`))
   )
     return yield* failure(
       "core",
-      "Session search missed the session or matched nothing",
+      "Session search missed the session by title, repo or prompt, or matched an absent text",
       "scotty ls --search",
     );
   const log = yield* events();

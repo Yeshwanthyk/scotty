@@ -19,7 +19,7 @@ import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
 import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
 import { supervisorEvent } from "./supervisor-events.js";
-import { conversationView, sessionView } from "./view.js";
+import { conversationView, sessionMatches, sessionView } from "./view.js";
 
 const scriptedStart = (
   kind: typeof AgentKind.Type,
@@ -427,6 +427,13 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             return true;
           }),
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
+        // The session's view when it matches a search, for the list; nothing otherwise.
+        find: (query: string) =>
+          Effect.sync(() =>
+            sessionMatches(log.state, query)
+              ? { version: 1, session: sessionView(id(), log.state) }
+              : undefined,
+          ),
         conversation: () => Effect.sync(() => conversationView(log.state, log.history)),
         log: () => Effect.sync(() => log.history),
         // A preview request from the Worker, whose Host is `<port>-<id>.<base>`, or the

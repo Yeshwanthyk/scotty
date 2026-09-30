@@ -724,6 +724,7 @@ export const dummies: DummySpec[] = [
     title: "Refactor the auth flow to passkeys",
     repo: "acme/storefront",
     minutesAgo: 60 * 24 * 3,
+    origin: { kind: "api", key: "passkeys-2026" },
     turns: [
       ...Array.from({ length: 9 }, (_, index): TurnSpec => ({
         prompt:
@@ -892,6 +893,7 @@ export const dummies: DummySpec[] = [
     title: "Write a migration guide for the v2 webhooks",
     repo: "Yeshwanthyk/scotty-hatch-test",
     minutesAgo: 60 * 24 * 21,
+    origin: { kind: "hook", connection: "sentry", delivery: "msg_8aB3dX", key: "issue-3977" },
     turns: [
       {
         prompt: "Write a migration guide for the v2 webhooks.",
