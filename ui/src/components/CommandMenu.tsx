@@ -22,15 +22,18 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  // The server also matches the whole first prompt; its hits join the ones the list shows.
-  const [found, setFound] = useState<ReadonlySet<string>>(new Set());
+  // The server also matches the whole first prompt; its hits join the ones the list shows,
+  // but only while they answer the text in the box.
+  const [hits, setHits] = useState<{ query: string; ids: ReadonlySet<string> }>();
+  const text = query.trim();
+  const found = hits?.query === text ? hits.ids : undefined;
   useEffect(() => {
-    const text = query.trim();
-    if (text === "") return setFound(new Set());
+    if (text === "") return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       searchSessions(controller.signal, text.slice(0, 200)).then(
-        (hits) => setFound(new Set(hits.map((hit) => hit.identity.id))),
+        (sessions) =>
+          setHits({ query: text, ids: new Set(sessions.map((hit) => hit.identity.id)) }),
         () => undefined,
       );
     }, 150);
@@ -38,7 +41,7 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [text]);
   const listRef = useRef<HTMLDivElement>(null);
   const commands = useMemo(() => {
     const go = (run: () => Promise<void>) => () => {
@@ -67,7 +70,7 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
     // Sessions match on title, repository, branch and first prompt; a repository sets the
     // sidebar's repository filter.
     const sessions: Command[] = (list ?? [])
-      .filter((session) => matchesText(session, needle) || found.has(session.identity.id))
+      .filter((session) => matchesText(session, needle) || found?.has(session.identity.id) === true)
       .map((session) => ({
         id: session.identity.id,
         label: session.display.title,
@@ -100,7 +103,9 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
       ...sessions,
     ];
   }, [list, query, found, navigate, onClose, setRepo]);
-  useEffect(() => setActive(0), [query]);
+  // The first row is active whenever the rows change; live updates to the same rows keep it.
+  const rows = commands.map((command) => command.id).join("\n");
+  useEffect(() => setActive(0), [rows]);
   useEffect(() => {
     listRef.current
       ?.querySelector(`[data-index="${active}"]`)

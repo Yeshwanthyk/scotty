@@ -668,7 +668,7 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 
 ### S3: hooks, keys and deliveries
 
-- **In scope:** a connection table in the Creds DO, first kind `webhook {name, secret}` (secret shown once), from the UI (Settings → Connections), `scotty connect` and the API. `POST /hooks/:name` verifies Standard Webhooks signatures, sits behind an Access bypass the deployer makes for `/hooks/*` only, and records each delivery (accepted or why not). A create with a key already used steers that session (resuming it); the same key with a different payload is 409. `created` records its origin `{connection, delivery, key}`.
+- **In scope:** a connection table in the Creds DO, first kind `webhook {name, secret}` (secret shown once), from the UI (Settings → Connections), `scotty connect` and the API. `POST /hooks/:name` verifies Standard Webhooks signatures, sits behind an Access bypass the deployer makes for `/hooks/*` only, and records each delivery (accepted or why not). A create with a key already used steers that session (resuming it); that key with a different repo or agent is 409. A retry (same delivery id, or same idempotency key) is answered with what the first attempt did and adds nothing; the same delivery id or idempotency key with a different repo, agent or prompt is 409. `created` records its origin `{connection, delivery, key}`.
 - **Done when:** `e2e hooks`: two signed deliveries with one key give one session with two turns; a bad signature is rejected and listed in `scotty deliveries`; the UI shows the delivery linked to its session.
 
 ### S4: automations and runs

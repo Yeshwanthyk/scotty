@@ -7,6 +7,7 @@ import {
   Connections,
   ConnectionRemoved,
   Conversation,
+  Created,
   Deliveries,
   List,
   View,
@@ -55,6 +56,8 @@ const deliver = (
     );
     const response = await fetch(`${url}/hooks/${name}`, {
       method: "POST",
+      // Access answers a request it guards with a redirect to its login.
+      redirect: "manual",
       headers: {
         "content-type": "application/json",
         "webhook-id": id,
@@ -64,7 +67,14 @@ const deliver = (
       body: text,
     });
     return { id, status: response.status, body: await response.text() };
-  });
+  }).pipe(
+    Effect.tap((answer) =>
+      check(
+        answer.status < 300 || answer.status >= 400,
+        `/hooks/${name} redirected (HTTP ${answer.status}): Access guards it, so no sender can reach it`,
+      ),
+    ),
+  );
 
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
@@ -82,6 +92,17 @@ const program = Effect.gen(function* () {
     "The connection list is missing the connection or shows its secret",
   );
   console.log(`Connection ${name}`);
+  // Access bypasses /hooks/* alone: a path that climbs out of it is not the API.
+  for (const path of ["/hooks/%2e%2e/api/sessions", "/hooks/..%2Fapi%2Fsessions"]) {
+    const escaped = yield* Effect.promise(async () => {
+      const response = await fetch(`${url}${path}`, { redirect: "manual" });
+      return { status: response.status, body: await response.text() };
+    });
+    yield* check(
+      escaped.status !== 200 && !escaped.body.includes('"sessions"'),
+      `${path} without an Access token answered ${escaped.status} as the API`,
+    );
+  }
 
   const key = `e2e-${crypto.randomUUID()}`;
   const body = (text: string) => ({
@@ -160,18 +181,9 @@ const program = Effect.gen(function* () {
       (value) => value.turns.length === count,
     );
   const once = `msg_${crypto.randomUUID()}`;
+  const three = body(prompt("Reply with only the word three.", "say three"));
   const twice = yield* Effect.all(
-    [1, 2].map(() =>
-      deliver(
-        url,
-        name,
-        connection.secret,
-        body(prompt("Reply with only the word three.", "say three")),
-        {
-          id: once,
-        },
-      ),
-    ),
+    [1, 2].map(() => deliver(url, name, connection.secret, three, { id: once })),
     { concurrency: "unbounded" },
   );
   const answers = yield* Effect.forEach(twice, (item) =>
@@ -179,16 +191,25 @@ const program = Effect.gen(function* () {
   );
   yield* check(
     answers.filter((item) => item.status === "accepted").length === 1 &&
-      answers.every((item) => ["accepted", "duplicate", "in_progress"].includes(item.status)),
+      answers.filter((item) => item.status === "duplicate").length === 1,
     `The same delivery twice gave ${answers.map((item) => item.status).join(", ")}`,
-  );
-  const retried = yield* deliver(url, name, connection.secret, body("say again"), { id: once });
-  yield* check(
-    (yield* Schema.decodeUnknownEffect(Status)(retried.body)).status === "duplicate",
-    "A retry of an accepted delivery was not a duplicate",
   );
   yield* turnsOf(session, 3);
   console.log("Same delivery id twice: one turn, the other a duplicate");
+
+  // A retry after the steer's turn has ended is still a duplicate, not a new turn or a 409.
+  yield* poll(events, (log) => log.filter((e) => e.kind === "turn.ended").length >= 3);
+  const retried = yield* deliver(url, name, connection.secret, three, { id: once });
+  yield* check(
+    retried.status === 200 &&
+      (yield* Schema.decodeUnknownEffect(Status)(retried.body)).status === "duplicate",
+    `A retry of a steer whose turn ended gave ${retried.status} ${retried.body}`,
+  );
+  yield* check(
+    (yield* request(`${prefix}/conversation`, Conversation)).turns.length === 3,
+    "A retried steer added a turn",
+  );
+  console.log("A retried steer after its turn ended: a duplicate");
 
   // 5. A delivery that steers a stopped session resumes it.
   yield* poll(events, (log) => log.filter((e) => e.kind === "turn.ended").length >= 3);
@@ -236,6 +257,39 @@ const program = Effect.gen(function* () {
     yield* request(`/api/sessions/${together}/stop`, View, { method: "POST" }).pipe(Effect.ignore);
   }
   console.log("Concurrent deliveries with a new key: one session, both prompts");
+
+  // 7. A keyed create retried with its idempotency key adds no second turn; the same key with
+  // another prompt is a conflict.
+  const create = (text: string) =>
+    request("/api/sessions", Created, {
+      method: "POST",
+      key: `e2e-${key}`,
+      body: {
+        title: `e2e hooks retry (${agent})`,
+        repo: fixtureRepo,
+        prompt: text,
+        provider: "cloudflare",
+        key: `e2e-api-${key}`,
+        ...sessionAgent,
+      },
+    });
+  const seven = prompt("Reply with only the word seven.", "say seven");
+  const made = yield* create(seven);
+  const again = yield* create(seven);
+  yield* check(again.id === made.id && again.steered !== true, "A retried create steered");
+  yield* turnsOf(made.id, 1);
+  yield* waiter(request, `/api/sessions/${made.id}`)(
+    () => request(`/api/sessions/${made.id}/log`, Log),
+    (log) => log.some((e) => e.kind === "turn.ended" && e.turn === "0"),
+  );
+  yield* check(
+    (yield* request(`/api/sessions/${made.id}/conversation`, Conversation)).turns.length === 1,
+    "A retried create added a second turn",
+  );
+  const changed = yield* create("say something else").pipe(Effect.flip);
+  yield* check(changed.code === "key_conflict", `A changed retry gave ${changed.code}`);
+  yield* request(`/api/sessions/${made.id}/stop`, View, { method: "POST" }).pipe(Effect.ignore);
+  console.log("A retried keyed create: one turn; with another prompt: 409");
 
   yield* request(`${prefix}/stop`, View, { method: "POST" }).pipe(Effect.ignore);
   const removed = yield* request(

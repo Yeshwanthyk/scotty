@@ -90,6 +90,8 @@ it.prop(
           chosen.startsWith("initial:")
         )
           fields.req = "client-p";
+        // The first prompt keeps its `initial:<gen>` name, which the generated requests use.
+        if (kind === "created") delete fields.req;
         if (kind === "sup.error" && !step.withReq) delete fields.req;
         if (kind === "sup.hello") fields.n = 1;
         const event = decodeSessionEvent({

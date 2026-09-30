@@ -1,6 +1,7 @@
 import type { AgentKind, SessionEvent } from "./events.js";
 import type { State, Request } from "./fold.js";
 import { ackRecorded } from "./ack.js";
+import { firstReq } from "./state.js";
 
 type Resend =
   | { readonly req: string; readonly kind: "prompt"; readonly turn: string; readonly text: string }
@@ -95,7 +96,8 @@ export function command(state: State, event: SessionEvent): Command | undefined 
     case "workspace.ready": {
       const request = state.requests.find(
         (item) =>
-          item.req === `initial:${event.gen}` &&
+          state.created !== undefined &&
+          item.req === firstReq(state.created, event.gen) &&
           item.seq === event.seq &&
           item.status === "pending",
       );

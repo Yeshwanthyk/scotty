@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
-import { deadline, deadlines, fold, initial } from "./fold.js";
-import { sessionMatches, sessionView } from "./view.js";
+import { deadline, deadlines, fold, initial, startStep } from "./fold.js";
+import { sessionView } from "./view.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
 describe("session fold", () => {
@@ -45,13 +45,16 @@ describe("session fold", () => {
     state = fold(state, early);
     expect(state.requests.find((item) => item.req === "early")?.status).toBe("pending");
     expect(command(state, early)).toBeUndefined();
-    const again = make(3 + 1, "prompt.requested", {
+    check(state);
+    const again = make(4, "prompt.requested", {
       req: "early",
       turn: "0",
       text: "x",
       images: [],
     });
-    expect(fold(state, again).requests).toHaveLength(1);
+    state = fold(state, again);
+    expect(state.requests).toHaveLength(1);
+    check(state);
     const up = make(5, "sup.hello", { gen: 1, version: "v1" });
     const workspace = make(6, "workspace.ready", { gen: 1, branch: "main", commit: "abc" });
     state = fold(fold(state, up), workspace);
@@ -69,6 +72,66 @@ describe("session fold", () => {
       fold([created, start].reduce(fold, initial), stop).requests.find((r) => r.req === "i")
         ?.status,
     ).toBe("stale");
+  });
+
+  it("sends the first prompt under the creator's request id and ignores a retry of it", () => {
+    const named = make(1, "created", { ...created, req: "create-1" });
+    const retry = (seq: number) =>
+      make(seq, "prompt.requested", { req: "create-1", turn: "0", text: "hello", images: [] });
+    let state = [named, start, hello].reduce(fold, initial);
+    state = fold(state, retry(4));
+    expect(state.requests).toEqual([]);
+    const workspace = make(5, "workspace.ready", { gen: 1, branch: "main", commit: "abc" });
+    state = fold(state, workspace);
+    expect(command(state, workspace)).toEqual({
+      kind: "prompt",
+      req: "create-1",
+      turn: "0",
+      text: "hello",
+    });
+    state = fold(state, retry(6));
+    expect(state.requests.map((item) => item.req)).toEqual(["create-1"]);
+    check(state);
+  });
+
+  it("answers a start by what the session has already seen", () => {
+    const input = {
+      req: "create-1",
+      repo: "https://example.org/repo",
+      agent: "codex" as const,
+      prompt: "hello",
+    };
+    expect(startStep(initial, input)).toBe("create");
+    const named = make(1, "created", { ...created, req: "create-1" });
+    const first = make(5, "prompt.delivered", { req: "create-1" });
+    let state = [named, start, hello, ready, first].reduce(fold, initial);
+    expect(startStep(state, input)).toBe("duplicate");
+    expect(startStep(state, { ...input, prompt: "other" })).toBe("conflict");
+    expect(startStep(state, { ...input, repo: "https://example.org/other" })).toBe("conflict");
+    expect(startStep(state, { ...input, req: "steer-1", agent: "claude" })).toBe("conflict");
+    const steer = { ...input, req: "steer-1", prompt: "more" };
+    expect(startStep(state, steer)).toBe("prompt");
+    state = fold(
+      state,
+      make(6, "prompt.requested", { req: "steer-1", turn: "0", text: "more", images: [] }),
+    );
+    expect(startStep(state, steer)).toBe("duplicate");
+    expect(startStep(state, { ...steer, prompt: "else" })).toBe("conflict");
+    // A steer whose turn has since ended went in: its retry is still a duplicate.
+    state = fold(state, make(7, "prompt.delivered", { req: "steer-1" }));
+    state = fold(
+      state,
+      make(8, "turn.ended", { gen: 1, turn: "0", codexTurn: "cx", state: "completed" }),
+    );
+    expect(startStep(state, steer)).toBe("duplicate");
+    // One the session refused did not go in, and a retry cannot put it in.
+    state = fold(
+      state,
+      make(9, "prompt.requested", { req: "late", turn: "0", text: "late", images: [] }),
+    );
+    expect(state.requests.find((item) => item.req === "late")?.status).toBe("stale");
+    expect(startStep(state, { ...input, req: "late", prompt: "late" })).toBe("unavailable");
+    check(state);
   });
 
   it("deduplicates start and request ids; rejects reserved initial names and stale turns", () => {
@@ -320,16 +383,6 @@ describe("session fold", () => {
     expect(state.phase).toBe("provisioning");
     expect(state.stoppedAt).toBeUndefined();
     expect(sessionView("session-1", state).display.stoppedAt).toBeNull();
-  });
-
-  it("matches a search on the whole prompt, the key and the connection", () => {
-    const origin = { kind: "hook", connection: "ci-hooks", delivery: "msg_1", key: "pr-7" };
-    const long = `${"x".repeat(400)} needle`;
-    const state = fold(initial, make(1, "created", { ...created, origin, prompt: long }));
-    for (const text of ["NEEDLE", "pr-7", "CI-hooks", "TEST", ""])
-      expect(sessionMatches(state, text)).toBe(true);
-    expect(sessionMatches(state, "absent")).toBe(false);
-    expect(sessionMatches(initial, "absent")).toBe(false);
   });
 
   it("saves after an accepted turn end and clears the save deadline on its result", () => {

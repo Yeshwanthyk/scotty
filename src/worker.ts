@@ -84,7 +84,7 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
       ),
     );
     // Sender-signed, not Access-signed: Access bypasses this path alone.
-    router.add("*", "/hooks/*", (request) =>
+    yield* router.add("*", "/hooks/*", (request) =>
       Effect.gen(function* () {
         const name = hookPath.exec(new URL(request.url, "https://scotty.internal").pathname)?.[1];
         if (name === undefined) return HttpServerResponse.text("Not found", { status: 404 });

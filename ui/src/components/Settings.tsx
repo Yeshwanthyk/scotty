@@ -20,6 +20,7 @@ import {
   type Accounts as AccountState,
   type Connection,
   type Delivery,
+  type DeliveryReason,
   type Device,
   type Settings as SettingsState,
 } from "../data/settings";
@@ -517,13 +518,16 @@ function Skills({ skills, reload }: { skills: SettingsState["skills"]; reload: (
   );
 }
 
-const reasons: Record<string, string> = {
+const reasons: Record<DeliveryReason, string> = {
+  missing_headers: "Missing webhook headers",
+  too_large: "Body too large",
   bad_signature: "Bad signature",
   stale_timestamp: "Timestamp too old",
-  key_conflict: "Key used by another repo or agent",
-  session_unavailable: "Session unavailable",
-  repo_unavailable: "Repository unavailable",
   bad_body: "Unreadable body",
+  repository_not_found: "Repository not found",
+  repository_unavailable: "Repository unavailable",
+  key_conflict: "Key or delivery used for another repo, agent or prompt",
+  session_unavailable: "Session unavailable",
 };
 
 function Connections() {
@@ -630,8 +634,9 @@ function Connections() {
                   <Icon name="trash" size={14} />
                 </button>
               </div>
-              {mine.map((delivery) => (
-                <div key={delivery.id} className="settings-row">
+              {mine.map((delivery, index) => (
+                // A retried delivery has its own row with the same id.
+                <div key={`${delivery.id}:${index}`} className="settings-row">
                   <div className="settings-row-text">
                     <div className="settings-row-title">
                       <span
@@ -639,7 +644,9 @@ function Connections() {
                         data-tone={delivery.outcome === "rejected" ? "warn" : "good"}
                       />
                       {delivery.outcome === "rejected"
-                        ? (reasons[delivery.reason ?? ""] ?? "Rejected")
+                        ? delivery.reason === null
+                          ? "Rejected"
+                          : reasons[delivery.reason]
                         : delivery.outcome === "duplicate"
                           ? "Already delivered"
                           : "Accepted"}
