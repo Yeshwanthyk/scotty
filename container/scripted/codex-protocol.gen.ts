@@ -12,8 +12,13 @@ const version = /@openai\/codex@([\d.]+)/.exec(
 )?.[1];
 if (version === undefined) throw new Error("container/Dockerfile pins no @openai/codex version");
 
-// What the stand-in replies and notifies; everything they refer to comes along.
+// What the stand-in reads, replies and notifies; everything they refer to comes along.
 const roots = [
+  "v2/ThreadStartParams",
+  "v2/ThreadResumeParams",
+  "v2/TurnStartParams",
+  "v2/TurnSteerParams",
+  "v2/TurnInterruptParams",
   "InitializeResponse",
   "v2/ThreadStartResponse",
   "v2/ThreadResumeResponse",

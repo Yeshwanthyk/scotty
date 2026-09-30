@@ -104,9 +104,21 @@ export type MessagePhase = "commentary" | "final_answer";
 export type ModeKind = "plan" | "default";
 
 /**
+ * Deprecated: `friendly` and `pragmatic` no longer select a style.
+ */
+export type Personality = "none" | "friendly" | "pragmatic";
+
+/**
  * See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning
  */
 export type ReasoningEffort = string;
+
+/**
+ * A summary of the reasoning performed by the model. This can be useful for
+ * debugging and understanding the model's reasoning process.
+ * See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries
+ */
+export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 
 export type JsonValue =
   | number
@@ -353,6 +365,8 @@ export type PatchChangeKind =
   | { type: "add" }
   | { type: "delete" }
   | { type: "update"; move_path: string | null };
+
+export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
 export type SandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -646,6 +660,52 @@ export type ThreadItem =
   | { type: "exitedReviewMode"; id: string; review: string }
   | { type: "contextCompaction"; id: string };
 
+/**
+ * There are three ways to resume a thread:
+ * 1. By thread_id: load the thread from disk by thread_id and resume it.
+ * 2. By history: instantiate the thread from memory and resume it.
+ * 3. By path: load the thread from disk by path and resume it.
+ *
+ * For non-running threads, the precedence is: history > non-empty path > thread_id.
+ * If using history or a non-empty path for a non-running thread, the thread_id
+ * param will be ignored.
+ *
+ * If thread_id identifies a running thread, app-server rejoins that thread and
+ * treats a non-empty path as a consistency check against the active rollout path.
+ * Empty string path values are treated as absent.
+ *
+ * Prefer using thread_id whenever possible.
+ */
+export type ThreadResumeParams = {
+  threadId: string /**
+   * Configuration overrides for the resumed thread, if any.
+   */;
+  model?: string | null;
+  modelProvider?: string | null;
+  serviceTier?: string | null | null;
+  cwd?: string | null;
+  approvalPolicy?: AskForApproval | null /**
+   * Override where approval requests are routed for review on this thread
+   * and subsequent turns.
+   */;
+  approvalsReviewer?: ApprovalsReviewer | null;
+  sandbox?: SandboxMode | null;
+  config?: { [key in string]?: JsonValue } | null;
+  baseInstructions?: string | null;
+  developerInstructions?: string | null /**
+   * @deprecated `friendly` and `pragmatic` no longer select a style.
+   * Changing this does not rewrite the thread's existing instructions.
+   */;
+  personality?: Personality | null /**
+   * When true, return only thread metadata and live-resume state without
+   * populating `thread.turns`. This is useful when the client plans to call
+   * `thread/turns/list` immediately after resuming. Full-history hydration
+   * is deprecated for paginated threads; use this with `thread/turns/list`
+   * and `thread/items/list` instead.
+   */;
+  excludeTurns?: boolean;
+};
+
 export type ThreadResumeResponse = {
   thread: Thread;
   model: string;
@@ -711,6 +771,31 @@ export type ThreadSource = string;
 
 export type ThreadStartedNotification = { thread: Thread };
 
+export type ThreadStartParams = {
+  model?: string | null;
+  modelProvider?: string | null;
+  serviceTier?: string | null | null;
+  cwd?: string | null;
+  approvalPolicy?: AskForApproval | null /**
+   * Override where approval requests are routed for review on this thread
+   * and subsequent turns.
+   */;
+  approvalsReviewer?: ApprovalsReviewer | null;
+  sandbox?: SandboxMode | null;
+  config?: { [key in string]?: JsonValue } | null;
+  serviceName?: string | null;
+  baseInstructions?: string | null;
+  developerInstructions?: string | null /**
+   * @deprecated `friendly` and `pragmatic` no longer select a style.
+   */;
+  personality?: Personality | null;
+  ephemeral?: boolean | null;
+  sessionStartSource?: ThreadStartSource | null /**
+   * Optional client-supplied analytics source classification for this thread.
+   */;
+  threadSource?: ThreadSource | null;
+};
+
 export type ThreadStartResponse = {
   thread: Thread;
   model: string;
@@ -733,6 +818,8 @@ export type ThreadStartResponse = {
   sandbox: SandboxPolicy;
   reasoningEffort: ReasoningEffort | null;
 };
+
+export type ThreadStartSource = "startup" | "clear";
 
 export type ThreadStatus =
   | { type: "notLoaded" }
@@ -786,17 +873,88 @@ export type TurnError = {
   misalignment: MisalignmentErrorDetails | null;
 };
 
+export type TurnInterruptParams = { threadId: string; turnId: string };
+
 export type TurnInterruptResponse = Record<string, never>;
 
 export type TurnItemsView = "notLoaded" | "summary" | "full";
 
 export type TurnStartedNotification = { threadId: string; turn: Turn };
 
+export type TurnStartParams = {
+  threadId: string /**
+   * Replace this thread's disabled plugin IDs.
+   * Omitted/null preserves the list; [] clears it.
+   */;
+  disabledPluginIds?: Array<string> | null;
+  clientUserMessageId?: string | null;
+  input: Array<UserInput> /**
+   * Optional source classification for the caller that starts this turn.
+   * Ignored when this request steers an already-active turn.
+   */;
+  turnTrigger?: string | null;
+  toolOutput?: TurnToolOutput | null /**
+   * Override the working directory for this turn and subsequent turns.
+   */;
+  cwd?: string | null /**
+   * Override the approval policy for this turn and subsequent turns.
+   */;
+  approvalPolicy?: AskForApproval | null /**
+   * Override where approval requests are routed for review on this turn and
+   * subsequent turns.
+   */;
+  approvalsReviewer?: ApprovalsReviewer | null /**
+   * Override the sandbox policy for this turn and subsequent turns.
+   */;
+  sandboxPolicy?: SandboxPolicy | null /**
+   * Override the model for this turn and subsequent turns.
+   */;
+  model?: string | null /**
+   * Override the service tier for this turn and subsequent turns.
+   */;
+  serviceTier?: string | null | null /**
+   * Override the service tier only when this request starts a new turn.
+   * Use "default" for standard speed. Omitted or null inherits the thread's tier.
+   * Does not change the thread's tier or a turn being steered.
+   */;
+  serviceTierForTurn?: string | null /**
+   * Override the reasoning effort for this turn and subsequent turns.
+   */;
+  effort?: ReasoningEffort | null /**
+   * Override the reasoning summary for this turn and subsequent turns.
+   */;
+  summary?: ReasoningSummary | null /**
+   * @deprecated `friendly` and `pragmatic` no longer select a style.
+   * Changing this does not rewrite the thread's existing instructions.
+   */;
+  personality?: Personality | null /**
+   * Optional JSON Schema used to constrain the final assistant message for
+   * this turn.
+   */;
+  outputSchema?: JsonValue | null;
+};
+
 export type TurnStartResponse = { turn: Turn };
 
 export type TurnStatus = "completed" | "interrupted" | "failed" | "inProgress";
 
+export type TurnSteerParams = {
+  threadId: string;
+  clientUserMessageId?: string | null;
+  input: Array<UserInput> /**
+   * Required active turn id precondition. The request fails when it does not
+   * match the currently active turn.
+   */;
+  expectedTurnId: string;
+};
+
 export type TurnSteerResponse = { turnId: string };
+
+export type TurnToolOutput = {
+  name: string;
+  namespace: string | null;
+  output: FunctionCallOutputBody;
+};
 
 export type UserInput =
   | {

@@ -28,13 +28,25 @@ export const fill = (text: string, out: string, recall: () => string) => {
   return filled.includes("{{recall}}") ? filled.replaceAll("{{recall}}", recall()) : filled;
 };
 
-// Runs a command with bash; `started` receives the child so an interrupt can kill it.
+// Runs a command with bash; `started` receives the child so an interrupt can kill it. Like the
+// agents' shell tools it returns when bash exits, not when every process holding its output
+// does: a server started with `&` keeps the pipe open. Output already written is drained first.
 export const shell = (command: string, cwd: string, started: (child: ChildProcess) => void) =>
   new Promise<{ output: string; exitCode: number }>((resolve) => {
     const child = spawn("bash", ["-lc", command], { cwd, stdio: ["ignore", "pipe", "pipe"] });
     started(child);
     let output = "";
+    let exitCode = 1;
+    const done = () => {
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolve({ output, exitCode });
+    };
     child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
-    child.on("close", (code) => resolve({ output, exitCode: code ?? 1 }));
+    child.on("close", done);
+    child.on("exit", (code) => {
+      exitCode = code ?? 1;
+      setTimeout(done, 200);
+    });
   });

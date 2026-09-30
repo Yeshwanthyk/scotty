@@ -9,6 +9,10 @@ import { createInterface } from "node:readline";
 import type {
   NonNullableUsage,
   SDKAssistantMessage,
+  SDKControlInitializeResponse,
+  SDKControlInterruptResponse,
+  SDKControlRequest,
+  SDKControlResponse,
   SDKMessage,
   SDKPartialAssistantMessage,
   SDKResultMessage,
@@ -17,23 +21,33 @@ import type {
 import { Option, Schema } from "effect";
 import { fill, lines, shell, step } from "./script.js";
 
-const Input = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("control_request"),
-    request_id: Schema.String,
-    request: Schema.Struct({ subtype: Schema.String }),
+const ControlRequest = Schema.Struct({
+  type: Schema.Literal("control_request"),
+  request_id: Schema.String,
+  request: Schema.Struct({ subtype: Schema.String }),
+});
+const UserMessage = Schema.Struct({
+  type: Schema.Literal("user"),
+  uuid: Schema.optional(Schema.String),
+  message: Schema.Struct({
+    content: Schema.Union([
+      Schema.String,
+      Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) })),
+    ]),
   }),
-  Schema.Struct({
-    type: Schema.Literal("user"),
-    uuid: Schema.optional(Schema.String),
-    message: Schema.Struct({
-      content: Schema.Union([
-        Schema.String,
-        Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) })),
-      ]),
-    }),
-  }),
-]);
+});
+const Input = Schema.Union([ControlRequest, UserMessage]);
+// Typecheck fails unless everything the pinned SDK writes to Claude Code's stdin decodes.
+type Covers<Sent, Read> = [Sent] extends [Read] ? true : never;
+const covers: [
+  Covers<SDKControlRequest, typeof ControlRequest.Encoded>,
+  Covers<SDKUserMessage, typeof UserMessage.Encoded>,
+] = [true, true];
+void covers;
+// The requests the stand-in answers; the runner sends no others.
+type Subtype = SDKControlRequest["request"]["subtype"];
+const initialize: Subtype = "initialize";
+const interrupt: Subtype = "interrupt";
 
 type Turn = {
   readonly lines: string[];
@@ -61,7 +75,7 @@ mkdirSync(project, { recursive: true });
 let active: Turn | undefined;
 let lastOutput = "";
 
-const write = (message: SDKMessage | object) =>
+const write = (message: SDKMessage | SDKControlResponse) =>
   process.stdout.write(`${JSON.stringify(message)}\n`);
 const record = (entry: object) =>
   appendFileSync(
@@ -220,30 +234,41 @@ const prompt = (content: typeof Input.Type & { type: "user" }) =>
     ? content.message.content
     : content.message.content.map((part) => part.text ?? "").join("\n");
 
+const control = (response: SDKControlResponse["response"]) =>
+  write({ type: "control_response", response } satisfies SDKControlResponse);
+
 const handle = (message: typeof Input.Type) => {
   if (message.type === "control_request") {
-    const { subtype } = message.request;
-    // An interrupt stops the running command; the turn then ends as interrupted.
-    if (subtype === "interrupt" && active !== undefined) {
+    const { request_id, request } = message;
+    if (request.subtype === initialize)
+      return control({
+        subtype: "success",
+        request_id,
+        response: {
+          commands: [],
+          agents: [],
+          models: [],
+          output_style: "default",
+          available_output_styles: [],
+          account: {},
+        } satisfies SDKControlInitializeResponse,
+      });
+    if (request.subtype !== interrupt)
+      return control({
+        subtype: "error",
+        request_id,
+        error: `The scripted stand-in does not handle ${request.subtype}`,
+      });
+    // An interrupt stops the running command; the turn then ends as interrupted. Nothing is
+    // ever queued, as a steer joins the running turn at once.
+    if (active !== undefined) {
       active.interrupted = true;
       active.child?.kill();
     }
-    return write({
-      type: "control_response",
-      response: {
-        subtype: "success",
-        request_id: message.request_id,
-        response:
-          subtype === "initialize"
-            ? {
-                commands: [],
-                agents: [],
-                models: [],
-                output_style: "default",
-                available_output_styles: [],
-              }
-            : {},
-      },
+    return control({
+      subtype: "success",
+      request_id,
+      response: { still_queued: [] } satisfies SDKControlInterruptResponse,
     });
   }
   const text = prompt(message);

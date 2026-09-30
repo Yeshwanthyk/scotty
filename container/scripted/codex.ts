@@ -25,6 +25,11 @@ import type {
   TurnStartedNotification,
   TurnStartResponse,
   TurnSteerResponse,
+  ThreadResumeParams,
+  ThreadStartParams,
+  TurnInterruptParams,
+  TurnStartParams,
+  TurnSteerParams,
 } from "./codex-protocol.js";
 import { fill, lines, shell, step } from "./script.js";
 
@@ -49,7 +54,7 @@ const Input = Schema.Array(
 );
 const ThreadParams = Schema.Struct({
   threadId: Schema.optional(Schema.String),
-  cwd: Schema.optional(Schema.String),
+  cwd: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const TurnParams = Schema.Struct({ threadId: Schema.String, input: Input });
 const SteerParams = Schema.Struct({
@@ -58,6 +63,16 @@ const SteerParams = Schema.Struct({
   input: Input,
 });
 const InterruptParams = Schema.Struct({ threadId: Schema.String, turnId: Schema.String });
+// Typecheck fails unless every request the pinned Codex's protocol allows decodes.
+type Covers<Sent, Read> = [Sent] extends [Read] ? true : never;
+const covers: [
+  Covers<ThreadStartParams, typeof ThreadParams.Encoded>,
+  Covers<ThreadResumeParams, typeof ThreadParams.Encoded>,
+  Covers<TurnStartParams, typeof TurnParams.Encoded>,
+  Covers<TurnSteerParams, typeof SteerParams.Encoded>,
+  Covers<TurnInterruptParams, typeof InterruptParams.Encoded>,
+] = [true, true, true, true, true];
+void covers;
 
 type Turn = {
   readonly id: string;
@@ -266,7 +281,7 @@ const handle = (message: typeof Message.Type) => {
     case "thread/resume": {
       const params = decode(ThreadParams);
       if (Option.isNone(params)) return fail(id, "invalid params");
-      if (params.value.cwd !== undefined) cwd = params.value.cwd;
+      cwd = params.value.cwd ?? cwd;
       mkdirSync(sessions, { recursive: true });
       let current: string;
       if (method === "thread/resume") {
