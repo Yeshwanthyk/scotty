@@ -457,7 +457,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           ).pipe(
             // raw hands the Response back untouched, so a 101 keeps its webSocket.
             Effect.map((response) => HttpServerResponse.raw(response)),
-            Effect.orElseSucceed(() => unavailable),
+            Effect.orElseSucceed(() =>
+              HttpServerResponse.text(`Nothing is answering on port ${port} yet`, { status: 502 }),
+            ),
           );
         }),
         alarm: () =>
