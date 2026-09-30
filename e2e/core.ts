@@ -90,7 +90,9 @@ const program = Effect.gen(function* () {
   const events = () => request(`${prefix}/log`, Log);
   const first = yield* poll(
     () => request(`${prefix}/conversation`, Conversation),
-    (conversation) => (conversation.turns[0]?.assistant.length ?? 0) > 0,
+    // The reply streams in pieces ("ready", " ", "0"), so only a finished turn is checked.
+    (conversation) =>
+      conversation.turns[0] !== undefined && conversation.turns[0].state !== "streaming",
   );
   if (!/\bready 0\b/.test(first.turns[0]?.assistant.toLowerCase() ?? ""))
     return yield* failure(
@@ -108,11 +110,11 @@ const program = Effect.gen(function* () {
     items.some((event) => event.kind === "turn.ended" && event.turn === "0"),
   );
 
-  // The same deployment command used by the operator. Its output is not echoed.
+  // The owner's own deploy command, to the stage in the Scotty config. Its output is not echoed.
   const redeploy = yield* Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     return yield* spawner.exitCode(
-      ChildProcess.make("npm", ["run", "deploy", "--", "--stage", "dev"], {
+      ChildProcess.make("bun", ["cli/main.ts", "deploy"], {
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
@@ -120,12 +122,9 @@ const program = Effect.gen(function* () {
     );
   }).pipe(
     Effect.provide(BunServices.layer),
-    Effect.mapError(() =>
-      failure("deploy", "Worker redeploy failed", "npm run deploy -- --stage dev"),
-    ),
+    Effect.mapError(() => failure("deploy", "Worker redeploy failed", "scotty deploy")),
   );
-  if (redeploy !== 0)
-    return yield* failure("deploy", "Worker redeploy failed", "npm run deploy -- --stage dev");
+  if (redeploy !== 0) return yield* failure("deploy", "Worker redeploy failed", "scotty deploy");
   yield* request(prefix, View);
   const before = yield* events();
   const steerReq = crypto.randomUUID();

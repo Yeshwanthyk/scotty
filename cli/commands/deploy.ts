@@ -1,7 +1,8 @@
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { BunServices } from "@effect/platform-bun";
-import { Effect, Stream } from "effect";
+import { Effect, FileSystem, Stream } from "effect";
 import { Command } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { version } from "../../src/version.js";
@@ -161,4 +162,18 @@ export const deploy = Command.make("deploy", {}, () =>
       `${green("✓")} Deployed v${version} to ${url}\n${dim("  → scotty doctor")}`,
     );
   }),
+);
+
+// The guide a person hands their own agent; it lives in the checkout beside this CLI.
+export const skill = Command.make("skill", {}, () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const text = yield* fs.readFileString(join(root, "skills", "scotty", "SKILL.md"));
+    yield* output({ skill: text }, text.trimEnd());
+  }).pipe(
+    Effect.provide(BunServices.layer),
+    Effect.mapError(() =>
+      failure("setup", "skills/scotty/SKILL.md is missing from this checkout", "git pull", 3),
+    ),
+  ),
 );

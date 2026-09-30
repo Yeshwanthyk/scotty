@@ -1,10 +1,11 @@
+#!/usr/bin/env bun
 import { BunServices } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
 import { Command, CliError } from "effect/unstable/cli";
 import { version } from "../src/version.js";
 import { CliFailure, failure } from "./client.js";
 import { bold, dim, json, red } from "./commands/common.js";
-import { deploy } from "./commands/deploy.js";
+import { deploy, skill } from "./commands/deploy.js";
 import { init, teardown } from "./commands/init.js";
 import { doctor, login } from "./commands/setup.js";
 import { create, ls, log, open, read } from "./commands/sessions.js";
@@ -19,6 +20,7 @@ ${bold("Setup")}
   teardown                        Remove the stage from Cloudflare and its config
   doctor                          Check setup, sign-ins and the deployment
   login chatgpt|github|claude     Sign in to an account sessions use
+  skill                           Print the guide to hand your own agent
 
 ${bold("Sessions")}
   new <repo> <prompt>             Start a session (--agent claude, --key <retry key>)
@@ -91,6 +93,9 @@ Print the preview URL for a server on <port> in a running session.
 Example: scotty hatch 3f2a 8080`,
   log: `Usage: scotty log <id>
 Print a session's raw events (one JSON object per line in a terminal).`,
+  skill: `Usage: scotty skill
+Print the Scotty skill: how an agent sets up and drives Scotty with this CLI.
+Save it for your agent: scotty skill > ~/.claude/skills/scotty/SKILL.md`,
   push: `Usage: scotty push skill <folder|zip…> | scotty push instructions <file|->
 skill          Upload skills; one with the same name is replaced and keeps its on/off setting.
 instructions   Set the text every session gets; - reads stdin, an empty file clears it.
@@ -105,6 +110,7 @@ const root = Command.make("scotty").pipe(
     teardown,
     doctor,
     login,
+    skill,
     create,
     ls,
     read,

@@ -1,6 +1,6 @@
 # Setup
 
-How to get a machine (yours or an agent's) able to build, deploy and test Scotty on the `dev` stage. [plan.md](plan.md) says what to work on; [design.md](design.md) says what is being built.
+How to get a machine (yours or an agent's) able to build, deploy and test Scotty on a test stage (the config's stage; the e2e tests use it). [plan.md](plan.md) says what to work on; [design.md](design.md) says what is being built.
 
 Never print, log, commit or paste a real token anywhere in this process: ChatGPT, Cloudflare, Docker Hub, GitHub, or a Cloudflare Access JWT. When you need to check one, print its length, a SHA-256 prefix or its expiry.
 
@@ -98,7 +98,7 @@ export SCOTTY_HATCH_TEST_REPO=<owner>/<repo>       # a small Vite + React repo w
 
 Load it in every shell that tests: `. work/dev-env.sh`.
 
-## 6. Deploy `dev`
+## 6. Deploy
 
 ```sh
 npm run --silent scotty -- deploy
@@ -122,26 +122,26 @@ cloudflared access login "$SCOTTY_URL"     # browser; once per ~24h
 
 ```sh
 npm run --silent scotty -- doctor     # exit 3 with a hint if not signed in
-npm run --silent scotty -- auth login chatgpt     # prints a URL and code; open it and enter the code
-npm run --silent scotty -- doctor     # now {"access":"ok","worker":"ok","chatgpt":"ok",...}
+npm run --silent scotty -- login chatgpt     # prints a URL and code; open it and enter the code
+npm run --silent scotty -- doctor     # now every check is ok
 ```
 
-The Creds DO keeps the tokens. Sign-in lasts about 10 days; `doctor` reports `chatgptExpiresAt`. Manual `auth login chatgpt` remains the owner-trial path; refresh and sign-out are deferred until after the trial. Don't sign in again while `doctor` says `ok`.
+The Creds DO keeps the tokens. Sign-in lasts about 10 days; `doctor` shows the days left. Manual `login chatgpt` remains the owner-trial path; refresh and sign-out are deferred until after the trial. Don't sign in again while `doctor` says `ok`.
 
 ## 8b. Claude sign-in (optional; Claude sessions only)
 
 ```sh
-npm run --silent scotty -- auth login claude     # runs claude setup-token; sign in in the browser
-npm run --silent scotty -- auth login claude < token-file     # or pipe a token made elsewhere
+npm run --silent scotty -- login claude     # runs claude setup-token; sign in in the browser
+npm run --silent scotty -- login claude < token-file     # or pipe a token made elsewhere
 ```
 
-The setup token lasts a year; `doctor` reports `claudeExpiresAt` and warns in its last 14 days. Settings → Accounts also takes it pasted, for the phone.
+The setup token lasts a year; `doctor` shows the days left and warns in its last 14 days. Settings → Accounts also takes it pasted, for the phone.
 
 ## 9. Run the checks
 
 ```sh
-npm run --silent e2e -- core          # create, answer, redeploy, steer, interrupt on dev
-npm run --silent e2e -- stop-resume   # stop, resume, crash mid-turn (SCOTTY_CONTAINER_APP_ID)
+npm run --silent e2e -- core          # create, answer, scotty deploy, steer, interrupt
+npm run --silent e2e -- stop-resume   # stop, resume, crash mid-turn (SCOTTY_CONTAINER_APP_ID: scotty-<stage>-sessions in `npx wrangler containers list`)
 npm run --silent e2e -- github        # private clone, push scotty/<id> only, no token (SCOTTY_PRIVATE_TEST_REPO)
 npm run --silent e2e -- hatch         # preview routing (SCOTTY_HATCH_BASE)
 npm run --silent e2e -- hatch-env     # agent sets up the dev env and brings it back (SCOTTY_HATCH_TEST_REPO)
@@ -154,17 +154,19 @@ npm run --silent e2e -- init --stage <name>   # scotty init in a terminal: Ctrl-
 
 `e2e init` deploys a stage of its own at `scotty-<name>.<SCOTTY_HATCH_BASE>` and tears it down at the end. Its domain must have no other stage on it: a stage owns its domain's preview record and route, so `init` refuses a domain another stage uses.
 
+`scotty skill` prints [skills/scotty/SKILL.md](../skills/scotty/SKILL.md), the guide for an owner's own agent; keep it under 150 lines and in step with `scotty --help`.
+
 For agents: the `.agents/skills/verify-scotty` skill drives the CLI through feature recipes (`features/*.md`) and saves evidence to `work/verify/`.
 
-Useful CLI commands (`npm run --silent scotty -- <command>`): `doctor`, `auth login chatgpt|github|claude`, `auth status`, `new [--agent codex|claude]`, `ls`, `show <id>`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `stop <id>`, `resume <id>`, `hatch <id> <port>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Output and errors are JSON on stdout; errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
+Useful CLI commands (`scotty --help` lists them all): `doctor`, `login chatgpt|github|claude`, `new <repo> <prompt> [--agent codex|claude]`, `ls`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `stop <id>`, `resume <id>`, `hatch <id> <port>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Piped output and errors are JSON on stdout (`--json` forces it); errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
 
 ## Troubleshooting
 
 | Symptom                                         | Fix                                                                                |
 | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `access_login` error, exit 3                    | `cloudflared access login "$SCOTTY_URL"`                                           |
-| `doctor` says ChatGPT not signed in or expiring | `npm run --silent scotty -- auth login chatgpt`                                    |
-| `doctor` says Claude missing or expiring        | `npm run --silent scotty -- auth login claude`                                     |
+| `doctor` says ChatGPT not signed in or expiring | `npm run --silent scotty -- login chatgpt`                                         |
+| `doctor` says Claude missing or expiring        | `npm run --silent scotty -- login claude`                                          |
 | Deploy fails before Alchemy runs                | Check `container/image.digest` is a `@sha256:` ref and the Docker Hub image exists |
 | Deploy fails with a Cloudflare auth error       | `npx alchemy profile edit --add Cloudflare` again                                  |
 | `vendor/` is empty                              | `git submodule update --init vendor/effect vendor/alchemy`                         |

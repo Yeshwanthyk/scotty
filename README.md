@@ -18,17 +18,30 @@ Then:
 ```sh
 git clone https://github.com/Yeshwanthyk/scotty.git && cd scotty
 git switch rebuild/core
-npm install
-bun cli/main.ts init
+npm install && npm link
+scotty init
 ```
 
-`init` signs you in to GitHub and Cloudflare if needed, asks a few questions (stage name, your email, which Cloudflare account and domain, the address, which agents), deploys, and signs you in to the agents you pick. It ends with `doctor`, which says what works and how to fix what doesn't. Run commands from this folder: it keeps the deploy state that `deploy` and `teardown` need. One stage per domain: a stage owns its domain's preview address, so `init` refuses a domain another stage uses.
+`npm link` puts `scotty` on your PATH. `init` signs you in to GitHub and Cloudflare if needed, asks a few questions (stage name, your email, which Cloudflare account and domain, the address, which agents), deploys, and signs you in to the agents you pick. It ends with `doctor`, which says what works and how to fix what doesn't. Keep the checkout: it holds the deploy state that `deploy` and `teardown` need. One stage per domain: a stage owns its domain's preview address, so `init` refuses a domain another stage uses.
 
 ```sh
-bun cli/main.ts doctor      # is everything working?
-bun cli/main.ts deploy      # update after git pull
-bun cli/main.ts teardown    # remove everything from Cloudflare
-bun cli/main.ts --help      # every command
+scotty doctor      # is everything working?
+scotty deploy      # update after git pull
+scotty teardown    # remove everything from Cloudflare
+scotty --help      # every command
 ```
+
+## Let your agent do it
+
+Paste this into Claude Code, Codex or another coding agent on your machine:
+
+```text
+Set up Scotty for me and start a session with it. Clone https://github.com/Yeshwanthyk/scotty.git,
+switch to the rebuild/core branch, run `npm install && npm link`, then run `scotty skill` and
+follow that guide. Ask me before anything that needs my browser or my accounts. Finish when
+`scotty doctor` is green and a session on a repository I name has answered.
+```
+
+`scotty skill` prints [skills/scotty/SKILL.md](skills/scotty/SKILL.md), which tells an agent how to set up and drive Scotty. Save it where your agent finds skills to keep it around, for example `scotty skill > ~/.claude/skills/scotty/SKILL.md`.
 
 Open the address from `init` on your phone to start sessions. [docs/setup.md](docs/setup.md) covers building your own image and running the checks.

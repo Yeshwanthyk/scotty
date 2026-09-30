@@ -10,7 +10,7 @@ The phone UI runs the core loop and agrees with the API.
 - **U3** A steer is shown as `pending` or `delivered`, then answered in a new turn.
 - **U4** Interrupt during a running turn ends it as `aborted`.
 - **U5** After reload, the session page and the session list show the same title, repository,
-  branch and state as `scotty show <id>`.
+  branch and state as `scotty read <id>`.
 - **U6** A turn whose agent ran `scotty-attach` shows each image (tapping opens it full size) and
   each video (plays inline) under its reply.
 
@@ -33,7 +33,7 @@ The phone UI runs the core loop and agrees with the API.
    (U3).
 4. Steer with "Count slowly from 1 to 500, one number per line.", press Interrupt while the turn
    is streaming, and screenshot the turn once it shows `aborted` (U4).
-5. Reload the session page, then open `/sessions`. Save `scotty show <id>` into `05-show.json`
+5. Reload the session page, then open `/sessions`. Save `scotty read <id>` into `05-show.json`
    and compare it with both screenshots (U5). Save `scotty log <id>` into `06-log.json`.
 6. In a session on `$SCOTTY_HATCH_TEST_REPO`, ask for a screenshot and a short video of the app.
    Screenshot the turn with both, tap the image, and play the video (U6).
