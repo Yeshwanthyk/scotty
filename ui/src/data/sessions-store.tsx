@@ -6,14 +6,24 @@ type Store = {
   list: ReadonlyArray<Session> | undefined;
   error: string;
   refresh: () => void;
+  // Set from Cmd-K: the sidebar then lists only this repository.
+  repo: string;
+  setRepo: (repo: string) => void;
 };
 
-const Context = createContext<Store>({ list: undefined, error: "", refresh: () => undefined });
+const Context = createContext<Store>({
+  list: undefined,
+  error: "",
+  refresh: () => undefined,
+  repo: "",
+  setRepo: () => undefined,
+});
 
 // One poll of the session list feeds the sidebar, the phone home and Cmd-K.
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const [list, setList] = useState<ReadonlyArray<Session>>();
   const [error, setError] = useState("");
+  const [repo, setRepo] = useState("");
   const refresh = useRef<() => void>(() => undefined);
   useEffect(() => {
     const polling = startVisibilityPolling(document, async (signal) => {
@@ -32,7 +42,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     return () => polling.stop();
   }, []);
   return (
-    <Context.Provider value={{ list, error, refresh: () => refresh.current() }}>
+    <Context.Provider value={{ list, error, refresh: () => refresh.current(), repo, setRepo }}>
       {children}
     </Context.Provider>
   );

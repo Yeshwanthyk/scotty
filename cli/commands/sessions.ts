@@ -70,8 +70,11 @@ export const create = Command.make(
 
 export const ls = Command.make(
   "ls",
-  { what: Argument.Literals("what", ["skills"]).pipe(Argument.optional) },
-  ({ what }) =>
+  {
+    what: Argument.Literals("what", ["skills"]).pipe(Argument.optional),
+    search: Flag.String("search").pipe(Flag.optional),
+  },
+  ({ what, search }) =>
     Effect.gen(function* () {
       const api = yield* withClient;
       if (Option.isSome(what)) {
@@ -98,14 +101,17 @@ export const ls = Command.make(
           ].join("\n"),
         );
       }
-      const { sessions } = yield* api("/api/sessions", List);
+      const query = Option.isSome(search) ? `?q=${encodeURIComponent(search.value)}` : "";
+      const { sessions } = yield* api(`/api/sessions${query}`, List);
       const sorted = [...sessions].sort((a, b) =>
         b.display.activeAt.localeCompare(a.display.activeAt),
       );
       yield* output(
         { sessions: sorted },
         sorted.length === 0
-          ? `No sessions yet. Start one: scotty new owner/repo "What to do"`
+          ? Option.isSome(search)
+            ? `No sessions match "${search.value}".`
+            : `No sessions yet. Start one: scotty new owner/repo "What to do"`
           : table([
               ["ID", "STATE", "AGENT", "ACTIVE", "REPOSITORY", "TITLE"],
               ...sorted.map((session) => [

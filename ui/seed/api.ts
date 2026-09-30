@@ -393,10 +393,18 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const list = [...sessions.values()].sort(
       (a, b) => (b.state.created?.at ?? 0) - (a.state.created?.at ?? 0),
     );
+    const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
+    const matches = list
+      .map((session) => view(session).session)
+      .filter(({ display }) =>
+        [display.title, display.repository, display.branch, display.prompt].some((field) =>
+          field.toLowerCase().includes(q),
+        ),
+      );
     return json(res, {
       version: 1,
-      sessions: list.map((session) => ({
-        ...view(session).session,
+      sessions: matches.map((session) => ({
+        ...session,
         projection: { projectedAt: new Date().toISOString() },
       })),
     });

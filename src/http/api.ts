@@ -6,6 +6,7 @@ import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { fixtureRepo } from "../../protocol/supervisor.js";
 import { AgentKind } from "../session/events.js";
+import { sessionMatches } from "../session/view.js";
 import { defaultBranch } from "./repository.js";
 import { version } from "../version.js";
 import {
@@ -234,7 +235,12 @@ export function apiHandler(
         (entry) => Effect.exit(sessions.getByName(entry.id).view()),
         { concurrency: 16 },
       );
-      const views = opened.flatMap((exit) => (Exit.isSuccess(exit) ? [exit.value] : []));
+      const query = url.searchParams.get("q") ?? "";
+      const views = opened.flatMap((exit) =>
+        Exit.isSuccess(exit) && sessionMatches(exit.value.session.display, query)
+          ? [exit.value]
+          : [],
+      );
       return yield* HttpServerResponse.json({
         version: 1,
         sessions: views.map((view) => ({

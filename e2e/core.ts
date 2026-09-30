@@ -11,6 +11,7 @@ import {
   Conversation,
   Created,
   failure,
+  List,
   Polled,
   Reply,
   Started,
@@ -109,6 +110,20 @@ const program = Effect.gen(function* () {
       "core",
       "Initial answer missing, or SCOTTY_ or Claude token env visible to commands",
       "scotty doctor",
+    );
+  // Search finds the session by its title and its first prompt, and not by a word it lacks.
+  const titleHits = yield* request(`/api/sessions?q=${encodeURIComponent("E2E CORE")}`, List);
+  const repoHits = yield* request(`/api/sessions?q=${encodeURIComponent(fixtureRepo)}`, List);
+  const noHits = yield* request(`/api/sessions?q=${encodeURIComponent(`nothing-${unique}`)}`, List);
+  if (
+    !titleHits.sessions.some((item) => item.identity.id === session.id) ||
+    !repoHits.sessions.some((item) => item.identity.id === session.id) ||
+    noHits.sessions.length !== 0
+  )
+    return yield* failure(
+      "core",
+      "Session search missed the session or matched nothing",
+      "scotty ls --search",
     );
   const log = yield* events();
   const start = log.find((event) => event.kind === "container.start");
