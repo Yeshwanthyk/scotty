@@ -1,7 +1,5 @@
-import type * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Schema } from "effect";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import type { Port } from "../places/place.js";
 import { FromSupervisor, type ToSupervisorMessage } from "../../protocol/supervisor.js";
 
 const Incoming = Schema.fromJsonString(FromSupervisor);
@@ -27,7 +25,7 @@ export class SupervisorLink {
   }
 
   /** `stillWanted` is checked once the socket opens; a stale dial closes it and changes nothing. */
-  dial(port: Cloudflare.Fetcher, gen: number, after: number, stillWanted: () => boolean) {
+  dial(port: Port, gen: number, after: number, stillWanted: () => boolean) {
     const enqueue = (operation: () => Promise<void>) => this.enqueue(operation);
     const consume = this.consume;
     // The replaced socket is no longer current, so its close is not reported.
@@ -38,22 +36,15 @@ export class SupervisorLink {
     };
     const isCurrent = (socket: WebSocket) => this.socket === socket;
     return Effect.gen(function* () {
-      const response = yield* port
-        .fetch(
-          HttpServerRequest.fromWeb(
-            new Request(`http://container/?gen=${gen}&after=${after}`, {
-              headers: { Upgrade: "websocket" },
-            }),
-          ),
-        )
-        .pipe(
-          // The fetcher surfaces a refused connection as a defect; a container still booting
-          // refuses, and the caller retries a DialError.
-          Effect.catchDefect(() =>
-            Effect.fail(new DialError({ message: "Supervisor not reachable" })),
-          ),
-        );
-      const web = HttpServerResponse.toWeb(response);
+      // A refused connection rejects; a container still booting refuses, and the caller
+      // retries a DialError.
+      const web = yield* Effect.tryPromise({
+        try: () =>
+          port.fetch(`http://container/?gen=${gen}&after=${after}`, {
+            headers: { Upgrade: "websocket" },
+          }),
+        catch: () => new DialError({ message: "Supervisor not reachable" }),
+      });
       const candidate: unknown = Reflect.get(web, "webSocket");
       if (
         !(candidate instanceof WebSocket) ||

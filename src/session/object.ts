@@ -87,7 +87,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       let link: SupervisorLink;
       // Work queued for an older generation, or for a session that has ended, does nothing.
       const current = (gen: number) => log.state.gen === gen && live(log.state);
-      const port = () => Cloudflare.fromCloudflareFetcher(where().port(7000));
+      const port = () => where().port(7000);
       // Container work runs after the caller returns, one operation at a time, so a resume
       // waits for the stop's destroy. Its outcome arrives as a later event.
       const lifecycle = yield* Semaphore.make(1);
@@ -102,8 +102,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           switch (action.kind) {
             case "container.start": {
               if (!current(action.gen)) return;
-              if (action.fresh && where().running()) yield* where().destroy();
-              if (!where().running())
+              if (action.fresh && (yield* where().running())) yield* where().destroy();
+              if (!(yield* where().running()))
                 yield* where().start({ session: id(), repo: log.state.created?.repo ?? "" });
               // A new container takes a moment to listen, longer on a new host; retry until the
               // fold's container deadline before reporting dial.failed.
@@ -254,7 +254,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
             }
             case "destroy":
-              if (where().running()) yield* where().destroy();
+              if (yield* where().running()) yield* where().destroy();
               return;
           }
         }).pipe(
@@ -275,7 +275,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (action.kind === "start") console.error(`start failed: ${Cause.pretty(cause)}`);
               if (action.kind === "container.start" || action.kind === "dial") {
                 // A dial that fails because the container is gone is a stop, not a retry.
-                const kind = where().running() ? "dial.failed" : "container.stopped";
+                const kind = (yield* where().running()) ? "dial.failed" : "container.stopped";
                 yield* dispatch(yield* append({ kind, gen: action.gen }, "session"));
               } else if (action.kind === "start") {
                 yield* append(
@@ -429,7 +429,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           const headers = new Headers(request.headers);
           headers.delete("host");
           const target = `http://localhost:${port}${url.pathname}${url.search}`;
-          const init = { method: request.method, headers, body: request.body, redirect: "manual" };
+          const init = {
+            method: request.method,
+            headers,
+            body: request.body,
+            redirect: "manual" as const,
+          };
           return yield* Effect.tryPromise(() => where().port(port).fetch(target, init)).pipe(
             // raw hands the Response back untouched, so a 101 keeps its webSocket.
             Effect.map((response) => HttpServerResponse.raw(response)),

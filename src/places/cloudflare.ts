@@ -28,7 +28,7 @@ export const cloudflarePlace = (container: cf.Container, exports: object): Place
         catch: () => new ContainerStartFailed(),
       });
     }),
-  running: () => container.running,
+  running: () => Effect.sync(() => container.running),
   port: (port) => container.getTcpPort(port),
   destroy: () => Effect.promise(() => container.destroy()),
 });

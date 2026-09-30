@@ -9,6 +9,11 @@ export class ContainerStartFailed extends Schema.TaggedError<ContainerStartFaile
   {},
 ) {}
 
+/** Plain HTTP and WebSocket to one port; all any place can honestly offer. */
+export interface Port {
+  readonly fetch: (input: string, init?: cf.RequestInit) => Promise<cf.Response>;
+}
+
 /**
  * Where one session's container runs. The Session DO does everything it does to that container
  * through this, so a place is one module.
@@ -19,8 +24,8 @@ export interface Place {
     session: string;
     repo: string;
   }) => Effect.Effect<void, ContainerStartFailed>;
-  readonly running: () => boolean;
+  readonly running: () => Effect.Effect<boolean>;
   /** HTTP and WebSocket to a port inside the container: supervisor, saves, terminal, hatch. */
-  readonly port: (port: number) => cf.Fetcher;
+  readonly port: (port: number) => Port;
   readonly destroy: () => Effect.Effect<void>;
 }
