@@ -702,6 +702,19 @@ export const teardown = Command.make(
           : undefined,
         `Removed stage ${config.stage}`,
       );
+      // The config stays until Cloudflare shows nothing of the stage, so a rerun can finish it.
+      const { leftovers } = yield* cloudflare;
+      const left = yield* leftovers(config.accountId, config.stage).pipe(
+        Effect.mapError(() =>
+          failure("teardown", "Could not check what is left in Cloudflare", "scotty teardown"),
+        ),
+      );
+      if (left.length > 0)
+        return yield* failure(
+          "teardown",
+          `Still in Cloudflare: ${left.join(", ")}`,
+          "scotty teardown finishes removing it",
+        );
       yield* removeConfig;
       if (Option.isNone(stage)) return ui.outro(dim("scotty init sets it up again"));
       yield* output(
