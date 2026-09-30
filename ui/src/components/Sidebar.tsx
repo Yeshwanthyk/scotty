@@ -142,14 +142,6 @@ export function Sidebar({
           <img src={scottyMark} alt="" />
           Scotty
         </Link>
-        <button
-          type="button"
-          className="icon-button pressable mobile-only"
-          aria-label="Search"
-          onClick={onSearch}
-        >
-          <Icon name="search" />
-        </button>
         <Link to="/settings" className="icon-button pressable mobile-only" aria-label="Settings">
           <Icon name="settings" />
         </Link>
@@ -162,61 +154,71 @@ export function Sidebar({
           <Icon name="sidebar" />
         </button>
       </div>
-      <nav className="sidebar-actions desktop-only">
+      <nav className="sidebar-tools" aria-label="Session controls">
+        <button type="button" className="sidebar-search pressable" onClick={onSearch}>
+          <Icon name="search" size={15} />
+          <span>Search</span>
+          <kbd>⌘K</kbd>
+        </button>
+        <div
+          className="sidebar-filter"
+          data-filtered={filter !== "all" || repo !== ""}
+          title="Filter sessions"
+        >
+          <Menu
+            label="Filter sessions"
+            items={filters.map((item) => ({
+              label: item.label,
+              icon: "check",
+              checked: filter === item.id,
+              onSelect: () => setFilter(item.id),
+            }))}
+          >
+            <Icon name="filter" size={15} />
+          </Menu>
+        </div>
         <Link
           to="/sessions/create"
-          className="nav-item pressable"
+          className="icon-button pressable"
+          aria-label="New session"
+          title="New session"
           activeProps={{ "aria-current": "page" }}
         >
           <Icon name="plus" />
-          New session
         </Link>
-        <button type="button" className="nav-item pressable" onClick={onSearch}>
-          <Icon name="search" />
-          Search
-          <kbd>⌘K</kbd>
-        </button>
       </nav>
-      <div className="session-heading group-label" data-filtered={filter !== "all" || repo !== ""}>
-        <span>Sessions</span>
-        {filter !== "all" ? (
-          <span className="session-heading-filter">
-            <span>· {filters.find((item) => item.id === filter)?.label}</span>
-            <button
-              type="button"
-              className="session-filter-clear pressable"
-              aria-label="Clear session filter"
-              onClick={() => setFilter("all")}
-            >
-              <Icon name="x" size={12} />
-            </button>
-          </span>
-        ) : null}
-        {repo !== "" ? (
-          <span className="session-heading-filter session-heading-repo">
-            <span title={repo}>· {repo}</span>
-            <button
-              type="button"
-              className="session-filter-clear pressable"
-              aria-label={`Clear repository ${repo}`}
-              onClick={() => setRepo("")}
-            >
-              <Icon name="x" size={12} />
-            </button>
-          </span>
-        ) : null}
-        <Menu
-          label="Filter sessions"
-          items={filters.map((item) => ({
-            label: item.label,
-            icon: "check",
-            checked: filter === item.id,
-            onSelect: () => setFilter(item.id),
-          }))}
-        >
-          <Icon name="filter" size={14} />
-        </Menu>
-      </div>
+      {filter !== "all" || repo !== "" ? (
+        <div className="session-filters">
+          {filter !== "all" ? (
+            <span className="session-filter">
+              <span>{filters.find((item) => item.id === filter)?.label}</span>
+              <button
+                type="button"
+                className="session-filter-clear pressable"
+                aria-label="Clear session filter"
+                title="Clear session filter"
+                onClick={() => setFilter("all")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          ) : null}
+          {repo !== "" ? (
+            <span className="session-filter session-filter-repo">
+              <span title={repo}>{repo}</span>
+              <button
+                type="button"
+                className="session-filter-clear pressable"
+                aria-label={`Clear repository ${repo}`}
+                title={`Clear repository ${repo}`}
+                onClick={() => setRepo("")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className="session-groups" data-scroll>
         {list === undefined && error === "" ? <Placeholder /> : null}
         {error && list === undefined ? (
@@ -275,14 +277,6 @@ export function Sidebar({
           Settings
         </Link>
       </nav>
-      <div className="sidebar-bottom mobile-only-block">
-        <Link to="/sessions/create" className="phone-compose pressable">
-          <span>Build, fix or explain…</span>
-          <span className="send-button" aria-hidden>
-            <Icon name="arrowUp" size={14} />
-          </span>
-        </Link>
-      </div>
     </aside>
   );
 }

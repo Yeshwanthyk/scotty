@@ -461,10 +461,53 @@ kbd {
   box-shadow: 0 0 0 1px var(--line-strong);
 }
 
-.sidebar-actions {
-  display: grid;
-  gap: 1px;
-  padding: 2px 8px 6px;
+.sidebar-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 2px 8px 0;
+}
+
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+  color: var(--muted);
+  text-align: left;
+}
+
+.sidebar-search kbd {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+}
+
+.sidebar-tools .icon-button {
+  width: 30px;
+  height: 30px;
+  flex: none;
+}
+
+.sidebar-tools .icon-button[aria-current="page"] {
+  background: var(--selected);
+  color: var(--ink);
+}
+
+.sidebar-filter {
+  flex: none;
+}
+
+.sidebar-filter[data-filtered="true"] .icon-button {
+  color: var(--ink);
 }
 
 .nav-item {
@@ -484,20 +527,6 @@ kbd {
   color: var(--quiet);
   width: 15px;
   height: 15px;
-}
-
-.nav-item kbd {
-  margin-left: auto;
-  border: 0;
-  background: none;
-  padding: 0;
-  opacity: 0;
-  transition: opacity 120ms;
-}
-
-.nav-item:hover kbd,
-.nav-item:focus-visible kbd {
-  opacity: 1;
 }
 
 .nav-item[aria-current="page"] {
@@ -580,28 +609,33 @@ kbd {
   overflow-wrap: anywhere;
 }
 
-.session-heading {
+.session-filters {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 16px 0;
-  white-space: nowrap;
   flex: none;
+  padding: 4px 8px 0;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
-.session-heading-filter {
+.session-filter {
   display: flex;
   align-items: center;
   gap: 2px;
   flex: none;
+  padding-left: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
 }
 
-.session-heading-repo {
+.session-filter-repo {
   min-width: 0;
   flex: 0 1 auto;
 }
 
-.session-heading-repo > span {
+.session-filter-repo > span {
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -610,22 +644,9 @@ kbd {
   display: inline-grid;
   place-items: center;
   flex: none;
-  width: 16px;
+  width: 20px;
   height: 20px;
   border-radius: var(--radius-sm);
-}
-
-.session-heading .menu {
-  margin-left: auto;
-  flex: none;
-}
-
-.session-heading .icon-button {
-  color: var(--quiet);
-}
-
-.session-heading[data-filtered="true"] .icon-button {
-  color: var(--ink);
 }
 
 .session-row[data-status="stopped"] .title,
@@ -669,11 +690,6 @@ kbd {
   color: var(--done);
 }
 
-.sidebar-bottom {
-  padding: 8px;
-  border-top: 1px solid var(--line);
-}
-
 .sidebar-empty {
   padding: 24px 12px;
   color: var(--quiet);
@@ -689,8 +705,12 @@ kbd {
 
   .nav-item:hover,
   .session-filter-clear:hover,
-  .session-heading .icon-button:hover {
+  .sidebar-search:hover {
     color: var(--ink);
+  }
+
+  .sidebar-search:hover {
+    background: var(--selected);
   }
 }
 
@@ -758,28 +778,6 @@ kbd {
 
 .header.bare {
   border-bottom-color: transparent;
-}
-
-.phone-compose {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 48px;
-  padding: 0 8px 0 16px;
-  border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
-  color: var(--quiet);
-  font-size: 15px;
-  box-shadow: var(--shadow);
-}
-
-.phone-compose span:first-child {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* ---------- Session workspace ---------- */
@@ -2363,12 +2361,6 @@ button.diff-line {
     display: block;
   }
 
-  .sidebar-bottom {
-    border-top: 0;
-    padding: 8px 12px;
-    padding-bottom: max(12px, env(safe-area-inset-bottom));
-  }
-
   .sidebar-top {
     padding: 14px 12px 8px 18px;
     padding-top: max(14px, env(safe-area-inset-top));
@@ -2376,6 +2368,10 @@ button.diff-line {
 
   .brand {
     font-size: 17px;
+  }
+
+  .session-groups {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
   }
 
   .session-row {
@@ -2394,11 +2390,6 @@ button.diff-line {
     font-size: 12.5px;
     padding-left: 10px;
     padding-right: 10px;
-  }
-
-  .session-heading {
-    padding-left: 18px;
-    padding-right: 18px;
   }
 
   .header {
