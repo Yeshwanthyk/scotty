@@ -1,6 +1,9 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Schema } from "effect";
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import type { SessionView } from "../session/view.js";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
 
 const CredentialRow = Schema.Struct({
@@ -70,7 +73,33 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         return row === undefined ? null : yield* Schema.decodeUnknownEffect(ClaudeRow)(row);
       });
 
+      // Every live socket here watches the session list.
+      const broadcast = (frame: object) =>
+        Effect.gen(function* () {
+          const text = JSON.stringify(frame);
+          for (const socket of yield* state.getWebSockets())
+            yield* socket.send(text).pipe(Effect.ignoreCause);
+        });
+
       return {
+        // `/api/sessions/live`: the client reads the list once, then applies these frames.
+        fetch: Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.headers["upgrade"]?.toLowerCase() !== "websocket")
+            return HttpServerResponse.text("Expected a WebSocket", { status: 426 });
+          const [response] = yield* Cloudflare.upgrade();
+          return response;
+        }),
+        webSocketMessage: (socket: Cloudflare.WebSocket) =>
+          socket.close(1008, "Live sockets take no messages").pipe(Effect.ignoreCause),
+        webSocketClose: (socket: Cloudflare.WebSocket) =>
+          socket.close(1000, "").pipe(Effect.ignoreCause),
+        // A Session DO calls this when its list-visible view changes; a deleted session is quiet.
+        sessionChanged: (session: SessionView) =>
+          Effect.gen(function* () {
+            const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session.identity.id}`;
+            if (rows.length > 0) yield* broadcast({ kind: "session", session });
+          }),
         reserve: (req: string, id: string) =>
           Effect.gen(function* () {
             const key = yield* Schema.decodeUnknownEffect(
@@ -94,7 +123,10 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session}`;
             return rows.length > 0;
           }),
-        forget: (id: string) => sql`DELETE FROM session_index WHERE id = ${id}`.pipe(Effect.asVoid),
+        forget: (id: string) =>
+          sql`DELETE FROM session_index WHERE id = ${id}`.pipe(
+            Effect.andThen(broadcast({ kind: "removed", id })),
+          ),
         sessions: () =>
           Effect.gen(function* () {
             const rows = yield* sql`SELECT id FROM session_index`;

@@ -206,10 +206,19 @@ The conversation snapshot includes top-level `currentTurn`, the authoritative tu
 | `POST /api/sessions/:id/{stop,resume}`                                       | Session DO stop, and `resume.requested`              |
 | `GET /api/sessions/:id/hatch/:port`; `<port>-<id>.<hatch base>`              | Hatch preview URL and routing                        |
 | `GET /api/sessions/:id/terminal` (WebSocket)                                 | A shell in the session's container                   |
+| `GET /api/sessions/live`, `GET /api/sessions/:id/live` (WebSocket)           | Pushed list and session updates (below)              |
 | `GET/POST /api/credentials/claude`                                           | Creds DO Claude token status                         |
 | `GET /api/settings`, `PUT /api/settings/instructions`                        | Creds DO instructions and skill list                 |
 | `PUT /api/skills`, `PATCH/DELETE /api/skills/:name`                          | R2 `skills/<name>` and the Creds DO skill list       |
 | `GET /api/version`                                                           | The deployed Worker's version                        |
+
+### Live updates
+
+The UI doesn't poll; the server pushes. Both sockets are hibernatable WebSockets accepted by a Durable Object, and a client sends nothing on them (a message closes the socket).
+
+- **Session:** `/api/sessions/:id/live` is accepted by the Session DO. On connect, and after appends, it sends `{kind:"snapshot", seq, session, conversation}`: `session` and `conversation` are what `GET /api/sessions/:id` (its `session`) and `/conversation` return, and `seq` is the last event's, so a client drops an older frame. The conversation replays the log, so pushes are coalesced: after an append, one push 250 ms later carries everything appended meanwhile. Watching isn't using: the live route doesn't touch the idle window, so an open page doesn't keep a session awake.
+- **List:** `/api/sessions/live` is accepted by the owner's Creds DO, which holds the session index. When a push finds the session's view changed from the last one it sent (kept in memory), the Session DO calls the Creds DO, which sends `{kind:"session", session}`; deleting a session sends `{kind:"removed", id}`. The client reads `GET /api/sessions` on each connect, then applies frames.
+- A push is not state: a lost one is repaired by the next, or by the snapshot a reconnect gets. The UI reconnects with backoff (1 s doubling to 30 s), at once when the tab shows again or the network returns, and says "Reconnecting…" after 3 s without a socket.
 
 ### Later
 

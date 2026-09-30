@@ -83,6 +83,8 @@ export function sessionView(id: string, state: State) {
   };
 }
 
+export type SessionView = ReturnType<typeof sessionView>;
+
 export function acceptedAgentEvents(events: readonly SessionEvent[]): SessionEvent[] {
   let replay: State = initial;
   const accepted: SessionEvent[] = [];

@@ -69,6 +69,9 @@ export const SessionArtifacts = Cloudflare.R2.Bucket(
 // workerd rejects monitor() with the exit code when a container exits non-zero.
 const ExitStatus = Schema.Struct({ exitCode: Schema.Int });
 
+// Live snapshots replay the log, so a burst of events shares one.
+const pushEvery = Duration.millis(250);
+
 class ContainerStartFailed extends Schema.TaggedError<ContainerStartFailed>()(
   "ContainerStartFailed",
   {},
@@ -97,7 +100,37 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       const id = () => log.state.created?.branch.slice("scotty/".length) ?? "";
       const context = yield* Effect.context<RuntimeContext | Cloudflare.DurableObjectState>();
 
-      const append = log.append;
+      // Live sockets get a fresh snapshot after appends, at most one per `pushEvery`; the owner's
+      // Creds DO hears when the list-visible view changes. Neither is state: a lost push is
+      // repaired by the next one, or by the snapshot a reconnect gets.
+      let pushQueued = false;
+      let listed = "";
+      const snapshot = () =>
+        JSON.stringify({
+          kind: "snapshot",
+          seq: log.state.lastSeq,
+          session: sessionView(id(), log.state),
+          conversation: conversationView(log.state, log.history),
+        });
+      const push = Effect.gen(function* () {
+        pushQueued = false;
+        const sockets = yield* storage.getWebSockets();
+        const frame = sockets.length > 0 ? snapshot() : "";
+        for (const socket of sockets) yield* socket.send(frame).pipe(Effect.ignoreCause);
+        if (log.state.created === undefined) return;
+        const view = sessionView(id(), log.state);
+        const serialized = JSON.stringify(view);
+        if (serialized === listed) return;
+        listed = serialized;
+        yield* credentials.getByName("owner").sessionChanged(view);
+      }).pipe(Effect.ignoreCause);
+      const changed = Effect.gen(function* () {
+        if (pushQueued) return;
+        pushQueued = true;
+        yield* storage.waitUntil(Effect.sleep(pushEvery).pipe(Effect.andThen(push)));
+      });
+      const append = (draft: Draft, src: string) =>
+        log.append(draft, src).pipe(Effect.tap(() => changed));
       const saveKey = () => `saves/${id()}.tar`;
       const supervisor = (path: string, init?: { method: "PUT"; body: ArrayBuffer }) =>
         Effect.tryPromise(() =>
@@ -536,6 +569,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             yield* bucket.delete([saveKey(), ...files.objects.map((file) => file.key)]);
             yield* storage.storage.deleteAlarm();
             yield* storage.storage.deleteAll();
+            for (const socket of yield* storage.getWebSockets())
+              yield* socket.close(1000, "Session deleted").pipe(Effect.ignoreCause);
             return true;
           }),
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
@@ -545,14 +580,22 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         // terminal socket at `/api/sessions/<id>/terminal`. It never starts a container and
         // appends nothing.
         fetch: Effect.gen(function* () {
-          const unavailable = HttpServerResponse.text("Session not running", { status: 502 });
-          if (log.state.phase !== "running") return unavailable;
-          used = Date.now();
           const request = yield* HttpServerRequest.toWeb(
             yield* HttpServerRequest.HttpServerRequest,
           ).pipe(Effect.orDie);
           const url = new URL(request.url);
           const label = /^(\d{1,5})-/.exec(url.hostname);
+          // Watching isn't using: a live socket leaves the idle window alone.
+          if (label === null && url.pathname.endsWith("/live")) {
+            if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
+              return HttpServerResponse.text("Expected a WebSocket", { status: 426 });
+            const [response, socket] = yield* Cloudflare.upgrade();
+            yield* socket.send(snapshot());
+            return response;
+          }
+          const unavailable = HttpServerResponse.text("Session not running", { status: 502 });
+          if (log.state.phase !== "running") return unavailable;
+          used = Date.now();
           if (label?.[1] === undefined) {
             const size = `cols=${url.searchParams.get("cols")}&rows=${url.searchParams.get("rows")}`;
             const target = `http://container/terminal?gen=${log.state.gen}&${size}`;
@@ -579,6 +622,11 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             ),
           );
         }),
+        // Live sockets only listen.
+        webSocketMessage: (socket: Cloudflare.WebSocket) =>
+          socket.close(1008, "Live sockets take no messages").pipe(Effect.ignoreCause),
+        webSocketClose: (socket: Cloudflare.WebSocket) =>
+          socket.close(1000, "").pipe(Effect.ignoreCause),
         alarm: () =>
           Effect.gen(function* () {
             const due = deadline(log.state);

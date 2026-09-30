@@ -9,11 +9,10 @@ import { SidebarButton } from "../components/Layout";
 import { SidePanel, type PanelTab } from "../components/SidePanel";
 import { Thread, type ThreadMode } from "../components/Thread";
 import {
-  conversation,
+  decodeSessionFrame,
   lifecycle,
   message,
   remove,
-  session,
   write,
   type Conversation,
   type Session,
@@ -21,7 +20,7 @@ import {
 import { sessionChanges } from "../data/diff";
 import { useSessions } from "../data/sessions-store";
 import { dormant, markSeen, statusOf } from "../data/status";
-import { startVisibilityPolling } from "../data/visibility-polling";
+import { openLive } from "../data/live";
 
 export const Route = createFileRoute("/s/$sessionId")({ component: SessionPage });
 
@@ -62,25 +61,33 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const refresh = useRef<() => void>(() => undefined);
   const attempt = useRef<{ input: string; req: string }>(undefined);
   useEffect(() => {
-    const polling = startVisibilityPolling(document, async (signal) => {
-      try {
-        const [nextDetail, nextSnapshot] = await Promise.all([
-          session(sessionId, signal),
-          conversation(sessionId, signal),
-        ]);
-        if (!signal.aborted) {
-          setDetail(nextDetail);
-          setSnapshot(nextSnapshot);
+    // The session pushes its whole view after changes; an older frame never replaces a newer one.
+    const reconnecting = "Reconnecting…";
+    let seq = -1;
+    const live = openLive(
+      `/api/sessions/${encodeURIComponent(sessionId)}/live`,
+      decodeSessionFrame,
+      {
+        frame: (frame) => {
+          if (frame.seq < seq) return;
+          seq = frame.seq;
+          setDetail(frame.session);
+          setSnapshot(frame.conversation);
           setError("");
-          markSeen(nextDetail);
-        }
-      } catch (failure) {
-        if (!signal.aborted) setError(message(failure, "Could not load session"));
-      }
-      return 2000;
-    });
-    refresh.current = polling.refresh;
-    return () => polling.stop();
+          markSeen(frame.session);
+        },
+        connection: (state) =>
+          setError((current) =>
+            state === "reconnecting"
+              ? current || reconnecting
+              : current === reconnecting
+                ? ""
+                : current,
+          ),
+      },
+    );
+    refresh.current = live.reconnect;
+    return () => live.stop();
   }, [sessionId]);
   // What changes when the agent adds output; polls that change nothing don't move the view.
   const last = snapshot?.turns.at(-1);
