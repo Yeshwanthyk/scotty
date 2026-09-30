@@ -35,35 +35,37 @@ const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("live", message, "scotty doctor"));
 
 // One live socket: every frame it received, decoded, in order. Anything undecodable fails the test.
-const listen = <A>(socket: WebSocketLike, schema: Schema.Codec<A>, name: string) => {
-  const frames: A[] = [];
-  const bad: string[] = [];
-  let closed = false;
-  socket.addEventListener("message", (event) => {
-    const text = typeof event.data === "string" ? event.data : "";
-    const frame = Schema.decodeUnknownOption(Schema.fromJsonString(schema))(text);
-    if (Option.isSome(frame)) frames.push(frame.value);
-    else bad.push(text.slice(0, 200));
-  });
-  socket.addEventListener("close", () => (closed = true));
-  // Waits on frames already received; this makes no request.
-  const until = (done: (frames: readonly A[]) => boolean, what: string) =>
-    Effect.tryPromise({
-      try: async () => {
-        const started = Date.now();
-        while (!done(frames)) {
-          if (bad.length > 0) throw new Error(`${name} sent an unreadable frame: ${bad[0]}`);
-          if (closed) throw new Error(`${name} closed while waiting for ${what}`);
-          if (Date.now() - started > limit) throw new Error(`Timed out waiting for ${what}`);
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        return frames;
-      },
-      catch: (error) =>
-        failure("live", error instanceof Error ? error.message : what, "scotty doctor"),
-    });
-  return { frames, until, close: () => socket.close() };
-};
+// The socket closes with the scope, so a failed step can't leave it holding the process open.
+const listen = <A>(connect: () => WebSocketLike, schema: Schema.Codec<A>, name: string) =>
+  Effect.acquireRelease(Effect.sync(connect), (socket) => Effect.sync(() => socket.close())).pipe(
+    Effect.map((socket) => {
+      const decode = Schema.decodeUnknownOption(Schema.fromJsonString(schema));
+      const frames: A[] = [];
+      const bad: string[] = [];
+      let closed = false;
+      socket.addEventListener("message", (event) => {
+        const text = typeof event.data === "string" ? event.data : "";
+        const frame = decode(text);
+        if (Option.isSome(frame)) frames.push(frame.value);
+        else bad.push(text.slice(0, 200));
+      });
+      socket.addEventListener("close", () => (closed = true));
+      const fail = (message: string) => Effect.fail(failure("live", message, "scotty doctor"));
+      // Waits on frames already received; this makes no request.
+      const until = (done: (frames: readonly A[]) => boolean, what: string) =>
+        Effect.gen(function* () {
+          const started = Date.now();
+          while (!done(frames)) {
+            if (bad.length > 0) return yield* fail(`${name} sent an unreadable frame: ${bad[0]}`);
+            if (closed) return yield* fail(`${name} closed while waiting for ${what}`);
+            if (Date.now() - started > limit) return yield* fail(`Timed out waiting for ${what}`);
+            yield* Effect.sleep("100 millis");
+          }
+          return frames;
+        });
+      return { frames, until, close: () => socket.close() };
+    }),
+  );
 
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
@@ -77,7 +79,7 @@ const program = Effect.gen(function* () {
   };
 
   // 1. The list socket is open before the session exists.
-  const list = listen(open("/api/sessions/live"), ListFrame, "The list socket");
+  const list = yield* listen(() => open("/api/sessions/live"), ListFrame, "The list socket");
   yield* Effect.sleep("2 seconds");
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
@@ -95,7 +97,7 @@ const program = Effect.gen(function* () {
   console.log(`Session ${id}`);
 
   // 2. The session socket's first frame is a snapshot; pushes show the turn stream, then end.
-  const live = listen(open(`${prefix}/live`), SessionFrame, "The session socket");
+  const live = yield* listen(() => open(`${prefix}/live`), SessionFrame, "The session socket");
   yield* live.until((frames) => frames.length > 0, "the first snapshot");
   const turn = (frame: typeof SessionFrame.Type) => frame.conversation.turns[0];
   const completed = yield* live.until(
@@ -140,7 +142,7 @@ const program = Effect.gen(function* () {
   // 5. A new socket starts from a fresh snapshot, no older than what the last one saw.
   const last = Math.max(...stopped.map((f) => f.seq));
   live.close();
-  const again = listen(open(`${prefix}/live`), SessionFrame, "The reconnected socket");
+  const again = yield* listen(() => open(`${prefix}/live`), SessionFrame, "The reconnected socket");
   const [first] = yield* again.until((frames) => frames.length > 0, "the reconnect snapshot");
   yield* check(
     first !== undefined && first.seq >= last && byUser(first.session),
@@ -155,13 +157,11 @@ const program = Effect.gen(function* () {
     "the removal on the list socket",
   );
   console.log("Delete: the list socket heard the session go");
-  again.close();
-  list.close();
 });
 
-Effect.runPromise(program.pipe(Effect.provide(BunSocket.layerWebSocketConstructor))).catch(
-  (error: unknown) => {
-    console.error(error instanceof CliFailure ? error.message : "Live e2e failed");
-    process.exitCode = 1;
-  },
-);
+Effect.runPromise(
+  program.pipe(Effect.scoped, Effect.provide(BunSocket.layerWebSocketConstructor)),
+).catch((error: unknown) => {
+  console.error(error instanceof CliFailure ? error.message : "Live e2e failed");
+  process.exitCode = 1;
+});

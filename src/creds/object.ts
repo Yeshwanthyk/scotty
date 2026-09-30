@@ -74,7 +74,9 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       });
 
       // Every live socket here watches the session list.
-      const broadcast = (frame: object) =>
+      const broadcast = (
+        frame: { kind: "session"; session: SessionView } | { kind: "removed"; id: string },
+      ) =>
         Effect.gen(function* () {
           const text = JSON.stringify(frame);
           for (const socket of yield* state.getWebSockets())

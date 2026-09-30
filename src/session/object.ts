@@ -12,6 +12,7 @@ import {
   Option,
   Schedule,
   Schema,
+  Scope,
   Semaphore,
 } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -163,20 +164,25 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       ]);
       // Awaits the running container's exit, so a crash or exit is recorded when it happens,
       // not when someone next looks. One watcher at a time; a new one replaces the last.
-      const watcher = yield* FiberHandle.make<void, never>();
+      // Nothing closes the isolate's scope, so the handle gets a scope of its own that goes away
+      // with this instance instead of adding a finalizer per activation.
+      const watcher = yield* FiberHandle.make<void, never>().pipe(
+        Scope.provide(yield* Scope.make()),
+      );
       const exited = (gen: number) =>
         Effect.tryPromise({
           try: () => container.monitor(),
-          catch: (cause) => {
-            console.error(`container exited: ${String(cause)}`);
-            return Schema.decodeUnknownOption(ExitStatus)(cause).pipe(
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.tapError((cause) => Effect.logWarning("container exited", cause)),
+          Effect.mapError((cause) =>
+            Schema.decodeUnknownOption(ExitStatus)(cause).pipe(
               Option.match({
                 onNone: () => ({ reason: "crashed" as const }),
                 onSome: ({ exitCode }) => ({ reason: "crashed" as const, exitCode }),
               }),
-            );
-          },
-        }).pipe(
+            ),
+          ),
           Effect.match({
             onSuccess: () => ({ reason: "exited" as const }),
             onFailure: (end) => end,
@@ -188,8 +194,13 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 )
               : Effect.void,
           ),
-          // Nothing joins the watcher, so a failure to record the exit is logged here.
-          Effect.ignoreCause({ log: "Error", message: "recording container exit failed" }),
+          // Nothing joins the watcher, so a failure to record the exit is logged here. A newer
+          // watcher interrupting this one is not a failure.
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.void
+              : Effect.logError("recording container exit failed", cause),
+          ),
           Effect.provide(context),
         );
       // Called once the supervisor answers, when the container surely exists: monitor() settles at
@@ -390,6 +401,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               // An unanswered supervisor counts as no terminal: the session sleeps. The fold
               // ignores the stop if a prompt or use arrived meanwhile.
               const terminals = yield* supervisor("/terminals").pipe(
+                Effect.filterOrFail((response) => response.ok),
                 Effect.flatMap((response) => Effect.tryPromise(() => response.json())),
                 Effect.flatMap(Schema.decodeUnknownEffect(Terminals)),
                 Effect.map(({ open }) => open),
@@ -590,7 +602,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")
               return HttpServerResponse.text("Expected a WebSocket", { status: 426 });
             const [response, socket] = yield* Cloudflare.upgrade();
-            yield* socket.send(snapshot());
+            // A failed first send leaves the socket to the next push.
+            yield* socket.send(snapshot()).pipe(Effect.ignoreCause);
             return response;
           }
           const unavailable = HttpServerResponse.text("Session not running", { status: 502 });
