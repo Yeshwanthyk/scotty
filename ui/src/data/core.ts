@@ -14,6 +14,7 @@ const Session = Schema.Struct({
     title: Schema.String,
     repository: Schema.String,
     branch: Schema.String,
+    prompt: Schema.String,
     agentKind: Schema.String,
     createdAt: Schema.String,
     activeAt: Schema.String,

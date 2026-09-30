@@ -72,15 +72,38 @@ export function duration(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-const groups = ["Today", "Yesterday", "This week", "This month", "Earlier"] as const;
+const groups = ["Today", "This week", "Older"] as const;
 export function groupOf(iso: string, now = new Date()): (typeof groups)[number] {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const at = Date.parse(iso);
   if (at >= start) return "Today";
-  if (at >= start - 86_400_000) return "Yesterday";
   if (at >= start - 6 * 86_400_000) return "This week";
-  if (at >= start - 30 * 86_400_000) return "This month";
-  return "Earlier";
+  return "Older";
+}
+
+// A session asleep (stopped) for over a week moves out of the way, still searchable.
+const archiveAfter = 7 * 86_400_000;
+export function archived(session: Session, now = Date.now()): boolean {
+  return (
+    session.authority.kind === "stable" &&
+    session.authority.lifecycle === "stopped" &&
+    now - Date.parse(session.display.activeAt) > archiveAfter
+  );
+}
+
+export type Filter = "all" | "running";
+// Running is a live container: starting up or up. Stopped and failed sessions are not.
+export function matchesFilter(session: Session, filter: Filter): boolean {
+  if (filter === "all") return true;
+  return session.authority.kind === "transitioning" || session.authority.lifecycle === "running";
+}
+
+// Case-insensitive substring over the same fields the server searches.
+export function matchesText(session: Session, text: string): boolean {
+  const needle = text.trim().toLowerCase();
+  if (needle === "") return true;
+  const { title, repository, branch, prompt } = session.display;
+  return [title, repository, branch, prompt].some((field) => field.toLowerCase().includes(needle));
 }
 
 export function grouped(list: ReadonlyArray<Session>) {

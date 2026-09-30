@@ -864,4 +864,37 @@ export const dummies: DummySpec[] = [
     after: "boot-failed",
     turns: [{ prompt: "reply ok", items: [] }],
   },
+  // Stopped for over a week: the sidebar files these under Archived.
+  {
+    id: "d0cc0de5000000000000000000000007",
+    title: "Upgrade the image pipeline to sharp 0.34",
+    repo: "acme/storefront",
+    minutesAgo: 60 * 24 * 9,
+    turns: [
+      {
+        prompt: "Upgrade sharp to 0.34 and make sure product thumbnails still render.",
+        items: [
+          {
+            type: "say",
+            text: "Upgraded sharp to 0.34; thumbnails render the same.",
+            phase: "final_answer",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "d0cc0de5000000000000000000000008",
+    title: "Write a migration guide for the v2 webhooks",
+    repo: "Yeshwanthyk/scotty-hatch-test",
+    minutesAgo: 60 * 24 * 21,
+    turns: [
+      {
+        prompt: "Write a migration guide for the v2 webhooks.",
+        items: [
+          { type: "say", text: "The guide is in docs/webhooks-v2.md.", phase: "final_answer" },
+        ],
+      },
+    ],
+  },
 ];

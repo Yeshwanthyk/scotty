@@ -3,7 +3,16 @@ import { useEffect, useState } from "react";
 import scottyMark from "../assets/brand/scotty-mark-128.png?url";
 import type { Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { ago, grouped, statusLabel, statusOf, type Status } from "../data/status";
+import {
+  ago,
+  archived,
+  grouped,
+  matchesFilter,
+  statusLabel,
+  statusOf,
+  type Filter,
+  type Status,
+} from "../data/status";
 import { Icon, Spinner } from "./Icon";
 
 export function StatusMark({ status }: { status: Status }) {
@@ -49,6 +58,12 @@ function Meta({ session, status }: { session: Session; status: Status }) {
   );
 }
 
+// Key and Automations filters arrive with session origins; until sessions carry one they stay out.
+const filters: ReadonlyArray<{ id: Filter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "running", label: "Running" },
+];
+
 function Row({ session, current }: { session: Session; current: boolean }) {
   const status = statusOf(session, current);
   return (
@@ -75,11 +90,11 @@ function useMinuteTick() {
   }, []);
 }
 
-const stoppedKey = "scotty.stoppedOpen";
-function useStoppedOpen() {
+const archivedKey = "scotty.archivedOpen";
+function useArchivedOpen() {
   const [open, setOpen] = useState(() => {
     try {
-      return localStorage.getItem(stoppedKey) === "1";
+      return localStorage.getItem(archivedKey) === "1";
     } catch {
       return false;
     }
@@ -88,7 +103,7 @@ function useStoppedOpen() {
     if (next === open) return;
     setOpen(next);
     try {
-      localStorage.setItem(stoppedKey, next ? "1" : "0");
+      localStorage.setItem(archivedKey, next ? "1" : "0");
     } catch {
       // Private windows can refuse storage; the section then starts closed.
     }
@@ -103,18 +118,21 @@ export function Sidebar({
   onSearch: () => void;
   onCollapse: () => void;
 }) {
-  const { list, error } = useSessions();
+  const { list, error, repo, setRepo } = useSessions();
+  const [filter, setFilter] = useState<Filter>("all");
   const params = useParams({ strict: false });
   const currentId = "sessionId" in params ? params.sessionId : undefined;
   useMinuteTick();
-  const [showStopped, toggleStopped] = useStoppedOpen();
-  // Stopped sessions hold no container; they fold away below the ones still running.
-  const all = list ?? [];
-  const live = grouped(all.filter((session) => statusOf(session) !== "stopped"));
-  const stopped = all
-    .filter((session) => statusOf(session) === "stopped")
+  const [showArchived, toggleArchived] = useArchivedOpen();
+  const all = (list ?? []).filter(
+    (session) =>
+      (repo === "" || session.display.repository === repo) && matchesFilter(session, filter),
+  );
+  const live = grouped(all.filter((session) => !archived(session)));
+  const old = all
+    .filter((session) => archived(session))
     .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
-  const viewingStopped = stopped.some((session) => session.identity.id === currentId);
+  const viewingArchived = old.some((session) => session.identity.id === currentId);
   return (
     <aside className="sidebar" aria-label="Sessions">
       <div className="sidebar-top">
@@ -157,6 +175,30 @@ export function Sidebar({
           <kbd>⌘K</kbd>
         </button>
       </nav>
+      <div className="session-filters" role="group" aria-label="Filter sessions">
+        {filters.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className="filter-chip pressable"
+            aria-pressed={filter === item.id}
+            onClick={() => setFilter(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+        {repo !== "" ? (
+          <button
+            type="button"
+            className="filter-chip pressable"
+            aria-pressed
+            aria-label={`Clear repository ${repo}`}
+            onClick={() => setRepo("")}
+          >
+            {repo.split("/").at(-1)} ×
+          </button>
+        ) : null}
+      </div>
       <div className="session-groups" data-scroll>
         {list === undefined && error === "" ? <Placeholder /> : null}
         {error && list === undefined ? <p className="sidebar-empty alert">{error}</p> : null}
@@ -175,23 +217,23 @@ export function Sidebar({
             ))}
           </section>
         ))}
-        {list !== undefined && list.length > 0 && live.length === 0 ? (
-          <p className="sidebar-empty">Nothing running.</p>
+        {list !== undefined && list.length > 0 && live.length === 0 && old.length === 0 ? (
+          <p className="sidebar-empty">Nothing matches.</p>
         ) : null}
-        {stopped.length > 0 ? (
+        {old.length > 0 ? (
           <details
-            className="stopped-group"
-            open={showStopped || viewingStopped}
+            className="archived-group"
+            open={showArchived || viewingArchived}
             onToggle={(event) => {
               // Opening for the session on screen doesn't change what the owner chose.
-              if (!viewingStopped) toggleStopped(event.currentTarget.open);
+              if (!viewingArchived) toggleArchived(event.currentTarget.open);
             }}
           >
             <summary className="group-label">
               <Icon name="chevronRight" size={12} />
-              Stopped · {stopped.length}
+              Archived · {old.length}
             </summary>
-            {stopped.map((session) => (
+            {old.map((session) => (
               <Row
                 key={session.identity.id}
                 session={session}

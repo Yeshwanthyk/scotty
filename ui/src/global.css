@@ -524,13 +524,13 @@ kbd {
   gap: 1px;
 }
 
-.stopped-group {
+.archived-group {
   display: grid;
   gap: 1px;
   margin-top: 8px;
 }
 
-.stopped-group summary {
+.archived-group summary {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -539,19 +539,19 @@ kbd {
   border-radius: var(--radius-md);
 }
 
-.stopped-group summary::-webkit-details-marker {
+.archived-group summary::-webkit-details-marker {
   display: none;
 }
 
-.stopped-group summary:hover {
+.archived-group summary:hover {
   color: var(--muted);
 }
 
-.stopped-group summary .icon {
+.archived-group summary .icon {
   transition: transform 120ms ease;
 }
 
-.stopped-group[open] summary .icon {
+.archived-group[open] summary .icon {
   transform: rotate(90deg);
 }
 
@@ -570,11 +570,36 @@ kbd {
   background: var(--selected);
 }
 
+/* The whole title where it fits; two lines at most, then cut. */
 .session-row .title {
   font-size: 13px;
-  white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+.session-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+
+.filter-chip {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 13px;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.filter-chip[aria-pressed="true"] {
+  background: var(--selected);
+  color: var(--ink);
+  border-color: var(--line-strong);
 }
 
 .session-row[data-status="stopped"] .title,

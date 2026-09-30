@@ -17,6 +17,22 @@ const turnState = (ended: string | undefined) =>
         ? ("failed" as const)
         : ("completed" as const);
 
+// A session's first prompt as shown to searches: long pastes are cut.
+const promptPreview = (prompt: string) => prompt.trim().slice(0, 300);
+
+// Case-insensitive substring over what the owner remembers a session by. Anything that later
+// gives a session an origin (a key, an automation) adds its text here.
+export function sessionMatches(
+  display: { title: string; repository: string; branch: string; prompt: string },
+  query: string,
+) {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return true;
+  return [display.title, display.repository, display.branch, display.prompt].some((field) =>
+    field.toLowerCase().includes(needle),
+  );
+}
+
 export function sessionView(id: string, state: State) {
   const created = state.created;
   const title = created?.title ?? "Session";
@@ -27,6 +43,7 @@ export function sessionView(id: string, state: State) {
       title,
       repository: created?.repo ?? "",
       branch,
+      prompt: promptPreview(created?.prompt ?? ""),
       agentKind: created?.agentKind ?? "codex",
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
