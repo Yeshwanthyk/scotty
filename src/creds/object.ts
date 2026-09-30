@@ -1,9 +1,15 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
-import type * as cf from "@cloudflare/workers-types";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Schema } from "effect";
 import { newSecret, verifyWebhook } from "../hooks/signature.js";
-import { ConnectionName, DeliveryOutcome, DeliveryReason, keptDeliveries } from "./connections.js";
+import {
+  ConnectionConfig,
+  NewConnection,
+  DeliveryOutcome,
+  DeliveryReason,
+  keptDeliveries,
+} from "./connections.js";
+import { isLoopback } from "../loopback.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
@@ -57,7 +63,7 @@ const SkillRow = Schema.Struct({
 });
 const ConnectionRow = Schema.Struct({
   name: Schema.String,
-  kind: Schema.Literal("webhook"),
+  config: Schema.fromJsonString(ConnectionConfig),
   created: Schema.Number,
 });
 const SecretRow = Schema.Struct({ secret: Schema.String });
@@ -105,10 +111,6 @@ const IdRow = Schema.Struct({ id: Schema.String });
 // How many runs are kept, and how many a list returns.
 const keptRuns = 500;
 const listedRuns = 100;
-// ctx.exports is typed {} without a GlobalProps declaration; its default export is the
-// Worker's loopback, which takes props.
-const isLoopback = (value: unknown): value is (options: { props: { run: string } }) => cf.Fetcher =>
-  typeof value === "function";
 // The newest deliveries a list returns.
 const listedDeliveries = 200;
 // Sessions can run for hours; refuse a token that could expire mid-session.
@@ -138,7 +140,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // What a search matches (`searchText`). Sessions made before it have no row: they are
       // listed but never found.
       yield* sql`CREATE TABLE IF NOT EXISTS session_search (id TEXT PRIMARY KEY, text TEXT NOT NULL)`;
-      yield* sql`CREATE TABLE IF NOT EXISTS connections (name TEXT PRIMARY KEY, kind TEXT NOT NULL, secret TEXT NOT NULL, created INTEGER NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS connections (name TEXT PRIMARY KEY, config TEXT NOT NULL, secret TEXT NOT NULL, created INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, connection TEXT NOT NULL, at INTEGER NOT NULL, outcome TEXT NOT NULL, reason TEXT, session TEXT)`;
       yield* sql`CREATE TABLE IF NOT EXISTS automations (name TEXT PRIMARY KEY, definition TEXT NOT NULL, enabled INTEGER NOT NULL, next_due INTEGER, created INTEGER NOT NULL)`;
       // A run's source (the schedule time, delivery or manual request) names it once, so a retried
@@ -274,33 +276,56 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           }),
         connections: () =>
           Effect.gen(function* () {
-            const rows = yield* sql`SELECT name, kind, created FROM connections ORDER BY name`;
+            const rows = yield* sql`SELECT name, created, config FROM connections ORDER BY name`;
             return yield* Effect.forEach(rows, (row) =>
-              Schema.decodeUnknownEffect(ConnectionRow)(row),
+              Schema.decodeUnknownEffect(ConnectionRow)(row).pipe(
+                Effect.map(({ name, created, config }) => ({ name, created, ...config })),
+              ),
             );
           }),
-        // The secret is returned here and never again; `connections` shows only metadata.
-        addConnection: (name: string) =>
+        // Only a generated webhook secret is returned. Pasted credentials stay here.
+        addConnection: (input: typeof NewConnection.Type) =>
           Effect.gen(function* () {
-            const checked = yield* Schema.decodeUnknownEffect(ConnectionName)(name);
-            const secret = newSecret();
+            const checked = yield* Schema.decodeUnknownEffect(NewConnection)(input).pipe(
+              Effect.mapError(() => new CredentialStoreError({ message: "Invalid connection" })),
+            );
+            const secret = checked.kind === "webhook" ? newSecret() : checked.secret;
             const created = Date.now();
+            const config = yield* Schema.decodeUnknownEffect(ConnectionConfig)(checked);
             const inserted =
-              yield* sql`INSERT OR IGNORE INTO connections (name, kind, secret, created) VALUES (${checked}, 'webhook', ${secret}, ${created}) RETURNING name`;
-            return inserted.length === 0
-              ? { status: "exists" as const }
-              : {
-                  status: "created" as const,
-                  name: checked,
-                  kind: "webhook" as const,
-                  secret,
-                  created,
-                };
-          }),
-        removeConnection: (name: string) =>
-          sql`DELETE FROM connections WHERE name = ${name} RETURNING name`.pipe(
-            Effect.map((rows) => rows.length > 0),
+              yield* sql`INSERT OR IGNORE INTO connections (name, config, secret, created) VALUES (${checked.name}, ${JSON.stringify(config)}, ${secret}, ${created}) RETURNING name`;
+            if (inserted.length === 0) return { status: "exists" as const };
+            const metadata = { status: "created" as const, name: checked.name, created };
+            return config.kind === "webhook"
+              ? { ...metadata, ...config, secret }
+              : { ...metadata, ...config };
+          }).pipe(
+            Effect.mapError(
+              () => new CredentialStoreError({ message: "Could not store connection" }),
+            ),
           ),
+        // Internal RPC for the streaming proxy only; no HTTP API exposes this method.
+        reachCredential: (name: string) =>
+          Effect.gen(function* () {
+            const row =
+              (yield* sql`SELECT secret, config FROM connections WHERE name = ${name} AND json_extract(config, '$.kind') IN ('token', 'mcp')`)[0];
+            if (row === undefined) return null;
+            return yield* Schema.decodeUnknownEffect(
+              Schema.Struct({
+                secret: Schema.String,
+                config: Schema.fromJsonString(ConnectionConfig),
+              }),
+            )(row);
+          }).pipe(
+            Effect.mapError(
+              () => new CredentialStoreError({ message: "Could not read connection" }),
+            ),
+          ),
+        removeConnection: (name: string) =>
+          Effect.gen(function* () {
+            const rows = yield* sql`DELETE FROM connections WHERE name = ${name} RETURNING name`;
+            return rows.length > 0;
+          }),
         // The secret stays in this object: the Worker hands over what the sender signed.
         verifyDelivery: (input: {
           connection: string;
@@ -311,7 +336,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         }) =>
           Effect.gen(function* () {
             const row =
-              (yield* sql`SELECT secret FROM connections WHERE name = ${input.connection}`)[0];
+              (yield* sql`SELECT secret FROM connections WHERE name = ${input.connection} AND json_extract(config, '$.kind') = 'webhook'`)[0];
             if (row === undefined) return "unknown" as const;
             const { secret } = yield* Schema.decodeUnknownEffect(SecretRow)(row);
             return yield* Effect.promise(() =>

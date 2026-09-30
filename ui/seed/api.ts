@@ -11,6 +11,11 @@ import { maxSearch, searchText } from "../../src/session/search.ts";
 import { conversationView, sessionView, turnOutcome } from "../../src/session/view.ts";
 import { AutomationName, Definition, nextDue, prepare } from "../../src/automations/automation.ts";
 import { readSkill } from "../../src/settings/skill.ts";
+import {
+  type ConnectionMetadata,
+  NewConnection,
+  connectionView,
+} from "../../src/creds/connections.ts";
 import { codexLog, dummies } from "./dummy.ts";
 
 const here = new URL(".", import.meta.url);
@@ -294,8 +299,27 @@ const owner = {
 };
 // Connections and their deliveries, in memory; the seeded deliveries point at seeded sessions.
 const hooks = {
-  connections: new Map<string, { name: string; kind: string; created: number }>([
+  connections: new Map<string, ConnectionMetadata>([
     ["sentry", { name: "sentry", kind: "webhook", created: Date.now() - 6 * 864e5 }],
+    [
+      "linear",
+      {
+        name: "linear",
+        kind: "mcp",
+        url: "https://mcp.linear.app/mcp",
+        created: Date.now() - 2 * 864e5,
+      },
+    ],
+    [
+      "metrics",
+      {
+        name: "metrics",
+        kind: "token",
+        host: "api.example.com",
+        header: "X-Api-Key",
+        created: Date.now() - 864e5,
+      },
+    ],
   ]),
   deliveries: [
     // Each accepted delivery made its session at the same minute (dummy.ts `minutesAgo`).
@@ -342,32 +366,40 @@ const hooks = {
     },
   ],
 };
-const hookUrl = (req: IncomingMessage, name: string) =>
-  `https://${req.headers.host ?? "localhost"}/hooks/${name}`;
 async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string, method: string) {
   if (path === "/api/connections" && method === "GET")
     return json(res, {
-      connections: [...hooks.connections.values()].map((item) => ({
-        ...item,
-        url: hookUrl(req, item.name),
-      })),
+      connections: [...hooks.connections.values()].map((item) =>
+        connectionView(item, `https://${req.headers.host ?? "localhost"}`),
+      ),
     });
   if (path === "/api/connections" && method === "POST") {
-    const input = Schema.decodeUnknownOption(
-      Schema.Struct({ kind: Schema.Literal("webhook"), name: Schema.String }),
-    )(await body(req));
+    const input = Schema.decodeUnknownOption(NewConnection)(await body(req));
     if (input._tag === "None" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(input.value.name))
       return fail(res, "Expected a name of lowercase letters, digits and dashes");
     const { name } = input.value;
     if (hooks.connections.has(name)) return fail(res, "That name is taken", 409, "exists");
-    const row = { name, kind: "webhook", created: Date.now() };
+    const checked = input.value;
+    const row: ConnectionMetadata =
+      checked.kind === "webhook"
+        ? { name, kind: checked.kind, created: Date.now() }
+        : checked.kind === "token"
+          ? {
+              name,
+              kind: checked.kind,
+              host: checked.host,
+              header: checked.header,
+              created: Date.now(),
+            }
+          : { name, kind: checked.kind, url: checked.url, created: Date.now() };
     hooks.connections.set(name, row);
     return json(
       res,
       {
-        ...row,
-        url: hookUrl(req, name),
-        secret: `whsec_${Buffer.from(name.padEnd(24, "x")).toString("base64")}`,
+        ...connectionView(row, `https://${req.headers.host ?? "localhost"}`),
+        ...(row.kind === "webhook"
+          ? { secret: `whsec_${Buffer.from(name.padEnd(24, "x")).toString("base64")}` }
+          : {}),
       },
       201,
     );

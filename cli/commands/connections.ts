@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { ConnectionCreated, ConnectionRemoved, Connections, Deliveries } from "../client.js";
 import {
@@ -8,41 +8,97 @@ import {
   dim,
   green,
   output,
+  readStdin,
   short,
   table,
   usage,
   withClient,
 } from "./common.js";
-import { connectionName } from "../../src/creds/connections.js";
+import {
+  NewConnection,
+  ConnectionName,
+  InternalConnectionName,
+  connectionName,
+} from "../../src/creds/connections.js";
 
-// `scotty connect webhook <name>` makes the URL and the secret a sender signs with.
+// Pasted credentials arrive on stdin, never in argv or command output.
 export const connect = Command.make(
   "connect",
   {
-    kind: Argument.Literals("kind", ["webhook"]),
+    kind: Argument.Literals("kind", ["webhook", "token", "mcp"]),
     name: Argument.String("name"),
+    host: Flag.String("host").pipe(Flag.optional),
+    header: Flag.String("header").pipe(Flag.optional),
+    endpoint: Flag.String("endpoint").pipe(Flag.optional),
   },
-  ({ name }) =>
+  ({ kind, name, host, header, endpoint }) =>
     Effect.gen(function* () {
-      if (!connectionName.test(name))
+      if (
+        Option.isNone(
+          Schema.decodeUnknownOption(kind === "webhook" ? ConnectionName : InternalConnectionName)(
+            name,
+          ),
+        )
+      )
         return yield* usage(
-          "A name is lowercase letters, digits and - (at most 40), starting with a letter or digit",
+          "Use a non-reserved lowercase name of letters, digits and - (at most 40)",
           "connect",
         );
+      if (
+        (kind === "webhook" && [host, header, endpoint].some(Option.isSome)) ||
+        (kind === "token" &&
+          (Option.isNone(host) || Option.isNone(header) || Option.isSome(endpoint))) ||
+        (kind === "mcp" &&
+          (Option.isNone(endpoint) || Option.isSome(host) || Option.isSome(header)))
+      )
+        return yield* usage(
+          "Token needs --host and --header; MCP needs --endpoint; webhook needs only a name",
+          "connect",
+        );
+      if (kind !== "webhook" && process.stdin.isTTY)
+        return yield* usage("Pipe the secret on stdin", "connect");
+      const secret = kind === "webhook" ? "" : (yield* readStdin).trim();
+      const input = yield* Schema.decodeUnknownEffect(NewConnection)(
+        kind === "webhook"
+          ? { kind, name }
+          : kind === "token"
+            ? {
+                kind,
+                name,
+                host: Option.getOrUndefined(host),
+                header: Option.getOrUndefined(header),
+                secret,
+              }
+            : { kind, name, url: Option.getOrUndefined(endpoint), secret },
+      ).pipe(
+        Effect.catchTag("SchemaError", () =>
+          usage(
+            "Use an HTTPS target, a header like Authorization: Bearer or X-Api-Key, and a non-blank secret",
+            "connect",
+          ),
+        ),
+      );
       const api = yield* withClient;
       const created = yield* api("/api/connections", ConnectionCreated, {
         method: "POST",
-        body: { kind: "webhook", name },
+        body: input,
       });
       yield* output(
         created,
         [
           `${green("✓")} Connected ${bold(created.name)}`,
-          `  URL     ${created.url}`,
-          `  Secret  ${created.secret}`,
-          dim("  The secret is shown once. Senders sign with it (Standard Webhooks)."),
-          dim(`  Body: {"repo": "owner/repo", "prompt": "…", "key": "optional"}`),
-          dim(`  See deliveries: scotty deliveries --connection ${created.name}`),
+          `  URL     ${created.kind === "webhook" ? created.url : created.internalUrl}`,
+          ...(created.kind === "webhook"
+            ? [
+                `  Secret  ${created.secret}`,
+                dim("  The secret is shown once. Senders sign with it (Standard Webhooks)."),
+                dim(`  See deliveries: scotty deliveries --connection ${created.name}`),
+              ]
+            : [
+                dim(
+                  "  The credential stays in Scotty. Stop and resume a session to pick up new connections.",
+                ),
+              ]),
         ].join("\n"),
       );
     }),
@@ -58,7 +114,11 @@ export const connections = Command.make("connections", {}, () =>
         ? "No connections yet. Add one: scotty connect webhook <name>"
         : table([
             ["NAME", "KIND", "URL"],
-            ...found.map((connection) => [connection.name, connection.kind, connection.url]),
+            ...found.map((connection) => [
+              connection.name,
+              connection.kind,
+              connection.kind === "webhook" ? connection.url : connection.internalUrl,
+            ]),
           ]),
     );
   }),

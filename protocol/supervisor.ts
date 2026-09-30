@@ -20,8 +20,19 @@ const credentialString = tomlString.check(
     }),
   ),
 );
+const mcp = Schema.optionalKey(
+  Schema.Array(
+    Schema.Struct({
+      name: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,39}$/)),
+      url: Schema.String.check(
+        Schema.isPattern(/^http:\/\/[a-z0-9][a-z0-9-]{0,39}\.internal\/api\/mcp$/),
+      ),
+    }),
+  ),
+);
 const CodexAgent = Schema.Struct({
   kind: Schema.Literal("codex"),
+  mcp,
   model: tomlString,
   effort: tomlString,
   baseUrl: credentialString,
@@ -31,6 +42,7 @@ const CodexAgent = Schema.Struct({
 // The token is Claude's setup token; it goes only into the Claude process's environment.
 const ClaudeAgent = Schema.Struct({
   kind: Schema.Literal("claude"),
+  mcp,
   model: Schema.String,
   effort: Schema.Literals(["low", "medium", "high", "xhigh", "max"]),
   token: credentialString,
@@ -38,11 +50,13 @@ const ClaudeAgent = Schema.Struct({
 // e2e sessions run an agent's scripted stand-in (container/scripted/): no token.
 const ScriptedCodexAgent = Schema.Struct({
   kind: Schema.Literal("codex"),
+  mcp,
   scripted: Schema.Literal(true),
   model: tomlString,
 });
 const ScriptedClaudeAgent = Schema.Struct({
   kind: Schema.Literal("claude"),
+  mcp,
   scripted: Schema.Literal(true),
   model: Schema.String,
 });

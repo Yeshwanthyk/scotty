@@ -195,7 +195,7 @@ export const deployStage = (
       metadata: {
         mainModule: "entry.js",
         compatibilityDate,
-        compatibilityFlags: [],
+        compatibilityFlags: ["enable_request_signal"],
         assets: {
           jwt,
           config: { notFoundHandling: "single-page-application", runWorkerFirst: true },

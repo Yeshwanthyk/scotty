@@ -19,10 +19,11 @@ export interface Port {
  * through this, so a place is one module.
  */
 export interface Place {
-  /** Starts the container with the session's `github.internal` and `files.internal` egress. */
+  /** Starts the container with the session's built-in and connection egress. */
   readonly start: (egress: {
     session: string;
     repo: string;
+    connections: readonly string[];
   }) => Effect.Effect<void, ContainerStartFailed>;
   readonly running: () => Effect.Effect<boolean>;
   /** HTTP and WebSocket to a port inside the container: supervisor, saves, terminal, hatch. */

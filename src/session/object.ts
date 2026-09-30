@@ -9,6 +9,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { AgentConfig, ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
+import { type ConnectionMetadata, internalUrl } from "../creds/connections.js";
 import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
 import type { AgentKind, Origin } from "./events.js";
@@ -88,6 +89,16 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       // Work queued for an older generation, or for a session that has ended, does nothing.
       const current = (gen: number) => log.state.gen === gen && live(log.state);
       const port = () => where().port(7000);
+      // Share one snapshot between container egress and agent MCP config for this generation.
+      // After DO hibernation, the start command reads again if this instance has no snapshot.
+      let startConnections: { gen: number; items: readonly ConnectionMetadata[] } | undefined;
+      const connectionsFor = (gen: number) =>
+        Effect.gen(function* () {
+          if (startConnections?.gen === gen) return startConnections.items;
+          const items = yield* credentials.getByName("owner").connections();
+          startConnections = { gen, items };
+          return items;
+        });
       // Container work runs after the caller returns, one operation at a time, so a resume
       // waits for the stop's destroy. Its outcome arrives as a later event.
       const lifecycle = yield* Semaphore.make(1);
@@ -103,8 +114,16 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             case "container.start": {
               if (!current(action.gen)) return;
               if (action.fresh && (yield* where().running())) yield* where().destroy();
-              if (!(yield* where().running()))
-                yield* where().start({ session: id(), repo: log.state.created?.repo ?? "" });
+              if (!(yield* where().running())) {
+                const connections = (yield* connectionsFor(action.gen))
+                  .filter((connection) => connection.kind !== "webhook")
+                  .map((connection) => connection.name);
+                yield* where().start({
+                  session: id(),
+                  repo: log.state.created?.repo ?? "",
+                  connections,
+                });
+              }
               // A new container takes a moment to listen, longer on a new host; retry until the
               // fold's container deadline before reporting dial.failed.
               yield* link
@@ -156,7 +175,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   );
                 return;
               }
-              const [agent, git] = signedIn.value;
+              const [configured, git] = signedIn.value;
+              const mcp = (yield* connectionsFor(action.gen))
+                .filter((connection) => connection.kind === "mcp")
+                .map((connection) => ({
+                  name: connection.name,
+                  url: internalUrl(connection.name, "mcp"),
+                }));
+              const agent = { ...configured, mcp };
               // The deployer always sets SCOTTY_HATCH_BASE to the stage's domain.
               const hatchBase = yield* Effect.orDie(Config.String("SCOTTY_HATCH_BASE"));
               // Resume only when the save reached the new container; otherwise start clean.

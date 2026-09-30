@@ -5,7 +5,7 @@ import {
   AutomationSwitched,
   CliFailure,
   client,
-  ConnectionCreated,
+  WebhookCreated as ConnectionCreated,
   ConnectionRemoved,
   List,
   failure,

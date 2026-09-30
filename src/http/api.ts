@@ -6,7 +6,7 @@ import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { AgentKind } from "../session/events.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
-import { ConnectionName, connectionName, Key } from "../creds/connections.js";
+import { NewConnection, connectionView, connectionName, Key } from "../creds/connections.js";
 import { githubHint, Prompt, Repo, startSession } from "./start.js";
 import { automationName, AutomationName, Definition } from "../automations/automation.js";
 import { fireRun, runRequest } from "../automations/fire.js";
@@ -31,10 +31,6 @@ const Create = Schema.Struct({
   scripted: Schema.optional(Schema.Literal(true)),
   // A second create with the same key steers the session the first one made.
   key: Schema.optional(Key),
-});
-const NewConnection = Schema.Struct({
-  kind: Schema.Literal("webhook"),
-  name: ConnectionName,
 });
 const connectionPath = /^\/api\/connections\/([^/]+)$/;
 const RequestId = Schema.String.check(
@@ -208,22 +204,23 @@ export function apiHandler(
         return yield* HttpServerResponse.json({ name, removed: true });
       }
     }
-    const hookUrl = (name: string) => `https://${request.headers["host"] ?? ""}/hooks/${name}`;
+    const origin = `https://${request.headers["host"] ?? ""}`;
     if (url.pathname === "/api/connections" && request.method === "GET")
       return yield* HttpServerResponse.json({
-        connections: (yield* credential.connections()).map((connection) => ({
-          ...connection,
-          url: hookUrl(connection.name),
-        })),
+        connections: (yield* credential.connections()).map((connection) =>
+          connectionView(connection, origin),
+        ),
       });
     if (url.pathname === "/api/connections" && request.method === "POST") {
       const body = yield* Schema.decodeUnknownEffect(NewConnection)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", () =>
-          bad('Expected {kind: "webhook", name} with a lowercase name of letters, digits and -'),
+          bad(
+            "Expected a named webhook, token {host, header, secret}, or mcp {url, secret}; use an HTTPS target and a non-reserved lowercase name",
+          ),
         ),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
-      const added = yield* credential.addConnection(body.name);
+      const added = yield* credential.addConnection(body);
       if (added.status === "exists")
         return yield* HttpServerResponse.json(
           {
@@ -235,10 +232,9 @@ export function apiHandler(
           },
           { status: 409 },
         );
-      // The only time the secret is shown.
       return yield* HttpServerResponse.json({
-        ...added,
-        url: hookUrl(added.name),
+        ...connectionView(added, origin),
+        ...(added.kind === "webhook" ? { secret: added.secret } : {}),
       });
     }
     const connectionMatch = connectionPath.exec(url.pathname);

@@ -162,6 +162,12 @@ export class ClaudeRunner implements Runner {
           },
           ...(resume ? { resume: session } : { sessionId: session }),
           model: this.agent.model,
+          mcpServers: Object.fromEntries(
+            (this.agent.mcp ?? []).map((server) => [
+              server.name,
+              { type: "http" as const, url: server.url },
+            ]),
+          ),
           ...(scripted ? {} : { effort: this.agent.effort }),
           systemPrompt: { type: "preset", preset: "claude_code" },
           settingSources: ["user", "project"],

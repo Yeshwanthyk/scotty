@@ -44,7 +44,7 @@ ${bold("What sessions get")}
   rm skill <name>                 Delete a skill
 
 ${bold("Hooks")}
-  connect webhook <name>          Make a webhook: its URL, and the secret (shown once)
+  connect <kind> <name>           Add a webhook, token or MCP connection
   connections                     List connections
   deliveries                      List deliveries, newest first (--connection <name>)
   rm connection <name>            Delete a connection
@@ -121,10 +121,12 @@ Print a session's raw events (one JSON object per line in a terminal).`,
 Print the Scotty skill: how an agent sets up and drives Scotty with this CLI.
 Save it for your agent: scotty skill > ~/.claude/skills/scotty/SKILL.md`,
   connect: `Usage: scotty connect webhook <name>
-Make a webhook that starts sessions. Prints its URL and its secret once. A sender POSTs JSON
-{"repo": "owner/repo", "prompt": "…", "key": "optional", "agent": "codex|claude", "title": "optional"}
-to the URL, signed as Standard Webhooks (webhook-id, webhook-timestamp, webhook-signature).
-A repeated key sends the prompt to the session that key started.`,
+       scotty connect token <name> --host api.example.com --header "Authorization: Bearer"
+       scotty connect mcp <name> --endpoint https://example.com/mcp
+A webhook prints its secret once. Pipe a token or MCP secret on stdin; it is never returned.
+Agents reach token hosts at http://<name>.internal/api/ and MCP at /api/mcp.
+New connections are installed when a session starts or resumes after stopping.
+Example: cat /secure/token | scotty connect mcp linear --endpoint https://mcp.linear.app/mcp`,
   connections: `Usage: scotty connections
 List connections (names, kinds and URLs; secrets are never shown again).`,
   deliveries: `Usage: scotty deliveries [--connection name]

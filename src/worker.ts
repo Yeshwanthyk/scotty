@@ -5,15 +5,20 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { fireRun } from "./automations/fire.js";
+import { reachHandler } from "./creds/reach.js";
+import { ConnectionName } from "./creds/connections.js";
 import { gitHandler } from "./creds/git.js";
 import CredsObject from "./creds/object.js";
 import { hookHandler, hookPath } from "./hooks/handler.js";
 import { apiHandler, hatchPort } from "./http/api.js";
 import SessionObject, { SessionArtifacts } from "./session/object.js";
 
-// Set by the Session DO when it routes its container's github.internal and files.internal
-// traffic here.
-const LoopbackProps = Schema.Struct({ session: Schema.String, repo: Schema.String });
+// Set by the Session DO when it routes a container's built-in or connection egress here.
+const LoopbackProps = Schema.Struct({
+  session: Schema.String,
+  repo: Schema.String,
+  connection: Schema.optionalKey(ConnectionName),
+});
 // Set by the Creds DO's alarm when it hands over an automation run to fire.
 const RunProps = Schema.Struct({ run: Schema.String });
 // A preview host is `<port>-<session id>.<SCOTTY_HATCH_BASE>`.
@@ -59,7 +64,7 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
       name: `scotty-${stage}`,
       main: import.meta.url,
       domain: { name: host, zoneId },
-      compatibility: { date: "2026-09-01" },
+      compatibility: { date: "2026-09-01", flags: ["enable_request_signal"] },
       assets: {
         directory: "./ui/dist",
         notFoundHandling: "single-page-application",
@@ -141,6 +146,10 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
           );
         const props = Schema.decodeUnknownOption(LoopbackProps)(exec.raw.props);
         const request = yield* HttpServerRequest.HttpServerRequest;
+        if (Option.isSome(props) && props.value.connection !== undefined)
+          return yield* reachHandler(request, props.value.connection, credentials).pipe(
+            Effect.orDie,
+          );
         if (Option.isSome(props) && request.headers["host"] === "files.internal")
           return yield* attach(request, props.value.session).pipe(Effect.orDie);
         if (Option.isSome(props))

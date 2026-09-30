@@ -4,7 +4,7 @@ import { message } from "../data/core";
 import { ago } from "../data/status";
 import {
   accounts,
-  addWebhook,
+  addConnection,
   connections as loadConnections,
   deliveries as loadDeliveries,
   removeConnection,
@@ -35,7 +35,7 @@ export const sections = [
     id: "connections",
     label: "Connections",
     icon: "branch",
-    detail: "Webhooks that start sessions",
+    detail: "Webhooks, API tokens and MCP servers",
   },
   { id: "signed-in", label: "Signed in", icon: "circle", detail: "Cloudflare Access" },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; icon: IconName; detail: string }>;
@@ -534,6 +534,10 @@ function Connections() {
   const [items, setItems] = useState<Connection[]>();
   const [log, setLog] = useState<Delivery[]>([]);
   const [name, setName] = useState("");
+  const [kind, setKind] = useState<"webhook" | "token" | "mcp">("webhook");
+  const [target, setTarget] = useState("");
+  const [header, setHeader] = useState("Authorization: Bearer");
+  const [secret, setSecret] = useState("");
   const [created, setCreated] = useState<{ name: string; url: string; secret: string }>();
   const [copied, setCopied] = useState("");
   const [busy, setBusy] = useState(false);
@@ -568,7 +572,8 @@ function Connections() {
     <div className="settings-card">
       <p className="settings-intro">
         A webhook starts a session from a signed POST with {"{repo, prompt, key?}"}; a repeated key
-        steers that session. From a terminal: <code>scotty connect webhook name</code>
+        steers that session. Tokens and MCP servers let agents call a service through its internal
+        URL. New connections are available when a session starts or resumes after stopping.
       </p>
       {created ? (
         <div className="settings-row secret-row">
@@ -619,7 +624,14 @@ function Connections() {
                     <span className="mono">{item.name}</span>
                     <span className="quiet settings-size">{item.kind}</span>
                   </div>
-                  <div className="settings-row-detail mono">{item.url}</div>
+                  <div className="settings-row-detail mono">
+                    {item.kind === "webhook" ? item.url : item.internalUrl}
+                  </div>
+                  {item.kind !== "webhook" ? (
+                    <div className="settings-row-detail mono">
+                      {item.kind === "token" ? `${item.host} · ${item.header}` : item.url}
+                    </div>
+                  ) : null}
                 </div>
                 <button
                   type="button"
@@ -676,28 +688,96 @@ function Connections() {
         onSubmit={(event) => {
           event.preventDefault();
           void run(async () => {
-            setCreated(await addWebhook(name.trim()));
+            const result = await addConnection(
+              kind === "webhook"
+                ? { kind, name: name.trim() }
+                : kind === "token"
+                  ? {
+                      kind,
+                      name: name.trim(),
+                      host: target.trim(),
+                      header: header.trim(),
+                      secret: secret.trim(),
+                    }
+                  : { kind, name: name.trim(), url: target.trim(), secret: secret.trim() },
+            );
+            setCreated(result.kind === "webhook" ? result : undefined);
+            setSecret("");
+            setTarget("");
             setCopied("");
             setName("");
-          }, "Could not add the webhook");
+          }, "Could not add the connection");
         }}
       >
+        <select
+          className="field"
+          aria-label="Connection kind"
+          value={kind}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value === "webhook" || value === "token" || value === "mcp") {
+              setKind(value);
+              setSecret("");
+              setTarget("");
+            }
+          }}
+        >
+          <option value="webhook">Webhook</option>
+          <option value="token">API token</option>
+          <option value="mcp">MCP server</option>
+        </select>
         <input
           className="field"
           placeholder="name, like sentry"
-          aria-label="Webhook name"
+          aria-label="Connection name"
           autoComplete="off"
           value={name}
           onChange={(event) => setName(event.target.value.toLowerCase())}
         />
+        {kind !== "webhook" ? (
+          <>
+            <input
+              className="field"
+              aria-label={kind === "token" ? "HTTPS host" : "MCP URL"}
+              placeholder={kind === "token" ? "api.example.com" : "https://example.com/mcp"}
+              value={target}
+              onChange={(event) => setTarget(event.target.value)}
+              autoComplete="off"
+            />
+            {kind === "token" ? (
+              <input
+                className="field"
+                aria-label="Credential header"
+                placeholder="Authorization: Bearer or X-Api-Key"
+                value={header}
+                onChange={(event) => setHeader(event.target.value)}
+                autoComplete="off"
+              />
+            ) : null}
+            <input
+              className="field"
+              type="password"
+              aria-label="Connection secret"
+              placeholder="Paste token"
+              value={secret}
+              onChange={(event) => setSecret(event.target.value)}
+              autoComplete="off"
+            />
+          </>
+        ) : null}
         <button
           type="submit"
           className="button pressable"
           data-tone="primary"
-          disabled={busy || name.trim() === ""}
+          disabled={
+            busy ||
+            name.trim() === "" ||
+            (kind !== "webhook" && (target.trim() === "" || secret.trim() === "")) ||
+            (kind === "token" && header.trim() === "")
+          }
         >
           {busy ? <Spinner size={12} /> : <Icon name="plus" size={13} />}
-          Add webhook
+          Add connection
         </button>
       </form>
       <Problem text={error} />

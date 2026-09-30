@@ -1,7 +1,12 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { DeliveryOutcome, DeliveryReason } from "../src/creds/connections.js";
+import {
+  Connection,
+  ConnectionCreated,
+  DeliveryOutcome,
+  DeliveryReason,
+} from "../src/creds/connections.js";
 
 export class CliFailure extends Schema.TaggedError<CliFailure>()("CliFailure", {
   code: Schema.String,
@@ -49,14 +54,9 @@ export const Created = Schema.Struct({
   // A create with a key already used steers that session instead of making one.
   steered: Schema.optional(Schema.Boolean),
 });
-export const Connection = Schema.Struct({
-  name: Schema.String,
-  kind: Schema.String,
-  created: Schema.Number,
-  url: Schema.String,
-});
+export { Connection, ConnectionCreated };
+export const WebhookCreated = ConnectionCreated.members[0];
 export const Connections = Schema.Struct({ connections: Schema.Array(Connection) });
-export const ConnectionCreated = Schema.Struct({ ...Connection.fields, secret: Schema.String });
 export const ConnectionRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
 export const Deliveries = Schema.Struct({
   deliveries: Schema.Array(

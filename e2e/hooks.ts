@@ -3,7 +3,7 @@ import {
   access,
   CliFailure,
   client,
-  ConnectionCreated,
+  WebhookCreated as ConnectionCreated,
   Connections,
   ConnectionRemoved,
   Conversation,
