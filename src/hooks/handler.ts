@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type * as Cloudflare from "alchemy/Cloudflare";
@@ -56,10 +56,24 @@ export function hookHandler(
         .pipe(Effect.andThen(refuse(status, reason)));
     if (delivery === "" || timestamp === "" || signature === "" || delivery.length > 256)
       return yield* reject(400, "missing_headers");
-    if (Number(request.headers["content-length"] ?? 0) > maxBodyBytes)
-      return yield* reject(413, "too_large");
-    const bytes = new Uint8Array(yield* request.arrayBuffer);
-    if (bytes.byteLength > maxBodyBytes) return yield* reject(413, "too_large");
+    // Reads until the cap is passed and stops there; Content-Length is the sender's claim only.
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    yield* request.stream.pipe(
+      Stream.takeWhile((chunk) => {
+        size += chunk.byteLength;
+        chunks.push(chunk);
+        return size <= maxBodyBytes;
+      }),
+      Stream.runDrain,
+    );
+    if (size > maxBodyBytes) return yield* reject(413, "too_large");
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
     const body = new TextDecoder().decode(bytes);
     const verdict = yield* credential.verifyDelivery({
       connection: name,
@@ -70,19 +84,31 @@ export function hookHandler(
     });
     if (verdict === "unknown") return yield* refuse(404, "unknown_connection");
     if (verdict !== "ok") return yield* reject(401, verdict);
-    const earlier = yield* credential.acceptedDelivery(name, delivery);
-    if (earlier !== null) {
+    const payload = yield* decodePayload(body).pipe(Effect.option);
+    if (payload._tag === "None") return yield* reject(400, "bad_body");
+    const { repo, prompt, key, agent, title } = payload.value;
+    // One claim per delivery id: a concurrent or retried delivery gets the first one's result.
+    const claim = yield* credential.claimDelivery(name, delivery);
+    if (claim.state === "pending")
+      return yield* HttpServerResponse.json({ status: "in_progress" }, { status: 202 });
+    if (claim.state === "done") {
+      if (claim.outcome === "rejected") return yield* refuse(409, claim.reason ?? "rejected");
       yield* credential.recordDelivery({
         id: delivery,
         connection: name,
         outcome: "duplicate",
-        session: earlier,
+        ...(claim.session === null ? {} : { session: claim.session }),
       });
-      return yield* HttpServerResponse.json({ status: "duplicate", session: earlier });
+      return yield* HttpServerResponse.json({ status: "duplicate", session: claim.session });
     }
-    const payload = yield* decodePayload(body).pipe(Effect.option);
-    if (payload._tag === "None") return yield* reject(400, "bad_body");
-    const { repo, prompt, key, agent, title } = payload.value;
+    const settle = (outcome: "accepted" | "rejected", reason?: string, session?: string) =>
+      credential.settleDelivery({
+        id: delivery,
+        connection: name,
+        outcome,
+        ...(reason === undefined ? {} : { reason }),
+        ...(session === undefined ? {} : { session }),
+      });
     const started = yield* startSession(sessions, credential, {
       repo,
       prompt,
@@ -98,17 +124,21 @@ export function hookHandler(
         ...(key === undefined ? {} : { key }),
       },
     });
-    if (started.kind === "refused") return yield* reject(502, "repository_unavailable");
-    if (started.kind === "conflict") return yield* reject(409, "key_conflict");
-    // A failed session takes no prompt; the sender should know rather than be told it went in.
-    if (started.kind === "steered" && started.status === "stale")
-      return yield* reject(409, "session_unavailable");
-    yield* credential.recordDelivery({
-      id: delivery,
-      connection: name,
-      outcome: "accepted",
-      session: started.id,
-    });
+    // A failure that a retry could cure leaves no claim behind.
+    if (started.kind === "refused")
+      return yield* credential
+        .releaseDelivery(name, delivery)
+        .pipe(Effect.andThen(reject(502, "repository_unavailable")));
+    if (started.kind === "conflict")
+      return yield* settle("rejected", "key_conflict").pipe(
+        Effect.andThen(refuse(409, "key_conflict")),
+      );
+    // A session that took no prompt (failed, or its turn moved on): the sender should know.
+    if (started.kind === "unavailable")
+      return yield* settle("rejected", "session_unavailable").pipe(
+        Effect.andThen(refuse(409, "session_unavailable")),
+      );
+    yield* settle("accepted", undefined, started.id);
     return yield* HttpServerResponse.json({
       status: "accepted",
       session: started.id,

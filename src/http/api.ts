@@ -286,6 +286,17 @@ export function apiHandler(
           },
           { status: 409 },
         );
+      if (started.kind === "unavailable")
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: "The session for that key is not taking prompts",
+              code: "session_unavailable",
+              hint: `scotty read ${started.id}`,
+            },
+          },
+          { status: 409 },
+        );
       const created =
         started.kind === "started"
           ? started.view

@@ -10,3 +10,6 @@ export const Key = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength
 export const DeliveryOutcome = Schema.Literals(["accepted", "rejected", "duplicate"]);
 // How many deliveries are kept; older ones are dropped as new ones arrive.
 export const keptDeliveries = 500;
+
+// A delivery claimed and not settled for this long can be taken over by a retry.
+export const claimTakeoverMs = 60_000;

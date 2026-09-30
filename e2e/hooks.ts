@@ -21,15 +21,24 @@ const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("hooks", message, "scotty deliveries"));
 
 const Answer = Schema.fromJsonString(Schema.Struct({ session: Schema.String }));
+const Status = Schema.fromJsonString(
+  Schema.Struct({ status: Schema.String, session: Schema.optional(Schema.NullOr(Schema.String)) }),
+);
 const answered = (text: string) =>
   Schema.decodeUnknownEffect(Answer)(text).pipe(Effect.map((x) => x.session));
 const base64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 
 // A Standard Webhooks delivery, signed with the connection's secret. /hooks/* is outside Access,
 // so it carries no Access token.
-const deliver = (url: string, name: string, secret: string, body: unknown, tamper = false) =>
+const deliver = (
+  url: string,
+  name: string,
+  secret: string,
+  body: unknown,
+  options: { tamper?: boolean; id?: string } = {},
+) =>
   Effect.promise(async () => {
-    const id = `msg_${crypto.randomUUID()}`;
+    const id = options.id ?? `msg_${crypto.randomUUID()}`;
     const timestamp = String(Math.floor(Date.now() / 1000));
     const text = JSON.stringify(body);
     const key = await crypto.subtle.importKey(
@@ -42,7 +51,7 @@ const deliver = (url: string, name: string, secret: string, body: unknown, tampe
     const signed = await crypto.subtle.sign(
       "HMAC",
       key,
-      new TextEncoder().encode(`${id}.${timestamp}.${tamper ? `${text} ` : text}`),
+      new TextEncoder().encode(`${id}.${timestamp}.${options.tamper ? `${text} ` : text}`),
     );
     const response = await fetch(`${url}/hooks/${name}`, {
       method: "POST",
@@ -122,7 +131,7 @@ const program = Effect.gen(function* () {
   }
 
   // 2. A bad signature is rejected and listed.
-  const bad = yield* deliver(url, name, connection.secret, body("say no"), true);
+  const bad = yield* deliver(url, name, connection.secret, body("say no"), { tamper: true });
   yield* check(bad.status === 401, `Tampered delivery: ${bad.status}`);
   const deliveries = yield* request(
     `/api/deliveries?connection=${encodeURIComponent(name)}`,
@@ -143,6 +152,90 @@ const program = Effect.gen(function* () {
     repo: "someone/else",
   });
   yield* check(other.status === 409, `Key conflict: ${other.status}`);
+
+  // 4. The same delivery id twice at once has one effect; the other answer is a duplicate.
+  const turnsOf = (id: string, count: number) =>
+    waiter(request, `/api/sessions/${id}`)(
+      () => request(`/api/sessions/${id}/conversation`, Conversation),
+      (value) => value.turns.length === count,
+    );
+  const once = `msg_${crypto.randomUUID()}`;
+  const twice = yield* Effect.all(
+    [1, 2].map(() =>
+      deliver(
+        url,
+        name,
+        connection.secret,
+        body(prompt("Reply with only the word three.", "say three")),
+        {
+          id: once,
+        },
+      ),
+    ),
+    { concurrency: "unbounded" },
+  );
+  const answers = yield* Effect.forEach(twice, (item) =>
+    Schema.decodeUnknownEffect(Status)(item.body),
+  );
+  yield* check(
+    answers.filter((item) => item.status === "accepted").length === 1 &&
+      answers.every((item) => ["accepted", "duplicate", "in_progress"].includes(item.status)),
+    `The same delivery twice gave ${answers.map((item) => item.status).join(", ")}`,
+  );
+  const retried = yield* deliver(url, name, connection.secret, body("say again"), { id: once });
+  yield* check(
+    (yield* Schema.decodeUnknownEffect(Status)(retried.body)).status === "duplicate",
+    "A retry of an accepted delivery was not a duplicate",
+  );
+  yield* turnsOf(session, 3);
+  console.log("Same delivery id twice: one turn, the other a duplicate");
+
+  // 5. A delivery that steers a stopped session resumes it.
+  yield* poll(events, (log) => log.filter((e) => e.kind === "turn.ended").length >= 3);
+  yield* request(`${prefix}/stop`, View, { method: "POST" });
+  const resumed = yield* deliver(
+    url,
+    name,
+    connection.secret,
+    body(prompt("Reply with only the word four.", "say four")),
+  );
+  yield* check(resumed.status === 200, `Delivery to a stopped session: ${resumed.status}`);
+  yield* turnsOf(session, 4);
+  yield* poll(events, (log) => log.filter((e) => e.kind === "turn.ended").length >= 4);
+  console.log("A delivery to a stopped session resumed it");
+
+  // 6. Two deliveries at once with one new key: one session, both prompts become turns.
+  const fresh = `e2e-${crypto.randomUUID()}`;
+  const pair = yield* Effect.all(
+    ["five", "six"].map((word) =>
+      deliver(url, name, connection.secret, {
+        ...body(prompt(`Reply with only the word ${word}.`, `say ${word}`)),
+        key: fresh,
+      }),
+    ),
+    { concurrency: "unbounded" },
+  );
+  yield* check(
+    pair.every((item) => item.status === 200),
+    `Concurrent deliveries gave ${pair.map((item) => item.status).join(", ")}`,
+  );
+  const sessions = yield* Effect.forEach(pair, (item) =>
+    Schema.decodeUnknownEffect(Status)(item.body),
+  );
+  const together = sessions[0]?.session;
+  yield* check(
+    typeof together === "string" && sessions.every((item) => item.session === together),
+    "Concurrent deliveries with one key made more than one session",
+  );
+  if (typeof together === "string") {
+    const both = yield* turnsOf(together, 2);
+    yield* check(
+      ["five", "six"].every((word) => both.turns.some((turn) => turn.user.includes(word))),
+      "A prompt from the concurrent deliveries was lost",
+    );
+    yield* request(`/api/sessions/${together}/stop`, View, { method: "POST" }).pipe(Effect.ignore);
+  }
+  console.log("Concurrent deliveries with a new key: one session, both prompts");
 
   yield* request(`${prefix}/stop`, View, { method: "POST" }).pipe(Effect.ignore);
   const removed = yield* request(

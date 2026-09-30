@@ -34,6 +34,43 @@ describe("session fold", () => {
     check(state);
   });
 
+  it("keeps a prompt that arrives while the workspace is made and sends it with the first", () => {
+    let state = [created, start].reduce(fold, initial);
+    const early = make(3, "prompt.requested", {
+      req: "early",
+      turn: "0",
+      text: "more",
+      images: [],
+    });
+    state = fold(state, early);
+    expect(state.requests.find((item) => item.req === "early")?.status).toBe("pending");
+    expect(command(state, early)).toBeUndefined();
+    const again = make(3 + 1, "prompt.requested", {
+      req: "early",
+      turn: "0",
+      text: "x",
+      images: [],
+    });
+    expect(fold(state, again).requests).toHaveLength(1);
+    const up = make(5, "sup.hello", { gen: 1, version: "v1" });
+    const workspace = make(6, "workspace.ready", { gen: 1, branch: "main", commit: "abc" });
+    state = fold(fold(state, up), workspace);
+    const sent = command(state, workspace);
+    expect(sent?.kind).toBe("resend");
+    expect(sent?.kind === "resend" ? sent.requests.map((item) => item.req) : []).toEqual([
+      "initial:1",
+      "early",
+    ]);
+    expect(deadline(state)).toBeDefined();
+    check(state);
+    // An interrupt still has nothing to stop before the workspace exists.
+    const stop = make(3, "interrupt.requested", { req: "i", turn: "0" });
+    expect(
+      fold([created, start].reduce(fold, initial), stop).requests.find((r) => r.req === "i")
+        ?.status,
+    ).toBe("stale");
+  });
+
   it("deduplicates start and request ids; rejects reserved initial names and stale turns", () => {
     let state = fold(fold(initial, created), start);
     const repeated = make(3, "container.start", { gen: 1 });

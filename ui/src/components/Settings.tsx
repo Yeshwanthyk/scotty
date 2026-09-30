@@ -567,7 +567,7 @@ function Connections() {
         steers that session. From a terminal: <code>scotty connect webhook name</code>
       </p>
       {created ? (
-        <div className="settings-row">
+        <div className="settings-row secret-row">
           <div className="settings-row-text">
             <div className="settings-row-title">
               <span className="mono">{created.name}</span> secret, shown once
@@ -575,25 +575,31 @@ function Connections() {
             <div className="settings-row-detail mono">{created.secret}</div>
             <div className="settings-row-detail mono">{created.url}</div>
           </div>
-          <button
-            type="button"
-            className="button pressable"
-            onClick={() => copy("secret", created.secret)}
-          >
-            <Icon name={copied === "secret" ? "check" : "copy"} size={13} />
-            Copy secret
-          </button>
-          <button
-            type="button"
-            className="button pressable"
-            onClick={() => copy("url", created.url)}
-          >
-            <Icon name={copied === "url" ? "check" : "copy"} size={13} />
-            Copy URL
-          </button>
-          <button type="button" className="button pressable" onClick={() => setCreated(undefined)}>
-            Done
-          </button>
+          <div className="settings-actions">
+            <button
+              type="button"
+              className="button pressable"
+              onClick={() => copy("secret", created.secret)}
+            >
+              <Icon name={copied === "secret" ? "check" : "copy"} size={13} />
+              Copy secret
+            </button>
+            <button
+              type="button"
+              className="button pressable"
+              onClick={() => copy("url", created.url)}
+            >
+              <Icon name={copied === "url" ? "check" : "copy"} size={13} />
+              Copy URL
+            </button>
+            <button
+              type="button"
+              className="button pressable"
+              onClick={() => setCreated(undefined)}
+            >
+              Done
+            </button>
+          </div>
         </div>
       ) : null}
       {items.length === 0 ? (
