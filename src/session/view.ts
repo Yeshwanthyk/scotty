@@ -28,6 +28,7 @@ export function sessionView(id: string, state: State) {
       repository: created?.repo ?? "",
       branch,
       agentKind: created?.agentKind ?? "codex",
+      place: created?.place ?? ("cloudflare" as const),
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
     },

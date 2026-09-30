@@ -214,13 +214,14 @@ export function apiHandler(
         prompt: body.prompt,
         agentKind: body.agent ?? "codex",
         image: "default",
+        place: body.provider,
         ...(body.scripted === true ? { scripted: true } : {}),
       });
       return yield* HttpServerResponse.json({
         id,
         title: created.display.title,
         branch: created.display.branch,
-        provider: "cloudflare",
+        provider: created.display.place,
         status: created.authority.kind === "stable" ? created.authority.lifecycle : "booting",
         url: `/s/${id}`,
       });

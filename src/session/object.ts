@@ -1,8 +1,10 @@
+import { cloudflarePlace } from "../places/cloudflare.js";
+import type { Place, PlaceKind } from "../places/place.js";
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
-import { Cause, Config, Duration, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
+import { Cause, Config, Duration, Effect, Exit, Schedule, Semaphore } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { AgentConfig, ToSupervisorMessage } from "../../protocol/supervisor.js";
@@ -51,11 +53,6 @@ export const SessionArtifacts = Cloudflare.R2.Bucket(
   Effect.map(Stack, ({ stage }) => ({ name: `scotty-${stage}-artifacts`, forceDestroy: true })),
 );
 
-class ContainerStartFailed extends Schema.TaggedError<ContainerStartFailed>()(
-  "ContainerStartFailed",
-  {},
-) {}
-
 export default class SessionObject extends Cloudflare.DurableObject<SessionObject>()(
   "SessionObject",
   Effect.gen(function* () {
@@ -67,24 +64,19 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       // The container handle exists only at run time.
       const container = storage.container;
       if (container === undefined) return yield* Effect.die("Session container binding missing");
-      // ctx.exports is typed {} without a GlobalProps declaration; its default export is the
-      // Worker's loopback, which takes props (work/spikes/7a/RESULT.md).
-      const isLoopback = (
-        value: unknown,
-      ): value is (options: {
-        props: { session: string; repo: string };
-      }) => Parameters<NonNullable<typeof container>["interceptOutboundHttp"]>[1] =>
-        typeof value === "function";
       const log = yield* openLog(storage);
       const id = () => log.state.created?.branch.slice("scotty/".length) ?? "";
       const context = yield* Effect.context<RuntimeContext | Cloudflare.DurableObjectState>();
 
       const append = log.append;
+      const places = {
+        cloudflare: cloudflarePlace(container, storage.raw.exports),
+      } satisfies Record<typeof PlaceKind.Type, Place>;
+      // Logs written before `created.place` ran on Cloudflare.
+      const where = () => places[log.state.created?.place ?? "cloudflare"];
       const saveKey = () => `saves/${id()}.tar`;
       const supervisor = (path: string, init?: { method: "PUT"; body: ArrayBuffer }) =>
-        Effect.tryPromise(() =>
-          container.getTcpPort(7000).fetch(`http://container${path}`, init),
-        ).pipe(
+        Effect.tryPromise(() => where().port(7000).fetch(`http://container${path}`, init)).pipe(
           Effect.flatMap((response) =>
             response.ok
               ? Effect.succeed(response)
@@ -95,7 +87,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       let link: SupervisorLink;
       // Work queued for an older generation, or for a session that has ended, does nothing.
       const current = (gen: number) => log.state.gen === gen && live(log.state);
-      const port = () => Cloudflare.fromCloudflareFetcher(container.getTcpPort(7000));
+      const port = () => Cloudflare.fromCloudflareFetcher(where().port(7000));
       // Container work runs after the caller returns, one operation at a time, so a resume
       // waits for the stop's destroy. Its outcome arrives as a later event.
       const lifecycle = yield* Semaphore.make(1);
@@ -110,25 +102,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           switch (action.kind) {
             case "container.start": {
               if (!current(action.gen)) return;
-              if (action.fresh && container.running)
-                yield* Effect.promise(() => container.destroy());
-              if (!container.running) {
-                // A new container needs the interceptor; Alchemy's wrapper drops this promise.
-                const loopback: unknown = Reflect.get(storage.raw.exports, "default");
-                if (!isLoopback(loopback)) return yield* Effect.die("no ctx.exports.default");
-                const repo = log.state.created?.repo ?? "";
-                const fetcher = loopback({ props: { session: id(), repo } });
-                yield* Effect.tryPromise(() =>
-                  Promise.all([
-                    container.interceptOutboundHttp("github.internal", fetcher),
-                    container.interceptOutboundHttp("files.internal", fetcher),
-                  ]),
-                ).pipe(Effect.mapError(() => new ContainerStartFailed()));
-                yield* Effect.try({
-                  try: () => container.start({ enableInternet: true }),
-                  catch: () => new ContainerStartFailed(),
-                });
-              }
+              if (action.fresh && where().running()) yield* where().destroy();
+              if (!where().running())
+                yield* where().start({ session: id(), repo: log.state.created?.repo ?? "" });
               // A new container takes a moment to listen, longer on a new host; retry until the
               // fold's container deadline before reporting dial.failed.
               yield* link
@@ -278,7 +254,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
             }
             case "destroy":
-              if (container.running) yield* Effect.promise(() => container.destroy());
+              if (where().running()) yield* where().destroy();
               return;
           }
         }).pipe(
@@ -299,7 +275,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (action.kind === "start") console.error(`start failed: ${Cause.pretty(cause)}`);
               if (action.kind === "container.start" || action.kind === "dial") {
                 // A dial that fails because the container is gone is a stop, not a retry.
-                const kind = container.running ? "dial.failed" : "container.stopped";
+                const kind = where().running() ? "dial.failed" : "container.stopped";
                 yield* dispatch(yield* append({ kind, gen: action.gen }, "session"));
               } else if (action.kind === "start") {
                 yield* append(
@@ -342,6 +318,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           prompt: string;
           agentKind: typeof AgentKind.Type;
           image: string;
+          place: typeof PlaceKind.Type;
           scripted?: true;
         }) =>
           Effect.gen(function* () {
@@ -357,6 +334,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   title: input.title,
                   prompt: input.prompt,
                   image: input.image,
+                  place: input.place,
                   ...(input.scripted === true ? { scripted: true } : {}),
                 },
                 "api",
@@ -440,7 +418,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             const size = `cols=${url.searchParams.get("cols")}&rows=${url.searchParams.get("rows")}`;
             const target = `http://container/terminal?gen=${log.state.gen}&${size}`;
             return yield* Effect.tryPromise(() =>
-              container.getTcpPort(7000).fetch(target, { headers: request.headers }),
+              where().port(7000).fetch(target, { headers: request.headers }),
             ).pipe(
               Effect.map((response) => HttpServerResponse.raw(response)),
               Effect.orElseSucceed(() => unavailable),
@@ -452,9 +430,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           headers.delete("host");
           const target = `http://localhost:${port}${url.pathname}${url.search}`;
           const init = { method: request.method, headers, body: request.body, redirect: "manual" };
-          return yield* Effect.tryPromise(() =>
-            container.getTcpPort(port).fetch(target, init),
-          ).pipe(
+          return yield* Effect.tryPromise(() => where().port(port).fetch(target, init)).pipe(
             // raw hands the Response back untouched, so a 101 keeps its webSocket.
             Effect.map((response) => HttpServerResponse.raw(response)),
             Effect.orElseSucceed(() =>
