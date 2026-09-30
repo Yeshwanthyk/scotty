@@ -1,5 +1,11 @@
 import { Option, Schema } from "effect";
-import { DeliveryOutcome, DeliveryReason } from "../../../src/creds/connections.ts";
+import {
+  Connection,
+  ConnectionCreated,
+  NewConnection,
+  DeliveryOutcome,
+  DeliveryReason,
+} from "../../../src/creds/connections.ts";
 import { request } from "./core";
 
 const Skill = Schema.Struct({
@@ -43,14 +49,7 @@ const GitHubSet = Schema.Union([
   Schema.Struct({ status: Schema.Literal("refused"), httpStatus: Schema.Number }),
 ]);
 
-const Connection = Schema.Struct({
-  name: Schema.String,
-  kind: Schema.String,
-  created: Schema.Number,
-  url: Schema.String,
-});
 const Connections = Schema.Struct({ connections: Schema.Array(Connection) });
-const ConnectionCreated = Schema.Struct({ ...Connection.fields, secret: Schema.String });
 const Deliveries = Schema.Struct({
   deliveries: Schema.Array(
     Schema.Struct({
@@ -167,13 +166,11 @@ export async function connections(signal?: AbortSignal): Promise<Connection[]> {
   return [...decode(Connections, value, "connections").connections];
 }
 
-// The secret comes back once, in this reply only.
-export async function addWebhook(name: string): Promise<typeof ConnectionCreated.Type> {
-  return decode(
-    ConnectionCreated,
-    await request("/api/connections", { kind: "webhook", name }),
-    "connection",
-  );
+// Only a generated webhook secret comes back.
+export async function addConnection(
+  input: typeof NewConnection.Type,
+): Promise<typeof ConnectionCreated.Type> {
+  return decode(ConnectionCreated, await request("/api/connections", input), "connection");
 }
 
 export async function removeConnection(name: string): Promise<void> {

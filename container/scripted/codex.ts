@@ -31,7 +31,7 @@ import type {
   TurnStartParams,
   TurnSteerParams,
 } from "./codex-protocol.js";
-import { fill, lines, shell, step } from "./script.js";
+import { call, fill, lines, shell, step, type Step } from "./script.js";
 
 type Notifications = {
   "thread/started": ThreadStartedNotification;
@@ -82,6 +82,7 @@ type Turn = {
   readonly startedAt: number;
   interrupted: boolean;
   child: ChildProcess | undefined;
+  call: AbortController | undefined;
 };
 
 const home = process.env.CODEX_HOME ?? `${process.env.HOME ?? "/home/scotty"}/.codex`;
@@ -171,7 +172,8 @@ const say = (turn: Turn, text: string) => {
   turn.items.push(done);
 };
 
-const run = async (turn: Turn, command: string) => {
+const run = async (turn: Turn, next: Extract<Step, { kind: "run" | "call" }>) => {
+  const command = next.command;
   const id = `call_${crypto.randomUUID().replaceAll("-", "")}`;
   const execution = (
     status: "inProgress" | "completed" | "failed" | "declined",
@@ -193,8 +195,13 @@ const run = async (turn: Turn, command: string) => {
   });
   started(turn, execution("inProgress", undefined));
   const startedAt = Date.now();
-  const { output, exitCode } = await shell(command, cwd, (child) => (turn.child = child));
+  if (next.kind === "call") turn.call = new AbortController();
+  const { output, exitCode } =
+    next.kind === "call" && turn.call !== undefined
+      ? await call(next.options, turn.call.signal)
+      : await shell(command, cwd, (child) => (turn.child = child));
   turn.child = undefined;
+  turn.call = undefined;
   if (output !== "")
     notify("item/commandExecution/outputDelta", {
       threadId: turn.thread,
@@ -219,7 +226,7 @@ const perform = async (turn: Turn) => {
     line = turn.lines.shift()
   ) {
     const next = step(line);
-    if (next.kind === "run") await run(turn, next.command);
+    if (next.kind === "run" || next.kind === "call") await run(turn, next);
     else say(turn, fill(next.text, lastOutput, recall(turn.thread)));
   }
   if (active === turn) active = undefined;
@@ -333,6 +340,7 @@ const handle = (message: typeof Message.Type) => {
         startedAt: seconds(),
         interrupted: false,
         child: undefined,
+        call: undefined,
       };
       active = turn;
       reply(id, { turn: turnBody(turn, "inProgress") } satisfies TurnStartResponse);
@@ -363,6 +371,7 @@ const handle = (message: typeof Message.Type) => {
         return fail(id, "no matching active turn");
       active.interrupted = true;
       active.child?.kill();
+      active.call?.abort();
       return reply(id, {} satisfies TurnInterruptResponse);
     }
     default:
