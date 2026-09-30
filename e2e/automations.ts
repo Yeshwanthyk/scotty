@@ -7,6 +7,7 @@ import {
   client,
   ConnectionCreated,
   ConnectionRemoved,
+  List,
   failure,
   Runs,
   target,
@@ -14,6 +15,7 @@ import {
 } from "../cli/client.js";
 import { agent, prompt, real, sessionAgent } from "./lib/agent.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
+import { Log, waiter } from "./lib/wait.js";
 
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("automations", message, "scotty runs"));
@@ -33,11 +35,14 @@ const Origin = Schema.Struct({
 });
 const Answer = Schema.fromJsonString(
   Schema.Struct({
+    status: Schema.Literals(["accepted", "duplicate"]),
     runs: Schema.Array(
       Schema.Struct({
+        id: Schema.String,
         automation: Schema.String,
         status: Schema.String,
         reason: Schema.NullOr(Schema.String),
+        session: Schema.NullOr(Schema.String),
       }),
     ),
   }),
@@ -57,9 +62,14 @@ const soon = (tz: string) => {
 };
 
 // A Standard Webhooks delivery, signed with the connection's secret.
-const deliver = (url: string, name: string, secret: string, body: unknown) =>
+const deliver = (
+  url: string,
+  name: string,
+  secret: string,
+  body: unknown,
+  id = `msg_${crypto.randomUUID()}`,
+) =>
   Effect.promise(async () => {
-    const id = `msg_${crypto.randomUUID()}`;
     const timestamp = String(Math.floor(Date.now() / 1000));
     const text = JSON.stringify(body);
     const key = await crypto.subtle.importKey(
@@ -164,7 +174,7 @@ const program = Effect.gen(function* () {
       only: { action: ["opened", "reopened"] },
       key: "issue-{{issue.id}}",
       repo: fixtureRepo,
-      prompt: "Look at {{issue.title}}",
+      prompt: prompt("Look at {{issue.title}}", "say {{issue.title}}"),
       ...sessionAgent,
     },
   });
@@ -190,6 +200,63 @@ const program = Effect.gen(function* () {
     `The non-matching delivery gave ${JSON.stringify(skipped)}`,
   );
   console.log(`A non-matching delivery is a skip: ${skipped[0]?.reason}`);
+
+  // A repeated event preserves a run's start or steer and appends no prompt to its session.
+  let eventSession: string | null = null;
+  for (const [title, status] of [
+    ["first", "started"],
+    ["second", "steered"],
+  ]) {
+    const delivery = `msg_${crypto.randomUUID()}`;
+    const body = { action: "opened", issue: { id: 7, title } };
+    const answers = yield* Effect.all(
+      [1, 2].map(() => deliver(url, hook, connection.secret, body, delivery)),
+      { concurrency: "unbounded" },
+    );
+    for (const answer of answers) {
+      yield* check(answer.status === 200, `Event delivery answered ${answer.status}`);
+      const received = yield* Schema.decodeUnknownEffect(Answer)(answer.body);
+      const run = received.runs[0];
+      yield* check(
+        received.runs.length === 1 &&
+          run?.id === `delivery:${hook}:${delivery}:${listener}` &&
+          run.status === status &&
+          run.session !== null &&
+          (eventSession === null || run.session === eventSession),
+        `Repeated delivery did not preserve its ${status} run`,
+      );
+      eventSession = run?.session ?? null;
+    }
+    const prefix = `/api/sessions/${eventSession}`;
+    const events = () => request(`${prefix}/log`, Log);
+    yield* waiter(request, prefix)(events, (log) =>
+      log.some(
+        (event) => event.kind === "save.done" && event.turn === (status === "started" ? "0" : "1"),
+      ),
+    );
+    const before = yield* events();
+    const retried = yield* deliver(url, hook, connection.secret, body, delivery);
+    const received = yield* Schema.decodeUnknownEffect(Answer)(retried.body);
+    yield* check(
+      retried.status === 200 &&
+        received.status === "duplicate" &&
+        received.runs[0]?.status === status,
+      `Settled delivery lost its ${status} outcome`,
+    );
+    yield* check(
+      JSON.stringify(yield* events()) === JSON.stringify(before),
+      "A settled delivery retry appended session events",
+    );
+  }
+  yield* check((yield* runsOf(listener)).runs.length === 3, "Repeated deliveries made extra runs");
+  const hits = yield* request(`/api/sessions?q=${listener}`, List);
+  yield* check(
+    hits.sessions.some((session) => session.identity.id === eventSession),
+    "Searching the automation's name did not find its session",
+  );
+  if (eventSession !== null)
+    yield* request(`/api/sessions/${eventSession}/stop`, View, { method: "POST" });
+  console.log("Repeated events keep one run and preserve start and steer outcomes");
 
   for (const name of [scheduled, listener]) {
     const removed = yield* request(`/api/automations/${name}`, AutomationRemoved, {

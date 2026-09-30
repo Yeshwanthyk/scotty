@@ -209,7 +209,11 @@ export function Sidebar({
       </div>
       <div className="session-groups" data-scroll>
         {list === undefined && error === "" ? <Placeholder /> : null}
-        {error && list === undefined ? <p className="sidebar-empty alert">{error}</p> : null}
+        {error && list === undefined ? (
+          <p className="sidebar-empty" title={error}>
+            Can't reach Scotty. Retrying…
+          </p>
+        ) : null}
         {list?.length === 0 ? (
           <p className="sidebar-empty">No sessions yet. Start one and it shows up here.</p>
         ) : null}

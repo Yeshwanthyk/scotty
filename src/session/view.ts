@@ -20,32 +20,6 @@ const turnState = (ended: string | undefined) =>
 // A session's first prompt as shown to searches: long pastes are cut.
 const promptPreview = (prompt: string) => prompt.trim().slice(0, 300);
 
-// A search text is at most this many characters once trimmed.
-export const maxSearch = 200;
-
-// Case-insensitive substring over what the owner remembers a session by: title, repository,
-// branch, the whole first prompt, and the key and connection or automation of its origin.
-export function sessionMatches(state: State, query: string) {
-  const needle = query.trim().toLowerCase();
-  if (needle === "") return true;
-  const created = state.created;
-  if (created === undefined) return false;
-  const origin = created.origin;
-  const fields = [
-    created.title,
-    created.repo,
-    created.branch,
-    created.prompt,
-    origin === undefined ? "" : (origin.key ?? ""),
-    origin?.kind === "hook"
-      ? origin.connection
-      : origin?.kind === "automation"
-        ? origin.automation
-        : "",
-  ];
-  return fields.some((field) => field.toLowerCase().includes(needle));
-}
-
 // How the turn a prompt went into ended: the first prompt's when `req` is absent. A prompt the
 // session refused counts as failed; a turn cut short by a stop, as stopped.
 export function turnOutcome(state: State, req?: string) {

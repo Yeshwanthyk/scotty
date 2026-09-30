@@ -9,14 +9,13 @@ import { defaultBranch } from "./repository.js";
 
 export const githubHint = "scotty login github";
 export const Repo = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/));
-
-// The first line of the prompt, cut at a word near 60 characters.
-export const titleFrom = (prompt: string) => {
-  const line = prompt.trim().split("\n")[0] ?? "";
-  if (line.length <= 60) return line;
-  const cut = line.slice(0, 60);
-  return `${cut.slice(0, cut.lastIndexOf(" ") > 30 ? cut.lastIndexOf(" ") : 60)}…`;
-};
+export const Prompt = Schema.String.check(
+  Schema.makeFilter((text) => text.trim() !== "", { expected: "a prompt that is not blank" }),
+  Schema.isMaxLength(256 * 1024),
+  Schema.makeFilter((text) => new TextEncoder().encode(text).byteLength <= 256 * 1024, {
+    expected: "at most 256 KiB of UTF-8 text",
+  }),
+);
 
 export type StartInput = {
   repo: string;
@@ -28,81 +27,86 @@ export type StartInput = {
   scripted?: true;
   // With a key, a second start steers the session the first one made.
   key?: string;
-  // Makes a retry a no-op: the session it reserved, or the steer it sent, the first time.
+  // The request id: a retry with it is answered with what the first attempt did.
   retry: string;
   origin?: Origin;
 };
 
-// A start either makes a session, steers the one its key names, or says why not.
+// A start makes a session, prompts the one its key names, answers a retry with what the first
+// attempt did, or says why not. The Session DO decides which; every caller with one id agrees.
 export function startSession(
   sessions: Cloudflare.DurableObject<SessionObject>,
   credential: ReturnType<Cloudflare.DurableObject<CredsObject>["getByName"]>,
   input: StartInput,
 ) {
   return Effect.gen(function* () {
-    const steer = (known: { id: string; repo: string; agent: typeof AgentKind.Type }) =>
-      Effect.gen(function* () {
-        if (known.repo !== input.repo || known.agent !== input.agent)
-          return { kind: "conflict" as const, id: known.id };
-        const { status } = yield* sessions
-          .getByName(known.id)
-          .request({ kind: "prompt", req: input.retry, text: input.prompt });
-        // A prompt the session refused (it failed, or its turn moved on) did not go in.
-        return status === "pending" || status === "delivered"
-          ? { kind: "steered" as const, id: known.id, status }
-          : { kind: "unavailable" as const, id: known.id, status };
-      });
-    // The key is reserved before its session is made; a steer that arrives in between waits
-    // for the session to exist, since a session that does not yet exist takes no prompt.
-    const steerKeyed = (key: string) =>
-      Effect.gen(function* () {
-        let known = yield* credential.keyed(key);
-        for (let waited = 0; known !== null && !known.created && waited < 40; waited++) {
-          yield* Effect.sleep("250 millis");
-          known = yield* credential.keyed(key);
-        }
-        return known === null ? null : yield* steer(known);
-      });
-    if (input.key !== undefined) {
-      const steered = yield* steerKeyed(input.key);
-      if (steered !== null) return steered;
+    const request = {
+      req: input.retry,
+      prompt: input.prompt,
+      repo: input.repo,
+      agentKind: input.agent,
+    };
+    // A key that names a made session needs no repository lookup.
+    const keyed = input.key === undefined ? null : yield* credential.keyed(input.key);
+    if (keyed !== null) {
+      const answer = yield* sessions.getByName(keyed).start(request);
+      if (answer.kind !== "uncreated") return { ...answer, id: keyed };
     }
     const branch = yield* Effect.gen(function* () {
       if (input.repo === fixtureRepo) return { ok: true as const, branch: "main" };
       const token = yield* credential.gitHubToken();
-      if (token === null) return { ok: false as const, message: "GitHub token missing" };
+      if (token === null)
+        return {
+          ok: false as const,
+          code: "repository_unavailable" as const,
+          message: "GitHub token missing",
+        };
       return yield* defaultBranch(input.repo, token).pipe(
         Effect.map((found) => ({ ok: true as const, branch: found })),
         Effect.catchTag("RepositoryFailure", (error) =>
-          Effect.succeed({ ok: false as const, message: error.message }),
+          Effect.succeed({
+            ok: false as const,
+            code:
+              error.missing === true
+                ? ("repository_not_found" as const)
+                : ("repository_unavailable" as const),
+            message: error.message,
+          }),
         ),
       );
     });
-    if (!branch.ok) return { kind: "refused" as const, message: branch.message, hint: githubHint };
-    const baseBranch = branch.branch;
-    const fresh = crypto.randomUUID().replaceAll("-", "");
-    let id = fresh;
-    if (input.key === undefined) id = yield* credential.reserve(input.retry, fresh);
-    else {
-      const reserved = yield* credential.reserveKey(input.key, fresh, input.repo, input.agent);
-      if (!reserved.fresh) {
-        const steered = yield* steerKeyed(input.key);
-        if (steered !== null) return steered;
-      }
-    }
-    const view = yield* sessions.getByName(id).create({
-      id,
-      repo: input.repo,
-      baseBranch,
+    if (!branch.ok)
+      return {
+        kind: "refused" as const,
+        code: branch.code,
+        message: branch.message,
+        hint: githubHint,
+      };
+    const id = yield* credential.reserve({
+      req: input.retry,
+      ...(input.key === undefined ? {} : { key: input.key }),
+      id: crypto.randomUUID().replaceAll("-", ""),
       title: input.title,
+      repo: input.repo,
       prompt: input.prompt,
-      agentKind: input.agent,
-      image: "default",
-      place: input.place ?? "cloudflare",
-      ...(input.scripted === true ? { scripted: true } : {}),
-      ...(input.origin === undefined ? {} : { origin: input.origin }),
+      ...(input.origin?.kind === "hook" ? { connection: input.origin.connection } : {}),
+      ...(input.origin?.kind === "automation" ? { automation: input.origin.automation } : {}),
     });
-    if (input.key !== undefined) yield* credential.keyCreated(input.key);
-    return { kind: "started" as const, id, view };
+    const answer = yield* sessions.getByName(id).start({
+      ...request,
+      create: {
+        id,
+        baseBranch: branch.branch,
+        title: input.title,
+        image: "default",
+        place: input.place ?? "cloudflare",
+        ...(input.scripted === true ? { scripted: true } : {}),
+        ...(input.origin === undefined ? {} : { origin: input.origin }),
+      },
+    });
+    // With `create` given, the session is never left unmade.
+    return answer.kind === "uncreated"
+      ? yield* Effect.die("Session was not created")
+      : { ...answer, id };
   });
 }

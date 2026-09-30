@@ -88,8 +88,7 @@ export function archived(session: Session, now = new Date()): boolean {
   const { authority, display } = session;
   if (authority.kind !== "stable" || authority.lifecycle !== "stopped") return false;
   if (display.stoppedAt === null) return false;
-  const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7, now.getHours());
-  return Date.parse(display.stoppedAt) < cutoff.getTime();
+  return Date.parse(display.stoppedAt) < now.getTime() - 7 * 86_400_000;
 }
 
 // Mine: started by a person, in the UI or CLI or through the API with a key. Automations: a hook

@@ -1,6 +1,6 @@
 import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
-import { maxSearch } from "../../src/session/view.js";
+import { titleFrom } from "../../src/session/title.js";
 import { Conversation, Created, List, Log, Settings, View } from "../client.js";
 import {
   ago,
@@ -30,14 +30,6 @@ export const repoName = (input: string, command: string) =>
       return yield* usage("Expected owner/repo or https://github.com/owner/repo", command);
     return value;
   });
-
-// The first line of the prompt, cut at a word near 60 characters.
-const titleFrom = (prompt: string) => {
-  const line = prompt.trim().split("\n")[0] ?? "";
-  if (line.length <= 60) return line;
-  const cut = line.slice(0, 60);
-  return `${cut.slice(0, cut.lastIndexOf(" ") > 30 ? cut.lastIndexOf(" ") : 60)}…`;
-};
 
 export const create = Command.make(
   "new",
@@ -112,8 +104,6 @@ export const ls = Command.make(
           ].join("\n"),
         );
       }
-      if (Option.isSome(search) && search.value.trim().length > maxSearch)
-        return yield* usage(`--search is at most ${maxSearch} characters`, "ls");
       const query = Option.isSome(search) ? `?q=${encodeURIComponent(search.value.trim())}` : "";
       const { sessions } = yield* api(`/api/sessions${query}`, List);
       const sorted = [...sessions].sort((a, b) =>

@@ -16,12 +16,12 @@ import { instructionsKey, skillKey } from "../settings/skill.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
 import { deadlines } from "./deadlines.js";
-import { deadline } from "./fold.js";
+import { deadline, startStep } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
 import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
 import { supervisorEvent } from "./supervisor-events.js";
-import { conversationView, sessionMatches, sessionView, turnOutcome } from "./view.js";
+import { conversationView, sessionView, turnOutcome } from "./view.js";
 
 const scriptedStart = (
   kind: typeof AgentKind.Type,
@@ -310,40 +310,75 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         yield* dispatch(yield* append({ kind: "sup.redial", gen: log.state.gen }, "session"));
       }
       return {
-        create: (input: {
-          id: string;
-          repo: string;
-          baseBranch: string;
-          title: string;
+        // Makes the session, or prompts it, or answers a request id it has already seen. The
+        // Durable Object runs one call at a time, so concurrent callers with one id agree.
+        // Without `create`, a session not yet made is left alone and answered "uncreated".
+        start: (input: {
+          req: string;
           prompt: string;
+          repo: string;
           agentKind: typeof AgentKind.Type;
-          image: string;
-          place: typeof PlaceKind.Type;
-          scripted?: true;
-          origin?: Origin;
+          create?: {
+            id: string;
+            baseBranch: string;
+            title: string;
+            image: string;
+            place: typeof PlaceKind.Type;
+            scripted?: true;
+            origin?: Origin;
+          };
         }) =>
           Effect.gen(function* () {
-            if (log.state.created) return sessionView(id(), log.state);
+            const step = startStep(log.state, { ...input, agent: input.agentKind });
+            const answer = (
+              kind: "created" | "steered" | "duplicate" | "unavailable" | "conflict",
+            ) => ({
+              kind,
+              session: sessionView(id(), log.state),
+            });
+            if (step === "create") {
+              const create = input.create;
+              if (create === undefined) return { kind: "uncreated" as const };
+              yield* dispatch(
+                yield* append(
+                  {
+                    kind: "created",
+                    agentKind: input.agentKind,
+                    branch: `scotty/${create.id}`,
+                    repo: input.repo,
+                    baseBranch: create.baseBranch,
+                    title: create.title,
+                    prompt: input.prompt,
+                    req: input.req,
+                    image: create.image,
+                    place: create.place,
+                    ...(create.scripted === true ? { scripted: true } : {}),
+                    ...(create.origin === undefined ? {} : { origin: create.origin }),
+                  },
+                  "api",
+                ),
+              );
+              yield* dispatch(yield* append({ kind: "container.start", gen: 1 }, "session"));
+              return answer("created");
+            }
+            if (step !== "prompt") return answer(step);
             yield* dispatch(
               yield* append(
                 {
-                  kind: "created",
-                  agentKind: input.agentKind,
-                  branch: `scotty/${input.id}`,
-                  repo: input.repo,
-                  baseBranch: input.baseBranch,
-                  title: input.title,
-                  prompt: input.prompt,
-                  image: input.image,
-                  place: input.place,
-                  ...(input.scripted === true ? { scripted: true } : {}),
-                  ...(input.origin === undefined ? {} : { origin: input.origin }),
+                  kind: "prompt.requested",
+                  req: input.req,
+                  turn: log.state.currentTurn,
+                  text: input.prompt,
+                  images: [],
                 },
                 "api",
               ),
             );
-            yield* dispatch(yield* append({ kind: "container.start", gen: 1 }, "session"));
-            return sessionView(id(), log.state);
+            // A prompt the session refused (it failed, or its turn moved on) did not go in.
+            const status = log.state.requests.find((item) => item.req === input.req)?.status;
+            return answer(
+              status === "pending" || status === "delivered" ? "steered" : "unavailable",
+            );
           }),
         request: (input: {
           kind: "prompt" | "interrupt";
@@ -405,13 +440,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             return true;
           }),
         view: () => Effect.sync(() => ({ version: 1, session: sessionView(id(), log.state) })),
-        // The session's view when it matches a search, for the list; nothing otherwise.
-        find: (query: string) =>
-          Effect.sync(() =>
-            sessionMatches(log.state, query)
-              ? { version: 1, session: sessionView(id(), log.state) }
-              : undefined,
-          ),
         conversation: () => Effect.sync(() => conversationView(log.state, log.history)),
         // How an automation run's turn went: its steer's, or the first prompt's; null once deleted.
         outcome: (req?: string) =>

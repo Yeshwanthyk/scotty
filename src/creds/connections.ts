@@ -8,8 +8,17 @@ export const ConnectionName = Schema.String.check(Schema.isPattern(connectionNam
 export const Key = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 
 export const DeliveryOutcome = Schema.Literals(["accepted", "rejected", "duplicate"]);
+// Why a delivery was rejected; the UI and CLI decode these same codes.
+export const DeliveryReason = Schema.Literals([
+  "missing_headers",
+  "too_large",
+  "bad_signature",
+  "stale_timestamp",
+  "bad_body",
+  "repository_not_found",
+  "repository_unavailable",
+  "key_conflict",
+  "session_unavailable",
+]);
 // How many deliveries are kept; older ones are dropped as new ones arrive.
 export const keptDeliveries = 500;
-
-// A delivery claimed and not settled for this long can be taken over by a retry.
-export const claimTakeoverMs = 60_000;

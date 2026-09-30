@@ -3,7 +3,8 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
-import { startSession, titleFrom } from "../http/start.js";
+import { startSession } from "../http/start.js";
+import { titleFrom } from "../session/title.js";
 
 type Credential = ReturnType<Cloudflare.DurableObject<CredsObject>["getByName"]>;
 
@@ -31,17 +32,29 @@ export function fireRun(
       retry: runRequest(id),
       origin: { kind: "automation", automation: run.automation, run: id, ...key },
     });
+    // A duplicate may be the first create or a later steer. The creator's request in the
+    // session log tells which, even when the reply or the run's settlement was lost.
+    const created =
+      started.kind === "duplicate"
+        ? (yield* sessions.getByName(started.id).log()).some(
+            (event) => event.kind === "created" && event.req === runRequest(id),
+          )
+        : started.kind === "created";
     const outcome: {
       status: "started" | "steered" | "failed";
       reason?: string;
       session?: string;
     } =
-      started.kind === "started" || started.kind === "steered"
-        ? { status: started.kind, session: started.id }
+      started.kind === "created" || started.kind === "steered" || started.kind === "duplicate"
+        ? { status: created ? "started" : "steered", session: started.id }
         : started.kind === "refused"
           ? { status: "failed", reason: `repository unavailable: ${started.message}` }
           : started.kind === "conflict"
-            ? { status: "failed", reason: "key used by another repo or agent", session: started.id }
+            ? {
+                status: "failed",
+                reason: "key or retry id used by another repo, agent or prompt",
+                session: started.id,
+              }
             : { status: "failed", reason: "session not taking prompts", session: started.id };
     yield* credential.settleRun(id, outcome);
     return outcome;

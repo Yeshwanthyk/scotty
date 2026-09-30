@@ -3,7 +3,8 @@ import type * as cf from "@cloudflare/workers-types";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Schema } from "effect";
 import { newSecret, verifyWebhook } from "../hooks/signature.js";
-import { claimTakeoverMs, ConnectionName, DeliveryOutcome, keptDeliveries } from "./connections.js";
+import { ConnectionName, DeliveryOutcome, DeliveryReason, keptDeliveries } from "./connections.js";
+import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
 import {
@@ -29,6 +30,7 @@ const DeviceRow = Schema.Struct({
   expires_at: Schema.Number,
 });
 const SessionRow = Schema.Struct({ id: Schema.String });
+const SessionId = Schema.String.check(Schema.isPattern(/^[a-z0-9-]{6,32}$/));
 const GitHubRow = Schema.Struct({
   token: Schema.String,
   login: Schema.String,
@@ -53,22 +55,9 @@ const SkillRow = Schema.Struct({
   size: Schema.Number,
   updated: Schema.Number,
 });
-const KeyRow = Schema.Struct({
-  id: Schema.String,
-  repo: Schema.String,
-  agent: AgentKind,
-  created: Schema.Number,
-});
-const ClaimRow = Schema.Struct({
-  at: Schema.Number,
-  done: Schema.Number,
-  outcome: Schema.NullOr(DeliveryOutcome),
-  reason: Schema.NullOr(Schema.String),
-  session: Schema.NullOr(Schema.String),
-});
 const ConnectionRow = Schema.Struct({
   name: Schema.String,
-  kind: Schema.String,
+  kind: Schema.Literal("webhook"),
   created: Schema.Number,
 });
 const SecretRow = Schema.Struct({ secret: Schema.String });
@@ -77,7 +66,7 @@ const DeliveryRow = Schema.Struct({
   connection: Schema.String,
   at: Schema.Number,
   outcome: DeliveryOutcome,
-  reason: Schema.NullOr(Schema.String),
+  reason: Schema.NullOr(DeliveryReason),
   session: Schema.NullOr(Schema.String),
 });
 const AutomationRow = Schema.Struct({
@@ -140,11 +129,12 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS claude (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS skills (name TEXT PRIMARY KEY, description TEXT NOT NULL, enabled INTEGER NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, updated INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
-      yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, repo TEXT NOT NULL, agent TEXT NOT NULL, created INTEGER NOT NULL DEFAULT 0)`;
-      yield* sql`CREATE TABLE IF NOT EXISTS delivery_claims (connection TEXT NOT NULL, id TEXT NOT NULL, at INTEGER NOT NULL, done INTEGER NOT NULL, outcome TEXT, reason TEXT, session TEXT, PRIMARY KEY (connection, id))`;
+      yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
+      // What a search matches (`searchText`). Sessions made before it have no row: they are
+      // listed but never found.
+      yield* sql`CREATE TABLE IF NOT EXISTS session_search (id TEXT PRIMARY KEY, text TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS connections (name TEXT PRIMARY KEY, kind TEXT NOT NULL, secret TEXT NOT NULL, created INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, connection TEXT NOT NULL, at INTEGER NOT NULL, outcome TEXT NOT NULL, reason TEXT, session TEXT)`;
-      yield* sql`CREATE INDEX IF NOT EXISTS deliveries_by_id ON deliveries (connection, id)`;
       yield* sql`CREATE TABLE IF NOT EXISTS automations (name TEXT PRIMARY KEY, definition TEXT NOT NULL, enabled INTEGER NOT NULL, next_due INTEGER, created INTEGER NOT NULL)`;
       // A run's source (the schedule time, delivery or manual request) names it once, so a retried
       // firing finds the same run. What it fires is fixed when it is received.
@@ -194,8 +184,12 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               ? prepare(input.definition, input.payload)
               : { status: "skipped" as const, reason: input.skip };
           const received = prepared.status === "received" ? prepared : undefined;
+          const id =
+            input.trigger === "event"
+              ? `${input.source}:${input.automation}`
+              : crypto.randomUUID().replaceAll("-", "");
           const inserted =
-            yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, scripted) VALUES (${crypto.randomUUID().replaceAll("-", "")}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
+            yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, scripted) VALUES (${id}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
           yield* sql`DELETE FROM runs WHERE seq <= (SELECT MAX(seq) FROM runs) - ${keptRuns}`;
           const run = yield* runRow(
             (yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs WHERE automation = ${input.automation} AND source = ${input.source}`)[0],
@@ -203,75 +197,82 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           return { ...run, fresh: inserted.length > 0 };
         });
 
+      // The session the first of these rows names; the rows were just written, so there is one.
+      const sessionOf = (rows: ReadonlyArray<unknown>) =>
+        Schema.decodeUnknownEffect(SessionRow)(rows[0]).pipe(Effect.map((row) => row.id));
+
       return {
-        reserve: (req: string, id: string) =>
+        // The first caller for a key, or for a request id when there is no key, names the
+        // session; later callers get that one. From here the session is listed and searchable.
+        reserve: (input: {
+          req: string;
+          key?: string;
+          id: string;
+          title: string;
+          repo: string;
+          prompt: string;
+          connection?: string;
+          automation?: string;
+        }) =>
           Effect.gen(function* () {
-            const key = yield* Schema.decodeUnknownEffect(
-              Schema.String.check(Schema.isMinLength(1)),
-            )(req);
-            const session = yield* Schema.decodeUnknownEffect(
-              Schema.String.check(Schema.isPattern(/^[a-z0-9-]{6,32}$/)),
-            )(id);
-            yield* sql`INSERT OR IGNORE INTO session_index (req, id) VALUES (${key}, ${session})`;
-            const rows = yield* sql`SELECT id FROM session_index WHERE req = ${key}`;
-            const row = rows[0];
-            if (row === undefined)
-              return yield* new CredentialStoreError({
-                message: "Reservation missing",
-              });
-            return (yield* Schema.decodeUnknownEffect(SessionRow)(row)).id;
+            const fresh = yield* Schema.decodeUnknownEffect(SessionId)(input.id);
+            const req =
+              input.key === undefined
+                ? yield* Schema.decodeUnknownEffect(Schema.String.check(Schema.isMinLength(1)))(
+                    input.req,
+                  )
+                : `key:${input.key}`;
+            if (input.key !== undefined)
+              yield* sql`INSERT OR IGNORE INTO session_keys (key, id) VALUES (${input.key}, ${fresh})`;
+            const reserved =
+              input.key === undefined
+                ? fresh
+                : yield* sessionOf(
+                    yield* sql`SELECT id FROM session_keys WHERE key = ${input.key}`,
+                  );
+            yield* sql`INSERT OR IGNORE INTO session_index (req, id) VALUES (${req}, ${reserved})`;
+            const id = yield* sessionOf(
+              yield* sql`SELECT id FROM session_index WHERE req = ${req}`,
+            );
+            const text = searchText({ ...input, branch: `scotty/${id}` });
+            yield* sql`INSERT OR IGNORE INTO session_search (id, text) VALUES (${id}, ${text})`;
+            return id;
+          }),
+        // The session a key names, if any; it may not be made yet.
+        keyed: (key: string) =>
+          Effect.gen(function* () {
+            const row = (yield* sql`SELECT id FROM session_keys WHERE key = ${key}`)[0];
+            return row === undefined
+              ? null
+              : (yield* Schema.decodeUnknownEffect(SessionRow)(row)).id;
+          }),
+        // Sessions whose search text holds the query, any case.
+        search: (query: string) =>
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`SELECT id FROM session_search WHERE instr(text, ${query.toLowerCase()}) > 0`;
+            return yield* Effect.forEach(rows, (row) =>
+              Schema.decodeUnknownEffect(SessionRow)(row),
+            );
           }),
         hasSession: (id: string) =>
           Effect.gen(function* () {
-            const session = yield* Schema.decodeUnknownEffect(
-              Schema.String.check(Schema.isPattern(/^[a-z0-9-]{6,32}$/)),
-            )(id);
+            const session = yield* Schema.decodeUnknownEffect(SessionId)(id);
             const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session}`;
             return rows.length > 0;
           }),
         forget: (id: string) =>
           Effect.gen(function* () {
             yield* sql`DELETE FROM session_keys WHERE id = ${id}`;
+            yield* sql`DELETE FROM session_search WHERE id = ${id}`;
             yield* sql`DELETE FROM session_index WHERE id = ${id}`;
-          }),
-        // The session a key names, with what it was made for.
-        keyed: (key: string) =>
-          Effect.gen(function* () {
-            const row =
-              (yield* sql`SELECT id, repo, agent, created FROM session_keys WHERE key = ${key}`)[0];
-            if (row === undefined) return null;
-            const found = yield* Schema.decodeUnknownEffect(KeyRow)(row);
-            return { ...found, created: found.created === 1 };
-          }),
-        // The session exists now, so a steer can reach it.
-        keyCreated: (key: string) =>
-          sql`UPDATE session_keys SET created = 1 WHERE key = ${key}`.pipe(Effect.asVoid),
-        // The first caller to reserve a key names its session; later callers get that one back.
-        reserveKey: (key: string, id: string, repo: string, agent: typeof AgentKind.Type) =>
-          Effect.gen(function* () {
-            const session = yield* Schema.decodeUnknownEffect(
-              Schema.String.check(Schema.isPattern(/^[a-z0-9-]{6,32}$/)),
-            )(id);
-            yield* sql`INSERT OR IGNORE INTO session_keys (key, id, repo, agent) VALUES (${key}, ${session}, ${repo}, ${agent})`;
-            const row =
-              (yield* sql`SELECT id, repo, agent, created FROM session_keys WHERE key = ${key}`)[0];
-            if (row === undefined)
-              return yield* new CredentialStoreError({
-                message: "Reservation missing",
-              });
-            const reserved = yield* Schema.decodeUnknownEffect(KeyRow)(row);
-            const fresh = reserved.id === session;
-            if (fresh)
-              yield* sql`INSERT OR IGNORE INTO session_index (req, id) VALUES (${`key:${key}`}, ${session})`;
-            return { ...reserved, created: reserved.created === 1, fresh };
           }),
         connections: () =>
           Effect.gen(function* () {
             const rows = yield* sql`SELECT name, kind, created FROM connections ORDER BY name`;
-            const found = yield* Effect.forEach(rows, (row) =>
+            return yield* Effect.forEach(rows, (row) =>
               Schema.decodeUnknownEffect(ConnectionRow)(row),
             );
-            return found.map((row) => ({ ...row, kind: "webhook" as const }));
           }),
         // The secret is returned here and never again; `connections` shows only metadata.
         addConnection: (name: string) =>
@@ -312,53 +313,12 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               verifyWebhook({ secret, ...input, now: Date.now() }),
             );
           }),
-        // The first caller for a delivery id gets "fresh"; a concurrent or later one gets what the
-        // first settled, or "pending" while it is still working. A claim nobody settled for a
-        // minute is taken over: what it does is keyed by the delivery id, so a repeat is a no-op.
-        claimDelivery: (connection: string, id: string) =>
-          Effect.gen(function* () {
-            const now = Date.now();
-            const inserted =
-              yield* sql`INSERT OR IGNORE INTO delivery_claims (connection, id, at, done) VALUES (${connection}, ${id}, ${now}, 0) RETURNING id`;
-            if (inserted.length > 0) return { state: "fresh" as const };
-            const row = yield* Schema.decodeUnknownEffect(ClaimRow)(
-              (yield* sql`SELECT at, done, outcome, reason, session FROM delivery_claims WHERE connection = ${connection} AND id = ${id}`)[0],
-            );
-            if (row.done === 1)
-              return {
-                state: "done" as const,
-                outcome: row.outcome ?? "rejected",
-                reason: row.reason,
-                session: row.session,
-              };
-            if (now - row.at < claimTakeoverMs) return { state: "pending" as const };
-            yield* sql`UPDATE delivery_claims SET at = ${now} WHERE connection = ${connection} AND id = ${id}`;
-            return { state: "fresh" as const };
-          }),
-        // Settles the claim and records the outcome in one call.
-        settleDelivery: (delivery: {
-          id: string;
-          connection: string;
-          outcome: typeof DeliveryOutcome.Type;
-          reason?: string;
-          session?: string;
-        }) =>
-          Effect.gen(function* () {
-            yield* sql`UPDATE delivery_claims SET done = 1, outcome = ${delivery.outcome}, reason = ${delivery.reason ?? null}, session = ${delivery.session ?? null} WHERE connection = ${delivery.connection} AND id = ${delivery.id}`;
-            yield* sql`INSERT INTO deliveries (id, connection, at, outcome, reason, session) VALUES (${delivery.id}, ${delivery.connection}, ${Date.now()}, ${delivery.outcome}, ${delivery.reason ?? null}, ${delivery.session ?? null})`;
-            yield* sql`DELETE FROM deliveries WHERE seq <= (SELECT MAX(seq) FROM deliveries) - ${keptDeliveries}`;
-            yield* sql`DELETE FROM delivery_claims WHERE at < ${Date.now() - 7 * 864e5}`;
-          }),
-        // A failure worth retrying leaves no claim behind.
-        releaseDelivery: (connection: string, id: string) =>
-          sql`DELETE FROM delivery_claims WHERE connection = ${connection} AND id = ${id}`.pipe(
-            Effect.asVoid,
-          ),
+        // Deliveries are a log; the oldest go as new ones arrive.
         recordDelivery: (delivery: {
           id: string;
           connection: string;
           outcome: typeof DeliveryOutcome.Type;
-          reason?: string;
+          reason?: typeof DeliveryReason.Type;
           session?: string;
         }) =>
           Effect.gen(function* () {
@@ -450,7 +410,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 automation: row.name,
                 definition: row.definition,
                 trigger: "event",
-                source: `event:${connection}:${delivery}`,
+                source: `delivery:${connection}:${delivery}`,
                 payload,
                 delivery,
                 ...(row.enabled === 1 ? {} : { skip: "off" }),

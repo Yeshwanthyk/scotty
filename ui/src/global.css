@@ -581,25 +581,32 @@ kbd {
 }
 
 .session-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 12px 0;
+  display: grid;
+  grid-template-columns: repeat(4, max-content);
+  gap: 2px;
+  padding: 6px 8px 2px;
 }
 
 .filter-chip {
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 13px;
-  font-size: 12px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
   color: var(--muted);
-  border: 1px solid var(--line);
+  white-space: nowrap;
 }
 
 .filter-chip[aria-pressed="true"] {
   background: var(--selected);
   color: var(--ink);
-  border-color: var(--line-strong);
+}
+
+.filter-chip[aria-label] {
+  grid-column: 1 / -1;
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .session-row[data-status="stopped"] .title,
@@ -656,11 +663,13 @@ kbd {
 
 @media (hover: hover) and (pointer: fine) {
   .session-row:hover:not([aria-current="page"]),
-  .nav-item:hover:not([aria-current="page"]) {
+  .nav-item:hover:not([aria-current="page"]),
+  .filter-chip:hover:not([aria-pressed="true"]) {
     background: var(--hover);
   }
 
-  .nav-item:hover {
+  .nav-item:hover,
+  .filter-chip:hover {
     color: var(--ink);
   }
 }

@@ -2,11 +2,12 @@ import { Effect, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type * as Cloudflare from "alchemy/Cloudflare";
-import { connectionName, Key } from "../creds/connections.js";
+import { connectionName, type DeliveryReason, Key } from "../creds/connections.js";
 import type CredsObject from "../creds/object.js";
 import { AgentKind } from "../session/events.js";
 import type SessionObject from "../session/object.js";
-import { Repo, startSession, titleFrom } from "../http/start.js";
+import { Prompt, Repo, startSession } from "../http/start.js";
+import { titleFrom } from "../session/title.js";
 import { automationDelivery } from "../automations/fire.js";
 import { maxBodyBytes } from "./signature.js";
 
@@ -14,10 +15,12 @@ export const hookPath = /^\/hooks\/([^/]+)$/;
 
 const Payload = Schema.Struct({
   repo: Repo,
-  prompt: Schema.String.check(Schema.isMinLength(1)),
+  prompt: Prompt,
   key: Schema.optional(Key),
   agent: Schema.optional(AgentKind),
   title: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))),
+  // The agent's scripted stand-in, for e2e, as on the API.
+  scripted: Schema.optional(Schema.Literal(true)),
 });
 const decodePayload = Schema.decodeUnknownEffect(Schema.fromJsonString(Payload));
 
@@ -35,15 +38,12 @@ export function hookHandler(
 ) {
   return Effect.gen(function* () {
     const credential = credentials.getByName("owner");
-    const known =
-      connectionName.test(name) &&
-      (yield* credential.connections()).some((connection) => connection.name === name);
-    if (!known) return yield* refuse(404, "unknown_connection");
+    if (!connectionName.test(name)) return yield* refuse(404, "unknown_connection");
     if (request.method !== "POST") return yield* refuse(405, "use_post");
     const delivery = request.headers["webhook-id"] ?? "";
     const timestamp = request.headers["webhook-timestamp"] ?? "";
     const signature = request.headers["webhook-signature"] ?? "";
-    const reject = (status: number, reason: string) =>
+    const reject = (status: number, reason: typeof DeliveryReason.Type) =>
       credential
         .recordDelivery({ id: delivery, connection: name, outcome: "rejected", reason })
         .pipe(Effect.andThen(refuse(status, reason)));
@@ -82,36 +82,15 @@ export function hookHandler(
     if (automated !== undefined) return automated;
     const payload = yield* decodePayload(body).pipe(Effect.option);
     if (payload._tag === "None") return yield* reject(400, "bad_body");
-    const { repo, prompt, key, agent, title } = payload.value;
-    // One claim per delivery id: a concurrent or retried delivery gets the first one's result.
-    const claim = yield* credential.claimDelivery(name, delivery);
-    if (claim.state === "pending")
-      return yield* HttpServerResponse.json({ status: "in_progress" }, { status: 202 });
-    if (claim.state === "done") {
-      if (claim.outcome === "rejected") return yield* refuse(409, claim.reason ?? "rejected");
-      yield* credential.recordDelivery({
-        id: delivery,
-        connection: name,
-        outcome: "duplicate",
-        ...(claim.session === null ? {} : { session: claim.session }),
-      });
-      return yield* HttpServerResponse.json({ status: "duplicate", session: claim.session });
-    }
-    const settle = (outcome: "accepted" | "rejected", reason?: string, session?: string) =>
-      credential.settleDelivery({
-        id: delivery,
-        connection: name,
-        outcome,
-        ...(reason === undefined ? {} : { reason }),
-        ...(session === undefined ? {} : { session }),
-      });
+    const { repo, prompt, key, agent, title, scripted } = payload.value;
     const started = yield* startSession(sessions, credential, {
       repo,
       prompt,
       title: title ?? titleFrom(prompt),
       agent: agent ?? "codex",
+      ...(scripted === true ? { scripted } : {}),
       ...(key === undefined ? {} : { key }),
-      // A retried delivery reserves the same session, or sends the same steer, and so does nothing new.
+      // A retried delivery is answered with what the first one did.
       retry: `hook:${name}:${delivery}`,
       origin: {
         kind: "hook",
@@ -120,25 +99,22 @@ export function hookHandler(
         ...(key === undefined ? {} : { key }),
       },
     });
-    // A failure that a retry could cure leaves no claim behind.
     if (started.kind === "refused")
-      return yield* credential
-        .releaseDelivery(name, delivery)
-        .pipe(Effect.andThen(reject(502, "repository_unavailable")));
-    if (started.kind === "conflict")
-      return yield* settle("rejected", "key_conflict").pipe(
-        Effect.andThen(refuse(409, "key_conflict")),
-      );
+      return yield* reject(started.code === "repository_not_found" ? 422 : 502, started.code);
+    if (started.kind === "conflict") return yield* reject(409, "key_conflict");
     // A session that took no prompt (failed, or its turn moved on): the sender should know.
-    if (started.kind === "unavailable")
-      return yield* settle("rejected", "session_unavailable").pipe(
-        Effect.andThen(refuse(409, "session_unavailable")),
-      );
-    yield* settle("accepted", undefined, started.id);
-    return yield* HttpServerResponse.json({
-      status: "accepted",
+    if (started.kind === "unavailable") return yield* reject(409, "session_unavailable");
+    const duplicate = started.kind === "duplicate";
+    yield* credential.recordDelivery({
+      id: delivery,
+      connection: name,
+      outcome: duplicate ? "duplicate" : "accepted",
       session: started.id,
-      steered: started.kind === "steered",
     });
+    return yield* HttpServerResponse.json(
+      duplicate
+        ? { status: "duplicate", session: started.id }
+        : { status: "accepted", session: started.id, steered: started.kind === "steered" },
+    );
   });
 }

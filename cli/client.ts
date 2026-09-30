@@ -1,6 +1,7 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { DeliveryOutcome, DeliveryReason } from "../src/creds/connections.js";
 
 export class CliFailure extends Schema.TaggedError<CliFailure>()("CliFailure", {
   code: Schema.String,
@@ -63,8 +64,8 @@ export const Deliveries = Schema.Struct({
       id: Schema.String,
       connection: Schema.String,
       at: Schema.Number,
-      outcome: Schema.Literals(["accepted", "rejected", "duplicate"]),
-      reason: Schema.NullOr(Schema.String),
+      outcome: DeliveryOutcome,
+      reason: Schema.NullOr(DeliveryReason),
       session: Schema.NullOr(Schema.String),
     }),
   ),
