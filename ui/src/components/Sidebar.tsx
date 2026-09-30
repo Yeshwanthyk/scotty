@@ -40,8 +40,8 @@ function Meta({ session, status }: { session: Session; status: Status }) {
   // Codex is the default; only other agents are named.
   const agent =
     session.display.agentKind === "claude" ? <span className="agent-tag">Claude</span> : null;
-  const loud =
-    status === "working" || status === "starting" || status === "failed" || status === "unseen";
+  // The spinner already says working; starting shares it, so only starting is spelled out.
+  const loud = status === "starting" || status === "failed" || status === "unseen";
   return (
     <span className="meta">
       {agent}
