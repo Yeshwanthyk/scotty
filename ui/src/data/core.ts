@@ -76,6 +76,16 @@ export type Conversation = CanonicalConversationSnapshot;
 export const message = (failure: unknown, fallback: string): string =>
   failure instanceof Error ? failure.message : fallback;
 
+// A failed request keeps its status, so a caller can tell "not found" from "not reachable".
+export class RequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 // A Blob body (a skill zip) goes as it is; any other body is JSON.
 export async function request(
   path: string,
@@ -104,7 +114,10 @@ export async function request(
   });
   if (!response.ok) {
     const error = Option.getOrUndefined(decodeError(value));
-    throw new Error(error?.error.message ?? "Request failed (" + response.status + ")");
+    throw new RequestError(
+      error?.error.message ?? "Request failed (" + response.status + ")",
+      response.status,
+    );
   }
   return value;
 }
@@ -149,6 +162,21 @@ export async function write(
 }
 
 const sessionPath = (id: string) => "/api/sessions/" + encodeURIComponent(id);
+
+// The session, or undefined when the server has no such session.
+const Detail = Schema.Struct({ version: Schema.Literal(1), session: Session });
+export async function session(id: string): Promise<Session | undefined> {
+  let value: unknown;
+  try {
+    value = await request(sessionPath(id));
+  } catch (failure) {
+    if (failure instanceof RequestError && failure.status === 404) return undefined;
+    throw failure;
+  }
+  const result = Option.getOrUndefined(Schema.decodeUnknownOption(Detail)(value));
+  if (result === undefined) throw new Error("Unreadable session");
+  return result.session;
+}
 
 // Stop and resume answer with the session; the live socket shows it, so the body is not read.
 export async function lifecycle(id: string, action: "stop" | "resume"): Promise<void> {

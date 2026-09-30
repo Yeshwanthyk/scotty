@@ -8,8 +8,9 @@ import { ExploreGroup, ToolRow } from "./ToolRow";
 // The last few turns stay open; older ones fold behind one button, as in pecan.
 const openTurns = 3;
 
-// "live": a streaming turn is working. "booting": the session is still starting, so a streaming
-// turn shows only its prompt. "dormant": the session stopped, so a streaming turn was cut off.
+// How the last turn shows while it streams. "live": the agent is working on it. "booting": the
+// session is still starting, so it shows only its prompt. "dormant": nothing is working on it, so
+// it was cut off. Any earlier streaming turn was cut off by a crash or a stop, whatever the mode.
 export type ThreadMode = "live" | "booting" | "dormant";
 
 export function Thread({
@@ -33,8 +34,13 @@ export function Thread({
           </span>
         </button>
       ) : null}
-      {turns.slice(hidden).map((turn) => (
-        <TurnView key={turn.id} sessionId={sessionId} turn={turn} mode={mode} />
+      {turns.slice(hidden).map((turn, index, shown) => (
+        <TurnView
+          key={turn.id}
+          sessionId={sessionId}
+          turn={turn}
+          mode={index === shown.length - 1 ? mode : "dormant"}
+        />
       ))}
     </>
   );
@@ -78,8 +84,11 @@ export function useNow(live: boolean, every = 1000) {
 }
 
 function TurnView({ sessionId, turn, mode }: { sessionId: string; turn: Turn; mode: ThreadMode }) {
-  // A turn still streaming in a stopped session was cut off; it must not look live.
-  const state = turn.state === "streaming" && mode === "dormant" ? "aborted" : turn.state;
+  // A streaming turn nothing is working on was cut off; it must not look live. While booting, one
+  // that already has output is left from before the restart.
+  const cutOff =
+    mode === "dormant" || (mode === "booting" && (turn.items.length > 0 || turn.assistant !== ""));
+  const state = turn.state === "streaming" && cutOff ? "aborted" : turn.state;
   const live = state === "streaming";
   const now = useNow(live && mode === "live");
   const { log, answer } = split(turn);
