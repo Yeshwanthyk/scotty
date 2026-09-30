@@ -13,6 +13,7 @@ import {
   lifecycle,
   message,
   remove,
+  session,
   write,
   type Conversation,
   type Session,
@@ -20,7 +21,7 @@ import {
 import { sessionChanges } from "../data/diff";
 import { useSessions } from "../data/sessions-store";
 import { dormant, markSeen, statusOf } from "../data/status";
-import { openLive } from "../data/live";
+import { openLive, type Connection } from "../data/live";
 
 export const Route = createFileRoute("/s/$sessionId")({ component: SessionPage });
 
@@ -44,13 +45,26 @@ const readPanel = (): PanelTab | undefined => {
 // Follow new output only while the reader is already near the bottom.
 const pinDistance = 140;
 
+// "closed": the server ended the socket, yet the session is still there.
+type Link = Connection | "closed" | "missing";
+const linkNote: Record<Link, string> = {
+  open: "",
+  connecting: "Connecting…",
+  reconnecting: "Reconnecting…",
+  closed: "Disconnected; reload to reconnect",
+  missing: "Session not found",
+};
+
 function SessionView({ sessionId }: { sessionId: string }) {
   const navigate = useNavigate();
   const sessions = useSessions();
   const [detail, setDetail] = useState<Session>();
   const [snapshot, setSnapshot] = useState<Conversation>();
   const [text, setText] = useState("");
+  // `error` is the last action's failure and `link` the socket's state, kept apart so a frame
+  // doesn't wipe an error.
   const [error, setError] = useState("");
+  const [link, setLink] = useState<Link>("open");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState<PanelTab | undefined>(() =>
@@ -62,8 +76,23 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const attempt = useRef<{ input: string; req: string }>(undefined);
   useEffect(() => {
     // The session pushes its whole view after changes; an older frame never replaces a newer one.
-    const reconnecting = "Reconnecting…";
     let seq = -1;
+    let stopped = false;
+    // A deleted session closes its socket and an unknown one refuses it, and the socket can't say
+    // which happened, so one read asks. `otherwise` is shown when the session is still there.
+    const check = (otherwise?: Link) =>
+      void session(sessionId).then(
+        (found) => {
+          if (stopped) return;
+          if (found === undefined) {
+            live.stop();
+            setLink("missing");
+          } else if (otherwise !== undefined) setLink(otherwise);
+        },
+        () => {
+          if (!stopped && otherwise !== undefined) setLink(otherwise);
+        },
+      );
     const live = openLive(
       `/api/sessions/${encodeURIComponent(sessionId)}/live`,
       decodeSessionFrame,
@@ -73,21 +102,20 @@ function SessionView({ sessionId }: { sessionId: string }) {
           seq = frame.seq;
           setDetail(frame.session);
           setSnapshot(frame.conversation);
-          setError("");
           markSeen(frame.session);
         },
-        connection: (state) =>
-          setError((current) =>
-            state === "reconnecting"
-              ? current || reconnecting
-              : current === reconnecting
-                ? ""
-                : current,
-          ),
+        connection: (state) => {
+          setLink(state);
+          if (state === "connecting") check();
+        },
+        ended: () => check("closed"),
       },
     );
     refresh.current = live.reconnect;
-    return () => live.stop();
+    return () => {
+      stopped = true;
+      live.stop();
+    };
   }, [sessionId]);
   // What changes when the agent adds output; polls that change nothing don't move the view.
   const last = snapshot?.turns.at(-1);
@@ -182,10 +210,22 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const changes = useMemo(() => sessionChanges(turns), [turns]);
   const added = changes.reduce((sum, file) => sum + file.added, 0);
   const removed = changes.reduce((sum, file) => sum + file.removed, 0);
-  // Booting runs container, then workspace, then the agent's first output on the first turn.
-  const first = turns.length === 1 ? turns[0] : undefined;
-  const agentStarting =
-    running && first?.state === "streaming" && first.items.length === 0 && first.assistant === "";
+  // Booting runs container, then workspace, then the agent's first output. A follow up in a
+  // session that was already running waits the same way, so the wait counts as booting only on
+  // the first turn or after a start this page saw.
+  const lastTurn = turns.at(-1);
+  const waiting =
+    working &&
+    lastTurn?.state === "streaming" &&
+    lastTurn.items.length === 0 &&
+    lastTurn.assistant === "";
+  const transitioning = detail?.authority.kind === "transitioning";
+  const [booted, setBooted] = useState(false);
+  useEffect(() => {
+    if (transitioning) setBooted(true);
+    else if (!waiting) setBooted(false);
+  }, [transitioning, waiting]);
+  const agentStarting = waiting && (booted || turns.length === 1);
   const bootStep =
     detail?.authority.kind === "transitioning"
       ? detail.authority.phase === "workspace"
@@ -194,8 +234,8 @@ function SessionView({ sessionId }: { sessionId: string }) {
       : agentStarting
         ? 2
         : undefined;
-  const mode: ThreadMode =
-    bootStep !== undefined ? "booting" : stopped || failed ? "dormant" : "live";
+  const mode: ThreadMode = bootStep !== undefined ? "booting" : working ? "live" : "dormant";
+  const alert = error || linkNote[link];
   const sleepsAt = running && !working ? detail?.progress.sleepsAt : undefined;
   return (
     <>
@@ -302,7 +342,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
             }}
           >
             <div className="thread-inner">
-              {snapshot === undefined && error === "" ? <ThreadPlaceholder /> : null}
+              {snapshot === undefined && link !== "missing" ? <ThreadPlaceholder /> : null}
               {snapshot !== undefined ? (
                 <Thread sessionId={sessionId} turns={turns} mode={mode} />
               ) : null}
@@ -324,14 +364,14 @@ function SessionView({ sessionId }: { sessionId: string }) {
             </button>
           ) : null}
           <div className="composer-wrap">
-            {error || note ? (
+            {alert || note ? (
               <p
                 className="composer-note"
-                data-tone={error ? "error" : undefined}
-                role={error ? "alert" : "status"}
+                data-tone={alert ? "error" : undefined}
+                role={alert ? "alert" : "status"}
               >
-                <Icon name={error ? "alert" : "check"} size={13} />
-                {error || note}
+                <Icon name={alert ? "alert" : "check"} size={13} />
+                {alert || note}
               </p>
             ) : null}
             <Composer
@@ -342,7 +382,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
               onStop={() => void send("interrupt")}
               working={working}
               busy={busy}
-              disabled={failed || snapshot === undefined}
+              disabled={failed || snapshot === undefined || link === "missing"}
               placeholder={
                 failed
                   ? resumable

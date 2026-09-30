@@ -8,6 +8,9 @@ type Store = {
   refresh: () => void;
 };
 
+const firstDelay = 1000;
+const maxDelay = 30_000;
+
 const Context = createContext<Store>({ list: undefined, error: "", refresh: () => undefined });
 
 const apply = (list: ReadonlyArray<Session>, frame: ListFrame): ReadonlyArray<Session> => {
@@ -28,7 +31,13 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     let stopped = false;
     // Frames that arrive while the list is being read are applied on top of it.
     let pending: ListFrame[] | undefined;
+    // A failed read is retried with backoff while the socket stays open; frames alone can't
+    // rebuild the list.
+    let connected = false;
+    let delay = firstDelay;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
+      clearTimeout(retry);
       const frames: ListFrame[] = [];
       pending = frames;
       try {
@@ -37,14 +46,26 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         if (stopped || pending !== frames) return;
         setList(frames.reduce(apply, next));
         setError("");
+        delay = firstDelay;
       } catch (failure) {
-        if (!stopped && pending === frames) setError(message(failure, "Could not load sessions"));
+        if (stopped || pending !== frames) return;
+        setError(message(failure, "Could not load sessions"));
+        if (connected) retry = setTimeout(() => void load(), delay);
+        delay = Math.min(delay * 2, maxDelay);
       } finally {
         if (pending === frames) pending = undefined;
       }
     };
     const live = openLive("/api/sessions/live", decodeListFrame, {
-      open: () => void load(),
+      open: () => {
+        connected = true;
+        delay = firstDelay;
+        void load();
+      },
+      connection: (state) => {
+        connected = state === "open";
+        if (!connected) clearTimeout(retry);
+      },
       frame: (frame) => {
         pending?.push(frame);
         setList((current) => (current === undefined ? current : apply(current, frame)));
@@ -56,6 +77,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     };
     return () => {
       stopped = true;
+      clearTimeout(retry);
       live.stop();
     };
   }, []);

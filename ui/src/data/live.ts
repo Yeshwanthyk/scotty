@@ -1,11 +1,15 @@
 // One live socket: the server pushes, the client only listens. It reconnects with backoff, and at
-// once when the tab shows again or the network returns.
-export type Connection = "open" | "reconnecting";
+// once when the tab shows again or the network returns. A clean close from the server (the
+// session was deleted) is final.
+export type Connection = "connecting" | "open" | "reconnecting";
 
 const firstDelay = 1000;
 const maxDelay = 30_000;
 // A short drop is not worth mentioning.
 const quietFor = 3000;
+// The server only pushes on change, so a socket that slept with the phone can look open while
+// dead. After this long hidden it is replaced, and the new one starts with a fresh snapshot.
+const staleAfter = 30_000;
 
 export function openLive<A>(
   path: string,
@@ -14,12 +18,15 @@ export function openLive<A>(
     readonly frame: (frame: A) => void;
     readonly open?: () => void;
     readonly connection?: (state: Connection) => void;
+    readonly ended?: () => void;
   },
 ): { readonly reconnect: () => void; readonly stop: () => void } {
   let socket: WebSocket | undefined;
   let open = false;
+  let opened = false;
   let stopped = false;
   let delay = firstDelay;
+  let hiddenAt: number | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let quiet: ReturnType<typeof setTimeout> | undefined;
   let reported: Connection = "open";
@@ -29,7 +36,8 @@ export function openLive<A>(
     on.connection?.(state);
   };
   const watchQuiet = () => {
-    if (quiet === undefined) quiet = setTimeout(() => report("reconnecting"), quietFor);
+    if (quiet === undefined)
+      quiet = setTimeout(() => report(opened ? "reconnecting" : "connecting"), quietFor);
   };
 
   const connect = () => {
@@ -44,6 +52,7 @@ export function openLive<A>(
     current.addEventListener("open", () => {
       if (socket !== current) return;
       open = true;
+      opened = true;
       delay = firstDelay;
       clearTimeout(quiet);
       quiet = undefined;
@@ -61,11 +70,16 @@ export function openLive<A>(
       const frame = decode(value);
       if (frame !== undefined) on.frame(frame);
     });
-    current.addEventListener("close", () => {
+    current.addEventListener("close", (event) => {
       if (socket !== current) return;
       socket = undefined;
       open = false;
       if (stopped) return;
+      if (event.code === 1000) {
+        stop();
+        on.ended?.();
+        return;
+      }
       watchQuiet();
       retry = setTimeout(connect, delay);
       delay = Math.min(delay * 2, maxDelay);
@@ -78,22 +92,32 @@ export function openLive<A>(
       return;
     connect();
   };
-  const onVisible = () => {
-    if (document.visibilityState === "visible") reconnect();
+  const onVisibility = () => {
+    if (document.visibilityState === "hidden") {
+      hiddenAt = Date.now();
+      return;
+    }
+    const stale = hiddenAt !== undefined && Date.now() - hiddenAt > staleAfter;
+    hiddenAt = undefined;
+    if (!stale) return reconnect();
+    if (stopped) return;
+    const old = socket;
+    socket = undefined;
+    open = false;
+    old?.close();
+    connect();
   };
-  document.addEventListener("visibilitychange", onVisible);
+  const stop = () => {
+    stopped = true;
+    clearTimeout(retry);
+    clearTimeout(quiet);
+    document.removeEventListener("visibilitychange", onVisibility);
+    window.removeEventListener("online", reconnect);
+    socket?.close();
+    socket = undefined;
+  };
+  document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("online", reconnect);
   connect();
-  return {
-    reconnect,
-    stop: () => {
-      stopped = true;
-      clearTimeout(retry);
-      clearTimeout(quiet);
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("online", reconnect);
-      socket?.close();
-      socket = undefined;
-    },
-  };
+  return { reconnect, stop };
 }
