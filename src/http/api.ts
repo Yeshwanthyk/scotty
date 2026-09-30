@@ -4,9 +4,9 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
-import { fixtureRepo } from "../../protocol/supervisor.js";
 import { AgentKind } from "../session/events.js";
-import { defaultBranch } from "./repository.js";
+import { ConnectionName, connectionName, Key } from "../creds/connections.js";
+import { githubHint, Repo, startSession } from "./start.js";
 import { version } from "../version.js";
 import {
   instructionsKey,
@@ -28,25 +28,34 @@ const Prompt = Schema.String.check(
 
 const Create = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
-  repo: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
+  repo: Repo,
   prompt: Prompt,
   provider: Schema.Literal("cloudflare"),
   agent: Schema.optional(AgentKind),
   // The agent's scripted stand-in, for e2e: no ChatGPT, Claude or GitHub sign-in needed.
   scripted: Schema.optional(Schema.Literal(true)),
+  // A second create with the same key steers the session the first one made.
+  key: Schema.optional(Key),
 });
+const NewConnection = Schema.Struct({
+  kind: Schema.Literal("webhook"),
+  name: ConnectionName,
+});
+const connectionPath = /^\/api\/connections\/([^/]+)$/;
 const Steer = Schema.Struct({
   text: Prompt,
   turn: Schema.String,
   req: Schema.optional(Schema.String),
 });
-const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(Schema.String) });
+const Interrupt = Schema.Struct({
+  turn: Schema.String,
+  req: Schema.optional(Schema.String),
+});
 const path =
   /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log|hatch\/(\d{1,5})|files\/([a-f0-9]{32})))?$/;
 const GitHubToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{20,255}$/)),
 });
-const githubHint = "scotty login github";
 const ClaudeToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^sk-ant-oat01-[A-Za-z0-9_-]{20,300}$/)),
 });
@@ -63,7 +72,13 @@ const skillPath = /^\/api\/skills\/([^/]+)$/;
 
 const bad = (message: string, status = 400, hint?: string) =>
   HttpServerResponse.json(
-    { error: { message, code: status === 404 ? "not_found" : "bad_request", hint } },
+    {
+      error: {
+        message,
+        code: status === 404 ? "not_found" : "bad_request",
+        hint,
+      },
+    },
     { status },
   );
 
@@ -164,8 +179,16 @@ export function apiHandler(
       if (typeof skill === "string") return yield* bad(skill);
       const digest = yield* Effect.promise(() => sha256(zip));
       yield* bucket.put(skillKey(skill.name), zip);
-      yield* credential.putSkill({ ...skill, sha256: digest, size: zip.byteLength });
-      return yield* HttpServerResponse.json({ ...skill, sha256: digest, size: zip.byteLength });
+      yield* credential.putSkill({
+        ...skill,
+        sha256: digest,
+        size: zip.byteLength,
+      });
+      return yield* HttpServerResponse.json({
+        ...skill,
+        sha256: digest,
+        size: zip.byteLength,
+      });
     }
     const skillMatch = skillPath.exec(url.pathname);
     if (skillMatch !== null) {
@@ -185,44 +208,94 @@ export function apiHandler(
         return yield* HttpServerResponse.json({ name, removed: true });
       }
     }
+    const hookUrl = (name: string) => `https://${request.headers["host"] ?? ""}/hooks/${name}`;
+    if (url.pathname === "/api/connections" && request.method === "GET")
+      return yield* HttpServerResponse.json({
+        connections: (yield* credential.connections()).map((connection) => ({
+          ...connection,
+          url: hookUrl(connection.name),
+        })),
+      });
+    if (url.pathname === "/api/connections" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(NewConnection)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () =>
+          bad('Expected {kind: "webhook", name} with a lowercase name of letters, digits and -'),
+        ),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const added = yield* credential.addConnection(body.name);
+      if (added.status === "exists")
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: `A connection named ${body.name} exists`,
+              code: "exists",
+              hint: `scotty connections`,
+            },
+          },
+          { status: 409 },
+        );
+      // The only time the secret is shown.
+      return yield* HttpServerResponse.json({
+        ...added,
+        url: hookUrl(added.name),
+      });
+    }
+    const connectionMatch = connectionPath.exec(url.pathname);
+    if (connectionMatch !== null && request.method === "DELETE") {
+      const name = connectionMatch[1] ?? "";
+      if (!connectionName.test(name) || !(yield* credential.removeConnection(name)))
+        return yield* bad("Not found", 404);
+      return yield* HttpServerResponse.json({ name, removed: true });
+    }
+    if (url.pathname === "/api/deliveries" && request.method === "GET") {
+      const connection = url.searchParams.get("connection") ?? undefined;
+      if (connection !== undefined && !connectionName.test(connection))
+        return yield* bad("Not a connection name");
+      return yield* HttpServerResponse.json({
+        deliveries: yield* credential.deliveries(connection),
+      });
+    }
     if (url.pathname === "/api/sessions" && request.method === "POST") {
       const body = yield* Schema.decodeUnknownEffect(Create)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
-      const baseBranch =
-        body.repo === fixtureRepo
-          ? "main"
-          : yield* Effect.gen(function* () {
-              const token = yield* credential.gitHubToken();
-              if (token === null) return yield* bad("GitHub token missing", 400, githubHint);
-              return yield* defaultBranch(body.repo, token).pipe(
-                Effect.catchTag("RepositoryFailure", (error) =>
-                  bad(error.message, 400, githubHint),
-                ),
-              );
-            });
-      if (HttpServerResponse.isHttpServerResponse(baseBranch)) return baseBranch;
-      const idempotency = request.headers["idempotency-key"] ?? crypto.randomUUID();
-      const id = yield* credential.reserve(idempotency, crypto.randomUUID().replaceAll("-", ""));
-      const stub = sessions.getByName(id);
-      const created = yield* stub.create({
-        id,
+      const started = yield* startSession(sessions, credential, {
         repo: body.repo,
-        baseBranch,
-        title: body.title,
         prompt: body.prompt,
-        agentKind: body.agent ?? "codex",
-        image: "default",
+        title: body.title,
+        agent: body.agent ?? "codex",
         ...(body.scripted === true ? { scripted: true } : {}),
+        ...(body.key === undefined
+          ? {}
+          : { key: body.key, origin: { kind: "api", key: body.key } }),
+        retry: request.headers["idempotency-key"] ?? crypto.randomUUID(),
       });
+      if (started.kind === "refused") return yield* bad(started.message, 400, started.hint);
+      if (started.kind === "conflict")
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: "That key belongs to a session for another repository or agent",
+              code: "key_conflict",
+              hint: `scotty read ${started.id}`,
+            },
+          },
+          { status: 409 },
+        );
+      const created =
+        started.kind === "started"
+          ? started.view
+          : (yield* sessions.getByName(started.id).view()).session;
       return yield* HttpServerResponse.json({
-        id,
+        id: started.id,
         title: created.display.title,
         branch: created.display.branch,
         provider: "cloudflare",
         status: created.authority.kind === "stable" ? created.authority.lifecycle : "booting",
-        url: `/s/${id}`,
+        url: `/s/${started.id}`,
+        steered: started.kind === "steered",
       });
     }
     if (url.pathname === "/api/sessions" && request.method === "GET") {
@@ -286,7 +359,9 @@ export function apiHandler(
           },
           { status: 409 },
         );
-      return yield* HttpServerResponse.json({ url: `https://${hatchHost(hatchBase, port, id)}` });
+      return yield* HttpServerResponse.json({
+        url: `https://${hatchHost(hatchBase, port, id)}`,
+      });
     }
     if (request.method === "GET" && match[4] !== undefined) {
       // iOS Safari plays a video only when a Range request gets a 206 with Content-Length.
@@ -306,7 +381,9 @@ export function apiHandler(
         "content-type": object.httpMetadata?.contentType ?? "application/octet-stream",
         "accept-ranges": "bytes",
         ...(status === 206
-          ? { "content-range": `bytes ${start}-${start + length - 1}/${object.size}` }
+          ? {
+              "content-range": `bytes ${start}-${start + length - 1}/${object.size}`,
+            }
           : {}),
       };
       // A stream is sent chunked, without the Content-Length Safari needs; files are at most 25 MB.

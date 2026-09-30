@@ -40,6 +40,8 @@ export type DummySpec = {
   turns: TurnSpec[];
   // Where the session is left: stopped after its turns, waiting on the owner, or failed at boot.
   after?: "stopped" | "waiting" | "boot-failed";
+  // Set when a webhook made the session.
+  origin?: Json;
 };
 
 const read = (path: string) => ({
@@ -85,6 +87,7 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
     title: spec.title,
     prompt: spec.turns[0]?.prompt ?? "",
     image: "default",
+    ...(spec.origin === undefined ? {} : { origin: spec.origin }),
   });
   push({ src: "session", kind: "container.start", gen: 1 });
   at += 3400;
@@ -581,6 +584,7 @@ export const dummies: DummySpec[] = [
   },
   {
     id: "d0cc0de5000000000000000000000002",
+    origin: { kind: "hook", connection: "sentry", delivery: "msg_2kQ9fT", key: "issue-4821" },
     title: "Status dots and spinner in the session list",
     repo: "Yeshwanthyk/scotty-hatch-test",
     minutesAgo: 6,

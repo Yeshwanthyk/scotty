@@ -17,6 +17,17 @@ const Session = Schema.Struct({
     agentKind: Schema.String,
     createdAt: Schema.String,
     activeAt: Schema.String,
+    origin: Schema.NullOr(
+      Schema.Union([
+        Schema.Struct({
+          kind: Schema.Literal("hook"),
+          connection: Schema.String,
+          delivery: Schema.String,
+          key: Schema.optionalKey(Schema.String),
+        }),
+        Schema.Struct({ kind: Schema.Literal("api"), key: Schema.String }),
+      ]),
+    ),
   }),
   progress: Schema.Struct({ working: Schema.Boolean, turns: Schema.Number }),
 });

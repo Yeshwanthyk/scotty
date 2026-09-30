@@ -45,22 +45,32 @@ export const create = Command.make(
     prompt: Argument.String("prompt"),
     agent: Flag.Literals("agent", ["codex", "claude"]).pipe(Flag.withDefault("codex")),
     key: Flag.String("key").pipe(Flag.optional),
+    sessionKey: Flag.String("session-key").pipe(Flag.optional),
   },
-  ({ repository, prompt, agent, key }) =>
+  ({ repository, prompt, agent, key, sessionKey }) =>
     Effect.gen(function* () {
       const repo = yield* repoName(repository);
       if (!prompt.trim()) return yield* usage("The prompt cannot be empty", "new");
       const api = yield* withClient;
       const created = yield* api("/api/sessions", Created, {
         method: "POST",
-        body: { repo, title: titleFrom(prompt), prompt, provider: "cloudflare", agent },
+        body: {
+          repo,
+          title: titleFrom(prompt),
+          prompt,
+          provider: "cloudflare",
+          agent,
+          ...(Option.isSome(sessionKey) ? { key: sessionKey.value } : {}),
+        },
         ...(Option.isSome(key) ? { key: key.value } : {}),
       });
       const url = new URL(created.url, api.url).href;
       yield* output(
         { ...created, url },
         [
-          `${green("✓")} Started ${bold(created.title)} on ${repo} ${dim(`(${agent})`)}`,
+          created.steered === true
+            ? `${green("✓")} Sent the prompt to ${bold(created.title)} ${dim("(that key has a session)")}`
+            : `${green("✓")} Started ${bold(created.title)} on ${repo} ${dim(`(${agent})`)}`,
           `  ${short(created.id)}  ${url}`,
           dim(`  Follow it: scotty read ${short(created.id)}`),
         ].join("\n"),

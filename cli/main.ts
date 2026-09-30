@@ -11,6 +11,7 @@ import { doctor, login } from "./commands/setup.js";
 import { create, ls, log, open, read } from "./commands/sessions.js";
 import { hatch, interrupt, resume, rm, steer, stop } from "./commands/actions.js";
 import { push } from "./commands/push.js";
+import { connect, connections, deliveries } from "./commands/connections.js";
 
 const overview = `${bold("scotty")} — Codex and Claude sessions in Cloudflare Containers
 
@@ -23,7 +24,8 @@ ${bold("Setup")}
   skill                           Print the guide to hand your own agent
 
 ${bold("Sessions")}
-  new <repo> <prompt>             Start a session (--agent claude, --key <retry key>)
+  new <repo> <prompt>             Start a session (--agent claude, --key <retry key>,
+                                  --session-key <key>: a repeat steers that session)
   ls                              List sessions
   read <id>                       Read the latest messages (--last N, --role user|assistant)
   steer <id> <text>               Send text; a stopped session resumes
@@ -39,6 +41,12 @@ ${bold("What sessions get")}
   push instructions <file|->      Set the instructions every session gets
   ls skills                       List skills and the instructions
   rm skill <name>                 Delete a skill
+
+${bold("Hooks")}
+  connect webhook <name>          Make a webhook: its URL, and the secret (shown once)
+  connections                     List connections
+  deliveries                      List deliveries, newest first (--connection <name>)
+  rm connection <name>            Delete a connection
 
 ${bold("Flags")}
   --json      JSON output (the default when piped)
@@ -69,8 +77,10 @@ chatgpt   Opens the device-code page and waits for you to enter the code.
 github    Saves the token from \`gh auth token\`, or from stdin when piped.
 claude    Runs \`claude setup-token\` and saves the token, or reads it from stdin when piped.
 Example: gh auth token | scotty login github`,
-  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--key key]
+  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--key key] [--session-key key]
 Start a session with Codex (the default) or Claude. --key makes retries idempotent.
+--session-key names the session: the same key with the same repository and agent sends the
+prompt to that session (resuming it if stopped); with another repository or agent it is refused.
 Example: scotty new octocat/Hello-World "Describe the code"`,
   ls: `Usage: scotty ls [skills]
 List sessions, newest activity first; \`ls skills\` lists skills and the instructions.`,
@@ -86,8 +96,8 @@ Interrupt the current turn.`,
 Stop a session's container; its work is saved and \`scotty resume\` or a steer picks it up.`,
   resume: `Usage: scotty resume <id>
 Resume a stopped session from its last save.`,
-  rm: `Usage: scotty rm <id…> | scotty rm skill <name>
-Delete stopped sessions with their saves and files, or delete a skill.`,
+  rm: `Usage: scotty rm <id…> | scotty rm skill <name> | scotty rm connection <name>
+Delete stopped sessions with their saves and files, or delete a skill or a connection.`,
   open: `Usage: scotty open [id]
 Open Scotty, or one session, in the default browser.`,
   hatch: `Usage: scotty hatch <id> <port>
@@ -98,6 +108,16 @@ Print a session's raw events (one JSON object per line in a terminal).`,
   skill: `Usage: scotty skill
 Print the Scotty skill: how an agent sets up and drives Scotty with this CLI.
 Save it for your agent: scotty skill > ~/.claude/skills/scotty/SKILL.md`,
+  connect: `Usage: scotty connect webhook <name>
+Make a webhook that starts sessions. Prints its URL and its secret once. A sender POSTs JSON
+{"repo": "owner/repo", "prompt": "…", "key": "optional", "agent": "codex|claude", "title": "optional"}
+to the URL, signed as Standard Webhooks (webhook-id, webhook-timestamp, webhook-signature).
+A repeated key sends the prompt to the session that key started.`,
+  connections: `Usage: scotty connections
+List connections (names, kinds and URLs; secrets are never shown again).`,
+  deliveries: `Usage: scotty deliveries [--connection name]
+List what senders posted, newest first: accepted (with its session), rejected (and why) or
+duplicate. The last 200 are shown.`,
   push: `Usage: scotty push skill <folder|zip…> | scotty push instructions <file|->
 skill          Upload skills; one with the same name is replaced and keeps its on/off setting.
 instructions   Set the text every session gets; - reads stdin, an empty file clears it.
@@ -125,6 +145,9 @@ const root = Command.make("scotty").pipe(
     hatch,
     log,
     push,
+    connect,
+    connections,
+    deliveries,
   ]),
 );
 

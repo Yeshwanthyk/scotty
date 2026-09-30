@@ -1,8 +1,13 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { message } from "../data/core";
+import { ago } from "../data/status";
 import {
   accounts,
+  addWebhook,
+  connections as loadConnections,
+  deliveries as loadDeliveries,
+  removeConnection,
   pollChatGpt,
   removeSkill,
   saveInstructions,
@@ -13,6 +18,8 @@ import {
   switchSkill,
   uploadSkill,
   type Accounts as AccountState,
+  type Connection,
+  type Delivery,
   type Device,
   type Settings as SettingsState,
 } from "../data/settings";
@@ -23,6 +30,12 @@ export const sections = [
   { id: "accounts", label: "Accounts", icon: "globe", detail: "ChatGPT, Claude and GitHub" },
   { id: "instructions", label: "Instructions", icon: "file", detail: "Added to every session" },
   { id: "skills", label: "Skills", icon: "list", detail: "Installed in new sessions" },
+  {
+    id: "connections",
+    label: "Connections",
+    icon: "branch",
+    detail: "Webhooks that start sessions",
+  },
   { id: "signed-in", label: "Signed in", icon: "circle", detail: "Cloudflare Access" },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; icon: IconName; detail: string }>;
 export type Section = (typeof sections)[number]["id"];
@@ -108,6 +121,8 @@ export function SettingsPage({ section }: { section?: Section }) {
             <Instructions saved={data.settings.instructions} reload={load} />
           ) : shown === "skills" ? (
             <Skills skills={data.settings.skills} reload={load} />
+          ) : shown === "connections" ? (
+            <Connections />
           ) : (
             <SignedIn email={data.settings.email} />
           )}
@@ -497,6 +512,181 @@ function Skills({ skills, reload }: { skills: SettingsState["skills"]; reload: (
           Upload zip
         </button>
       </div>
+      <Problem text={error} />
+    </div>
+  );
+}
+
+const reasons: Record<string, string> = {
+  bad_signature: "Bad signature",
+  stale_timestamp: "Timestamp too old",
+  key_conflict: "Key used by another repo or agent",
+  session_unavailable: "Session unavailable",
+  repo_unavailable: "Repository unavailable",
+  bad_body: "Unreadable body",
+};
+
+function Connections() {
+  const [items, setItems] = useState<Connection[]>();
+  const [log, setLog] = useState<Delivery[]>([]);
+  const [name, setName] = useState("");
+  const [created, setCreated] = useState<{ name: string; url: string; secret: string }>();
+  const [copied, setCopied] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try {
+      const [next, recent] = await Promise.all([loadConnections(), loadDeliveries()]);
+      setItems(next);
+      setLog(recent);
+    } catch (failure) {
+      setError(message(failure, "Could not load connections"));
+    }
+  }, []);
+  useEffect(() => void load(), [load]);
+  async function run(action: () => Promise<void>, fallback: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await action();
+      await load();
+    } catch (failure) {
+      setError(message(failure, fallback));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const copy = (what: string, text: string) =>
+    void navigator.clipboard?.writeText(text).then(() => setCopied(what));
+  if (items === undefined)
+    return error ? <Problem text={error} /> : <div className="settings-card" aria-busy="true" />;
+  return (
+    <div className="settings-card">
+      <p className="settings-intro">
+        A webhook starts a session from a signed POST with {"{repo, prompt, key?}"}; a repeated key
+        steers that session. From a terminal: <code>scotty connect webhook name</code>
+      </p>
+      {created ? (
+        <div className="settings-row">
+          <div className="settings-row-text">
+            <div className="settings-row-title">
+              <span className="mono">{created.name}</span> secret, shown once
+            </div>
+            <div className="settings-row-detail mono">{created.secret}</div>
+            <div className="settings-row-detail mono">{created.url}</div>
+          </div>
+          <button
+            type="button"
+            className="button pressable"
+            onClick={() => copy("secret", created.secret)}
+          >
+            <Icon name={copied === "secret" ? "check" : "copy"} size={13} />
+            Copy secret
+          </button>
+          <button
+            type="button"
+            className="button pressable"
+            onClick={() => copy("url", created.url)}
+          >
+            <Icon name={copied === "url" ? "check" : "copy"} size={13} />
+            Copy URL
+          </button>
+          <button type="button" className="button pressable" onClick={() => setCreated(undefined)}>
+            Done
+          </button>
+        </div>
+      ) : null}
+      {items.length === 0 ? (
+        <div className="settings-empty">No connections yet.</div>
+      ) : (
+        items.map((item) => {
+          const mine = log.filter((delivery) => delivery.connection === item.name).slice(0, 8);
+          return (
+            <div key={item.name}>
+              <div className="settings-row">
+                <div className="settings-row-text">
+                  <div className="settings-row-title">
+                    <span className="mono">{item.name}</span>
+                    <span className="quiet settings-size">{item.kind}</span>
+                  </div>
+                  <div className="settings-row-detail mono">{item.url}</div>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button pressable"
+                  aria-label={`Delete ${item.name}`}
+                  disabled={busy}
+                  onClick={() => {
+                    if (window.confirm(`Delete the ${item.name} connection?`))
+                      void run(() => removeConnection(item.name), "Could not delete it");
+                  }}
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
+              {mine.map((delivery) => (
+                <div key={delivery.id} className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-title">
+                      <span
+                        className="settings-dot"
+                        data-tone={delivery.outcome === "rejected" ? "warn" : "good"}
+                      />
+                      {delivery.outcome === "rejected"
+                        ? (reasons[delivery.reason ?? ""] ?? "Rejected")
+                        : delivery.outcome === "duplicate"
+                          ? "Already delivered"
+                          : "Accepted"}
+                      <span className="quiet tabular settings-size">
+                        {ago(new Date(delivery.at).toISOString())}
+                      </span>
+                    </div>
+                    <div className="settings-row-detail mono">{delivery.id}</div>
+                  </div>
+                  {delivery.session ? (
+                    <Link
+                      to="/s/$sessionId"
+                      params={{ sessionId: delivery.session }}
+                      className="button pressable"
+                    >
+                      Open session
+                    </Link>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          );
+        })
+      )}
+      <form
+        className="token-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void run(async () => {
+            setCreated(await addWebhook(name.trim()));
+            setCopied("");
+            setName("");
+          }, "Could not add the webhook");
+        }}
+      >
+        <input
+          className="field"
+          placeholder="name, like sentry"
+          aria-label="Webhook name"
+          autoComplete="off"
+          value={name}
+          onChange={(event) => setName(event.target.value.toLowerCase())}
+        />
+        <button
+          type="submit"
+          className="button pressable"
+          data-tone="primary"
+          disabled={busy || name.trim() === ""}
+        >
+          {busy ? <Spinner size={12} /> : <Icon name="plus" size={13} />}
+          Add webhook
+        </button>
+      </form>
       <Problem text={error} />
     </div>
   );

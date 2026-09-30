@@ -73,6 +73,7 @@ const names = (config: Config) => ({
   bucket: `scotty-${config.stage}-artifacts`,
   app: `scotty-${config.stage}-sessions`,
   access: `scotty-${config.stage}`,
+  hooks: `scotty-${config.stage}-hooks`,
   wildcard: `*.${config.domain}`,
   route: `*.${config.domain}/*`,
 });
@@ -279,25 +280,15 @@ export const deployStage = (
       { type: "preview_worker", workerId },
     ];
     const policies = [{ decision: "allow", include: [{ email: { email } }] }];
-    const access = yield* accessApps(accountId, name.access);
-    const accessId = access[0]?.id;
-    if (accessId)
-      yield* ZeroTrust.updateAccessApplicationForAccount({
-        accountId,
-        appId: accessId,
-        type: "self_hosted",
-        name: name.access,
-        destinations,
-        policies,
-      });
-    else
-      yield* ZeroTrust.createAccessApplicationForAccount({
-        accountId,
-        type: "self_hosted",
-        name: name.access,
-        destinations,
-        policies,
-      });
+    yield* ensureAccessApp(accountId, name.access, destinations, policies);
+    // Senders of signed webhooks have no Access login; the Worker verifies their signatures. This
+    // app, with a path more specific than the Worker's, lets `/hooks/*` alone through.
+    yield* ensureAccessApp(
+      accountId,
+      name.hooks,
+      [{ type: "public", uri: `${host}/hooks/*` }],
+      [{ name: "signed webhooks", decision: "bypass", include: [{ everyone: {} }] }],
+    );
 
     yield* say("Setting up the preview address");
     if ((yield* wildcardRecords(zoneId, name.wildcard)).length === 0)
@@ -323,6 +314,21 @@ export const deployStage = (
       });
   });
 
+type AccessApp = Parameters<typeof ZeroTrust.createAccessApplicationForAccount>[0];
+
+const ensureAccessApp = (
+  accountId: string,
+  name: string,
+  destinations: NonNullable<AccessApp["destinations"]>,
+  policies: NonNullable<AccessApp["policies"]>,
+) =>
+  Effect.gen(function* () {
+    const found = (yield* accessApps(accountId, name))[0]?.id;
+    const app = { accountId, type: "self_hosted", name, destinations, policies };
+    if (found) yield* ZeroTrust.updateAccessApplicationForAccount({ ...app, appId: found });
+    else yield* ZeroTrust.createAccessApplicationForAccount(app);
+  });
+
 const accessApps = (accountId: string, name: string) =>
   ZeroTrust.listAccessApplicationsForAccount.items({ accountId }).pipe(
     Stream.filter((app) => app.name === name),
@@ -345,7 +351,10 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
     const say = (text: string) => Effect.sync(() => progress(text));
 
     yield* say("Removing the Access app");
-    for (const app of yield* accessApps(accountId, name.access))
+    for (const app of [
+      ...(yield* accessApps(accountId, name.access)),
+      ...(yield* accessApps(accountId, name.hooks)),
+    ])
       if (app.id) yield* ZeroTrust.deleteAccessApplicationForAccount({ accountId, appId: app.id });
 
     yield* say("Removing the container app");
@@ -405,6 +414,7 @@ export const leftovers = (config: Config) =>
     const apps = yield* Containers.listContainerApplications({ accountId });
     const buckets = yield* R2.listBuckets({ accountId });
     const access = yield* accessApps(accountId, name.access);
+    const hooks = yield* accessApps(accountId, name.hooks);
     const records = yield* wildcardRecords(zoneId, name.wildcard);
     return [
       ...[
@@ -413,6 +423,7 @@ export const leftovers = (config: Config) =>
         ...(buckets.buckets ?? []).map((b) => b.name),
       ].filter(mine),
       ...access.map(() => `Access app ${name.access}`),
+      ...hooks.map(() => `Access app ${name.hooks}`),
       ...records.map(() => `DNS record ${name.wildcard}`),
     ];
   });

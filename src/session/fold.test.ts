@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
 import { deadline, deadlines, fold, initial } from "./fold.js";
+import { sessionView } from "./view.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
 describe("session fold", () => {
@@ -357,5 +358,40 @@ describe("session fold", () => {
     ]);
     expect(command(state, late)).toBeUndefined();
     check(state);
+  });
+
+  it("keeps what started a session, and a steer on the same turn behaves as any other prompt", () => {
+    const origin = { kind: "hook", connection: "ci", delivery: "msg_1", key: "pr-7" };
+    const hooked = make(1, "created", { ...created, origin });
+    let state = fold(fold(initial, hooked), start);
+    expect(state.created?.origin).toEqual(origin);
+    expect(sessionView("session-1", state).display.origin).toEqual(origin);
+    expect(sessionView("session-1", fold(initial, created)).display.origin).toBeNull();
+    state = [hello, ready, delivered].reduce(fold, state);
+    state = fold(
+      state,
+      make(6, "prompt.requested", { req: "hook:ci:msg_2", turn: "0", text: "again", images: [] }),
+    );
+    expect(state.requests.map((item) => [item.req, item.status])).toEqual([
+      ["initial:1", "delivered"],
+      ["hook:ci:msg_2", "pending"],
+    ]);
+    // A retried delivery names the same req and does nothing.
+    const retried = make(7, "prompt.requested", {
+      req: "hook:ci:msg_2",
+      turn: "0",
+      text: "again",
+      images: [],
+    });
+    expect(fold(state, retried).requests).toHaveLength(2);
+    expect(state.created?.origin).toEqual(origin);
+    check(state);
+  });
+
+  it("decodes an api origin and refuses a hook origin without its connection", () => {
+    expect(() =>
+      decodeSessionEvent({ ...created, origin: { kind: "api", key: "nightly" } }),
+    ).not.toThrow();
+    expect(() => decodeSessionEvent({ ...created, origin: { kind: "hook" } })).toThrow();
   });
 });

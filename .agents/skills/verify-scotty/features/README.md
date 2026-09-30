@@ -12,6 +12,7 @@ directory. Conventions, evidence and cleanup: [SKILL.md](../SKILL.md).
 | [github](github.md)           | A session on a private repo pushes only its own branch, and holds no token   | G1–G3      | `github`             |
 | [hatch](hatch.md)             | A dev server in a session opens at its preview URL, and comes back on resume | H1–H4      | `hatch`, `hatch-env` |
 | [files](files.md)             | Images and video the agent makes show in the turn that made them             | F1–F4      | `files`              |
+| [hooks](hooks.md)             | A signed webhook starts or steers a session and every delivery is listed     | K1–K5      | `hooks`              |
 | [ui](ui.md)                   | The phone UI creates, answers, steers and interrupts, and shows files        | U1–U6      | none                 |
 
 An e2e proves the same behaviours automatically; drive the recipe when a change needs a human-

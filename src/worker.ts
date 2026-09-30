@@ -6,6 +6,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { gitHandler } from "./creds/git.js";
 import CredsObject from "./creds/object.js";
+import { hookHandler, hookPath } from "./hooks/handler.js";
 import { apiHandler, hatchPort } from "./http/api.js";
 import SessionObject, { SessionArtifacts } from "./session/object.js";
 
@@ -82,6 +83,14 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
         Effect.provide(RuntimeContext.phantom),
       ),
     );
+    // Sender-signed, not Access-signed: Access bypasses this path alone.
+    router.add("*", "/hooks/*", (request) =>
+      Effect.gen(function* () {
+        const name = hookPath.exec(new URL(request.url, "https://scotty.internal").pathname)?.[1];
+        if (name === undefined) return HttpServerResponse.text("Not found", { status: 404 });
+        return yield* hookHandler(request, name, sessions, credentials);
+      }).pipe(Effect.orDie, Effect.provide(RuntimeContext.phantom)),
+    );
     const api = router.asHttpEffect().pipe(Effect.orDie);
     // The bytes reach R2 before the Session DO records the file, so no event names missing bytes.
     const attach = (request: HttpServerRequest.HttpServerRequest, session: string) =>
@@ -143,7 +152,8 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
             return HttpServerResponse.text("Forbidden", { status: 403 });
           return yield* sessions.getByName(terminal).fetch(request).pipe(Effect.orDie);
         }
-        if (url.pathname.startsWith("/api/")) return yield* api;
+        if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/hooks/"))
+          return yield* api;
         const assets: unknown = env["ASSETS"];
         if (!isFetcher(assets)) return yield* Effect.die("ASSETS binding missing");
         return yield* Cloudflare.fromCloudflareFetcher(assets).fetch(request).pipe(Effect.orDie);
