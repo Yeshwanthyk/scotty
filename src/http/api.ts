@@ -5,7 +5,7 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { AgentKind } from "../session/events.js";
-import { sessionMatches } from "../session/view.js";
+import { maxSearch } from "../session/view.js";
 import { ConnectionName, connectionName, Key } from "../creds/connections.js";
 import { githubHint, Repo, startSession } from "./start.js";
 import { version } from "../version.js";
@@ -300,19 +300,22 @@ export function apiHandler(
       });
     }
     if (url.pathname === "/api/sessions" && request.method === "GET") {
+      const searched = Schema.decodeUnknownExit(Schema.String.check(Schema.isMaxLength(maxSearch)))(
+        (url.searchParams.get("q") ?? "").trim(),
+      );
+      if (Exit.isFailure(searched))
+        return yield* bad(`Search text is at most ${maxSearch} characters`, 400);
+      const query = searched.value;
       const ids = yield* credential.sessions();
       // Each view may wake a cold Durable Object; one at a time, a long list outlasts the CLI.
       // A session that cannot open is left out rather than failing the whole list.
       const opened = yield* Effect.forEach(
         ids,
-        (entry) => Effect.exit(sessions.getByName(entry.id).view()),
+        (entry) => Effect.exit(sessions.getByName(entry.id).find(query)),
         { concurrency: 16 },
       );
-      const query = url.searchParams.get("q") ?? "";
       const views = opened.flatMap((exit) =>
-        Exit.isSuccess(exit) && sessionMatches(exit.value.session.display, query)
-          ? [exit.value]
-          : [],
+        Exit.isSuccess(exit) && exit.value !== undefined ? [exit.value] : [],
       );
       return yield* HttpServerResponse.json({
         version: 1,

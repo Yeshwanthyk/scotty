@@ -1,5 +1,6 @@
 import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
+import { maxSearch } from "../../src/session/view.js";
 import { Conversation, Created, List, Log, Settings, View } from "../client.js";
 import {
   ago,
@@ -111,7 +112,9 @@ export const ls = Command.make(
           ].join("\n"),
         );
       }
-      const query = Option.isSome(search) ? `?q=${encodeURIComponent(search.value)}` : "";
+      if (Option.isSome(search) && search.value.trim().length > maxSearch)
+        return yield* usage(`--search is at most ${maxSearch} characters`, "ls");
+      const query = Option.isSome(search) ? `?q=${encodeURIComponent(search.value.trim())}` : "";
       const { sessions } = yield* api(`/api/sessions${query}`, List);
       const sorted = [...sessions].sort((a, b) =>
         b.display.activeAt.localeCompare(a.display.activeAt),

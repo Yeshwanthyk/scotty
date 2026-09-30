@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { sessions as searchSessions } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import { ago, matchesText, statusOf } from "../data/status";
 import { Icon } from "./Icon";
@@ -21,6 +22,23 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  // The server also matches the whole first prompt; its hits join the ones the list shows.
+  const [found, setFound] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const text = query.trim();
+    if (text === "") return setFound(new Set());
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      searchSessions(controller.signal, text.slice(0, 200)).then(
+        (hits) => setFound(new Set(hits.map((hit) => hit.identity.id))),
+        () => undefined,
+      );
+    }, 150);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
   const listRef = useRef<HTMLDivElement>(null);
   const commands = useMemo(() => {
     const go = (run: () => Promise<void>) => () => {
@@ -49,7 +67,7 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
     // Sessions match on title, repository, branch and first prompt; a repository sets the
     // sidebar's repository filter.
     const sessions: Command[] = (list ?? [])
-      .filter((session) => matchesText(session, needle))
+      .filter((session) => matchesText(session, needle) || found.has(session.identity.id))
       .map((session) => ({
         id: session.identity.id,
         label: session.display.title,
@@ -81,7 +99,7 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
       ...repos,
       ...sessions,
     ];
-  }, [list, query, navigate, onClose, setRepo]);
+  }, [list, query, found, navigate, onClose, setRepo]);
   useEffect(() => setActive(0), [query]);
   useEffect(() => {
     listRef.current

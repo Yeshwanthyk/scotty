@@ -20,17 +20,26 @@ const turnState = (ended: string | undefined) =>
 // A session's first prompt as shown to searches: long pastes are cut.
 const promptPreview = (prompt: string) => prompt.trim().slice(0, 300);
 
-// Case-insensitive substring over what the owner remembers a session by. Anything that later
-// gives a session an origin (a key, an automation) adds its text here.
-export function sessionMatches(
-  display: { title: string; repository: string; branch: string; prompt: string },
-  query: string,
-) {
+// A search text is at most this many characters once trimmed.
+export const maxSearch = 200;
+
+// Case-insensitive substring over what the owner remembers a session by: title, repository,
+// branch, the whole first prompt, and the key and connection of its origin.
+export function sessionMatches(state: State, query: string) {
   const needle = query.trim().toLowerCase();
   if (needle === "") return true;
-  return [display.title, display.repository, display.branch, display.prompt].some((field) =>
-    field.toLowerCase().includes(needle),
-  );
+  const created = state.created;
+  if (created === undefined) return false;
+  const origin = created.origin;
+  const fields = [
+    created.title,
+    created.repo,
+    created.branch,
+    created.prompt,
+    origin === undefined ? "" : (origin.key ?? ""),
+    origin?.kind === "hook" ? origin.connection : "",
+  ];
+  return fields.some((field) => field.toLowerCase().includes(needle));
 }
 
 export function sessionView(id: string, state: State) {
@@ -46,6 +55,7 @@ export function sessionView(id: string, state: State) {
       prompt: promptPreview(created?.prompt ?? ""),
       agentKind: created?.agentKind ?? "codex",
       origin: created?.origin ?? null,
+      stoppedAt: state.stoppedAt === undefined ? null : new Date(state.stoppedAt).toISOString(),
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
     },

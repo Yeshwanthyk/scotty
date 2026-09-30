@@ -16,9 +16,11 @@ const settle = (
   requests.map((item) =>
     item.req === req && item.status === "pending" ? { ...item, status } : item,
   );
-const endAll = (state: State, phase: "stopped" | "failed"): State => ({
+const endAll = (state: State, phase: "stopped" | "failed", at: number): State => ({
   ...state,
   phase,
+  // How long a session has slept counts from here; a new generation clears it.
+  stoppedAt: phase === "stopped" ? at : undefined,
   stopSeq: state.lastSeq,
   connected: false,
   pending: [],
@@ -31,6 +33,7 @@ const endAll = (state: State, phase: "stopped" | "failed"): State => ({
 const resume = (state: State, at: number): State => ({
   ...state,
   phase: "provisioning",
+  stoppedAt: undefined,
   gen: (state.gen ?? 0) + 1,
   startSeq: state.lastSeq,
   hello: false,
@@ -75,6 +78,7 @@ export function fold(state: State, event: SessionEvent): State {
             failure: { code: "supervisor_restarted", retryable: true },
           },
           "failed",
+          event.at,
         );
       if (state.connected || (!has(state.pending, "container") && !has(state.pending, "dial")))
         return next;
@@ -207,6 +211,7 @@ export function fold(state: State, event: SessionEvent): State {
             lastAckSeq: state.lastAckSeq,
           },
           "stopped",
+          event.at,
         );
       // The supervisor reports a failed start once; waiting out the workspace deadline adds nothing.
       if (event.req === undefined && !state.ready)
@@ -218,6 +223,7 @@ export function fold(state: State, event: SessionEvent): State {
             failure: { code: event.code, retryable: true },
           },
           "failed",
+          event.at,
         );
       if (
         event.req === undefined ||
@@ -304,7 +310,7 @@ export function fold(state: State, event: SessionEvent): State {
       )
         return next;
       // The container is gone or unreachable; its saved work can still resume.
-      if (event.op === "dial") return endAll(next, "stopped");
+      if (event.op === "dial") return endAll(next, "stopped", event.at);
       if (event.op === "container" || event.op === "workspace")
         return endAll(
           {
@@ -312,6 +318,7 @@ export function fold(state: State, event: SessionEvent): State {
             failure: { code: `${event.op}_timeout`, retryable: true },
           },
           "failed",
+          event.at,
         );
       // A lost save leaves the previous save in place; the session carries on.
       if (event.op === "save") return { ...next, pending: remove(state.pending, "save") };
@@ -329,7 +336,7 @@ export function fold(state: State, event: SessionEvent): State {
     case "resume.requested":
       return state.phase === "stopped" ? resume({ ...next, activeAt: event.at }, event.at) : next;
     case "container.stopped":
-      return event.gen === state.gen && live(state) ? endAll(next, "stopped") : next;
+      return event.gen === state.gen && live(state) ? endAll(next, "stopped", event.at) : next;
     case "failed":
       return endAll(
         {
@@ -338,6 +345,7 @@ export function fold(state: State, event: SessionEvent): State {
           failure: { code: event.code, retryable: event.retryable },
         },
         "failed",
+        event.at,
       );
     case "file.attached": {
       const { seq: _seq, at: _at, src: _src, kind: _kind, ...file } = event;

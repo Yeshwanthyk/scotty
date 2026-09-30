@@ -58,9 +58,10 @@ function Meta({ session, status }: { session: Session; status: Status }) {
   );
 }
 
-// Key and Automations filters arrive with session origins; until sessions carry one they stay out.
 const filters: ReadonlyArray<{ id: Filter; label: string }> = [
   { id: "all", label: "All" },
+  { id: "mine", label: "Mine" },
+  { id: "automations", label: "Automations" },
   { id: "running", label: "Running" },
 ];
 

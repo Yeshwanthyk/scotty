@@ -8,6 +8,7 @@ import {
   ConnectionRemoved,
   Conversation,
   Deliveries,
+  List,
   View,
   failure,
   target,
@@ -111,6 +112,14 @@ const program = Effect.gen(function* () {
   const conversation = yield* request(`${prefix}/conversation`, Conversation);
   yield* check(conversation.turns.length === 2, "The session does not have two turns");
   console.log("Two deliveries with one key: one session, two turns");
+  // Search by the key and by the connection name finds the session.
+  for (const text of [key, name]) {
+    const hits = yield* request(`/api/sessions?q=${encodeURIComponent(text)}`, List);
+    yield* check(
+      hits.sessions.some((item) => item.identity.id === session),
+      `Searching ${text} did not find the session`,
+    );
+  }
 
   // 2. A bad signature is rejected and listed.
   const bad = yield* deliver(url, name, connection.secret, body("say no"), true);

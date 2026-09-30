@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
 import { deadline, deadlines, fold, initial } from "./fold.js";
-import { sessionView } from "./view.js";
+import { sessionMatches, sessionView } from "./view.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
 describe("session fold", () => {
@@ -268,6 +268,31 @@ describe("session fold", () => {
     );
     expect(late).toEqual({ ...state, lastSeq: 7 });
     check(late);
+  });
+
+  it("records when a session went to sleep and clears it on resume", () => {
+    const stopped = make(6, "container.stopped", { gen: 1 });
+    let state = fold(boot(), stopped);
+    expect(state.stoppedAt).toBe(stopped.at);
+    expect(sessionView("session-1", state).display.stoppedAt).toBe(
+      new Date(stopped.at).toISOString(),
+    );
+    state = fold(state, make(7, "agent.event", { gen: 1, n: 7, agentKind: "codex", event: null }));
+    expect(state.stoppedAt).toBe(stopped.at);
+    state = fold(state, make(8, "resume.requested"));
+    expect(state.phase).toBe("provisioning");
+    expect(state.stoppedAt).toBeUndefined();
+    expect(sessionView("session-1", state).display.stoppedAt).toBeNull();
+  });
+
+  it("matches a search on the whole prompt, the key and the connection", () => {
+    const origin = { kind: "hook", connection: "ci-hooks", delivery: "msg_1", key: "pr-7" };
+    const long = `${"x".repeat(400)} needle`;
+    const state = fold(initial, make(1, "created", { ...created, origin, prompt: long }));
+    for (const text of ["NEEDLE", "pr-7", "CI-hooks", "TEST", ""])
+      expect(sessionMatches(state, text)).toBe(true);
+    expect(sessionMatches(state, "absent")).toBe(false);
+    expect(sessionMatches(initial, "absent")).toBe(false);
   });
 
   it("saves after an accepted turn end and clears the save deadline on its result", () => {
