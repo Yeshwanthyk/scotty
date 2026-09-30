@@ -13,12 +13,13 @@ import {
   target,
   View,
 } from "../cli/client.js";
-import { agent } from "./lib/agent.js";
+import { agent, prompt, real, sessionAgent } from "./lib/agent.js";
 
 // A command that kills the agent itself. Claude Code refuses a pkill that matches its own
-// process, so for Claude the shell kills its parent, which is Claude.
+// process, so for Claude the shell kills its parent, which is Claude. The stand-ins run commands
+// with `bash -lc`, whose parent is the stand-in.
 const crashCommand = {
-  codex: "sleep 5 && pkill -9 -f 'codex app-server'",
+  codex: real ? "sleep 5 && pkill -9 -f 'codex app-server'" : "sleep 5 && kill -9 $PPID",
   claude: "sleep 5 && kill -9 $PPID",
 };
 import { Log, waiter } from "./lib/wait.js";
@@ -59,8 +60,11 @@ const program = Effect.gen(function* () {
     body: {
       title: `e2e stop-resume (${agent})`,
       repo: fixtureRepo,
-      agent,
-      prompt: `Run exactly: \`echo ${marker} > marker.txt && rm README\`, then reply with only the word done.`,
+      ...sessionAgent,
+      prompt: prompt(
+        `Run exactly: \`echo ${marker} > marker.txt && rm README\`, then reply with only the word done.`,
+        `run echo ${marker} > marker.txt && rm README\nsay done`,
+      ),
       provider: "cloudflare",
     },
   });
@@ -104,13 +108,17 @@ const program = Effect.gen(function* () {
   console.log("Stopped: ls shows stopped and the instance is not running");
 
   // 3. A steer resumes the same Codex thread with the saved files.
-  const recalled = yield* answer("1", "What was the marker? Reply with the marker only.");
+  const recall = prompt("What was the marker? Reply with the marker only.", "say {{recall}}");
+  const recalled = yield* answer("1", recall);
   const threads = (yield* events()).flatMap((e) => (e.kind === "agent.ready" ? [e.session] : []));
   yield* check(threads.length >= 2 && new Set(threads).size === 1, "Resume used a new thread");
   yield* check(recalled.includes(marker), "Resumed thread did not recall the marker");
   const files = yield* answer(
     "2",
-    "Run exactly: `cat marker.txt; ls README` and reply with its full output.",
+    prompt(
+      "Run exactly: `cat marker.txt; ls README` and reply with its full output.",
+      "run cat marker.txt; ls README\nsay {{out}}",
+    ),
   );
   yield* check(
     files.includes(marker) && /no such file|cannot access/i.test(files),
@@ -127,7 +135,7 @@ const program = Effect.gen(function* () {
     body: {
       req: crash,
       turn: "3",
-      text: `Run exactly: \`${crashCommand[agent]}\``,
+      text: prompt(`Run exactly: \`${crashCommand[agent]}\``, `run ${crashCommand[agent]}`),
     },
   });
   const ended = yield* poll(
@@ -151,7 +159,7 @@ const program = Effect.gen(function* () {
     "Invariant violated during crash",
   );
   yield* request(`${prefix}/resume`, View, { method: "POST" });
-  const after = yield* answer("3", "What was the marker? Reply with the marker only.");
+  const after = yield* answer("3", recall);
   yield* check(after.includes(marker), "Marker lost after crash and resume");
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   console.log("Crash: stopped without invariant violations; resume recalled the marker");

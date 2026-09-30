@@ -5,7 +5,7 @@ import type { RuntimeContext } from "alchemy/RuntimeContext";
 import { Cause, Config, Duration, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
+import type { AgentConfig, ToSupervisorMessage } from "../../protocol/supervisor.js";
 import CredsObject from "../creds/object.js";
 import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
@@ -20,6 +20,15 @@ import { live } from "./state.js";
 import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
 import { supervisorEvent } from "./supervisor-events.js";
 import { conversationView, sessionView } from "./view.js";
+
+const scriptedStart = (
+  kind: typeof AgentKind.Type,
+): [typeof AgentConfig.Type, { name: string; email: string }] => [
+  kind === "codex"
+    ? { kind: "codex", scripted: true, model: "scripted" }
+    : { kind: "claude", scripted: true, model: "scripted" },
+  { name: "Scotty e2e", email: "e2e@scotty.invalid" },
+];
 
 export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
   "SessionContainer",
@@ -152,8 +161,11 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 codex: () => owner.sessionToken().pipe(Effect.map(codex.startConfig)),
                 claude: () => owner.claudeToken().pipe(Effect.map(claude.startConfig)),
               } satisfies Record<typeof AgentKind.Type, unknown>;
+              // The scripted stand-in needs no account, so e2e runs without the owner's sign-ins.
               const signedIn = yield* Effect.exit(
-                Effect.all([agentConfig[action.agentKind](), owner.gitIdentity()]),
+                action.scripted === true
+                  ? Effect.succeed(scriptedStart(action.agentKind))
+                  : Effect.all([agentConfig[action.agentKind](), owner.gitIdentity()]),
               );
               if (Exit.isFailure(signedIn)) {
                 if (current(action.gen))
@@ -330,6 +342,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           prompt: string;
           agentKind: typeof AgentKind.Type;
           image: string;
+          scripted?: true;
         }) =>
           Effect.gen(function* () {
             if (log.state.created) return sessionView(id(), log.state);
@@ -344,6 +357,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   title: input.title,
                   prompt: input.prompt,
                   image: input.image,
+                  ...(input.scripted === true ? { scripted: true } : {}),
                 },
                 "api",
               ),

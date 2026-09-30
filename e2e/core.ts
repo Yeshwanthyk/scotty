@@ -17,7 +17,7 @@ import {
   target,
   View,
 } from "../cli/client.js";
-import { agent } from "./lib/agent.js";
+import { agent, prompt, real, sessionAgent } from "./lib/agent.js";
 import { Log, waiter } from "./lib/wait.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 
@@ -59,15 +59,23 @@ const signIn = (request: ReturnType<typeof client>) =>
     if (!signedIn)
       return yield* failure("signin", "ChatGPT sign-in timed out", "scotty login chatgpt");
   });
+const envCheck =
+  "env | grep -e SCOTTY_ -e CLAUDE_CODE_OAUTH_TOKEN -e sk-ant- | grep -vc ^SCOTTY_HATCH=";
+
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const token = yield* access(url);
   const request = client({ url, token });
+  // The real agents need the owner's sign-in; the scripted stand-in needs none.
   // Sign in only when the stored ChatGPT token is missing or near expiry.
-  if (agent === "codex") {
+  if (real && agent === "codex") {
     const current = yield* request("/api/credentials/chatgpt", ChatGptStatus);
     if (current.status !== "signed-in") yield* signIn(request);
-  } else if ((yield* request("/api/credentials/claude", ClaudeStatus)).status === "signed-out")
+  } else if (
+    real &&
+    agent === "claude" &&
+    (yield* request("/api/credentials/claude", ClaudeStatus)).status === "signed-out"
+  )
     return yield* failure("signin", "Claude token is not set", "scotty login claude");
   const unique = crypto.randomUUID();
   const session = yield* request("/api/sessions", Created, {
@@ -76,12 +84,14 @@ const program = Effect.gen(function* () {
     body: {
       title: `e2e core (${agent})`,
       repo: fixtureRepo,
-      agent,
+      ...sessionAgent,
       // Commands must not inherit the ChatGPT token from Codex's config or Claude's token from
       // its environment. SCOTTY_HATCH, the public preview URL template, is the one variable
       // they are meant to see.
-      prompt:
-        "Run `env | grep -e SCOTTY_ -e CLAUDE_CODE_OAUTH_TOKEN -e sk-ant- | grep -vc ^SCOTTY_HATCH=` and reply with only the word ready followed by the number it printed.",
+      prompt: prompt(
+        `Run \`${envCheck}\` and reply with only the word ready followed by the number it printed.`,
+        `run ${envCheck}\nsay ready {{out}}`,
+      ),
       provider: "cloudflare",
     },
   });
@@ -131,7 +141,11 @@ const program = Effect.gen(function* () {
   yield* request(`${prefix}/steer`, Reply, {
     method: "POST",
     key: steerReq,
-    body: { req: steerReq, turn: "1", text: "Answer with the word steered." },
+    body: {
+      req: steerReq,
+      turn: "1",
+      text: prompt("Answer with the word steered.", "say steered"),
+    },
   });
   const after = yield* poll(
     events,
@@ -164,7 +178,10 @@ const program = Effect.gen(function* () {
     body: {
       req: slowReq,
       turn: "2",
-      text: "Run `sleep 20` in the shell, then reply with the word first.",
+      text: prompt(
+        "Run `sleep 20` in the shell, then reply with the word first.",
+        "sleep 20\nsay first",
+      ),
     },
   });
   yield* poll(events, (items) =>
@@ -175,7 +192,11 @@ const program = Effect.gen(function* () {
   yield* request(`${prefix}/steer`, Reply, {
     method: "POST",
     key: joinReq,
-    body: { req: joinReq, turn: "2", text: "Also put the word joined in your final reply." },
+    body: {
+      req: joinReq,
+      turn: "2",
+      text: prompt("Also put the word joined in your final reply.", "say joined"),
+    },
   });
   const joined = yield* poll(
     events,
@@ -198,7 +219,11 @@ const program = Effect.gen(function* () {
   yield* request(`${prefix}/steer`, Reply, {
     method: "POST",
     key: longReq,
-    body: { req: longReq, turn: "3", text: "Count from one to ten thousand, slowly." },
+    body: {
+      req: longReq,
+      turn: "3",
+      text: prompt("Count from one to ten thousand, slowly.", "sleep 600"),
+    },
   });
   const interruptReq = crypto.randomUUID();
   yield* request(`${prefix}/interrupt`, Reply, {

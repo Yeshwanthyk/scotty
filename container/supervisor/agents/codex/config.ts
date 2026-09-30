@@ -9,11 +9,7 @@ import { processEnv } from "../../runtime.js";
 export const toml = (value: string) => JSON.stringify(value).replace(/\u007f/g, "\\u007f");
 export const codexHome = () => processEnv("SCOTTY_CODEX_HOME") || "/home/scotty/.codex";
 
-export const launchCodex = (
-  config: Extract<Config, { kind: "codex" }>,
-  cwd: string,
-  env: Record<string, string>,
-) =>
+const writeConfig = (config: Extract<Config, { kind: "codex"; token: string }>, home: string) =>
   Effect.gen(function* () {
     const url = yield* Effect.try({
       try: () => new URL(config.baseUrl),
@@ -22,14 +18,6 @@ export const launchCodex = (
     if (url.protocol !== "https:")
       return yield* new AgentError({ code: "config", message: "invalid provider settings" });
     const fs = yield* FileSystem.FileSystem;
-    const home = codexHome();
-    yield* fs
-      .makeDirectory(home, { recursive: true, mode: 0o700 })
-      .pipe(
-        Effect.mapError(
-          () => new AgentError({ code: "config", message: "could not create Codex home" }),
-        ),
-      );
     yield* fs
       .writeFileString(
         `${home}/config.toml`,
@@ -41,23 +29,45 @@ export const launchCodex = (
           () => new AgentError({ code: "config", message: "could not write Codex config" }),
         ),
       );
+  });
+
+export const launchCodex = (
+  config: Extract<Config, { kind: "codex" }>,
+  cwd: string,
+  env: Record<string, string>,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const home = codexHome();
+    yield* fs
+      .makeDirectory(home, { recursive: true, mode: 0o700 })
+      .pipe(
+        Effect.mapError(
+          () => new AgentError({ code: "config", message: "could not create Codex home" }),
+        ),
+      );
+    if (!("scripted" in config)) yield* writeConfig(config, home);
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     return yield* spawner
       .spawn(
-        ChildProcess.make("codex", ["app-server", "--listen", "stdio://"], {
-          cwd,
-          extendEnv: false,
-          forceKillAfter: "2 seconds",
-          stdin: { stream: "pipe", endOnDone: false },
-          env: {
-            ...env,
-            PATH: processEnv("PATH"),
-            HOME: processEnv("HOME") || "/home/scotty",
-            CODEX_HOME: home,
-            LANG: "C.UTF-8",
-            TERM: "xterm-256color",
+        ChildProcess.make(
+          "scripted" in config ? "scotty-codex-scripted" : "codex",
+          ["app-server", "--listen", "stdio://"],
+          {
+            cwd,
+            extendEnv: false,
+            forceKillAfter: "2 seconds",
+            stdin: { stream: "pipe", endOnDone: false },
+            env: {
+              ...env,
+              PATH: processEnv("PATH"),
+              HOME: processEnv("HOME") || "/home/scotty",
+              CODEX_HOME: home,
+              LANG: "C.UTF-8",
+              TERM: "xterm-256color",
+            },
           },
-        }),
+        ),
       )
       .pipe(
         Effect.mapError(() => new AgentError({ code: "spawn", message: "could not launch Codex" })),

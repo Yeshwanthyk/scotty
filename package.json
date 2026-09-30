@@ -19,6 +19,7 @@
     "ui:build": "npm run build --workspace @scotty/ui",
     "test": "vitest run",
     "e2e": "bun e2e/run.ts",
+    "protocol:codex": "bun container/scripted/codex-protocol.gen.ts",
     "scotty": "bun cli/main.ts"
   },
   "dependencies": {

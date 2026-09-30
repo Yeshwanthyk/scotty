@@ -24,6 +24,8 @@ export const SessionEvent = Schema.Union([
     title: Schema.String,
     prompt: Schema.String,
     image: Schema.String,
+    // Runs the agent's scripted stand-in instead of the agent; only e2e asks for it.
+    scripted: Schema.optionalKey(Schema.Literal(true)),
   }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.start"), gen: Schema.Natural }),
   Schema.Struct({

@@ -140,11 +140,15 @@ export class ClaudeRunner implements Runner {
       if (session === undefined || scope === undefined) return;
       const inbox = new Inbox();
       const gen = ++this.gen;
+      // e2e sessions run the scripted stand-in (container/scripted/claude.ts) with no token.
+      const scripted = "scripted" in this.agent;
       const running = query({
         prompt: inbox,
         options: {
           cwd: this.cwd,
-          pathToClaudeCodeExecutable: executable(),
+          pathToClaudeCodeExecutable: scripted
+            ? "/usr/local/bin/scotty-claude-scripted"
+            : executable(),
           // env replaces the environment, so only these reach Claude and its commands.
           env: {
             ...this.env,
@@ -152,13 +156,13 @@ export class ClaudeRunner implements Runner {
             HOME: processEnv("HOME") || "/home/scotty",
             LANG: "C.UTF-8",
             TERM: "xterm-256color",
-            CLAUDE_CODE_OAUTH_TOKEN: this.agent.token,
+            ...(scripted ? {} : { CLAUDE_CODE_OAUTH_TOKEN: this.agent.token }),
             CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
             DISABLE_AUTOUPDATER: "1",
           },
           ...(resume ? { resume: session } : { sessionId: session }),
           model: this.agent.model,
-          effort: this.agent.effort,
+          ...(scripted ? {} : { effort: this.agent.effort }),
           systemPrompt: { type: "preset", preset: "claude_code" },
           settingSources: ["user", "project"],
           permissionMode: "bypassPermissions",

@@ -11,6 +11,7 @@ import {
   View,
 } from "../cli/client.js";
 import { Log, waiter } from "./lib/wait.js";
+import { agent, prompt, sessionAgent } from "./lib/agent.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 
 const Hatch = Schema.Struct({ url: Schema.String });
@@ -93,16 +94,20 @@ const program = Effect.gen(function* () {
   const base = process.env.SCOTTY_HATCH_BASE ?? "";
   const marker = `HATCH-${crypto.randomUUID().slice(0, 8)}`;
   const script = btoa(server(marker));
+  const start =
+    `echo ${script} | base64 -d > /workspace/server.mjs && mkdir -p /workspace/.scotty/logs && ` +
+    "setsid nohup node /workspace/server.mjs > /workspace/.scotty/logs/server.log 2>&1 < /dev/null &";
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: "e2e hatch",
+      title: `e2e hatch (${agent})`,
       repo: fixtureRepo,
-      prompt:
-        `Run exactly: \`echo ${script} | base64 -d > /workspace/server.mjs && mkdir -p /workspace/.scotty/logs && ` +
-        `setsid nohup node /workspace/server.mjs > /workspace/.scotty/logs/server.log 2>&1 < /dev/null &\`, ` +
-        "then reply with only the word done.",
+      ...sessionAgent,
+      prompt: prompt(
+        `Run exactly: \`${start}\`, then reply with only the word done.`,
+        `run ${start}\nsay done`,
+      ),
       provider: "cloudflare",
     },
   });

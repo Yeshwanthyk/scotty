@@ -32,6 +32,8 @@ const Create = Schema.Struct({
   prompt: Prompt,
   provider: Schema.Literal("cloudflare"),
   agent: Schema.optional(AgentKind),
+  // The agent's scripted stand-in, for e2e: no ChatGPT, Claude or GitHub sign-in needed.
+  scripted: Schema.optional(Schema.Literal(true)),
 });
 const Steer = Schema.Struct({
   text: Prompt,
@@ -212,6 +214,7 @@ export function apiHandler(
         prompt: body.prompt,
         agentKind: body.agent ?? "codex",
         image: "default",
+        ...(body.scripted === true ? { scripted: true } : {}),
       });
       return yield* HttpServerResponse.json({
         id,

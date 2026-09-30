@@ -15,6 +15,7 @@ import {
   target,
   View,
 } from "../cli/client.js";
+import { agent, prompt, sessionAgent } from "./lib/agent.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 import { Log, waiter } from "./lib/wait.js";
 
@@ -64,9 +65,16 @@ const addSkill = (url: string) =>
     ),
   );
 
-// Lists what start installed: the skill folders and the markers in Codex's AGENTS.md.
-const probe =
-  'Run exactly: `ls ~/.agents/skills; grep -rho "[A-Z]*MARK-[A-Z0-9-]*" ~/.agents/skills "${CODEX_HOME:-$HOME/.codex}/AGENTS.md"` and reply with its full output only.';
+// Lists what start installed: the skill folders and the markers in the agent's instructions.
+const instructions = {
+  codex: '"${CODEX_HOME:-$HOME/.codex}/AGENTS.md"',
+  claude: '"$HOME/.claude/CLAUDE.md"',
+}[agent];
+const command = `ls ~/.agents/skills; grep -rho "[A-Z]*MARK-[A-Z0-9-]*" ~/.agents/skills ${instructions}`;
+const probe = prompt(
+  `Run exactly: \`${command}\` and reply with its full output only.`,
+  `run ${command}\nsay {{out}}`,
+);
 
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
@@ -85,7 +93,13 @@ const program = Effect.gen(function* () {
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
     key: crypto.randomUUID(),
-    body: { title: "e2e settings", repo: fixtureRepo, prompt: probe, provider: "cloudflare" },
+    body: {
+      title: `e2e settings (${agent})`,
+      repo: fixtureRepo,
+      ...sessionAgent,
+      prompt: probe,
+      provider: "cloudflare",
+    },
   });
   const prefix = `/api/sessions/${session.id}`;
   console.log(`Session ${session.id}`);

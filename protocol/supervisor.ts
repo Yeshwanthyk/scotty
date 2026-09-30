@@ -35,7 +35,23 @@ const ClaudeAgent = Schema.Struct({
   effort: Schema.Literals(["low", "medium", "high", "xhigh", "max"]),
   token: credentialString,
 });
-export const AgentConfig = Schema.Union([CodexAgent, ClaudeAgent]);
+// e2e sessions run an agent's scripted stand-in (container/scripted/): no token.
+const ScriptedCodexAgent = Schema.Struct({
+  kind: Schema.Literal("codex"),
+  scripted: Schema.Literal(true),
+  model: tomlString,
+});
+const ScriptedClaudeAgent = Schema.Struct({
+  kind: Schema.Literal("claude"),
+  scripted: Schema.Literal(true),
+  model: Schema.String,
+});
+export const AgentConfig = Schema.Union([
+  CodexAgent,
+  ScriptedCodexAgent,
+  ClaudeAgent,
+  ScriptedClaudeAgent,
+]);
 const Kind = Schema.Literals(["codex", "claude"]);
 // n remains in the DO envelope for callers that number their sends; it is never
 // used by the supervisor to deduplicate, order, or acknowledge commands.

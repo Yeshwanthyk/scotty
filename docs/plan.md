@@ -27,7 +27,7 @@ The old implementation died from weight: 229 fix commits, ~74k lines of tests, c
 ### What to test
 
 13. **Three kinds of test, no others:** (a) unit tests of `src/session/fold.ts`; (b) replays of saved event logs in `e2e/logs/`; (c) e2e against a real deployment in `e2e/`. Nothing else goes in `npm test`.
-14. **No mocks** of Cloudflare, Codex, GitHub, ChatGPT or the network. No fake servers, no stubbed `fetch`, no in-memory DO doubles.
+14. **No mocks** of Cloudflare, GitHub, ChatGPT or the network; e2e sessions run the agents' scripted stand-ins (step 13b). No fake servers, no stubbed `fetch`, no in-memory DO doubles.
 15. **No unit tests for** the CLI, the supervisor, the Worker routes, the Creds DO, `view.ts` or helpers. They are proved by e2e and the verify-scotty recipes.
 16. **One test per behaviour.** Don't add a test that repeats what an existing test already fails on. No snapshot tests, no tests that read source text, no tests of private helpers.
 17. **A bug gets exactly one new test:** its saved log plus a failing replay (see "When something breaks"), or one e2e assertion if the bug isn't in the fold.

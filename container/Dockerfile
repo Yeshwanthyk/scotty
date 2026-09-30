@@ -6,6 +6,9 @@ RUN bun install --frozen-lockfile --no-save --ignore-scripts
 COPY container/supervisor ./container/supervisor
 COPY protocol/supervisor.ts ./protocol/supervisor.ts
 RUN bun build --compile container/supervisor/main.ts --outfile /out/scotty-sup
+COPY container/scripted ./container/scripted
+RUN bun build --compile container/scripted/codex.ts --outfile /out/scotty-codex-scripted \
+ && bun build --compile container/scripted/claude.ts --outfile /out/scotty-claude-scripted
 
 FROM node:22-bookworm-slim
 # supervisorVersion in protocol/supervisor.ts; a custom image built FROM this one must keep it.
@@ -33,6 +36,8 @@ RUN mkdir -m 700 /home/scotty/.codex && ln -s /etc/scotty/AGENTS.md /home/scotty
     && mkdir -m 700 /home/scotty/.claude && ln -s /etc/scotty/AGENTS.md /home/scotty/.claude/CLAUDE.md \
     && chown -R scotty:scotty /home/scotty/.codex /home/scotty/.claude
 COPY --from=build /out/scotty-sup /usr/local/bin/scotty-sup
+# The stand-ins for Codex and Claude that e2e sessions run (container/scripted/).
+COPY --from=build /out/scotty-codex-scripted /out/scotty-claude-scripted /usr/local/bin/
 USER scotty
 WORKDIR /workspace
 EXPOSE 7000

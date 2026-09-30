@@ -22,6 +22,7 @@ export type Command =
       readonly base: string;
       readonly branch: string;
       readonly agentKind: typeof AgentKind.Type;
+      readonly scripted?: true;
       readonly resume?: { readonly threadId: string; readonly commit: string };
     }
   | {
@@ -86,6 +87,7 @@ export function command(state: State, event: SessionEvent): Command | undefined 
             base: state.created.baseBranch,
             branch: state.created.branch,
             agentKind: state.created.agentKind,
+            ...(state.created.scripted === true ? { scripted: true } : {}),
             ...(state.agentSession !== undefined && state.commit !== undefined
               ? { resume: { threadId: state.agentSession, commit: state.commit } }
               : {}),

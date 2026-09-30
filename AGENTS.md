@@ -33,7 +33,8 @@ Scotty runs Codex sessions in Cloudflare Containers, driven from a phone-friendl
 ## Tests
 
 - Unit tests cover only `src/session/fold.ts` and replays of saved event logs in `e2e/logs/`.
-- Everything else is proved end to end against a real deployment in `e2e/`. Don't mock Cloudflare, Codex or GitHub.
+- Everything else is proved end to end against a real deployment in `e2e/`. Don't mock Cloudflare or GitHub.
+- e2e sessions run the agent's scripted stand-in (`container/scripted/`), not Codex or Claude, so they need no sign-in and don't check a model's wording; `--real` runs the real agent. The stand-ins are typed against the pinned agents' protocols (the Claude Agent SDK's types, and `codex-protocol.ts`, generated from the pinned Codex), so `npm run typecheck` holds them to it. After changing the Codex version in `container/Dockerfile`, run `npm run protocol:codex`.
 - Only `e2e github` and `hatch-env` use GitHub. The other e2e tests use `fixtureRepo` (`protocol/supervisor.ts`), a repository baked into the container image, so GitHub throttling can't fail them.
 - When something breaks, save its event log to `e2e/logs/` and add a failing replay before fixing it.
 

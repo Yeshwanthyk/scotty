@@ -2,6 +2,7 @@ import { BunSocket } from "@effect/platform-bun";
 import { Effect } from "effect";
 import { WebSocketConstructor, type WebSocketLike } from "effect/unstable/socket/Socket";
 import { access, CliFailure, client, Created, failure, target, View } from "../cli/client.js";
+import { agent, prompt, sessionAgent } from "./lib/agent.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 import { Log, waiter } from "./lib/wait.js";
 
@@ -50,9 +51,10 @@ const program = Effect.gen(function* () {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: "e2e terminal",
+      title: `e2e terminal (${agent})`,
       repo: fixtureRepo,
-      prompt: "Reply with only the word ready.",
+      ...sessionAgent,
+      prompt: prompt("Reply with only the word ready.", "say ready"),
       provider: "cloudflare",
     },
   });
