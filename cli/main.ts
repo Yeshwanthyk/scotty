@@ -16,7 +16,7 @@ const overview = `${bold("scotty")} — Codex and Claude sessions in Cloudflare 
 
 ${bold("Setup")}
   init                            Set up Scotty: questions, deploy, sign-ins, doctor
-  deploy                          Deploy Scotty from this checkout to the configured stage
+  deploy                          Deploy this Scotty to the configured stage (--image ref)
   teardown                        Remove the stage from Cloudflare and its config
   doctor                          Check setup, sign-ins and the deployment
   login chatgpt|github|claude     Sign in to an account sessions use
@@ -56,9 +56,11 @@ Claude, and ends with doctor. Run it in a terminal; running it again keeps finis
 Remove the configured stage from Cloudflare: the Worker with every session and sign-in, the
 container app, the bucket and its files, Access and previews. Then deletes the config.
 Asks you to type the stage name; --stage <name> confirms it without asking.`,
-  deploy: `Usage: scotty deploy
-Build the UI, copy the pinned container image and deploy the stage in the Scotty config.
-Asks nothing; run it from a Scotty checkout after \`scotty init\`.`,
+  deploy: `Usage: scotty deploy [--image docker.io/<repo>@sha256:<digest>]
+Deploy the release this CLI carries (from a checkout, one built there) to the stage in the
+Scotty config, copying its container image into Cloudflare. Run it after \`scotty init\`.
+--image deploys an image built FROM Scotty's; it is refused unless its scotty.supervisor label
+matches. A later deploy without --image goes back to Scotty's image.`,
   doctor: `Usage: scotty doctor
 Check the config, Cloudflare Access, the Worker and each sign-in, and print the fix for each problem.
 Exits 3 when something required is missing.`,

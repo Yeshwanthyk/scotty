@@ -20,7 +20,17 @@ export const Index = Schema.Struct({
   ),
 });
 export const Manifest = Schema.Struct({ config: Descriptor, layers: Schema.Array(Descriptor) });
-export const Config = Schema.Struct({ os: Schema.String, architecture: Schema.String });
+export const Config = Schema.Struct({
+  os: Schema.String,
+  architecture: Schema.String,
+  config: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        Labels: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.String))),
+      }),
+    ),
+  ),
+});
 export const Token = Schema.Struct({ token: Schema.String });
 export type Blob = typeof Descriptor.Type;
 

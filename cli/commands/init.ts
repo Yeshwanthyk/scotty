@@ -19,7 +19,6 @@ import {
   leftoversWith,
   loadConfig,
   removeWith,
-  root,
 } from "./deploy.js";
 import {
   awaitChatGpt,
@@ -264,7 +263,7 @@ const spawn = (command: string, args: readonly string[], stdio: "inherit" | "ign
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
-      ChildProcess.make(command, args, { cwd: root, stdin: stdio, stdout: stdio, stderr: stdio }),
+      ChildProcess.make(command, args, { stdin: stdio, stdout: stdio, stderr: stdio }),
     );
     return yield* child.exitCode;
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer));
@@ -478,7 +477,7 @@ const accessLogin = (url: string, email: string) =>
     spin.start("Waiting for you to sign in");
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
-      ChildProcess.make("cloudflared", ["access", "login", url], { cwd: root, stdin: "ignore" }),
+      ChildProcess.make("cloudflared", ["access", "login", url], { stdin: "ignore" }),
     );
     yield* child.all.pipe(
       Stream.decodeText(),

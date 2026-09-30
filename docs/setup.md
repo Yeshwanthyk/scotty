@@ -67,6 +67,14 @@ docker buildx imagetools inspect <repository>:rebuild-<full sha> | grep -m1 Dige
 
 Put it in `container/image.digest` as `index.docker.io/<repository>@sha256:<digest>` and commit it; every deploy uses that file. If nothing under those paths changed, keep the digest that is there.
 
+**Your own image:** build it `FROM` the ref in `container/image.digest`, for linux/amd64, keep its `scotty.supervisor` label, push it to Docker Hub, and deploy it by digest:
+
+```sh
+scotty deploy --image docker.io/<repository>@sha256:<digest>
+```
+
+An image whose label differs from this Scotty's supervisor version is refused before anything is copied; rebuild it on the current base. The next `scotty deploy` without `--image` goes back to Scotty's image.
+
 ## 5. Config and environment file
 
 The CLI reads `~/.config/scotty/config.json` (names and IDs only, no tokens):
@@ -104,7 +112,7 @@ Load it in every shell that tests: `. work/dev-env.sh`.
 npm run --silent scotty -- deploy
 ```
 
-This builds the UI and a release, copies the image in `container/image.digest` into `registry.cloudflare.com`, then makes or updates the config's stage over the Cloudflare API: the Worker on the config's host (DNS record and certificate included), its container app and bucket, the Access application (owner email only), and the preview record and route. `scotty teardown` removes them by name.
+From a checkout this builds the UI and a release; the installed binary carries its own. Either copies the image in `container/image.digest` into `registry.cloudflare.com`, then makes or updates the config's stage over the Cloudflare API: the Worker on the config's host (DNS record and certificate included), its container app and bucket, the Access application (owner email only), and the preview record and route. `scotty teardown` removes them by name.
 
 Never deploy to `production`, to any `scotty-baseline-*` stage, or to a name derived from a user, machine or account.
 
@@ -160,6 +168,10 @@ npm run --silent e2e -- init --stage <name>   # scotty init in a terminal: Ctrl-
 For agents: the `.agents/skills/verify-scotty` skill drives the CLI through feature recipes (`features/*.md`) and saves evidence to `work/verify/`, scratch that is deleted once the step's notes record the result.
 
 Useful CLI commands (`scotty --help` lists them all): `doctor`, `login chatgpt|github|claude`, `new <repo> <prompt> [--agent codex|claude]`, `ls`, `read <id> --last 5`, `read <id> --role assistant`, `steer <id>`, `interrupt <id>`, `stop <id>`, `resume <id>`, `hatch <id> <port>`, `log <id>`. `read` returns recent messages and the latest turn state in one snapshot; callers choose when to read again. Piped output and errors are JSON on stdout (`--json` forces it); errors include a `hint` and a nonzero exit code (3 means a setup or sign-in problem).
+
+## 10. Releases
+
+Tagging `v<version>` (it must match `src/version.ts`) runs `.github/workflows/release.yml`: it builds the three binaries with `npm run compile`, publishes them with `checksums.txt` and `install.sh` on GitHub Releases, and pushes `Formula/scotty.rb` to `Yeshwanthyk/homebrew-scotty`. One-time setup (owner): the public tap repository, and in GitHub → Settings → Environments → `release`, a secret `SCOTTY_TAP_TOKEN` (a fine-grained token with Contents read/write on the tap only). To try a binary locally: `npm run ui:build && npm run compile darwin-arm64`, then `dist/bin/scotty-darwin-arm64`.
 
 ## Troubleshooting
 

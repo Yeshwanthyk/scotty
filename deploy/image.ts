@@ -37,14 +37,31 @@ const Repository = Schema.String.pipe(
     Schema.isPattern(/^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/),
   ),
 );
-const Input = Schema.Struct({ source: Source, account: Account, repository: Repository });
+const Input = Schema.Struct({
+  source: Source,
+  account: Account,
+  repository: Repository,
+  supervisor: Schema.String,
+});
 const accept =
   "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json";
 const error = (step: string, status = 0) => new CopyError({ step, status });
 
-export const copyImage = (raw: { source: string; account: string; repository: string }) =>
+// An image whose supervisor is not the one this release speaks to.
+export class StaleImage extends Schema.TaggedError<StaleImage>()("StaleImage", {
+  message: Schema.String,
+}) {}
+
+// Copies the image into the account's registry, refusing it unless its scotty.supervisor label
+// is `supervisor`; nothing is pushed before that check.
+export const copyImage = (raw: {
+  source: string;
+  account: string;
+  repository: string;
+  supervisor: string;
+}) =>
   Effect.gen(function* () {
-    const { source, account, repository } = yield* decode(Input, raw, "input");
+    const { source, account, repository, supervisor } = yield* decode(Input, raw, "input");
     const match = /^(?:index\.docker\.io|docker\.io)\/(.+)@(sha256:[a-f0-9]{64})$/.exec(source);
     if (!match) return yield* error("source reference");
     let repo = match[1];
@@ -116,6 +133,11 @@ export const copyImage = (raw: { source: string; account: string; repository: st
     const config = yield* decode(Config, yield* json(configBytes, "config JSON"), "config schema");
     if (config.os !== "linux" || config.architecture !== "amd64")
       return yield* error("config platform");
+    const label = config.config?.Labels?.["scotty.supervisor"];
+    if (label !== supervisor)
+      return yield* new StaleImage({
+        message: `${source} has scotty.supervisor ${label === undefined ? "unset" : `"${label}"`}; this Scotty needs "${supervisor}".`,
+      });
 
     const credential = yield* Containers.createContainerRegistryCredentials({
       accountId: account,

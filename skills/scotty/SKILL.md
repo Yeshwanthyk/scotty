@@ -31,19 +31,17 @@ fixes top to bottom, then run `doctor` again. Exit 3 means setup is missing.
 
 Needs, on the owner's side: a Cloudflare account on Workers Paid with Zero Trust on (free plan),
 a domain on that account, a GitHub account, and ChatGPT (for Codex) or Claude (for Claude).
-On the machine: Node 22, Bun, git, and `brew install cloudflared gh`.
+On the machine (macOS or Linux x64): `gh`, and `cloudflared` (brew installs it with scotty).
 
 ```sh
-git clone https://github.com/Yeshwanthyk/scotty.git && cd scotty
-git switch rebuild/core
-npm install && npm link          # puts `scotty` on PATH
+brew install yeshwanthyk/scotty/scotty
+# or: curl -fsSL https://github.com/Yeshwanthyk/scotty/releases/latest/download/install.sh | sh
 ```
 
 Then the owner runs `scotty init` in their own terminal. It asks the stage name, their email,
 the Cloudflare account and domain, and the address (default `scotty.<domain>`); deploys (a few
 minutes, and a new address's DNS can take several more); signs in to Access and the agents; and
-ends with `doctor`. It is safe to rerun: finished steps are kept. Keep the checkout: `deploy` and
-`teardown` run from it.
+ends with `doctor`. It is safe to rerun: finished steps are kept.
 
 `init` needs a terminal. Without one, write `~/.config/scotty/config.json` (names and ids only):
 
@@ -125,7 +123,7 @@ Turning a skill on or off is in the web page's Settings.
 
 ## Keeping it working
 
-- After `git pull` in the checkout: `scotty deploy`. `doctor` warns when the deployed version
+- After `brew upgrade scotty` (or the install script again): `scotty deploy`. `doctor` warns when the deployed version
   differs from the CLI's.
 - ChatGPT and Claude sign-ins expire; `doctor` shows the days left and the `login` that renews them.
 - Remove everything: `scotty teardown` (it asks for the stage name). Only when the owner asks.

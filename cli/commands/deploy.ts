@@ -2,16 +2,17 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BunServices } from "@effect/platform-bun";
 import * as ui from "@clack/prompts";
-import { Effect, Exit, FileSystem, Redacted, Stream } from "effect";
-import { Command } from "effect/unstable/cli";
+import { Effect, Exit, FileSystem, Option, Redacted, Stream } from "effect";
+import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { CloudflareLayer } from "../../deploy/cloudflare.ts";
 import { version } from "../../src/version.js";
 import { failure } from "../client.js";
 import { type Config, readConfig } from "../config.js";
+import { embedded, packedFile, unpackRelease } from "../release.ts";
 import { dim, green, json, launch, output } from "./common.js";
 
-// Deploying runs from a Scotty checkout until the CLI carries its own release.
+// A Scotty checkout, when the CLI runs from one rather than as the compiled binary.
 export const root = fileURLToPath(new URL("../..", import.meta.url));
 
 export const loadConfig = Effect.gen(function* () {
@@ -175,27 +176,51 @@ export const cloudflareToken = Effect.gen(function* () {
   return cloudflareLayer(token);
 });
 
-// Builds a release from this checkout and deploys it to the stage; asks nothing.
-export const deployWith = (config: Config, layer: CloudflareLayer, report: Report = plain) =>
+// Deploys the release this CLI carries, or one built from this checkout, to the stage; asks
+// nothing. `image` replaces the release's image with one built FROM it.
+export const deployWith = (
+  config: Config,
+  layer: CloudflareLayer,
+  report: Report = plain,
+  image?: string,
+) =>
   Effect.gen(function* () {
     const { deployStage } = yield* deployer;
-    const { buildRelease } = yield* Effect.promise(() => import("../../deploy/release.ts"));
-    const dir = join(root, "dist", "release");
-    yield* step("Building the UI", "npm", ["run", "--silent", "ui:build"], {}, report, "UI built");
-    yield* cloudflareStep(
-      "Building the release",
-      "Release built",
-      () => Effect.tryPromise(() => buildRelease(dir)),
-      report,
-    );
+    const dir = embedded()
+      ? yield* unpackRelease.pipe(
+          Effect.mapError(() =>
+            failure("deploy_failed", "Could not unpack the release", "Reinstall scotty"),
+          ),
+        )
+      : yield* Effect.gen(function* () {
+          yield* step(
+            "Building the UI",
+            "npm",
+            ["run", "--silent", "ui:build"],
+            {},
+            report,
+            "UI built",
+          );
+          // In its own process, so the binary never bundles the bundler.
+          const build = `import { buildRelease } from "./deploy/release.ts"; await buildRelease("dist/release");`;
+          yield* step(
+            "Building the release",
+            "bun",
+            ["--eval", build],
+            {},
+            report,
+            "Release built",
+          );
+          return join(root, "dist", "release");
+        });
     yield* cloudflareStep(
       `Deploying scotty-${config.stage} (a few minutes)`,
       `Deployed scotty-${config.stage}`,
-      (progress) => deployStage(config, dir, progress).pipe(Effect.provide(layer)),
+      (progress) => deployStage(config, dir, progress, image).pipe(Effect.provide(layer)),
       report,
     );
     return `https://${config.host}`;
-  });
+  }).pipe(Effect.scoped);
 
 // Removes the stage by name; the caller checks what is left.
 export const removeWith = (config: Config, layer: CloudflareLayer, report: Report = plain) =>
@@ -216,27 +241,36 @@ export const leftoversWith = (config: Config, layer: CloudflareLayer) =>
     return yield* leftovers(config).pipe(Effect.provide(layer));
   });
 
-export const deploy = Command.make("deploy", {}, () =>
-  Effect.gen(function* () {
-    const config = yield* loadConfig;
-    const url = yield* deployWith(config, yield* cloudflareToken);
-    yield* output(
-      { stage: config.stage, url, version },
-      `${green("✓")} Deployed v${version} to ${url}\n${dim("  → scotty doctor")}`,
-    );
-  }),
+export const deploy = Command.make(
+  "deploy",
+  { image: Flag.String("image").pipe(Flag.optional) },
+  ({ image }) =>
+    Effect.gen(function* () {
+      const config = yield* loadConfig;
+      const url = yield* deployWith(
+        config,
+        yield* cloudflareToken,
+        plain,
+        Option.getOrUndefined(image),
+      );
+      yield* output(
+        { stage: config.stage, url, version },
+        `${green("✓")} Deployed v${version} to ${url}\n${dim("  → scotty doctor")}`,
+      );
+    }),
 );
 
-// The guide a person hands their own agent; it lives in the checkout beside this CLI.
+// The guide a person hands their own agent; the binary carries it, a checkout has it beside
+// this CLI.
 export const skill = Command.make("skill", {}, () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const text = yield* fs.readFileString(join(root, "skills", "scotty", "SKILL.md"));
+    const text =
+      (yield* packedFile("SKILL.md")) ??
+      (yield* fs.readFileString(join(root, "skills", "scotty", "SKILL.md")));
     yield* output({ skill: text }, text.trimEnd());
   }).pipe(
     Effect.provide(BunServices.layer),
-    Effect.mapError(() =>
-      failure("setup", "skills/scotty/SKILL.md is missing from this checkout", "git pull", 3),
-    ),
+    Effect.mapError(() => failure("setup", "The Scotty skill is missing", "Reinstall scotty", 3)),
   ),
 );

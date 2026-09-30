@@ -118,7 +118,13 @@ const uploadAssets = (accountId: string, scriptName: string, dir: string) =>
     return jwt;
   });
 
-export const deployStage = (config: Config, dir: string, progress: (text: string) => void) =>
+// `image` replaces the release's image with one built FROM it.
+export const deployStage = (
+  config: Config,
+  dir: string,
+  progress: (text: string) => void,
+  image?: string,
+) =>
   Effect.gen(function* () {
     const { accountId, zoneId, domain, host, email, stage } = config;
     const name = names(config);
@@ -135,11 +141,18 @@ export const deployStage = (config: Config, dir: string, progress: (text: string
     );
 
     yield* say("Copying the container image");
-    const image = yield* copyImage({
-      source: release.image,
+    const copied = yield* copyImage({
+      source: image ?? release.image,
       account: accountId,
       repository: "scotty",
-    });
+      supervisor: release.supervisor,
+    }).pipe(
+      Effect.catchTag("StaleImage", (stale) =>
+        Effect.fail(
+          new DeployError({ message: `${stale.message} Build it FROM ${release.image}` }),
+        ),
+      ),
+    );
 
     yield* say("Setting up the bucket");
     yield* R2.getBucket({ accountId, bucketName: name.bucket }).pipe(
@@ -199,7 +212,7 @@ export const deployStage = (config: Config, dir: string, progress: (text: string
           text("ALCHEMY_CLOUDFLARE_ACCOUNT_ID", accountId),
           text("SCOTTY_HOST", host),
           text("SCOTTY_HATCH_BASE", domain),
-          text("SCOTTY_IMAGE", image),
+          text("SCOTTY_IMAGE", copied),
         ],
         containers: [{ className: "SessionObject" }],
         migrations: migrated
@@ -218,7 +231,7 @@ export const deployStage = (config: Config, dir: string, progress: (text: string
     if (!namespaceId)
       return yield* new DeployError({ message: "Cloudflare made no SessionObject namespace" });
     const configuration = {
-      image,
+      image: copied,
       instanceType: "standard-1",
       environmentVariables: [{ name: "ALCHEMY_CLOUDFLARE_ACCOUNT_ID", value: accountId }],
     };
@@ -237,7 +250,7 @@ export const deployStage = (config: Config, dir: string, progress: (text: string
         configuration,
         durableObjects: { namespaceId },
       });
-    } else if (app.configuration.image !== image) {
+    } else if (app.configuration.image !== copied) {
       yield* say("Rolling out the container image");
       yield* Containers.updateContainerApplication({
         accountId,
