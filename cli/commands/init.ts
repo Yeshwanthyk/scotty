@@ -1,4 +1,4 @@
-import { Resolver, lookup } from "node:dns/promises";
+import { lookup } from "node:dns/promises";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -356,15 +356,32 @@ const spinners = (stopped: string): Report => {
   };
 };
 
-const cloudflareDns = new Resolver();
-cloudflareDns.setServers(["1.1.1.1", "1.0.0.1"]);
+const DnsReply = Schema.Struct({
+  Answer: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ type: Schema.Number, data: Schema.String })),
+  ),
+});
+
+// Cloudflare's resolver over HTTPS, asked afresh each time. A resolver in this process would
+// remember "no such name" from before the deploy for up to half an hour.
+const records = (name: string, type: "A" | "AAAA") =>
+  Effect.tryPromise(() =>
+    fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`, {
+      headers: { accept: "application/dns-json" },
+    }).then((response) => response.json()),
+  ).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(DnsReply)),
+    Effect.map((reply) =>
+      (reply.Answer ?? [])
+        .filter((answer) => answer.type === (type === "A" ? 1 : 28))
+        .map((answer) => answer.data),
+    ),
+    Effect.orElseSucceed((): ReadonlyArray<string> => []),
+  );
 
 // The address as the world sees it: its DNS record, then a certificate for the name.
 const published = (host: string) =>
-  Effect.tryPromise(() => cloudflareDns.resolve4(host)).pipe(
-    Effect.map((addresses) => addresses[0]),
-    Effect.orElseSucceed(() => undefined),
-  );
+  records(host, "A").pipe(Effect.map((addresses) => addresses[0]));
 
 const certified = (host: string, address: string) =>
   Effect.callback<boolean>((resume) => {
@@ -379,17 +396,9 @@ const certified = (host: string, address: string) =>
   });
 
 // Any record for a name, as Cloudflare's resolver sees it.
-const found = (lookup: () => Promise<ReadonlyArray<string>>) =>
-  Effect.tryPromise(lookup).pipe(
-    Effect.map((records) => records.length > 0),
-    Effect.orElseSucceed(() => false),
-  );
 const answers = (name: string) =>
   Effect.gen(function* () {
-    return (
-      (yield* found(() => cloudflareDns.resolve4(name))) ||
-      (yield* found(() => cloudflareDns.resolve6(name)))
-    );
+    return (yield* records(name, "A")).length > 0 || (yield* records(name, "AAAA")).length > 0;
   });
 
 // Alchemy keeps a stage's state in the checkout that deployed it.
