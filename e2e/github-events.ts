@@ -83,6 +83,7 @@ export function githubEvents(request: ReturnType<typeof client>) {
       method: "POST",
       key: crypto.randomUUID(),
       body: {
+        title: `e2e github events (${agent})`,
         repo: fixtureRepo,
         prompt: "say PR ready",
         key,
