@@ -651,6 +651,8 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 | S6    | Scotty inside sessions       | S1         | todo     |                                                                                                                                                     |
 | S7    | Slack bot                    | S4, S5     | todo     |                                                                                                                                                     |
 | S8    | GitHub events and babysit    | S4         | todo     |                                                                                                                                                     |
+| S9    | MCP sign-in and tool limits  | S5         | todo     |                                                                                                                                                     |
+| S10   | Approvals for MCP writes     | S9         | todo     |                                                                                                                                                     |
 | R1    | Places                       | none       | todo     |                                                                                                                                                     |
 | R2    | Runners on the owner's boxes | R1         | todo     |                                                                                                                                                     |
 | R3    | Where a session runs         | R2, S4     | todo     |                                                                                                                                                     |
@@ -696,6 +698,17 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 
 - **In scope:** a `github` connection with a webhook secret; events verified by `x-hub-signature-256`; events authored by Scotty's own GitHub identity are dropped. The babysit automation (`gh:{repo}#{pr}`) is documented as the example.
 - **Done when:** `e2e github` delivers a signed `check_run` failure to an automation and it steers the PR's session.
+
+### S9: MCP sign-in and tool limits
+
+- **Why:** most remote MCP servers (Linear, Sentry, Notion) take OAuth, not a pasted token, and a connected server should not hand the agent every write tool. `cloudflare/cloudflare-os` (`packages/mcp-shared`) is the porting reference: `account.ts` (discovery, registration, PKCE, refresh) and `http.ts` (callback).
+- **In scope:** an `mcp` connection signs in with OAuth when the server answers 401: protected-resource and authorization-server discovery, dynamic client registration, authorization code with PKCE and a resource indicator, through the official MCP client `auth()`. The redirect is `https://<host>/api/connections/<name>/callback`, reached in the owner's Access-signed-in browser; `state` carries a one-time nonce. Tokens, the client registration and discovery live in the Creds DO; the proxy sends the current access token and refreshes it before expiry, one refresh at a time. Settings → Connections shows Connect, signed in, and needs sign-in again. A pasted token still works. Each MCP connection has a tool policy, `all | read-only | named tools`, default read-only: the proxy refuses a `tools/call` outside it with an MCP error and removes those tools from `tools/list` (JSON or streamed). Read-only means the server's `readOnlyHint`. The Worker enables `global_fetch_strictly_public`.
+- **Done when:** `e2e` signs in to a test OAuth MCP server, calls an allowed tool through `name.internal`, is refused a blocked one, and doesn't see it listed; a refresh replaces an expired token; no token reaches the container, log or event log. The owner signs in to one real server (Linear) on `track`.
+
+### S10: approvals for MCP writes
+
+- **In scope:** a tool policy may say `ask` for tools outside the allowed set. The proxy refuses such a call with "needs approval" and the Session DO records an approval request event; the owner approves or denies in the UI (phone first), which is a later event, and Scotty steers the session to retry. An approval covers one tool for the session, or always for that connection. The agent never waits on an open request for the owner.
+- **Done when:** `e2e` makes a scripted session call an `ask` tool, sees the refusal and the pending request, approves it, and the retry succeeds; a denial is recorded and the call stays refused.
 
 ### R1: places
 
