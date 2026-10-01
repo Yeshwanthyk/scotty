@@ -135,19 +135,22 @@ List what senders posted, newest first: accepted (with its session), rejected (a
 duplicate, or skipped (and why). The last 200 are shown.`,
   automation: `Usage: scotty automation add|ls|enable|run|rm
 add <name> <owner/repo> <prompt> (--cron "<5 fields>" --tz <IANA zone> | --every <minutes> | --on <connection>)
-    [--only field=value[,value…]] [--key template] [--agent codex|claude]
+    [--only field=value[,value…]] [--except field=value[,value…]] [--action start|wake|end]
+    [--key template] [--branch template] [--agent codex|claude]
   Adds an automation, off; enable it to run. A calendar schedule is read in its zone; an interval
   counts from when it is turned on; --on fires on each delivery to that connection.
-  --only keeps payloads whose field (a.b for nested) is one of the values; repeat it for more.
-  The prompt and --key take {{field}} from the payload (a schedule's payload is {"at": time}).
-  A run whose key already has a session sends the prompt to that session.
+  --only keeps matching payloads; --except skips them. Repeat for more fields (a.b for nested).
+  Commas match any of the values; field=~text matches strings containing text.
+  The prompt, --key and --branch take {{field}} from the payload (schedules give {"at": time}).
+  start (default) starts or steers; wake only steers an existing key's session; end stops it and
+  releases the key. wake and end skip with no_session when no session holds the key.
 ls                   List automations in plain words, on or off, with the last run.
 enable <name> [--off]  Turn one on or off. A schedule missed while off does not run.
 run <name>           Run one now, on or off; prints the run and its session.
 rm <name>            Delete an automation; its runs stay listed.
 Example: scotty automation add standup octocat/Hello-World "Summarise yesterday's commits" --cron "0 9 * * 1-5" --tz Europe/London`,
   runs: `Usage: scotty runs [--automation name]
-List runs, newest first: what fired them, skipped (and why), started or steered a session, or
+List runs, newest first: what fired them, skipped (and why), started, steered or ended a session, or
 failed; and how that session's turn went. The last 100 are shown.`,
   push: `Usage: scotty push skill <folder|zip…> | scotty push instructions <file|->
 skill          Upload skills; one with the same name is replaced and keeps its on/off setting.

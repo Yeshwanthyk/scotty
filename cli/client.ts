@@ -1,6 +1,7 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Definition, RunStatus } from "../src/automations/automation.js";
 import {
   Connection,
   ConnectionCreated,
@@ -75,7 +76,7 @@ export const Run = Schema.Struct({
   automation: Schema.String,
   trigger: Schema.Literals(["schedule", "event", "manual"]),
   at: Schema.Number,
-  status: Schema.Literals(["received", "skipped", "failed", "started", "steered"]),
+  status: RunStatus,
   reason: Schema.NullOr(Schema.String),
   session: Schema.NullOr(Schema.String),
   delivery: Schema.NullOr(Schema.String),
@@ -99,23 +100,11 @@ export const RunFired = Schema.Struct({
   reason: Schema.NullOr(Schema.String),
   session: Schema.NullOr(Schema.String),
 });
-export const When = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("calendar"), cron: Schema.String, tz: Schema.String }),
-  Schema.Struct({ kind: Schema.Literal("interval"), minutes: Schema.Number }),
-  Schema.Struct({ kind: Schema.Literal("event"), connection: Schema.String }),
-]);
 export const Automations = Schema.Struct({
   automations: Schema.Array(
     Schema.Struct({
       name: Schema.String,
-      when: When,
-      only: Schema.optionalKey(
-        Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Array(Schema.String)])),
-      ),
-      key: Schema.optionalKey(Schema.String),
-      repo: Schema.String,
-      agent: Schema.String,
-      prompt: Schema.String,
+      ...Definition.fields,
       enabled: Schema.Boolean,
       nextDue: Schema.NullOr(Schema.Number),
       created: Schema.Number,

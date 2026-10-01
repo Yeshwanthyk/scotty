@@ -1,37 +1,25 @@
 import { Option, Schema } from "effect";
 import { request } from "./core";
+import {
+  Definition as DefinitionSchema,
+  RunStatus,
+  describeFilter,
+} from "../../../src/automations/automation";
 
-const When = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("calendar"), cron: Schema.String, tz: Schema.String }),
-  Schema.Struct({ kind: Schema.Literal("interval"), minutes: Schema.Number }),
-  Schema.Struct({ kind: Schema.Literal("event"), connection: Schema.String }),
-]);
-const Only = Schema.Record(
-  Schema.String,
-  Schema.Union([Schema.String, Schema.Array(Schema.String)]),
-);
 const Run = Schema.Struct({
   id: Schema.String,
   automation: Schema.String,
   trigger: Schema.Literals(["schedule", "event", "manual"]),
   at: Schema.Number,
-  status: Schema.Literals(["received", "skipped", "failed", "started", "steered"]),
+  status: RunStatus,
   reason: Schema.NullOr(Schema.String),
   session: Schema.NullOr(Schema.String),
   delivery: Schema.NullOr(Schema.String),
   key: Schema.NullOr(Schema.String),
 });
-const Definition = Schema.Struct({
-  when: When,
-  only: Schema.optionalKey(Only),
-  key: Schema.optionalKey(Schema.String),
-  repo: Schema.String,
-  agent: Schema.Literals(["codex", "claude"]),
-  prompt: Schema.String,
-});
 const Automation = Schema.Struct({
   name: Schema.String,
-  ...Definition.fields,
+  ...DefinitionSchema.fields,
   enabled: Schema.Boolean,
   nextDue: Schema.NullOr(Schema.Number),
   lastRun: Schema.NullOr(Run),
@@ -55,8 +43,8 @@ const Fired = Schema.Struct({
   session: Schema.NullOr(Schema.String),
 });
 
-export type When = typeof When.Type;
-export type Definition = typeof Definition.Type;
+export type When = Definition["when"];
+export type Definition = typeof DefinitionSchema.Type;
 export type Automation = typeof Automation.Type;
 export type Run = (typeof Runs.Type)["runs"][number];
 
@@ -81,11 +69,17 @@ export function sentence(automation: Automation): string {
       : when.kind === "interval"
         ? `Every ${when.minutes} minute${when.minutes === 1 ? "" : "s"}`
         : `On each delivery to ${when.connection}`;
-  const only = Object.entries(automation.only ?? {}).map(
-    ([field, value]) => `${field} is ${typeof value === "string" ? value : value.join(" or ")}`,
-  );
+  const only = describeFilter(automation.only ?? {});
+  const except = describeFilter(automation.except ?? {});
   const agent = automation.agent === "claude" ? "Claude" : "Codex";
-  return `${start}${only.length === 0 ? "" : `, when ${only.join(" and ")}`}, ${agent} works on ${automation.repo}${automation.key === undefined ? "" : `, one session per ${automation.key}`}.`;
+  const action = automation.action ?? "start";
+  const verb =
+    action === "start"
+      ? `start or wake a ${agent} session`
+      : action === "wake"
+        ? `wake the ${agent} session`
+        : "end the session and release its key";
+  return `${start}${only.length === 0 ? "" : `, when ${only.join(" and ")}`}${except.length === 0 ? "" : `, except when ${except.join(" and ")}`}, ${verb} on ${automation.repo}${automation.branch === undefined ? "" : ` from ${automation.branch}`}${automation.key === undefined ? "" : `, key ${automation.key}`}.`;
 }
 
 export async function automations(signal?: AbortSignal): Promise<Automation[]> {

@@ -125,7 +125,12 @@ export const SessionEvent = Schema.Union([
   Schema.Struct({ ...envelope, kind: Schema.Literal("socket.closed"), gen: Schema.Natural }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("dial.failed"), gen: Schema.Natural }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("sup.redial"), gen: Schema.Natural }),
-  Schema.Struct({ ...envelope, kind: Schema.Literal("container.stopped"), gen: Schema.Natural }),
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("container.stopped"),
+    gen: Schema.Natural,
+    req: Schema.optionalKey(ClientReq),
+  }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("resume.requested") }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("save.done"), turn: Schema.String }),
   Schema.Struct({

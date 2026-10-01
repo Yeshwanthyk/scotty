@@ -654,7 +654,7 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 | S9    | MCP sign-in and tool limits  | S5         | todo     |                                                                                                                                                     |
 | S10   | Approvals for MCP writes     | S9         | todo     |                                                                                                                                                     |
 | S11   | Signatures as configuration  | S8         | todo     |                                                                                                                                                     |
-| S12   | Automation actions           | S1, S4     | todo     |                                                                                                                                                     |
+| S12   | Automation actions           | S1, S4     | building | built except the ended stop reason, which waits for the session-lifecycle merge                                                                     |
 | S13   | Blueprints                   | S11, S12   | todo     |                                                                                                                                                     |
 | R1    | Places                       | none       | todo     |                                                                                                                                                     |
 | R2    | Runners on the owner's boxes | R1         | todo     |                                                                                                                                                     |
@@ -723,6 +723,8 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 
 - **In scope:** `except` beside `only`, and a contains match for strings; templated `branch` (the session starts on that branch instead of the default); actions `start` (default), `wake` (skip with `no_session` when no session holds the key) and `end` (stop with reason `ended`, release the key). S8's "GitHub delivery with no automation" skip stays. Built on S1's stop reasons; nothing about sleep is read by automations.
 - **Done when:** fold tests cover `ended`; `e2e automations` proves `wake` skips without a session, `end` stops and releases (a later `wake` skips, a later `start` starts a new session), `except` and contains filter, and a templated branch is checked out.
+- **Build notes:** This worktree builds the actions, matcher, branch base, API/CLI/UI/seed and automation recipe. The Session DO fold is unchanged; `container.stopped` gains an optional request id for end retries. The extended e2e includes owner messaging after end and repeated end deliveries. The new fixture branch in `container/Dockerfile` needs an image rebuild. The runs-table change requires resetting the track automation runs table in the Creds DO before deployment. Deploy, image push and e2e are deferred at the owner's request; local check results are recorded below.
+- **Local checks:** `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run ui:build` and `npm test` pass (43 fold/replay tests). No deployment or e2e was run at the owner's request.
 
 ### S13: blueprints
 

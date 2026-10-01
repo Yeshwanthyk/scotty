@@ -16,6 +16,7 @@ import { AgentKind } from "../session/events.js";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
 import {
   Definition,
+  Action,
   giveUpAfterMs,
   missedAfterMs,
   nextDue,
@@ -127,13 +128,17 @@ const FireRow = Schema.Struct({
   agent: AgentKind,
   prompt: Schema.String,
   key: Schema.NullOr(Schema.String),
+  branch: Schema.NullOr(Schema.String),
+  action: Action,
+  session: Schema.NullOr(Schema.String),
   scripted: Schema.Number,
 });
 const RunAnswer = Schema.Struct({
-  status: Schema.Literals(["started", "steered", "failed"]),
+  status: Schema.Literals(["started", "steered", "ended", "skipped", "failed"]),
   reason: Schema.NullOr(Schema.String),
   session: Schema.NullOr(Schema.String),
 });
+const SettledRun = Schema.Struct({ ...RunAnswer.fields, key: Schema.NullOr(Schema.String) });
 const DueRow = Schema.Struct({ due: Schema.NullOr(Schema.Number) });
 const IdRow = Schema.Struct({ id: Schema.String });
 // How many runs are kept, and how many a list returns.
@@ -173,7 +178,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS automations (name TEXT PRIMARY KEY, definition TEXT NOT NULL, enabled INTEGER NOT NULL, next_due INTEGER, created INTEGER NOT NULL)`;
       // A run's source (the schedule time, delivery or manual request) names it once, so a retried
       // firing finds the same run. What it fires is fixed when it is received.
-      yield* sql`CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, automation TEXT NOT NULL, source TEXT NOT NULL, trigger TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, session TEXT, delivery TEXT, repo TEXT NOT NULL, agent TEXT NOT NULL, prompt TEXT, key TEXT, scripted INTEGER NOT NULL, tried INTEGER NOT NULL DEFAULT 0, UNIQUE (automation, source))`;
+      yield* sql`CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, automation TEXT NOT NULL, source TEXT NOT NULL, trigger TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, session TEXT, delivery TEXT, repo TEXT NOT NULL, agent TEXT NOT NULL, prompt TEXT, key TEXT, branch TEXT, action TEXT NOT NULL, scripted INTEGER NOT NULL, tried INTEGER NOT NULL DEFAULT 0, UNIQUE (automation, source))`;
       yield* sql`CREATE INDEX IF NOT EXISTS runs_by_automation ON runs (automation, seq)`;
 
       const gitHub = Effect.gen(function* () {
@@ -224,7 +229,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               ? `${input.source}:${input.automation}`
               : crypto.randomUUID().replaceAll("-", "");
           const inserted =
-            yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, scripted) VALUES (${id}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
+            yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, branch, action, scripted) VALUES (${id}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${received?.branch ?? null}, ${input.definition.action ?? "start"}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
           yield* sql`DELETE FROM runs WHERE seq <= (SELECT MAX(seq) FROM runs) - ${keptRuns}`;
           const run = yield* runRow(
             (yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs WHERE automation = ${input.automation} AND source = ${input.source}`)[0],
@@ -235,6 +240,12 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // The session the first of these rows names; the rows were just written, so there is one.
       const sessionOf = (rows: ReadonlyArray<unknown>) =>
         Schema.decodeUnknownEffect(SessionRow)(rows[0]).pipe(Effect.map((row) => row.id));
+
+      const keyed = (key: string | null) =>
+        Effect.gen(function* () {
+          const row = (yield* sql`SELECT id FROM session_keys WHERE key = ${key}`)[0];
+          return row === undefined ? null : (yield* Schema.decodeUnknownEffect(SessionRow)(row)).id;
+        });
 
       return {
         // The first caller for a key, or for a request id when there is no key, names the
@@ -248,8 +259,15 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           prompt: string;
           connection?: string;
           automation?: string;
+          run?: string;
         }) =>
           Effect.gen(function* () {
+            if (input.run !== undefined) {
+              const pinned =
+                (yield* sql`SELECT session AS id FROM runs WHERE id = ${input.run} AND session IS NOT NULL`)[0];
+              if (pinned !== undefined)
+                return (yield* Schema.decodeUnknownEffect(SessionRow)(pinned)).id;
+            }
             const fresh = yield* Schema.decodeUnknownEffect(SessionId)(input.id);
             const req =
               input.key === undefined
@@ -271,16 +289,12 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             );
             const text = searchText({ ...input, branch: `scotty/${id}` });
             yield* sql`INSERT OR IGNORE INTO session_search (id, text) VALUES (${id}, ${text})`;
+            if (input.run !== undefined)
+              yield* sql`UPDATE runs SET session = ${id} WHERE id = ${input.run} AND status = 'received'`;
             return id;
-          }),
+          }).pipe(sql.withTransaction),
         // The session a key names, if any; it may not be made yet.
-        keyed: (key: string) =>
-          Effect.gen(function* () {
-            const row = (yield* sql`SELECT id FROM session_keys WHERE key = ${key}`)[0];
-            return row === undefined
-              ? null
-              : (yield* Schema.decodeUnknownEffect(SessionRow)(row)).id;
-          }),
+        keyed,
         // Sessions whose search text holds the query, any case.
         search: (query: string) =>
           Effect.gen(function* () {
@@ -517,22 +531,47 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         // Marks it tried, so the alarm fires it again only if this attempt never answers.
         takeRun: (id: string) =>
           Effect.gen(function* () {
-            const row =
-              (yield* sql`UPDATE runs SET tried = ${Date.now()} WHERE id = ${id} AND status = 'received' RETURNING automation, repo, agent, prompt, key, scripted`)[0];
+            const taken = yield* sql.withTransaction(
+              Effect.gen(function* () {
+                const row =
+                  (yield* sql`UPDATE runs SET tried = ${Date.now()} WHERE id = ${id} AND status = 'received' RETURNING automation, repo, agent, prompt, key, branch, action, session, scripted`)[0];
+                if (row !== undefined) {
+                  const run = yield* Schema.decodeUnknownEffect(FireRow)(row);
+                  const session = run.session ?? (yield* keyed(run.key));
+                  const target =
+                    run.action === "start"
+                      ? { action: run.action, session }
+                      : session === null
+                        ? undefined
+                        : { action: run.action, session };
+                  if (target === undefined) {
+                    yield* sql`UPDATE runs SET status = 'skipped', reason = 'no_session' WHERE id = ${id}`;
+                    return {
+                      kind: "settled" as const,
+                      status: "skipped" as const,
+                      reason: "no_session",
+                      session: null,
+                    };
+                  }
+                  yield* sql`UPDATE runs SET session = ${session} WHERE id = ${id}`;
+                  return {
+                    kind: "received" as const,
+                    ...run,
+                    ...target,
+                  };
+                }
+                const answer =
+                  (yield* sql`SELECT status, reason, session FROM runs WHERE id = ${id} AND status != 'received'`)[0];
+                return answer === undefined
+                  ? null
+                  : {
+                      kind: "settled" as const,
+                      ...(yield* Schema.decodeUnknownEffect(RunAnswer)(answer)),
+                    };
+              }),
+            );
             yield* rearm;
-            if (row !== undefined)
-              return {
-                kind: "received" as const,
-                ...(yield* Schema.decodeUnknownEffect(FireRow)(row)),
-              };
-            const answer =
-              (yield* sql`SELECT status, reason, session FROM runs WHERE id = ${id} AND status IN ('started', 'steered', 'failed')`)[0];
-            return answer === undefined
-              ? null
-              : {
-                  kind: "settled" as const,
-                  ...(yield* Schema.decodeUnknownEffect(RunAnswer)(answer)),
-                };
+            return taken;
           }),
         // The first answer for a run is its answer.
         settleRun: (
@@ -544,13 +583,22 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           },
         ) =>
           Effect.gen(function* () {
-            yield* sql`UPDATE runs SET status = ${outcome.status}, reason = ${outcome.reason ?? null}, session = ${outcome.session ?? null} WHERE id = ${id} AND status = 'received'`;
+            const settled = yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`UPDATE runs SET status = ${outcome.status}, reason = ${outcome.reason ?? null}, session = ${outcome.session ?? null} WHERE id = ${id} AND status = 'received'`;
+                const row =
+                  (yield* sql`SELECT status, reason, session, key FROM runs WHERE id = ${id}`)[0];
+                if (row === undefined) return null;
+                const answer = yield* Schema.decodeUnknownEffect(SettledRun)(row);
+                if (answer.status === "ended") {
+                  yield* sql`DELETE FROM session_keys WHERE key = ${answer.key} AND id = ${answer.session}`;
+                  yield* sql`UPDATE session_index SET req = ${`released:${answer.session}`} WHERE req = ${`key:${answer.key}`} AND id = ${answer.session}`;
+                }
+                return { status: answer.status, reason: answer.reason, session: answer.session };
+              }),
+            );
             yield* rearm;
-            const answer =
-              (yield* sql`SELECT status, reason, session FROM runs WHERE id = ${id}`)[0];
-            return answer === undefined
-              ? null
-              : yield* Schema.decodeUnknownEffect(RunAnswer)(answer);
+            return settled;
           }),
         runs: (automation?: string) =>
           Effect.gen(function* () {

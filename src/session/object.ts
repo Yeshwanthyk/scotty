@@ -432,11 +432,21 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 "unknown",
             };
           }),
-        stop: () =>
+        stop: (req?: string) =>
           Effect.gen(function* () {
-            if (log.state.gen !== undefined)
+            const duplicate =
+              req !== undefined &&
+              log.history.some((event) => event.kind === "container.stopped" && event.req === req);
+            if (!duplicate && log.state.gen !== undefined)
               yield* dispatch(
-                yield* append({ kind: "container.stopped", gen: log.state.gen }, "api"),
+                yield* append(
+                  {
+                    kind: "container.stopped",
+                    gen: log.state.gen,
+                    ...(req === undefined ? {} : { req }),
+                  },
+                  "api",
+                ),
               );
             return { version: 1, session: sessionView(id(), log.state) };
           }),

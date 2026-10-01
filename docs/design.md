@@ -89,7 +89,7 @@ A handler never awaits an outside party while changing state. An outside action 
 | `invariant.violated`                    | `code, detail`                                                                                                                         |
 | `timeout`                               | `op`: `container`, `workspace`, `dial`, `redial`, or `req:<req>`; lifecycle expiry fails with `<op>_timeout`, retryable                |
 | `save.done` / `save.failed`             | `turn` / `turn, code` (an accepted `turn.ended` is the save intent)                                                                    |
-| `container.stopped`                     | `gen` (any cause; folds to `stopped`)                                                                                                  |
+| `container.stopped`                     | `gen, req?` (any cause; folds to `stopped`; `req` records an automation end for retry deduplication)                                   |
 | `resume.requested`                      | (a steer to a stopped session resumes in the same fold)                                                                                |
 
 Fold states, and the status the UI shows for each:
@@ -116,7 +116,7 @@ Scotty has four primitives. Anything provider-specific beyond them is data (filt
 - **Session:** one per key, with the sleep and resume rules in [Stop and resume](#stop-and-resume). An automation reaches a session only by the same steer the owner sends: a running session takes it, a stopped one resumes in the same fold. Automations never read sleep state or touch a container, and sessions keep no timers of their own; a later check is a schedule automation that wakes a key.
 - **Blueprint:** a JSON file listing the connections, automations and prompts a use needs. Installing one creates them through the normal API, disabled, and asks for the secrets; everything a blueprint does can be made by hand. No blueprint has code of its own.
 
-**Ending.** `end` stops the session with reason `ended` and releases its key, so no automation reaches it again; a later event for that key starts a new session only through a `start` automation. The owner can still read and message an ended session, and a message resumes it as after any stop.
+**Ending.** `end` uses the existing Session DO stop path and releases its key, so later automations no longer resolve that key to it; a later event for that key starts a new session only through a `start` automation. The `ended` stop reason waits for the owner's session-lifecycle merge. The owner can still read and message an ended session, and a message resumes it as after any stop.
 
 Examples, each only data:
 
@@ -126,9 +126,17 @@ Examples, each only data:
 
 ## Automations and runs
 
-An automation is created or replaced disabled. Calendar schedules use five cron fields and an explicit IANA zone; intervals count from enablement. A schedule more than ten minutes late is skipped. Event filters compare payload fields for equality or membership, and templates render the prompt and optional session key. A connection with listeners hands each verified delivery to those automations.
+An automation is created or replaced disabled. Calendar schedules use five cron fields and an explicit IANA zone; intervals count from enablement. A schedule more than ten minutes late is skipped. A connection with listeners hands each verified delivery to those automations.
+
+`only` and `except` use one matcher over dotted payload paths. A string rule means equality, a string array means one-of, and `{kind: "contains", value: "text"}` means a case-sensitive substring of a string (numbers and booleans are not strings for contains). All fields in a filter must match: `only` skips at the first mismatch with `not matched: <field> is <value|missing>`; `except` skips when every field matches, with `except matched: <rules>`. An empty filter imposes no constraint. The CLI and editor use `field=value`, commas for one-of, and `field=~text` for contains.
+
+The prompt, optional key and optional branch are templates; a missing field is a recorded skip naming the field and template. A rendered branch supplies `created.baseBranch`; `created.branch` remains `scotty/<id>`. The supervisor already clones that existing base branch and checks out the session's work branch from it. This preserves session identity (derived from the work branch) and the save/resume path without a second checkout path. Omitted branch uses the repository's default. A branch template affects only a new session, not a steer.
 
 Each firing records a run before starting anything. Event run IDs are `delivery:<connection>:<webhook-id>:<automation>`, so the same delivery keeps the same start request even if its run has left the 500-run log. The Session DO answers `created` as a started run and `steered` as a steered run. For `duplicate`, the session log's creator request identifies whether the first attempt started or steered; a retry adds nothing. `unavailable`, `conflict` and `refused` settle as failed with the reason. Only an attempt without an answer remains received and is retried every 60 seconds, for up to an hour.
+
+The received run fixes its action (omitted means `start`), rendered branch and target session before dispatch. `start` reserves or uses the key's session; `wake` and `end` only look it up and skip with `no_session` if none exists, including when no key is supplied. `wake` sends the same prompt request as an owner message. `end` calls the same Session DO stop method as the owner, recording `container.stopped.req = run:<id>` so a retry cannot stop an owner-resumed session again. The stop result settles the run as `ended`; its Creds DO transaction deletes only that key/session's `session_keys` row and renames the matching `session_index` reservation from `key:<key>` to `released:<session>`. The session stays listed and searchable, and `created.origin` stays as provenance. Unknown RPC results leave the run received with its pinned target; they never release a key or claim success. Runs already dispatched to that session keep their target.
+
+The runs table gains action and branch columns; this slice requires a reset of the track stage's automation runs table in the Creds DO before its first deployment, rather than a schema migration. `e2e automations` uses the fixture's distinct `automation-base` branch to prove the rendered branch is cloned; rebuilding the container image is required before driving it.
 
 Deliveries use the plain delivery log. Concurrent attempts return the run's stored first answer, including when another attempt settles it before they take it. Runs link to sessions and read their turn outcome from the Session DO. Search uses the Creds DO index, including the automation name alongside the session's title, repository, branch, first prompt and key.
 
@@ -209,6 +217,7 @@ There are no disk snapshots and no vaporize. A session is `running` or `stopped`
 
 - **Save after every turn.** An accepted turn end is the save intent. The Session DO pulls one tar from the supervisor (`GET /save` on port 7000) and writes it to R2 at `saves/<id>.tar`, overwriting the previous save. The tar holds the thread's rollout file (`codex/`), every file that differs from the base commit, committed or not, excluding ignored files (`repo/`), and the deleted paths (`deleted`). Nothing is committed for the save and nothing is pushed. Unpushed agent commits come back as uncommitted changes.
 - **Stopped** is one event whatever the cause: `scotty stop`, idle, crash, redeploy, Codex exiting. Work since the last finished turn is lost.
+- An automation `end` records a stop through this path, then releases the routing key. Owner messages still resume that session; the `ended` stop reason is deferred until the session-lifecycle merge.
 - **Resume** (`scotty resume`, or a steer to a stopped session):
   1. Destroy any running container and start a new one (a new gen).
   2. `PUT /save` the tar, then `start` with `resume: {threadId, commit}`.

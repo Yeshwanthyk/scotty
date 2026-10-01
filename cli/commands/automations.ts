@@ -3,7 +3,7 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 import { AutomationRemoved, Automations, AutomationSwitched, RunFired, Runs } from "../client.js";
 import { ago, bold, dim, green, output, short, table, usage, withClient } from "./common.js";
 import { repoName } from "./sessions.js";
-import { automationName } from "../../src/automations/automation.js";
+import { automationName, describeFilter, parseFilter } from "../../src/automations/automation.js";
 
 type Automation = (typeof Automations.Type)["automations"][number];
 
@@ -23,14 +23,15 @@ const sentence = (automation: Automation) => {
       : automation.when.kind === "interval"
         ? `Every ${automation.when.minutes} minute${automation.when.minutes === 1 ? "" : "s"}`
         : `On each delivery to ${automation.when.connection}`;
-  const only = Object.entries(automation.only ?? {}).map(
-    ([path, value]) => `${path} is ${typeof value === "string" ? value : value.join(" or ")}`,
-  );
+  const only = describeFilter(automation.only ?? {});
+  const except = describeFilter(automation.except ?? {});
   const line = automation.prompt.trim().split("\n")[0] ?? "";
   return [
     when,
     only.length === 0 ? "" : ` where ${only.join(" and ")}`,
-    `, ${automation.agent} on ${automation.repo}`,
+    except.length === 0 ? "" : ` except where ${except.join(" and ")}`,
+    `, ${automation.action ?? "start"} (${automation.agent}) on ${automation.repo}`,
+    automation.branch === undefined ? "" : ` from ${automation.branch}`,
     automation.key === undefined ? "" : ` (key ${automation.key})`,
     `: ${line.length > 60 ? `${line.slice(0, 60)}…` : line}`,
   ].join("");
@@ -52,10 +53,13 @@ const add = Command.make(
     every: Flag.Int("every").pipe(Flag.optional),
     on: Flag.String("on").pipe(Flag.optional),
     only: Flag.KeyValuePair("only").pipe(Flag.optional),
+    except: Flag.KeyValuePair("except").pipe(Flag.optional),
+    branch: Flag.String("branch").pipe(Flag.optional),
+    action: Flag.Literals("action", ["start", "wake", "end"]).pipe(Flag.withDefault("start")),
     key: Flag.String("key").pipe(Flag.optional),
     agent: Flag.Literals("agent", ["codex", "claude"]).pipe(Flag.withDefault("codex")),
   },
-  ({ name, repository, prompt, cron, tz, every, on, only, key, agent }) =>
+  ({ name, repository, prompt, cron, tz, every, on, only, except, branch, action, key, agent }) =>
     Effect.gen(function* () {
       yield* checkName(name, "automation");
       const repo = yield* repoName(repository, "automation");
@@ -78,19 +82,12 @@ const add = Command.make(
           when,
           repo,
           agent,
+          action,
           prompt,
+          ...(Option.isSome(branch) ? { branch: branch.value } : {}),
           ...(Option.isSome(key) ? { key: key.value } : {}),
-          // `--only action=opened,reopened` matches either value.
-          ...(Option.isSome(only)
-            ? {
-                only: Object.fromEntries(
-                  Object.entries(only.value).map(([path, value]) => {
-                    const values = value.split(",");
-                    return [path, values.length === 1 ? value : values];
-                  }),
-                ),
-              }
-            : {}),
+          ...(Option.isSome(only) ? { only: parseFilter(only.value) } : {}),
+          ...(Option.isSome(except) ? { except: parseFilter(except.value) } : {}),
         },
       });
       yield* output(
