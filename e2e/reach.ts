@@ -91,6 +91,7 @@ const program = Effect.gen(function* () {
         name: mcpName,
         url: "https://httpbingo.org/anything/reach",
         secret: mcp,
+        policy: { kind: "all" },
       },
     ]) {
       const added = yield* request("/api/connections", RawConnection, {

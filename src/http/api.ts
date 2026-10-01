@@ -6,7 +6,14 @@ import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { AgentKind } from "../session/events.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
-import { NewConnection, connectionView, connectionName, Key } from "../creds/connections.js";
+import {
+  NewConnection,
+  connectionView,
+  connectionName,
+  ConnectionName,
+  ToolPolicy,
+  Key,
+} from "../creds/connections.js";
 import { githubHint, Prompt, Repo, startSession } from "./start.js";
 import { automationName, AutomationName, Definition } from "../automations/automation.js";
 import { fireRun, runRequest } from "../automations/fire.js";
@@ -32,6 +39,21 @@ const Create = Schema.Struct({
   // A second create with the same key steers the session the first one made.
   key: Schema.optional(Key),
 });
+const Callback = Schema.Union([
+  Schema.Struct({
+    state: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/)),
+    code: Schema.String.check(Schema.isMinLength(1)),
+    error: Schema.optionalKey(Schema.Never),
+    iss: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({
+    state: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/)),
+    error: Schema.String.check(Schema.isMinLength(1)),
+    code: Schema.optionalKey(Schema.Never),
+  }),
+]);
+const callbackCode = Schema.Struct({ code: Schema.String, iss: Schema.optionalKey(Schema.String) });
+const connectionAction = /^\/api\/connections\/([^/]+)\/(connect|callback|policy)$/;
 const connectionPath = /^\/api\/connections\/([^/]+)$/;
 const RequestId = Schema.String.check(
   Schema.isMinLength(1),
@@ -215,7 +237,7 @@ export function apiHandler(
       const body = yield* Schema.decodeUnknownEffect(NewConnection)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", () =>
           bad(
-            "Expected a named webhook or github, token {host, header, secret}, or mcp {url, secret}; use an HTTPS target and a non-reserved lowercase name",
+            "Expected a named webhook or github, token {host, header, secret}, or mcp {url, secret?}; use an HTTPS target and a non-reserved lowercase name",
           ),
         ),
       );
@@ -236,6 +258,55 @@ export function apiHandler(
         ...connectionView(added, origin),
         ...(added.kind === "webhook" || added.kind === "github" ? { secret: added.secret } : {}),
       });
+    }
+    const actionMatch = connectionAction.exec(url.pathname);
+    if (actionMatch !== null) {
+      const name = yield* Schema.decodeUnknownEffect(ConnectionName)(actionMatch[1]).pipe(
+        Effect.catchTag("SchemaError", () => bad("Not a connection name")),
+      );
+      if (HttpServerResponse.isHttpServerResponse(name)) return name;
+      const action = actionMatch[2];
+      if (action === "connect" && request.method === "POST") {
+        const result = yield* credential.connectMcp(
+          name,
+          `${origin}/api/connections/${name}/callback`,
+        );
+        if (result.status === "not-found") return yield* bad("Not found", 404);
+        if (result.status === "failed") return yield* bad("Could not start MCP sign-in", 502);
+        return yield* HttpServerResponse.json({ authorizationUrl: result.authorizationUrl });
+      }
+      if (action === "callback" && request.method === "GET") {
+        if (
+          ["state", "code", "error", "iss"].some((key) => url.searchParams.getAll(key).length > 1)
+        )
+          return yield* bad("Invalid OAuth callback");
+        const query = yield* Schema.decodeUnknownEffect(Callback)(
+          Object.fromEntries(url.searchParams),
+        ).pipe(Effect.catchTag("SchemaError", () => bad("Invalid OAuth callback")));
+        if (HttpServerResponse.isHttpServerResponse(query)) return query;
+        const code = Schema.decodeUnknownOption(callbackCode)(query);
+        const result = yield* credential.finishMcp(
+          name,
+          query.state,
+          code._tag === "Some" ? { kind: "code", ...code.value } : { kind: "denied" },
+        );
+        if (result.status === "invalid-state")
+          return yield* bad("Unknown, expired or reused OAuth state");
+        if (result.status === "failed")
+          return yield* bad("MCP sign-in failed; connect again in Settings", 502);
+        return HttpServerResponse.empty({
+          status: 303,
+          headers: { location: "/settings/connections" },
+        });
+      }
+      if (action === "policy" && request.method === "PUT") {
+        const policy = yield* Schema.decodeUnknownEffect(ToolPolicy)(yield* request.json).pipe(
+          Effect.catchTag("SchemaError", () => bad("Expected all, read-only or named tools")),
+        );
+        if (HttpServerResponse.isHttpServerResponse(policy)) return policy;
+        if (!(yield* credential.setToolPolicy(name, policy))) return yield* bad("Not found", 404);
+        return yield* HttpServerResponse.json({ name, policy });
+      }
     }
     const connectionMatch = connectionPath.exec(url.pathname);
     if (connectionMatch !== null && request.method === "DELETE") {

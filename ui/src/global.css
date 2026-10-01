@@ -2601,3 +2601,7 @@ button.diff-line {
     animation: none;
   }
 }
+
+.mcp-controls {
+  padding: 0 0 14px;
+}

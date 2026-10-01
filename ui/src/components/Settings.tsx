@@ -5,6 +5,8 @@ import { ago } from "../data/status";
 import {
   accounts,
   addConnection,
+  connectMcp,
+  setToolPolicy,
   connections as loadConnections,
   deliveries as loadDeliveries,
   removeConnection,
@@ -652,6 +654,7 @@ function Connections() {
                   <Icon name="trash" size={14} />
                 </button>
               </div>
+              {item.kind === "mcp" ? <McpControls item={item} busy={busy} run={run} /> : null}
               {mine.map((delivery, index) => (
                 // A retried delivery has its own row with the same id.
                 <div key={`${delivery.id}:${index}`} className="settings-row">
@@ -707,7 +710,12 @@ function Connections() {
                       header: header.trim(),
                       secret: secret.trim(),
                     }
-                  : { kind, name: name.trim(), url: target.trim(), secret: secret.trim() },
+                  : {
+                      kind,
+                      name: name.trim(),
+                      url: target.trim(),
+                      ...(secret.trim() === "" ? {} : { secret: secret.trim() }),
+                    },
             );
             setCreated(result.kind === "webhook" || result.kind === "github" ? result : undefined);
             setSecret("");
@@ -767,7 +775,9 @@ function Connections() {
               className="field"
               type="password"
               aria-label="Connection secret"
-              placeholder="Paste token"
+              placeholder={
+                kind === "mcp" ? "Token (optional; leave blank for OAuth)" : "Paste token"
+              }
               value={secret}
               onChange={(event) => setSecret(event.target.value)}
               autoComplete="off"
@@ -781,8 +791,8 @@ function Connections() {
           disabled={
             busy ||
             name.trim() === "" ||
-            ((kind === "token" || kind === "mcp") &&
-              (target.trim() === "" || secret.trim() === "")) ||
+            ((kind === "token" || kind === "mcp") && target.trim() === "") ||
+            (kind === "token" && secret.trim() === "") ||
             (kind === "token" && header.trim() === "")
           }
         >
@@ -791,6 +801,104 @@ function Connections() {
         </button>
       </form>
       <Problem text={error} />
+    </div>
+  );
+}
+
+function McpControls({
+  item,
+  busy,
+  run,
+}: {
+  item: Extract<Connection, { kind: "mcp" }>;
+  busy: boolean;
+  run: (action: () => Promise<void>, fallback: string) => Promise<void>;
+}) {
+  const [mode, setMode] = useState(item.policy.kind);
+  const [tools, setTools] = useState(
+    item.policy.kind === "named" ? item.policy.tools.join(", ") : "",
+  );
+  const changed =
+    mode !== item.policy.kind ||
+    (mode === "named" &&
+      tools
+        .split(",")
+        .map((tool) => tool.trim())
+        .filter(Boolean)
+        .join(",") !== (item.policy.kind === "named" ? item.policy.tools.join(",") : ""));
+  return (
+    <div className="mcp-controls">
+      <div className="settings-actions">
+        <span className="settings-row-detail" role="status">
+          {item.signIn === "signed-in"
+            ? "Signed in"
+            : item.signIn === "needs-sign-in"
+              ? "Needs sign-in again"
+              : "Not connected"}
+        </span>
+        <button
+          type="button"
+          className="button pressable"
+          disabled={busy}
+          onClick={() =>
+            void run(async () => {
+              window.location.assign(await connectMcp(item.name));
+            }, "Could not start sign-in")
+          }
+        >
+          {item.signIn === "signed-in" ? "Reconnect" : "Connect"}
+        </button>
+      </div>
+      <form
+        className="token-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void run(
+            () =>
+              setToolPolicy(
+                item.name,
+                mode === "named"
+                  ? {
+                      kind: mode,
+                      tools: tools
+                        .split(",")
+                        .map((tool) => tool.trim())
+                        .filter(Boolean),
+                    }
+                  : { kind: mode },
+              ),
+            "Could not save tool policy",
+          );
+        }}
+      >
+        <select
+          className="field"
+          aria-label={`Tool policy for ${item.name}`}
+          value={mode}
+          disabled={busy}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value === "all" || value === "read-only" || value === "named") setMode(value);
+          }}
+        >
+          <option value="read-only">Read-only tools</option>
+          <option value="all">All tools</option>
+          <option value="named">Named tools</option>
+        </select>
+        {mode === "named" ? (
+          <input
+            className="field"
+            aria-label={`Allowed tools for ${item.name}`}
+            placeholder="list_issues, get_issue"
+            value={tools}
+            disabled={busy}
+            onChange={(event) => setTools(event.target.value)}
+          />
+        ) : null}
+        <button type="submit" className="button pressable" disabled={busy || !changed}>
+          Save policy
+        </button>
+      </form>
     </div>
   );
 }

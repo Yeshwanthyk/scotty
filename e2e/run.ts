@@ -12,12 +12,13 @@ const testName = Schema.decodeUnknownExit(
     "terminal",
     "hooks",
     "reach",
+    "mcp-oauth",
     "automations",
     "init",
   ]),
 )(process.argv[2]);
 if (Exit.isFailure(testName))
   throw new Error(
-    "Usage: npm run e2e -- core|stop-resume|github|hatch|hatch-env|files|settings|terminal|hooks|reach|automations [--agent codex|claude] [--real], or init --stage <name>",
+    "Usage: npm run e2e -- core|stop-resume|github|hatch|hatch-env|files|settings|terminal|hooks|reach|mcp-oauth|automations [--agent codex|claude] [--real], or init --stage <name>",
   );
 await import(`./${testName.value}.js`);

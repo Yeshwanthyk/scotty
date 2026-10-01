@@ -13,6 +13,7 @@ import { AutomationName, Definition, nextDue, prepare } from "../../src/automati
 import { readSkill } from "../../src/settings/skill.ts";
 import {
   type ConnectionMetadata,
+  ToolPolicy,
   NewConnection,
   connectionView,
 } from "../../src/creds/connections.ts";
@@ -308,7 +309,31 @@ const hooks = {
         name: "linear",
         kind: "mcp",
         url: "https://mcp.linear.app/mcp",
+        signIn: "signed-in",
+        policy: { kind: "read-only" },
         created: Date.now() - 2 * 864e5,
+      },
+    ],
+    [
+      "mcp-connect",
+      {
+        name: "mcp-connect",
+        kind: "mcp",
+        url: "https://example.com/mcp",
+        created: Date.now(),
+        signIn: "signed-out",
+        policy: { kind: "all" },
+      },
+    ],
+    [
+      "mcp-expired",
+      {
+        name: "mcp-expired",
+        kind: "mcp",
+        url: "https://example.com/mcp",
+        created: Date.now(),
+        signIn: "needs-sign-in",
+        policy: { kind: "named", tools: ["list_issues", "get_issue"] },
       },
     ],
     [
@@ -416,7 +441,14 @@ async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string,
               header: checked.header,
               created: Date.now(),
             }
-          : { name, kind: checked.kind, url: checked.url, created: Date.now() };
+          : {
+              name,
+              kind: checked.kind,
+              url: checked.url,
+              created: Date.now(),
+              policy: checked.policy ?? { kind: "read-only" },
+              signIn: checked.secret === undefined ? "signed-out" : "signed-in",
+            };
     hooks.connections.set(name, row);
     return json(
       res,
@@ -428,6 +460,24 @@ async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string,
       },
       201,
     );
+  }
+  const action = /^\/api\/connections\/([a-z0-9-]+)\/(connect|policy)$/.exec(path);
+  if (action !== null) {
+    const name = action[1] ?? "";
+    const row = hooks.connections.get(name);
+    if (row === undefined || row.kind !== "mcp") return fail(res, "Not found", 404);
+    if (action[2] === "connect" && method === "POST") {
+      hooks.connections.set(name, { ...row, signIn: "signed-in" });
+      return json(res, {
+        authorizationUrl: `http://${req.headers.host ?? "localhost"}/settings/connections`,
+      });
+    }
+    if (action[2] === "policy" && method === "PUT") {
+      const policy = Schema.decodeUnknownOption(ToolPolicy)(await body(req));
+      if (policy._tag === "None") return fail(res, "Invalid tool policy");
+      hooks.connections.set(name, { ...row, policy: policy.value });
+      return json(res, { name, policy: policy.value });
+    }
   }
   const name = /^\/api\/connections\/([a-z0-9-]+)$/.exec(path)?.[1];
   if (name !== undefined && method === "DELETE")

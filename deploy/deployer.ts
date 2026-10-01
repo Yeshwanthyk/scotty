@@ -129,6 +129,18 @@ export const deployStage = (
   Effect.gen(function* () {
     const { accountId, zoneId, domain, host, email, stage } = config;
     const name = names(config);
+    if (
+      config.mcpOAuthTest !== undefined &&
+      (config.stage === "main" ||
+        config.mcpOAuthTest.name === name.script ||
+        config.mcpOAuthTest.name === "scotty-main" ||
+        config.mcpOAuthTest.name.startsWith("scotty-main-") ||
+        config.mcpOAuthTest.host === config.host)
+    )
+      return yield* new DeployError({
+        message:
+          "The OAuth test Worker requires a separate name and host on a stage other than main",
+      });
     const say = (text: string) => Effect.sync(() => progress(text));
     // The preview route matches the Worker's own host too; the Worker tells them apart by name.
     if (!host.endsWith(`.${domain}`) || /^\d{1,5}-[a-z0-9-]{6,32}\./.test(host))
@@ -195,7 +207,7 @@ export const deployStage = (
       metadata: {
         mainModule: "entry.js",
         compatibilityDate,
-        compatibilityFlags: ["enable_request_signal"],
+        compatibilityFlags: ["enable_request_signal", "global_fetch_strictly_public"],
         assets: {
           jwt,
           config: { notFoundHandling: "single-page-application", runWorkerFirst: true },
@@ -267,6 +279,50 @@ export const deployStage = (
         stepPercentage: 100,
         targetConfiguration: configuration,
       });
+    }
+
+    if (config.mcpOAuthTest !== undefined) {
+      const test = config.mcpOAuthTest;
+      yield* say("Uploading the OAuth test Worker");
+      const testDir = join(dir, "mcp-oauth-test");
+      const testFiles = yield* Effect.forEach(
+        (yield* list(testDir)).filter((path) => path.endsWith(".js")),
+        (path) =>
+          read(path).pipe(
+            Effect.map(
+              (content) =>
+                new File([content], relative(testDir, path), {
+                  type: "application/javascript+module",
+                }),
+            ),
+          ),
+      );
+      const exists = [...(yield* namespaces(test.name))].some(
+        (namespace) => namespace.class === "McpTestObject",
+      );
+      yield* Workers.putScript({
+        accountId,
+        scriptName: test.name,
+        metadata: {
+          mainModule: "entry.js",
+          compatibilityDate,
+          compatibilityFlags: ["global_fetch_strictly_public"],
+          bindings: [
+            { type: "durable_object_namespace", name: "McpTestObject", className: "McpTestObject" },
+            text("ALCHEMY_PHASE", "runtime"),
+            text("ALCHEMY_WORKER_NAME", test.name),
+            text("ALCHEMY_STACK_NAME", "scotty"),
+            text("ALCHEMY_STAGE", stage),
+            text("ALCHEMY_CLOUDFLARE_ACCOUNT_ID", accountId),
+            text("SCOTTY_HOST", host),
+          ],
+          migrations: exists ? undefined : { newTag: "v1", newSqliteClasses: ["McpTestObject"] },
+        },
+        files: testFiles,
+      });
+      yield* Workers.putDomain({ accountId, hostname: test.host, service: test.name, zoneId }).pipe(
+        Effect.retry(retry),
+      );
     }
 
     yield* say("Attaching the address");
@@ -374,6 +430,17 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
       if (route.pattern === name.route && route.script === name.script)
         yield* Workers.deleteRoute({ zoneId, routeId: route.id });
 
+    if (config.mcpOAuthTest !== undefined) {
+      for (const domain of yield* Workers.listDomains
+        .items({ accountId, service: config.mcpOAuthTest.name })
+        .pipe(Stream.runCollect))
+        if (domain.id) yield* Workers.deleteDomain({ accountId, domainId: domain.id });
+      yield* Workers.deleteScript({
+        accountId,
+        scriptName: config.mcpOAuthTest.name,
+        force: true,
+      }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
+    }
     yield* say("Removing the Worker");
     yield* Workers.deleteScript({ accountId, scriptName: name.script, force: true }).pipe(
       Effect.catchTag("WorkerNotFound", () => Effect.void),
@@ -406,7 +473,9 @@ export const leftovers = (config: Config) =>
     const { accountId, zoneId } = config;
     const name = names(config);
     const mine = (candidate: string | null | undefined) =>
-      candidate === name.script || (candidate ?? "").startsWith(`${name.script}-`);
+      candidate === name.script ||
+      candidate === config.mcpOAuthTest?.name ||
+      (candidate ?? "").startsWith(`${name.script}-`);
     const scripts = yield* Workers.listScripts.items({ accountId }).pipe(
       Stream.map((script) => script.id),
       Stream.runCollect,

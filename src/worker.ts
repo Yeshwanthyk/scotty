@@ -64,7 +64,10 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
       name: `scotty-${stage}`,
       main: import.meta.url,
       domain: { name: host, zoneId },
-      compatibility: { date: "2026-09-01", flags: ["enable_request_signal"] },
+      compatibility: {
+        date: "2026-09-01",
+        flags: ["enable_request_signal", "global_fetch_strictly_public"],
+      },
       assets: {
         directory: "./ui/dist",
         notFoundHandling: "single-page-application",

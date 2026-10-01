@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 // Lowercase and explicit: the name is in the hook URL and in every session it starts.
 export const connectionName = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -50,16 +50,30 @@ export const ConnectionUrl = Schema.String.check(
     }
   }),
 );
-const Secret = Schema.String.check(
+export const ConnectionSecret = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(8192),
   Schema.isPattern(/^[\x21-\x7e]+$/),
+);
+export const ToolPolicy = Schema.Union([
+  Schema.Struct({ kind: Schema.Literals(["all", "read-only"]) }),
+  Schema.Struct({
+    kind: Schema.Literal("named"),
+    tools: Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256))),
+  }),
+]);
+export const McpSignIn = Schema.Literals(["signed-out", "signed-in", "needs-sign-in"]);
+export const ConnectionAuthorization = Schema.Struct({
+  authorizationUrl: Schema.String.check(Schema.isMinLength(1)),
+});
+const policy = ToolPolicy.pipe(
+  Schema.withDecodingDefault(Effect.succeed({ kind: "read-only" as const })),
 );
 export const ConnectionConfig = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("webhook") }),
   Schema.Struct({ kind: Schema.Literal("github") }),
   Schema.Struct({ kind: Schema.Literal("token"), host: ConnectionHost, header: ConnectionHeader }),
-  Schema.Struct({ kind: Schema.Literal("mcp"), url: ConnectionUrl }),
+  Schema.Struct({ kind: Schema.Literal("mcp"), url: ConnectionUrl, policy }),
 ]);
 export const NewConnection = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("webhook"), name: ConnectionName }),
@@ -69,20 +83,24 @@ export const NewConnection = Schema.Union([
     name: InternalConnectionName,
     host: ConnectionHost,
     header: ConnectionHeader,
-    secret: Secret,
+    secret: ConnectionSecret,
   }),
   Schema.Struct({
     kind: Schema.Literal("mcp"),
     name: InternalConnectionName,
     url: ConnectionUrl,
-    secret: Secret,
+    secret: Schema.optionalKey(ConnectionSecret),
+    policy: Schema.optionalKey(ToolPolicy),
   }),
 ]);
 const metadata = { name: ConnectionName, created: Schema.Number };
-export type ConnectionMetadata = typeof ConnectionConfig.Type & {
-  readonly name: string;
-  readonly created: number;
-};
+const Metadata = Schema.Union([
+  Schema.Struct({ ...metadata, ...ConnectionConfig.members[0].fields }),
+  Schema.Struct({ ...metadata, ...ConnectionConfig.members[1].fields }),
+  Schema.Struct({ ...metadata, ...ConnectionConfig.members[2].fields }),
+  Schema.Struct({ ...metadata, ...ConnectionConfig.members[3].fields, signIn: McpSignIn }),
+]);
+export type ConnectionMetadata = typeof Metadata.Type;
 export const internalUrl = (name: string, kind: "token" | "mcp") =>
   `http://${name}.internal/api/${kind === "mcp" ? "mcp" : ""}`;
 export const connectionView = (connection: ConnectionMetadata, origin: string) =>
@@ -103,6 +121,8 @@ const Mcp = Schema.Struct({
   kind: Schema.Literal("mcp"),
   url: ConnectionUrl,
   internalUrl: Schema.String,
+  policy: ToolPolicy,
+  signIn: McpSignIn,
 });
 export const Connection = Schema.Union([Webhook, GitHub, Token, Mcp]);
 export const ConnectionCreated = Schema.Union([

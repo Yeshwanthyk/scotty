@@ -16,6 +16,12 @@ export const Config = Schema.Struct({
   domain: Hostname,
   zoneId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)),
   host: Hostname,
+  mcpOAuthTest: Schema.optionalKey(
+    Schema.Struct({
+      name: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,62}$/)),
+      host: Hostname,
+    }),
+  ),
 });
 export type Config = typeof Config.Type;
 
