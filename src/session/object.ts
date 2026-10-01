@@ -243,7 +243,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               // A new container takes a moment to listen, longer on a new host; retry until the
               // fold's container deadline before reporting dial.failed.
               yield* link
-                .dial(port(), action.gen, 0, () => current(action.gen))
+                .dial(port, action.gen, 0, () => current(action.gen))
                 .pipe(
                   Effect.timeout("10 seconds"),
                   Effect.retry({
@@ -261,7 +261,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               // A dial queued behind the start may find the socket already connected.
               if (!current(action.gen) || log.state.connected) return;
               yield* link
-                .dial(port(), action.gen, action.after, () => current(action.gen))
+                .dial(port, action.gen, action.after, () => current(action.gen))
                 .pipe(Effect.timeout("10 seconds"));
               yield* watch(action.gen);
               return;

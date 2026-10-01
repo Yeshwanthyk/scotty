@@ -24,8 +24,12 @@ export class SupervisorLink {
     socket.send(JSON.stringify({ ...message, n: ++this.outgoing }));
   }
 
-  /** `stillWanted` is checked once the socket opens; a stale dial closes it and changes nothing. */
-  dial(port: Port, gen: number, after: number, stillWanted: () => boolean) {
+  /**
+   * `stillWanted` is checked once the socket opens; a stale dial closes it and changes nothing.
+   * `port` is called on every attempt: a port handle whose lookup failed (no instance placed yet)
+   * stays failed, and only a new `getTcpPort()` looks again.
+   */
+  dial(port: () => Port, gen: number, after: number, stillWanted: () => boolean) {
     const enqueue = (operation: () => Promise<void>) => this.enqueue(operation);
     const consume = this.consume;
     // The replaced socket is no longer current, so its close is not reported.
@@ -41,7 +45,7 @@ export class SupervisorLink {
       const web = yield* Effect.tryPromise({
         // A dial abandoned by its attempt's timeout still resolves later; close that socket.
         try: (signal) => {
-          const pending = port.fetch(`http://container/?gen=${gen}&after=${after}`, {
+          const pending = port().fetch(`http://container/?gen=${gen}&after=${after}`, {
             headers: { Upgrade: "websocket" },
           });
           signal.addEventListener("abort", () =>
