@@ -73,7 +73,8 @@ export function hookHandler(
     }
     const verified = yield* credential.verifyDelivery({
       connection: name,
-      headers: request.headers,
+      // Effect's Headers carry a symbol key, which Workers RPC can't serialize.
+      headers: Object.fromEntries(Object.entries(request.headers)),
       body: bytes,
     });
     delivery = verified.id;
