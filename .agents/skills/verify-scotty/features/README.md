@@ -19,6 +19,7 @@ directory. Conventions, evidence and cleanup: [SKILL.md](../SKILL.md).
 | [hooks](hooks.md)                 | A signed webhook starts or steers a session and every delivery is listed                       | K1–K5      | `hooks`              |
 | [signatures](signatures.md)       | Linear and Slack signatures verify; tampered and stale deliveries are listed                   | Signing    | `signatures`         |
 | [reach](reach.md)                 | Agents call token and MCP services through internal URLs                                       | Transport  | `reach`              |
+| [mcp-oauth](mcp-oauth.md)         | OAuth sign-in, refresh and tool policy through internal MCP URLs                               | OAuth      | `mcp-oauth`          |
 | [automations](automations.md)     | A schedule or a webhook delivery fires a run into a session, or a listed skip                  | A1–A6      | `automations`        |
 | [ui](ui.md)                       | The phone UI creates, answers, steers and interrupts, and shows files                          | U1–U6      | none                 |
 

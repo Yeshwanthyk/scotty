@@ -14,6 +14,7 @@ const Call = Schema.Struct({
   method: Schema.optionalKey(Schema.Literals(["GET", "POST", "DELETE"])),
   headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   body: Schema.optionalKey(Schema.String),
+  response: Schema.optionalKey(Schema.Literal("mcp")),
 });
 const Echo = Schema.Struct({
   headers: Schema.Record(Schema.String, Schema.Array(Schema.String)),
@@ -35,6 +36,22 @@ export const call = (options: typeof Call.Type, signal: AbortSignal) =>
           signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
         }),
       );
+      if (options.response === "mcp") {
+        if (!response.ok)
+          return { output: JSON.stringify({ status: response.status }), exitCode: 1 };
+        const text = yield* Effect.tryPromise(() => response.text());
+        const payload = (response.headers.get("content-type") ?? "").includes("text/event-stream")
+          ? text
+              .split(/\r\n|\n|\r/)
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trimStart())
+              .join("\n")
+          : text;
+        const message = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+        )(payload);
+        return { output: JSON.stringify({ status: response.status, message }), exitCode: 0 };
+      }
       const echo = yield* Schema.decodeUnknownEffect(Echo)(
         yield* Effect.tryPromise(() => response.json()),
       );

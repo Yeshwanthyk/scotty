@@ -355,17 +355,86 @@ The dev environment belongs to the agent, and nothing in an agent adapter knows 
   - The Worker reads identity only from `ctx.props` (`WorkerExecutionContext.raw.props`), never from `Host` or anything the container sends. A request without props, such as a public one through Access, gets 404. The path is under `/api/` because the static-assets layer answers everything outside `runWorkerFirst: ["/api/*"]`, loopback traffic included.
   - The handler allows only smart-HTTP paths for the session's own repository, and in `git-receive-pack` only updates to `refs/heads/scotty/*` (it buffers the push body to read the commands; a body that is only a flush-pkt is git's auth probe and passes). It strips incoming auth and hop-by-hop headers, adds the real token, and forwards to `https://github.com`.
   - GitHub throttles Cloudflare's shared egress (429, or 403 with `retry-after` or `x-ratelimit-remaining: 0`, which the handler returns as 429). The supervisor retries only 429, 5xx and dropped transfers, backing off from 1 s to 30 s; clone and resume fetch share a 240 s budget, so no attempt starts after ~270 s of the 360 s `workspace` deadline. A transfer stalled for 30 s fails and is retried. Any other 4xx fails at once.
-- **Token and MCP connections.** Settings → Connections, `scotty connect` and `POST /api/connections` accept a pasted `secret`. A token connection has `host` and `header` (`X-Api-Key`, or a name and scheme such as `Authorization: Bearer`); MCP has an HTTPS `url` and uses `Authorization: Bearer`. Creation and listing return metadata only; the generated webhook secret keeps its existing one-time display. CLI secrets arrive on stdin. The Creds DO stores the secret separately from the connection metadata.
+- **Token and MCP connections.** Settings → Connections, `scotty connect` and `POST /api/connections` accept a pasted `secret`. A token connection has `host` and `header` (`X-Api-Key`, or a name and scheme such as `Authorization: Bearer`); MCP has an HTTPS `url` and uses `Authorization: Bearer`; leaving its secret blank enables OAuth sign-in. Creation and listing return metadata only; the generated webhook secret keeps its existing one-time display. CLI secrets arrive on stdin. The Creds DO stores the secret separately from the connection metadata.
   - Before a cold container start, the place awaits the raw `interceptOutboundHttp` for every token/MCP `<name>.internal`, with `{session, repo, connection}` in loopback props. The Worker selects the connection solely from props and reads its credential over internal Creds RPC. Reserved built-in names cannot be used for egress connections. Removing a connection immediately makes its interceptor answer 404; new connections require a cold start.
   - Token `http://<name>.internal/api/<path>` maps to `https://<host>/<path>`. MCP `http://<name>.internal/api/mcp` maps to its configured endpoint, with child paths appended beneath it and query parameters preserved. Both agent configs contain only the MCP name and that plain HTTP internal URL: Codex `[mcp_servers.<name>] url` (pinned [config schema](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/core/config.schema.json)), Claude SDK `mcpServers` with `type: "http"`.
-  - The proxy strips incoming auth and hop-by-hop headers, replaces the connection's credential header, and forwards request and response streams without reading either body. MCP session/protocol/replay headers and GET/POST/DELETE survive. The forwarded request keeps the incoming `signal`; `deploy/deployer.ts` enables `enable_request_signal`. Redirects are returned without following, so custom credential headers never cross to another host. OAuth is deferred.
-  - `e2e reach` uses disposable sentinels against the public httpbingo echo service; the scripted agent hashes echoed headers before emitting output. It checks both connection kinds, MCP methods and headers, body forwarding, a cold resume, and absence of the sentinels from environment/config reads, conversation and event log. Local checks typecheck this recipe; deployment proof is pending.
+  - The proxy strips incoming auth and hop-by-hop headers, replaces the connection's credential header, and streams token requests and responses untouched. Restricted MCP requests and responses are inspected for tool policy (below). MCP session/protocol/replay headers and GET/POST/DELETE survive. The forwarded request keeps the incoming `signal`; `deploy/deployer.ts` enables `enable_request_signal`. Redirects are returned without following, so custom credential headers never cross to another host. MCP OAuth is described below.
+  - `e2e reach` uses disposable sentinels against the public httpbingo echo service; the scripted agent hashes echoed headers before emitting output. Its MCP echo connection explicitly uses all-tools policy. It checks both connection kinds, MCP methods and headers, body forwarding, a cold resume, and absence of the sentinels from environment/config reads, conversation and event log. Local checks typecheck this recipe; deployment proof is pending.
+
+### MCP sign-in and tool policy
+
+An MCP connection with no pasted token starts disconnected. Settings → Connections offers
+Connect; `scotty connect mcp <name> --endpoint <url> --oauth` adds it and `scotty mcp signin
+<name>` returns the authorization URL as JSON. Both use `POST /api/connections/<name>/connect`.
+The callback is `https://<host>/api/connections/<name>/callback`, behind the owner's normal
+Cloudflare Access sign-in, then redirects to Settings. Public metadata carries `signIn`:
+`signed-out`, `signed-in`, or `needs-sign-in`; it contains no credential or discovery document.
+A pasted token keeps the existing stdin/password-field path.
+
+The dependency is pinned `@modelcontextprotocol/client@2.0.0`, the package used by the
+cloudflare-os reference. Its installed `dist/index.mjs` supplies `auth()` and
+`refreshAuthorization()`. The package's `workerd` export selects `shimsWorkerd.mjs`; Alchemy's
+vendored rolldown options select `workerd`/`browser`, including PKCE's Web Crypto implementation.
+The OAuth code uses fetch, URLs and Web Crypto, with no Node transport. Scotty uses the official
+helpers for protected-resource and authorization-server discovery, dynamic public-client
+registration, S256 PKCE, issuer binding and the resource indicator. A credential-free initialize
+probe supplies the server's advertised metadata URL; metadata, registration and token results
+are validated with Effect Schema at the provider boundary before storage. Every OAuth fetch
+validates its HTTPS URL and refuses redirects. SDK errors are classified without exposing their
+credential-bearing text.
+
+The Creds DO's `mcp_oauth` table is the single OAuth store. A ten-minute random state nonce is
+bound to its connection and atomically claimed before redeeming the code. Unknown, expired and
+reused state is refused. A connect generation guards every result write, so an old callback or
+refresh cannot restore credentials after removal or a newer Connect. Registration, discovery,
+PKCE verifier and tokens never enter session state, container configuration or public metadata.
+Only the proxy obtains the current bearer through internal Creds RPC.
+
+Reach refreshes one minute before expiry; if the server omits expiry, the SDK token is treated as
+lasting an hour. Concurrent callers share one in-flight refresh per generation. Creds keeps the
+stored grant while refreshing and replaces it in one write guarded by the generation and old
+access token. A response without a refresh token retains the previous one. Only OAuth
+`invalid_grant` or a token-endpoint 400/401 clears the grant; network failures, 5xx responses,
+unknown replies and eviction leave it stored, so the next request tries again. An upstream 401
+forces one refresh and retries the request once, including a read-only tool-list check. Reconnect
+always starts fresh authorization, without refreshing the previous grant. The Worker definition and deployer enable
+`global_fetch_strictly_public`; no private discovery/token endpoint is reachable.
+
+`policy` is `{kind: "read-only"}` (default), `{kind: "all"}` or `{kind: "named", tools: [...]}`.
+Settings edits it, as does `scotty mcp policy <name> <kind> --tools name,other` and
+`PUT /api/connections/<name>/policy`. The single reach proxy removes disallowed entries from
+JSON and SSE `tools/list` results, preserving other result fields and SSE event IDs/comments.
+Malformed tool lists fail closed. Read-only requires the server's explicit `readOnlyHint: true`;
+a read-only call fetches the current list, with pagination and the caller's MCP session headers,
+before forwarding the call. The synthetic request sets `Mcp-Method: tools/list` and omits
+`Mcp-Name`. Missing/false hints are denied. Named policy compares exact names. MCP POST bodies
+are decoded for method checking and retained for the one-time 401 retry; tools methods with
+incorrect casing are refused under every policy. All policy leaves responses untouched. A blocked
+call returns a JSON-RPC error without forwarding that call. Token connections keep their existing streaming path.
+
+`e2e mcp-oauth` uses a separate public OAuth/MCP Worker and test DO under `e2e/`. The release
+contains its separate bundle; the deployer installs it only when config explicitly sets
+`mcpOAuthTest: {host}`, and refuses `main` or the normal Worker's host. Its name is always
+`scotty-<stage>-mcp-test`; teardown deletes only that exact fixture name on a test stage. Its only
+credentials are disposable test tokens with 70-second expiry and rotating refresh grants; it
+checks PKCE, resource, client and redirect, auto-approves clients, and exposes one read tool and
+one write tool. The e2e follows the callback with Access, drives the scripted agent through the
+internal URL, tests JSON/fragmented SSE filtering, all/named policies, method casing, concurrent
+expiry refresh, recovery after a token-endpoint 503, omitted refresh tokens, upstream 401 retry
+and rejected-refresh status, then checks env/configs, conversation and event log for either token
+prefix. The seed API shows all three OAuth states. This change requires a new container image
+for the extended MCP probe. Deployment/e2e and the owner's real Linear sign-in on `track` remain
+pending; local checks and release bundling do not prove them.
+
 - **No HTTPS interception.** Git goes over plain HTTP to `github.internal`. The raw Container API also has `interceptOutboundHttps` (workers-types `index.d.ts:4001`), which Alchemy doesn't wrap; it isn't needed.
 - **Port from `3042018`:** the header cleanup for the git handler in `worker/src/egress/worker.ts:95-123,164-240,428-443`, and the Codex config shape in `worker/src/agent/codex/process.ts:204-270`.
 
 ## API the UI needs
 
 The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{message,code?,hint?}}`.
+For API methods other than GET/HEAD and for terminal requests, a present `Origin` must equal
+`https://<host>` or the Worker returns 403. Requests without Origin, including CLI requests, are
+accepted; `/hooks/*` keeps its sender-signature checks.
 
 The conversation snapshot includes top-level `currentTurn`, the authoritative turn identity for steer and interrupt writes. `turns[].id` remains the stable message identity.
 

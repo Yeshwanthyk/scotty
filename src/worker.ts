@@ -66,7 +66,10 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
       name: `scotty-${stage}`,
       main: import.meta.url,
       domain: { name: host, zoneId },
-      compatibility: { date: "2026-09-01", flags: ["enable_request_signal"] },
+      compatibility: {
+        date: "2026-09-01",
+        flags: ["enable_request_signal", "global_fetch_strictly_public"],
+      },
       assets: {
         directory: "./ui/dist",
         notFoundHandling: "single-page-application",
@@ -166,9 +169,16 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
         const url = new URL(request.url, "https://scotty.internal");
         const terminal = terminalPath.exec(url.pathname)?.[1];
         const live = livePath.exec(url.pathname);
-        // A page on another site can't open these sockets with the owner's Access cookie.
+        // A page on another site can't open these sockets, or change anything through the API, with the owner's Access cookie.
         const origin = request.headers["origin"];
         const foreign = origin !== undefined && origin !== `https://${host}`;
+        if (
+          foreign &&
+          url.pathname.startsWith("/api/") &&
+          request.method !== "GET" &&
+          request.method !== "HEAD"
+        )
+          return HttpServerResponse.text("Forbidden", { status: 403 });
         if (terminal !== undefined) {
           if (foreign) return HttpServerResponse.text("Forbidden", { status: 403 });
           return yield* sessions.getByName(terminal).fetch(request).pipe(Effect.orDie);

@@ -19,6 +19,8 @@ import {
   ConnectionName,
   InternalConnectionName,
   connectionName,
+  ConnectionAuthorization,
+  ToolPolicy,
 } from "../../src/creds/connections.js";
 import { SignaturePreset } from "../../src/hooks/config.js";
 
@@ -30,9 +32,10 @@ export const connect = Command.make(
     name: Argument.String("name"),
     host: Flag.String("host").pipe(Flag.optional),
     header: Flag.String("header").pipe(Flag.optional),
+    oauth: Flag.Boolean("oauth"),
     endpoint: Flag.String("endpoint").pipe(Flag.optional),
   },
-  ({ kind, name, host, header, endpoint }) =>
+  ({ kind, name, host, header, endpoint, oauth }) =>
     Effect.gen(function* () {
       if (
         Option.isNone(
@@ -56,9 +59,10 @@ export const connect = Command.make(
           "Token needs --host and --header; MCP needs --endpoint; inbound presets need only a name",
           "connect",
         );
-      if ((kind === "token" || kind === "mcp") && process.stdin.isTTY)
+      if (oauth && kind !== "mcp") return yield* usage("--oauth is for MCP servers", "connect");
+      if ((kind === "token" || (kind === "mcp" && !oauth)) && process.stdin.isTTY)
         return yield* usage("Pipe the secret on stdin", "connect");
-      const secret = process.stdin.isTTY ? "" : (yield* readStdin).trim();
+      const secret = oauth || process.stdin.isTTY ? "" : (yield* readStdin).trim();
       const input = yield* Schema.decodeUnknownEffect(NewConnection)(
         kind !== "token" && kind !== "mcp"
           ? {
@@ -75,7 +79,7 @@ export const connect = Command.make(
                 header: Option.getOrUndefined(header),
                 secret,
               }
-            : { kind, name, url: Option.getOrUndefined(endpoint), secret },
+            : { kind, name, url: Option.getOrUndefined(endpoint), ...(oauth ? {} : { secret }) },
       ).pipe(
         Effect.catchTag("SchemaError", () =>
           usage(
@@ -125,11 +129,17 @@ export const connections = Command.make("connections", {}, () =>
       found.length === 0
         ? "No connections yet. Add one: scotty connect standard-webhooks <name>"
         : table([
-            ["NAME", "KIND", "URL"],
+            ["NAME", "KIND", "URL", "SIGN-IN", "TOOLS"],
             ...found.map((connection) => [
               connection.name,
               connection.kind,
               connection.kind === "inbound" ? connection.url : connection.internalUrl,
+              connection.kind === "mcp" ? connection.signIn : "-",
+              connection.kind === "mcp"
+                ? connection.policy.kind === "named"
+                  ? connection.policy.tools.join(", ")
+                  : connection.policy.kind
+                : "-",
             ]),
           ]),
     );
@@ -175,3 +185,54 @@ export const removeConnection = (api: Api, name: string) =>
     });
     yield* output(removed, `${green("✓")} Removed connection ${removed.name}`);
   });
+
+const signin = Command.make("signin", { name: Argument.String("name") }, ({ name }) =>
+  Effect.gen(function* () {
+    if (Option.isNone(Schema.decodeUnknownOption(ConnectionName)(name)))
+      return yield* usage("Use a connection name", "mcp");
+    const api = yield* withClient;
+    const result = yield* api(`/api/connections/${name}/connect`, ConnectionAuthorization, {
+      method: "POST",
+    });
+    yield* output(result, `Open in your Access-signed-in browser:\n${result.authorizationUrl}`);
+  }),
+);
+const policy = Command.make(
+  "policy",
+  {
+    name: Argument.String("name"),
+    mode: Argument.Literals("mode", ["all", "read-only", "named"]),
+    tools: Flag.String("tools").pipe(Flag.optional),
+  },
+  ({ name, mode, tools }) =>
+    Effect.gen(function* () {
+      if (Option.isNone(Schema.decodeUnknownOption(ConnectionName)(name)))
+        return yield* usage("Use a connection name", "mcp");
+      if ((mode === "named") !== Option.isSome(tools))
+        return yield* usage(
+          "Named policy needs --tools name,other; other policies take no --tools",
+          "mcp",
+        );
+      const value = yield* Schema.decodeUnknownEffect(ToolPolicy)(
+        mode === "named"
+          ? {
+              kind: mode,
+              tools: Option.getOrElse(tools, () => "")
+                .split(",")
+                .map((tool) => tool.trim()),
+            }
+          : { kind: mode },
+      ).pipe(Effect.catchTag("SchemaError", () => usage("Use non-blank tool names", "mcp")));
+      const api = yield* withClient;
+      const result = yield* api(
+        `/api/connections/${name}/policy`,
+        Schema.Struct({ name: Schema.String, policy: ToolPolicy }),
+        { method: "PUT", body: value },
+      );
+      yield* output(
+        result,
+        `Tools for ${name}: ${mode === "named" ? Option.getOrElse(tools, () => "") : mode}`,
+      );
+    }),
+);
+export const mcp = Command.make("mcp").pipe(Command.withSubcommands([signin, policy]));

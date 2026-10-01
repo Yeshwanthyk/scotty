@@ -13,26 +13,31 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 
 export const buildRelease = async (dir: string) => {
   await rm(dir, { recursive: true, force: true });
-  const bundle = await rolldown({
-    input: join(root, "deploy/entry.js"),
-    // Native modules that dev tooling references behind runtime guards.
-    external: ["lightningcss", "fsevents"],
-    cwd: root,
-    plugins: [cloudflareRolldown({ compatibilityDate, compatibilityFlags: [] })],
-    checks: { unresolvedImport: false, ineffectiveDynamicImport: false },
-    transform: { define: { "globalThis.__ALCHEMY_RUNTIME__": "true" } },
-  });
-  try {
-    await bundle.write({
-      format: "esm",
-      minify: true,
-      keepNames: true,
-      codeSplitting: false,
-      dir: join(dir, "worker"),
-      entryFileNames: "entry.js",
+  for (const entry of [
+    { input: "deploy/entry.js", directory: "worker" },
+    { input: "e2e/mcp-server-entry.js", directory: "mcp-oauth-test" },
+  ]) {
+    const bundle = await rolldown({
+      input: join(root, entry.input),
+      // Native modules that dev tooling references behind runtime guards.
+      external: ["lightningcss", "fsevents"],
+      cwd: root,
+      plugins: [cloudflareRolldown({ compatibilityDate, compatibilityFlags: [] })],
+      checks: { unresolvedImport: false, ineffectiveDynamicImport: false },
+      transform: { define: { "globalThis.__ALCHEMY_RUNTIME__": "true" } },
     });
-  } finally {
-    await bundle.close();
+    try {
+      await bundle.write({
+        format: "esm",
+        minify: true,
+        keepNames: true,
+        codeSplitting: false,
+        dir: join(dir, entry.directory),
+        entryFileNames: "entry.js",
+      });
+    } finally {
+      await bundle.close();
+    }
   }
   // ui/dist/server is the prerender's own build, not something the browser loads.
   const ui = join(root, "ui/dist");

@@ -1,6 +1,7 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Schema } from "effect";
+import type { SqlError } from "effect/unstable/sql/SqlError";
 import {
   maxBodyBytes,
   newSecret,
@@ -15,7 +16,10 @@ import {
   DeliveryOutcome,
   DeliveryReason,
   keptDeliveries,
+  ToolPolicy,
+  McpSignIn,
 } from "./connections.js";
+import { authorizeMcp, refreshMcp, StoredMcpOAuth } from "./mcp-oauth.js";
 import { isLoopback } from "../loopback.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
@@ -78,6 +82,11 @@ const ConnectionRow = Schema.Struct({
   name: Schema.String,
   config: Schema.fromJsonString(ConnectionConfig),
   created: Schema.Number,
+  signIn: McpSignIn,
+});
+const OAuthRow = Schema.Struct({
+  generation: Schema.String,
+  data: Schema.NullOr(Schema.fromJsonString(StoredMcpOAuth)),
 });
 const HookRow = Schema.Struct({
   config: Schema.fromJsonString(ConnectionConfig.members[0]),
@@ -163,12 +172,57 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // listed but never found.
       yield* sql`CREATE TABLE IF NOT EXISTS session_search (id TEXT PRIMARY KEY, text TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS connections (name TEXT PRIMARY KEY, config TEXT NOT NULL, secret TEXT NOT NULL, created INTEGER NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS mcp_oauth (name TEXT PRIMARY KEY, generation TEXT NOT NULL, nonce TEXT, expires INTEGER NOT NULL, data TEXT)`;
       yield* sql`CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, connection TEXT NOT NULL, at INTEGER NOT NULL, outcome TEXT NOT NULL, reason TEXT, session TEXT)`;
       yield* sql`CREATE TABLE IF NOT EXISTS automations (name TEXT PRIMARY KEY, definition TEXT NOT NULL, enabled INTEGER NOT NULL, next_due INTEGER, created INTEGER NOT NULL)`;
       // A run's source (the schedule time, delivery or manual request) names it once, so a retried
       // firing finds the same run. What it fires is fixed when it is received.
       yield* sql`CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, automation TEXT NOT NULL, source TEXT NOT NULL, trigger TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, session TEXT, delivery TEXT, repo TEXT NOT NULL, agent TEXT NOT NULL, prompt TEXT, key TEXT, branch TEXT, action TEXT NOT NULL, scripted INTEGER NOT NULL, tried INTEGER NOT NULL DEFAULT 0, UNIQUE (automation, source))`;
       yield* sql`CREATE INDEX IF NOT EXISTS runs_by_automation ON runs (automation, seq)`;
+
+      const refreshing = new Map<
+        string,
+        Effect.Effect<string | null, SqlError | Schema.SchemaError>
+      >();
+      const oauth = (name: string) =>
+        Effect.gen(function* () {
+          const row = (yield* sql`SELECT generation, data FROM mcp_oauth WHERE name = ${name}`)[0];
+          return row === undefined ? null : yield* Schema.decodeUnknownEffect(OAuthRow)(row);
+        });
+      const mcpToken = (name: string, row: typeof OAuthRow.Type, rejectedToken?: string) =>
+        Effect.gen(function* () {
+          const running = refreshing.get(row.generation);
+          if (running !== undefined) return yield* running;
+          const stored = row.data;
+          if (stored === null || stored.phase !== "signed-in") return null;
+          if (
+            stored.tokens.access_token !== rejectedToken &&
+            stored.expiresAt > Date.now() + 60_000
+          )
+            return stored.tokens.access_token;
+          const refresh = yield* Effect.cached(
+            Effect.gen(function* () {
+              const next = yield* refreshMcp(stored).pipe(
+                Effect.catchTag("McpRefreshFailure", (error) =>
+                  Effect.gen(function* () {
+                    if (error.kind === "rejected")
+                      yield* sql`UPDATE mcp_oauth SET data = NULL, nonce = NULL WHERE name = ${name} AND generation = ${row.generation} AND json_extract(data, '$.tokens.access_token') = ${stored.tokens.access_token}`;
+                    return null;
+                  }),
+                ),
+              );
+              if (next === null) return null;
+              const saved =
+                yield* sql`UPDATE mcp_oauth SET data = ${JSON.stringify(next)} WHERE name = ${name} AND generation = ${row.generation} AND json_extract(data, '$.tokens.access_token') = ${stored.tokens.access_token} RETURNING name`;
+              return saved.length === 0 ? null : next.tokens.access_token;
+            }).pipe(
+              Effect.uninterruptible,
+              Effect.ensuring(Effect.sync(() => refreshing.delete(row.generation))),
+            ),
+          );
+          refreshing.set(row.generation, refresh);
+          return yield* refresh;
+        });
 
       const gitHub = Effect.gen(function* () {
         const row = (yield* sql`SELECT token, login, name, email FROM github WHERE id = 1`)[0];
@@ -327,10 +381,15 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           }),
         connections: () =>
           Effect.gen(function* () {
-            const rows = yield* sql`SELECT name, created, config FROM connections ORDER BY name`;
+            const rows =
+              yield* sql`SELECT name, created, config, CASE WHEN secret <> '' OR (SELECT json_extract(data, '$.phase') FROM mcp_oauth WHERE mcp_oauth.name = connections.name) = 'signed-in' THEN 'signed-in' WHEN EXISTS (SELECT 1 FROM mcp_oauth WHERE mcp_oauth.name = connections.name AND nonce IS NULL) THEN 'needs-sign-in' ELSE 'signed-out' END AS signIn FROM connections ORDER BY name`;
             return yield* Effect.forEach(rows, (row) =>
               Schema.decodeUnknownEffect(ConnectionRow)(row).pipe(
-                Effect.map(({ name, created, config }) => ({ name, created, ...config })),
+                Effect.map(({ name, created, config, signIn }) =>
+                  config.kind === "mcp"
+                    ? { name, created, ...config, signIn }
+                    : { name, created, ...config },
+                ),
               ),
             );
           }),
@@ -345,7 +404,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               config.kind === "inbound" && config.signature.key.encoding === "base64"
                 ? config.signature.key.prefix
                 : "whsec_";
-            const secret = checked.secret ?? newSecret(prefix);
+            const secret = checked.secret ?? (config.kind === "inbound" ? newSecret(prefix) : "");
             const created = Date.now();
             const inserted =
               yield* sql`INSERT OR IGNORE INTO connections (name, config, secret, created) VALUES (${checked.name}, ${JSON.stringify(config)}, ${secret}, ${created}) RETURNING name`;
@@ -353,7 +412,13 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const metadata = { status: "created" as const, name: checked.name, created };
             return config.kind === "inbound"
               ? { ...metadata, ...config, secret: checked.secret === undefined ? secret : null }
-              : { ...metadata, ...config };
+              : config.kind === "mcp"
+                ? {
+                    ...metadata,
+                    ...config,
+                    signIn: secret === "" ? ("signed-out" as const) : ("signed-in" as const),
+                  }
+                : { ...metadata, ...config };
           }).pipe(
             Effect.mapError(
               () => new CredentialStoreError({ message: "Could not store connection" }),
@@ -363,11 +428,13 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         reachCredential: (name: string) =>
           Effect.gen(function* () {
             const row =
-              (yield* sql`SELECT secret, config FROM connections WHERE name = ${name} AND json_extract(config, '$.kind') IN ('token', 'mcp')`)[0];
+              (yield* sql`SELECT connections.secret, connections.config, mcp_oauth.generation AS oauth_generation, mcp_oauth.data AS oauth_data FROM connections LEFT JOIN mcp_oauth ON mcp_oauth.name = connections.name WHERE connections.name = ${name} AND json_extract(config, '$.kind') IN ('token', 'mcp')`)[0];
             if (row === undefined) return null;
-            return yield* Schema.decodeUnknownEffect(
+            const checked = yield* Schema.decodeUnknownEffect(
               Schema.Struct({
                 secret: Schema.String,
+                oauth_generation: Schema.NullOr(Schema.String),
+                oauth_data: Schema.NullOr(Schema.fromJsonString(StoredMcpOAuth)),
                 config: Schema.fromJsonString(
                   ConnectionConfig.pipe(
                     Schema.refine((config) => config.kind === "token" || config.kind === "mcp"),
@@ -375,13 +442,118 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 ),
               }),
             )(row);
+            const token =
+              checked.config.kind === "token" || checked.secret !== ""
+                ? checked.secret
+                : checked.oauth_generation === null
+                  ? null
+                  : yield* mcpToken(name, {
+                      generation: checked.oauth_generation,
+                      data: checked.oauth_data,
+                    });
+            return {
+              config: checked.config,
+              secret: token ?? "",
+              generation: checked.oauth_generation,
+            };
           }).pipe(
             Effect.mapError(
               () => new CredentialStoreError({ message: "Could not read connection" }),
             ),
           ),
+        connectMcp: (name: string, redirectUrl: string) =>
+          Effect.gen(function* () {
+            const row =
+              (yield* sql`SELECT config FROM connections WHERE name = ${name} AND json_extract(config, '$.kind') = 'mcp'`)[0];
+            if (row === undefined) return { status: "not-found" as const };
+            const { config } = yield* Schema.decodeUnknownEffect(
+              Schema.Struct({ config: Schema.fromJsonString(ConnectionConfig.members[2]) }),
+            )(row);
+            const previous = yield* oauth(name);
+            const nonce = crypto.randomUUID();
+            const generation = crypto.randomUUID();
+            yield* sql`INSERT OR REPLACE INTO mcp_oauth (name, generation, nonce, expires, data) VALUES (${name}, ${generation}, ${nonce}, ${Date.now() + 600_000}, NULL)`;
+            const result = yield* authorizeMcp(config.url, {
+              kind: "connect",
+              redirectUrl,
+              nonce,
+              previous: previous?.data ?? null,
+            }).pipe(Effect.catchTag("McpOAuthFailure", () => Effect.succeed(null)));
+            if (result === null || result.kind !== "redirect") {
+              yield* sql`UPDATE mcp_oauth SET nonce = NULL WHERE name = ${name} AND generation = ${generation}`;
+              return { status: "failed" as const };
+            }
+            const saved =
+              yield* sql`UPDATE mcp_oauth SET data = ${JSON.stringify(result.stored)} WHERE name = ${name} AND generation = ${generation} RETURNING name`;
+            return saved.length === 0
+              ? { status: "failed" as const }
+              : { status: "redirect" as const, authorizationUrl: result.authorizationUrl };
+          }).pipe(
+            Effect.mapError(
+              () => new CredentialStoreError({ message: "Could not start MCP sign-in" }),
+            ),
+          ),
+        finishMcp: (
+          name: string,
+          nonce: string,
+          answer: { kind: "code"; code: string; iss?: string } | { kind: "denied" },
+        ) =>
+          Effect.gen(function* () {
+            // Claim before any outside call. Unknown, expired and reused callbacks never redeem a code.
+            const row =
+              (yield* sql`UPDATE mcp_oauth SET nonce = NULL WHERE name = ${name} AND nonce = ${nonce} AND expires > ${Date.now()} RETURNING generation, data`)[0];
+            if (row === undefined) return { status: "invalid-state" as const };
+            const pending = yield* Schema.decodeUnknownEffect(OAuthRow)(row);
+            yield* sql`UPDATE mcp_oauth SET data = NULL WHERE name = ${name} AND generation = ${pending.generation}`;
+            if (
+              answer.kind === "denied" ||
+              pending.data === null ||
+              pending.data.phase !== "pending"
+            )
+              return { status: "failed" as const };
+            const connection =
+              (yield* sql`SELECT json_extract(config, '$.url') AS url FROM connections WHERE name = ${name}`)[0];
+            const { url } = yield* Schema.decodeUnknownEffect(
+              Schema.Struct({ url: Schema.String }),
+            )(connection);
+            const result = yield* authorizeMcp(url, {
+              kind: "callback",
+              pending: pending.data,
+              code: answer.code,
+              iss: answer.iss,
+            }).pipe(Effect.catchTag("McpOAuthFailure", () => Effect.succeed(null)));
+            if (result === null || result.kind !== "authorized")
+              return { status: "failed" as const };
+            const saved =
+              yield* sql`UPDATE mcp_oauth SET data = ${JSON.stringify(result.stored)} WHERE name = ${name} AND generation = ${pending.generation} RETURNING name`;
+            if (saved.length === 0) return { status: "failed" as const };
+            yield* sql`UPDATE connections SET secret = '' WHERE name = ${name} AND EXISTS (SELECT 1 FROM mcp_oauth WHERE name = ${name} AND generation = ${pending.generation})`;
+            return { status: "signed-in" as const };
+          }).pipe(
+            Effect.mapError(
+              () => new CredentialStoreError({ message: "Could not finish MCP sign-in" }),
+            ),
+          ),
+        mcpUnauthorized: (name: string, token: string, generation: string) =>
+          Effect.gen(function* () {
+            const row = yield* oauth(name);
+            return row === null || row.generation !== generation
+              ? null
+              : yield* mcpToken(name, row, token);
+          }).pipe(
+            Effect.mapError(
+              () => new CredentialStoreError({ message: "Could not refresh MCP sign-in" }),
+            ),
+          ),
+        setToolPolicy: (name: string, policy: typeof ToolPolicy.Type) =>
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`UPDATE connections SET config = json_set(config, '$.policy', json(${JSON.stringify(policy)})) WHERE name = ${name} AND json_extract(config, '$.kind') = 'mcp' RETURNING name`;
+            return rows.length > 0;
+          }),
         removeConnection: (name: string) =>
           Effect.gen(function* () {
+            yield* sql`DELETE FROM mcp_oauth WHERE name = ${name}`;
             const rows = yield* sql`DELETE FROM connections WHERE name = ${name} RETURNING name`;
             return rows.length > 0;
           }),

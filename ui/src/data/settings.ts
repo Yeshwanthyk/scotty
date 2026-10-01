@@ -5,6 +5,8 @@ import {
   NewConnection,
   DeliveryOutcome,
   DeliveryReason,
+  ConnectionAuthorization,
+  ToolPolicy,
 } from "../../../src/creds/connections.ts";
 import { request } from "./core";
 
@@ -186,4 +188,26 @@ export async function removeConnection(name: string): Promise<void> {
 export async function deliveries(signal?: AbortSignal): Promise<Delivery[]> {
   const value = await request("/api/deliveries", undefined, signal);
   return [...decode(Deliveries, value, "deliveries").deliveries];
+}
+
+export async function connectMcp(name: string): Promise<string> {
+  const result = decode(
+    ConnectionAuthorization,
+    await request(`/api/connections/${encodeURIComponent(name)}/connect`, {}),
+    "authorization",
+  );
+  return result.authorizationUrl;
+}
+export async function setToolPolicy(name: string, policy: typeof ToolPolicy.Type): Promise<void> {
+  decode(
+    Schema.Struct({ name: Schema.String, policy: ToolPolicy }),
+    await request(
+      `/api/connections/${encodeURIComponent(name)}/policy`,
+      policy,
+      undefined,
+      undefined,
+      "PUT",
+    ),
+    "policy",
+  );
 }

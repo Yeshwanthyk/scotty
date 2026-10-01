@@ -11,7 +11,7 @@ import { doctor, login } from "./commands/setup.js";
 import { create, ls, log, open, read } from "./commands/sessions.js";
 import { hatch, interrupt, resume, rm, steer, stop } from "./commands/actions.js";
 import { push } from "./commands/push.js";
-import { connect, connections, deliveries } from "./commands/connections.js";
+import { connect, connections, deliveries, mcp } from "./commands/connections.js";
 import { automation, runs } from "./commands/automations.js";
 
 const overview = `${bold("scotty")} — Codex and Claude sessions in Cloudflare Containers
@@ -45,6 +45,8 @@ ${bold("What sessions get")}
 
 ${bold("Hooks")}
   connect <preset|kind> <name>    Add an inbound, token or MCP connection
+  mcp signin <name>               Sign in to an MCP server
+  mcp policy <name> <mode>        Set all, read-only or named tools (--tools name,other)
   connections                     List connections
   deliveries                      List deliveries, newest first (--connection <name>)
   rm connection <name>            Delete a connection
@@ -122,11 +124,16 @@ Print the Scotty skill: how an agent sets up and drives Scotty with this CLI.
 Save it for your agent: scotty skill > ~/.claude/skills/scotty/SKILL.md`,
   connect: `Usage: scotty connect standard-webhooks|github|linear|slack <name>
        scotty connect token <name> --host api.example.com --header "Authorization: Bearer"
-       scotty connect mcp <name> --endpoint https://example.com/mcp
-Inbound presets print a generated secret once and the hook URL. Pipe a provider signing secret (Linear or Slack), token or MCP secret on stdin; pasted secrets are never returned.
+       scotty connect mcp <name> --endpoint https://example.com/mcp [--oauth]
+Inbound presets print a generated secret once and the hook URL. Pipe a provider signing secret (Linear or Slack), token or MCP secret on stdin; pasted secrets are never returned. For OAuth use --oauth, then mcp signin <name>.
 Agents reach token hosts at http://<name>.internal/api/ and MCP at /api/mcp.
 New connections are installed when a session starts or resumes after stopping.
 Example: cat /secure/token | scotty connect mcp linear --endpoint https://mcp.linear.app/mcp`,
+  mcp: `Usage: scotty mcp signin <name>
+       scotty mcp policy <name> all|read-only|named [--tools name,other]
+Sign in through your Access-signed-in browser, or edit a connection's tool policy.
+Read-only (default) uses the server's readOnlyHint; named allows only the listed names.
+Example: scotty mcp policy linear named --tools list_issues,get_issue`,
   connections: `Usage: scotty connections
 List connections (names, kinds and URLs; secrets are never shown again).`,
   deliveries: `Usage: scotty deliveries [--connection name]
@@ -180,6 +187,7 @@ const root = Command.make("scotty").pipe(
     push,
     connect,
     connections,
+    mcp,
     deliveries,
     automation,
     runs,

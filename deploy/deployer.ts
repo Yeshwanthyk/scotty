@@ -71,6 +71,7 @@ const retry = { schedule: Schedule.spaced("3 seconds"), times: 40 } as const;
 
 const names = (config: Config) => ({
   script: `scotty-${config.stage}`,
+  mcpTest: `scotty-${config.stage}-mcp-test`,
   bucket: `scotty-${config.stage}-artifacts`,
   app: `scotty-${config.stage}-sessions`,
   access: `scotty-${config.stage}`,
@@ -131,6 +132,13 @@ export const deployStage = (
     const { accountId, zoneId, domain, host, email, stage } = config;
     const codex = config.codex ?? defaultCodexSettings;
     const name = names(config);
+    if (
+      config.mcpOAuthTest !== undefined &&
+      (config.stage === "main" || config.mcpOAuthTest.host === config.host)
+    )
+      return yield* new DeployError({
+        message: "The OAuth test Worker requires a separate host on a stage other than main",
+      });
     const say = (text: string) => Effect.sync(() => progress(text));
     // The preview route matches the Worker's own host too; the Worker tells them apart by name.
     if (!host.endsWith(`.${domain}`) || /^\d{1,5}-[a-z0-9-]{6,32}\./.test(host))
@@ -197,7 +205,7 @@ export const deployStage = (
       metadata: {
         mainModule: "entry.js",
         compatibilityDate,
-        compatibilityFlags: ["enable_request_signal"],
+        compatibilityFlags: ["enable_request_signal", "global_fetch_strictly_public"],
         assets: {
           jwt,
           config: { notFoundHandling: "single-page-application", runWorkerFirst: true },
@@ -271,6 +279,53 @@ export const deployStage = (
         stepPercentage: 100,
         targetConfiguration: configuration,
       });
+    }
+
+    if (config.mcpOAuthTest !== undefined) {
+      const test = config.mcpOAuthTest;
+      yield* say("Uploading the OAuth test Worker");
+      const testDir = join(dir, "mcp-oauth-test");
+      const testFiles = yield* Effect.forEach(
+        (yield* list(testDir)).filter((path) => path.endsWith(".js")),
+        (path) =>
+          read(path).pipe(
+            Effect.map(
+              (content) =>
+                new File([content], relative(testDir, path), {
+                  type: "application/javascript+module",
+                }),
+            ),
+          ),
+      );
+      const exists = [...(yield* namespaces(name.mcpTest))].some(
+        (namespace) => namespace.class === "McpTestObject",
+      );
+      yield* Workers.putScript({
+        accountId,
+        scriptName: name.mcpTest,
+        metadata: {
+          mainModule: "entry.js",
+          compatibilityDate,
+          compatibilityFlags: ["global_fetch_strictly_public"],
+          bindings: [
+            { type: "durable_object_namespace", name: "McpTestObject", className: "McpTestObject" },
+            text("ALCHEMY_PHASE", "runtime"),
+            text("ALCHEMY_WORKER_NAME", name.mcpTest),
+            text("ALCHEMY_STACK_NAME", "scotty"),
+            text("ALCHEMY_STAGE", stage),
+            text("ALCHEMY_CLOUDFLARE_ACCOUNT_ID", accountId),
+            text("SCOTTY_HOST", host),
+          ],
+          migrations: exists ? undefined : { newTag: "v1", newSqliteClasses: ["McpTestObject"] },
+        },
+        files: testFiles,
+      });
+      yield* Workers.putDomain({
+        accountId,
+        hostname: test.host,
+        service: name.mcpTest,
+        zoneId,
+      }).pipe(Effect.retry(retry));
     }
 
     yield* say("Attaching the address");
@@ -378,6 +433,17 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
       if (route.pattern === name.route && route.script === name.script)
         yield* Workers.deleteRoute({ zoneId, routeId: route.id });
 
+    if (config.mcpOAuthTest !== undefined && config.stage !== "main") {
+      for (const domain of yield* Workers.listDomains
+        .items({ accountId, service: name.mcpTest })
+        .pipe(Stream.runCollect))
+        if (domain.id) yield* Workers.deleteDomain({ accountId, domainId: domain.id });
+      yield* Workers.deleteScript({
+        accountId,
+        scriptName: name.mcpTest,
+        force: true,
+      }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
+    }
     yield* say("Removing the Worker");
     yield* Workers.deleteScript({ accountId, scriptName: name.script, force: true }).pipe(
       Effect.catchTag("WorkerNotFound", () => Effect.void),
