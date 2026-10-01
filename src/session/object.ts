@@ -28,7 +28,11 @@ import CredsObject from "../creds/object.js";
 import { type ConnectionMetadata, internalUrl } from "../creds/connections.js";
 import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
-import { CodexSettings, defaultCodexSettings } from "./agents/codex-settings.js";
+import {
+  AgentSettings,
+  defaultClaudeSettings,
+  defaultCodexSettings,
+} from "./agents/agent-settings.js";
 import type { AgentKind, Origin } from "./events.js";
 import { instructionsKey, skillKey } from "../settings/skill.js";
 import type { Command } from "./commands.js";
@@ -268,29 +272,42 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (!current(action.gen)) return;
               // Sent over the socket only; never appended to the event log.
               const owner = credentials.getByName("owner");
-              const codexSettings =
-                action.scripted !== true && action.agentKind === "codex"
-                  ? yield* Schema.decodeUnknownEffect(CodexSettings)({
-                      model: yield* Config.String("SCOTTY_CODEX_MODEL").pipe(
-                        Config.withDefault(defaultCodexSettings.model),
-                      ),
-                      effort: yield* Config.String("SCOTTY_CODEX_EFFORT").pipe(
-                        Config.withDefault(defaultCodexSettings.effort),
-                      ),
-                    })
-                  : defaultCodexSettings;
               const agentConfig = {
-                codex: () =>
+                codex: (settings: typeof AgentSettings.Type) =>
                   owner
                     .sessionToken()
-                    .pipe(Effect.map((chatgpt) => codex.startConfig(chatgpt, codexSettings))),
-                claude: () => owner.claudeToken().pipe(Effect.map(claude.startConfig)),
+                    .pipe(Effect.map((chatgpt) => codex.startConfig(chatgpt, settings))),
+                claude: (settings: typeof AgentSettings.Type) =>
+                  owner
+                    .claudeToken()
+                    .pipe(Effect.map((token) => claude.startConfig(token, settings))),
               } satisfies Record<typeof AgentKind.Type, unknown>;
+              // The stage's model and effort for this agent, from the Worker's plain vars.
+              const stage = {
+                codex: {
+                  model: "SCOTTY_CODEX_MODEL",
+                  effort: "SCOTTY_CODEX_EFFORT",
+                  fallback: defaultCodexSettings,
+                },
+                claude: {
+                  model: "SCOTTY_CLAUDE_MODEL",
+                  effort: "SCOTTY_CLAUDE_EFFORT",
+                  fallback: defaultClaudeSettings,
+                },
+              }[action.agentKind];
+              const settings = yield* Schema.decodeUnknownEffect(AgentSettings)({
+                model: yield* Config.String(stage.model).pipe(
+                  Config.withDefault(stage.fallback.model),
+                ),
+                effort: yield* Config.String(stage.effort).pipe(
+                  Config.withDefault(stage.fallback.effort),
+                ),
+              });
               // The scripted stand-in needs no account, so e2e runs without the owner's sign-ins.
               const signedIn = yield* Effect.exit(
                 action.scripted === true
                   ? Effect.succeed(scriptedStart(action.agentKind))
-                  : Effect.all([agentConfig[action.agentKind](), owner.gitIdentity()]),
+                  : Effect.all([agentConfig[action.agentKind](settings), owner.gitIdentity()]),
               );
               if (Exit.isFailure(signedIn)) {
                 if (current(action.gen))

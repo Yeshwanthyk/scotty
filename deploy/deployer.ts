@@ -14,7 +14,10 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Config } from "../cli/config.ts";
-import { defaultCodexSettings } from "../src/session/agents/codex-settings.js";
+import {
+  defaultClaudeSettings,
+  defaultCodexSettings,
+} from "../src/session/agents/agent-settings.js";
 import { copyImage } from "./image.ts";
 
 export const compatibilityDate = "2026-09-01";
@@ -131,6 +134,7 @@ export const deployStage = (
   Effect.gen(function* () {
     const { accountId, zoneId, domain, host, email, stage } = config;
     const codex = config.codex ?? defaultCodexSettings;
+    const claude = config.claude ?? defaultClaudeSettings;
     const name = names(config);
     if (
       config.mcpOAuthTest !== undefined &&
@@ -226,6 +230,8 @@ export const deployStage = (
           text("SCOTTY_IMAGE", copied),
           text("SCOTTY_CODEX_MODEL", codex.model),
           text("SCOTTY_CODEX_EFFORT", codex.effort),
+          text("SCOTTY_CLAUDE_MODEL", claude.model),
+          text("SCOTTY_CLAUDE_EFFORT", claude.effort),
         ],
         containers: [{ className: "SessionObject" }],
         migrations: migrated

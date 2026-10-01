@@ -1,6 +1,7 @@
 // Claude's side of the session view and start: its Agent SDK messages as items and text, and
 // the agent settings a Claude start sends.
 import type { AgentConfig } from "../../../protocol/supervisor.js";
+import type { AgentSettings } from "./agent-settings.js";
 import {
   array,
   type Change,
@@ -186,11 +187,12 @@ export function text(event: unknown): { text: string; complete: boolean } | unde
   return parts.length === 0 ? undefined : { text: parts.join("\n\n"), complete: true };
 }
 
-export const startConfig = (claude: {
-  readonly token: string;
-}): Extract<typeof AgentConfig.Type, { kind: "claude" }> => ({
+export const startConfig = (
+  claude: { readonly token: string },
+  settings: typeof AgentSettings.Type,
+): Extract<typeof AgentConfig.Type, { kind: "claude" }> => ({
   kind: "claude",
-  model: "claude-opus-5-5",
-  effort: "medium",
+  model: settings.model,
+  effort: settings.effort,
   token: claude.token,
 });

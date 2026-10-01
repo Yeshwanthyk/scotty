@@ -1,7 +1,7 @@
 // Codex's side of the session view and start: its app-server events as items and text, and
 // the agent settings a Codex start sends.
 import type { AgentConfig } from "../../../protocol/supervisor.js";
-import type { CodexSettings } from "./codex-settings.js";
+import type { AgentSettings } from "./agent-settings.js";
 import {
   array,
   base,
@@ -259,7 +259,7 @@ export const startConfig = (
     readonly token: string;
     readonly accountId: string;
   },
-  settings: typeof CodexSettings.Type,
+  settings: typeof AgentSettings.Type,
 ): Extract<typeof AgentConfig.Type, { kind: "codex" }> => ({
   kind: "codex",
   model: settings.model,
