@@ -116,7 +116,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (action.fresh && (yield* where().running())) yield* where().destroy();
               if (!(yield* where().running())) {
                 const connections = (yield* connectionsFor(action.gen))
-                  .filter((connection) => connection.kind !== "webhook")
+                  .filter((connection) => connection.kind !== "inbound")
                   .map((connection) => connection.name);
                 yield* where().start({
                   session: id(),

@@ -1,3 +1,5 @@
+import { Option, Schema } from "effect";
+import { SignaturePreset } from "../../../src/hooks/config";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { message } from "../data/core";
@@ -537,7 +539,8 @@ function Connections() {
   const [items, setItems] = useState<Connection[]>();
   const [log, setLog] = useState<Delivery[]>([]);
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<"webhook" | "github" | "token" | "mcp">("webhook");
+  const [kind, setKind] = useState<"inbound" | "token" | "mcp">("inbound");
+  const [preset, setPreset] = useState<SignaturePreset>("standard-webhooks");
   const [target, setTarget] = useState("");
   const [header, setHeader] = useState("Authorization: Bearer");
   const [secret, setSecret] = useState("");
@@ -629,9 +632,7 @@ function Connections() {
                     <span className="quiet settings-size">{item.kind}</span>
                   </div>
                   <div className="settings-row-detail mono">
-                    {item.kind === "webhook" || item.kind === "github"
-                      ? item.url
-                      : item.internalUrl}
+                    {item.kind === "inbound" ? item.url : item.internalUrl}
                   </div>
                   {item.kind === "token" || item.kind === "mcp" ? (
                     <div className="settings-row-detail mono">
@@ -697,8 +698,13 @@ function Connections() {
           event.preventDefault();
           void run(async () => {
             const result = await addConnection(
-              kind === "webhook" || kind === "github"
-                ? { kind, name: name.trim() }
+              kind === "inbound"
+                ? {
+                    kind,
+                    name: name.trim(),
+                    signing: { kind: "preset", preset },
+                    ...(secret.trim() === "" ? {} : { secret: secret.trim() }),
+                  }
                 : kind === "token"
                   ? {
                       kind,
@@ -709,7 +715,11 @@ function Connections() {
                     }
                   : { kind, name: name.trim(), url: target.trim(), secret: secret.trim() },
             );
-            setCreated(result.kind === "webhook" || result.kind === "github" ? result : undefined);
+            setCreated(
+              result.kind === "inbound" && result.secret !== null
+                ? { name: result.name, url: result.url, secret: result.secret }
+                : undefined,
+            );
             setSecret("");
             setTarget("");
             setCopied("");
@@ -723,18 +733,36 @@ function Connections() {
           value={kind}
           onChange={(event) => {
             const value = event.target.value;
-            if (value === "webhook" || value === "github" || value === "token" || value === "mcp") {
+            if (value === "inbound" || value === "token" || value === "mcp") {
               setKind(value);
               setSecret("");
               setTarget("");
             }
           }}
         >
-          <option value="webhook">Webhook</option>
-          <option value="github">GitHub events</option>
+          <option value="inbound">Webhook</option>
           <option value="token">API token</option>
           <option value="mcp">MCP server</option>
         </select>
+        {kind === "inbound" ? (
+          <select
+            className="field"
+            aria-label="Signature preset"
+            value={preset}
+            onChange={(event) => {
+              const value = Schema.decodeUnknownOption(SignaturePreset)(event.target.value);
+              if (Option.isSome(value)) {
+                setPreset(value.value);
+                setSecret("");
+              }
+            }}
+          >
+            <option value="standard-webhooks">Standard Webhooks</option>
+            <option value="github">GitHub</option>
+            <option value="linear">Linear</option>
+            <option value="slack">Slack</option>
+          </select>
+        ) : null}
         <input
           className="field"
           placeholder="name, like sentry"
@@ -773,6 +801,17 @@ function Connections() {
               autoComplete="off"
             />
           </>
+        ) : null}
+        {kind === "inbound" ? (
+          <input
+            className="field"
+            type="password"
+            aria-label="Signing secret"
+            placeholder="Signing secret (leave blank to generate)"
+            value={secret}
+            onChange={(event) => setSecret(event.target.value)}
+            autoComplete="off"
+          />
         ) : null}
         <button
           type="submit"

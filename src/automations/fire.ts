@@ -81,12 +81,12 @@ export function automationDelivery(
   connection: string,
   delivery: string,
   payload: unknown,
-  kind: "webhook" | "github",
+  unhandled: "session" | "skip",
 ) {
   return Effect.gen(function* () {
     const runs = yield* credential.receiveEvent(connection, delivery, payload);
     if (runs === null) {
-      if (kind === "webhook") return undefined;
+      if (unhandled === "session") return undefined;
       yield* credential.recordDelivery({
         id: delivery,
         connection,

@@ -55,7 +55,10 @@ export const Created = Schema.Struct({
   steered: Schema.optional(Schema.Boolean),
 });
 export { Connection, ConnectionCreated };
-export const WebhookCreated = ConnectionCreated.members[0];
+export const InboundCreated = Schema.Struct({
+  ...ConnectionCreated.members[0].fields,
+  secret: Schema.String,
+});
 export const Connections = Schema.Struct({ connections: Schema.Array(Connection) });
 export const ConnectionRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
 export const Deliveries = Schema.Struct({

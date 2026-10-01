@@ -10,11 +10,9 @@ import type SessionObject from "../session/object.js";
 import { Prompt, Repo, startSession } from "../http/start.js";
 import { titleFrom } from "../session/title.js";
 import { automationDelivery } from "../automations/fire.js";
-import { maxBodyBytes, SigningHeaders } from "./signature.js";
+import { maxBodyBytes, readDelivery, SigningValues } from "./signature.js";
 
 export const hookPath = /^\/hooks\/([^/]+)$/;
-
-const decodeHeaders = Schema.decodeUnknownOption(SigningHeaders);
 
 const Payload = Schema.Struct({
   repo: Repo,
@@ -26,13 +24,13 @@ const Payload = Schema.Struct({
   scripted: Schema.optional(Schema.Literal(true)),
 });
 const decodePayload = Schema.decodeUnknownEffect(Payload);
-const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const decodeEventPayload = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Unknown));
 
 // A sender sees only the status and a code; the details are in `scotty deliveries`.
 const refuse = (status: number, code: string) =>
   HttpServerResponse.json({ error: { code, message: code.replaceAll("_", " ") } }, { status });
 const refusalStatus: Record<
-  Exclude<DeliveryVerification["verdict"], "ok" | "own_github_identity">,
+  Exclude<DeliveryVerification, "ok" | "own_github_identity"> | "missing_headers" | "bad_body",
   number
 > = {
   unknown_connection: 404,
@@ -54,21 +52,13 @@ export function hookHandler(
     const credential = credentials.getByName("owner");
     if (!connectionName.test(name)) return yield* refuse(404, "unknown_connection");
     if (request.method !== "POST") return yield* refuse(405, "use_post");
-    const headers = decodeHeaders(request.headers);
-    if (Option.isNone(headers)) {
-      yield* credential.recordDelivery({
-        id: "",
-        connection: name,
-        outcome: "rejected",
-        reason: "missing_headers",
-      });
-      return yield* refuse(400, "missing_headers");
-    }
-    const delivery = headers.value.id;
+    const config = yield* credential.inboundConfig(name);
+    let delivery = "";
     const reject = (status: number, reason: typeof DeliveryReason.Type) =>
       credential
         .recordDelivery({ id: delivery, connection: name, outcome: "rejected", reason })
         .pipe(Effect.andThen(refuse(status, reason)));
+    if (config === null) return yield* reject(404, "unknown_connection");
     // Reads until the cap is passed and stops there; Content-Length is the sender's claim only.
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -80,45 +70,61 @@ export function hookHandler(
       }),
       Stream.runDrain,
     );
-    if (size > maxBodyBytes) return yield* reject(413, "too_large");
+    if (size > maxBodyBytes) {
+      if (config.delivery.kind === "header")
+        delivery = Option.getOrElse(
+          Schema.decodeUnknownOption(SigningValues.fields.id)(
+            request.headers[config.delivery.name.toLowerCase()],
+          ),
+          () => "",
+        );
+      return yield* reject(413, "too_large");
+    }
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) {
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    const verified = yield* credential.verifyDelivery({
+    const decoded = readDelivery(config, request.headers, bytes);
+    if (decoded.verdict !== "ok") {
+      delivery = decoded.id;
+      return yield* reject(refusalStatus[decoded.verdict], decoded.verdict);
+    }
+    delivery = decoded.values.id;
+    const verdict = yield* credential.verifyDelivery({
       connection: name,
-      headers: headers.value,
+      values: decoded.values,
       body: bytes,
+      payload: decoded.payload,
     });
-    if (verified.verdict === "own_github_identity") {
+    if (verdict === "own_github_identity") {
       yield* credential.recordDelivery({
         id: delivery,
         connection: name,
         outcome: "skipped",
-        reason: verified.verdict,
+        reason: verdict,
       });
-      return yield* HttpServerResponse.json({ status: "skipped", reason: verified.verdict });
+      return yield* HttpServerResponse.json({ status: "skipped", reason: verdict });
     }
-    if (verified.verdict !== "ok")
-      return yield* reject(refusalStatus[verified.verdict], verified.verdict);
-    const json =
-      verified.kind === "github"
-        ? Option.some(verified.payload)
-        : decodeJson(new TextDecoder().decode(bytes));
-    if (Option.isNone(json)) return yield* reject(400, "bad_body");
+    if (verdict !== "ok") return yield* reject(refusalStatus[verdict], verdict);
+    let json: unknown = decoded.payload;
+    if (config.event !== null && config.event.kind === "header") {
+      const payload = decodeEventPayload(json);
+      if (Option.isNone(payload)) return yield* reject(400, "bad_body");
+      json = { ...payload.value, event: decoded.values.event };
+    }
     // A connection that automations listen on hands its deliveries to them.
     const automated = yield* automationDelivery(
       sessions,
       credential,
       name,
       delivery,
-      json.value,
-      verified.kind,
+      json,
+      config.unhandled,
     );
     if (automated !== undefined) return automated;
-    const payload = yield* decodePayload(json.value).pipe(Effect.option);
+    const payload = yield* decodePayload(json).pipe(Effect.option);
     if (Option.isNone(payload)) return yield* reject(400, "bad_body");
     const { repo, prompt, key, agent, title, scripted } = payload.value;
     const started = yield* startSession(sessions, credential, {

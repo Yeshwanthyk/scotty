@@ -3,7 +3,7 @@ import {
   access,
   CliFailure,
   client,
-  WebhookCreated as ConnectionCreated,
+  InboundCreated as ConnectionCreated,
   Connections,
   ConnectionRemoved,
   Conversation,
@@ -86,7 +86,7 @@ const program = Effect.gen(function* () {
   const name = `e2e-${crypto.randomUUID().slice(0, 8)}`;
   const connection = yield* request("/api/connections", ConnectionCreated, {
     method: "POST",
-    body: { kind: "webhook", name },
+    body: { kind: "inbound", name, signing: { kind: "preset", preset: "standard-webhooks" } },
   });
   yield* check(connection.secret.startsWith("whsec_"), "The secret is not a whsec_ value");
   const listed = yield* request("/api/connections", Connections);

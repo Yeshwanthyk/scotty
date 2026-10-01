@@ -33,7 +33,7 @@ a run: skipped (and why), or started or steered a session, and then how that ses
    with a session (A2). `read <session>` answers; `runs` shows the turn completed.
 3. `ls --search digest` finds the session; in the UI its header says "From automation digest"
    and links back (A3).
-4. `connect webhook demo`; `automation add triage <owner/repo> "Look at {{issue.title}}" --on demo
+4. `connect standard-webhooks demo`; `automation add triage <owner/repo> "Look at {{issue.title}}" --on demo
 --only action=opened,reopened`; enable it; POST a signed `{"action":"closed", …}`: the answer
    and `runs --automation triage` show it skipped, `not matched: action is "closed"` (A4).
 5. `automation run triage`: skipped (no payload matches); `automation run digest`: started (A5).

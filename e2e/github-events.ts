@@ -65,14 +65,14 @@ export function githubEvents(request: ReturnType<typeof client>) {
     const name = `e2e-babysit-${suffix}`;
     const connection = yield* request("/api/connections", ConnectionCreated, {
       method: "POST",
-      body: { kind: "github", name: hook },
+      body: { kind: "inbound", name: hook, signing: { kind: "preset", preset: "github" } },
     });
-    if (connection.kind !== "github")
+    if (connection.kind !== "inbound" || connection.secret === null)
       return yield* failure("github_events", "Expected a GitHub connection", "scotty connections");
     const listed = yield* request("/api/connections", Connections);
     yield* check(
       listed.connections.some(
-        (item) => item.kind === "github" && item.name === hook && item.url === connection.url,
+        (item) => item.kind === "inbound" && item.name === hook && item.url === connection.url,
       ),
       "The GitHub connection and hook URL were not listed",
     );

@@ -72,7 +72,7 @@ export function nextDue(when: When, after: number): number | null {
 }
 
 // The value at a dotted path, or undefined when any step is missing.
-const field = (payload: unknown, path: string): unknown =>
+export const field = (payload: unknown, path: string): unknown =>
   path
     .split(".")
     .reduce<unknown>(

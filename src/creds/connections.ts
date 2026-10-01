@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { InboundConfig, SignaturePreset, signaturePresets } from "../hooks/config.js";
 
 // Lowercase and explicit: the name is in the hook URL and in every session it starts.
 export const connectionName = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -56,14 +57,20 @@ const Secret = Schema.String.check(
   Schema.isPattern(/^[\x21-\x7e]+$/),
 );
 export const ConnectionConfig = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("webhook") }),
-  Schema.Struct({ kind: Schema.Literal("github") }),
+  Schema.Struct({ kind: Schema.Literal("inbound"), signature: InboundConfig }),
   Schema.Struct({ kind: Schema.Literal("token"), host: ConnectionHost, header: ConnectionHeader }),
   Schema.Struct({ kind: Schema.Literal("mcp"), url: ConnectionUrl }),
 ]);
 export const NewConnection = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("webhook"), name: ConnectionName }),
-  Schema.Struct({ kind: Schema.Literal("github"), name: ConnectionName }),
+  Schema.Struct({
+    kind: Schema.Literal("inbound"),
+    name: ConnectionName,
+    signing: Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("preset"), preset: SignaturePreset }),
+      Schema.Struct({ kind: Schema.Literal("custom"), config: InboundConfig }),
+    ]),
+    secret: Schema.optional(Secret),
+  }),
   Schema.Struct({
     kind: Schema.Literal("token"),
     name: InternalConnectionName,
@@ -78,6 +85,22 @@ export const NewConnection = Schema.Union([
     secret: Secret,
   }),
 ]);
+export const configFor = (input: typeof NewConnection.Type): typeof ConnectionConfig.Type => {
+  switch (input.kind) {
+    case "inbound":
+      return {
+        kind: input.kind,
+        signature:
+          input.signing.kind === "preset"
+            ? signaturePresets[input.signing.preset]
+            : input.signing.config,
+      };
+    case "token":
+      return { kind: input.kind, host: input.host, header: input.header };
+    case "mcp":
+      return { kind: input.kind, url: input.url };
+  }
+};
 const metadata = { name: ConnectionName, created: Schema.Number };
 export type ConnectionMetadata = typeof ConnectionConfig.Type & {
   readonly name: string;
@@ -86,11 +109,14 @@ export type ConnectionMetadata = typeof ConnectionConfig.Type & {
 export const internalUrl = (name: string, kind: "token" | "mcp") =>
   `http://${name}.internal/api/${kind === "mcp" ? "mcp" : ""}`;
 export const connectionView = (connection: ConnectionMetadata, origin: string) =>
-  connection.kind === "webhook" || connection.kind === "github"
+  connection.kind === "inbound"
     ? { ...connection, url: `${origin}/hooks/${connection.name}` }
     : { ...connection, internalUrl: internalUrl(connection.name, connection.kind) };
-const Webhook = Schema.Struct({ ...metadata, kind: Schema.Literal("webhook"), url: Schema.String });
-const GitHub = Schema.Struct({ ...metadata, kind: Schema.Literal("github"), url: Schema.String });
+const Inbound = Schema.Struct({
+  ...metadata,
+  ...ConnectionConfig.members[0].fields,
+  url: Schema.String,
+});
 const Token = Schema.Struct({
   ...metadata,
   kind: Schema.Literal("token"),
@@ -104,10 +130,9 @@ const Mcp = Schema.Struct({
   url: ConnectionUrl,
   internalUrl: Schema.String,
 });
-export const Connection = Schema.Union([Webhook, GitHub, Token, Mcp]);
+export const Connection = Schema.Union([Inbound, Token, Mcp]);
 export const ConnectionCreated = Schema.Union([
-  Schema.Struct({ ...Webhook.fields, secret: Schema.String }),
-  Schema.Struct({ ...GitHub.fields, secret: Schema.String }),
+  Schema.Struct({ ...Inbound.fields, secret: Schema.NullOr(Schema.String) }),
   Token,
   Mcp,
 ]);

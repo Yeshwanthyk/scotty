@@ -14,8 +14,10 @@ import { readSkill } from "../../src/settings/skill.ts";
 import {
   type ConnectionMetadata,
   NewConnection,
+  configFor,
   connectionView,
 } from "../../src/creds/connections.ts";
+import { signaturePresets } from "../../src/hooks/config.ts";
 import { codexLog, dummies } from "./dummy.ts";
 
 const here = new URL(".", import.meta.url);
@@ -300,8 +302,42 @@ const owner = {
 // Connections and their deliveries, in memory; the seeded deliveries point at seeded sessions.
 const hooks = {
   connections: new Map<string, ConnectionMetadata>([
-    ["sentry", { name: "sentry", kind: "webhook", created: Date.now() - 6 * 864e5 }],
-    ["github-events", { name: "github-events", kind: "github", created: Date.now() - 864e5 }],
+    [
+      "sentry",
+      {
+        name: "sentry",
+        kind: "inbound",
+        signature: signaturePresets["standard-webhooks"],
+        created: Date.now() - 6 * 864e5,
+      },
+    ],
+    [
+      "github-events",
+      {
+        name: "github-events",
+        kind: "inbound",
+        signature: signaturePresets.github,
+        created: Date.now() - 864e5,
+      },
+    ],
+    [
+      "linear-events",
+      {
+        name: "linear-events",
+        kind: "inbound",
+        signature: signaturePresets.linear,
+        created: Date.now() - 864e5,
+      },
+    ],
+    [
+      "slack-events",
+      {
+        name: "slack-events",
+        kind: "inbound",
+        signature: signaturePresets.slack,
+        created: Date.now() - 864e5,
+      },
+    ],
     [
       "linear",
       {
@@ -323,6 +359,24 @@ const hooks = {
     ],
   ]),
   deliveries: [
+    ...["linear-events", "slack-events"].flatMap((connection) => [
+      {
+        id: `${connection}-valid`,
+        connection,
+        minutesAgo: 1,
+        outcome: "skipped",
+        reason: "no_automation",
+        session: null,
+      },
+      {
+        id: `${connection}-tampered`,
+        connection,
+        minutesAgo: 0.5,
+        outcome: "rejected",
+        reason: "bad_signature",
+        session: null,
+      },
+    ]),
     {
       id: "8406f74c-fb1f-48fd-ac27-e48df5d9dce7",
       connection: "github-events",
@@ -405,25 +459,19 @@ async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string,
     const { name } = input.value;
     if (hooks.connections.has(name)) return fail(res, "That name is taken", 409, "exists");
     const checked = input.value;
-    const row: ConnectionMetadata =
-      checked.kind === "webhook" || checked.kind === "github"
-        ? { name, kind: checked.kind, created: Date.now() }
-        : checked.kind === "token"
-          ? {
-              name,
-              kind: checked.kind,
-              host: checked.host,
-              header: checked.header,
-              created: Date.now(),
-            }
-          : { name, kind: checked.kind, url: checked.url, created: Date.now() };
+    const row: ConnectionMetadata = { name, ...configFor(checked), created: Date.now() };
     hooks.connections.set(name, row);
     return json(
       res,
       {
         ...connectionView(row, `https://${req.headers.host ?? "localhost"}`),
-        ...(row.kind === "webhook" || row.kind === "github"
-          ? { secret: `whsec_${Buffer.from(name.padEnd(24, "x")).toString("base64")}` }
+        ...(row.kind === "inbound"
+          ? {
+              secret:
+                checked.secret === undefined
+                  ? `${row.signature.key.encoding === "base64" ? row.signature.key.prefix : "whsec_"}${Buffer.from(name.padEnd(24, "x")).toString("base64")}`
+                  : null,
+            }
           : {}),
       },
       201,

@@ -15,6 +15,7 @@ directory. Conventions, evidence and cleanup: [SKILL.md](../SKILL.md).
 | [hatch](hatch.md)                 | A dev server in a session opens at its preview URL, and comes back on resume     | H1–H4      | `hatch`, `hatch-env` |
 | [files](files.md)                 | Images and video the agent makes show in the turn that made them                 | F1–F4      | `files`              |
 | [hooks](hooks.md)                 | A signed webhook starts or steers a session and every delivery is listed         | K1–K5      | `hooks`              |
+| [signatures](signatures.md)       | Linear and Slack signatures verify; tampered and stale deliveries are listed     | Signing    | `signatures`         |
 | [reach](reach.md)                 | Agents call token and MCP services through internal URLs                         | Transport  | `reach`              |
 | [automations](automations.md)     | A schedule or a webhook delivery fires a run into a session, or a listed skip    | A1–A6      | `automations`        |
 | [ui](ui.md)                       | The phone UI creates, answers, steers and interrupts, and shows files            | U1–U6      | none                 |
