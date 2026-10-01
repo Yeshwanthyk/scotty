@@ -194,32 +194,31 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           const row = (yield* sql`SELECT generation, data FROM mcp_oauth WHERE name = ${name}`)[0];
           return row === undefined ? null : yield* Schema.decodeUnknownEffect(OAuthRow)(row);
         });
-      const mcpToken = (name: string, row: typeof OAuthRow.Type) =>
+      const mcpToken = (name: string, row: typeof OAuthRow.Type, rejectedToken?: string) =>
         Effect.gen(function* () {
           const running = refreshing.get(row.generation);
           if (running !== undefined) return yield* running;
           const stored = row.data;
           if (stored === null || stored.phase !== "signed-in") return null;
-          if (stored.expiresAt > Date.now() + 60_000) return stored.tokens.access_token;
+          if (
+            stored.tokens.access_token !== rejectedToken &&
+            stored.expiresAt > Date.now() + 60_000
+          )
+            return stored.tokens.access_token;
           const refresh = yield* Effect.cached(
             Effect.gen(function* () {
-              // Persist retirement before a rotating refresh. An eviction or lost reply needs sign-in.
-              const retired =
-                yield* sql`UPDATE mcp_oauth SET data = NULL WHERE name = ${name} AND generation = ${row.generation} AND json_extract(data, '$.tokens.access_token') = ${stored.tokens.access_token} RETURNING name`;
-              if (retired.length === 0) {
-                const latest = yield* oauth(name);
-                return latest !== null &&
-                  latest.generation === row.generation &&
-                  latest.data?.phase === "signed-in"
-                  ? latest.data.tokens.access_token
-                  : null;
-              }
               const next = yield* refreshMcp(stored).pipe(
-                Effect.catchTag("McpOAuthFailure", () => Effect.succeed(null)),
+                Effect.catchTag("McpRefreshFailure", (error) =>
+                  Effect.gen(function* () {
+                    if (error.kind === "rejected")
+                      yield* sql`UPDATE mcp_oauth SET data = NULL, nonce = NULL WHERE name = ${name} AND generation = ${row.generation} AND json_extract(data, '$.tokens.access_token') = ${stored.tokens.access_token}`;
+                    return null;
+                  }),
+                ),
               );
               if (next === null) return null;
               const saved =
-                yield* sql`UPDATE mcp_oauth SET data = ${JSON.stringify(next)} WHERE name = ${name} AND generation = ${row.generation} RETURNING name`;
+                yield* sql`UPDATE mcp_oauth SET data = ${JSON.stringify(next)} WHERE name = ${name} AND generation = ${row.generation} AND json_extract(data, '$.tokens.access_token') = ${stored.tokens.access_token} RETURNING name`;
               return saved.length === 0 ? null : next.tokens.access_token;
             }).pipe(
               Effect.uninterruptible,
@@ -427,7 +426,11 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                       generation: checked.oauth_generation,
                       data: checked.oauth_data,
                     });
-            return { config: checked.config, secret: token ?? "" };
+            return {
+              config: checked.config,
+              secret: token ?? "",
+              generation: checked.oauth_generation,
+            };
           }).pipe(
             Effect.mapError(
               () => new CredentialStoreError({ message: "Could not read connection" }),
@@ -506,10 +509,15 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               () => new CredentialStoreError({ message: "Could not finish MCP sign-in" }),
             ),
           ),
-        mcpUnauthorized: (name: string, token: string) =>
-          sql`UPDATE mcp_oauth SET data = NULL, nonce = NULL WHERE name = ${name} AND json_extract(data, '$.tokens.access_token') = ${token}`.pipe(
+        mcpUnauthorized: (name: string, token: string, generation: string) =>
+          Effect.gen(function* () {
+            const row = yield* oauth(name);
+            return row === null || row.generation !== generation
+              ? null
+              : yield* mcpToken(name, row, token);
+          }).pipe(
             Effect.mapError(
-              () => new CredentialStoreError({ message: "Could not retire MCP sign-in" }),
+              () => new CredentialStoreError({ message: "Could not refresh MCP sign-in" }),
             ),
           ),
         setToolPolicy: (name: string, policy: typeof ToolPolicy.Type) =>

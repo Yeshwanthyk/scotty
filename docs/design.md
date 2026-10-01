@@ -285,8 +285,9 @@ The OAuth code uses fetch, URLs and Web Crypto, with no Node transport. Scotty u
 helpers for protected-resource and authorization-server discovery, dynamic public-client
 registration, S256 PKCE, issuer binding and the resource indicator. A credential-free initialize
 probe supplies the server's advertised metadata URL; metadata, registration and token results
-are validated with Effect Schema at the provider boundary before storage. OAuth fetches refuse
-redirects, and SDK errors become a generic failure without their credential-bearing text.
+are validated with Effect Schema at the provider boundary before storage. Every OAuth fetch
+validates its HTTPS URL and refuses redirects. SDK errors are classified without exposing their
+credential-bearing text.
 
 The Creds DO's `mcp_oauth` table is the single OAuth store. A ten-minute random state nonce is
 bound to its connection and atomically claimed before redeeming the code. Unknown, expired and
@@ -296,11 +297,13 @@ PKCE verifier and tokens never enter session state, container configuration or p
 Only the proxy obtains the current bearer through internal Creds RPC.
 
 Reach refreshes one minute before expiry; if the server omits expiry, the SDK token is treated as
-lasting an hour. Concurrent callers share one in-flight refresh per generation. Creds retires the
-persisted grant before sending a rotating refresh, then replaces the complete OAuth record in one
-write. Failure, an unknown reply or eviction requires sign-in, with no retry of the old grant.
-An upstream 401 retires only the token that request used. Reconnect always starts fresh
-authorization, without refreshing the previous grant. The Worker definition and deployer enable
+lasting an hour. Concurrent callers share one in-flight refresh per generation. Creds keeps the
+stored grant while refreshing and replaces it in one write guarded by the generation and old
+access token. A response without a refresh token retains the previous one. Only OAuth
+`invalid_grant` or a token-endpoint 400/401 clears the grant; network failures, 5xx responses,
+unknown replies and eviction leave it stored, so the next request tries again. An upstream 401
+forces one refresh and retries the request once, including a read-only tool-list check. Reconnect
+always starts fresh authorization, without refreshing the previous grant. The Worker definition and deployer enable
 `global_fetch_strictly_public`; no private discovery/token endpoint is reachable.
 
 `policy` is `{kind: "read-only"}` (default), `{kind: "all"}` or `{kind: "named", tools: [...]}`.
@@ -309,18 +312,22 @@ Settings edits it, as does `scotty mcp policy <name> <kind> --tools name,other` 
 JSON and SSE `tools/list` results, preserving other result fields and SSE event IDs/comments.
 Malformed tool lists fail closed. Read-only requires the server's explicit `readOnlyHint: true`;
 a read-only call fetches the current list, with pagination and the caller's MCP session headers,
-before forwarding the call. Missing/false hints are denied. Named policy compares exact names;
-all policy retains the untouched transport. A blocked call returns a JSON-RPC error without
-forwarding that call. Token connections keep their existing streaming path.
+before forwarding the call. The synthetic request sets `Mcp-Method: tools/list` and omits
+`Mcp-Name`. Missing/false hints are denied. Named policy compares exact names. MCP POST bodies
+are decoded for method checking and retained for the one-time 401 retry; tools methods with
+incorrect casing are refused under every policy. All policy leaves responses untouched. A blocked
+call returns a JSON-RPC error without forwarding that call. Token connections keep their existing streaming path.
 
 `e2e mcp-oauth` uses a separate public OAuth/MCP Worker and test DO under `e2e/`. The release
 contains its separate bundle; the deployer installs it only when config explicitly sets
-`mcpOAuthTest: {name, host}`, and refuses `main` or the normal Worker's name/host. Its only
+`mcpOAuthTest: {host}`, and refuses `main` or the normal Worker's host. Its name is always
+`scotty-<stage>-mcp-test`; teardown deletes only that exact fixture name on a test stage. Its only
 credentials are disposable test tokens with 70-second expiry and rotating refresh grants; it
 checks PKCE, resource, client and redirect, auto-approves clients, and exposes one read tool and
 one write tool. The e2e follows the callback with Access, drives the scripted agent through the
-internal URL, tests JSON/fragmented SSE filtering, all/named policies, concurrent expiry refresh
-and failed-refresh status, then checks env/configs, conversation and event log for either token
+internal URL, tests JSON/fragmented SSE filtering, all/named policies, method casing, concurrent
+expiry refresh, recovery after a token-endpoint 503, omitted refresh tokens, upstream 401 retry
+and rejected-refresh status, then checks env/configs, conversation and event log for either token
 prefix. The seed API shows all three OAuth states. This change requires a new container image
 for the extended MCP probe. Deployment/e2e and the owner's real Linear sign-in on `track` remain
 pending; local checks and release bundling do not prove them.
@@ -331,6 +338,9 @@ pending; local checks and release bundling do not prove them.
 ## API the UI needs
 
 The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{message,code?,hint?}}`.
+For API methods other than GET/HEAD and for terminal requests, a present `Origin` must equal
+`https://<host>` or the Worker returns 403. Requests without Origin, including CLI requests, are
+accepted; `/hooks/*` keeps its sender-signature checks.
 
 The conversation snapshot includes top-level `currentTurn`, the authoritative turn identity for steer and interrupt writes. `turns[].id` remains the stable message identity.
 

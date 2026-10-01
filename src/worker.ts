@@ -166,11 +166,17 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
         }
         const url = new URL(request.url, "https://scotty.internal");
         const terminal = terminalPath.exec(url.pathname)?.[1];
-        if (terminal !== undefined) {
-          // A page on another site can't open a shell with the owner's Access cookie.
+        if (
+          terminal !== undefined ||
+          (url.pathname.startsWith("/api/") &&
+            request.method !== "GET" &&
+            request.method !== "HEAD")
+        ) {
           const origin = request.headers["origin"];
           if (origin !== undefined && origin !== `https://${host}`)
             return HttpServerResponse.text("Forbidden", { status: 403 });
+        }
+        if (terminal !== undefined) {
           return yield* sessions.getByName(terminal).fetch(request).pipe(Effect.orDie);
         }
         if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/hooks/"))

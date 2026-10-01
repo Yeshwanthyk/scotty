@@ -2,6 +2,8 @@ import {
   auth,
   checkResourceAllowed,
   extractWWWAuthenticateParams,
+  OAuthError,
+  OAuthErrorCode,
   refreshAuthorization,
   type OAuthClientProvider,
 } from "@modelcontextprotocol/client";
@@ -65,11 +67,17 @@ const SignedIn = Schema.Struct({
   expiresAt: Schema.Number,
 });
 export const StoredMcpOAuth = Schema.Union([Pending, SignedIn]);
-export type StoredMcpOAuth = typeof StoredMcpOAuth.Type;
+type StoredMcpOAuth = typeof StoredMcpOAuth.Type;
 class McpOAuthFailure extends Schema.TaggedError<McpOAuthFailure>()("McpOAuthFailure", {}) {}
+class McpRefreshFailure extends Schema.TaggedError<McpRefreshFailure>()("McpRefreshFailure", {
+  kind: Schema.Literals(["rejected", "unavailable"]),
+}) {}
 
 // The SDK's fetch hook is a host boundary. Refuse redirects before credentials can cross hosts.
 const oauthFetch: typeof fetch = async (input, init) => {
+  Schema.decodeUnknownSync(ConnectionUrl)(
+    typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+  );
   const response = await fetch(input, { ...init, redirect: "manual" });
   if (response.status >= 300 && response.status < 400) throw new McpOAuthFailure({});
   return response;
@@ -202,19 +210,38 @@ export const authorizeMcp = (
   });
 
 export const refreshMcp = (stored: typeof SignedIn.Type) =>
-  Effect.tryPromise({
-    try: async () => {
-      if (stored.tokens.refresh_token === undefined) throw new McpOAuthFailure({});
-      const tokens = Schema.decodeUnknownSync(Tokens)(
-        await refreshAuthorization(stored.discovery.authorizationServerUrl, {
-          metadata: stored.discovery.authorizationServerMetadata,
-          clientInformation: stored.client,
-          refreshToken: stored.tokens.refresh_token,
-          resource: new URL(stored.resource),
-          fetchFn: oauthFetch,
+  Effect.gen(function* () {
+    const refreshToken = stored.tokens.refresh_token;
+    if (refreshToken === undefined) return yield* new McpRefreshFailure({ kind: "unavailable" });
+    let status: number | undefined;
+    const tokens = yield* Effect.tryPromise({
+      try: async () =>
+        Schema.decodeUnknownSync(Tokens)(
+          await refreshAuthorization(stored.discovery.authorizationServerUrl, {
+            metadata: stored.discovery.authorizationServerMetadata,
+            clientInformation: stored.client,
+            refreshToken,
+            resource: new URL(stored.resource),
+            fetchFn: async (input, init) => {
+              const response = await oauthFetch(input, init);
+              status = response.status;
+              return response;
+            },
+          }),
+        ),
+      catch: (error) =>
+        new McpRefreshFailure({
+          kind:
+            (error instanceof OAuthError && error.code === OAuthErrorCode.InvalidGrant) ||
+            status === 400 ||
+            status === 401
+              ? "rejected"
+              : "unavailable",
         }),
-      );
-      return { ...stored, tokens, expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000 };
-    },
-    catch: () => new McpOAuthFailure({}),
+    });
+    return {
+      ...stored,
+      tokens: { ...tokens, refresh_token: tokens.refresh_token ?? refreshToken },
+      expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+    };
   });

@@ -5,11 +5,10 @@ agent. Do not deploy or run this recipe on `main`. The normal Worker has no test
 
 ## Setup
 
-The test stage's Scotty config must explicitly include the separate Worker name and host:
+The test stage's Scotty config must explicitly include the fixture host:
 
 ```json
 "mcpOAuthTest": {
-  "name": "scotty-track-mcp-oauth-test",
   "host": "mcp-oauth-test.scotty-agent.com"
 }
 ```
@@ -17,7 +16,8 @@ The test stage's Scotty config must explicitly include the separate Worker name 
 Use the existing account, zone and stage fields. The deployer uploads the release's separate
 `mcp-oauth-test` bundle, its test DO and custom domain only when this field is present. The fixture
 is public, auto-approves test clients and issues disposable tokens; never point a real service at
-it. Its redirect is restricted to the configured Scotty host. Teardown removes it by the same name.
+it. Its redirect is restricted to the configured Scotty host. The Worker name is always
+`scotty-<stage>-mcp-test`; teardown removes only that fixture name and skips it on `main`.
 Keep this config until teardown if retiring the test Worker.
 
 ## Drive
@@ -32,7 +32,10 @@ Keep this config until teardown if retiring the test Worker.
    a write returns a JSON-RPC error and the fixture's write count stays zero. Two concurrent
    reads after the 70-second token expiry use the same refreshed generation. All policy allows
    a write; named policy lists and allows only the named tool. An invalidated refresh grant
-   makes the proxy return 401 and metadata report `needs-sign-in`.
+   makes the proxy return 401 and metadata report `needs-sign-in`. A token-endpoint 503 leaves
+   metadata signed in and the next request refreshes successfully. A non-rotating provider omits
+   the refresh token and a later refresh still succeeds. An upstream 401 refreshes and retries
+   once. Incorrectly cased tools methods return a JSON-RPC error, including under all policy.
 4. The e2e reads container env/configs, the raw conversation and event log. None may contain
    either test token prefix. Save a failing session's log under `e2e/logs/` before fixing a
    deployed failure; never save Access headers, authorization codes or token endpoint replies.
@@ -53,8 +56,10 @@ Keep this config until teardown if retiring the test Worker.
   OAuth errors are deliberately generic to keep upstream credential-bearing text out of logs.
 - Callback 400 means malformed query, unknown, reused or expired state. Start Connect again;
   state expires after ten minutes. A code is redeemed once, including after a lost reply.
-- Proxy 401 with `needs-sign-in` means refresh failed or the server rejected the current token.
-  Reconnect. A lost rotating-refresh reply also needs sign-in; Scotty does not retry the old grant.
+- Proxy 401 with `needs-sign-in` means the token endpoint rejected the grant (`invalid_grant`
+  or HTTP 400/401). Reconnect. Other refresh failures preserve the grant and the next request
+  tries again. If a rotating provider consumed the grant before a lost reply, that retry can
+  reject it and require sign-in.
 - Proxy 502 means the server's tools could not be verified. Read-only uses explicit
   `readOnlyHint: true`; missing hints are denied. Read-only calls fetch the current server list,
   including pagination, using the caller's MCP session headers. Named/all policy is explicit.

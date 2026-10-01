@@ -64,6 +64,9 @@ export class McpTestObject extends Cloudflare.DurableObject<McpTestObject>()(
       yield* sql`CREATE TABLE IF NOT EXISTS clients (id TEXT PRIMARY KEY, redirect TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, client TEXT NOT NULL, redirect TEXT NOT NULL, challenge TEXT NOT NULL, resource TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS tokens (access TEXT PRIMARY KEY, refresh TEXT UNIQUE NOT NULL, client TEXT NOT NULL, resource TEXT NOT NULL, generation INTEGER NOT NULL, expires INTEGER NOT NULL, writes INTEGER NOT NULL)`;
+      const unavailable = new Set<string>();
+      const nonRotating = new Set<string>();
+      const unauthorized = new Map<string, number>();
       return {
         fetch: (request: HttpServerRequest.HttpServerRequest) =>
           Effect.gen(function* () {
@@ -143,6 +146,7 @@ export class McpTestObject extends Cloudflare.DurableObject<McpTestObject>()(
               );
               let generation = 1;
               let writes = 0;
+              let refresh = `mcp-oauth-refresh-${nonce()}`;
               if (grant.grant_type === "authorization_code") {
                 const row =
                   (yield* sql`DELETE FROM codes WHERE code = ${grant.code} RETURNING client, redirect, challenge, resource`)[0];
@@ -167,6 +171,8 @@ export class McpTestObject extends Cloudflare.DurableObject<McpTestObject>()(
                     { status: 400 },
                   );
               } else {
+                if (unavailable.delete(grant.client_id))
+                  return yield* HttpServerResponse.json({ error: "server_error" }, { status: 503 });
                 const row =
                   (yield* sql`DELETE FROM tokens WHERE refresh = ${grant.refresh_token} AND client = ${grant.client_id} AND resource = ${grant.resource} RETURNING client, resource, generation, expires, writes`)[0];
                 const old =
@@ -178,16 +184,31 @@ export class McpTestObject extends Cloudflare.DurableObject<McpTestObject>()(
                   );
                 generation = old.generation + 1;
                 writes = old.writes;
+                if (nonRotating.has(grant.client_id)) refresh = grant.refresh_token;
               }
               const access = `mcp-oauth-access-${nonce()}`;
-              const refresh = `mcp-oauth-refresh-${nonce()}`;
               yield* sql`INSERT INTO tokens (access, refresh, client, resource, generation, expires, writes) VALUES (${access}, ${refresh}, ${grant.client_id}, ${grant.resource}, ${generation}, ${Date.now() + expirySeconds * 1000}, ${writes})`;
               return yield* HttpServerResponse.json({
                 access_token: access,
-                refresh_token: refresh,
+                ...(grant.grant_type === "refresh_token" && nonRotating.has(grant.client_id)
+                  ? {}
+                  : { refresh_token: refresh }),
                 token_type: "Bearer",
                 expires_in: expirySeconds,
               });
+            }
+            if (url.pathname === "/configure" && request.method === "POST") {
+              const { client, mode } = yield* Schema.decodeUnknownEffect(
+                Schema.Struct({
+                  client: Schema.String,
+                  mode: Schema.Literals(["unavailable", "non-rotating", "unauthorized"]),
+                }),
+              )(yield* request.json);
+              if (mode === "unavailable") unavailable.add(client);
+              if (mode === "non-rotating") nonRotating.add(client);
+              if (mode === "unauthorized")
+                yield* sql`UPDATE tokens SET expires = 0 WHERE client = ${client}`;
+              return HttpServerResponse.empty();
             }
             if (url.pathname === "/invalidate" && request.method === "POST") {
               const { client } = yield* Schema.decodeUnknownEffect(
@@ -202,6 +223,8 @@ export class McpTestObject extends Cloudflare.DurableObject<McpTestObject>()(
                 (yield* sql`SELECT client, resource, generation, expires, writes FROM tokens WHERE access = ${token}`)[0];
               const credential =
                 row === undefined ? null : yield* Schema.decodeUnknownEffect(TokenRow)(row);
+              if (credential?.expires === 0)
+                unauthorized.set(credential.client, (unauthorized.get(credential.client) ?? 0) + 1);
               if (credential === null || credential.expires <= Date.now())
                 return HttpServerResponse.empty({
                   status: 401,
@@ -211,6 +234,14 @@ export class McpTestObject extends Cloudflare.DurableObject<McpTestObject>()(
                 });
               if (request.method !== "POST") return HttpServerResponse.empty({ status: 405 });
               const rpc = yield* Schema.decodeUnknownEffect(Rpc)(yield* request.json);
+              if (
+                request.headers["mcp-method"] !== rpc.method ||
+                (rpc.method === "tools/list" && request.headers["mcp-name"] !== undefined)
+              )
+                return yield* HttpServerResponse.json(
+                  { error: "invalid_request" },
+                  { status: 400 },
+                );
               if (rpc.id === undefined) return HttpServerResponse.empty({ status: 202 });
               let result: unknown;
               if (rpc.method === "initialize")
@@ -236,7 +267,7 @@ export class McpTestObject extends Cloudflare.DurableObject<McpTestObject>()(
                     },
                   ],
                 };
-              else if (rpc.method === "tools/call") {
+              else if (rpc.method.toLowerCase() === "tools/call") {
                 const params = yield* Schema.decodeUnknownEffect(ToolCall)(rpc.params);
                 if (params.name === "write")
                   yield* sql`UPDATE tokens SET writes = writes + 1 WHERE access = ${token}`;
@@ -247,6 +278,7 @@ export class McpTestObject extends Cloudflare.DurableObject<McpTestObject>()(
                       text: JSON.stringify({
                         generation: credential.generation,
                         writes: credential.writes + (params.name === "write" ? 1 : 0),
+                        unauthorized: unauthorized.get(credential.client) ?? 0,
                       }),
                     },
                   ],

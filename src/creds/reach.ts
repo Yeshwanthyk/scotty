@@ -33,12 +33,6 @@ const Rpc = Schema.Union([
     rest,
   ),
 ]);
-const Request = Schema.Struct({
-  jsonrpc: Schema.Literal("2.0"),
-  id: Schema.optionalKey(Id),
-  method: Schema.String,
-  params: Schema.optionalKey(Schema.Unknown),
-});
 const CallParams = Schema.Struct({ name: Schema.String });
 const Tools = Schema.StructWithRest(
   Schema.Struct({
@@ -164,37 +158,41 @@ const readTools = async (response: Response, id: string) => {
     await reader.cancel();
   }
 };
-const readOnly = (target: URL, headers: Headers, name: string, signal: AbortSignal) =>
-  Effect.tryPromise({
-    try: async () => {
-      let cursor: string | undefined;
-      const seen = new Set<string>();
-      for (;;) {
-        const id = crypto.randomUUID();
-        const listHeaders = new Headers(headers);
-        listHeaders.set("Content-Type", "application/json");
-        listHeaders.set("Accept", "application/json, text/event-stream");
-        const response = await fetch(target, {
-          method: "POST",
-          headers: listHeaders,
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id,
-            method: "tools/list",
-            ...(cursor === undefined ? {} : { params: { cursor } }),
-          }),
-          signal,
-          redirect: "manual",
-        });
-        const list = await readTools(response, id);
-        const tool = list.tools.find((tool) => tool.name === name);
-        if (tool !== undefined) return tool.annotations?.readOnlyHint === true;
-        if (list.nextCursor === undefined || seen.has(list.nextCursor)) return false;
-        cursor = list.nextCursor;
-        seen.add(cursor);
-      }
-    },
-    catch: () => new McpProxyFailure({}),
+const readOnly = (
+  headers: Headers,
+  name: string,
+  send: (headers: Headers, body: BodyInit | null) => Effect.Effect<Response, McpProxyFailure>,
+) =>
+  Effect.gen(function* () {
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    for (;;) {
+      const id = crypto.randomUUID();
+      const listHeaders = new Headers(headers);
+      listHeaders.set("Content-Type", "application/json");
+      listHeaders.set("Accept", "application/json, text/event-stream");
+      listHeaders.set("Mcp-Method", "tools/list");
+      listHeaders.delete("Mcp-Name");
+      listHeaders.delete("content-length");
+      const response = yield* send(
+        listHeaders,
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/list",
+          ...(cursor === undefined ? {} : { params: { cursor } }),
+        }),
+      );
+      const list = yield* Effect.tryPromise({
+        try: () => readTools(response, id),
+        catch: () => new McpProxyFailure({}),
+      });
+      const tool = list.tools.find((tool) => tool.name === name);
+      if (tool !== undefined) return tool.annotations?.readOnlyHint === true;
+      if (list.nextCursor === undefined || seen.has(list.nextCursor)) return false;
+      cursor = list.nextCursor;
+      seen.add(cursor);
+    }
   });
 const filtered = (upstream: Response, policy: typeof ToolPolicy.Type) =>
   Effect.tryPromise({
@@ -275,34 +273,61 @@ export const reachHandler = (
     const [name = "authorization", scheme] = (
       config.kind === "token" ? config.header : "Authorization: Bearer"
     ).split(": ");
-    headers.set(name, scheme === undefined ? credential.secret : `${scheme} ${credential.secret}`);
+    let secret = credential.secret;
+    let refreshed = false;
+    const send = (headers: Headers, body: BodyInit | null) =>
+      Effect.gen(function* () {
+        headers.set(name, scheme === undefined ? secret : `${scheme} ${secret}`);
+        const call = Effect.tryPromise(() =>
+          fetch(target, {
+            method: request.method,
+            headers,
+            body,
+            signal: raw.signal,
+            redirect: "manual",
+          }),
+        );
+        const response = yield* call;
+        if (
+          config.kind !== "mcp" ||
+          response.status !== 401 ||
+          refreshed ||
+          credential.generation === null
+        )
+          return response;
+        refreshed = true;
+        const token = yield* credentials
+          .getByName("owner")
+          .mcpUnauthorized(connection, secret, credential.generation);
+        if (token === null) return response;
+        yield* Effect.tryPromise(() => response.body?.cancel() ?? Promise.resolve());
+        secret = token;
+        headers.set(name, `Bearer ${secret}`);
+        return yield* call;
+      }).pipe(Effect.mapError(() => new McpProxyFailure({})));
     let body: BodyInit | null = raw.body;
-    if (config.kind === "mcp" && config.policy.kind !== "all" && request.method === "POST") {
+    if (config.kind === "mcp" && request.method === "POST") {
       const text = yield* Effect.tryPromise(() => raw.text());
-      const rpc = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Request))(text);
+      const rpc = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Rpc))(text);
       body = text;
-      if (rpc.method === "tools/call") {
+      if (
+        typeof rpc.method === "string" &&
+        rpc.method.toLowerCase().startsWith("tools/") &&
+        rpc.method !== rpc.method.toLowerCase()
+      )
+        return yield* refused(rpc.id ?? null, "MCP methods are case-sensitive");
+      if (rpc.method === "tools/call" && config.policy.kind !== "all") {
         const params = yield* Schema.decodeUnknownEffect(CallParams)(rpc.params);
         const permits =
           config.policy.kind === "named"
             ? config.policy.tools.includes(params.name)
-            : yield* readOnly(target, headers, params.name, raw.signal);
+            : yield* readOnly(headers, params.name, send);
         if (!permits)
           return yield* refused(rpc.id ?? null, "Tool is outside this connection's policy");
       }
       headers.delete("content-length");
     }
-    const response = yield* Effect.tryPromise(() =>
-      fetch(target, {
-        method: request.method,
-        headers,
-        body,
-        signal: raw.signal,
-        redirect: "manual",
-      }),
-    );
-    if (config.kind === "mcp" && response.status === 401)
-      yield* credentials.getByName("owner").mcpUnauthorized(connection, credential.secret);
+    const response = yield* send(headers, body);
     const upstream = config.kind === "mcp" ? yield* filtered(response, config.policy) : response;
     const responseHeaders = new Headers(upstream.headers);
     for (const name of (responseHeaders.get("connection") ?? "").split(","))

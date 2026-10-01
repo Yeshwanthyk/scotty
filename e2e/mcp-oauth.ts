@@ -33,6 +33,7 @@ const ToolList = Schema.Struct({
 const Reading = Schema.Struct({
   generation: Schema.Number,
   writes: Schema.Number,
+  unauthorized: Schema.Number,
 });
 const ReadResult = Schema.Struct({
   result: Schema.Struct({
@@ -55,6 +56,8 @@ const script = (method: string, tool?: string, sse = false) =>
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
+      "Mcp-Method": method,
+      ...(tool === undefined ? {} : { "Mcp-Name": tool }),
       ...(sse ? { "X-Test-Sse": "yes" } : {}),
     },
     body: JSON.stringify({
@@ -82,10 +85,7 @@ const program = Effect.gen(function* () {
   if (real) return yield* check(false, "This recipe uses the scripted agent; omit --real");
   const config = yield* readConfig;
   if (config?.mcpOAuthTest === undefined || config.stage === "main")
-    return yield* check(
-      false,
-      "Configure mcpOAuthTest with an explicit test Worker name and host on a test stage",
-    );
+    return yield* check(false, "Configure mcpOAuthTest with an explicit host on a test stage");
   const url = yield* target(process.env.SCOTTY_URL);
   yield* check(
     new URL(url).host === config.host,
@@ -124,6 +124,17 @@ const program = Effect.gen(function* () {
     const clientId = yield* Schema.decodeUnknownEffect(Schema.String)(
       authorization.searchParams.get("client_id"),
     );
+    const configure = (mode: "unavailable" | "non-rotating" | "unauthorized") =>
+      Effect.gen(function* () {
+        const response = yield* Effect.tryPromise(() =>
+          fetch(`${server}/configure`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ client: clientId, mode }),
+          }),
+        );
+        yield* check(response.ok, "Could not configure the test token endpoint");
+      });
     yield* check(
       authorization.origin === server &&
         authorization.searchParams.get("resource") === `${server}/mcp` &&
@@ -218,6 +229,11 @@ const program = Effect.gen(function* () {
     yield* listed(yield* steer(script("tools/list", undefined, true)));
     const before = yield* read(yield* steer(script("tools/call", "read", true)));
     yield* check(before.writes === 0, "Unexpected upstream write");
+    for (const method of ["TOOLS/call", "tools/List"])
+      yield* decode(
+        Refused,
+        yield* steer(script(method, method === "TOOLS/call" ? "write" : undefined)),
+      );
     const blocked = yield* decode(Refused, yield* steer(script("tools/call", "write")));
     yield* check(blocked.message.error.code < 0, "Blocked call was not a JSON-RPC error");
     yield* check(
@@ -231,7 +247,7 @@ const program = Effect.gen(function* () {
       method: "tools/call",
       params: { name: "read", arguments: {} },
     });
-    const parallel = `const result = await Promise.all([1, 2].map(async () => (await fetch(${JSON.stringify(`http://${name}.internal/api/mcp`)}, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json, text/event-stream"}, body: ${JSON.stringify(callBody)}})).json())); console.log(JSON.stringify(result));`;
+    const parallel = `const result = await Promise.all([1, 2].map(async () => (await fetch(${JSON.stringify(`http://${name}.internal/api/mcp`)}, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json, text/event-stream", "Mcp-Method": "tools/call", "Mcp-Name": "read"}, body: ${JSON.stringify(callBody)}})).json())); console.log(JSON.stringify(result));`;
     const refreshed = yield* decode(
       Schema.Array(ReadResult),
       yield* steer(`sleep 71\nrun bun -e '${parallel}'\nsay {{out}}`),
@@ -244,6 +260,25 @@ const program = Effect.gen(function* () {
         generations[0] === generations[1],
       "Expired token was not replaced by one shared refresh",
     );
+    yield* configure("non-rotating");
+    yield* configure("unavailable");
+    yield* decode(
+      Schema.Struct({ status: Schema.Literal(401) }),
+      yield* steer(`sleep 11\n${script("tools/call", "read")}`),
+    );
+    yield* check(
+      (yield* request("/api/connections", Connections)).connections.some(
+        (item) => item.name === name && item.kind === "mcp" && item.signIn === "signed-in",
+      ),
+      "Transient refresh failure discarded the sign-in",
+    );
+    const recovered = yield* read(yield* steer(script("tools/call", "read")));
+    yield* check(recovered.generation > (generations[0] ?? 0), "Refresh did not retry after 503");
+    const reused = yield* read(yield* steer(`sleep 11\n${script("tools/call", "read")}`));
+    yield* check(
+      reused.generation > recovered.generation,
+      "Omitted refresh token was not retained",
+    );
     const policy = (value: typeof ToolPolicy.Type) =>
       request(
         `/api/connections/${name}/policy`,
@@ -251,9 +286,16 @@ const program = Effect.gen(function* () {
         { method: "PUT", body: value },
       );
     yield* policy({ kind: "all" });
+    yield* decode(Refused, yield* steer(script("TOOLS/call", "write")));
     yield* check(
       (yield* read(yield* steer(script("tools/call", "write")))).writes === 1,
       "All policy refused a write",
+    );
+    yield* configure("unauthorized");
+    const retried = yield* read(yield* steer(script("tools/call", "read")));
+    yield* check(
+      retried.generation > reused.generation && retried.unauthorized === 1,
+      "Upstream 401 was not refreshed and retried once",
     );
     yield* policy({ kind: "named", tools: ["read"] });
     yield* listed(yield* steer(script("tools/list", undefined, true)));
@@ -290,7 +332,7 @@ const program = Effect.gen(function* () {
     );
     yield* noTokens(status);
     console.log(
-      `MCP OAuth (${agent}): PKCE, single-use state, JSON/SSE policy, blocked writes, shared refresh and secret isolation passed`,
+      `MCP OAuth (${agent}): PKCE, single-use state, JSON/SSE policy, method casing, shared refresh, transient recovery, non-rotating grants, 401 retry and secret isolation passed`,
     );
   }).pipe(Effect.ensuring(cleanup));
 });
