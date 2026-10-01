@@ -121,7 +121,16 @@ function mismatch(filter: Filter, payload: unknown): string | undefined {
 export function parseFilter(fields: Readonly<Record<string, string>>): Filter {
   return Object.fromEntries<Filter[string]>(
     Object.entries(fields).map(([path, text]): [string, Filter[string]] => {
-      if (text.startsWith("~")) return [path, { kind: "contains", value: text.slice(1) }];
+      if (text.startsWith("~")) {
+        const value = text.slice(1);
+        const literal = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.String))(value);
+        return [
+          path,
+          { kind: "contains", value: Result.isSuccess(literal) ? literal.success : value },
+        ];
+      }
+      const literal = Schema.decodeUnknownResult(Schema.fromJsonString(Match))(text);
+      if (Result.isSuccess(literal)) return [path, literal.success];
       const values = text.split(",");
       return [path, values.length === 1 ? text : values];
     }),

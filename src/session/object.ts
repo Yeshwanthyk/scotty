@@ -432,23 +432,35 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 "unknown",
             };
           }),
-        stop: (req?: string) =>
+        stop: (req?: string, target?: { repo: string; agent: typeof AgentKind.Type }) =>
           Effect.gen(function* () {
+            const answer = (kind: "ended" | "pending" | "conflict") => ({
+              kind,
+              version: 1,
+              session: sessionView(id(), log.state),
+            });
+            const created = log.state.created;
+            if (created === undefined || log.state.gen === undefined) return answer("pending");
+            if (
+              target !== undefined &&
+              (created.repo !== target.repo || created.agentKind !== target.agent)
+            )
+              return answer("conflict");
             const duplicate =
               req !== undefined &&
               log.history.some((event) => event.kind === "container.stopped" && event.req === req);
-            if (!duplicate && log.state.gen !== undefined)
-              yield* dispatch(
-                yield* append(
-                  {
-                    kind: "container.stopped",
-                    gen: log.state.gen,
-                    ...(req === undefined ? {} : { req }),
-                  },
-                  "api",
-                ),
-              );
-            return { version: 1, session: sessionView(id(), log.state) };
+            if (duplicate) return answer("ended");
+            yield* dispatch(
+              yield* append(
+                {
+                  kind: "container.stopped",
+                  gen: log.state.gen,
+                  ...(req === undefined ? {} : { req }),
+                },
+                "api",
+              ),
+            );
+            return answer(live(log.state) ? "pending" : "ended");
           }),
         resume: () =>
           Effect.gen(function* () {

@@ -50,11 +50,7 @@ export function startSession(
       agentKind: input.agent,
     };
     // Automations already resolved their target; a made session needs no repository lookup.
-    const keyed =
-      input.id ??
-      (input.origin?.kind === "automation" || input.key === undefined
-        ? null
-        : yield* credential.keyed(input.key));
+    const keyed = input.id ?? (yield* credential.resolveSession(input.retry, input.key ?? null));
     if (keyed !== null) {
       const answer = yield* sessions.getByName(keyed).start(request);
       if (answer.kind !== "uncreated") return { ...answer, id: keyed };

@@ -28,10 +28,18 @@ export function fireRun(
       };
     const outcome = yield* Effect.gen(function* () {
       if (run.action === "end") {
-        const stopped = yield* sessions.getByName(run.session).stop(runRequest(id));
-        return stopped.session.identity.id === ""
-          ? { status: "skipped" as const, reason: "no_session" }
-          : { status: "ended" as const, session: run.session };
+        const stopped = yield* sessions
+          .getByName(run.session)
+          .stop(runRequest(id), { repo: run.repo, agent: run.agent });
+        return stopped.kind === "pending"
+          ? { status: "received" as const, session: run.session }
+          : stopped.kind === "conflict"
+            ? {
+                status: "failed" as const,
+                reason: "key or retry id used by another repo, agent or prompt",
+                session: run.session,
+              }
+            : { status: "ended" as const, session: run.session };
       }
       const key = run.key === null ? {} : { key: run.key };
       const started =
@@ -85,6 +93,7 @@ export function fireRun(
                 : { status: "failed", reason: "session not taking prompts", session: started.id };
       return answer;
     });
+    if (outcome.status === "received") return { ...outcome, reason: undefined };
     const settled = yield* credential.settleRun(id, outcome);
     return settled === null
       ? null
@@ -142,15 +151,18 @@ export function automationDelivery(
       outcome: fresh ? "accepted" : "duplicate",
       ...(session === null ? {} : { session }),
     });
-    return yield* HttpServerResponse.json({
-      status: fresh ? "accepted" : "duplicate",
-      runs: answered.map((run) => ({
-        id: run.id,
-        automation: run.automation,
-        status: run.status,
-        reason: run.reason,
-        session: run.session,
-      })),
-    });
+    return yield* HttpServerResponse.json(
+      {
+        status: fresh ? "accepted" : "duplicate",
+        runs: answered.map((run) => ({
+          id: run.id,
+          automation: run.automation,
+          status: run.status,
+          reason: run.reason,
+          session: run.session,
+        })),
+      },
+      { status: answered.some((run) => run.status === "received") ? 503 : 200 },
+    );
   });
 }

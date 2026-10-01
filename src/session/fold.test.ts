@@ -370,6 +370,30 @@ describe("session fold", () => {
     check(late);
   });
 
+  it("records a stop on a failed session without making it resumable or taking prompts", () => {
+    const failed = fold(
+      boot(),
+      make(6, "failed", { phase: "agent", code: "agent_exited", retryable: true }),
+    );
+    const old = make(7, "container.stopped", { gen: 0, req: "old-end" });
+    const ignored = fold(failed, old);
+    expect(ignored.stopSeq).toBe(failed.stopSeq);
+    expect(command(ignored, old)).toBeUndefined();
+    const stopped = make(8, "container.stopped", { gen: 1, req: "end" });
+    const state = fold(ignored, stopped);
+    expect(state).toEqual({ ...failed, lastSeq: 8, stopSeq: 8 });
+    expect(command(state, stopped)).toEqual({ kind: "destroy" });
+    const resumed = fold(state, make(9, "resume.requested"));
+    expect(resumed).toEqual({ ...state, lastSeq: 9 });
+    const prompted = fold(
+      resumed,
+      make(10, "prompt.requested", { req: "new", turn: state.currentTurn, text: "hi", images: [] }),
+    );
+    expect(prompted.phase).toBe("failed");
+    expect(prompted.requests.find((request) => request.req === "new")?.status).toBe("stale");
+    check(prompted);
+  });
+
   it("records when a session went to sleep and clears it on resume", () => {
     const stopped = make(6, "container.stopped", { gen: 1 });
     let state = fold(boot(), stopped);

@@ -302,7 +302,7 @@ const filterDraft = (filter: Filter) =>
   Object.entries(filter)
     .map(
       ([field, value]) =>
-        `${field}=${typeof value === "string" ? value : "kind" in value ? `~${value.value}` : value.join(",")}`,
+        `${field}=${typeof value === "string" || !("kind" in value) ? JSON.stringify(value) : `~${JSON.stringify(value.value)}`}`,
     )
     .join("\n");
 
@@ -485,7 +485,7 @@ function Editor({
         </label>
       )}
       <label>
-        Only when (field=value; commas for any of; ~text for contains)
+        Only when (field=value; commas for any of; ~text for contains; quotes for literal text)
         <textarea
           className="field settings-text automation-only"
           placeholder="action=created,reopened"

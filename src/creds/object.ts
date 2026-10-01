@@ -38,6 +38,7 @@ const DeviceRow = Schema.Struct({
   expires_at: Schema.Number,
 });
 const SessionRow = Schema.Struct({ id: Schema.String });
+const RequestSession = Schema.Struct({ id: Schema.NullOr(Schema.String) });
 const SessionId = Schema.String.check(Schema.isPattern(/^[a-z0-9-]{6,32}$/));
 const GitHubRow = Schema.Struct({
   token: Schema.String,
@@ -168,8 +169,9 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS github (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, login TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS claude (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS skills (name TEXT PRIMARY KEY, description TEXT NOT NULL, enabled INTEGER NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, updated INTEGER NOT NULL)`;
-      yield* sql`CREATE TABLE IF NOT EXISTS session_index (req TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS session_index (id TEXT PRIMARY KEY)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS request_sessions (req TEXT PRIMARY KEY, id TEXT)`;
       // What a search matches (`searchText`). Sessions made before it have no row: they are
       // listed but never found.
       yield* sql`CREATE TABLE IF NOT EXISTS session_search (id TEXT PRIMARY KEY, text TEXT NOT NULL)`;
@@ -237,14 +239,21 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           return { ...run, fresh: inserted.length > 0 };
         });
 
-      // The session the first of these rows names; the rows were just written, so there is one.
-      const sessionOf = (rows: ReadonlyArray<unknown>) =>
-        Schema.decodeUnknownEffect(SessionRow)(rows[0]).pipe(Effect.map((row) => row.id));
-
       const keyed = (key: string | null) =>
         Effect.gen(function* () {
           const row = (yield* sql`SELECT id FROM session_keys WHERE key = ${key}`)[0];
           return row === undefined ? null : (yield* Schema.decodeUnknownEffect(SessionRow)(row)).id;
+        });
+
+      // Request targets outlive both routing keys and the bounded run history.
+      const resolveSession = (req: string, key: string | null) =>
+        Effect.gen(function* () {
+          const row = (yield* sql`SELECT id FROM request_sessions WHERE req = ${req}`)[0];
+          if (row !== undefined) return (yield* Schema.decodeUnknownEffect(RequestSession)(row)).id;
+          const id = yield* keyed(key);
+          if (id !== null)
+            yield* sql`INSERT INTO request_sessions (req, id) VALUES (${req}, ${id})`;
+          return id;
         });
 
       return {
@@ -262,39 +271,23 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           run?: string;
         }) =>
           Effect.gen(function* () {
-            if (input.run !== undefined) {
-              const pinned =
-                (yield* sql`SELECT session AS id FROM runs WHERE id = ${input.run} AND session IS NOT NULL`)[0];
-              if (pinned !== undefined)
-                return (yield* Schema.decodeUnknownEffect(SessionRow)(pinned)).id;
+            let id = yield* resolveSession(input.req, input.key ?? null);
+            if (id === null) {
+              id = yield* Schema.decodeUnknownEffect(SessionId)(input.id);
+              if (input.key !== undefined)
+                yield* sql`INSERT INTO session_keys (key, id) VALUES (${input.key}, ${id})`;
+              yield* sql`INSERT INTO request_sessions (req, id) VALUES (${input.req}, ${id})`;
             }
-            const fresh = yield* Schema.decodeUnknownEffect(SessionId)(input.id);
-            const req =
-              input.key === undefined
-                ? yield* Schema.decodeUnknownEffect(Schema.String.check(Schema.isMinLength(1)))(
-                    input.req,
-                  )
-                : `key:${input.key}`;
-            if (input.key !== undefined)
-              yield* sql`INSERT OR IGNORE INTO session_keys (key, id) VALUES (${input.key}, ${fresh})`;
-            const reserved =
-              input.key === undefined
-                ? fresh
-                : yield* sessionOf(
-                    yield* sql`SELECT id FROM session_keys WHERE key = ${input.key}`,
-                  );
-            yield* sql`INSERT OR IGNORE INTO session_index (req, id) VALUES (${req}, ${reserved})`;
-            const id = yield* sessionOf(
-              yield* sql`SELECT id FROM session_index WHERE req = ${req}`,
-            );
+            yield* sql`INSERT OR IGNORE INTO session_index (id) VALUES (${id})`;
             const text = searchText({ ...input, branch: `scotty/${id}` });
             yield* sql`INSERT OR IGNORE INTO session_search (id, text) VALUES (${id}, ${text})`;
             if (input.run !== undefined)
               yield* sql`UPDATE runs SET session = ${id} WHERE id = ${input.run} AND status = 'received'`;
             return id;
           }).pipe(sql.withTransaction),
-        // The session a key names, if any; it may not be made yet.
-        keyed,
+        // A retry keeps its target even after the key is released; it may not be made yet.
+        resolveSession: (req: string, key: string | null) =>
+          resolveSession(req, key).pipe(sql.withTransaction),
         // Sessions whose search text holds the query, any case.
         search: (query: string) =>
           Effect.gen(function* () {
@@ -537,7 +530,10 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                   (yield* sql`UPDATE runs SET tried = ${Date.now()} WHERE id = ${id} AND status = 'received' RETURNING automation, repo, agent, prompt, key, branch, action, session, scripted`)[0];
                 if (row !== undefined) {
                   const run = yield* Schema.decodeUnknownEffect(FireRow)(row);
-                  const session = run.session ?? (yield* keyed(run.key));
+                  const req = `run:${id}`;
+                  const session = run.session ?? (yield* resolveSession(req, run.key));
+                  if (run.action !== "start")
+                    yield* sql`INSERT OR IGNORE INTO request_sessions (req, id) VALUES (${req}, ${session})`;
                   const target =
                     run.action === "start"
                       ? { action: run.action, session }
@@ -592,7 +588,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 const answer = yield* Schema.decodeUnknownEffect(SettledRun)(row);
                 if (answer.status === "ended") {
                   yield* sql`DELETE FROM session_keys WHERE key = ${answer.key} AND id = ${answer.session}`;
-                  yield* sql`UPDATE session_index SET req = ${`released:${answer.session}`} WHERE req = ${`key:${answer.key}`} AND id = ${answer.session}`;
                 }
                 return { status: answer.status, reason: answer.reason, session: answer.session };
               }),

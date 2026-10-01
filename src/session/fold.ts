@@ -343,7 +343,12 @@ export function fold(state: State, event: SessionEvent): State {
     case "resume.requested":
       return state.phase === "stopped" ? resume({ ...next, activeAt: event.at }, event.at) : next;
     case "container.stopped":
-      return event.gen === state.gen && live(state) ? endAll(next, "stopped", event.at) : next;
+      if (event.gen !== state.gen) return next;
+      return live(state)
+        ? endAll(next, "stopped", event.at)
+        : state.phase === "failed"
+          ? { ...next, stopSeq: event.seq }
+          : next;
     case "failed":
       return endAll(
         {

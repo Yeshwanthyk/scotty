@@ -47,13 +47,18 @@ firing is a run: skipped (and why), started, steered, ended or failed. Prompt ru
 5. `automation run triage`: skipped (no payload matches); `automation run digest`: started (A5).
 6. Open Automations in the UI (A6). Clean up: `automation rm digest`, `automation rm triage`,
    `rm connection demo`.
-7. Run `npm run --silent e2e -- automations` against `track` after its automation runs table reset and
-   an image rebuild containing the fixture's `automation-base` branch (A7–A10). It signs its
-   own deliveries, checks the branch's different commit, filters, key release and owner resume.
+7. Run `npm run --silent e2e -- automations` against `track` after an image rebuild containing
+   the fixture's `automation-base` branch (A7–A10). It signs its own deliveries, checks the
+   branch's different commit, filters, key release and owner resume. It sends the end request
+   id directly through `/api/sessions/:id/stop` with `Idempotency-Key` after resume to prove DO
+   dedupe, refuses an end for a different repo, and replays old starts and ends after run pruning.
 8. In the editor or CLI, try `--only 'issue.title=~issue' --except 'issue.title=~[skip]'`
    and `--branch '{{issue.branch}}'` on an event automation. A title without `issue`, one with
    `[skip]`, and an otherwise matched payload missing `issue.branch` each list a specific skip.
    The JSON API represents contains as `{kind: "contains", value: "issue"}` (A9–A10).
+9. Load and save an unchanged automation with equality `"~urgent"`, equality `"a,b"`, a
+   one-element one-of list and contains text with a newline. Read it back from the API: `only`
+   and `except` must be identical. The editor quotes literals and uses JSON arrays for one-of.
 
 ## Gotchas
 
@@ -63,6 +68,9 @@ firing is a run: skipped (and why), started, steered, ended or failed. Prompt ru
   run id (the start's retry key), then failed.
 - `runs` keeps the last 500 runs; the list shows 100.
 - Missing key fields skip before lookup; an omitted key on wake or end gives `no_session`.
+- An end for a reserved but uncreated session stays received and returns webhook 503 for retry;
+  it keeps the pinned target and key until the DO answers. A failed session counts as ended
+  after its stop is recorded, retaining its failure behavior.
 - `end` currently uses the ordinary stop path. Its `ended` stop reason waits for the owner's
   session-lifecycle merge; the run itself already says `ended`.
 

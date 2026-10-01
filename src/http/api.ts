@@ -484,8 +484,14 @@ export function apiHandler(
       const bytes = yield* object.bytes().pipe(Effect.orDie);
       return HttpServerResponse.uint8Array(bytes, { status, headers });
     }
-    if (request.method === "POST" && subpath === "stop")
-      return yield* HttpServerResponse.json(yield* stub.stop());
+    if (request.method === "POST" && subpath === "stop") {
+      const retry =
+        request.headers["idempotency-key"] === undefined
+          ? undefined
+          : yield* idempotencyKey(request.headers["idempotency-key"]);
+      if (retry !== undefined && HttpServerResponse.isHttpServerResponse(retry)) return retry;
+      return yield* HttpServerResponse.json(yield* stub.stop(retry));
+    }
     if (request.method === "POST" && subpath === "resume")
       return yield* HttpServerResponse.json(yield* stub.resume());
     if (request.method === "POST" && subpath === "steer") {
