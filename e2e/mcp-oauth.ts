@@ -250,7 +250,7 @@ const program = Effect.gen(function* () {
     const parallel = `const result = await Promise.all([1, 2].map(async () => (await fetch(${JSON.stringify(`http://${name}.internal/api/mcp`)}, {method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json, text/event-stream", "Mcp-Method": "tools/call", "Mcp-Name": "read"}, body: ${JSON.stringify(callBody)}})).json())); console.log(JSON.stringify(result));`;
     const refreshed = yield* decode(
       Schema.Array(ReadResult),
-      yield* steer(`sleep 71\nrun bun -e '${parallel}'\nsay {{out}}`),
+      yield* steer(`sleep 71\nrun node --input-type=module -e '${parallel}'\nsay {{out}}`),
     );
     const generations = refreshed.map((result) => result.result.content[0]?.text.generation);
     yield* check(

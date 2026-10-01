@@ -326,6 +326,8 @@ export const deployStage = (
         service: name.mcpTest,
         zoneId,
       }).pipe(Effect.retry(retry));
+      // The stage's wildcard route outranks a custom domain; a more specific route does not.
+      yield* ensureRoute(zoneId, `${test.host}/*`, name.mcpTest);
     }
 
     yield* say("Attaching the address");
@@ -359,18 +361,17 @@ export const deployStage = (
         proxied: true,
         ttl: 1,
       });
+    yield* ensureRoute(zoneId, name.route, name.script);
+  });
+
+const ensureRoute = (zoneId: string, pattern: string, script: string) =>
+  Effect.gen(function* () {
     const route = [...(yield* Workers.listRoutes.items({ zoneId }).pipe(Stream.runCollect))].find(
-      (candidate) => candidate.pattern === name.route,
+      (candidate) => candidate.pattern === pattern,
     );
-    if (route === undefined)
-      yield* Workers.createRoute({ zoneId, pattern: name.route, script: name.script });
-    else if (route.script !== name.script)
-      yield* Workers.updateRoute({
-        zoneId,
-        routeId: route.id,
-        pattern: name.route,
-        script: name.script,
-      });
+    if (route === undefined) yield* Workers.createRoute({ zoneId, pattern, script });
+    else if (route.script !== script)
+      yield* Workers.updateRoute({ zoneId, routeId: route.id, pattern, script });
   });
 
 type AccessApp = Parameters<typeof ZeroTrust.createAccessApplicationForAccount>[0];
@@ -430,7 +431,10 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
     for (const domain of domains)
       if (domain.id) yield* Workers.deleteDomain({ accountId, domainId: domain.id });
     for (const route of yield* Workers.listRoutes.items({ zoneId }).pipe(Stream.runCollect))
-      if (route.pattern === name.route && route.script === name.script)
+      if (
+        (route.pattern === name.route && route.script === name.script) ||
+        route.script === name.mcpTest
+      )
         yield* Workers.deleteRoute({ zoneId, routeId: route.id });
 
     if (config.mcpOAuthTest !== undefined && config.stage !== "main") {

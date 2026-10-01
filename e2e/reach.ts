@@ -45,7 +45,8 @@ const mcpName = `reach-mcp-${id}`;
 // Disposable sentinels, not live service credentials. Echoed auth is hashed inside the stand-in.
 const token = `reach-token-secret-${crypto.randomUUID()}`;
 const mcp = `reach-mcp-secret-${crypto.randomUUID()}`;
-const body = "reach streamed request";
+// Reach reads every MCP POST as JSON-RPC, so the probe body is one.
+const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
 const script = (method: "GET" | "POST" | "DELETE", kind: "token" | "mcp") =>
   `call ${JSON.stringify({
     url: `http://${kind === "token" ? tokenName : mcpName}.internal/api/${kind === "mcp" ? "mcp" : "anything/reach"}?marker=${id}`,
@@ -54,7 +55,7 @@ const script = (method: "GET" | "POST" | "DELETE", kind: "token" | "mcp") =>
       Authorization: "Bearer incoming-auth",
       "X-Api-Key": "incoming-key",
       "X-Reach-Token": "incoming-token",
-      "Content-Type": "text/plain",
+      "Content-Type": "application/json",
       "Mcp-Session-Id": `session-${id}`,
       "Mcp-Protocol-Version": "2025-06-18",
       "Last-Event-ID": `event-${id}`,
