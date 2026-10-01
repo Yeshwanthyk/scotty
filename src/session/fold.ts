@@ -477,6 +477,8 @@ function step(state: State, event: SessionEvent): State {
           }
         : next;
     case "failed":
+      // A failure reported for an ended session changes nothing.
+      if (!live(state)) return next;
       return endAll(
         {
           ...next,

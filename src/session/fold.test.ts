@@ -308,7 +308,7 @@ describe("session fold", () => {
     check(state);
   });
 
-  it("records a retryable reason for each lifecycle timeout", () => {
+  it("records a retryable reason for each lifecycle timeout and destroys the container", () => {
     const started = fold(fold(initial, created), start);
     const cases = [
       { op: "container", state: started, code: "container_timeout" },
@@ -316,25 +316,27 @@ describe("session fold", () => {
     ];
     for (const item of cases) {
       const due = item.state.pending.find((p) => p.op === item.op)?.due;
-      const timed = fold(
-        item.state,
-        decodeSessionEvent({
-          seq: item.state.lastSeq + 1,
-          at: due,
-          src: "alarm",
-          kind: "timeout",
-          op: item.op,
-        }),
-      );
+      const event = decodeSessionEvent({
+        seq: item.state.lastSeq + 1,
+        at: due,
+        src: "alarm",
+        kind: "timeout",
+        op: item.op,
+      });
+      const timed = fold(item.state, event);
       expect(timed.failure).toEqual({ code: item.code, retryable: true });
+      // A start placed after its deadline would otherwise run until the inactivity timeout.
+      expect(command(timed, event)).toEqual({ kind: "destroy" });
       check(timed);
     }
   });
 
   it("fails at once when the supervisor reports a failed start", () => {
     const started = fold(fold(fold(initial, created), start), hello);
-    const failed = fold(started, make(4, "sup.error", { code: "workspace" }));
+    const error = make(4, "sup.error", { code: "workspace" });
+    const failed = fold(started, error);
     expect(failed.phase).toBe("failed");
+    expect(command(failed, error)).toEqual({ kind: "destroy" });
     expect(failed.failure).toEqual({ code: "workspace", retryable: true });
     expect(deadline(failed)).toBeUndefined();
     check(failed);

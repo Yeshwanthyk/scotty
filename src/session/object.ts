@@ -174,31 +174,28 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
       const watcher = yield* FiberHandle.make<void, never>().pipe(
         Scope.provide(yield* Scope.make()),
       );
-      const exited = (gen: number) =>
-        Effect.tryPromise({
+      // monitor() resolves on a clean exit and rejects with the exit code on a crash. Any other
+      // rejection (the Session DO losing its link to the container) says nothing about the
+      // container; the watch deadline re-checks it.
+      const exited = (gen: number) => {
+        const record = (end: { reason: "exited" } | { reason: "crashed"; exitCode: number }) =>
+          current(gen)
+            ? append({ kind: "container.stopped", gen, ...end }, "session").pipe(
+                Effect.flatMap(dispatch),
+              )
+            : Effect.void;
+        return Effect.tryPromise({
           try: () => container.monitor(),
           catch: (cause) => cause,
         }).pipe(
-          Effect.tapError((cause) => Effect.logWarning("container exited", cause)),
-          Effect.mapError((cause) =>
-            Schema.decodeUnknownOption(ExitStatus)(cause).pipe(
-              Option.match({
-                onNone: () => ({ reason: "crashed" as const }),
-                onSome: ({ exitCode }) => ({ reason: "crashed" as const, exitCode }),
+          Effect.matchEffect({
+            onSuccess: () => record({ reason: "exited" }),
+            onFailure: (cause) =>
+              Option.match(Schema.decodeUnknownOption(ExitStatus)(cause), {
+                onNone: () => Effect.logWarning("container watch lost", cause),
+                onSome: ({ exitCode }) => record({ reason: "crashed", exitCode }),
               }),
-            ),
-          ),
-          Effect.match({
-            onSuccess: () => ({ reason: "exited" as const }),
-            onFailure: (end) => end,
           }),
-          Effect.flatMap((end) =>
-            current(gen)
-              ? append({ kind: "container.stopped", gen, ...end }, "session").pipe(
-                  Effect.flatMap(dispatch),
-                )
-              : Effect.void,
-          ),
           // Nothing joins the watcher, so a failure to record the exit is logged here. A newer
           // watcher interrupting this one is not a failure.
           Effect.catchCause((cause) =>
@@ -208,6 +205,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           ),
           Effect.provide(context),
         );
+      };
       // Called once the supervisor answers, when the container surely exists: monitor() settles at
       // once for a container not yet placed. The inactivity timeout keeps the container running
       // while the Session DO is evicted, until the watch deadline's alarm brings it back.
@@ -296,14 +294,16 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               );
               if (Exit.isFailure(signedIn)) {
                 if (current(action.gen))
-                  yield* append(
-                    {
-                      kind: "failed",
-                      phase: "credentials",
-                      code: "signin_required",
-                      retryable: true,
-                    },
-                    "session",
+                  yield* dispatch(
+                    yield* append(
+                      {
+                        kind: "failed",
+                        phase: "credentials",
+                        code: "signin_required",
+                        retryable: true,
+                      },
+                      "session",
+                    ),
                   );
                 return;
               }
@@ -462,7 +462,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               ? append(
                   { kind: "failed", phase: "container", code: "container_start", retryable: true },
                   "session",
-                ).pipe(Effect.asVoid)
+                ).pipe(Effect.flatMap(dispatch))
               : Effect.void,
           ),
           Effect.catchCause((cause) =>
@@ -481,9 +481,11 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   ),
                 );
               } else if (action.kind === "start") {
-                yield* append(
-                  { kind: "failed", phase: "start", code: "start_failed", retryable: true },
-                  "session",
+                yield* dispatch(
+                  yield* append(
+                    { kind: "failed", phase: "start", code: "start_failed", retryable: true },
+                    "session",
+                  ),
                 );
               }
             }),

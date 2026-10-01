@@ -47,12 +47,10 @@ const ackFor = (
 
 export function command(state: State, event: SessionEvent): Command | undefined {
   if (state.lastSeq !== event.seq) return undefined;
-  if (state.phase === "stopped")
+  // Ending a session, stopped or failed, destroys its container: a start that failed may still
+  // have placed one.
+  if (state.phase === "stopped" || state.phase === "failed")
     return state.stopSeq === event.seq ? { kind: "destroy" } : undefined;
-  if (state.phase === "failed")
-    return event.kind === "container.stopped" && state.stopSeq === event.seq
-      ? { kind: "destroy" }
-      : undefined;
   switch (event.kind) {
     case "resume.requested":
       return state.gen !== undefined && state.startSeq === event.seq
