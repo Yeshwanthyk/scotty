@@ -2278,6 +2278,10 @@ button.diff-line {
   padding: 24px 28px 48px;
 }
 
+.automations .settings-row-detail {
+  overflow-wrap: anywhere;
+}
+
 .automations-heading {
   margin: 8px 0 0;
   font-size: 13px;
