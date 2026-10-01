@@ -148,7 +148,7 @@ describe("saved session event logs", () => {
     expect(sessionView("s", state).progress.working).toBe(false);
     expect(conversationView(state, history).turns.map((turn) => turn.state)).toEqual(["aborted"]);
   });
-  it("replays a queued prompt followed by a supervisor startup timeout", async () => {
+  it("replays a queued prompt, startup timeout, resume and first turn completion", async () => {
     const file = "2026-09-30-queued-prompt-startup-timeout.jsonl";
     const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
     let state = initial;
@@ -159,13 +159,40 @@ describe("saved session event logs", () => {
         expect(state.ready).toBe(false);
         expect(state.requests.find((request) => request.req === "s")?.status).toBe("pending");
       }
+      if (event.kind === "sup.error") {
+        expect(state).toMatchObject({
+          phase: "failed",
+          failure: { code: "timeout", retryable: true },
+          currentTurn: "1",
+        });
+        expect(state.requests.find((request) => request.req === "s")?.status).toBe("ended");
+        expect(state.turns.at(-1)?.state).toBe("interrupted");
+      }
+      if (event.kind === "workspace.ready")
+        expect(command(state, event)).toEqual({
+          kind: "prompt",
+          req: "initial:2",
+          turn: "1",
+          text: "hello",
+        });
+      if (event.kind === "workspace.ready" || event.kind === "prompt.delivered") {
+        expect(sessionView("s", state).progress.working).toBe(true);
+        expect(state.pending.some((item) => item.op === "idle")).toBe(false);
+      }
+      if (event.kind === "turn.ended") {
+        expect(command(state, event)).toEqual({ kind: "save", gen: 2, turn: "1", ack: 5 });
+        expect(state.pending.some((item) => item.op === "save")).toBe(true);
+      }
     }
     expect(state).toMatchObject({
-      phase: "failed",
-      failure: { code: "timeout", retryable: true },
-      currentTurn: "1",
+      phase: "running",
+      currentTurn: "2",
+      turns: [
+        { turn: "0", state: "interrupted" },
+        { turn: "1", state: "completed" },
+      ],
     });
-    expect(state.requests.find((request) => request.req === "s")?.status).toBe("ended");
-    expect(state.turns.at(-1)?.state).toBe("interrupted");
+    expect(state.pending.some((item) => item.op === "save")).toBe(false);
+    expect(sessionView("s", state).progress.working).toBe(false);
   });
 });

@@ -202,7 +202,7 @@ function step(state: State, event: SessionEvent): State {
           ...state.requests,
           {
             req,
-            turn: "0",
+            turn: state.currentTurn,
             kind: "prompt",
             text: state.created.prompt,
             status: "pending",
