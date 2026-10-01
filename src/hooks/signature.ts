@@ -1,6 +1,6 @@
 import { Option, Schema } from "effect";
 import { field } from "../automations/automation.js";
-import type { InboundConfig } from "./config.js";
+import { signingKey, type InboundConfig } from "./config.js";
 
 export const maxBodyBytes = 64 * 1024;
 const Text = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
@@ -10,7 +10,6 @@ export const SigningValues = Schema.Struct({
   timestamp: Schema.NullOr(Schema.String.check(Schema.isMinLength(1))),
   signature: Schema.String.check(Schema.isMinLength(1)),
 });
-export type SigningValues = typeof SigningValues.Type;
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const decodeValues = Schema.decodeUnknownOption(SigningValues);
 
@@ -62,27 +61,21 @@ export const newSecret = (prefix: string) => {
   const bytes = crypto.getRandomValues(new Uint8Array(24));
   return `${prefix}${btoa(String.fromCharCode(...bytes))}`;
 };
-export type Verdict = "ok" | "bad_signature" | "stale_timestamp";
 
 export async function verifySignature(
   config: InboundConfig,
   input: {
     secret: string;
-    values: SigningValues;
+    values: typeof SigningValues.Type;
     body: Uint8Array<ArrayBuffer>;
     now: number;
   },
-): Promise<Verdict> {
+): Promise<"ok" | "bad_signature" | "stale_timestamp"> {
   const { id, timestamp, signature } = input.values;
   if (config.timestamp !== null && (timestamp === null || !/^\d{1,16}$/.test(timestamp)))
     return "bad_signature";
-  const raw =
-    config.key.encoding === "raw"
-      ? encoder.encode(input.secret)
-      : input.secret.startsWith(config.key.prefix)
-        ? bytesOf(input.secret.slice(config.key.prefix.length))
-        : undefined;
-  if (raw === undefined || raw.length === 0) return "bad_signature";
+  const raw = signingKey(config.key, input.secret);
+  if (raw === undefined) return "bad_signature";
   const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, [
     "verify",
   ]);

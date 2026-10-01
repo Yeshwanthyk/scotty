@@ -40,9 +40,50 @@ export const InboundConfig = Schema.Struct({
 }).check(
   Schema.makeFilter(
     (config) => !config.signed.includes("{timestamp}") || config.timestamp !== null,
+    { message: "A signed {timestamp} needs a timestamp source" },
+  ),
+  Schema.makeFilter(
+    (config) =>
+      config.timestamp?.toleranceSeconds === undefined ||
+      config.timestamp.source.kind === "payload" ||
+      config.signed.includes("{timestamp}"),
+    {
+      message:
+        "Timestamp tolerance requires a signed timestamp: include {timestamp} or use the body",
+    },
   ),
 );
 export type InboundConfig = typeof InboundConfig.Type;
+
+export const CustomInboundConfig = InboundConfig.check(
+  Schema.makeFilter(
+    (config) =>
+      config.timestamp?.toleranceSeconds === undefined ||
+      config.delivery.kind === "payload" ||
+      config.signed.includes("{id}"),
+    {
+      message:
+        "With timestamp tolerance, custom delivery id must be signed: include {id} or use the body",
+    },
+  ),
+);
+
+export const signingKey = (
+  key: InboundConfig["key"],
+  secret: string,
+): Uint8Array<ArrayBuffer> | undefined => {
+  if (key.encoding === "raw")
+    return secret.length > 0 ? new TextEncoder().encode(secret) : undefined;
+  if (!secret.startsWith(key.prefix)) return undefined;
+  try {
+    const bytes = Uint8Array.from(atob(secret.slice(key.prefix.length)), (character) =>
+      character.charCodeAt(0),
+    );
+    return bytes.length > 0 ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 export const SignaturePreset = Schema.Literals(["standard-webhooks", "github", "linear", "slack"]);
 export type SignaturePreset = typeof SignaturePreset.Type;

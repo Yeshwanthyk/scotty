@@ -1,5 +1,11 @@
 import { Schema } from "effect";
-import { InboundConfig, SignaturePreset, signaturePresets } from "../hooks/config.js";
+import {
+  CustomInboundConfig,
+  InboundConfig,
+  SignaturePreset,
+  signaturePresets,
+  signingKey,
+} from "../hooks/config.js";
 
 // Lowercase and explicit: the name is in the hook URL and in every session it starts.
 export const connectionName = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -67,10 +73,25 @@ export const NewConnection = Schema.Union([
     name: ConnectionName,
     signing: Schema.Union([
       Schema.Struct({ kind: Schema.Literal("preset"), preset: SignaturePreset }),
-      Schema.Struct({ kind: Schema.Literal("custom"), config: InboundConfig }),
+      Schema.Struct({ kind: Schema.Literal("custom"), config: CustomInboundConfig }),
     ]),
     secret: Schema.optional(Secret),
-  }),
+  }).check(
+    Schema.makeFilter(
+      (input) =>
+        input.secret === undefined ||
+        signingKey(
+          input.signing.kind === "preset"
+            ? signaturePresets[input.signing.preset].key
+            : input.signing.config.key,
+          input.secret,
+        ) !== undefined,
+      {
+        message:
+          "Signing key must be nonempty raw text or the configured prefix followed by nonempty valid base64 bytes",
+      },
+    ),
+  ),
   Schema.Struct({
     kind: Schema.Literal("token"),
     name: InternalConnectionName,

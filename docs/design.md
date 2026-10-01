@@ -134,6 +134,12 @@ name}` or `{kind: "payload", path}`; payload paths are dotted, including numeric
 Templates accept only `{id}`, `{timestamp}` and exactly one `{body}`. HMAC-SHA256 is the only
 algorithm; raw body bytes are inserted unchanged. Space-separated signature candidates support
 Standard Webhooks key rotation. The key is raw text or base64 after a configured prefix.
+Creation rejects empty keys, missing key prefixes and malformed base64. A timestamp tolerance
+requires the timestamp to be signed, either through `{timestamp}` or as a field in the signed body.
+Custom configurations with a timestamp tolerance also require the delivery id to be signed
+through `{id}` or read from the body.
+Provider presets retain their delivery sources; Linear's timestamp is in its signed body,
+and GitHub has no timestamp tolerance.
 
 The presets are data, checked against provider documentation on 2026-09-30:
 
@@ -192,18 +198,17 @@ reads it from stdin and Settings has a password field. Pasted secrets are never 
 (`secret: null` on create). Without one, Creds generates and returns a secret once (`whsec_` for the presets; a custom base64 key uses its configured prefix).
 Listings show the configuration and hook URL, never the secret. Secrets stay in the Creds DO.
 
-The Worker reads the public config and decodes JSON and signing values at the
-edge. Creds verifies the signature with Web Crypto's constant-time HMAC verification and
-checks timestamp tolerance and the configured self-event rule before routing. A header event source
+The Worker caps the raw body and passes it with the headers to Creds. One Creds call reads
+the connection once, extracts JSON and signing values, verifies with Web Crypto's constant-time
+HMAC verification, checks timestamp tolerance and self-events, and records automation runs.
+Its returned payload and session fallback come from that same snapshot. A header event source
 requires an object and supplies its top-level automation `event`; a payload source preserves the nested `event` object
 so paths such as Slack's `event.channel` remain available. Every delivery uses the existing log
 and reason codes. Standard Webhooks keeps the direct `{repo, prompt, key}` session-start path
 when no automation listens; the other presets record and answer `skipped: no_automation`.
 
-On Creds initialization, existing track rows with `{kind: "webhook"}` or `{kind: "github"}`
-are updated once to the corresponding preset configuration. Their names, secrets, URLs and
-associated deliveries/automations remain valid; subsequent initialization finds no old rows.
-No older implementation formats or old create requests are supported.
+The track stage will be torn down and recreated. Stored connection data is not converted;
+older implementation formats and old create requests are unsupported.
 
 ## Automations and runs
 

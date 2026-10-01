@@ -18,7 +18,7 @@ The old implementation died from weight: 229 fix commits, ~74k lines of tests, c
 5. **No defensive code for impossible states.** Decode input once at the boundary (Schema), then trust the types. No re-validation, no `try/catch` around code that can't throw, no fallbacks for cases the fold already rules out.
 6. **No retries, timers or backoff** except the deadlines in the fold's table (`src/session/fold.ts`). The DO has one alarm. Don't add a second.
 7. **No new dependencies** unless the step names them. No `@effect/platform`, `@effect/schema`, `@cloudflare/sandbox`, fast-check, mocking or HTTP-stub libraries, ever.
-8. **No compatibility code.** No shims for @old formats, no migration of old event logs, no dual code paths. A log-format change ships with a reset note in the commit.
+8. **No compatibility code.** No shims for @old formats, no migration of old event logs, no dual code paths. When stored formats change, the track stage is torn down and recreated.
 9. **Reuse before adding.** Before writing a helper, `grep` for one. Before a new error class, reuse `CliFailure`, `AgentError`, `CredentialStoreError` or the API's `bad(...)`.
 10. **Deleting beats adding.** If the step can be done by removing code, remove it.
 11. **Comments say why, never what.** No JSDoc on obvious functions. No banner comments. No TODOs; open items go under **Later** here.
@@ -248,7 +248,7 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
 - **Depends on:** 5.
 - **Design (owner, 2026-09-27):** two states, `running` and `stopped`. No vaporize, no separate pause, no disk snapshots. No compatibility with existing `dev` sessions: they are dropped (item 1).
 - **In scope:**
-  1. **Reset `dev` first.** Save one stuck log (`fea49255…`) to `e2e/logs/2026-09-27-warm-after-container-stopped.jsonl` and add its failing replay: the fold must end `stopped`, not `failed`, once the dial deadline passes (after item 3, it passes). Then drop the old index: rename the Creds DO table `sessions` to `session_index` (no migration, no drop; the old rows and the three empty-ID rows become unreachable). Record the reset in the commit. The empty-ID rows came from `reserve` succeeding before `create` appended `created`; no fix beyond the reset.
+  1. **Keep the failure replay.** Save one stuck log (`fea49255…`) to `e2e/logs/2026-09-27-warm-after-container-stopped.jsonl` and add its failing replay: the fold must end `stopped`, not `failed`, once the dial deadline passes (after item 3, it passes). Stored formats are not converted; the track stage is torn down and recreated.
   2. **Save after every turn.** An accepted `turn.ended` is the save intent: the fold adds a `save` deadline (60 s), and its command is `save {gen, turn, ack}`. The DO sends the ack, `GET`s `http://container/save?gen=<gen>` over `getTcpPort(7000)`, and `put`s the body to R2 `saves/<id>.tar`, overwriting the last save. The result is `save.done {turn}` or `save.failed {turn, code}`; a `save` timeout records the save as failed. A failed save never fails the session. The supervisor builds the tar with `tar` (no new dependency):
      - `codex/`: the thread's rollout file at its path under `CODEX_HOME`.
      - `repo/`: every file that differs from the base commit, committed or not (`git diff --name-only <base>` with deletions filtered out, plus `git ls-files --others --exclude-standard`). Ignored files stay out.
@@ -653,7 +653,7 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 | S8    | GitHub events and babysit    | S4         | built    | GitHub connections, signed deliveries, self-event and no-automation skips, babysit example, scripted e2e.                                           |
 | S9    | MCP sign-in and tool limits  | S5         | todo     |                                                                                                                                                     |
 | S10   | Approvals for MCP writes     | S9         | todo     |                                                                                                                                                     |
-| S11   | Signatures as configuration  | S8         | built    | Shared inbound config, four presets, CLI/UI/seed and signatures e2e; all five local checks pass (43 tests); deploy/e2e deferred.                    |
+| S11   | Signatures as configuration  | S8         | built    | Shared config, four presets, CLI/UI/seed and signatures e2e. Review fixes built; five local checks pass (43 tests); deploy/e2e deferred.            |
 | S12   | Automation actions           | S1, S4     | todo     |                                                                                                                                                     |
 | S13   | Blueprints                   | S11, S12   | todo     |                                                                                                                                                     |
 | R1    | Places                       | none       | todo     |                                                                                                                                                     |
@@ -718,6 +718,7 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 - **Why:** each sender signs slightly differently; a connection kind per provider would put provider code in Scotty for each one.
 - **In scope:** an inbound connection carries its signature configuration (design.md, "Building blocks"): header, prefix, encoding, what was signed, and where the delivery id, event name and timestamp come from. Standard Webhooks and GitHub become two presets of it, and Linear and Slack are presets with no new code. The self-event rule (payload field compared with a stored identity) moves onto the connection. Presets are data the UI and CLI offer; a custom configuration is allowed.
 - **Done when:** `e2e hooks` and `e2e github` pass unchanged on the presets; a signed Linear-shaped and a Slack-shaped delivery are verified, and tampered ones rejected and listed.
+- **Review fixes:** creation rejects unsigned custom replay fields and invalid encoded keys. Extraction, verification and routing share one Creds snapshot; `src/automations/fire.ts` consumes its routed runs. The signatures e2e and recipe add custom-config and key-rejection cases. `npm run fmt`, `npm run lint`, `npm run typecheck`, `npm run ui:build`, `npm test` pass (43 tests). Deployment and changed-code e2e were not run because the owner requested no deploy. The track stage will be torn down and recreated; stored data is not converted.
 
 ### S12: automation actions
 

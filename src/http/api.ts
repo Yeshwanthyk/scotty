@@ -213,11 +213,7 @@ export function apiHandler(
       });
     if (url.pathname === "/api/connections" && request.method === "POST") {
       const body = yield* Schema.decodeUnknownEffect(NewConnection)(yield* request.json).pipe(
-        Effect.catchTag("SchemaError", () =>
-          bad(
-            "Expected inbound {name, signing: {kind: preset, preset} | {kind: custom, config}}, token {name, host, header, secret}, or mcp {name, url, secret}; use an HTTPS target and a non-reserved lowercase name",
-          ),
-        ),
+        Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
       const added = yield* credential.addConnection(body);

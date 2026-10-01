@@ -2,19 +2,23 @@
 
 All inbound connections use one verifier in Creds. The preset is stored as configuration;
 custom configurations use the same API and verifier. See `docs/design.md`, "Inbound signatures"
-for the configuration shape, provider sources, timestamp units and existing-row conversion.
+for the configuration shape, provider sources and timestamp units.
 
 ## Prove it
 
 On an already deployed stage, run `npm run --silent e2e -- signatures`. It creates temporary
-Linear and Slack connections with no automations, sends independent provider-shaped JSON,
-and removes its connections even if an assertion fails. Pass when, for both providers:
+Linear, Slack and custom connections with no automations, sends independently signed JSON,
+and removes its connections even if an assertion fails. Pass when, for all three configurations:
 
 - A correctly signed delivery answers HTTP 200 `skipped: no_automation`, with no session.
 - A changed raw body answers HTTP 401 `bad_signature` and is listed as rejected.
 - A correctly signed old timestamp answers HTTP 401 `stale_timestamp` and is listed as rejected.
 - Delivery IDs come from Linear's header and Slack's body field; every result is listed under
   its id with no session. Pasted secrets are absent from create responses and listings.
+- Custom configuration signs a header timestamp and delivery id with the raw body, using a
+  valid base64 key with a custom prefix. Omitting either signed header field is refused at
+  creation with HTTP 400 and a clear message, without storing the connection.
+- Invalid, empty or wrongly prefixed base64 signing keys are refused at creation with HTTP 400.
 
 Run `e2e hooks`, `e2e automations` and `e2e github` to check the existing Standard Webhooks
 start/steer/retry path, automation routing and GitHub self-event/retry behaviour. These require
