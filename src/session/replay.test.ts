@@ -7,6 +7,7 @@ import { command } from "./commands.js";
 import { deadlines } from "./deadlines.js";
 import { SessionEvent } from "./events.js";
 import { fold, initial, invariants, type State } from "./fold.js";
+import { conversationView, sessionView } from "./view.js";
 
 const logs = join(process.cwd(), "e2e", "logs");
 const decodeLine = Schema.decodeUnknownSync(Schema.fromJsonString(SessionEvent));
@@ -129,5 +130,69 @@ describe("saved session event logs", () => {
         expect(event.at).toBeLessThan(containerDue ?? 0);
     }
     expect(state.phase).toBe("stopped");
+  });
+  it("replays a turn whose container stopped while the Session DO was away, ending it interrupted", async () => {
+    // Cloudflare evicted the quiet Session DO mid-turn and stopped its container; the redial on
+    // wake found it gone. The UI kept showing the reply as streaming.
+    const file = "2026-09-30-idle-container-stopped.jsonl";
+    const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
+    let state = initial;
+    const history: (typeof SessionEvent.Type)[] = [];
+    for (const [index, line] of lines.entries()) {
+      history.push(decodeLine(line));
+      state = replayLine(state, line, file, index + 1);
+    }
+    expect(state.phase).toBe("stopped");
+    expect(state.stop).toEqual({ reason: "gone" });
+    expect(state.currentTurn).toBe("1");
+    expect(sessionView("s", state).progress.working).toBe(false);
+    expect(conversationView(state, history).turns.map((turn) => turn.state)).toEqual(["aborted"]);
+  });
+  it("replays a queued prompt, startup timeout, resume and first turn completion", async () => {
+    const file = "2026-09-30-queued-prompt-startup-timeout.jsonl";
+    const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
+    let state = initial;
+    for (const [index, line] of lines.entries()) {
+      const event = decodeLine(line);
+      state = replayLine(state, line, file, index + 1);
+      if (event.kind === "prompt.requested") {
+        expect(state.ready).toBe(false);
+        expect(state.requests.find((request) => request.req === "s")?.status).toBe("pending");
+      }
+      if (event.kind === "sup.error") {
+        expect(state).toMatchObject({
+          phase: "failed",
+          failure: { code: "timeout", retryable: true },
+          currentTurn: "1",
+        });
+        expect(state.requests.find((request) => request.req === "s")?.status).toBe("ended");
+        expect(state.turns.at(-1)?.state).toBe("interrupted");
+      }
+      if (event.kind === "workspace.ready")
+        expect(command(state, event)).toEqual({
+          kind: "prompt",
+          req: "initial:2",
+          turn: "1",
+          text: "hello",
+        });
+      if (event.kind === "workspace.ready" || event.kind === "prompt.delivered") {
+        expect(sessionView("s", state).progress.working).toBe(true);
+        expect(state.pending.some((item) => item.op === "idle")).toBe(false);
+      }
+      if (event.kind === "turn.ended") {
+        expect(command(state, event)).toEqual({ kind: "save", gen: 2, turn: "1", ack: 5 });
+        expect(state.pending.some((item) => item.op === "save")).toBe(true);
+      }
+    }
+    expect(state).toMatchObject({
+      phase: "running",
+      currentTurn: "2",
+      turns: [
+        { turn: "0", state: "interrupted" },
+        { turn: "1", state: "completed" },
+      ],
+    });
+    expect(state.pending.some((item) => item.op === "save")).toBe(false);
+    expect(sessionView("s", state).progress.working).toBe(false);
   });
 });

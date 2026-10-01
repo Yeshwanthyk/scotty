@@ -1,0 +1,15 @@
+{"seq":1,"at":124000,"src":"property","kind":"created","agentKind":"codex","repo":"https://example.org/repo","baseBranch":"main","branch":"scotty/session-1","title":"test","prompt":"hello","image":"image"}
+{"seq":2,"at":124000,"src":"property","kind":"container.start","gen":1}
+{"seq":3,"at":126000,"src":"property","gen":1,"n":1,"kind":"sup.hello","version":"v1","boot":"boot-1"}
+{"seq":4,"at":246000,"src":"property","kind":"prompt.requested","req":"s","turn":"0","text":"go","images":[]}
+{"seq":5,"at":248000,"src":"property","gen":1,"n":1,"kind":"sup.hello","version":"v1","boot":"boot-1"}
+{"seq":6,"at":250000,"src":"property","kind":"created","agentKind":"codex","repo":"https://example.org/repo","baseBranch":"main","branch":"scotty/session-1","title":"test","prompt":"hello","image":"image"}
+{"seq":7,"at":370000,"src":"property","kind":"socket.closed","gen":0}
+{"seq":8,"at":371000,"src":"property","gen":1,"n":6,"kind":"sup.error","code":"timeout","message":"supervisor output"}
+{"seq":9,"at":372000,"src":"api","kind":"resume.requested"}
+{"seq":10,"at":373000,"src":"supervisor","gen":2,"n":1,"kind":"sup.hello","version":"v1","boot":"boot-2"}
+{"seq":11,"at":374000,"src":"supervisor","gen":2,"n":2,"kind":"workspace.ready","base":"main","branch":"scotty/session-1","commit":"a1b2c3"}
+{"seq":12,"at":375000,"src":"supervisor","gen":2,"n":3,"kind":"agent.ready","agentKind":"codex","session":"thread-2"}
+{"seq":13,"at":376000,"src":"supervisor","gen":2,"n":4,"kind":"prompt.delivered","req":"initial:2"}
+{"seq":14,"at":377000,"src":"supervisor","gen":2,"n":5,"kind":"turn.ended","turn":"1","codexTurn":"turn-2","state":"completed"}
+{"seq":15,"at":378000,"src":"do","kind":"save.done","turn":"1"}

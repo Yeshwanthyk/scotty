@@ -237,6 +237,11 @@ a {
   color: var(--quiet);
 }
 
+.status-mark[data-status="asleep"] {
+  color: var(--quiet);
+  opacity: 0.8;
+}
+
 .dot {
   width: 6px;
   height: 6px;
@@ -279,6 +284,22 @@ a {
 .pill[data-status="unseen"] {
   color: var(--done);
   background: color-mix(in srgb, var(--done) 12%, transparent);
+}
+
+.pill[data-status="asleep"] {
+  color: var(--quiet);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+/* Time until an idle session sleeps: present, never loud. */
+.sleeps {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--quiet);
+  font-size: 11.5px;
+  white-space: nowrap;
 }
 
 /* ---------- Buttons ---------- */
@@ -649,6 +670,7 @@ kbd {
   border-radius: var(--radius-sm);
 }
 
+.session-row[data-status="asleep"] .title,
 .session-row[data-status="stopped"] .title,
 .session-row[data-status="failed"] .title {
   color: var(--muted);
@@ -729,8 +751,8 @@ kbd {
 .header-title {
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
   margin-right: auto;
 }
 
@@ -747,21 +769,45 @@ kbd {
 .crumbs {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
-  color: var(--quiet);
-  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
 }
 
-.crumbs .icon {
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1;
+}
+
+.chip .icon {
+  flex: none;
   color: var(--quiet);
 }
 
-.crumbs span {
+.chip-text {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.chip-owner {
+  color: var(--quiet);
+}
+
+.chip-name {
+  color: var(--ink);
+  font-weight: 500;
 }
 
 .header-actions {
@@ -1203,6 +1249,98 @@ kbd {
 
 .turn-end[data-state="failed"] {
   color: var(--danger);
+}
+
+.interrupted {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  font-weight: 500;
+}
+
+/* Why a session isn't running, with the way back on the right. */
+.lifecycle-notice {
+  align-items: center;
+  padding: 8px 8px 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--sunken);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--muted);
+}
+
+.lifecycle-notice .icon {
+  margin-top: 0;
+  flex: none;
+}
+
+.lifecycle-notice > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.lifecycle-notice .button {
+  flex: none;
+}
+
+.lifecycle-notice[data-tone="asleep"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.lifecycle-notice[data-tone="warning"] {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  box-shadow: none;
+}
+
+.lifecycle-notice[data-tone="warning"] > .icon {
+  color: var(--warning);
+}
+
+.lifecycle-notice[data-tone="error"] {
+  box-shadow: none;
+}
+
+.boot-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.boot-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 20px;
+  color: var(--quiet);
+}
+
+.boot-steps li[data-state="done"] {
+  color: var(--muted);
+}
+
+.boot-steps li[data-state="done"] .icon {
+  color: var(--done);
+}
+
+.boot-steps li[data-state="active"] {
+  color: var(--muted);
+}
+
+.boot-steps li[data-state="active"] .spinner {
+  color: var(--working);
+}
+
+.boot-steps li[data-state="waiting"] .icon {
+  opacity: 0.6;
 }
 
 .live {
@@ -2465,8 +2603,14 @@ button.diff-line {
   }
 
   .crumbs {
-    font-size: 11.5px;
     max-width: 100%;
+    margin-top: 2px;
+  }
+
+  .chip {
+    height: 18px;
+    padding: 0 5px;
+    font-size: 11px;
   }
 
   .thread-inner {

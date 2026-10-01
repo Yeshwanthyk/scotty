@@ -68,12 +68,19 @@ export const sessionIds = (api: Api, ids: readonly string[], command: string) =>
 export const sessionPath = (api: Api, id: string, command: string) =>
   sessionIds(api, [id], command).pipe(Effect.map(([full]) => `/api/sessions/${full ?? id}`));
 
-export const state = (session: typeof Session.Type) =>
-  session.authority.kind === "transitioning"
-    ? "starting"
-    : session.progress.working
-      ? "working"
-      : session.authority.lifecycle;
+const minutes = (iso: string) => Math.max(1, Math.ceil((Date.parse(iso) - Date.now()) / 60_000));
+
+// An idle running session is warm until it sleeps; a stop says why.
+export const state = (session: typeof Session.Type) => {
+  const { authority, progress } = session;
+  if (authority.kind === "transitioning") return "starting";
+  if (progress.working) return "working";
+  if (authority.lifecycle === "running" && progress.sleepsAt != null)
+    return `warm · sleeps in ${minutes(progress.sleepsAt)}m`;
+  const reason = authority.stop?.reason;
+  if (authority.lifecycle !== "stopped" || reason === undefined) return authority.lifecycle;
+  return reason === "idle" ? "asleep · idle" : `stopped · ${reason}`;
+};
 
 export const readStdin = Effect.gen(function* () {
   const stdio = yield* Stdio.Stdio;

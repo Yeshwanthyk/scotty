@@ -25,6 +25,7 @@ export type StartInput = {
   // Where the container runs; hooks leave it to the default.
   place?: typeof PlaceKind.Type;
   scripted?: true;
+  idleAfter?: number;
   // With a key, a second start steers the session the first one made.
   key?: string;
   // The request id: a retry with it is answered with what the first attempt did.
@@ -101,6 +102,7 @@ export function startSession(
         image: "default",
         place: input.place ?? "cloudflare",
         ...(input.scripted === true ? { scripted: true } : {}),
+        ...(input.idleAfter === undefined ? {} : { idleAfter: input.idleAfter }),
         ...(input.origin === undefined ? {} : { origin: input.origin }),
       },
     });

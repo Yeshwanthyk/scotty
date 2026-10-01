@@ -38,6 +38,8 @@ export function turnOutcome(state: State, req?: string) {
   return state.phase === "stopped" ? ("stopped" as const) : ("working" as const);
 }
 
+const iso = (at: number | undefined) => (at === undefined ? null : new Date(at).toISOString());
+
 export function sessionView(id: string, state: State) {
   const created = state.created;
   const title = created?.title ?? "Session";
@@ -56,14 +58,24 @@ export function sessionView(id: string, state: State) {
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
     },
-    // Working while the current turn has a prompt; `turns` lets a client notice unseen answers.
+    // Working while the current turn has a live prompt; `turns` lets a client notice unseen
+    // answers.
     progress: {
       working:
         state.phase === "running" &&
         state.requests.some(
-          (request) => request.kind === "prompt" && request.turn === state.currentTurn,
+          (request) =>
+            request.kind === "prompt" &&
+            request.turn === state.currentTurn &&
+            (request.status === "pending" || request.status === "delivered"),
         ),
       turns: state.turns.length,
+      // When an idle running session sleeps, unless someone uses it first.
+      sleepsAt: iso(
+        state.phase === "running"
+          ? state.pending.find((item) => item.op === "idle")?.due
+          : undefined,
+      ),
     },
   };
   if (state.phase === "provisioning") {
@@ -83,13 +95,20 @@ export function sessionView(id: string, state: State) {
     authority: {
       kind: "stable" as const,
       lifecycle: state.phase,
+      stop: state.phase === "stopped" ? (state.stop ?? null) : null,
       failure:
         state.phase === "failed"
-          ? { code: state.failure?.code ?? "session_failed", recovery: "create" as const }
+          ? {
+              code: state.failure?.code ?? "session_failed",
+              recovery:
+                state.failure?.retryable === true ? ("resume" as const) : ("create" as const),
+            }
           : null,
     },
   };
 }
+
+export type SessionView = ReturnType<typeof sessionView>;
 
 export function acceptedAgentEvents(events: readonly SessionEvent[]): SessionEvent[] {
   let replay: State = initial;
@@ -101,8 +120,6 @@ export function acceptedAgentEvents(events: readonly SessionEvent[]): SessionEve
   }
   return accepted;
 }
-
-const iso = (at: number | undefined) => (at === undefined ? null : new Date(at).toISOString());
 
 export function conversationView(state: State, events: readonly SessionEvent[]) {
   const answers = new Map<string, string>();

@@ -311,7 +311,7 @@ const program = Effect.gen(function* () {
     },
     { path: `/api/sessions/${made.id}/interrupt`, body: { turn: "1", req: "valid-body" } },
   ];
-  for (const key of ["initial:reserved", "", " ", "x".repeat(257)]) {
+  for (const key of ["initial:reserved", "stalled:reserved", "", " ", "x".repeat(257)]) {
     for (const input of cases) {
       const answer = yield* Effect.tryPromise({
         try: async (signal) => {

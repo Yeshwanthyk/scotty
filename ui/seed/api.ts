@@ -5,6 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Schema } from "effect";
 import type { Plugin } from "vite";
+import { WebSocketServer, type WebSocket } from "ws";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
 import { fold, initial, type State } from "../../src/session/fold.ts";
 import { maxSearch, searchText } from "../../src/session/search.ts";
@@ -127,6 +128,41 @@ function append(session: Session, draft: Record<string, unknown>) {
   session.state = fold(before, event);
   if (event.kind === "agent.event" && session.state.lastN === before.lastN)
     console.warn(`[seed] ${session.id}: fold dropped agent event n=${event.n}`);
+  changed(session);
+}
+
+// Live sockets, as the Session and Creds DOs push them: a snapshot per session after changes,
+// coalesced, and list frames when a session's view changes or it is deleted.
+const watchers = new Map<string, Set<WebSocket>>();
+const listWatchers = new Set<WebSocket>();
+const queued = new Set<string>();
+const snapshot = (session: Session) =>
+  JSON.stringify({
+    kind: "snapshot",
+    seq: session.state.lastSeq,
+    session: sessionView(session.id, session.state),
+    conversation: conversationView(session.state, session.history),
+  });
+function changed(session: Session) {
+  if (queued.has(session.id)) return;
+  queued.add(session.id);
+  setTimeout(() => {
+    queued.delete(session.id);
+    if (!sessions.has(session.id)) return;
+    const frame = snapshot(session);
+    for (const socket of watchers.get(session.id) ?? []) socket.send(frame);
+    const listed = JSON.stringify({
+      kind: "session",
+      session: sessionView(session.id, session.state),
+    });
+    for (const socket of listWatchers) socket.send(listed);
+  }, 250);
+}
+function removed(id: string) {
+  for (const socket of watchers.get(id) ?? []) socket.close(1000, "Session deleted");
+  watchers.delete(id);
+  const frame = JSON.stringify({ kind: "removed", id });
+  for (const socket of listWatchers) socket.send(frame);
 }
 
 function pump(session: Session) {
@@ -833,6 +869,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       return fail(res, "Session is still running", 409, "running");
     clearTimeout(session.timer);
     sessions.delete(session.id);
+    removed(session.id);
     return json(res, { id: session.id, removed: true });
   }
   if (method === "GET" && sub === "conversation")
@@ -922,6 +959,30 @@ export function seedApi(): Plugin {
     apply: "serve",
     configureServer(server) {
       seed();
+      const live = new WebSocketServer({ noServer: true });
+      server.httpServer?.on("upgrade", (req, socket, head) => {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        const id = /^\/api\/sessions\/([a-z0-9-]{6,32})\/live$/.exec(url.pathname)?.[1];
+        const session = id === undefined ? undefined : sessions.get(id);
+        const isList = url.pathname === "/api/sessions/live";
+        // Vite's own HMR socket shares the server, so only API paths are answered here.
+        if (!url.pathname.startsWith("/api/")) return;
+        if (!isList && session === undefined) return socket.destroy();
+        live.handleUpgrade(req, socket, head, (ws) => {
+          ws.on("message", () => ws.close(1008, "Live sockets take no messages"));
+          if (isList) {
+            listWatchers.add(ws);
+            ws.on("close", () => listWatchers.delete(ws));
+            return;
+          }
+          if (session === undefined) return;
+          const set = watchers.get(session.id) ?? new Set<WebSocket>();
+          watchers.set(session.id, set);
+          set.add(ws);
+          ws.on("close", () => set.delete(ws));
+          ws.send(snapshot(session));
+        });
+      });
       server.middlewares.use((req, res, next) => {
         if (!req.url?.startsWith("/api/")) return next();
         handle(req, res).catch((error: unknown) => {

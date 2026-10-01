@@ -100,6 +100,7 @@ export const kinds = [
   "dial.failed",
   "sup.redial",
   "failed",
+  "active",
   "invariant.violated",
 ] as const;
 export const generated = Arbitrary.schema(
