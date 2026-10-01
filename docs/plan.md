@@ -650,7 +650,7 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 | S5    | Reach: `name.internal`       | S3         | built    | Token/MCP, proxy, agent configs, CLI/UI/seed and recipe built. Local checks and 43 tests pass; deployment/e2e deferred.                             |
 | S6    | Scotty inside sessions       | S1         | todo     |                                                                                                                                                     |
 | S7    | Slack bot                    | S4, S5     | todo     |                                                                                                                                                     |
-| S8    | GitHub events and babysit    | S4         | todo     |                                                                                                                                                     |
+| S8    | GitHub events and babysit    | S4         | built    | GitHub connections, signed deliveries, self-event and no-automation skips, babysit example, scripted e2e.                                           |
 | S9    | MCP sign-in and tool limits  | S5         | todo     |                                                                                                                                                     |
 | S10   | Approvals for MCP writes     | S9         | todo     |                                                                                                                                                     |
 | R1    | Places                       | none       | todo     |                                                                                                                                                     |
@@ -695,6 +695,8 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 - **Done when:** `e2e slack` with a signed mention payload creates a session and records the reply intent; the owner sees a real thread reply on `main`.
 
 ### S8: GitHub events and babysit
+
+- **Status note:** The outbound reach handler excludes the new hook kind so only token/MCP connections can be proxied.
 
 - **In scope:** a `github` connection with a webhook secret; events verified by `x-hub-signature-256`; events authored by Scotty's own GitHub identity are dropped. The babysit automation (`gh:{repo}#{pr}`) is documented as the example.
 - **Done when:** `e2e github` delivers a signed `check_run` failure to an automation and it steers the PR's session.

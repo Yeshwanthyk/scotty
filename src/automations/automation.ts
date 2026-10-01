@@ -8,7 +8,7 @@ export const automationName = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const AutomationName = Schema.String.check(Schema.isPattern(automationName));
 
 // A calendar schedule is five cron fields read in an IANA zone; an interval counts from when
-// the automation was enabled; an event is a delivery to a webhook connection.
+// the automation was enabled; an event is a delivery to a connection.
 export const When = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("calendar"),

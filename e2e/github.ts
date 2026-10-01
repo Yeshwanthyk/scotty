@@ -13,6 +13,7 @@ import {
   View,
 } from "../cli/client.js";
 import { Log, waiter } from "./lib/wait.js";
+import { githubEvents } from "./github-events.js";
 
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("github", message, "scotty doctor"));
@@ -37,6 +38,7 @@ const gh = (args: string[]) =>
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const request = client({ url, token: yield* access(url) });
+  yield* githubEvents(request);
   const repo = yield* Schema.decodeUnknownEffect(
     Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
   )(process.env.SCOTTY_PRIVATE_TEST_REPO).pipe(

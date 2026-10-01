@@ -57,11 +57,13 @@ const Secret = Schema.String.check(
 );
 export const ConnectionConfig = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("webhook") }),
+  Schema.Struct({ kind: Schema.Literal("github") }),
   Schema.Struct({ kind: Schema.Literal("token"), host: ConnectionHost, header: ConnectionHeader }),
   Schema.Struct({ kind: Schema.Literal("mcp"), url: ConnectionUrl }),
 ]);
 export const NewConnection = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("webhook"), name: ConnectionName }),
+  Schema.Struct({ kind: Schema.Literal("github"), name: ConnectionName }),
   Schema.Struct({
     kind: Schema.Literal("token"),
     name: InternalConnectionName,
@@ -84,10 +86,11 @@ export type ConnectionMetadata = typeof ConnectionConfig.Type & {
 export const internalUrl = (name: string, kind: "token" | "mcp") =>
   `http://${name}.internal/api/${kind === "mcp" ? "mcp" : ""}`;
 export const connectionView = (connection: ConnectionMetadata, origin: string) =>
-  connection.kind === "webhook"
+  connection.kind === "webhook" || connection.kind === "github"
     ? { ...connection, url: `${origin}/hooks/${connection.name}` }
     : { ...connection, internalUrl: internalUrl(connection.name, connection.kind) };
 const Webhook = Schema.Struct({ ...metadata, kind: Schema.Literal("webhook"), url: Schema.String });
+const GitHub = Schema.Struct({ ...metadata, kind: Schema.Literal("github"), url: Schema.String });
 const Token = Schema.Struct({
   ...metadata,
   kind: Schema.Literal("token"),
@@ -101,9 +104,10 @@ const Mcp = Schema.Struct({
   url: ConnectionUrl,
   internalUrl: Schema.String,
 });
-export const Connection = Schema.Union([Webhook, Token, Mcp]);
+export const Connection = Schema.Union([Webhook, GitHub, Token, Mcp]);
 export const ConnectionCreated = Schema.Union([
   Schema.Struct({ ...Webhook.fields, secret: Schema.String }),
+  Schema.Struct({ ...GitHub.fields, secret: Schema.String }),
   Token,
   Mcp,
 ]);
@@ -111,10 +115,13 @@ export const ConnectionCreated = Schema.Union([
 // A key ties deliveries (or API creates) to one session.
 export const Key = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
 
-export const DeliveryOutcome = Schema.Literals(["accepted", "rejected", "duplicate"]);
-// Why a delivery was rejected; the UI and CLI decode these same codes.
+export const DeliveryOutcome = Schema.Literals(["accepted", "rejected", "duplicate", "skipped"]);
+// Why a delivery was rejected or skipped; the UI and CLI decode these same codes.
 export const DeliveryReason = Schema.Literals([
   "missing_headers",
+  "unknown_connection",
+  "own_github_identity",
+  "no_automation",
   "too_large",
   "bad_signature",
   "stale_timestamp",

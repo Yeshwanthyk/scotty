@@ -1,9 +1,41 @@
+import { Schema } from "effect";
+
 // Standard Webhooks (https://www.standardwebhooks.com): the signature is
 // base64(HMAC-SHA256(key, `${id}.${timestamp}.${body}`)) under `v1,`, and the key is the base64
 // after `whsec_` in the secret.
 export const secretPrefix = "whsec_";
 export const maxSkewSeconds = 5 * 60;
 export const maxBodyBytes = 64 * 1024;
+
+// The headers each sender signs with, decoded where the request enters.
+const DeliveryId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+export const SigningHeaders = Schema.Union([
+  Schema.Struct({
+    kind: Schema.tagDefaultOmit("webhook"),
+    id: DeliveryId,
+    timestamp: Schema.String.check(Schema.isMinLength(1)),
+    signature: Schema.String.check(Schema.isMinLength(1)),
+  }).pipe(
+    Schema.encodeKeys({
+      id: "webhook-id",
+      timestamp: "webhook-timestamp",
+      signature: "webhook-signature",
+    }),
+  ),
+  Schema.Struct({
+    kind: Schema.tagDefaultOmit("github"),
+    id: DeliveryId,
+    event: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+    signature: Schema.String.check(Schema.isMinLength(1)),
+  }).pipe(
+    Schema.encodeKeys({
+      id: "x-github-delivery",
+      event: "x-github-event",
+      signature: "x-hub-signature-256",
+    }),
+  ),
+]);
+export type SigningHeaders = typeof SigningHeaders.Type;
 
 const encoder = new TextEncoder();
 
@@ -50,4 +82,23 @@ export async function verifyWebhook(input: {
       return "ok";
   }
   return "bad_signature";
+}
+
+export async function verifyGitHub(input: {
+  secret: string;
+  signature: string;
+  body: Uint8Array<ArrayBuffer>;
+}): Promise<Verdict> {
+  if (!/^sha256=[0-9a-fA-F]{64}$/.test(input.signature)) return "bad_signature";
+  const candidate = Uint8Array.from({ length: 32 }, (_, index) =>
+    Number.parseInt(input.signature.slice(7 + index * 2, 9 + index * 2), 16),
+  );
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(input.secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  return (await crypto.subtle.verify("HMAC", key, candidate, input.body)) ? "ok" : "bad_signature";
 }

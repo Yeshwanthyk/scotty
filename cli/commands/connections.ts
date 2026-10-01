@@ -25,7 +25,7 @@ import {
 export const connect = Command.make(
   "connect",
   {
-    kind: Argument.Literals("kind", ["webhook", "token", "mcp"]),
+    kind: Argument.Literals("kind", ["webhook", "github", "token", "mcp"]),
     name: Argument.String("name"),
     host: Flag.String("host").pipe(Flag.optional),
     header: Flag.String("header").pipe(Flag.optional),
@@ -35,9 +35,9 @@ export const connect = Command.make(
     Effect.gen(function* () {
       if (
         Option.isNone(
-          Schema.decodeUnknownOption(kind === "webhook" ? ConnectionName : InternalConnectionName)(
-            name,
-          ),
+          Schema.decodeUnknownOption(
+            kind === "webhook" || kind === "github" ? ConnectionName : InternalConnectionName,
+          )(name),
         )
       )
         return yield* usage(
@@ -45,21 +45,22 @@ export const connect = Command.make(
           "connect",
         );
       if (
-        (kind === "webhook" && [host, header, endpoint].some(Option.isSome)) ||
+        ((kind === "webhook" || kind === "github") &&
+          [host, header, endpoint].some(Option.isSome)) ||
         (kind === "token" &&
           (Option.isNone(host) || Option.isNone(header) || Option.isSome(endpoint))) ||
         (kind === "mcp" &&
           (Option.isNone(endpoint) || Option.isSome(host) || Option.isSome(header)))
       )
         return yield* usage(
-          "Token needs --host and --header; MCP needs --endpoint; webhook needs only a name",
+          "Token needs --host and --header; MCP needs --endpoint; webhook and GitHub need only a name",
           "connect",
         );
-      if (kind !== "webhook" && process.stdin.isTTY)
+      if ((kind === "token" || kind === "mcp") && process.stdin.isTTY)
         return yield* usage("Pipe the secret on stdin", "connect");
-      const secret = kind === "webhook" ? "" : (yield* readStdin).trim();
+      const secret = kind === "webhook" || kind === "github" ? "" : (yield* readStdin).trim();
       const input = yield* Schema.decodeUnknownEffect(NewConnection)(
-        kind === "webhook"
+        kind === "webhook" || kind === "github"
           ? { kind, name }
           : kind === "token"
             ? {
@@ -87,11 +88,15 @@ export const connect = Command.make(
         created,
         [
           `${green("✓")} Connected ${bold(created.name)}`,
-          `  URL     ${created.kind === "webhook" ? created.url : created.internalUrl}`,
-          ...(created.kind === "webhook"
+          `  URL     ${created.kind === "webhook" || created.kind === "github" ? created.url : created.internalUrl}`,
+          ...(created.kind === "webhook" || created.kind === "github"
             ? [
                 `  Secret  ${created.secret}`,
-                dim("  The secret is shown once. Senders sign with it (Standard Webhooks)."),
+                dim(
+                  created.kind === "github"
+                    ? "  The secret is shown once. Paste it and the URL into GitHub webhook settings."
+                    : "  The secret is shown once. Senders sign with it (Standard Webhooks).",
+                ),
                 dim(`  See deliveries: scotty deliveries --connection ${created.name}`),
               ]
             : [
@@ -117,7 +122,9 @@ export const connections = Command.make("connections", {}, () =>
             ...found.map((connection) => [
               connection.name,
               connection.kind,
-              connection.kind === "webhook" ? connection.url : connection.internalUrl,
+              connection.kind === "webhook" || connection.kind === "github"
+                ? connection.url
+                : connection.internalUrl,
             ]),
           ]),
     );

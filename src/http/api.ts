@@ -215,7 +215,7 @@ export function apiHandler(
       const body = yield* Schema.decodeUnknownEffect(NewConnection)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", () =>
           bad(
-            "Expected a named webhook, token {host, header, secret}, or mcp {url, secret}; use an HTTPS target and a non-reserved lowercase name",
+            "Expected a named webhook or github, token {host, header, secret}, or mcp {url, secret}; use an HTTPS target and a non-reserved lowercase name",
           ),
         ),
       );
@@ -234,7 +234,7 @@ export function apiHandler(
         );
       return yield* HttpServerResponse.json({
         ...connectionView(added, origin),
-        ...(added.kind === "webhook" ? { secret: added.secret } : {}),
+        ...(added.kind === "webhook" || added.kind === "github" ? { secret: added.secret } : {}),
       });
     }
     const connectionMatch = connectionPath.exec(url.pathname);

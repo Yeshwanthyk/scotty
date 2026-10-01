@@ -115,6 +115,61 @@ Each firing records a run before starting anything. Event run IDs are `delivery:
 
 Deliveries use the plain delivery log. Concurrent attempts return the run's stored first answer, including when another attempt settles it before they take it. Runs link to sessions and read their turn outcome from the Session DO. Search uses the Creds DO index, including the automation name alongside the session's title, repository, branch, first prompt and key.
 
+### GitHub events and babysit
+
+Settings → Connections, `scotty connect github <name>` and `POST /api/connections`
+`{kind: "github", name}` create a GitHub connection in the same `connections` table,
+with `{kind: "github"}` in `config`. Creation shows the generated secret once and the
+`/hooks/<name>` URL to paste into GitHub's webhook settings; listing shows the URL without
+its secret. Select JSON payloads in GitHub. The secret is used as its full displayed string,
+including `whsec_`; GitHub does not base64-decode it.
+
+The Worker decodes signing headers into a webhook or GitHub delivery before reading the
+body. The Creds DO checks that its kind matches the connection, then verifies GitHub's
+`sha256=<hex>` as HMAC-SHA256 of the raw body bytes, using Web Crypto's constant-time
+verification. Missing or mismatched headers, an unknown connection, a bad signature or unreadable JSON are
+recorded rejections. GitHub has no timestamp header. Its delivery id is the event run's retry
+identity, as for plain webhooks: redelivery can add a duplicate delivery-log row, but adds no
+run or session event. GitHub connections feed automations only; without listeners a verified
+delivery is skipped with `no_automation`, with no run or session.
+
+The automation payload is GitHub's JSON object with a top-level `event` set from
+`X-GitHub-Event` (overwriting any body field of that name). All other fields keep their paths,
+such as `action`, `repository.full_name` and `check_run.conclusion`. Before any automation is
+fired, a `sender.login` equal to the `login` stored with the GitHub token is a delivery skipped
+with `own_github_identity`; it creates no run. No stored token means no self-event drop.
+
+A babysit automation steers the session that owns a PR's key. Start that session with
+`--session-key 'gh:owner/repo#42'`, then create and enable this automation (`POST
+/api/automations`, followed by `PATCH /api/automations/babysit` `{enabled: true}`):
+
+```json
+{
+  "name": "babysit",
+  "when": { "kind": "event", "connection": "github-events" },
+  "only": {
+    "event": "check_run",
+    "action": "completed",
+    "check_run.conclusion": "failure"
+  },
+  "key": "gh:{{repository.full_name}}#{{check_run.pull_requests.0.number}}",
+  "repo": "owner/repo",
+  "agent": "codex",
+  "prompt": "Fix the failed check {{check_run.name}} for PR #{{check_run.pull_requests.0.number}}: {{check_run.html_url}}"
+}
+```
+
+The existing dotted-path renderer reaches array indexes with `.0`; no special GitHub aliases
+are added. A check with no associated PR is a run skipped for a missing key field. The repo
+and agent must match the keyed session; a missing key owner starts a session as for other
+event automations. Optional review handling is a second event automation with the same key
+shape, `only` on `event: pull_request_review`, `action: submitted` and
+`review.state: changes_requested`, and PR number at `pull_request.number`.
+
+`e2e github` signs a check failure locally and proves a scripted session's second turn,
+idempotent redelivery, a listed bad signature and a skipped sender matching the stored login.
+No real GitHub webhook is needed. Driving and diagnosis: [GitHub events recipe](../.agents/skills/verify-scotty/features/github-events.md).
+
 ## Supervisor
 
 `scotty-sup` is the container's entrypoint. It listens on port 7000. The Session DO connects to it with `container.getTcpPort(7000)` and upgrades to a WebSocket. That traffic never leaves Cloudflare, so the supervisor needs no auth token and no public route.

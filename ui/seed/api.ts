@@ -301,6 +301,7 @@ const owner = {
 const hooks = {
   connections: new Map<string, ConnectionMetadata>([
     ["sentry", { name: "sentry", kind: "webhook", created: Date.now() - 6 * 864e5 }],
+    ["github-events", { name: "github-events", kind: "github", created: Date.now() - 864e5 }],
     [
       "linear",
       {
@@ -322,6 +323,30 @@ const hooks = {
     ],
   ]),
   deliveries: [
+    {
+      id: "8406f74c-fb1f-48fd-ac27-e48df5d9dce7",
+      connection: "github-events",
+      minutesAgo: 1,
+      outcome: "skipped",
+      reason: "no_automation",
+      session: null,
+    },
+    {
+      id: "f4a8ac65-66a1-4c75-bddd-d5f512d8ec06",
+      connection: "github-events",
+      minutesAgo: 3,
+      outcome: "accepted",
+      reason: null,
+      session: "d0cc0de5000000000000000000000002",
+    },
+    {
+      id: "f0e71f89-35b1-4114-99db-457353fc3c8b",
+      connection: "github-events",
+      minutesAgo: 2,
+      outcome: "skipped",
+      reason: "own_github_identity",
+      session: null,
+    },
     // Each accepted delivery made its session at the same minute (dummy.ts `minutesAgo`).
     {
       id: "msg_8aB3dX",
@@ -381,7 +406,7 @@ async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string,
     if (hooks.connections.has(name)) return fail(res, "That name is taken", 409, "exists");
     const checked = input.value;
     const row: ConnectionMetadata =
-      checked.kind === "webhook"
+      checked.kind === "webhook" || checked.kind === "github"
         ? { name, kind: checked.kind, created: Date.now() }
         : checked.kind === "token"
           ? {
@@ -397,7 +422,7 @@ async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string,
       res,
       {
         ...connectionView(row, `https://${req.headers.host ?? "localhost"}`),
-        ...(row.kind === "webhook"
+        ...(row.kind === "webhook" || row.kind === "github"
           ? { secret: `whsec_${Buffer.from(name.padEnd(24, "x")).toString("base64")}` }
           : {}),
       },

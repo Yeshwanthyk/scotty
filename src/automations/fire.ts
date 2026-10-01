@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect } from "effect";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import type CredsObject from "../creds/object.js";
@@ -74,20 +74,27 @@ export function fireRun(
 }
 
 // A delivery to a connection that automations listen on goes to them, one run each; the
-// connection then starts nothing itself. Undefined when none listens, or the body is not JSON
-// (the plain hook path rejects that).
+// connection then starts nothing itself. A GitHub connection only feeds automations.
 export function automationDelivery(
   sessions: Cloudflare.DurableObject<SessionObject>,
   credential: Credential,
   connection: string,
   delivery: string,
-  body: string,
+  payload: unknown,
+  kind: "webhook" | "github",
 ) {
   return Effect.gen(function* () {
-    const payload = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(body);
-    if (Option.isNone(payload)) return undefined;
-    const runs = yield* credential.receiveEvent(connection, delivery, payload.value);
-    if (runs === null) return undefined;
+    const runs = yield* credential.receiveEvent(connection, delivery, payload);
+    if (runs === null) {
+      if (kind === "webhook") return undefined;
+      yield* credential.recordDelivery({
+        id: delivery,
+        connection,
+        outcome: "skipped",
+        reason: "no_automation",
+      });
+      return yield* HttpServerResponse.json({ status: "skipped", reason: "no_automation" });
+    }
     // A received run without an answer yet is fired again; the run id keeps that a no-op.
     const answered = yield* Effect.forEach(
       runs,
