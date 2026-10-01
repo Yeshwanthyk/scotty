@@ -4,17 +4,14 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { connectionName, type DeliveryReason, Key } from "../creds/connections.js";
 import type CredsObject from "../creds/object.js";
-import type { DeliveryVerification } from "../creds/object.js";
 import { AgentKind } from "../session/events.js";
 import type SessionObject from "../session/object.js";
 import { Prompt, Repo, startSession } from "../http/start.js";
 import { titleFrom } from "../session/title.js";
 import { automationDelivery } from "../automations/fire.js";
-import { maxBodyBytes, SigningHeaders } from "./signature.js";
+import { maxBodyBytes } from "./signature.js";
 
 export const hookPath = /^\/hooks\/([^/]+)$/;
-
-const decodeHeaders = Schema.decodeUnknownOption(SigningHeaders);
 
 const Payload = Schema.Struct({
   repo: Repo,
@@ -26,20 +23,17 @@ const Payload = Schema.Struct({
   scripted: Schema.optional(Schema.Literal(true)),
 });
 const decodePayload = Schema.decodeUnknownEffect(Payload);
-const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 // A sender sees only the status and a code; the details are in `scotty deliveries`.
 const refuse = (status: number, code: string) =>
   HttpServerResponse.json({ error: { code, message: code.replaceAll("_", " ") } }, { status });
-const refusalStatus: Record<
-  Exclude<DeliveryVerification["verdict"], "ok" | "own_github_identity">,
-  number
-> = {
+const refusalStatus = {
   unknown_connection: 404,
   missing_headers: 400,
   bad_body: 400,
   bad_signature: 401,
   stale_timestamp: 401,
+  too_large: 413,
 };
 
 // POST /hooks/:name. Only a verified delivery reaches a session; every one that names a
@@ -54,17 +48,7 @@ export function hookHandler(
     const credential = credentials.getByName("owner");
     if (!connectionName.test(name)) return yield* refuse(404, "unknown_connection");
     if (request.method !== "POST") return yield* refuse(405, "use_post");
-    const headers = decodeHeaders(request.headers);
-    if (Option.isNone(headers)) {
-      yield* credential.recordDelivery({
-        id: "",
-        connection: name,
-        outcome: "rejected",
-        reason: "missing_headers",
-      });
-      return yield* refuse(400, "missing_headers");
-    }
-    const delivery = headers.value.id;
+    let delivery = "";
     const reject = (status: number, reason: typeof DeliveryReason.Type) =>
       credential
         .recordDelivery({ id: delivery, connection: name, outcome: "rejected", reason })
@@ -80,18 +64,19 @@ export function hookHandler(
       }),
       Stream.runDrain,
     );
-    if (size > maxBodyBytes) return yield* reject(413, "too_large");
-    const bytes = new Uint8Array(size);
+    const bytes = new Uint8Array(Math.min(size, maxBodyBytes + 1));
     let offset = 0;
     for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
+      const part = chunk.subarray(0, bytes.byteLength - offset);
+      bytes.set(part, offset);
+      offset += part.byteLength;
     }
     const verified = yield* credential.verifyDelivery({
       connection: name,
-      headers: headers.value,
+      headers: request.headers,
       body: bytes,
     });
+    delivery = verified.id;
     if (verified.verdict === "own_github_identity") {
       yield* credential.recordDelivery({
         id: delivery,
@@ -103,22 +88,10 @@ export function hookHandler(
     }
     if (verified.verdict !== "ok")
       return yield* reject(refusalStatus[verified.verdict], verified.verdict);
-    const json =
-      verified.kind === "github"
-        ? Option.some(verified.payload)
-        : decodeJson(new TextDecoder().decode(bytes));
-    if (Option.isNone(json)) return yield* reject(400, "bad_body");
     // A connection that automations listen on hands its deliveries to them.
-    const automated = yield* automationDelivery(
-      sessions,
-      credential,
-      name,
-      delivery,
-      json.value,
-      verified.kind,
-    );
+    const automated = yield* automationDelivery(sessions, credential, name, verified);
     if (automated !== undefined) return automated;
-    const payload = yield* decodePayload(json.value).pipe(Effect.option);
+    const payload = yield* decodePayload(verified.payload).pipe(Effect.option);
     if (Option.isNone(payload)) return yield* reject(400, "bad_body");
     const { repo, prompt, key, agent, title, scripted } = payload.value;
     const started = yield* startSession(sessions, credential, {

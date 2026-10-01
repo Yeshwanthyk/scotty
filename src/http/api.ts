@@ -213,11 +213,7 @@ export function apiHandler(
       });
     if (url.pathname === "/api/connections" && request.method === "POST") {
       const body = yield* Schema.decodeUnknownEffect(NewConnection)(yield* request.json).pipe(
-        Effect.catchTag("SchemaError", () =>
-          bad(
-            "Expected a named webhook or github, token {host, header, secret}, or mcp {url, secret}; use an HTTPS target and a non-reserved lowercase name",
-          ),
-        ),
+        Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
       const added = yield* credential.addConnection(body);
@@ -234,7 +230,7 @@ export function apiHandler(
         );
       return yield* HttpServerResponse.json({
         ...connectionView(added, origin),
-        ...(added.kind === "webhook" || added.kind === "github" ? { secret: added.secret } : {}),
+        ...(added.kind === "inbound" ? { secret: added.secret } : {}),
       });
     }
     const connectionMatch = connectionPath.exec(url.pathname);

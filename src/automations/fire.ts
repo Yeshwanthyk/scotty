@@ -79,14 +79,12 @@ export function automationDelivery(
   sessions: Cloudflare.DurableObject<SessionObject>,
   credential: Credential,
   connection: string,
-  delivery: string,
-  payload: unknown,
-  kind: "webhook" | "github",
+  verified: Extract<Effect.Success<ReturnType<Credential["verifyDelivery"]>>, { verdict: "ok" }>,
 ) {
   return Effect.gen(function* () {
-    const runs = yield* credential.receiveEvent(connection, delivery, payload);
+    const { id: delivery, runs, unhandled } = verified;
     if (runs === null) {
-      if (kind === "webhook") return undefined;
+      if (unhandled === "session") return undefined;
       yield* credential.recordDelivery({
         id: delivery,
         connection,

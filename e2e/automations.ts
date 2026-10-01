@@ -5,7 +5,7 @@ import {
   AutomationSwitched,
   CliFailure,
   client,
-  WebhookCreated as ConnectionCreated,
+  InboundCreated as ConnectionCreated,
   ConnectionRemoved,
   List,
   failure,
@@ -165,7 +165,7 @@ const program = Effect.gen(function* () {
   const hook = `e2e-${suffix}`;
   const connection = yield* request("/api/connections", ConnectionCreated, {
     method: "POST",
-    body: { kind: "webhook", name: hook },
+    body: { kind: "inbound", name: hook, signing: { kind: "preset", preset: "standard-webhooks" } },
   });
   const listener = `e2e-event-${suffix}`;
   yield* request("/api/automations", AutomationSwitched, {

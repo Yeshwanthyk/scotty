@@ -20,12 +20,13 @@ import {
   InternalConnectionName,
   connectionName,
 } from "../../src/creds/connections.js";
+import { SignaturePreset } from "../../src/hooks/config.js";
 
 // Pasted credentials arrive on stdin, never in argv or command output.
 export const connect = Command.make(
   "connect",
   {
-    kind: Argument.Literals("kind", ["webhook", "github", "token", "mcp"]),
+    kind: Argument.Literals("kind", [...SignaturePreset.literals, "token", "mcp"]),
     name: Argument.String("name"),
     host: Flag.String("host").pipe(Flag.optional),
     header: Flag.String("header").pipe(Flag.optional),
@@ -36,7 +37,7 @@ export const connect = Command.make(
       if (
         Option.isNone(
           Schema.decodeUnknownOption(
-            kind === "webhook" || kind === "github" ? ConnectionName : InternalConnectionName,
+            kind !== "token" && kind !== "mcp" ? ConnectionName : InternalConnectionName,
           )(name),
         )
       )
@@ -45,23 +46,27 @@ export const connect = Command.make(
           "connect",
         );
       if (
-        ((kind === "webhook" || kind === "github") &&
-          [host, header, endpoint].some(Option.isSome)) ||
+        (kind !== "token" && kind !== "mcp" && [host, header, endpoint].some(Option.isSome)) ||
         (kind === "token" &&
           (Option.isNone(host) || Option.isNone(header) || Option.isSome(endpoint))) ||
         (kind === "mcp" &&
           (Option.isNone(endpoint) || Option.isSome(host) || Option.isSome(header)))
       )
         return yield* usage(
-          "Token needs --host and --header; MCP needs --endpoint; webhook and GitHub need only a name",
+          "Token needs --host and --header; MCP needs --endpoint; inbound presets need only a name",
           "connect",
         );
       if ((kind === "token" || kind === "mcp") && process.stdin.isTTY)
         return yield* usage("Pipe the secret on stdin", "connect");
-      const secret = kind === "webhook" || kind === "github" ? "" : (yield* readStdin).trim();
+      const secret = process.stdin.isTTY ? "" : (yield* readStdin).trim();
       const input = yield* Schema.decodeUnknownEffect(NewConnection)(
-        kind === "webhook" || kind === "github"
-          ? { kind, name }
+        kind !== "token" && kind !== "mcp"
+          ? {
+              kind: "inbound",
+              name,
+              signing: { kind: "preset", preset: kind },
+              ...(secret === "" ? {} : { secret }),
+            }
           : kind === "token"
             ? {
                 kind,
@@ -88,15 +93,17 @@ export const connect = Command.make(
         created,
         [
           `${green("✓")} Connected ${bold(created.name)}`,
-          `  URL     ${created.kind === "webhook" || created.kind === "github" ? created.url : created.internalUrl}`,
-          ...(created.kind === "webhook" || created.kind === "github"
+          `  URL     ${created.kind === "inbound" ? created.url : created.internalUrl}`,
+          ...(created.kind === "inbound"
             ? [
-                `  Secret  ${created.secret}`,
-                dim(
-                  created.kind === "github"
-                    ? "  The secret is shown once. Paste it and the URL into GitHub webhook settings."
-                    : "  The secret is shown once. Senders sign with it (Standard Webhooks).",
-                ),
+                ...(created.secret === null
+                  ? []
+                  : [
+                      `  Secret  ${created.secret}`,
+                      dim(
+                        "  The secret is shown once. Paste it and the URL into the sender's webhook settings.",
+                      ),
+                    ]),
                 dim(`  See deliveries: scotty deliveries --connection ${created.name}`),
               ]
             : [
@@ -116,15 +123,13 @@ export const connections = Command.make("connections", {}, () =>
     yield* output(
       { connections: found },
       found.length === 0
-        ? "No connections yet. Add one: scotty connect webhook <name>"
+        ? "No connections yet. Add one: scotty connect standard-webhooks <name>"
         : table([
             ["NAME", "KIND", "URL"],
             ...found.map((connection) => [
               connection.name,
               connection.kind,
-              connection.kind === "webhook" || connection.kind === "github"
-                ? connection.url
-                : connection.internalUrl,
+              connection.kind === "inbound" ? connection.url : connection.internalUrl,
             ]),
           ]),
     );

@@ -44,7 +44,7 @@ ${bold("What sessions get")}
   rm skill <name>                 Delete a skill
 
 ${bold("Hooks")}
-  connect <kind> <name>           Add a webhook, GitHub, token or MCP connection
+  connect <preset|kind> <name>    Add an inbound, token or MCP connection
   connections                     List connections
   deliveries                      List deliveries, newest first (--connection <name>)
   rm connection <name>            Delete a connection
@@ -120,11 +120,10 @@ Print a session's raw events (one JSON object per line in a terminal).`,
   skill: `Usage: scotty skill
 Print the Scotty skill: how an agent sets up and drives Scotty with this CLI.
 Save it for your agent: scotty skill > ~/.claude/skills/scotty/SKILL.md`,
-  connect: `Usage: scotty connect webhook <name>
-       scotty connect github <name>
+  connect: `Usage: scotty connect standard-webhooks|github|linear|slack <name>
        scotty connect token <name> --host api.example.com --header "Authorization: Bearer"
        scotty connect mcp <name> --endpoint https://example.com/mcp
-Webhook and GitHub connections print their secret once and the hook URL. Pipe a token or MCP secret on stdin; it is never returned.
+Inbound presets print a generated secret once and the hook URL. Pipe a provider signing secret (Linear or Slack), token or MCP secret on stdin; pasted secrets are never returned.
 Agents reach token hosts at http://<name>.internal/api/ and MCP at /api/mcp.
 New connections are installed when a session starts or resumes after stopping.
 Example: cat /secure/token | scotty connect mcp linear --endpoint https://mcp.linear.app/mcp`,

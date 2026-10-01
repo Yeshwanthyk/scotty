@@ -124,6 +124,92 @@ Examples, each only data:
 - **Linear ticket worker:** a Linear webhook and the Linear MCP connection. An issue labelled `scotty` → `start` `linear:{issue.id}`; comments → `wake`; the issue closed → `end`.
 - **Linear triage:** a schedule automation whose prompt uses the Linear MCP connection.
 
+### Inbound signatures
+
+Inbound connections store `{kind: "inbound", signature: InboundConfig}`. The one Schema in
+`src/hooks/config.ts` owns the signing header, prefix, hex/base64 encoding, signing template,
+key encoding, delivery/event/timestamp sources, timestamp unit and optional tolerance,
+self-event rule, and the fallback when no automation listens. A source is `{kind: "header",
+name}` or `{kind: "payload", path}`; payload paths are dotted, including numeric array indexes.
+Templates accept only `{id}`, `{timestamp}` and exactly one `{body}`. HMAC-SHA256 is the only
+algorithm; raw body bytes are inserted unchanged. Space-separated signature candidates support
+Standard Webhooks key rotation. The key is raw text or base64 after a configured prefix.
+Creation rejects empty keys, missing key prefixes and malformed base64. A timestamp tolerance
+requires the timestamp to be signed, either through `{timestamp}` or as a field in the signed body.
+Custom configurations with a timestamp tolerance also require the delivery id to be signed
+through `{id}` or read from the body.
+Provider presets retain their delivery sources; Linear's timestamp is in its signed body,
+and GitHub has no timestamp tolerance.
+
+The presets are data, checked against provider documentation on 2026-09-30:
+
+| Preset              | Signature                             | Signed bytes              | Key                   | Delivery / event                               | Timestamp / tolerance                               |
+| ------------------- | ------------------------------------- | ------------------------- | --------------------- | ---------------------------------------------- | --------------------------------------------------- |
+| `standard-webhooks` | `webhook-signature`, `v1,`, base64    | `{id}.{timestamp}.{body}` | base64 after `whsec_` | header `webhook-id` / preserve payload         | header `webhook-timestamp`, seconds / 300 s         |
+| `github`            | `x-hub-signature-256`, `sha256=`, hex | `{body}`                  | raw text              | headers `x-github-delivery` / `x-github-event` | none                                                |
+| `linear`            | `linear-signature`, no prefix, hex    | `{body}`                  | raw text              | headers `linear-delivery` / `linear-event`     | payload `webhookTimestamp`, milliseconds / 60 s     |
+| `slack`             | `x-slack-signature`, `v0=`, hex       | `v0:{timestamp}:{body}`   | raw text              | payload `event_id` / `event.type`              | header `x-slack-request-timestamp`, seconds / 300 s |
+
+Checked [Standard Webhooks' specification](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md)
+for the HMAC template, key serialization, headers and multiple signatures;
+[GitHub's verification docs](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
+for raw-secret HMAC-SHA256 and the signature format;
+[Linear's webhook docs](https://linear.app/developers/webhooks) for the headers, hex digest,
+body timestamp in milliseconds and recommended one-minute tolerance; and
+[Slack's signing docs](https://docs.slack.dev/authentication/verifying-requests-from-slack/) and
+[Events API](https://docs.slack.dev/apis/events-api/) for its signing string, prefix, timestamp,
+five-minute tolerance, delivery id and nested event type. The Slack preset covers JSON event
+callbacks; URL verification and the Slack bot are separate work.
+
+Settings → Connections selects a webhook preset. CLI: `scotty connect
+standard-webhooks|github|linear|slack <name>`. The API creates a preset with:
+
+```json
+{ "kind": "inbound", "name": "linear-events", "signing": { "kind": "preset", "preset": "linear" } }
+```
+
+For a custom configuration, use `signing: {kind: "custom", config: <InboundConfig>}`. For
+example, this body uses a nested delivery id and no timestamp check:
+
+```json
+{
+  "kind": "inbound",
+  "name": "custom-events",
+  "signing": {
+    "kind": "custom",
+    "config": {
+      "header": "x-signature",
+      "prefix": "sha256=",
+      "encoding": "hex",
+      "signed": "{body}",
+      "key": { "encoding": "raw" },
+      "delivery": { "kind": "payload", "path": "delivery.id" },
+      "event": { "kind": "payload", "path": "event.type" },
+      "timestamp": null,
+      "selfEvent": null,
+      "unhandled": "skip"
+    }
+  }
+}
+```
+
+An optional `secret` accepts a provider-issued signing secret (Linear and Slack); the CLI
+reads it from stdin and Settings has a password field. Pasted secrets are never returned
+(`secret: null` on create). Without one, Creds generates and returns a secret once (`whsec_` for the presets; a custom base64 key uses its configured prefix).
+Listings show the configuration and hook URL, never the secret. Secrets stay in the Creds DO.
+
+The Worker caps the raw body and passes it with the headers to Creds. One Creds call reads
+the connection once, extracts JSON and signing values, verifies with Web Crypto's constant-time
+HMAC verification, checks timestamp tolerance and self-events, and records automation runs.
+Its returned payload and session fallback come from that same snapshot. A header event source
+requires an object and supplies its top-level automation `event`; a payload source preserves the nested `event` object
+so paths such as Slack's `event.channel` remain available. Every delivery uses the existing log
+and reason codes. Standard Webhooks keeps the direct `{repo, prompt, key}` session-start path
+when no automation listens; the other presets record and answer `skipped: no_automation`.
+
+The track stage will be torn down and recreated. Stored connection data is not converted;
+older implementation formats and old create requests are unsupported.
+
 ## Automations and runs
 
 An automation is created or replaced disabled. Calendar schedules use five cron fields and an explicit IANA zone; intervals count from enablement. A schedule more than ten minutes late is skipped. Event filters compare payload fields for equality or membership, and templates render the prompt and optional session key. A connection with listeners hands each verified delivery to those automations.
@@ -134,27 +220,18 @@ Deliveries use the plain delivery log. Concurrent attempts return the run's stor
 
 ### GitHub events and babysit
 
-Settings → Connections, `scotty connect github <name>` and `POST /api/connections`
-`{kind: "github", name}` create a GitHub connection in the same `connections` table,
-with `{kind: "github"}` in `config`. Creation shows the generated secret once and the
-`/hooks/<name>` URL to paste into GitHub's webhook settings; listing shows the URL without
-its secret. Select JSON payloads in GitHub. The secret is used as its full displayed string,
-including `whsec_`; GitHub does not base64-decode it.
+`scotty connect github <name>` and the inbound API's `github` preset create the connection
+and show its generated secret once. Paste its hook URL and whole secret into GitHub's webhook
+settings and select JSON payloads. The raw secret includes `whsec_`; GitHub does not decode it.
+The preset uses the shared verifier described in [Inbound signatures](#inbound-signatures).
 
-The Worker decodes signing headers into a webhook or GitHub delivery before reading the
-body. The Creds DO checks that its kind matches the connection, then verifies GitHub's
-`sha256=<hex>` as HMAC-SHA256 of the raw body bytes, using Web Crypto's constant-time
-verification. Missing or mismatched headers, an unknown connection, a bad signature or unreadable JSON are
-recorded rejections. GitHub has no timestamp header. Its delivery id is the event run's retry
-identity, as for plain webhooks: redelivery can add a duplicate delivery-log row, but adds no
-run or session event. GitHub connections feed automations only; without listeners a verified
-delivery is skipped with `no_automation`, with no run or session.
-
-The automation payload is GitHub's JSON object with a top-level `event` set from
-`X-GitHub-Event` (overwriting any body field of that name). All other fields keep their paths,
-such as `action`, `repository.full_name` and `check_run.conclusion`. Before any automation is
-fired, a `sender.login` equal to the `login` stored with the GitHub token is a delivery skipped
-with `own_github_identity`; it creates no run. No stored token means no self-event drop.
+The automation payload is GitHub's JSON object with top-level `event` supplied by
+`X-GitHub-Event`, overwriting a body field of that name. All other fields keep their paths,
+such as `action`, `repository.full_name` and `check_run.conclusion`. Its configured self-event
+rule compares `sender.login` with the `login` stored with the GitHub token; a match records
+`skipped: own_github_identity` and creates no run. With no token stored, no sender is dropped.
+GitHub has no timestamp check. Redelivery can add a duplicate delivery-log row but no run or
+session event; no listening automation records `skipped: no_automation`.
 
 A babysit automation steers the session that owns a PR's key. Start that session with
 `--session-key 'gh:owner/repo#42'`, then create and enable this automation (`POST

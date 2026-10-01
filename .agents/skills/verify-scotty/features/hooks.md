@@ -5,7 +5,7 @@ is recorded, accepted or not.
 
 ## Behaviours
 
-- **K1** `connect webhook <name>` prints a `whsec_` secret once and the hook URL; `connections`
+- **K1** `connect standard-webhooks <name>` prints a `whsec_` secret once and the hook URL; `connections`
   lists the connection without the secret.
 - **K2** Two signed deliveries to `/hooks/<name>` with one `key` give one session with two turns;
   the session's origin names the connection.
@@ -25,7 +25,7 @@ is recorded, accepted or not.
 
 ## Drive
 
-1. `connect webhook demo --json` into `01-connect.json`; keep the secret (K1). `connections`
+1. `connect standard-webhooks demo --json` into `01-connect.json`; keep the secret (K1). `connections`
    does not show it.
 2. Sign a body `{repo, prompt, key}` with Standard Webhooks (HMAC-SHA256 of
    `<id>.<timestamp>.<body>`, key is the base64 after `whsec_`) and POST it to the URL twice with

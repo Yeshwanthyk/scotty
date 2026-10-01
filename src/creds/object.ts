@@ -1,10 +1,16 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Schema } from "effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
-import { newSecret, type SigningHeaders, verifyGitHub, verifyWebhook } from "../hooks/signature.js";
+import {
+  maxBodyBytes,
+  newSecret,
+  readDelivery,
+  SigningValues,
+  verifySignature,
+} from "../hooks/signature.js";
 import {
   ConnectionConfig,
+  configFor,
   NewConnection,
   DeliveryOutcome,
   DeliveryReason,
@@ -16,6 +22,7 @@ import { AgentKind } from "../session/events.js";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
 import {
   Definition,
+  field,
   giveUpAfterMs,
   missedAfterMs,
   nextDue,
@@ -68,33 +75,10 @@ const ConnectionRow = Schema.Struct({
   created: Schema.Number,
 });
 const HookRow = Schema.Struct({
+  config: Schema.fromJsonString(ConnectionConfig.members[0]),
   secret: Schema.String,
-  kind: Schema.Literals(["webhook", "github"]),
 });
-const GitHubPayload = Schema.fromJsonString(
-  Schema.StructWithRest(
-    Schema.Struct({
-      sender: Schema.optionalKey(
-        Schema.StructWithRest(Schema.Struct({ login: Schema.String }), [
-          Schema.Record(Schema.String, Schema.Unknown),
-        ]),
-      ),
-    }),
-    [Schema.Record(Schema.String, Schema.Unknown)],
-  ),
-);
-export type DeliveryVerification =
-  | { verdict: "ok"; kind: "webhook" }
-  | { verdict: "ok"; kind: "github"; payload: typeof GitHubPayload.Type & { event: string } }
-  | {
-      verdict:
-        | "unknown_connection"
-        | "missing_headers"
-        | "bad_signature"
-        | "stale_timestamp"
-        | "bad_body"
-        | "own_github_identity";
-    };
+const decodeEventPayload = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Unknown));
 const DeliveryRow = Schema.Struct({
   id: Schema.String,
   connection: Schema.String,
@@ -311,24 +295,25 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               ),
             );
           }),
-        // Only a generated webhook secret is returned. Pasted credentials stay here.
+        // Only generated secrets are returned. Pasted credentials stay here.
         addConnection: (input: typeof NewConnection.Type) =>
           Effect.gen(function* () {
             const checked = yield* Schema.decodeUnknownEffect(NewConnection)(input).pipe(
               Effect.mapError(() => new CredentialStoreError({ message: "Invalid connection" })),
             );
-            const secret =
-              checked.kind === "webhook" || checked.kind === "github"
-                ? newSecret()
-                : checked.secret;
+            const config = configFor(checked);
+            const prefix =
+              config.kind === "inbound" && config.signature.key.encoding === "base64"
+                ? config.signature.key.prefix
+                : "whsec_";
+            const secret = checked.secret ?? newSecret(prefix);
             const created = Date.now();
-            const config = yield* Schema.decodeUnknownEffect(ConnectionConfig)(checked);
             const inserted =
               yield* sql`INSERT OR IGNORE INTO connections (name, config, secret, created) VALUES (${checked.name}, ${JSON.stringify(config)}, ${secret}, ${created}) RETURNING name`;
             if (inserted.length === 0) return { status: "exists" as const };
             const metadata = { status: "created" as const, name: checked.name, created };
-            return config.kind === "webhook" || config.kind === "github"
-              ? { ...metadata, ...config, secret }
+            return config.kind === "inbound"
+              ? { ...metadata, ...config, secret: checked.secret === undefined ? secret : null }
               : { ...metadata, ...config };
           }).pipe(
             Effect.mapError(
@@ -361,51 +346,83 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const rows = yield* sql`DELETE FROM connections WHERE name = ${name} RETURNING name`;
             return rows.length > 0;
           }),
-        // The secret stays in this object: the Worker hands over what the sender signed.
+        // Extraction, verification and routing use this one stored connection snapshot.
         verifyDelivery: (input: {
           connection: string;
-          headers: SigningHeaders;
+          headers: Readonly<Record<string, string>>;
           body: Uint8Array<ArrayBuffer>;
-        }): Effect.Effect<DeliveryVerification, SqlError | Schema.SchemaError> =>
+        }) =>
           Effect.gen(function* () {
             const row =
-              (yield* sql`SELECT secret, json_extract(config, '$.kind') AS kind FROM connections WHERE name = ${input.connection} AND json_extract(config, '$.kind') IN ('webhook', 'github')`)[0];
-            if (row === undefined) return { verdict: "unknown_connection" as const };
-            const { secret, kind } = yield* Schema.decodeUnknownEffect(HookRow)(row);
-            const checked = input.headers;
-            if (checked.kind !== kind) return { verdict: "missing_headers" as const };
-            const body = new TextDecoder().decode(input.body);
-            if (checked.kind === "webhook") {
-              const verdict = yield* Effect.promise(() =>
-                verifyWebhook({
-                  secret,
-                  id: checked.id,
-                  timestamp: checked.timestamp,
-                  signature: checked.signature,
-                  body,
-                  now: Date.now(),
-                }),
-              );
-              return verdict === "ok" ? { kind: checked.kind, verdict } : { verdict };
+              (yield* sql`SELECT secret, config FROM connections WHERE name = ${input.connection} AND json_extract(config, '$.kind') = 'inbound'`)[0];
+            if (row === undefined) return { verdict: "unknown_connection", id: "" } as const;
+            const { secret, config } = yield* Schema.decodeUnknownEffect(HookRow)(row);
+            if (input.body.byteLength > maxBodyBytes) {
+              const id =
+                config.signature.delivery.kind === "header"
+                  ? input.headers[config.signature.delivery.name.toLowerCase()]
+                  : undefined;
+              return {
+                verdict: "too_large",
+                id: Option.getOrElse(
+                  Schema.decodeUnknownOption(SigningValues.fields.id)(id),
+                  () => "",
+                ),
+              } as const;
             }
+            const decoded = readDelivery(config.signature, input.headers, input.body);
+            if (decoded.verdict !== "ok") return decoded;
+            const id = decoded.values.id;
             const verdict = yield* Effect.promise(() =>
-              verifyGitHub({
-                secret,
-                signature: checked.signature,
+              verifySignature(config.signature, {
                 body: input.body,
+                values: decoded.values,
+                secret,
+                now: Date.now(),
               }),
             );
-            if (verdict !== "ok") return { verdict };
-            const payload = Schema.decodeUnknownOption(GitHubPayload)(body);
-            if (Option.isNone(payload)) return { verdict: "bad_body" as const };
-            const identity = yield* gitHub;
-            if (identity !== null && payload.value.sender?.login === identity.login)
-              return { verdict: "own_github_identity" as const };
+            if (verdict !== "ok") return { verdict, id };
+            if (config.signature.selfEvent !== null) {
+              const identity = yield* gitHub;
+              if (
+                identity !== null &&
+                field(decoded.payload, config.signature.selfEvent.path) === identity.login
+              )
+                return { verdict: "own_github_identity", id } as const;
+            }
+            let payload: unknown = decoded.payload;
+            if (config.signature.event?.kind === "header") {
+              const checked = decodeEventPayload(payload);
+              if (Option.isNone(checked)) return { verdict: "bad_body", id } as const;
+              payload = { ...checked.value, event: decoded.values.event };
+            }
+            const listening = (yield* automations).filter(
+              (row) =>
+                row.definition.when.kind === "event" &&
+                row.definition.when.connection === input.connection,
+            );
+            const runs =
+              listening.length === 0
+                ? null
+                : yield* Effect.forEach(listening, (row) =>
+                    receive({
+                      automation: row.name,
+                      definition: row.definition,
+                      trigger: "event",
+                      source: `delivery:${input.connection}:${id}`,
+                      payload,
+                      delivery: id,
+                      ...(row.enabled === 1 ? {} : { skip: "off" }),
+                    }),
+                  );
+            if (runs !== null) yield* rearm;
             return {
-              kind: checked.kind,
-              verdict: "ok" as const,
-              payload: { ...payload.value, event: checked.event },
-            };
+              verdict: "ok",
+              id,
+              payload,
+              runs,
+              unhandled: config.signature.unhandled,
+            } as const;
           }),
         // Deliveries are a log; the oldest go as new ones arrive.
         recordDelivery: (delivery: {
@@ -488,30 +505,6 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             });
             yield* rearm;
             return run;
-          }),
-        // A verified delivery becomes one run per automation listening on its connection, or
-        // null when none listens. A repeated delivery finds the runs it made the first time.
-        receiveEvent: (connection: string, delivery: string, payload: unknown) =>
-          Effect.gen(function* () {
-            const listening = (yield* automations).filter(
-              (row) =>
-                row.definition.when.kind === "event" &&
-                row.definition.when.connection === connection,
-            );
-            if (listening.length === 0) return null;
-            const runs = yield* Effect.forEach(listening, (row) =>
-              receive({
-                automation: row.name,
-                definition: row.definition,
-                trigger: "event",
-                source: `delivery:${connection}:${delivery}`,
-                payload,
-                delivery,
-                ...(row.enabled === 1 ? {} : { skip: "off" }),
-              }),
-            );
-            yield* rearm;
-            return runs;
           }),
         // What a received run sends, or its stored answer if another attempt settled it.
         // Marks it tried, so the alarm fires it again only if this attempt never answers.

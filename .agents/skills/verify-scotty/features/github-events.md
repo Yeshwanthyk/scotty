@@ -58,8 +58,7 @@ also uses `SCOTTY_PRIVATE_TEST_REPO` and `gh` to prove private-repo pushes. Pass
 - HTTP 302 means `/hooks/*` lacks its Access bypass. HTTP 404 is a recorded
   `unknown_connection`; check the name and `scotty connections`.
 - HTTP 400 `missing_headers` means a required header is absent, empty or an id/event is too
-  long. `bad_body` means the verified payload was not a JSON object with a valid sender if
-  present. HTTP 413 means the raw body exceeded 64 KiB.
+  long. `bad_body` means unreadable JSON or a payload that is not an object. HTTP 413 means the raw body exceeded 64 KiB.
 - HTTP 401 `bad_signature`: sign the exact raw bytes using the secret as text, including
   `whsec_`; do not use Standard Webhooks' base64 key decoding or id/timestamp signing string.
 - `own_github_identity` comes only from the token's stored login. Check Settings → Accounts or

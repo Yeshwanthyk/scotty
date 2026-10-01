@@ -1,44 +1,54 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
+import { field } from "../automations/automation.js";
+import { signingKey, type InboundConfig } from "./config.js";
 
-// Standard Webhooks (https://www.standardwebhooks.com): the signature is
-// base64(HMAC-SHA256(key, `${id}.${timestamp}.${body}`)) under `v1,`, and the key is the base64
-// after `whsec_` in the secret.
-export const secretPrefix = "whsec_";
-export const maxSkewSeconds = 5 * 60;
 export const maxBodyBytes = 64 * 1024;
+const Text = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+export const SigningValues = Schema.Struct({
+  id: Text,
+  event: Schema.NullOr(Text),
+  timestamp: Schema.NullOr(Schema.String.check(Schema.isMinLength(1))),
+  signature: Schema.String.check(Schema.isMinLength(1)),
+});
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const decodeValues = Schema.decodeUnknownOption(SigningValues);
 
-// The headers each sender signs with, decoded where the request enters.
-const DeliveryId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
-export const SigningHeaders = Schema.Union([
-  Schema.Struct({
-    kind: Schema.tagDefaultOmit("webhook"),
-    id: DeliveryId,
-    timestamp: Schema.String.check(Schema.isMinLength(1)),
-    signature: Schema.String.check(Schema.isMinLength(1)),
-  }).pipe(
-    Schema.encodeKeys({
-      id: "webhook-id",
-      timestamp: "webhook-timestamp",
-      signature: "webhook-signature",
-    }),
-  ),
-  Schema.Struct({
-    kind: Schema.tagDefaultOmit("github"),
-    id: DeliveryId,
-    event: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
-    signature: Schema.String.check(Schema.isMinLength(1)),
-  }).pipe(
-    Schema.encodeKeys({
-      id: "x-github-delivery",
-      event: "x-github-event",
-      signature: "x-hub-signature-256",
-    }),
-  ),
-]);
-export type SigningHeaders = typeof SigningHeaders.Type;
+export function readDelivery(
+  config: InboundConfig,
+  headers: Readonly<Record<string, string>>,
+  body: Uint8Array,
+) {
+  const payload = decodeJson(new TextDecoder().decode(body));
+  if (Option.isNone(payload)) {
+    const id =
+      config.delivery.kind === "header" ? headers[config.delivery.name.toLowerCase()] : undefined;
+    return {
+      verdict: "bad_body",
+      id: Option.getOrElse(Schema.decodeUnknownOption(Text)(id), () => ""),
+    } as const;
+  }
+  const source = (location: typeof config.delivery): unknown =>
+    location.kind === "header"
+      ? headers[location.name.toLowerCase()]
+      : field(payload.value, location.path);
+  const id = source(config.delivery);
+  const timestamp =
+    config.timestamp === null ? null : (source(config.timestamp.source) ?? undefined);
+  const checked = decodeValues({
+    id,
+    event: config.event === null ? null : (source(config.event) ?? undefined),
+    timestamp: typeof timestamp === "number" ? String(timestamp) : timestamp,
+    signature: headers[config.header.toLowerCase()],
+  });
+  if (Option.isNone(checked))
+    return {
+      verdict: "missing_headers",
+      id: Option.getOrElse(Schema.decodeUnknownOption(Text)(id), () => ""),
+    } as const;
+  return { verdict: "ok", values: checked.value, payload: payload.value } as const;
+}
 
 const encoder = new TextEncoder();
-
 const bytesOf = (base64: string): Uint8Array<ArrayBuffer> | undefined => {
   try {
     return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
@@ -47,58 +57,63 @@ const bytesOf = (base64: string): Uint8Array<ArrayBuffer> | undefined => {
   }
 };
 
-export const newSecret = () => {
+export const newSecret = (prefix: string) => {
   const bytes = crypto.getRandomValues(new Uint8Array(24));
-  return `${secretPrefix}${btoa(String.fromCharCode(...bytes))}`;
+  return `${prefix}${btoa(String.fromCharCode(...bytes))}`;
 };
 
-export type Verdict = "ok" | "bad_signature" | "stale_timestamp";
-
-export async function verifyWebhook(input: {
-  secret: string;
-  id: string;
-  timestamp: string;
-  signature: string;
-  body: string;
-  now: number;
-}): Promise<Verdict> {
-  if (!/^\d{1,12}$/.test(input.timestamp)) return "bad_signature";
-  if (Math.abs(input.now / 1000 - Number(input.timestamp)) > maxSkewSeconds)
-    return "stale_timestamp";
-  const raw = input.secret.startsWith(secretPrefix)
-    ? bytesOf(input.secret.slice(secretPrefix.length))
-    : undefined;
+export async function verifySignature(
+  config: InboundConfig,
+  input: {
+    secret: string;
+    values: typeof SigningValues.Type;
+    body: Uint8Array<ArrayBuffer>;
+    now: number;
+  },
+): Promise<"ok" | "bad_signature" | "stale_timestamp"> {
+  const { id, timestamp, signature } = input.values;
+  if (config.timestamp !== null && (timestamp === null || !/^\d{1,16}$/.test(timestamp)))
+    return "bad_signature";
+  const raw = signingKey(config.key, input.secret);
   if (raw === undefined) return "bad_signature";
   const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, [
     "verify",
   ]);
-  const signed = encoder.encode(`${input.id}.${input.timestamp}.${input.body}`);
-  // The header may carry several signatures (a secret being rotated), each `v1,<base64>`.
-  for (const entry of input.signature.split(" ")) {
-    const [version, value] = entry.split(",");
-    const candidate = version === "v1" && value !== undefined ? bytesOf(value) : undefined;
-    // `verify` compares in constant time.
-    if (candidate !== undefined && (await crypto.subtle.verify("HMAC", key, candidate, signed)))
-      return "ok";
+  // Insert raw bytes, without decoding/re-encoding the body or interpreting values as templates.
+  const parts = config.signed
+    .split(/(\{id\}|\{timestamp\}|\{body\})/)
+    .map((part) =>
+      part === "{body}"
+        ? input.body
+        : encoder.encode(part === "{id}" ? id : part === "{timestamp}" ? (timestamp ?? "") : part),
+    );
+  const signed = new Uint8Array(parts.reduce((size, part) => size + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    signed.set(part, offset);
+    offset += part.length;
+  }
+  // Space-separated candidates also cover Standard Webhooks' secret rotation.
+  for (const entry of signature.split(" ")) {
+    if (!entry.startsWith(config.prefix)) continue;
+    const value = entry.slice(config.prefix.length);
+    const candidate =
+      config.encoding === "base64"
+        ? bytesOf(value)
+        : /^[0-9a-fA-F]{64}$/.test(value)
+          ? Uint8Array.from({ length: 32 }, (_, index) =>
+              Number.parseInt(value.slice(index * 2, index * 2 + 2), 16),
+            )
+          : undefined;
+    // Web Crypto compares HMACs in constant time.
+    if (candidate === undefined || !(await crypto.subtle.verify("HMAC", key, candidate, signed)))
+      continue;
+    if (config.timestamp !== null && config.timestamp.toleranceSeconds !== undefined) {
+      const at = Number(timestamp) * (config.timestamp.unit === "seconds" ? 1000 : 1);
+      if (Math.abs(input.now - at) > config.timestamp.toleranceSeconds * 1000)
+        return "stale_timestamp";
+    }
+    return "ok";
   }
   return "bad_signature";
-}
-
-export async function verifyGitHub(input: {
-  secret: string;
-  signature: string;
-  body: Uint8Array<ArrayBuffer>;
-}): Promise<Verdict> {
-  if (!/^sha256=[0-9a-fA-F]{64}$/.test(input.signature)) return "bad_signature";
-  const candidate = Uint8Array.from({ length: 32 }, (_, index) =>
-    Number.parseInt(input.signature.slice(7 + index * 2, 9 + index * 2), 16),
-  );
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(input.secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["verify"],
-  );
-  return (await crypto.subtle.verify("HMAC", key, candidate, input.body)) ? "ok" : "bad_signature";
 }
