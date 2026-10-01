@@ -153,11 +153,11 @@ npm run --silent e2e -- stop-resume   # stop, resume, crash mid-turn (SCOTTY_CON
 npm run --silent e2e -- github        # private clone, push scotty/<id> only, no token (SCOTTY_PRIVATE_TEST_REPO)
 npm run --silent e2e -- hatch         # preview routing (SCOTTY_HATCH_BASE)
 npm run --silent e2e -- hatch-env     # agent sets up the dev env and brings it back (SCOTTY_HATCH_TEST_REPO)
-npm run --silent e2e -- files         # screenshot and video in chat, from R2 (SCOTTY_HATCH_TEST_REPO)
+npm run --silent e2e -- files         # screenshot and video in chat, from R2 (--real: SCOTTY_HATCH_TEST_REPO)
 npm run --silent e2e -- settings      # skills and instructions reach new and resumed sessions
 npm run --silent e2e -- terminal      # the side panel shell; no token in its env
-# core, stop-resume, settings, terminal and hatch run the scripted stand-in (no sign-in);
-# --agent claude picks Claude's, --real the real agent. github, hatch-env and files run the real Codex
+# core, stop-resume, settings, terminal, hatch and files run the scripted stand-in (no sign-in);
+# --agent claude picks Claude's, --real the real agent. github and hatch-env run the real Codex
 npm run --silent e2e -- init --stage <name>   # scotty init in a terminal: Ctrl-C mid-deploy, again until live, teardown
 ```
 
