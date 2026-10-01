@@ -520,6 +520,8 @@ function Skills({ skills, reload }: { skills: SettingsState["skills"]; reload: (
 
 const reasons: Record<DeliveryReason, string> = {
   missing_headers: "Missing webhook headers",
+  unknown_connection: "Unknown connection",
+  own_github_identity: "Skipped: sent by Scotty’s GitHub account",
   too_large: "Body too large",
   bad_signature: "Bad signature",
   stale_timestamp: "Timestamp too old",
@@ -534,7 +536,7 @@ function Connections() {
   const [items, setItems] = useState<Connection[]>();
   const [log, setLog] = useState<Delivery[]>([]);
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<"webhook" | "token" | "mcp">("webhook");
+  const [kind, setKind] = useState<"webhook" | "github" | "token" | "mcp">("webhook");
   const [target, setTarget] = useState("");
   const [header, setHeader] = useState("Authorization: Bearer");
   const [secret, setSecret] = useState("");
@@ -572,8 +574,9 @@ function Connections() {
     <div className="settings-card">
       <p className="settings-intro">
         A webhook starts a session from a signed POST with {"{repo, prompt, key?}"}; a repeated key
-        steers that session. Tokens and MCP servers let agents call a service through its internal
-        URL. New connections are available when a session starts or resumes after stopping.
+        steers that session. GitHub events fire automations; paste the URL and generated secret into
+        GitHub webhook settings. Tokens and MCP servers let agents call a service through its
+        internal URL. New connections are available when a session starts or resumes after stopping.
       </p>
       {created ? (
         <div className="settings-row secret-row">
@@ -625,9 +628,11 @@ function Connections() {
                     <span className="quiet settings-size">{item.kind}</span>
                   </div>
                   <div className="settings-row-detail mono">
-                    {item.kind === "webhook" ? item.url : item.internalUrl}
+                    {item.kind === "webhook" || item.kind === "github"
+                      ? item.url
+                      : item.internalUrl}
                   </div>
-                  {item.kind !== "webhook" ? (
+                  {item.kind === "token" || item.kind === "mcp" ? (
                     <div className="settings-row-detail mono">
                       {item.kind === "token" ? `${item.host} · ${item.header}` : item.url}
                     </div>
@@ -655,9 +660,11 @@ function Connections() {
                         className="settings-dot"
                         data-tone={delivery.outcome === "rejected" ? "warn" : "good"}
                       />
-                      {delivery.outcome === "rejected"
+                      {delivery.outcome === "rejected" || delivery.outcome === "skipped"
                         ? delivery.reason === null
-                          ? "Rejected"
+                          ? delivery.outcome === "skipped"
+                            ? "Skipped"
+                            : "Rejected"
                           : reasons[delivery.reason]
                         : delivery.outcome === "duplicate"
                           ? "Already delivered"
@@ -689,7 +696,7 @@ function Connections() {
           event.preventDefault();
           void run(async () => {
             const result = await addConnection(
-              kind === "webhook"
+              kind === "webhook" || kind === "github"
                 ? { kind, name: name.trim() }
                 : kind === "token"
                   ? {
@@ -701,7 +708,7 @@ function Connections() {
                     }
                   : { kind, name: name.trim(), url: target.trim(), secret: secret.trim() },
             );
-            setCreated(result.kind === "webhook" ? result : undefined);
+            setCreated(result.kind === "webhook" || result.kind === "github" ? result : undefined);
             setSecret("");
             setTarget("");
             setCopied("");
@@ -715,7 +722,7 @@ function Connections() {
           value={kind}
           onChange={(event) => {
             const value = event.target.value;
-            if (value === "webhook" || value === "token" || value === "mcp") {
+            if (value === "webhook" || value === "github" || value === "token" || value === "mcp") {
               setKind(value);
               setSecret("");
               setTarget("");
@@ -723,6 +730,7 @@ function Connections() {
           }}
         >
           <option value="webhook">Webhook</option>
+          <option value="github">GitHub events</option>
           <option value="token">API token</option>
           <option value="mcp">MCP server</option>
         </select>
@@ -734,7 +742,7 @@ function Connections() {
           value={name}
           onChange={(event) => setName(event.target.value.toLowerCase())}
         />
-        {kind !== "webhook" ? (
+        {kind === "token" || kind === "mcp" ? (
           <>
             <input
               className="field"
@@ -772,7 +780,8 @@ function Connections() {
           disabled={
             busy ||
             name.trim() === "" ||
-            (kind !== "webhook" && (target.trim() === "" || secret.trim() === "")) ||
+            ((kind === "token" || kind === "mcp") &&
+              (target.trim() === "" || secret.trim() === "")) ||
             (kind === "token" && header.trim() === "")
           }
         >

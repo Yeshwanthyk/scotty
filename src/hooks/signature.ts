@@ -51,3 +51,22 @@ export async function verifyWebhook(input: {
   }
   return "bad_signature";
 }
+
+export async function verifyGitHub(input: {
+  secret: string;
+  signature: string;
+  body: Uint8Array<ArrayBuffer>;
+}): Promise<Verdict> {
+  if (!/^sha256=[0-9a-fA-F]{64}$/.test(input.signature)) return "bad_signature";
+  const candidate = Uint8Array.from({ length: 32 }, (_, index) =>
+    Number.parseInt(input.signature.slice(7 + index * 2, 9 + index * 2), 16),
+  );
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(input.secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  return (await crypto.subtle.verify("HMAC", key, candidate, input.body)) ? "ok" : "bad_signature";
+}

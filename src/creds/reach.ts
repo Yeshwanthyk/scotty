@@ -25,7 +25,10 @@ export const reachHandler = (
   Effect.gen(function* () {
     const incoming = new URL(request.url, "http://connection.internal");
     const credential = yield* credentials.getByName("owner").reachCredential(connection);
-    if (credential === null || credential.config.kind === "webhook")
+    if (
+      credential === null ||
+      (credential.config.kind !== "token" && credential.config.kind !== "mcp")
+    )
       return HttpServerResponse.text("Not found\n", { status: 404 });
     const config = credential.config;
     const base = config.kind === "token" ? "/api/" : "/api/mcp";

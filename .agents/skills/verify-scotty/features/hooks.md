@@ -42,4 +42,4 @@ is recorded, accepted or not.
 - What broke: `scotty deliveries` gives the reason for a rejection; `scotty log <id>` the session.
 - `/hooks/*` is the only path outside Cloudflare Access; a 302 to a login means the bypass app
   was not made, so redeploy.
-- A hit on an unknown connection name is 404 and not recorded.
+- A hit on an unknown connection name is 404 and recorded as `unknown_connection`.

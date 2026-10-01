@@ -1,4 +1,4 @@
-import { Effect, Schema, Stream } from "effect";
+import { Effect, Option, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type * as Cloudflare from "alchemy/Cloudflare";
@@ -22,7 +22,8 @@ const Payload = Schema.Struct({
   // The agent's scripted stand-in, for e2e, as on the API.
   scripted: Schema.optional(Schema.Literal(true)),
 });
-const decodePayload = Schema.decodeUnknownEffect(Schema.fromJsonString(Payload));
+const decodePayload = Schema.decodeUnknownEffect(Payload);
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 // A sender sees only the status and a code; the details are in `scotty deliveries`.
 const refuse = (status: number, code: string) =>
@@ -40,15 +41,11 @@ export function hookHandler(
     const credential = credentials.getByName("owner");
     if (!connectionName.test(name)) return yield* refuse(404, "unknown_connection");
     if (request.method !== "POST") return yield* refuse(405, "use_post");
-    const delivery = request.headers["webhook-id"] ?? "";
-    const timestamp = request.headers["webhook-timestamp"] ?? "";
-    const signature = request.headers["webhook-signature"] ?? "";
+    let delivery = request.headers["x-github-delivery"] ?? request.headers["webhook-id"] ?? "";
     const reject = (status: number, reason: typeof DeliveryReason.Type) =>
       credential
         .recordDelivery({ id: delivery, connection: name, outcome: "rejected", reason })
         .pipe(Effect.andThen(refuse(status, reason)));
-    if (delivery === "" || timestamp === "" || signature === "" || delivery.length > 256)
-      return yield* reject(400, "missing_headers");
     // Reads until the cap is passed and stops there; Content-Length is the sender's claim only.
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -67,21 +64,47 @@ export function hookHandler(
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    const body = new TextDecoder().decode(bytes);
-    const verdict = yield* credential.verifyDelivery({
+    const verified = yield* credential.verifyDelivery({
       connection: name,
-      id: delivery,
-      timestamp,
-      signature,
-      body,
+      headers: request.headers,
+      body: bytes,
     });
-    if (verdict === "unknown") return yield* refuse(404, "unknown_connection");
-    if (verdict !== "ok") return yield* reject(401, verdict);
+    delivery = verified.id;
+    if (verified.verdict === "own_github_identity") {
+      yield* credential.recordDelivery({
+        id: delivery,
+        connection: name,
+        outcome: "skipped",
+        reason: verified.verdict,
+      });
+      return yield* HttpServerResponse.json({ status: "skipped", reason: verified.verdict });
+    }
+    if (verified.verdict !== "ok")
+      return yield* reject(
+        verified.verdict === "unknown_connection"
+          ? 404
+          : verified.verdict === "missing_headers" || verified.verdict === "bad_body"
+            ? 400
+            : 401,
+        verified.verdict,
+      );
+    const json =
+      verified.kind === "github"
+        ? Option.some(verified.payload)
+        : decodeJson(new TextDecoder().decode(bytes));
+    if (Option.isNone(json)) return yield* reject(400, "bad_body");
     // A connection that automations listen on hands its deliveries to them.
-    const automated = yield* automationDelivery(sessions, credential, name, delivery, body);
+    const automated = yield* automationDelivery(
+      sessions,
+      credential,
+      name,
+      delivery,
+      json.value,
+      verified.kind,
+    );
     if (automated !== undefined) return automated;
-    const payload = yield* decodePayload(body).pipe(Effect.option);
-    if (payload._tag === "None") return yield* reject(400, "bad_body");
+    const payload = yield* decodePayload(json.value).pipe(Effect.option);
+    if (Option.isNone(payload)) return yield* reject(400, "bad_body");
     const { repo, prompt, key, agent, title, scripted } = payload.value;
     const started = yield* startSession(sessions, credential, {
       repo,

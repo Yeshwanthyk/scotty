@@ -44,7 +44,7 @@ ${bold("What sessions get")}
   rm skill <name>                 Delete a skill
 
 ${bold("Hooks")}
-  connect <kind> <name>           Add a webhook, token or MCP connection
+  connect <kind> <name>           Add a webhook, GitHub, token or MCP connection
   connections                     List connections
   deliveries                      List deliveries, newest first (--connection <name>)
   rm connection <name>            Delete a connection
@@ -121,9 +121,10 @@ Print a session's raw events (one JSON object per line in a terminal).`,
 Print the Scotty skill: how an agent sets up and drives Scotty with this CLI.
 Save it for your agent: scotty skill > ~/.claude/skills/scotty/SKILL.md`,
   connect: `Usage: scotty connect webhook <name>
+       scotty connect github <name>
        scotty connect token <name> --host api.example.com --header "Authorization: Bearer"
        scotty connect mcp <name> --endpoint https://example.com/mcp
-A webhook prints its secret once. Pipe a token or MCP secret on stdin; it is never returned.
+Webhook and GitHub connections print their secret once and the hook URL. Pipe a token or MCP secret on stdin; it is never returned.
 Agents reach token hosts at http://<name>.internal/api/ and MCP at /api/mcp.
 New connections are installed when a session starts or resumes after stopping.
 Example: cat /secure/token | scotty connect mcp linear --endpoint https://mcp.linear.app/mcp`,
@@ -131,12 +132,12 @@ Example: cat /secure/token | scotty connect mcp linear --endpoint https://mcp.li
 List connections (names, kinds and URLs; secrets are never shown again).`,
   deliveries: `Usage: scotty deliveries [--connection name]
 List what senders posted, newest first: accepted (with its session), rejected (and why) or
-duplicate. The last 200 are shown.`,
+duplicate, or skipped (and why). The last 200 are shown.`,
   automation: `Usage: scotty automation add|ls|enable|run|rm
 add <name> <owner/repo> <prompt> (--cron "<5 fields>" --tz <IANA zone> | --every <minutes> | --on <connection>)
     [--only field=value[,value…]] [--key template] [--agent codex|claude]
   Adds an automation, off; enable it to run. A calendar schedule is read in its zone; an interval
-  counts from when it is turned on; --on fires on each delivery to that webhook connection.
+  counts from when it is turned on; --on fires on each delivery to that connection.
   --only keeps payloads whose field (a.b for nested) is one of the values; repeat it for more.
   The prompt and --key take {{field}} from the payload (a schedule's payload is {"at": time}).
   A run whose key already has a session sends the prompt to that session.
