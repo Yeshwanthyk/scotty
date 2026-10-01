@@ -1,4 +1,4 @@
-import type { SessionEvent } from "./events.js";
+import type { SessionEvent, StopReason } from "./events.js";
 import type { Pending } from "./deadlines.js";
 
 type RequestBase = {
@@ -39,8 +39,14 @@ export type State = {
   readonly boot: string | undefined;
   readonly agentSession: string | undefined;
   readonly failure: { readonly code: string; readonly retryable: boolean } | undefined;
+  // Why the session last stopped; `agent` is the agent exiting in a running container.
+  readonly stop:
+    | { readonly reason: typeof StopReason.Type | "agent"; readonly exitCode?: number }
+    | undefined;
   readonly lastHelloSeq: number;
   readonly lastRedialSeq: number;
+  // The idle timeout the Session DO is checking; 0 once a prompt, turn or use overtakes it.
+  readonly idleSeq: number;
   readonly currentTurn: string;
   readonly turns: readonly Turn[];
   readonly requests: readonly Request[];
@@ -79,8 +85,10 @@ export const initial: State = {
   boot: undefined,
   agentSession: undefined,
   failure: undefined,
+  stop: undefined,
   lastHelloSeq: 0,
   lastRedialSeq: 0,
+  idleSeq: 0,
   currentTurn: "0",
   turns: [],
   requests: [],

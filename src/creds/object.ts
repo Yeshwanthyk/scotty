@@ -13,6 +13,9 @@ import {
 import { isLoopback } from "../loopback.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import type { SessionView } from "../session/view.js";
 import { exchangeCode, OAuthFailure, pollDevice, startDevice } from "./oauth.js";
 import {
   Definition,
@@ -236,7 +239,35 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       const sessionOf = (rows: ReadonlyArray<unknown>) =>
         Schema.decodeUnknownEffect(SessionRow)(rows[0]).pipe(Effect.map((row) => row.id));
 
+      // Every live socket here watches the session list.
+      const broadcast = (
+        frame: { kind: "session"; session: SessionView } | { kind: "removed"; id: string },
+      ) =>
+        Effect.gen(function* () {
+          const text = JSON.stringify(frame);
+          for (const socket of yield* state.getWebSockets())
+            yield* socket.send(text).pipe(Effect.ignoreCause);
+        });
+
       return {
+        // `/api/sessions/live`: the client reads the list once, then applies these frames.
+        fetch: Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.headers["upgrade"]?.toLowerCase() !== "websocket")
+            return HttpServerResponse.text("Expected a WebSocket", { status: 426 });
+          const [response] = yield* Cloudflare.upgrade();
+          return response;
+        }),
+        webSocketMessage: (socket: Cloudflare.WebSocket) =>
+          socket.close(1008, "Live sockets take no messages").pipe(Effect.ignoreCause),
+        webSocketClose: (socket: Cloudflare.WebSocket) =>
+          socket.close(1000, "").pipe(Effect.ignoreCause),
+        // A Session DO calls this when its list-visible view changes; a deleted session is quiet.
+        sessionChanged: (session: SessionView) =>
+          Effect.gen(function* () {
+            const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session.identity.id}`;
+            if (rows.length > 0) yield* broadcast({ kind: "session", session });
+          }),
         // The first caller for a key, or for a request id when there is no key, names the
         // session; later callers get that one. From here the session is listed and searchable.
         reserve: (input: {
@@ -301,6 +332,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             yield* sql`DELETE FROM session_keys WHERE id = ${id}`;
             yield* sql`DELETE FROM session_search WHERE id = ${id}`;
             yield* sql`DELETE FROM session_index WHERE id = ${id}`;
+            yield* broadcast({ kind: "removed", id });
           }),
         connections: () =>
           Effect.gen(function* () {

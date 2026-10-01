@@ -6,6 +6,8 @@ import { useSessions } from "../data/sessions-store";
 import {
   ago,
   archived,
+  dormant,
+  stopLabel,
   grouped,
   matchesFilter,
   statusLabel,
@@ -16,15 +18,23 @@ import {
 import { Icon, Spinner } from "./Icon";
 import { Menu } from "./Menu";
 
-export function StatusMark({ status }: { status: Status }) {
+export function StatusMark({ status, title }: { status: Status; title?: string }) {
   return (
-    <span className="status-mark" data-status={status} title={statusLabel[status]}>
+    <span
+      className="status-mark"
+      data-status={status}
+      title={title ?? statusLabel[status]}
+      role="img"
+      aria-label={title ?? statusLabel[status]}
+    >
       {status === "working" || status === "starting" ? (
         <Spinner size={13} />
       ) : status === "failed" ? (
         <Icon name="alert" size={14} />
       ) : status === "unseen" ? (
         <span className="dot" />
+      ) : status === "asleep" ? (
+        <Icon name="moon" size={13} />
       ) : status === "stopped" ? (
         <Icon name="branch" size={14} />
       ) : (
@@ -40,8 +50,8 @@ function Meta({ session, status }: { session: Session; status: Status }) {
   // Codex is the default; only other agents are named.
   const agent =
     session.display.agentKind === "claude" ? <span className="agent-tag">Claude</span> : null;
-  const loud =
-    status === "working" || status === "starting" || status === "failed" || status === "unseen";
+  // The spinner already says working; starting shares it, so only starting is spelled out.
+  const loud = status === "starting" || status === "failed" || status === "unseen";
   return (
     <span className="meta">
       {agent}
@@ -76,7 +86,14 @@ function Row({ session, current }: { session: Session; current: boolean }) {
       data-status={status}
       aria-current={current ? "page" : undefined}
     >
-      <StatusMark status={status} />
+      <StatusMark
+        status={status}
+        title={
+          status === "stopped" && session.authority.kind === "stable"
+            ? stopLabel(session.authority.stop)
+            : undefined
+        }
+      />
       <span className="title">{session.display.title}</span>
       <Meta session={session} status={status} />
     </Link>
@@ -93,10 +110,11 @@ function useMinuteTick() {
 }
 
 const archivedKey = "scotty.archivedOpen";
-function useArchivedOpen() {
+const stoppedKey = "scotty.stoppedOpen";
+function useSectionOpen(key: string) {
   const [open, setOpen] = useState(() => {
     try {
-      return localStorage.getItem(archivedKey) === "1";
+      return localStorage.getItem(key) === "1";
     } catch {
       return false;
     }
@@ -105,7 +123,7 @@ function useArchivedOpen() {
     if (next === open) return;
     setOpen(next);
     try {
-      localStorage.setItem(archivedKey, next ? "1" : "0");
+      localStorage.setItem(key, next ? "1" : "0");
     } catch {
       // Private windows can refuse storage; the section then starts closed.
     }
@@ -125,12 +143,17 @@ export function Sidebar({
   const params = useParams({ strict: false });
   const currentId = "sessionId" in params ? params.sessionId : undefined;
   useMinuteTick();
-  const [showArchived, toggleArchived] = useArchivedOpen();
+  const [showArchived, toggleArchived] = useSectionOpen(archivedKey);
+  const [showStopped, toggleStopped] = useSectionOpen(stoppedKey);
   const all = (list ?? []).filter(
     (session) =>
       (repo === "" || session.display.repository === repo) && matchesFilter(session, filter),
   );
-  const live = grouped(all.filter((session) => !archived(session)));
+  const live = grouped(all.filter((session) => !archived(session) && !dormant(statusOf(session))));
+  const stopped = all
+    .filter((session) => !archived(session) && dormant(statusOf(session)))
+    .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
+  const viewingStopped = stopped.some((session) => session.identity.id === currentId);
   const old = all
     .filter((session) => archived(session))
     .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
@@ -248,8 +271,34 @@ export function Sidebar({
             ))}
           </section>
         ))}
-        {list !== undefined && list.length > 0 && live.length === 0 && old.length === 0 ? (
+        {list !== undefined &&
+        list.length > 0 &&
+        live.length === 0 &&
+        stopped.length === 0 &&
+        old.length === 0 ? (
           <p className="sidebar-empty">Nothing matches.</p>
+        ) : null}
+        {stopped.length > 0 ? (
+          <details
+            className="archived-group"
+            open={showStopped || viewingStopped}
+            onToggle={(event) => {
+              // Opening for the session on screen doesn't change what the owner chose.
+              if (!viewingStopped) toggleStopped(event.currentTarget.open);
+            }}
+          >
+            <summary className="group-label">
+              <Icon name="chevronRight" size={12} />
+              Stopped · {stopped.length}
+            </summary>
+            {stopped.map((session) => (
+              <Row
+                key={session.identity.id}
+                session={session}
+                current={session.identity.id === currentId}
+              />
+            ))}
+          </details>
         ) : null}
         {old.length > 0 ? (
           <details

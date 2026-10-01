@@ -30,7 +30,11 @@ export const Url = Schema.String.check(Schema.isPattern(/^https:\/\/[^/]+\/?$/))
 export const Session = Schema.Struct({
   identity: Schema.Struct({ id: Schema.String }),
   authority: Schema.Union([
-    Schema.Struct({ kind: Schema.Literal("stable"), lifecycle: Schema.String }),
+    Schema.Struct({
+      kind: Schema.Literal("stable"),
+      lifecycle: Schema.String,
+      stop: Schema.optional(Schema.NullOr(Schema.Struct({ reason: Schema.String }))),
+    }),
     Schema.Struct({ kind: Schema.Literal("transitioning"), action: Schema.String }),
   ]),
   display: Schema.Struct({
@@ -40,7 +44,10 @@ export const Session = Schema.Struct({
     agentKind: Schema.String,
     activeAt: Schema.String,
   }),
-  progress: Schema.Struct({ working: Schema.Boolean }),
+  progress: Schema.Struct({
+    working: Schema.Boolean,
+    sleepsAt: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
 });
 export const View = Schema.Struct({ version: Schema.Number, session: Session });
 export const List = Schema.Struct({ version: Schema.Number, sessions: Schema.Array(Session) });
@@ -148,6 +155,7 @@ export const Saved = Schema.Struct({ saved: Schema.Boolean });
 export const SkillRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
 export const Conversation = Schema.Struct({
   version: Schema.Number,
+  currentTurn: Schema.String,
   turns: Schema.Array(
     Schema.Struct({
       id: Schema.String,

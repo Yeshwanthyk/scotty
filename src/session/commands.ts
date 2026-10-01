@@ -35,6 +35,8 @@ export type Command =
   | { readonly kind: "prompt"; readonly req: string; readonly turn: string; readonly text: string }
   | { readonly kind: "interrupt"; readonly req: string }
   | { readonly kind: "destroy" }
+  | { readonly kind: "watch"; readonly gen: number }
+  | { readonly kind: "idle"; readonly gen: number; readonly seq: number }
   | { readonly kind: "save"; readonly gen: number; readonly turn: string; readonly ack: number };
 
 const ackFor = (
@@ -64,6 +66,20 @@ export function command(state: State, event: SessionEvent): Command | undefined 
           : { kind: "container.start", gen: event.gen }
         : undefined;
     case "timeout":
+      if (event.op === "watch" && state.gen !== undefined) return { kind: "watch", gen: state.gen };
+      if (event.op === "idle")
+        return state.gen !== undefined && state.idleSeq === event.seq
+          ? { kind: "idle", gen: state.gen, seq: event.seq }
+          : undefined;
+      if (event.op === "stalled") {
+        const stall = state.requests.find(
+          (item) =>
+            item.seq === event.seq && item.kind === "interrupt" && item.status === "pending",
+        );
+        return stall !== undefined && state.ready && state.connected
+          ? { kind: "interrupt", req: stall.req }
+          : undefined;
+      }
       return event.op === "redial" &&
         state.gen !== undefined &&
         !state.connected &&

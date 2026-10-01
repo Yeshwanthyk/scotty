@@ -7,6 +7,7 @@ import { command } from "./commands.js";
 import { deadlines } from "./deadlines.js";
 import { SessionEvent } from "./events.js";
 import { fold, initial, invariants, type State } from "./fold.js";
+import { conversationView, sessionView } from "./view.js";
 
 const logs = join(process.cwd(), "e2e", "logs");
 const decodeLine = Schema.decodeUnknownSync(Schema.fromJsonString(SessionEvent));
@@ -129,5 +130,42 @@ describe("saved session event logs", () => {
         expect(event.at).toBeLessThan(containerDue ?? 0);
     }
     expect(state.phase).toBe("stopped");
+  });
+  it("replays a turn whose container stopped while the Session DO was away, ending it interrupted", async () => {
+    // Cloudflare evicted the quiet Session DO mid-turn and stopped its container; the redial on
+    // wake found it gone. The UI kept showing the reply as streaming.
+    const file = "2026-09-30-idle-container-stopped.jsonl";
+    const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
+    let state = initial;
+    const history: (typeof SessionEvent.Type)[] = [];
+    for (const [index, line] of lines.entries()) {
+      history.push(decodeLine(line));
+      state = replayLine(state, line, file, index + 1);
+    }
+    expect(state.phase).toBe("stopped");
+    expect(state.stop).toEqual({ reason: "gone" });
+    expect(state.currentTurn).toBe("1");
+    expect(sessionView("s", state).progress.working).toBe(false);
+    expect(conversationView(state, history).turns.map((turn) => turn.state)).toEqual(["aborted"]);
+  });
+  it("replays a queued prompt followed by a supervisor startup timeout", async () => {
+    const file = "2026-09-30-queued-prompt-startup-timeout.jsonl";
+    const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
+    let state = initial;
+    for (const [index, line] of lines.entries()) {
+      const event = decodeLine(line);
+      state = replayLine(state, line, file, index + 1);
+      if (event.kind === "prompt.requested") {
+        expect(state.ready).toBe(false);
+        expect(state.requests.find((request) => request.req === "s")?.status).toBe("pending");
+      }
+    }
+    expect(state).toMatchObject({
+      phase: "failed",
+      failure: { code: "timeout", retryable: true },
+      currentTurn: "1",
+    });
+    expect(state.requests.find((request) => request.req === "s")?.status).toBe("ended");
+    expect(state.turns.at(-1)?.state).toBe("interrupted");
   });
 });

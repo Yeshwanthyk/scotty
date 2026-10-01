@@ -31,14 +31,21 @@ const Create = Schema.Struct({
   scripted: Schema.optional(Schema.Literal(true)),
   // A second create with the same key steers the session the first one made.
   key: Schema.optional(Key),
+  // A shorter idle window, so e2e can watch a scripted session sleep.
+  idleAfter: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 10_000, maximum: 600_000 })),
+  ),
 });
 const connectionPath = /^\/api\/connections\/([^/]+)$/;
 const RequestId = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(256),
-  Schema.makeFilter((id) => id.trim() !== "" && !id.startsWith("initial:"), {
-    expected: "a non-blank request id that does not start with initial:",
-  }),
+  Schema.makeFilter(
+    (id) => id.trim() !== "" && !id.startsWith("initial:") && !id.startsWith("stalled:"),
+    {
+      expected: "a non-blank request id that does not start with initial: or stalled:",
+    },
+  ),
 );
 const decodeRequestId = Schema.decodeUnknownEffect(RequestId);
 const Steer = Schema.Struct({
@@ -81,7 +88,7 @@ const idempotencyKey = (header: string | undefined) =>
   decodeRequestId(header ?? crypto.randomUUID()).pipe(
     Effect.catchTag("SchemaError", () =>
       bad(
-        "Idempotency-Key must be non-blank, at most 256 characters, and must not start with initial:",
+        "Idempotency-Key must be non-blank, at most 256 characters, and must not start with initial: or stalled:",
       ),
     ),
   );
@@ -343,6 +350,8 @@ export function apiHandler(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      if (body.idleAfter !== undefined && body.scripted !== true)
+        return yield* bad("idleAfter is only for scripted sessions");
       const started = yield* startSession(sessions, credential, {
         repo: body.repo,
         prompt: body.prompt,
@@ -354,6 +363,7 @@ export function apiHandler(
           ? {}
           : { key: body.key, origin: { kind: "api", key: body.key } }),
         retry,
+        ...(body.idleAfter === undefined ? {} : { idleAfter: body.idleAfter }),
       });
       if (started.kind === "refused") return yield* bad(started.message, 400, started.hint);
       if (started.kind === "conflict")

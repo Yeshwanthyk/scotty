@@ -45,6 +45,7 @@ const paths = {
   diff: "M4.75 2.75v6.5M1.75 6h6M8.25 13h6M11.25 4.25V13",
   circle: "M8 13.25a5.25 5.25 0 1 0 0-10.5 5.25 5.25 0 0 0 0 10.5Z",
   send: "M8 12.75V3.5M4 7.25 8 3.25l4 4",
+  moon: "M13.25 9.6A5.5 5.5 0 1 1 6.4 2.75a4.5 4.5 0 0 0 6.85 6.85Z",
 } as const;
 
 export type IconName = keyof typeof paths;

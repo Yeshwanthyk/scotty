@@ -26,6 +26,16 @@ export function invariants(state: State): Violation[] {
     "failure recorded while active",
   );
   check(
+    (!has(state.pending, "idle") && !has(state.pending, "stalled")) || state.ready,
+    "pace",
+    "idle or stalled deadline before the workspace is ready",
+  );
+  check(
+    state.stop === undefined || state.phase === "stopped",
+    "stop",
+    "stop reason recorded while not stopped",
+  );
+  check(
     state.currentTurn === String(state.turns.length) &&
       state.turns.every((turn, i) => turn.turn === String(i)),
     "turns",
@@ -89,6 +99,11 @@ export function invariants(state: State): Violation[] {
     !has(state.pending, "redial") || (state.gen !== undefined && !state.connected && live(state)),
     "redial",
     "redial without disconnected generation",
+  );
+  check(
+    !has(state.pending, "watch") || (state.gen !== undefined && live(state)),
+    "watch",
+    "watch without a live generation",
   );
   return violations;
 }
