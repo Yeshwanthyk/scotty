@@ -434,13 +434,13 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           }),
         stop: (req?: string, target?: { repo: string; agent: typeof AgentKind.Type }) =>
           Effect.gen(function* () {
-            const answer = (kind: "ended" | "pending" | "conflict") => ({
+            const answer = (kind: "ended" | "absent" | "conflict") => ({
               kind,
               version: 1,
               session: sessionView(id(), log.state),
             });
             const created = log.state.created;
-            if (created === undefined || log.state.gen === undefined) return answer("pending");
+            if (created === undefined || log.state.gen === undefined) return answer("absent");
             if (
               target !== undefined &&
               (created.repo !== target.repo || created.agentKind !== target.agent)
@@ -460,7 +460,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 "api",
               ),
             );
-            return answer(live(log.state) ? "pending" : "ended");
+            return answer("ended");
           }),
         resume: () =>
           Effect.gen(function* () {

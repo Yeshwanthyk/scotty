@@ -68,9 +68,9 @@ firing is a run: skipped (and why), started, steered, ended or failed. Prompt ru
   run id (the start's retry key), then failed.
 - `runs` keeps the last 500 runs; the list shows 100.
 - Missing key fields skip before lookup; an omitted key on wake or end gives `no_session`.
-- An end for a reserved but uncreated session stays received and returns webhook 503 for retry;
-  it keeps the pinned target and key until the DO answers. A failed session counts as ended
-  after its stop is recorded, retaining its failure behavior.
+- An end for a reserved but uncreated session skips with `no_session`; the webhook returns 200.
+  If the session is then created, it runs until it idles or is stopped. A failed session counts
+  as ended after its stop is recorded, retaining its failure behavior.
 - `end` currently uses the ordinary stop path. Its `ended` stop reason waits for the owner's
   session-lifecycle merge; the run itself already says `ended`.
 
