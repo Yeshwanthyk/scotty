@@ -10,11 +10,12 @@ const fromSupervisor = {
 export const AgentKind = Schema.Literals(["codex", "claude"]);
 // `initial:` and `stalled:` ids belong to the Session DO's own requests.
 const ClientReq = Schema.String.check(Schema.isPattern(/^(?!initial:|stalled:)/));
-// Why a container stopped: the owner stopped it, it slept (idle) or was stopped for making no
+// Why a container stopped: the owner stopped it, an automation ended it, it slept (idle) or was stopped for making no
 // progress (stalled), it exited on its own (crashed with an exit code, or exited cleanly), a
 // deploy replaced it, or it was found gone without a recorded exit.
 export const StopReason = Schema.Literals([
   "user",
+  "ended",
   "idle",
   "stalled",
   "crashed",
@@ -144,6 +145,7 @@ export const SessionEvent = Schema.Union([
     ...envelope,
     kind: Schema.Literal("container.stopped"),
     gen: Schema.Natural,
+    req: Schema.optionalKey(ClientReq),
     // Absent in logs written before stops recorded a reason.
     reason: Schema.optionalKey(StopReason),
     exitCode: Schema.optionalKey(Schema.Int),

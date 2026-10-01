@@ -10,7 +10,13 @@ import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.
 import { fold, initial, type State } from "../../src/session/fold.ts";
 import { maxSearch, searchText } from "../../src/session/search.ts";
 import { conversationView, sessionView, turnOutcome } from "../../src/session/view.ts";
-import { AutomationName, Definition, nextDue, prepare } from "../../src/automations/automation.ts";
+import {
+  AutomationName,
+  Definition,
+  RunStatus,
+  nextDue,
+  prepare,
+} from "../../src/automations/automation.ts";
 import { readSkill } from "../../src/settings/skill.ts";
 import {
   type ConnectionMetadata,
@@ -201,7 +207,12 @@ const nextTemplate = (): Segment => {
   return segment;
 };
 
-function create(input: { title: string; repo: string; prompt: string }): Session {
+function create(input: {
+  title: string;
+  repo: string;
+  prompt: string;
+  baseBranch?: string;
+}): Session {
   const id = crypto.randomUUID().replaceAll("-", "");
   const template = templates.showcase[0];
   if (template?.kind !== "created") throw new Error("showcase log has no created event");
@@ -213,6 +224,7 @@ function create(input: { title: string; repo: string; prompt: string }): Session
     repo: input.repo,
     prompt: input.prompt,
     branch: `scotty/${id}`,
+    ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
   });
   append(session, { kind: "container.start", src: "session", gen: 1 });
   play(session, boot);
@@ -535,7 +547,7 @@ type SeedRun = {
   automation: string;
   trigger: "schedule" | "event" | "manual";
   at: number;
-  status: "received" | "skipped" | "failed" | "started" | "steered";
+  status: typeof RunStatus.Type;
   reason: string | null;
   session: string | null;
   delivery: string | null;
@@ -549,7 +561,7 @@ function seedRun(
   reason: string | null,
   session: string | null,
 ): SeedRun {
-  const event = automation === "triage-sentry";
+  const event = automation !== "daily-digest" && automation !== "weekly-deps";
   return {
     id: `5eed${String(index).padStart(28, "0")}`,
     automation,
@@ -590,7 +602,10 @@ const flows = {
         definition: {
           when: { kind: "event", connection: "sentry" },
           only: { action: ["created", "reopened"] },
+          except: { "data.issue.title": { kind: "contains", value: "[skip]" } },
+          action: "start",
           key: "issue-{{data.issue.id}}",
+          branch: "{{data.issue.branch}}",
           repo: "acme/storefront",
           agent: "codex",
           prompt: "Sentry reports {{data.issue.title}}. Find the cause and propose a fix.",
@@ -598,6 +613,40 @@ const flows = {
         enabled: true,
         nextDue: null,
         created: Date.now() - 6 * 864e5,
+      },
+    ],
+    [
+      "follow-up",
+      {
+        definition: {
+          when: { kind: "event", connection: "sentry" },
+          action: "wake",
+          only: { action: "comment", "data.issue.title": { kind: "contains", value: "checkout" } },
+          key: "issue-{{data.issue.id}}",
+          repo: "acme/storefront",
+          agent: "codex",
+          prompt: "Follow up on {{data.issue.title}}: {{data.comment}}",
+        },
+        enabled: true,
+        nextDue: null,
+        created: Date.now() - 5 * 864e5,
+      },
+    ],
+    [
+      "close-issue",
+      {
+        definition: {
+          when: { kind: "event", connection: "sentry" },
+          action: "end",
+          only: { action: "resolved" },
+          key: "issue-{{data.issue.id}}",
+          repo: "acme/storefront",
+          agent: "codex",
+          prompt: "Issue resolved.",
+        },
+        enabled: true,
+        nextDue: null,
+        created: Date.now() - 5 * 864e5,
       },
     ],
     [
@@ -616,6 +665,9 @@ const flows = {
     ],
   ]),
   runs: [
+    seedRun(5, "follow-up", 5, "skipped", "no_session", null),
+    seedRun(6, "close-issue", 10, "ended", null, "d0cc0de5000000000000000000000002"),
+    seedRun(7, "follow-up", 15, "steered", null, "d0cc0de5000000000000000000000002"),
     seedRun(0, "daily-digest", 60 * 5, "started", null, "d0cc0de5000000000000000000000009"),
     seedRun(1, "triage-sentry", 120, "started", null, "d0cc0de5000000000000000000000002"),
     seedRun(2, "triage-sentry", 75, "steered", null, "d0cc0de5000000000000000000000002"),
@@ -624,6 +676,7 @@ const flows = {
   ],
 };
 const NewAutomation = Schema.Struct({ name: AutomationName, ...Definition.fields });
+const sessionKeys = new Map<string, string>();
 const automationRow = (name: string) => {
   const row = flows.automations.get(name);
   if (row === undefined) return undefined;
@@ -661,7 +714,11 @@ async function automationsApi(
         .filter((run) => only === null || run.automation === only)
         .map((run) => {
           const session = run.session === null ? undefined : sessions.get(run.session);
-          return { ...run, outcome: session === undefined ? null : turnOutcome(session.state) };
+          return {
+            ...run,
+            outcome:
+              session === undefined || run.status === "ended" ? null : turnOutcome(session.state),
+          };
         }),
     });
   }
@@ -671,25 +728,62 @@ async function automationsApi(
   if (name === undefined || row === undefined) return fail(res, "Not found", 404, "not_found");
   if (match?.[2] !== undefined && method === "POST") {
     const prepared = prepare(row.definition, { at: new Date().toISOString() });
-    const session =
-      prepared.status === "received"
-        ? create({
-            title: prepared.prompt.slice(0, 60),
-            repo: row.definition.repo,
-            prompt: prepared.prompt,
-          })
+    const action = row.definition.action ?? "start";
+    const existing =
+      prepared.status === "received" && prepared.key !== null
+        ? sessionKeys.get(prepared.key)
         : undefined;
+    let session = existing === undefined ? undefined : sessions.get(existing);
     const run: SeedRun = {
       id: crypto.randomUUID().replaceAll("-", ""),
       automation: name,
       trigger: "manual",
       at: Date.now(),
-      status: session === undefined ? "skipped" : "started",
+      status: "skipped",
       reason: prepared.status === "skipped" ? prepared.reason : null,
       session: session?.id ?? null,
       delivery: null,
       key: prepared.status === "received" ? prepared.key : null,
     };
+    if (prepared.status === "received") {
+      if (session === undefined && action !== "start") run.reason = "no_session";
+      else if (action === "end" && session !== undefined) {
+        clearTimeout(session.timer);
+        session.timer = undefined;
+        session.queue = [];
+        session.playing = undefined;
+        append(session, {
+          kind: "container.stopped",
+          src: "api",
+          gen: session.state.gen,
+          req: `run:${run.id}`,
+        });
+        if (prepared.key !== null) sessionKeys.delete(prepared.key);
+        run.status = "ended";
+      } else if (session === undefined) {
+        session = create({
+          title: prepared.prompt.slice(0, 60),
+          repo: row.definition.repo,
+          prompt: prepared.prompt,
+          ...(prepared.branch === null ? {} : { baseBranch: prepared.branch }),
+        });
+        if (prepared.key !== null) sessionKeys.set(prepared.key, session.id);
+        run.status = "started";
+      } else {
+        append(session, {
+          kind: "prompt.requested",
+          src: "api",
+          req: `run:${run.id}`,
+          turn: session.state.currentTurn,
+          text: prepared.prompt,
+          images: [],
+        });
+        if (session.state.phase === "provisioning") play(session, boot);
+        play(session, nextTemplate(), { req: `run:${run.id}`, turn: session.state.currentTurn });
+        run.status = "steered";
+      }
+      run.session = session?.id ?? null;
+    }
     flows.runs.unshift(run);
     return json(res, run);
   }
@@ -983,6 +1077,10 @@ export function seedApi(): Plugin {
           ws.send(snapshot(session));
         });
       });
+      for (const session of sessions.values()) {
+        const key = session.state.created?.origin?.key;
+        if (key !== undefined) sessionKeys.set(key, session.id);
+      }
       server.middlewares.use((req, res, next) => {
         if (!req.url?.startsWith("/api/")) return next();
         handle(req, res).catch((error: unknown) => {

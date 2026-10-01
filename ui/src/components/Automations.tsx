@@ -16,6 +16,7 @@ import { message } from "../data/core";
 import { ago } from "../data/status";
 import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
+import { parseFilter, type Filter } from "../../../src/automations/automation";
 
 // The list of automations and their recent runs; `name` shows one, with its editor.
 export function AutomationsPage({ name }: { name?: string }) {
@@ -102,8 +103,8 @@ export function AutomationsPage({ name }: { name?: string }) {
             ) : null}
             <div className="settings-card">
               <p className="settings-intro">
-                An automation starts a session on a schedule or on a webhook delivery. A new or
-                changed one stays off until you switch it on.
+                An automation starts, wakes or ends a session on a schedule or a webhook delivery. A
+                new or changed one stays off until you switch it on.
               </p>
               {items.length === 0 ? (
                 <div className="settings-empty">No automations yet.</div>
@@ -226,6 +227,7 @@ const statusText: Record<Run["status"], string> = {
   failed: "Failed",
   started: "Started",
   steered: "Steered",
+  ended: "Ended",
 };
 const outcomeText: Record<NonNullable<Run["outcome"]>, string> = {
   working: "working",
@@ -287,11 +289,22 @@ type Draft = {
   minutes: string;
   connection: string;
   only: string;
+  except: string;
+  action: NonNullable<Definition["action"]>;
   key: string;
+  branch: string;
   repo: string;
   agent: Definition["agent"];
   prompt: string;
 };
+
+const filterDraft = (filter: Filter) =>
+  Object.entries(filter)
+    .map(
+      ([field, value]) =>
+        `${field}=${typeof value === "string" || !("kind" in value) ? JSON.stringify(value) : `~${JSON.stringify(value.value)}`}`,
+    )
+    .join("\n");
 
 const draftOf = (automation?: Automation): Draft => {
   const when = automation?.when;
@@ -302,29 +315,35 @@ const draftOf = (automation?: Automation): Draft => {
     tz: when?.kind === "calendar" ? when.tz : Intl.DateTimeFormat().resolvedOptions().timeZone,
     minutes: when?.kind === "interval" ? String(when.minutes) : "60",
     connection: when?.kind === "event" ? when.connection : "",
-    // One `field=value` per line; commas give one-of.
-    only: Object.entries(automation?.only ?? {})
-      .map(([field, value]) => `${field}=${typeof value === "string" ? value : value.join(",")}`)
-      .join("\n"),
+    only: filterDraft(automation?.only ?? {}),
+    except: filterDraft(automation?.except ?? {}),
+    action: automation?.action ?? "start",
     key: automation?.key ?? "",
+    branch: automation?.branch ?? "",
     repo: automation?.repo ?? "",
     agent: automation?.agent ?? "codex",
     prompt: automation?.prompt ?? "",
   };
 };
 
-const definitionOf = (draft: Draft): Definition => {
-  const only = Object.fromEntries(
-    draft.only
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "")
-      .map((line) => {
-        const at = line.indexOf("=");
-        const values = line.slice(at + 1).split(",");
-        return [line.slice(0, at).trim(), values.length === 1 ? line.slice(at + 1) : values];
-      }),
+const filterOf = (text: string) =>
+  parseFilter(
+    Object.fromEntries(
+      text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "")
+        .map((line) => {
+          const at = line.indexOf("=");
+          if (at < 1) throw new Error("Use field=value in filters");
+          return [line.slice(0, at).trim(), line.slice(at + 1)];
+        }),
+    ),
   );
+
+const definitionOf = (draft: Draft): Definition => {
+  const only = filterOf(draft.only);
+  const except = filterOf(draft.except);
   return {
     when:
       draft.kind === "calendar"
@@ -333,7 +352,10 @@ const definitionOf = (draft: Draft): Definition => {
           ? { kind: "interval", minutes: Number(draft.minutes) }
           : { kind: "event", connection: draft.connection.trim() },
     ...(Object.keys(only).length === 0 ? {} : { only }),
+    ...(Object.keys(except).length === 0 ? {} : { except }),
+    action: draft.action,
     ...(draft.key.trim() === "" ? {} : { key: draft.key.trim() }),
+    ...(draft.branch.trim() === "" ? {} : { branch: draft.branch.trim() }),
     repo: draft.repo.trim(),
     agent: draft.agent,
     prompt: draft.prompt,
@@ -391,6 +413,23 @@ function Editor({
           />
         </label>
       ) : null}
+      <div className="automation-choices" role="group" aria-label="Action">
+        {(["start", "wake", "end"] as const).map((action) => (
+          <button
+            key={action}
+            type="button"
+            className="filter-chip pressable"
+            aria-pressed={draft.action === action}
+            onClick={() => set({ action })}
+          >
+            {action === "start"
+              ? "Start or wake"
+              : action === "wake"
+                ? "Wake only"
+                : "End and release key"}
+          </button>
+        ))}
+      </div>
       <div className="automation-choices" role="group" aria-label="When it runs">
         {kinds.map((kind) => (
           <button
@@ -446,13 +485,23 @@ function Editor({
         </label>
       )}
       <label>
-        Only when (one field=value per line; commas for any of)
+        Only when (field=value; commas for any of; ~text for contains; quotes for literal text)
         <textarea
           className="field settings-text automation-only"
           placeholder="action=created,reopened"
           spellCheck={false}
           value={draft.only}
           onChange={(event) => set({ only: event.target.value })}
+        />
+      </label>
+      <label>
+        Except when (same filter syntax)
+        <textarea
+          className="field settings-text automation-only"
+          placeholder="issue.title=~[skip]"
+          spellCheck={false}
+          value={draft.except}
+          onChange={(event) => set({ except: event.target.value })}
         />
       </label>
       <div className="automation-pair">
@@ -466,7 +515,7 @@ function Editor({
           />
         </label>
         <label>
-          Session key (optional; a repeat steers that session)
+          Session key (optional for start; wake and end target its session)
           <input
             className="field mono"
             placeholder="issue-{{data.issue.id}}"
@@ -475,6 +524,15 @@ function Editor({
           />
         </label>
       </div>
+      <label>
+        Branch (optional; starts from this existing branch)
+        <input
+          className="field mono"
+          placeholder="{{pull_request.head.ref}}"
+          value={draft.branch}
+          onChange={(event) => set({ branch: event.target.value })}
+        />
+      </label>
       <div className="automation-choices" role="group" aria-label="Agent">
         {(["codex", "claude"] as const).map((agent) => (
           <button

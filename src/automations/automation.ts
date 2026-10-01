@@ -30,20 +30,28 @@ export const When = Schema.Union([
 ]);
 export type When = typeof When.Type;
 
-// Each field (a dotted path into the payload) must equal the value, or one of the values.
-export const Only = Schema.Record(
+const Match = Schema.Union([
+  Schema.String,
+  Schema.Array(Schema.String).check(Schema.isMinLength(1)),
+  Schema.Struct({ kind: Schema.Literal("contains"), value: Schema.String }),
+]);
+const Filter = Schema.Record(
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
-  Schema.Union([Schema.String, Schema.Array(Schema.String).check(Schema.isMinLength(1))]),
+  Match,
 ).check(Schema.isMaxProperties(20));
-export type Only = typeof Only.Type;
+export type Filter = typeof Filter.Type;
+export const Action = Schema.Literals(["start", "wake", "end"]);
 
 const Template = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64 * 1024));
 
-// What the owner (or an agent) writes. `key` and `prompt` are templates over the payload.
+// What the owner (or an agent) writes. The prompt, key and branch are payload templates.
 export const Definition = Schema.Struct({
   when: When,
-  only: Schema.optionalKey(Only),
+  only: Schema.optionalKey(Filter),
+  except: Schema.optionalKey(Filter),
+  action: Schema.optionalKey(Action),
   key: Schema.optionalKey(Template.check(Schema.isMaxLength(200))),
+  branch: Schema.optionalKey(Template.check(Schema.isMaxLength(200))),
   repo: Repo,
   agent: AgentKind,
   prompt: Template,
@@ -53,9 +61,15 @@ export const Definition = Schema.Struct({
 export type Definition = typeof Definition.Type;
 
 export const RunTrigger = Schema.Literals(["schedule", "event", "manual"]);
-// A run is received until a session takes its prompt (started or steered) or it fails; a run
-// that never fires is skipped, with the reason.
-export const RunStatus = Schema.Literals(["received", "skipped", "failed", "started", "steered"]);
+// A run stays received until its session answers the action; a skipped run names its reason.
+export const RunStatus = Schema.Literals([
+  "received",
+  "skipped",
+  "failed",
+  "started",
+  "steered",
+  "ended",
+]);
 
 // A schedule that wakes this long after its time is past: that run is skipped, not late.
 export const missedAfterMs = 10 * 60_000;
@@ -89,14 +103,48 @@ const scalar = (value: unknown) =>
     : undefined;
 
 // Why a payload does not match, or undefined when it does.
-export function mismatch(only: Only, payload: unknown): string | undefined {
-  for (const [path, wanted] of Object.entries(only)) {
-    const value = scalar(field(payload, path));
-    const allowed = typeof wanted === "string" ? [wanted] : wanted;
-    if (value === undefined || !allowed.includes(value))
-      return `${path} is ${value === undefined ? "missing" : JSON.stringify(value)}`;
+function mismatch(filter: Filter, payload: unknown): string | undefined {
+  for (const [path, wanted] of Object.entries(filter)) {
+    const raw = field(payload, path);
+    const value = scalar(raw);
+    const matched =
+      typeof wanted === "string"
+        ? value === wanted
+        : "kind" in wanted
+          ? typeof raw === "string" && raw.includes(wanted.value)
+          : value !== undefined && wanted.includes(value);
+    if (!matched) return `${path} is ${value === undefined ? "missing" : JSON.stringify(value)}`;
   }
   return undefined;
+}
+
+export function parseFilter(fields: Readonly<Record<string, string>>): Filter {
+  return Object.fromEntries<Filter[string]>(
+    Object.entries(fields).map(([path, text]): [string, Filter[string]] => {
+      if (text.startsWith("~")) {
+        const value = text.slice(1);
+        const literal = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.String))(value);
+        return [
+          path,
+          { kind: "contains", value: Result.isSuccess(literal) ? literal.success : value },
+        ];
+      }
+      const literal = Schema.decodeUnknownResult(Schema.fromJsonString(Match))(text);
+      if (Result.isSuccess(literal)) return [path, literal.success];
+      const values = text.split(",");
+      return [path, values.length === 1 ? text : values];
+    }),
+  );
+}
+
+export function describeFilter(filter: Filter): string[] {
+  return Object.entries(filter).map(([path, wanted]) =>
+    typeof wanted === "string"
+      ? `${path} is ${wanted}`
+      : "kind" in wanted
+        ? `${path} contains ${JSON.stringify(wanted.value)}`
+        : `${path} is ${wanted.join(" or ")}`,
+  );
 }
 
 // `{{a.b}}` becomes that payload field: text as it is, anything else as JSON.
@@ -120,14 +168,31 @@ export function render(
 export function prepare(definition: Definition, payload: unknown) {
   const reason = definition.only === undefined ? undefined : mismatch(definition.only, payload);
   if (reason !== undefined) return { status: "skipped" as const, reason: `not matched: ${reason}` };
+  if (
+    definition.except !== undefined &&
+    Object.keys(definition.except).length > 0 &&
+    mismatch(definition.except, payload) === undefined
+  )
+    return {
+      status: "skipped" as const,
+      reason: `except matched: ${describeFilter(definition.except).join(" and ")}`,
+    };
   const prompt = render(definition.prompt, payload);
   if (!prompt.ok) return { status: "skipped" as const, reason: `no ${prompt.missing} for prompt` };
   if (prompt.text.trim() === "") return { status: "skipped" as const, reason: "empty prompt" };
-  if (definition.key === undefined)
-    return { status: "received" as const, prompt: prompt.text, key: null };
-  const key = render(definition.key, payload);
+  const branch =
+    definition.branch === undefined
+      ? { ok: true as const, text: null }
+      : render(definition.branch, payload);
+  if (!branch.ok) return { status: "skipped" as const, reason: `no ${branch.missing} for branch` };
+  if (branch.text !== null && (branch.text.trim() === "" || branch.text.length > 200))
+    return { status: "skipped" as const, reason: "branch is empty or too long" };
+  const key =
+    definition.key === undefined
+      ? { ok: true as const, text: null }
+      : render(definition.key, payload);
   if (!key.ok) return { status: "skipped" as const, reason: `no ${key.missing} for key` };
-  if (key.text === "" || key.text.length > 200)
+  if (key.text !== null && (key.text === "" || key.text.length > 200))
     return { status: "skipped" as const, reason: "key is empty or too long" };
-  return { status: "received" as const, prompt: prompt.text, key: key.text };
+  return { status: "received" as const, prompt: prompt.text, key: key.text, branch: branch.text };
 }

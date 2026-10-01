@@ -63,6 +63,8 @@ export function stopLabel(stop: { reason: string; exitCode?: number } | null | u
   switch (stop?.reason) {
     case "user":
       return "Stopped by you";
+    case "ended":
+      return "Ended by an automation";
     case "stalled":
       return "Stopped — no output";
     case "crashed":
@@ -97,6 +99,8 @@ export function stopSentence(stop: { reason: string; exitCode?: number } | null 
   switch (stop?.reason) {
     case "user":
       return "You stopped this session.";
+    case "ended":
+      return "An automation ended this session.";
     case "stalled":
       return "Stopped after 30 minutes with no output from the agent.";
     case "crashed":

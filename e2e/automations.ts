@@ -7,15 +7,20 @@ import {
   client,
   InboundCreated as ConnectionCreated,
   ConnectionRemoved,
+  Created,
   List,
   failure,
   Runs,
+  RunFired,
+  Reply,
   target,
   View,
 } from "../cli/client.js";
 import { agent, prompt, real, sessionAgent } from "./lib/agent.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 import { Log, waiter } from "./lib/wait.js";
+import { fold, initial } from "../src/session/fold.js";
+import type { Action } from "../src/automations/automation.js";
 
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("automations", message, "scotty runs"));
@@ -159,6 +164,9 @@ const program = Effect.gen(function* () {
     "The run's turn did not complete",
   );
   console.log("The run shows its turn completed");
+  const mainWorkspace = (yield* request(`/api/sessions/${session}/log`, Log)).find(
+    (event) => event.kind === "workspace.ready",
+  );
   yield* request(`/api/sessions/${session}/stop`, View, { method: "POST" }).pipe(Effect.ignore);
 
   // 2. A delivery an event automation's `only` does not match is recorded as a skip.
@@ -168,16 +176,21 @@ const program = Effect.gen(function* () {
     body: { kind: "inbound", name: hook, signing: { kind: "preset", preset: "standard-webhooks" } },
   });
   const listener = `e2e-event-${suffix}`;
+  const startDefinition = {
+    when: { kind: "event", connection: hook },
+    only: { action: ["opened", "reopened"], "issue.title": { kind: "contains", value: "issue" } },
+    except: { "issue.title": { kind: "contains", value: "[skip]" } },
+    key: "issue-{{issue.id}}",
+    branch: "{{issue.branch}}",
+    repo: fixtureRepo,
+    prompt: prompt("Look at {{issue.title}}", "say {{issue.title}}"),
+    ...sessionAgent,
+  };
   yield* request("/api/automations", AutomationSwitched, {
     method: "POST",
     body: {
       name: listener,
-      when: { kind: "event", connection: hook },
-      only: { action: ["opened", "reopened"] },
-      key: "issue-{{issue.id}}",
-      repo: fixtureRepo,
-      prompt: prompt("Look at {{issue.title}}", "say {{issue.title}}"),
-      ...sessionAgent,
+      ...startDefinition,
     },
   });
   yield* request(`/api/automations/${listener}`, AutomationSwitched, {
@@ -205,12 +218,17 @@ const program = Effect.gen(function* () {
 
   // A repeated event preserves a run's start or steer and appends no prompt to its session.
   let eventSession: string | null = null;
+  const startDeliveries: { delivery: string; body: unknown; status: string }[] = [];
   for (const [title, status] of [
     ["first", "started"],
     ["second", "steered"],
-  ]) {
+  ] as const) {
     const delivery = `msg_${crypto.randomUUID()}`;
-    const body = { action: "opened", issue: { id: issue, title } };
+    const body = {
+      action: "opened",
+      issue: { id: issue, title: `${title} issue`, branch: "automation-base" },
+    };
+    startDeliveries.push({ delivery, body, status });
     const answers = yield* Effect.all(
       [1, 2].map(() => deliver(url, hook, connection.secret, body, delivery)),
       { concurrency: "unbounded" },
@@ -256,9 +274,280 @@ const program = Effect.gen(function* () {
     hits.sessions.some((session) => session.identity.id === eventSession),
     "Searching the automation's name did not find its session",
   );
-  if (eventSession !== null)
-    yield* request(`/api/sessions/${eventSession}/stop`, View, { method: "POST" });
   console.log("Repeated events keep one run and preserve start and steer outcomes");
+
+  if (eventSession === null)
+    return yield* failure("automations", "No event session", "scotty runs");
+  const prefix = `/api/sessions/${eventSession}`;
+  const events = () => request(`${prefix}/log`, Log);
+  const history = yield* events();
+  const created = history.find((event) => event.kind === "created");
+  const workspace = history.find((event) => event.kind === "workspace.ready");
+  yield* check(
+    created?.kind === "created" &&
+      created.baseBranch === "automation-base" &&
+      created.branch === `scotty/${eventSession}` &&
+      workspace?.kind === "workspace.ready" &&
+      workspace.base === "automation-base" &&
+      workspace.branch === created.branch &&
+      mainWorkspace?.kind === "workspace.ready" &&
+      workspace.commit !== mainWorkspace.commit,
+    "The templated branch was not cloned as the work branch's base",
+  );
+
+  for (const [title, reason] of [
+    ["unrelated", "not matched: issue.title"],
+    ["[skip] issue", "except matched: issue.title"],
+  ]) {
+    const answer = yield* deliver(url, hook, connection.secret, {
+      action: "opened",
+      issue: { id: issue, title, branch: "automation-base" },
+    });
+    const received = yield* Schema.decodeUnknownEffect(Answer)(answer.body);
+    yield* check(
+      answer.status === 200 &&
+        received.runs[0]?.status === "skipped" &&
+        received.runs[0]?.reason?.startsWith(reason) === true,
+      `Filter did not skip ${title}`,
+    );
+  }
+  const missing = yield* deliver(url, hook, connection.secret, {
+    action: "opened",
+    issue: { id: issue, title: "an issue" },
+  });
+  const missingBranch = yield* Schema.decodeUnknownEffect(Answer)(missing.body);
+  yield* check(
+    missingBranch.runs[0]?.status === "skipped" &&
+      missingBranch.runs[0]?.reason === "no issue.branch for branch",
+    "A missing branch field was not skipped",
+  );
+  yield* check(
+    JSON.stringify(yield* events()) === JSON.stringify(history),
+    "Filtered or missing-branch events reached the session",
+  );
+  console.log("Contains, except and missing branch fields skip with the matching rule");
+
+  const putAction = (action: typeof Action.Type, key: string, repo = fixtureRepo) =>
+    request(`/api/automations/${listener}`, AutomationSwitched, {
+      method: "PUT",
+      body: {
+        when: { kind: "event", connection: hook },
+        action,
+        key,
+        repo,
+        prompt: prompt("Reply with the word awake.", "say awake"),
+        ...sessionAgent,
+      },
+    });
+  const runNow = () =>
+    request(`/api/automations/${listener}/run`, RunFired, { method: "POST", body: {} });
+  const absentKey = `absent-${issue}`;
+  yield* putAction("wake", absentKey);
+  const noSession = yield* runNow();
+  yield* check(
+    noSession.status === "skipped" &&
+      noSession.reason === "no_session" &&
+      noSession.session === null,
+    "Wake without a session did not skip",
+  );
+  yield* check(
+    (yield* request(`/api/sessions?q=${absentKey}`, List)).sessions.length === 0,
+    "Wake created a session",
+  );
+  yield* putAction("end", absentKey);
+  const noEnd = yield* runNow();
+  yield* check(
+    noEnd.status === "skipped" && noEnd.reason === "no_session",
+    "End without a session did not skip",
+  );
+
+  const key = `issue-${issue}`;
+  yield* putAction("wake", key);
+  const turn = (yield* events()).reduce(fold, initial).currentTurn;
+  const woke = yield* runNow();
+  yield* check(
+    woke.status === "steered" && woke.session === eventSession,
+    "Wake did not steer the key's session",
+  );
+  yield* waiter(request, prefix)(events, (log) =>
+    log.some((event) => event.kind === "save.done" && event.turn === turn),
+  );
+
+  // API retry ids also keep the session they steered, independently of its routing key.
+  const retry = `api-${suffix}`;
+  const retryBody = {
+    title: "Retry identity",
+    repo: fixtureRepo,
+    key,
+    prompt: prompt("Say retry.", "say retry"),
+    ...sessionAgent,
+  };
+  const retryTurn = (yield* events()).reduce(fold, initial).currentTurn;
+  yield* request("/api/sessions", Created, { method: "POST", key: retry, body: retryBody });
+  yield* waiter(request, prefix)(events, (log) =>
+    log.some((event) => event.kind === "save.done" && event.turn === retryTurn),
+  );
+
+  yield* putAction("end", key, "octocat/Hello-World");
+  yield* request(`/api/automations/${listener}`, AutomationSwitched, {
+    method: "PATCH",
+    body: { enabled: true },
+  });
+  const beforeConflict = yield* events();
+  const conflict = yield* deliver(url, hook, connection.secret, {});
+  const conflictRun = (yield* Schema.decodeUnknownEffect(Answer)(conflict.body)).runs[0];
+  yield* check(
+    conflict.status === 200 &&
+      conflictRun?.status === "failed" &&
+      conflictRun.reason === "key or retry id used by another repo, agent or prompt" &&
+      JSON.stringify(yield* events()) === JSON.stringify(beforeConflict),
+    "An end with a mismatched repo was not refused without stopping the session",
+  );
+
+  yield* putAction("end", key);
+  yield* request(`/api/automations/${listener}`, AutomationSwitched, {
+    method: "PATCH",
+    body: { enabled: true },
+  });
+  const endDelivery = `msg_${crypto.randomUUID()}`;
+  const ended = yield* deliver(url, hook, connection.secret, {}, endDelivery);
+  const endedRun = (yield* Schema.decodeUnknownEffect(Answer)(ended.body)).runs[0];
+  yield* check(
+    ended.status === 200 && endedRun?.status === "ended" && endedRun.session === eventSession,
+    "End did not reach the key's session",
+  );
+  const stopped = yield* request(prefix, View);
+  yield* check(
+    stopped.session.authority.kind === "stable" &&
+      stopped.session.authority.lifecycle === "stopped",
+    "End did not stop the session",
+  );
+  yield* check(
+    (yield* events()).filter(
+      (event) =>
+        event.kind === "container.stopped" &&
+        event.req === `run:${endedRun?.id}` &&
+        event.reason === "ended",
+    ).length === 1,
+    "End's stop was not recorded with reason ended",
+  );
+
+  const ownerTurn = (yield* events()).reduce(fold, initial).currentTurn;
+  yield* request(`${prefix}/steer`, Reply, {
+    method: "POST",
+    body: { turn: ownerTurn, text: prompt("Reply with the word resumed.", "say resumed") },
+  });
+  yield* waiter(request, prefix)(events, (log) =>
+    log.some((event) => event.kind === "save.done" && event.turn === ownerTurn),
+  );
+  const resumed = yield* events();
+  // This goes directly to the DO with the end's request id, bypassing settled-run dedupe.
+  yield* request(`${prefix}/stop`, View, { method: "POST", key: `run:${endedRun?.id}` });
+  yield* check(
+    JSON.stringify(yield* events()) === JSON.stringify(resumed),
+    "The Session DO repeated a stop request after owner resume",
+  );
+  const again = yield* deliver(url, hook, connection.secret, {}, endDelivery);
+  yield* check(
+    (yield* Schema.decodeUnknownEffect(Answer)(again.body)).runs[0]?.status === "ended" &&
+      JSON.stringify(yield* events()) === JSON.stringify(resumed),
+    "An end retry stopped the owner-resumed session",
+  );
+
+  yield* putAction("wake", key);
+  const released = yield* runNow();
+  yield* check(
+    released.status === "skipped" && released.reason === "no_session",
+    "An ended key still reached its old session",
+  );
+  yield* putAction("start", key);
+  const fresh = yield* runNow();
+  yield* check(
+    fresh.status === "started" && fresh.session !== null && fresh.session !== eventSession,
+    "Start reused the ended session's key reservation",
+  );
+  const apiRetry = yield* request("/api/sessions", Created, {
+    method: "POST",
+    key: retry,
+    body: retryBody,
+  });
+  yield* check(
+    apiRetry.id === eventSession &&
+      apiRetry.steered === false &&
+      JSON.stringify(yield* events()) === JSON.stringify(resumed),
+    "A keyed API retry followed the replacement session",
+  );
+
+  // Prune the 500-run history, then replay old requests with the key held by a replacement.
+  if (fresh.session === null)
+    return yield* failure("automations", "No replacement session", "scotty runs");
+  const replacement = `/api/sessions/${fresh.session}`;
+  yield* waiter(request, replacement)(
+    () => request(`${replacement}/log`, Log),
+    (log) => log.some((event) => event.kind === "save.done" && event.turn === "0"),
+  );
+  const replacementHistory = yield* request(`${replacement}/log`, Log);
+  yield* putAction("end", absentKey);
+  yield* Effect.forEach(Array.from({ length: 501 }), () => runNow(), {
+    concurrency: 8,
+    discard: true,
+  });
+  yield* check(
+    !(yield* runsOf(listener)).runs.some((run) => run.id === endedRun?.id),
+    "The end run was not pruned",
+  );
+  yield* putAction("end", key);
+  yield* request(`/api/automations/${listener}`, AutomationSwitched, {
+    method: "PATCH",
+    body: { enabled: true },
+  });
+  const replayedEnd = yield* deliver(url, hook, connection.secret, {}, endDelivery);
+  const replayedAnswer = yield* Schema.decodeUnknownEffect(Answer)(replayedEnd.body);
+  const replayedRun = replayedAnswer.runs[0];
+  yield* check(
+    replayedEnd.status === 200 &&
+      replayedAnswer.status === "accepted" &&
+      replayedRun?.status === "ended" &&
+      replayedRun.session === eventSession &&
+      JSON.stringify(yield* events()) === JSON.stringify(resumed) &&
+      JSON.stringify(yield* request(`${replacement}/log`, Log)) ===
+        JSON.stringify(replacementHistory),
+    "A pruned end retry stopped the original or replacement session",
+  );
+  yield* request(`/api/automations/${listener}`, AutomationSwitched, {
+    method: "PUT",
+    body: startDefinition,
+  });
+  yield* request(`/api/automations/${listener}`, AutomationSwitched, {
+    method: "PATCH",
+    body: { enabled: true },
+  });
+  for (const { delivery, body, status } of startDeliveries) {
+    const answer = yield* deliver(url, hook, connection.secret, body, delivery);
+    const received = yield* Schema.decodeUnknownEffect(Answer)(answer.body);
+    const run = received.runs[0];
+    yield* check(
+      answer.status === 200 &&
+        received.status === "accepted" &&
+        run?.status === status &&
+        run.session === eventSession &&
+        JSON.stringify(yield* events()) === JSON.stringify(resumed) &&
+        JSON.stringify(yield* request(`${replacement}/log`, Log)) ===
+          JSON.stringify(replacementHistory),
+      "A pruned start or steer retry followed the replacement session",
+    );
+  }
+  const listed = yield* request("/api/sessions", List);
+  yield* check(
+    listed.sessions.some((session) => session.identity.id === eventSession) &&
+      listed.sessions.some((session) => session.identity.id === fresh.session),
+    "Releasing the key removed a session from the index",
+  );
+  yield* request(`/api/sessions/${fresh.session}/stop`, View, { method: "POST" });
+  yield* request(`${prefix}/stop`, View, { method: "POST" });
+  console.log(
+    "Wake skips without a session; end stops and releases; owner messages resume; start makes a new session",
+  );
 
   for (const name of [scheduled, listener]) {
     const removed = yield* request(`/api/automations/${name}`, AutomationRemoved, {

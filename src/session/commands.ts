@@ -49,7 +49,10 @@ export function command(state: State, event: SessionEvent): Command | undefined 
   if (state.lastSeq !== event.seq) return undefined;
   if (state.phase === "stopped")
     return state.stopSeq === event.seq ? { kind: "destroy" } : undefined;
-  if (state.phase === "failed") return undefined;
+  if (state.phase === "failed")
+    return event.kind === "container.stopped" && state.stopSeq === event.seq
+      ? { kind: "destroy" }
+      : undefined;
   switch (event.kind) {
     case "resume.requested":
       return state.gen !== undefined && state.startSeq === event.seq

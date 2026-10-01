@@ -440,12 +440,16 @@ function step(state: State, event: SessionEvent): State {
         ? resume({ ...next, activeAt: event.at }, event.at)
         : next;
     case "container.stopped":
+      if (event.gen !== state.gen) return next;
+      // An owner or automation stop of a failed session destroys its container.
+      if (!live(state))
+        return state.phase === "failed" && (event.reason === "user" || event.reason === "ended")
+          ? { ...next, stopSeq: event.seq }
+          : next;
       // An idle stop decided before a prompt or use landed does not apply.
-      return event.gen === state.gen &&
-        live(state) &&
-        (event.reason !== "idle" ||
-          (has(state.pending, "idle") &&
-            (event.idleSeq === undefined || event.idleSeq === state.idleSeq)))
+      return event.reason !== "idle" ||
+        (has(state.pending, "idle") &&
+          (event.idleSeq === undefined || event.idleSeq === state.idleSeq))
         ? endAll(next, "stopped", event.at, {
             reason: event.reason ?? "gone",
             ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),

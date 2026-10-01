@@ -11,8 +11,7 @@ type Credential = ReturnType<Cloudflare.DurableObject<CredsObject>["getByName"]>
 // The start's retry key, and so the request id of the prompt a steered run sends.
 export const runRequest = (id: string) => `run:${id}`;
 
-// Starts or steers the session a received run names, and records the answer on the run. The
-// run id is the start's retry key, so firing a run twice sends it once.
+// The run id names a start, prompt or stop request, so retries keep its first answer.
 export function fireRun(
   sessions: Cloudflare.DurableObject<SessionObject>,
   credential: Credential,
@@ -27,41 +26,73 @@ export function fireRun(
         ...(run.reason === null ? {} : { reason: run.reason }),
         ...(run.session === null ? {} : { session: run.session }),
       };
-    const key = run.key === null ? {} : { key: run.key };
-    const started = yield* startSession(sessions, credential, {
-      repo: run.repo,
-      prompt: run.prompt,
-      title: titleFrom(run.prompt),
-      agent: run.agent,
-      ...(run.scripted === 1 ? { scripted: true } : {}),
-      ...key,
-      retry: runRequest(id),
-      origin: { kind: "automation", automation: run.automation, run: id, ...key },
-    });
-    // A duplicate may be the first create or a later steer. The creator's request in the
-    // session log tells which, even when the reply or the run's settlement was lost.
-    const created =
-      started.kind === "duplicate"
-        ? (yield* sessions.getByName(started.id).log()).some(
-            (event) => event.kind === "created" && event.req === runRequest(id),
-          )
-        : started.kind === "created";
-    const outcome: {
-      status: "started" | "steered" | "failed";
-      reason?: string;
-      session?: string;
-    } =
-      started.kind === "created" || started.kind === "steered" || started.kind === "duplicate"
-        ? { status: created ? "started" : "steered", session: started.id }
-        : started.kind === "refused"
-          ? { status: "failed", reason: `repository unavailable: ${started.message}` }
-          : started.kind === "conflict"
+    const outcome = yield* Effect.gen(function* () {
+      if (run.action === "end") {
+        const stopped = yield* sessions
+          .getByName(run.session)
+          .stop(runRequest(id), { repo: run.repo, agent: run.agent });
+        return stopped.kind === "absent"
+          ? { status: "skipped" as const, reason: "no_session" }
+          : stopped.kind === "conflict"
             ? {
-                status: "failed",
+                status: "failed" as const,
                 reason: "key or retry id used by another repo, agent or prompt",
-                session: started.id,
+                session: run.session,
               }
-            : { status: "failed", reason: "session not taking prompts", session: started.id };
+            : { status: "ended" as const, session: run.session };
+      }
+      const key = run.key === null ? {} : { key: run.key };
+      const started =
+        run.action === "wake"
+          ? {
+              ...(yield* sessions.getByName(run.session).start({
+                req: runRequest(id),
+                prompt: run.prompt,
+                repo: run.repo,
+                agentKind: run.agent,
+              })),
+              id: run.session,
+            }
+          : yield* startSession(sessions, credential, {
+              ...(run.session === null ? {} : { id: run.session }),
+              ...(run.branch === null ? {} : { branch: run.branch }),
+              repo: run.repo,
+              prompt: run.prompt,
+              title: titleFrom(run.prompt),
+              agent: run.agent,
+              ...(run.scripted === 1 ? { scripted: true } : {}),
+              ...key,
+              retry: runRequest(id),
+              origin: { kind: "automation", automation: run.automation, run: id, ...key },
+            });
+      // A duplicate may be the first create or a later steer. The creator's request in the
+      // session log tells which, even when the reply or the run's settlement was lost.
+      const created =
+        started.kind === "duplicate"
+          ? (yield* sessions.getByName(started.id).log()).some(
+              (event) => event.kind === "created" && event.req === runRequest(id),
+            )
+          : started.kind === "created";
+      const answer: {
+        status: "started" | "steered" | "skipped" | "failed";
+        reason?: string;
+        session?: string;
+      } =
+        started.kind === "created" || started.kind === "steered" || started.kind === "duplicate"
+          ? { status: created ? "started" : "steered", session: started.id }
+          : started.kind === "uncreated"
+            ? { status: "skipped", reason: "no_session" }
+            : started.kind === "refused"
+              ? { status: "failed", reason: `repository unavailable: ${started.message}` }
+              : started.kind === "conflict"
+                ? {
+                    status: "failed",
+                    reason: "key or retry id used by another repo, agent or prompt",
+                    session: started.id,
+                  }
+                : { status: "failed", reason: "session not taking prompts", session: started.id };
+      return answer;
+    });
     const settled = yield* credential.settleRun(id, outcome);
     return settled === null
       ? null

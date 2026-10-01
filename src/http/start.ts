@@ -26,6 +26,9 @@ export type StartInput = {
   place?: typeof PlaceKind.Type;
   scripted?: true;
   idleAfter?: number;
+  // An automation run reserves its target before dispatch, so retries keep that session.
+  id?: string;
+  branch?: string;
   // With a key, a second start steers the session the first one made.
   key?: string;
   // The request id: a retry with it is answered with what the first attempt did.
@@ -47,13 +50,14 @@ export function startSession(
       repo: input.repo,
       agentKind: input.agent,
     };
-    // A key that names a made session needs no repository lookup.
-    const keyed = input.key === undefined ? null : yield* credential.keyed(input.key);
+    // Automations already resolved their target; a made session needs no repository lookup.
+    const keyed = input.id ?? (yield* credential.resolveSession(input.retry, input.key ?? null));
     if (keyed !== null) {
       const answer = yield* sessions.getByName(keyed).start(request);
       if (answer.kind !== "uncreated") return { ...answer, id: keyed };
     }
     const branch = yield* Effect.gen(function* () {
+      if (input.branch !== undefined) return { ok: true as const, branch: input.branch };
       if (input.repo === fixtureRepo) return { ok: true as const, branch: "main" };
       const token = yield* credential.gitHubToken();
       if (token === null)
@@ -83,16 +87,20 @@ export function startSession(
         message: branch.message,
         hint: githubHint,
       };
-    const id = yield* credential.reserve({
-      req: input.retry,
-      ...(input.key === undefined ? {} : { key: input.key }),
-      id: crypto.randomUUID().replaceAll("-", ""),
-      title: input.title,
-      repo: input.repo,
-      prompt: input.prompt,
-      ...(input.origin?.kind === "hook" ? { connection: input.origin.connection } : {}),
-      ...(input.origin?.kind === "automation" ? { automation: input.origin.automation } : {}),
-    });
+    const id =
+      input.id ??
+      (yield* credential.reserve({
+        req: input.retry,
+        ...(input.key === undefined ? {} : { key: input.key }),
+        id: crypto.randomUUID().replaceAll("-", ""),
+        title: input.title,
+        repo: input.repo,
+        prompt: input.prompt,
+        ...(input.origin?.kind === "hook" ? { connection: input.origin.connection } : {}),
+        ...(input.origin?.kind === "automation"
+          ? { automation: input.origin.automation, run: input.origin.run }
+          : {}),
+      }));
     const answer = yield* sessions.getByName(id).start({
       ...request,
       create: {
