@@ -107,6 +107,23 @@ Duplicate requests (the same `req`) do nothing. A prompt whose `turn` no longer 
 
 The API decodes `Idempotency-Key` on create, steer and interrupt before sending it to a Session DO. It must be non-blank, at most 256 characters and must not start with the reserved `initial:` prefix; invalid values return 400 with that rule. An explicit steer or interrupt body `req` uses the same schema and still takes precedence over a valid header. Without either, the API generates a UUID.
 
+## Building blocks
+
+Scotty has four primitives. Anything provider-specific beyond them is data (filters, templates, prompts) or the agent's own work through a connection; Scotty's code holds only what touches secrets: verifying signatures, keeping and minting tokens, and refusing its own events.
+
+- **Connection:** a way in (a signed webhook URL) and a way out (`<name>.internal` with a token or MCP credential). How a sender signs is configuration on the connection, not a kind in code: the signature header, its prefix and encoding, what was signed (the body, or the timestamp and body), and where the delivery id, event name and timestamp are found (a header or a payload field). A connection may name the payload field that marks Scotty's own events and the stored identity it is compared with; matching deliveries are skipped.
+- **Automation:** a trigger (schedule, event or manual), `only` and `except` filters (equality, one-of, contains), a key template, an action, and the session's repo, branch, agent and prompt as templates. The action is `start` (start or wake the key's session, the default), `wake` (only wake an existing key's session; no session is a skip, `no_session`) or `end` (stop the key's session and release its key).
+- **Session:** one per key, with the sleep and resume rules in [Stop and resume](#stop-and-resume). An automation reaches a session only by the same steer the owner sends: a running session takes it, a stopped one resumes in the same fold. Automations never read sleep state or touch a container, and sessions keep no timers of their own; a later check is a schedule automation that wakes a key.
+- **Blueprint:** a JSON file listing the connections, automations and prompts a use needs. Installing one creates them through the normal API, disabled, and asks for the secrets; everything a blueprint does can be made by hand. No blueprint has code of its own.
+
+**Ending.** `end` stops the session with reason `ended` and releases its key, so no automation reaches it again; a later event for that key starts a new session only through a `start` automation. The owner can still read and message an ended session, and a message resumes it as after any stop.
+
+Examples, each only data:
+
+- **PR reviewer:** a GitHub connection and three automations. `pull_request` opened or ready → `start` `gh:{repo}#{pr}` on the PR's head branch with the review prompt (and the repo's `.scotty/review.md` when the prompt says to read it); comments, reviews and pushes → `wake`; `pull_request` closed → `end`. The agent posts its review through a GitHub API connection.
+- **Linear ticket worker:** a Linear webhook and the Linear MCP connection. An issue labelled `scotty` → `start` `linear:{issue.id}`; comments → `wake`; the issue closed → `end`.
+- **Linear triage:** a schedule automation whose prompt uses the Linear MCP connection.
+
 ## Automations and runs
 
 An automation is created or replaced disabled. Calendar schedules use five cron fields and an explicit IANA zone; intervals count from enablement. A schedule more than ten minutes late is skipped. Event filters compare payload fields for equality or membership, and templates render the prompt and optional session key. A connection with listeners hands each verified delivery to those automations.

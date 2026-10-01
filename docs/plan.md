@@ -633,7 +633,7 @@ Steps 8–14 are provisional: each is rewritten to Rule zero's detail (In scope,
 
 ## Track: automations, connections, sleep and runners (owner, 2026-09-30)
 
-Outside systems and schedules start and talk to sessions. Three nouns: **connection** (a secret, a way in, a way out), **automation** (when, only if, key, repo, agent, prompt), **run** (what happened). Anything that needs thought is a session; the Worker only verifies, filters and routes. Scripts in Dynamic Workers, the Slack MCP server and a filter language are out.
+Outside systems and schedules start and talk to sessions. Three nouns: **connection** (a secret, a way in, a way out), **automation** (when, only if, key, repo, agent, prompt), **run** (what happened). Anything that needs thought is a session; the Worker only verifies, filters and routes. Uses such as a PR reviewer or a Linear ticket worker are blueprints made of these primitives, not code (design.md, "Building blocks"). Scripts in Dynamic Workers, the Slack MCP server and a filter language are out.
 
 These slices are built on one branch, `track/automations-runners`, and land as one PR once the owner is happy with them. They replace Rule zero's **Budget** with one rule: each slice is the tightest complete vertical slice (Worker, UI, CLI, observability, e2e) and nothing else. Every other rule holds, except that this track works on its own branch rather than `rebuild/core`.
 
@@ -641,21 +641,24 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 
 **Observability in every slice:** each new record (stop reason, delivery, run) is readable as JSON from the CLI and visible in the UI, and each slice adds a recipe to `.agents/skills/verify-scotty/features/` that says how to prove it and how to find out what broke.
 
-| Slice | Title                        | Depends on | Status   | Notes                                                                                                                                               |
-| ----- | ---------------------------- | ---------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1    | Sessions sleep               | none       | building | owner's `fix/session-lifecycle`                                                                                                                     |
-| S2    | Find sessions                | none       | todo     |                                                                                                                                                     |
-| S3    | Hooks, keys and deliveries   | none       | todo     |                                                                                                                                                     |
-| S4    | Automations and runs         | S3         | built    | Updated for Session DO start and indexed search; local fmt, lint, typecheck, ui:build and test pass. Deploy and e2e not run at the owner's request. |
-| S5    | Reach: `name.internal`       | S3         | built    | Token/MCP, proxy, agent configs, CLI/UI/seed and recipe built. Local checks and 43 tests pass; deployment/e2e deferred.                             |
-| S6    | Scotty inside sessions       | S1         | todo     |                                                                                                                                                     |
-| S7    | Slack bot                    | S4, S5     | todo     |                                                                                                                                                     |
-| S8    | GitHub events and babysit    | S4         | built    | GitHub connections, signed deliveries, self-event and no-automation skips, babysit example, scripted e2e.                                           |
-| S9    | MCP sign-in and tool limits  | S5         | todo     |                                                                                                                                                     |
-| S10   | Approvals for MCP writes     | S9         | todo     |                                                                                                                                                     |
-| R1    | Places                       | none       | todo     |                                                                                                                                                     |
-| R2    | Runners on the owner's boxes | R1         | todo     |                                                                                                                                                     |
-| R3    | Where a session runs         | R2, S4     | todo     |                                                                                                                                                     |
+| Slice | Title                        | Depends on   | Status   | Notes                                                                                                                                               |
+| ----- | ---------------------------- | ------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1    | Sessions sleep               | none         | building | owner's `fix/session-lifecycle`                                                                                                                     |
+| S2    | Find sessions                | none         | todo     |                                                                                                                                                     |
+| S3    | Hooks, keys and deliveries   | none         | todo     |                                                                                                                                                     |
+| S4    | Automations and runs         | S3           | built    | Updated for Session DO start and indexed search; local fmt, lint, typecheck, ui:build and test pass. Deploy and e2e not run at the owner's request. |
+| S5    | Reach: `name.internal`       | S3           | built    | Token/MCP, proxy, agent configs, CLI/UI/seed and recipe built. Local checks and 43 tests pass; deployment/e2e deferred.                             |
+| S6    | Scotty inside sessions       | S1           | todo     |                                                                                                                                                     |
+| S7    | Slack bot                    | S11, S13     | todo     |                                                                                                                                                     |
+| S8    | GitHub events and babysit    | S4           | built    | GitHub connections, signed deliveries, self-event and no-automation skips, babysit example, scripted e2e.                                           |
+| S9    | MCP sign-in and tool limits  | S5           | todo     |                                                                                                                                                     |
+| S10   | Approvals for MCP writes     | S9           | todo     |                                                                                                                                                     |
+| S11   | Signatures as configuration  | S8           | todo     |                                                                                                                                                     |
+| S12   | Automation actions           | S1, S4       | todo     |                                                                                                                                                     |
+| S13   | Blueprints                   | S9, S11, S12 | todo     |                                                                                                                                                     |
+| R1    | Places                       | none         | todo     |                                                                                                                                                     |
+| R2    | Runners on the owner's boxes | R1           | todo     |                                                                                                                                                     |
+| R3    | Where a session runs         | R2, S4       | todo     |                                                                                                                                                     |
 
 ### S1: sessions sleep
 
@@ -691,12 +694,10 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 
 ### S7: Slack bot
 
-- **In scope:** a `slack` connection: Scotty shows an app manifest with the events URL; the owner pastes the bot token and signing secret. Mentions and thread replies from the owner's Slack user id only; key `slack:<channel>:<thread>`; repo from `in owner/repo`, else the connection's default, else it asks in the thread. When a turn ends the Session DO posts its answer and link to the thread (intent event, then result). Slack retries are no-ops.
-- **Done when:** `e2e slack` with a signed mention payload creates a session and records the reply intent; the owner sees a real thread reply on `main`.
+- **In scope:** Slack as a blueprint: a connection whose signature configuration is Slack's (`v0:{timestamp}:{body}`), the owner's Slack user id as an `only` filter, key `slack:{channel}:{thread}`, `start` on a mention and `wake` on thread replies. Scotty shows an app manifest with the events URL; the owner pastes the bot token (a token connection) and signing secret. The agent posts its answer to the thread through the Slack token connection. Repo from `in owner/repo`, else the blueprint's default, else the agent asks in the thread. Slack retries are no-ops.
+- **Done when:** `e2e slack` with a signed mention payload starts a session whose scripted reply is posted through the connection; the owner sees a real thread reply on `main`.
 
 ### S8: GitHub events and babysit
-
-- **Status note:** The outbound reach handler excludes the new hook kind so only token/MCP connections can be proxied.
 
 - **In scope:** a `github` connection with a webhook secret; events verified by `x-hub-signature-256`; events authored by Scotty's own GitHub identity are dropped. The babysit automation (`gh:{repo}#{pr}`) is documented as the example.
 - **Done when:** `e2e github` delivers a signed `check_run` failure to an automation and it steers the PR's session.
@@ -711,6 +712,22 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 
 - **In scope:** a tool policy may say `ask` for tools outside the allowed set. The proxy refuses such a call with "needs approval" and the Session DO records an approval request event; the owner approves or denies in the UI (phone first), which is a later event, and Scotty steers the session to retry. An approval covers one tool for the session, or always for that connection. The agent never waits on an open request for the owner.
 - **Done when:** `e2e` makes a scripted session call an `ask` tool, sees the refusal and the pending request, approves it, and the retry succeeds; a denial is recorded and the call stays refused.
+
+### S11: signatures as configuration
+
+- **Why:** each sender signs slightly differently; a connection kind per provider would put provider code in Scotty for each one.
+- **In scope:** an inbound connection carries its signature configuration (design.md, "Building blocks"): header, prefix, encoding, what was signed, and where the delivery id, event name and timestamp come from. Standard Webhooks and GitHub become two presets of it, and Linear and Slack are presets with no new code. The self-event rule (payload field compared with a stored identity) moves onto the connection. Presets are data the UI and CLI offer; a custom configuration is allowed.
+- **Done when:** `e2e hooks` and `e2e github` pass unchanged on the presets; a signed Linear-shaped and a Slack-shaped delivery are verified, and tampered ones rejected and listed.
+
+### S12: automation actions
+
+- **In scope:** `except` beside `only`, and a contains match for strings; templated `branch` (the session starts on that branch instead of the default); actions `start` (default), `wake` (skip with `no_session` when no session holds the key) and `end` (stop with reason `ended`, release the key). S8's "GitHub delivery with no automation" skip stays. Built on S1's stop reasons; nothing about sleep is read by automations.
+- **Done when:** fold tests cover `ended`; `e2e automations` proves `wake` skips without a session, `end` stops and releases (a later `wake` skips, a later `start` starts a new session), `except` and contains filter, and a templated branch is checked out.
+
+### S13: blueprints
+
+- **In scope:** a blueprint file format (connections, automations, prompts, the secrets to ask for); `scotty blueprint install <file>` and an install sheet in Settings that create everything disabled through the normal API, then show what to paste where. Two blueprints ship as data: **PR reviewer** (GitHub) and **Linear ticket worker** (Linear webhook and MCP). The PR reviewer's agent posts through a GitHub API token connection.
+- **Done when:** `e2e blueprints` installs both and drives each with signed deliveries and a scripted session: PR opened starts a review session on the head branch, a comment wakes it, closing ends it; a labelled Linear issue starts a session that calls the MCP connection, closing ends it. The owner runs the PR reviewer on a real PR on `track`.
 
 ### R1: places
 
