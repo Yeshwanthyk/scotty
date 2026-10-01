@@ -97,6 +97,26 @@ export function githubEvents(request: ReturnType<typeof client>) {
       () => request(`${prefix}/log`, Log),
       (log) => log.some((event) => event.kind === "turn.ended" && event.turn === "0"),
     );
+    const payload = {
+      event: "ignored",
+      action: "completed",
+      repository: { full_name: fixtureRepo },
+      check_run: { conclusion: "failure", pull_requests: [{ number: pr }] },
+      sender: { login: `external-${suffix}` },
+    };
+    const noAutomationId = crypto.randomUUID();
+    const noAutomation = yield* deliver(connection.url, connection.secret, noAutomationId, payload);
+    const noAutomationAnswer = yield* Schema.decodeUnknownEffect(Answer)(noAutomation.body);
+    yield* check(
+      noAutomation.status === 200 &&
+        noAutomationAnswer.status === "skipped" &&
+        noAutomationAnswer.reason === "no_automation",
+      "A delivery with no listening automation was not skipped",
+    );
+    yield* check(
+      (yield* request(`/api/runs?automation=${name}`, Runs)).runs.length === 0,
+      "A delivery with no listening automation added a run",
+    );
     yield* request("/api/automations", AutomationSwitched, {
       method: "POST",
       body: {
@@ -114,13 +134,6 @@ export function githubEvents(request: ReturnType<typeof client>) {
       method: "PATCH",
       body: { enabled: true },
     });
-    const payload = {
-      event: "ignored",
-      action: "completed",
-      repository: { full_name: fixtureRepo },
-      check_run: { conclusion: "failure", pull_requests: [{ number: pr }] },
-      sender: { login: `external-${suffix}` },
-    };
     const id = crypto.randomUUID();
     const accepted = yield* deliver(connection.url, connection.secret, id, payload);
     yield* check(accepted.status === 200, `Signed check_run answered ${accepted.status}`);
@@ -177,6 +190,16 @@ export function githubEvents(request: ReturnType<typeof client>) {
     const log = yield* request(`/api/deliveries?connection=${hook}`, Deliveries);
     yield* check(
       log.deliveries.some(
+        (item) =>
+          item.id === noAutomationId &&
+          item.outcome === "skipped" &&
+          item.reason === "no_automation" &&
+          item.session === null,
+      ),
+      "The skip with no listening automation was not listed",
+    );
+    yield* check(
+      log.deliveries.some(
         (item) => item.id === id && item.outcome === "accepted" && item.session === session.id,
       ),
       "The accepted delivery was not listed",
@@ -209,6 +232,8 @@ export function githubEvents(request: ReturnType<typeof client>) {
     yield* request(`${prefix}/stop`, View, { method: "POST" });
     yield* request(`/api/automations/${name}`, AutomationRemoved, { method: "DELETE" });
     yield* request(`/api/connections/${hook}`, ConnectionRemoved, { method: "DELETE" });
-    console.log("GitHub babysit: second turn, retry, bad signature and self-event skip proved");
+    console.log(
+      "GitHub babysit: second turn, retry, bad signature, self-event and no-automation skips proved",
+    );
   });
 }

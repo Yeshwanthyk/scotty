@@ -1,6 +1,8 @@
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Schema } from "effect";
+import type { SqlError } from "effect/unstable/sql/SqlError";
+import type { SigningHeaders } from "../hooks/handler.js";
 import { newSecret, verifyGitHub, verifyWebhook } from "../hooks/signature.js";
 import {
   ConnectionConfig,
@@ -70,21 +72,6 @@ const HookRow = Schema.Struct({
   secret: Schema.String,
   kind: Schema.Literals(["webhook", "github"]),
 });
-const DeliveryId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
-const HookHeaders = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("webhook"),
-    "webhook-id": DeliveryId,
-    "webhook-timestamp": Schema.String.check(Schema.isMinLength(1)),
-    "webhook-signature": Schema.String.check(Schema.isMinLength(1)),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("github"),
-    "x-github-delivery": DeliveryId,
-    "x-github-event": Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
-    "x-hub-signature-256": Schema.String.check(Schema.isMinLength(1)),
-  }),
-]);
 const GitHubPayload = Schema.fromJsonString(
   Schema.StructWithRest(
     Schema.Struct({
@@ -97,6 +84,18 @@ const GitHubPayload = Schema.fromJsonString(
     [Schema.Record(Schema.String, Schema.Unknown)],
   ),
 );
+export type DeliveryVerification =
+  | { verdict: "ok"; kind: "webhook" }
+  | { verdict: "ok"; kind: "github"; payload: typeof GitHubPayload.Type & { event: string } }
+  | {
+      verdict:
+        | "unknown_connection"
+        | "missing_headers"
+        | "bad_signature"
+        | "stale_timestamp"
+        | "bad_body"
+        | "own_github_identity";
+    };
 const DeliveryRow = Schema.Struct({
   id: Schema.String,
   connection: Schema.String,
@@ -346,7 +345,11 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             return yield* Schema.decodeUnknownEffect(
               Schema.Struct({
                 secret: Schema.String,
-                config: Schema.fromJsonString(ConnectionConfig),
+                config: Schema.fromJsonString(
+                  ConnectionConfig.pipe(
+                    Schema.refine((config) => config.kind === "token" || config.kind === "mcp"),
+                  ),
+                ),
               }),
             )(row);
           }).pipe(
@@ -362,54 +365,47 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         // The secret stays in this object: the Worker hands over what the sender signed.
         verifyDelivery: (input: {
           connection: string;
-          headers: Readonly<Record<string, string>>;
+          headers: SigningHeaders;
           body: Uint8Array<ArrayBuffer>;
-        }) =>
+        }): Effect.Effect<DeliveryVerification, SqlError | Schema.SchemaError> =>
           Effect.gen(function* () {
             const row =
               (yield* sql`SELECT secret, json_extract(config, '$.kind') AS kind FROM connections WHERE name = ${input.connection} AND json_extract(config, '$.kind') IN ('webhook', 'github')`)[0];
-            if (row === undefined)
-              return {
-                id: input.headers["x-github-delivery"] ?? input.headers["webhook-id"] ?? "",
-                verdict: "unknown_connection" as const,
-              };
+            if (row === undefined) return { verdict: "unknown_connection" as const };
             const { secret, kind } = yield* Schema.decodeUnknownEffect(HookRow)(row);
-            const headers = Schema.decodeUnknownOption(HookHeaders)({ ...input.headers, kind });
-            const id = input.headers[kind === "github" ? "x-github-delivery" : "webhook-id"] ?? "";
-            if (Option.isNone(headers)) return { id, verdict: "missing_headers" as const };
+            const checked = input.headers;
+            if (checked.kind !== kind) return { verdict: "missing_headers" as const };
             const body = new TextDecoder().decode(input.body);
-            const checked = headers.value;
             if (checked.kind === "webhook") {
               const verdict = yield* Effect.promise(() =>
                 verifyWebhook({
                   secret,
-                  id: checked["webhook-id"],
-                  timestamp: checked["webhook-timestamp"],
-                  signature: checked["webhook-signature"],
+                  id: checked.id,
+                  timestamp: checked.timestamp,
+                  signature: checked.signature,
                   body,
                   now: Date.now(),
                 }),
               );
-              return { kind: checked.kind, id, verdict };
+              return verdict === "ok" ? { kind: checked.kind, verdict } : { verdict };
             }
             const verdict = yield* Effect.promise(() =>
               verifyGitHub({
                 secret,
-                signature: checked["x-hub-signature-256"],
+                signature: checked.signature,
                 body: input.body,
               }),
             );
-            if (verdict !== "ok") return { id, verdict };
+            if (verdict !== "ok") return { verdict };
             const payload = Schema.decodeUnknownOption(GitHubPayload)(body);
-            if (Option.isNone(payload)) return { id, verdict: "bad_body" as const };
+            if (Option.isNone(payload)) return { verdict: "bad_body" as const };
             const identity = yield* gitHub;
             if (identity !== null && payload.value.sender?.login === identity.login)
-              return { id, verdict: "own_github_identity" as const };
+              return { verdict: "own_github_identity" as const };
             return {
               kind: checked.kind,
-              id,
               verdict: "ok" as const,
-              payload: { ...payload.value, event: checked["x-github-event"] },
+              payload: { ...payload.value, event: checked.event },
             };
           }),
         // Deliveries are a log; the oldest go as new ones arrive.

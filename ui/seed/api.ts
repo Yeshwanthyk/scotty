@@ -324,6 +324,14 @@ const hooks = {
   ]),
   deliveries: [
     {
+      id: "8406f74c-fb1f-48fd-ac27-e48df5d9dce7",
+      connection: "github-events",
+      minutesAgo: 1,
+      outcome: "skipped",
+      reason: "no_automation",
+      session: null,
+    },
+    {
       id: "f4a8ac65-66a1-4c75-bddd-d5f512d8ec06",
       connection: "github-events",
       minutesAgo: 3,

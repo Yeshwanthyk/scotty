@@ -84,9 +84,17 @@ export function automationDelivery(
   kind: "webhook" | "github",
 ) {
   return Effect.gen(function* () {
-    const received = yield* credential.receiveEvent(connection, delivery, payload);
-    if (received === null && kind === "webhook") return undefined;
-    const runs = received ?? [];
+    const runs = yield* credential.receiveEvent(connection, delivery, payload);
+    if (runs === null) {
+      if (kind === "webhook") return undefined;
+      yield* credential.recordDelivery({
+        id: delivery,
+        connection,
+        outcome: "skipped",
+        reason: "no_automation",
+      });
+      return yield* HttpServerResponse.json({ status: "skipped", reason: "no_automation" });
+    }
     // A received run without an answer yet is fired again; the run id keeps that a no-op.
     const answered = yield* Effect.forEach(
       runs,
@@ -103,7 +111,7 @@ export function automationDelivery(
           : Effect.succeed(run),
       { concurrency: "unbounded" },
     );
-    const fresh = runs.length === 0 || runs.some((run) => run.fresh);
+    const fresh = runs.some((run) => run.fresh);
     const session = answered.find((run) => run.session !== null)?.session ?? null;
     yield* credential.recordDelivery({
       id: delivery,

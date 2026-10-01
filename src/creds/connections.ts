@@ -121,6 +121,7 @@ export const DeliveryReason = Schema.Literals([
   "missing_headers",
   "unknown_connection",
   "own_github_identity",
+  "no_automation",
   "too_large",
   "bad_signature",
   "stale_timestamp",

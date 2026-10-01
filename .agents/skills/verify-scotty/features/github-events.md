@@ -18,6 +18,8 @@ also uses `SCOTTY_PRIVATE_TEST_REPO` and `gh` to prove private-repo pushes. Pass
 - A bad signature is HTTP 401 and listed as `rejected: bad_signature`.
 - A sender equal to the stored GitHub login is listed as `skipped: own_github_identity`,
   with no session, run or turn from that delivery.
+- A verified delivery with no listening automation is `skipped: no_automation`, with no
+  session or run from that delivery.
 
 ## Owner setup
 
@@ -63,7 +65,7 @@ also uses `SCOTTY_PRIVATE_TEST_REPO` and `gh` to prove private-repo pushes. Pass
 - `own_github_identity` comes only from the token's stored login. Check Settings → Accounts or
   `scotty doctor`; with no token stored, no sender is dropped.
 - An accepted delivery with a skipped run: `scotty runs` reports the filter or missing template
-  field. Checks without PRs lack `check_run.pull_requests.0.number`. An accepted delivery with
-  no runs means no automation listens on that connection.
+  field. Checks without PRs lack `check_run.pull_requests.0.number`. `skipped: no_automation`
+  means no automation listens on that connection.
 - A failed run: compare the rendered PR key, repo and agent with the existing session. Session
   logs show whether a prompt was taken; a run still `received` has no known answer yet.

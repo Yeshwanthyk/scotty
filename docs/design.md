@@ -124,13 +124,14 @@ with `{kind: "github"}` in `config`. Creation shows the generated secret once an
 its secret. Select JSON payloads in GitHub. The secret is used as its full displayed string,
 including `whsec_`; GitHub does not base64-decode it.
 
-The Creds DO decodes `X-GitHub-Delivery`, `X-GitHub-Event` and `X-Hub-Signature-256`, and
-verifies `sha256=<hex>` as HMAC-SHA256 of the raw body bytes, using Web Crypto's constant-time
-verification. Missing headers, an unknown connection, a bad signature or unreadable JSON are
+The Worker decodes signing headers into a webhook or GitHub delivery before reading the
+body. The Creds DO checks that its kind matches the connection, then verifies GitHub's
+`sha256=<hex>` as HMAC-SHA256 of the raw body bytes, using Web Crypto's constant-time
+verification. Missing or mismatched headers, an unknown connection, a bad signature or unreadable JSON are
 recorded rejections. GitHub has no timestamp header. Its delivery id is the event run's retry
 identity, as for plain webhooks: redelivery can add a duplicate delivery-log row, but adds no
 run or session event. GitHub connections feed automations only; without listeners a verified
-delivery is accepted with no runs.
+delivery is skipped with `no_automation`, with no run or session.
 
 The automation payload is GitHub's JSON object with a top-level `event` set from
 `X-GitHub-Event` (overwriting any body field of that name). All other fields keep their paths,

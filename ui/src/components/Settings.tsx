@@ -522,6 +522,7 @@ const reasons: Record<DeliveryReason, string> = {
   missing_headers: "Missing webhook headers",
   unknown_connection: "Unknown connection",
   own_github_identity: "Skipped: sent by Scotty’s GitHub account",
+  no_automation: "Skipped: no automation listens on this connection",
   too_large: "Body too large",
   bad_signature: "Bad signature",
   stale_timestamp: "Timestamp too old",

@@ -4,6 +4,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { connectionName, type DeliveryReason, Key } from "../creds/connections.js";
 import type CredsObject from "../creds/object.js";
+import type { DeliveryVerification } from "../creds/object.js";
 import { AgentKind } from "../session/events.js";
 import type SessionObject from "../session/object.js";
 import { Prompt, Repo, startSession } from "../http/start.js";
@@ -12,6 +13,36 @@ import { automationDelivery } from "../automations/fire.js";
 import { maxBodyBytes } from "./signature.js";
 
 export const hookPath = /^\/hooks\/([^/]+)$/;
+
+const DeliveryId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+const SigningHeaders = Schema.Union([
+  Schema.Struct({
+    kind: Schema.tagDefaultOmit("webhook"),
+    id: DeliveryId,
+    timestamp: Schema.String.check(Schema.isMinLength(1)),
+    signature: Schema.String.check(Schema.isMinLength(1)),
+  }).pipe(
+    Schema.encodeKeys({
+      id: "webhook-id",
+      timestamp: "webhook-timestamp",
+      signature: "webhook-signature",
+    }),
+  ),
+  Schema.Struct({
+    kind: Schema.tagDefaultOmit("github"),
+    id: DeliveryId,
+    event: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+    signature: Schema.String.check(Schema.isMinLength(1)),
+  }).pipe(
+    Schema.encodeKeys({
+      id: "x-github-delivery",
+      event: "x-github-event",
+      signature: "x-hub-signature-256",
+    }),
+  ),
+]);
+export type SigningHeaders = typeof SigningHeaders.Type;
+const decodeHeaders = Schema.decodeUnknownOption(SigningHeaders);
 
 const Payload = Schema.Struct({
   repo: Repo,
@@ -28,6 +59,16 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unkno
 // A sender sees only the status and a code; the details are in `scotty deliveries`.
 const refuse = (status: number, code: string) =>
   HttpServerResponse.json({ error: { code, message: code.replaceAll("_", " ") } }, { status });
+const refusalStatus: Record<
+  Exclude<DeliveryVerification["verdict"], "ok" | "own_github_identity">,
+  number
+> = {
+  unknown_connection: 404,
+  missing_headers: 400,
+  bad_body: 400,
+  bad_signature: 401,
+  stale_timestamp: 401,
+};
 
 // POST /hooks/:name. Only a verified delivery reaches a session; every one that names a
 // connection is recorded, accepted or not.
@@ -41,7 +82,17 @@ export function hookHandler(
     const credential = credentials.getByName("owner");
     if (!connectionName.test(name)) return yield* refuse(404, "unknown_connection");
     if (request.method !== "POST") return yield* refuse(405, "use_post");
-    let delivery = request.headers["x-github-delivery"] ?? request.headers["webhook-id"] ?? "";
+    const headers = decodeHeaders(request.headers);
+    if (Option.isNone(headers)) {
+      yield* credential.recordDelivery({
+        id: "",
+        connection: name,
+        outcome: "rejected",
+        reason: "missing_headers",
+      });
+      return yield* refuse(400, "missing_headers");
+    }
+    const delivery = headers.value.id;
     const reject = (status: number, reason: typeof DeliveryReason.Type) =>
       credential
         .recordDelivery({ id: delivery, connection: name, outcome: "rejected", reason })
@@ -66,10 +117,9 @@ export function hookHandler(
     }
     const verified = yield* credential.verifyDelivery({
       connection: name,
-      headers: request.headers,
+      headers: headers.value,
       body: bytes,
     });
-    delivery = verified.id;
     if (verified.verdict === "own_github_identity") {
       yield* credential.recordDelivery({
         id: delivery,
@@ -80,14 +130,7 @@ export function hookHandler(
       return yield* HttpServerResponse.json({ status: "skipped", reason: verified.verdict });
     }
     if (verified.verdict !== "ok")
-      return yield* reject(
-        verified.verdict === "unknown_connection"
-          ? 404
-          : verified.verdict === "missing_headers" || verified.verdict === "bad_body"
-            ? 400
-            : 401,
-        verified.verdict,
-      );
+      return yield* reject(refusalStatus[verified.verdict], verified.verdict);
     const json =
       verified.kind === "github"
         ? Option.some(verified.payload)
