@@ -99,6 +99,8 @@ const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const request = client({ url, token: yield* access(url) });
   const suffix = crypto.randomUUID().slice(0, 8);
+  // A unique issue keeps this run's key away from sessions earlier runs left on the stage.
+  const issue = Date.now();
   const runsOf = (name: string) => request(`/api/runs?automation=${name}`, Runs);
 
   // 1. A calendar schedule in a zone away from UTC fires once, into a session that names its run.
@@ -184,7 +186,7 @@ const program = Effect.gen(function* () {
   });
   const answer = yield* deliver(url, hook, connection.secret, {
     action: "closed",
-    issue: { id: 7, title: "A closed issue" },
+    issue: { id: issue, title: "A closed issue" },
   });
   yield* check(answer.status === 200, `The delivery was answered ${answer.status}`);
   const answered = yield* Schema.decodeUnknownEffect(Answer)(answer.body);
@@ -208,7 +210,7 @@ const program = Effect.gen(function* () {
     ["second", "steered"],
   ]) {
     const delivery = `msg_${crypto.randomUUID()}`;
-    const body = { action: "opened", issue: { id: 7, title } };
+    const body = { action: "opened", issue: { id: issue, title } };
     const answers = yield* Effect.all(
       [1, 2].map(() => deliver(url, hook, connection.secret, body, delivery)),
       { concurrency: "unbounded" },
@@ -223,7 +225,7 @@ const program = Effect.gen(function* () {
           run.status === status &&
           run.session !== null &&
           (eventSession === null || run.session === eventSession),
-        `Repeated delivery did not preserve its ${status} run`,
+        `Repeated delivery did not preserve its ${status} run: ${JSON.stringify(received)}`,
       );
       eventSession = run?.session ?? null;
     }
