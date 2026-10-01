@@ -1,9 +1,41 @@
+import { Schema } from "effect";
+
 // Standard Webhooks (https://www.standardwebhooks.com): the signature is
 // base64(HMAC-SHA256(key, `${id}.${timestamp}.${body}`)) under `v1,`, and the key is the base64
 // after `whsec_` in the secret.
 export const secretPrefix = "whsec_";
 export const maxSkewSeconds = 5 * 60;
 export const maxBodyBytes = 64 * 1024;
+
+// The headers each sender signs with, decoded where the request enters.
+const DeliveryId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+export const SigningHeaders = Schema.Union([
+  Schema.Struct({
+    kind: Schema.tagDefaultOmit("webhook"),
+    id: DeliveryId,
+    timestamp: Schema.String.check(Schema.isMinLength(1)),
+    signature: Schema.String.check(Schema.isMinLength(1)),
+  }).pipe(
+    Schema.encodeKeys({
+      id: "webhook-id",
+      timestamp: "webhook-timestamp",
+      signature: "webhook-signature",
+    }),
+  ),
+  Schema.Struct({
+    kind: Schema.tagDefaultOmit("github"),
+    id: DeliveryId,
+    event: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+    signature: Schema.String.check(Schema.isMinLength(1)),
+  }).pipe(
+    Schema.encodeKeys({
+      id: "x-github-delivery",
+      event: "x-github-event",
+      signature: "x-hub-signature-256",
+    }),
+  ),
+]);
+export type SigningHeaders = typeof SigningHeaders.Type;
 
 const encoder = new TextEncoder();
 

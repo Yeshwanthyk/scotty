@@ -2,8 +2,7 @@ import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Schema } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
-import type { SigningHeaders } from "../hooks/handler.js";
-import { newSecret, verifyGitHub, verifyWebhook } from "../hooks/signature.js";
+import { newSecret, type SigningHeaders, verifyGitHub, verifyWebhook } from "../hooks/signature.js";
 import {
   ConnectionConfig,
   NewConnection,

@@ -10,38 +10,10 @@ import type SessionObject from "../session/object.js";
 import { Prompt, Repo, startSession } from "../http/start.js";
 import { titleFrom } from "../session/title.js";
 import { automationDelivery } from "../automations/fire.js";
-import { maxBodyBytes } from "./signature.js";
+import { maxBodyBytes, SigningHeaders } from "./signature.js";
 
 export const hookPath = /^\/hooks\/([^/]+)$/;
 
-const DeliveryId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
-const SigningHeaders = Schema.Union([
-  Schema.Struct({
-    kind: Schema.tagDefaultOmit("webhook"),
-    id: DeliveryId,
-    timestamp: Schema.String.check(Schema.isMinLength(1)),
-    signature: Schema.String.check(Schema.isMinLength(1)),
-  }).pipe(
-    Schema.encodeKeys({
-      id: "webhook-id",
-      timestamp: "webhook-timestamp",
-      signature: "webhook-signature",
-    }),
-  ),
-  Schema.Struct({
-    kind: Schema.tagDefaultOmit("github"),
-    id: DeliveryId,
-    event: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
-    signature: Schema.String.check(Schema.isMinLength(1)),
-  }).pipe(
-    Schema.encodeKeys({
-      id: "x-github-delivery",
-      event: "x-github-event",
-      signature: "x-hub-signature-256",
-    }),
-  ),
-]);
-export type SigningHeaders = typeof SigningHeaders.Type;
 const decodeHeaders = Schema.decodeUnknownOption(SigningHeaders);
 
 const Payload = Schema.Struct({
