@@ -1,6 +1,7 @@
 // Codex's side of the session view and start: its app-server events as items and text, and
 // the agent settings a Codex start sends.
 import type { AgentConfig } from "../../../protocol/supervisor.js";
+import type { CodexSettings } from "./codex-settings.js";
 import {
   array,
   base,
@@ -253,13 +254,16 @@ export function text(event: unknown): { text: string; complete: boolean } | unde
   return typeof text === "string" ? { text, complete: method === "item/completed" } : undefined;
 }
 
-export const startConfig = (chatgpt: {
-  readonly token: string;
-  readonly accountId: string;
-}): Extract<typeof AgentConfig.Type, { kind: "codex" }> => ({
+export const startConfig = (
+  chatgpt: {
+    readonly token: string;
+    readonly accountId: string;
+  },
+  settings: typeof CodexSettings.Type,
+): Extract<typeof AgentConfig.Type, { kind: "codex" }> => ({
   kind: "codex",
-  model: "gpt-5.5",
-  effort: "medium",
+  model: settings.model,
+  effort: settings.effort,
   baseUrl: "https://chatgpt.com/backend-api/codex",
   token: chatgpt.token,
   accountId: chatgpt.accountId,

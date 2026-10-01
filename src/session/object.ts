@@ -4,7 +4,7 @@ import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
-import { Cause, Config, Duration, Effect, Exit, Schedule, Semaphore } from "effect";
+import { Cause, Config, Duration, Effect, Exit, Schedule, Schema, Semaphore } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { AgentConfig, ToSupervisorMessage } from "../../protocol/supervisor.js";
@@ -12,6 +12,7 @@ import CredsObject from "../creds/object.js";
 import { type ConnectionMetadata, internalUrl } from "../creds/connections.js";
 import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
+import { CodexSettings, defaultCodexSettings } from "./agents/codex-settings.js";
 import type { AgentKind, Origin } from "./events.js";
 import { instructionsKey, skillKey } from "../settings/skill.js";
 import type { Command } from "./commands.js";
@@ -152,8 +153,22 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (!current(action.gen)) return;
               // Sent over the socket only; never appended to the event log.
               const owner = credentials.getByName("owner");
+              const codexSettings =
+                action.scripted !== true && action.agentKind === "codex"
+                  ? yield* Schema.decodeUnknownEffect(CodexSettings)({
+                      model: yield* Config.String("SCOTTY_CODEX_MODEL").pipe(
+                        Config.withDefault(defaultCodexSettings.model),
+                      ),
+                      effort: yield* Config.String("SCOTTY_CODEX_EFFORT").pipe(
+                        Config.withDefault(defaultCodexSettings.effort),
+                      ),
+                    })
+                  : defaultCodexSettings;
               const agentConfig = {
-                codex: () => owner.sessionToken().pipe(Effect.map(codex.startConfig)),
+                codex: () =>
+                  owner
+                    .sessionToken()
+                    .pipe(Effect.map((chatgpt) => codex.startConfig(chatgpt, codexSettings))),
                 claude: () => owner.claudeToken().pipe(Effect.map(claude.startConfig)),
               } satisfies Record<typeof AgentKind.Type, unknown>;
               // The scripted stand-in needs no account, so e2e runs without the owner's sign-ins.

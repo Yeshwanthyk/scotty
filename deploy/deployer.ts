@@ -14,6 +14,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Config } from "../cli/config.ts";
+import { defaultCodexSettings } from "../src/session/agents/codex-settings.js";
 import { copyImage } from "./image.ts";
 
 export const compatibilityDate = "2026-09-01";
@@ -128,6 +129,7 @@ export const deployStage = (
 ) =>
   Effect.gen(function* () {
     const { accountId, zoneId, domain, host, email, stage } = config;
+    const codex = config.codex ?? defaultCodexSettings;
     const name = names(config);
     const say = (text: string) => Effect.sync(() => progress(text));
     // The preview route matches the Worker's own host too; the Worker tells them apart by name.
@@ -214,6 +216,8 @@ export const deployStage = (
           text("SCOTTY_HOST", host),
           text("SCOTTY_HATCH_BASE", domain),
           text("SCOTTY_IMAGE", copied),
+          text("SCOTTY_CODEX_MODEL", codex.model),
+          text("SCOTTY_CODEX_EFFORT", codex.effort),
         ],
         containers: [{ className: "SessionObject" }],
         migrations: migrated
