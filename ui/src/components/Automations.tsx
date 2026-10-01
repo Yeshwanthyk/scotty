@@ -77,14 +77,6 @@ export function AutomationsPage({ name }: { name?: string }) {
         <div className="header-title">
           <h1>{name ?? "Automations"}</h1>
         </div>
-        {name === undefined && !creating ? (
-          <div className="header-actions">
-            <button type="button" className="button pressable" onClick={() => setCreating(true)}>
-              <Icon name="plus" size={13} />
-              New
-            </button>
-          </div>
-        ) : null}
       </header>
       <div className="automations" data-scroll>
         {error ? (
@@ -111,8 +103,7 @@ export function AutomationsPage({ name }: { name?: string }) {
             <div className="settings-card">
               <p className="settings-intro">
                 An automation starts a session on a schedule or on a webhook delivery. A new or
-                changed one is off until you switch it on. From a terminal:{" "}
-                <code>scotty automation add</code>
+                changed one stays off until you switch it on.
               </p>
               {items.length === 0 ? (
                 <div className="settings-empty">No automations yet.</div>
@@ -138,6 +129,16 @@ export function AutomationsPage({ name }: { name?: string }) {
                   </div>
                 ))
               )}
+              {!creating ? (
+                <button
+                  type="button"
+                  className="settings-row pressable quiet"
+                  onClick={() => setCreating(true)}
+                >
+                  <Icon name="plus" size={13} />
+                  Add automation
+                </button>
+              ) : null}
             </div>
             <h2 className="automations-heading">Recent runs</h2>
             <Runs runs={recent} />
