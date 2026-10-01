@@ -114,6 +114,7 @@ const program = Effect.gen(function* () {
       method: "POST",
       key: crypto.randomUUID(),
       body: {
+        title: `e2e reach (${agent})`,
         repo: fixtureRepo,
         agent,
         scripted: true,
