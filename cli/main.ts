@@ -13,6 +13,7 @@ import { hatch, interrupt, resume, rm, steer, stop } from "./commands/actions.js
 import { push } from "./commands/push.js";
 import { connect, connections, deliveries, mcp } from "./commands/connections.js";
 import { automation, runs } from "./commands/automations.js";
+import { blueprint } from "./commands/blueprints.js";
 
 const overview = `${bold("scotty")} — Codex and Claude sessions in Cloudflare Containers
 
@@ -60,6 +61,8 @@ ${bold("Automations")}
   automation run <name>           Run one now
   automation rm <name>            Delete an automation
   runs                            List runs, newest first (--automation <name>)
+  blueprint install <file> --repo <owner/repo>
+                                  Add a blueprint's connections and automations, off
 
 ${bold("Flags")}
   --json      JSON output (the default when piped)
@@ -158,6 +161,13 @@ Example: scotty automation add standup octocat/Hello-World "Summarise yesterday'
   runs: `Usage: scotty runs [--automation name]
 List runs, newest first: what fired them, skipped (and why), started, steered or ended a session, or
 failed; and how that session's turn went. The last 100 are shown.`,
+  blueprint: `Usage: scotty blueprint install <file> --repo <owner/repo> [--agent codex|claude]
+Add the connections and automations a blueprint file lists, all off, for that repo and agent.
+Pipe the secrets it asks for as one JSON object of connection name to secret; a missing one is
+named with the hook URLs to set up first. Prints each hook URL, generated secrets (once) and what
+to paste where; then turn the automations on with scotty automation enable <name>.
+Scotty's repository ships blueprints/pr-reviewer.json and blueprints/linear.json.
+Example: scotty blueprint install pr-reviewer.json --repo octocat/Hello-World < /secure/secrets.json`,
   push: `Usage: scotty push skill <folder|zip…> | scotty push instructions <file|->
 skill          Upload skills; one with the same name is replaced and keeps its on/off setting.
 instructions   Set the text every session gets; - reads stdin, an empty file clears it.
@@ -191,6 +201,7 @@ const root = Command.make("scotty").pipe(
     deliveries,
     automation,
     runs,
+    blueprint,
   ]),
 );
 

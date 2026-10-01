@@ -21,6 +21,7 @@ directory. Conventions, evidence and cleanup: [SKILL.md](../SKILL.md).
 | [reach](reach.md)                 | Agents call token and MCP services through internal URLs                                       | Transport  | `reach`              |
 | [mcp-oauth](mcp-oauth.md)         | OAuth sign-in, refresh and tool policy through internal MCP URLs                               | OAuth      | `mcp-oauth`          |
 | [automations](automations.md)     | A schedule or a webhook delivery fires a run into a session, or a listed skip                  | A1–A6      | `automations`        |
+| [blueprints](blueprints.md)       | One install makes a use's connections and automations off, and shows what to paste where       | B1–B5      | `blueprints`         |
 | [ui](ui.md)                       | The phone UI creates, answers, steers and interrupts, and shows files                          | U1–U6      | none                 |
 
 An e2e proves the same behaviours automatically; drive the recipe when a change needs a human-

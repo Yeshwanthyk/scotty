@@ -11,8 +11,8 @@ import { fold, initial, type State } from "../../src/session/fold.ts";
 import { maxSearch, searchText } from "../../src/session/search.ts";
 import { conversationView, sessionView, turnOutcome } from "../../src/session/view.ts";
 import {
-  AutomationName,
   Definition,
+  NewAutomation,
   RunStatus,
   nextDue,
   prepare,
@@ -727,7 +727,6 @@ const flows = {
     seedRun(4, "daily-digest", 60 * 29, "skipped", "missed", null),
   ],
 };
-const NewAutomation = Schema.Struct({ name: AutomationName, ...Definition.fields });
 const sessionKeys = new Map<string, string>();
 const automationRow = (name: string) => {
   const row = flows.automations.get(name);

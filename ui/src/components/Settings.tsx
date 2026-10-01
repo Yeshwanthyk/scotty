@@ -28,6 +28,7 @@ import {
   type Device,
   type Settings as SettingsState,
 } from "../data/settings";
+import { blueprints, installBlueprint } from "../data/blueprints";
 import { Icon, Spinner, type IconName } from "./Icon";
 import { SidebarButton } from "./Layout";
 
@@ -40,6 +41,12 @@ export const sections = [
     label: "Connections",
     icon: "branch",
     detail: "Webhooks, API tokens and MCP servers",
+  },
+  {
+    id: "blueprints",
+    label: "Blueprints",
+    icon: "nodes",
+    detail: "Connections and automations for one use",
   },
   { id: "signed-in", label: "Signed in", icon: "circle", detail: "Cloudflare Access" },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; icon: IconName; detail: string }>;
@@ -128,6 +135,8 @@ export function SettingsPage({ section }: { section?: Section }) {
             <Skills skills={data.settings.skills} reload={load} />
           ) : shown === "connections" ? (
             <Connections />
+          ) : shown === "blueprints" ? (
+            <Blueprints />
           ) : (
             <SignedIn email={data.settings.email} />
           )}
@@ -938,6 +947,237 @@ function McpControls({
           Save policy
         </button>
       </form>
+    </div>
+  );
+}
+
+// A shipped blueprint, installed off: the hook URLs are shown first because some senders (Linear)
+// issue their signing secret only once the webhook exists.
+function Blueprints() {
+  const [chosen, setChosen] = useState(blueprints[0]?.name ?? "");
+  const [repo, setRepo] = useState("");
+  const [agent, setAgent] = useState<"codex" | "claude">("codex");
+  const [secrets, setSecrets] = useState<Record<string, string>>({});
+  const [created, setCreated] = useState<Awaited<ReturnType<typeof installBlueprint>>>();
+  const [copied, setCopied] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const blueprint = blueprints.find((item) => item.name === chosen);
+  const copy = (what: string, text: string) =>
+    void navigator.clipboard?.writeText(text).then(() => setCopied(what));
+  async function run(action: () => Promise<void>, fallback: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await action();
+    } catch (failure) {
+      setError(message(failure, fallback));
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (blueprint === undefined) return null;
+  const hook = (name: string) => `${window.location.origin}/hooks/${name}`;
+  if (created !== undefined)
+    return (
+      <div className="settings-card">
+        <p className="settings-intro">
+          Installed {blueprint.title} for <span className="mono">{repo.trim()}</span>, off. Paste
+          each URL and secret where it says, then turn the automations on in{" "}
+          <Link to="/automations">Automations</Link>. Generated secrets are shown once.
+        </p>
+        {created.map((connection) => {
+          const secret = connection.kind === "inbound" ? connection.secret : null;
+          return (
+            <div key={connection.name} className="settings-row secret-row">
+              <div className="settings-row-text">
+                <div className="settings-row-title">
+                  <span className="mono">{connection.name}</span>
+                  <span className="quiet settings-size">{connection.kind}</span>
+                </div>
+                <div className="settings-row-detail mono">
+                  {connection.kind === "inbound" ? connection.url : connection.internalUrl}
+                </div>
+                {secret === null ? null : <div className="settings-row-detail mono">{secret}</div>}
+                <div className="settings-row-detail">
+                  {blueprint.connections.find((item) => item.name === connection.name)?.setup}
+                </div>
+              </div>
+              <div className="settings-actions">
+                {connection.kind === "inbound" ? (
+                  <button
+                    type="button"
+                    className="button pressable"
+                    onClick={() => copy(`url:${connection.name}`, connection.url)}
+                  >
+                    <Icon name={copied === `url:${connection.name}` ? "check" : "copy"} size={13} />
+                    Copy URL
+                  </button>
+                ) : null}
+                {secret === null ? null : (
+                  <button
+                    type="button"
+                    className="button pressable"
+                    onClick={() => copy(`secret:${connection.name}`, secret)}
+                  >
+                    <Icon
+                      name={copied === `secret:${connection.name}` ? "check" : "copy"}
+                      size={13}
+                    />
+                    Copy secret
+                  </button>
+                )}
+                {connection.kind === "mcp" && connection.signIn !== "signed-in" ? (
+                  <button
+                    type="button"
+                    className="button pressable"
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        window.location.assign(await connectMcp(connection.name));
+                      }, "Could not start sign-in")
+                    }
+                  >
+                    Connect
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+        <div className="settings-actions">
+          <button
+            type="button"
+            className="button pressable"
+            onClick={() => {
+              setCreated(undefined);
+              setCopied("");
+            }}
+          >
+            Done
+          </button>
+        </div>
+        <Problem text={error} />
+      </div>
+    );
+  return (
+    <div className="settings-card">
+      <p className="settings-intro">
+        A blueprint adds the connections and automations for one use, all off. Choose the repo and
+        agent, paste the secrets it asks for, and install; then paste the URLs where it says and
+        turn the automations on.
+      </p>
+      <form
+        className="token-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void run(async () => {
+            setCreated(await installBlueprint(blueprint, { repo: repo.trim(), agent, secrets }));
+            setSecrets({});
+          }, "Could not install the blueprint");
+        }}
+      >
+        <select
+          className="field"
+          aria-label="Blueprint"
+          value={chosen}
+          onChange={(event) => {
+            setChosen(event.target.value);
+            setSecrets({});
+          }}
+        >
+          {blueprints.map((item) => (
+            <option key={item.name} value={item.name}>
+              {item.title}
+            </option>
+          ))}
+        </select>
+        <p className="settings-row-detail">{blueprint.description}</p>
+        {blueprint.connections.map((connection) => (
+          <div key={connection.name} className="settings-row">
+            <div className="settings-row-text">
+              <div className="settings-row-title">
+                <span className="mono">{connection.name}</span>
+                <span className="quiet settings-size">{connection.kind}</span>
+              </div>
+              {connection.kind === "inbound" ? (
+                <div className="settings-row-detail mono">{hook(connection.name)}</div>
+              ) : null}
+              {connection.setup ? (
+                <div className="settings-row-detail">{connection.setup}</div>
+              ) : null}
+            </div>
+            {connection.kind === "inbound" ? (
+              <button
+                type="button"
+                className="button pressable"
+                onClick={() => copy(`hook:${connection.name}`, hook(connection.name))}
+              >
+                <Icon name={copied === `hook:${connection.name}` ? "check" : "copy"} size={13} />
+                Copy URL
+              </button>
+            ) : null}
+          </div>
+        ))}
+        {blueprint.connections.map((connection) =>
+          connection.ask ? (
+            <input
+              key={connection.name}
+              className="field"
+              type="password"
+              aria-label={`Secret for ${connection.name}`}
+              placeholder={`${connection.name}: ${connection.ask.prompt}`}
+              value={secrets[connection.name] ?? ""}
+              onChange={(event) =>
+                setSecrets((current) => ({ ...current, [connection.name]: event.target.value }))
+              }
+              autoComplete="off"
+            />
+          ) : null,
+        )}
+        <div className="settings-row-detail">
+          Automations: {blueprint.automations.map((automation) => automation.name).join(", ")}
+        </div>
+        <input
+          className="field"
+          aria-label="Repository"
+          placeholder="owner/repo"
+          value={repo}
+          onChange={(event) => setRepo(event.target.value)}
+          autoComplete="off"
+        />
+        <select
+          className="field"
+          aria-label="Agent"
+          value={agent}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value === "codex" || value === "claude") setAgent(value);
+          }}
+        >
+          <option value="codex">Codex</option>
+          <option value="claude">Claude</option>
+        </select>
+        <button
+          type="submit"
+          className="button pressable"
+          data-tone="primary"
+          disabled={
+            busy ||
+            repo.trim() === "" ||
+            blueprint.connections.some(
+              (connection) =>
+                connection.ask !== undefined &&
+                connection.ask.optional === undefined &&
+                (secrets[connection.name] ?? "").trim() === "",
+            )
+          }
+        >
+          {busy ? <Spinner size={12} /> : <Icon name="plus" size={13} />}
+          Install, off
+        </button>
+      </form>
+      <Problem text={error} />
     </div>
   );
 }

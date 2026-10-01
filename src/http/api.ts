@@ -15,7 +15,7 @@ import {
   Key,
 } from "../creds/connections.js";
 import { githubHint, Prompt, Repo, startSession } from "./start.js";
-import { automationName, AutomationName, Definition } from "../automations/automation.js";
+import { automationName, Definition, NewAutomation } from "../automations/automation.js";
 import { fireRun, runRequest } from "../automations/fire.js";
 import { version } from "../version.js";
 import {
@@ -94,7 +94,6 @@ const Instructions = Schema.Struct({
 });
 const SkillSwitch = Schema.Struct({ enabled: Schema.Boolean });
 const skillPath = /^\/api\/skills\/([^/]+)$/;
-const NewAutomation = Schema.Struct({ name: AutomationName, ...Definition.fields });
 const AutomationSwitch = Schema.Struct({ enabled: Schema.Boolean });
 const automationPath = /^\/api\/automations\/([^/]+)(\/run)?$/;
 const definitionHint =

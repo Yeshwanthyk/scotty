@@ -59,6 +59,7 @@ export const Definition = Schema.Struct({
   scripted: Schema.optionalKey(Schema.Literal(true)),
 });
 export type Definition = typeof Definition.Type;
+export const NewAutomation = Schema.Struct({ name: AutomationName, ...Definition.fields });
 
 export const RunTrigger = Schema.Literals(["schedule", "event", "manual"]);
 // A run stays received until its session answers the action; a skipped run names its reason.
@@ -102,6 +103,10 @@ const scalar = (value: unknown) =>
     ? String(value)
     : undefined;
 
+// A field's text as a template renders it: text as it is, anything else as JSON.
+const asText = (value: unknown) =>
+  value === undefined ? undefined : typeof value === "string" ? value : JSON.stringify(value);
+
 // Why a payload does not match, or undefined when it does.
 function mismatch(filter: Filter, payload: unknown): string | undefined {
   for (const [path, wanted] of Object.entries(filter)) {
@@ -111,9 +116,10 @@ function mismatch(filter: Filter, payload: unknown): string | undefined {
       typeof wanted === "string"
         ? value === wanted
         : "kind" in wanted
-          ? typeof raw === "string" && raw.includes(wanted.value)
+          ? asText(raw)?.includes(wanted.value) === true
           : value !== undefined && wanted.includes(value);
-    if (!matched) return `${path} is ${value === undefined ? "missing" : JSON.stringify(value)}`;
+    if (!matched)
+      return `${path} is ${raw === undefined ? "missing" : value === undefined ? "a list or object" : JSON.stringify(value)}`;
   }
   return undefined;
 }
