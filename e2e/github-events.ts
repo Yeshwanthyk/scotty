@@ -158,7 +158,11 @@ export function githubEvents(request: ReturnType<typeof client>) {
       conversation.turns[1]?.assistant.includes(`Fixed ${fixtureRepo}#${pr}`) === true,
       "The second turn lacks the rendered PR number",
     );
-    const before = yield* request(`${prefix}/log`, Log);
+    // A delivery reaches the session only as a prompt; saves and socket events keep arriving.
+    const prompts = request(`${prefix}/log`, Log).pipe(
+      Effect.map((events) => JSON.stringify(events.filter((e) => e.kind === "prompt.requested"))),
+    );
+    const before = yield* prompts;
     const retry = yield* deliver(connection.url, connection.secret, id, payload);
     yield* check(
       retry.status === 200 &&
@@ -169,10 +173,7 @@ export function githubEvents(request: ReturnType<typeof client>) {
       (yield* request(`/api/runs?automation=${name}`, Runs)).runs.length === 1,
       "Redelivery added a run",
     );
-    yield* check(
-      JSON.stringify(yield* request(`${prefix}/log`, Log)) === JSON.stringify(before),
-      "Redelivery added session events",
-    );
+    yield* check((yield* prompts) === before, "Redelivery added a prompt");
     const badId = crypto.randomUUID();
     const bad = yield* deliver(connection.url, `${connection.secret}-wrong`, badId, payload);
     yield* check(bad.status === 401, `Bad signature answered ${bad.status}`);
@@ -226,10 +227,7 @@ export function githubEvents(request: ReturnType<typeof client>) {
       (yield* request(`/api/runs?automation=${name}`, Runs)).runs.length === 1,
       "A rejected or self-authored event added a run",
     );
-    yield* check(
-      JSON.stringify(yield* request(`${prefix}/log`, Log)) === JSON.stringify(before),
-      "A rejected or self-authored event added session events",
-    );
+    yield* check((yield* prompts) === before, "A rejected or self-authored event added a prompt");
     yield* request(`${prefix}/stop`, View, { method: "POST" });
     yield* request(`/api/automations/${name}`, AutomationRemoved, { method: "DELETE" });
     yield* request(`/api/connections/${hook}`, ConnectionRemoved, { method: "DELETE" });
