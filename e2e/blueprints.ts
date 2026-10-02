@@ -16,7 +16,7 @@ import {
 } from "../cli/client.js";
 import { readConfig } from "../cli/config.js";
 import { ConnectionAuthorization } from "../src/creds/connections.js";
-import { Blueprint, installation } from "../src/blueprints/blueprint.js";
+import { Blueprint, installation, type Choices } from "../src/blueprints/blueprint.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
 import { agent, real, sessionAgent } from "./lib/agent.js";
 import { Log, waiter } from "./lib/wait.js";
@@ -164,9 +164,13 @@ const program = Effect.gen(function* () {
   });
 
   // The same steps as `scotty blueprint install` and the Settings sheet: check, create off, list.
-  const install = (blueprint: Blueprint, secrets: Readonly<Record<string, string>>) =>
+  const install = (
+    blueprint: Blueprint,
+    secrets: Readonly<Record<string, string>>,
+    homes: Pick<Choices, "repo" | "targets">,
+  ) =>
     Effect.gen(function* () {
-      const plan = installation(blueprint, { repo: fixtureRepo, ...sessionAgent, secrets });
+      const plan = installation(blueprint, { ...homes, ...sessionAgent, secrets });
       if (!plan.ok) return yield* check(false, plan.problem).pipe(Effect.as([]));
       const created = [];
       for (const body of plan.installation.connections) {
@@ -180,10 +184,10 @@ const program = Effect.gen(function* () {
         made.automations.push(body.name);
       }
       const listed = (yield* request("/api/automations", Automations)).automations.filter(
-        (automation) => blueprint.automations.some((item) => item.name === automation.name),
+        (automation) => plan.installation.automations.some((item) => item.name === automation.name),
       );
       yield* check(
-        listed.length === blueprint.automations.length &&
+        listed.length === plan.installation.automations.length &&
           listed.every((automation) => !automation.enabled && automation.repo === fixtureRepo),
         `${blueprint.name} automations were not all created off for the fixture repo`,
       );
@@ -229,9 +233,11 @@ const program = Effect.gen(function* () {
       "pr-review-comment": "say {{comment.body}}",
       "pr-review-end": "say closed",
     });
-    const [hook] = yield* install(reviewer, {
-      [`github-api-${suffix}`]: `e2e_${suffix}_token_unused`,
-    });
+    const [hook] = yield* install(
+      reviewer,
+      { [`github-api-${suffix}`]: `e2e_${suffix}_token_unused` },
+      { repo: fixtureRepo },
+    );
     if (hook?.kind !== "inbound" || hook.secret === null)
       return yield* check(false, "The GitHub webhook did not come back with a generated secret");
     console.log(`Installed ${reviewer.name} off, then enabled: ${hook.url}`);
@@ -310,8 +316,9 @@ const program = Effect.gen(function* () {
     );
     console.log("PR closed → session ended");
 
-    // Linear: an issue labelled scotty starts a session keyed by the issue, which reads it through
-    // the MCP connection; other updates skip; completing the issue ends it.
+    // Linear, with two targets: an issue with target B's label starts a session through B's start
+    // automation, keyed by the issue, which reads it through the MCP connection; other updates
+    // skip; completing it ends it through B's end automation, while A's skips.
     const mcpName = `linear-${suffix}`;
     const call = `call ${JSON.stringify({
       url: `http://${mcpName}.internal/api/mcp`,
@@ -334,14 +341,26 @@ const program = Effect.gen(function* () {
       yield* load("linear.json"),
       suffix,
       {
-        "linear-new": `${call}\nsay read {{data.identifier}}`,
-        "linear-labelled": `${call}\nsay read {{data.identifier}}`,
-        "linear-done": "say done",
+        "linear-new-${target}": `${call}\nsay read {{data.identifier}}`,
+        "linear-labelled-${target}": `${call}\nsay read {{data.identifier}}`,
+        "linear-done-${target}": "say done",
       },
       `${server}/mcp`,
     );
     const signing = `lin_wh_${crypto.randomUUID().replaceAll("-", "")}`;
-    const [inbound, mcp] = yield* install(worker, { [`linear-issues-${suffix}`]: signing });
+    // Only the fixture repo is safe to use, so both targets work there; the runs' automation
+    // names tell them apart.
+    const [labelA, labelB] = ["e2e:a", "e2e:b"];
+    const [inbound, mcp] = yield* install(
+      worker,
+      { [`linear-issues-${suffix}`]: signing },
+      {
+        targets: [
+          { name: labelA, repo: fixtureRepo },
+          { name: labelB, repo: fixtureRepo },
+        ],
+      },
+    );
     if (inbound?.kind !== "inbound" || mcp?.kind !== "mcp")
       return yield* check(false, "The Linear blueprint did not make a webhook and an MCP server");
     yield* check(inbound.secret === null, "A pasted Linear signing secret was echoed back");
@@ -377,20 +396,22 @@ const program = Effect.gen(function* () {
     });
     yield* check(
       unlabelled.runs.every((run) => run.status === "skipped"),
-      "An issue without the scotty label started a session",
+      "An issue without a target's label started a session",
     );
     const labelled = yield* linear(inbound.url, signing, {
       action: "update",
       type: "Issue",
-      data: issue(["bug", "scotty"]),
+      data: issue(["bug", labelB]),
       updatedFrom: { labelIds: ["label-0"] },
       url: issueUrl,
     });
-    const started = runOf(labelled, "linear-labelled");
+    const started = runOf(labelled, "linear-labelled-e2e-b");
     const ticket = started?.session ?? null;
     yield* check(
-      started?.status === "started" && ticket !== null,
-      "Adding the scotty label did not start a session",
+      started?.status === "started" &&
+        ticket !== null &&
+        runOf(labelled, "linear-labelled-e2e-a")?.status === "skipped",
+      "Adding target B's label did not start a session through B's automation alone",
     );
     if (ticket === null) return;
     made.sessions.push(ticket);
@@ -402,11 +423,13 @@ const program = Effect.gen(function* () {
       (event) => event.kind === "agent.event" && JSON.stringify(event.event).includes("generation"),
     );
     yield* check(outputs.length > 0, "The session did not read through the MCP connection");
-    console.log(`Label added → session ${ticket} read the issue through ${mcp.internalUrl}`);
+    console.log(
+      `Target B's label added → session ${ticket} read the issue through ${mcp.internalUrl}`,
+    );
     const edited = yield* linear(inbound.url, signing, {
       action: "update",
       type: "Issue",
-      data: { ...issue(["bug", "scotty"]), title: "e2e issue, edited" },
+      data: { ...issue(["bug", labelB]), title: "e2e issue, edited" },
       updatedFrom: { title: "e2e issue" },
       url: issueUrl,
     });
@@ -417,11 +440,15 @@ const program = Effect.gen(function* () {
     const done = yield* linear(inbound.url, signing, {
       action: "update",
       type: "Issue",
-      data: issue(["bug", "scotty"], "completed"),
+      data: issue(["bug", labelB], "completed"),
       updatedFrom: { stateId: "started" },
       url: issueUrl,
     });
-    const finished = runOf(done, "linear-done");
+    const finished = runOf(done, "linear-done-e2e-b");
+    yield* check(
+      runOf(done, "linear-done-e2e-a")?.status === "skipped",
+      "Target A's end automation acted on target B's issue",
+    );
     yield* check(
       finished?.status === "ended" &&
         finished.session === ticket &&

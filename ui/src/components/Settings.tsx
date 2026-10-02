@@ -956,6 +956,7 @@ function McpControls({
 function Blueprints() {
   const [chosen, setChosen] = useState(blueprints[0]?.name ?? "");
   const [repo, setRepo] = useState("");
+  const [targets, setTargets] = useState([{ name: "", repo: "" }]);
   const [agent, setAgent] = useState<"codex" | "claude">("codex");
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [created, setCreated] = useState<Awaited<ReturnType<typeof installBlueprint>>>();
@@ -977,13 +978,31 @@ function Blueprints() {
     }
   }
   if (blueprint === undefined) return null;
+  const shared = blueprint.automations.some((automation) => automation.perTarget === undefined);
+  const given = targets
+    .map((target) => ({ name: target.name.trim(), repo: target.repo.trim() }))
+    .filter((target) => target.name !== "" || target.repo !== "");
+  const choices = {
+    ...(shared ? { repo: repo.trim() } : {}),
+    ...(blueprint.targets === undefined ? {} : { targets: given }),
+  };
+  const setTarget = (at: number, change: Partial<{ name: string; repo: string }>) =>
+    setTargets((current) =>
+      current.map((target, index) => (index === at ? { ...target, ...change } : target)),
+    );
   const hook = (name: string) => `${window.location.origin}/hooks/${name}`;
   if (created !== undefined)
     return (
       <div className="settings-card">
         <p className="settings-intro">
-          Installed {blueprint.title} for <span className="mono">{repo.trim()}</span>, off. Paste
-          each URL and secret where it says, then turn the automations on in{" "}
+          Installed {blueprint.title} for{" "}
+          <span className="mono">
+            {[
+              ...(choices.repo === undefined ? [] : [choices.repo]),
+              ...(choices.targets ?? []).map((target) => `${target.name} → ${target.repo}`),
+            ].join(", ")}
+          </span>
+          , off. Paste each URL and secret where it says, then turn the automations on in{" "}
           <Link to="/automations">Automations</Link>. Generated secrets are shown once.
         </p>
         {created.map((connection) => {
@@ -1072,7 +1091,7 @@ function Blueprints() {
         onSubmit={(event) => {
           event.preventDefault();
           void run(async () => {
-            setCreated(await installBlueprint(blueprint, { repo: repo.trim(), agent, secrets }));
+            setCreated(await installBlueprint(blueprint, { ...choices, agent, secrets }));
             setSecrets({});
           }, "Could not install the blueprint");
         }}
@@ -1138,14 +1157,60 @@ function Blueprints() {
         <div className="settings-row-detail">
           Automations: {blueprint.automations.map((automation) => automation.name).join(", ")}
         </div>
-        <input
-          className="field"
-          aria-label="Repository"
-          placeholder="owner/repo"
-          value={repo}
-          onChange={(event) => setRepo(event.target.value)}
-          autoComplete="off"
-        />
+        {shared ? (
+          <input
+            className="field"
+            aria-label="Repository"
+            placeholder="owner/repo"
+            value={repo}
+            onChange={(event) => setRepo(event.target.value)}
+            autoComplete="off"
+          />
+        ) : null}
+        {blueprint.targets === undefined ? null : (
+          <>
+            <p className="settings-row-detail">Targets: {blueprint.targets.ask}</p>
+            {targets.map((target, at) => (
+              <div key={at} className="token-form">
+                <input
+                  className="field"
+                  aria-label={`Target ${at + 1} name`}
+                  placeholder="name"
+                  value={target.name}
+                  onChange={(event) => setTarget(at, { name: event.target.value })}
+                  autoComplete="off"
+                />
+                <input
+                  className="field"
+                  aria-label={`Target ${at + 1} repository`}
+                  placeholder="owner/repo"
+                  value={target.repo}
+                  onChange={(event) => setTarget(at, { repo: event.target.value })}
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  className="icon-button pressable"
+                  aria-label={`Remove target ${at + 1}`}
+                  disabled={targets.length === 1}
+                  onClick={() =>
+                    setTargets((current) => current.filter((_, index) => index !== at))
+                  }
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="button pressable"
+              onClick={() => setTargets((current) => [...current, { name: "", repo: "" }])}
+            >
+              <Icon name="plus" size={13} />
+              Add target
+            </button>
+          </>
+        )}
         <select
           className="field"
           aria-label="Agent"
@@ -1164,7 +1229,8 @@ function Blueprints() {
           data-tone="primary"
           disabled={
             busy ||
-            repo.trim() === "" ||
+            (shared && repo.trim() === "") ||
+            (blueprint.targets !== undefined && given.length === 0) ||
             blueprint.connections.some(
               (connection) =>
                 connection.ask !== undefined &&

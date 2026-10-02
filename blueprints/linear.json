@@ -1,7 +1,8 @@
 {
   "name": "linear",
   "title": "Linear issue worker",
-  "description": "Starts a session on each Linear issue labelled scotty, keyed by the issue, and ends it when the issue is completed or canceled. The agent reads the issue through Linear's MCP server.",
+  "description": "Starts a session on each Linear issue with a target's label, in that target's repo and keyed by the issue, and ends it when the issue is completed or canceled. The agent reads the issue through Linear's MCP server.",
+  "targets": { "ask": "a Linear label per repo, e.g. scotty:web → owner/web" },
   "connections": [
     {
       "kind": "inbound",
@@ -25,25 +26,27 @@
   ],
   "automations": [
     {
-      "name": "linear-new",
+      "name": "linear-new-${target}",
+      "perTarget": true,
       "when": { "kind": "event", "connection": "linear-issues" },
       "only": {
         "type": "Issue",
         "action": "create",
-        "data.labels": { "kind": "contains", "value": "\"name\":\"scotty\"" }
+        "data.labels": { "kind": "contains", "value": "\"name\":\"${target}\"" }
       },
       "action": "start",
       "key": "linear:{{data.id}}",
       "prompt": "Work on Linear issue {{data.identifier}}: {{data.title}} ({{url}}).\n\nRead the issue and its comments with the Linear MCP server at http://linear.internal/api/mcp, then do the work on this branch, run the tests, and push it. Say what you did and what is left."
     },
     {
-      "name": "linear-labelled",
+      "name": "linear-labelled-${target}",
+      "perTarget": true,
       "when": { "kind": "event", "connection": "linear-issues" },
       "only": {
         "type": "Issue",
         "action": "update",
         "updatedFrom.labelIds": { "kind": "contains", "value": "" },
-        "data.labels": { "kind": "contains", "value": "\"name\":\"scotty\"" }
+        "data.labels": { "kind": "contains", "value": "\"name\":\"${target}\"" }
       },
       "except": { "data.state.type": ["completed", "canceled"] },
       "action": "start",
@@ -51,12 +54,14 @@
       "prompt": "Work on Linear issue {{data.identifier}}: {{data.title}} ({{url}}). Its labels changed.\n\nRead the issue and its comments with the Linear MCP server at http://linear.internal/api/mcp, then do the work on this branch, run the tests, and push it. Say what you did and what is left."
     },
     {
-      "name": "linear-done",
+      "name": "linear-done-${target}",
+      "perTarget": true,
       "when": { "kind": "event", "connection": "linear-issues" },
       "only": {
         "type": "Issue",
         "action": "update",
-        "data.state.type": ["completed", "canceled"]
+        "data.state.type": ["completed", "canceled"],
+        "data.labels": { "kind": "contains", "value": "\"name\":\"${target}\"" }
       },
       "action": "end",
       "key": "linear:{{data.id}}",

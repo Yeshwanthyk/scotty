@@ -1,10 +1,10 @@
 import { BunServices } from "@effect/platform-bun";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { Automations, AutomationSwitched, ConnectionCreated, Connections } from "../client.js";
 import { address, bold, dim, green, output, readStdin, usage, withClient } from "./common.js";
 import { repoName } from "./sessions.js";
-import { Blueprint, installation, taken } from "../../src/blueprints/blueprint.js";
+import { Blueprint, installation, taken, Targets } from "../../src/blueprints/blueprint.js";
 
 const Secrets = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
 
@@ -30,13 +30,27 @@ const install = Command.make(
   "install",
   {
     file: Argument.String("file"),
-    repository: Flag.String("repo"),
+    repository: Flag.String("repo").pipe(Flag.optional),
+    target: Flag.String("target").pipe(Flag.atLeast(0)),
     agent: Flag.Literals("agent", ["codex", "claude"]).pipe(Flag.withDefault("codex")),
   },
-  ({ file, repository, agent }) =>
+  ({ file, repository, target, agent }) =>
     Effect.gen(function* () {
       const blueprint = yield* readBlueprint(file);
-      const repo = yield* repoName(repository, "blueprint");
+      const repo = Option.isSome(repository)
+        ? yield* repoName(repository.value, "blueprint")
+        : undefined;
+      // Each --target is <name>=<owner/repo>; a name may hold "=", a repo can't.
+      const targets = yield* Schema.decodeUnknownEffect(Targets)(
+        target.map((text) => {
+          const at = text.lastIndexOf("=");
+          return at < 0 ? { name: text } : { name: text.slice(0, at), repo: text.slice(at + 1) };
+        }),
+      ).pipe(
+        Effect.catchTag("SchemaError", (error) =>
+          usage(`Expected --target <name>=<owner/repo>: ${error.message}`, "blueprint"),
+        ),
+      );
       const piped = process.stdin.isTTY ? "" : (yield* readStdin).trim();
       const secrets =
         piped === ""
@@ -49,7 +63,12 @@ const install = Command.make(
                 ),
               ),
             );
-      const plan = installation(blueprint, { repo, agent, secrets });
+      const plan = installation(blueprint, {
+        ...(repo === undefined ? {} : { repo }),
+        ...(targets.length === 0 ? {} : { targets }),
+        agent,
+        secrets,
+      });
       if (!plan.ok) {
         const origin = new URL(yield* address).origin;
         return yield* usage(
@@ -70,7 +89,7 @@ const install = Command.make(
         api("/api/connections", Connections),
         api("/api/automations", Automations),
       ]);
-      const clash = taken(blueprint, {
+      const clash = taken(plan.installation, {
         connections: existing.map((connection) => connection.name),
         automations: automations.map((automation) => automation.name),
       });
@@ -103,7 +122,10 @@ const install = Command.make(
       yield* output(
         { blueprint: blueprint.name, connections: created, automations: names },
         [
-          `${green("✓")} Installed ${bold(blueprint.title)} for ${repo}, off`,
+          `${green("✓")} Installed ${bold(blueprint.title)} for ${[
+            ...(repo === undefined ? [] : [repo]),
+            ...targets.map((item) => `${item.name} → ${item.repo}`),
+          ].join(", ")}, off`,
           ...created.flatMap((connection) => [
             `  ${bold(connection.name)}  ${connection.kind === "inbound" ? connection.url : connection.internalUrl}`,
             ...(connection.kind === "inbound" && connection.secret !== null

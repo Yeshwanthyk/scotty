@@ -61,7 +61,7 @@ ${bold("Automations")}
   automation run <name>           Run one now
   automation rm <name>            Delete an automation
   runs                            List runs, newest first (--automation <name>)
-  blueprint install <file> --repo <owner/repo>
+  blueprint install <file> --repo <owner/repo> | --target <name>=<owner/repo>…
                                   Add a blueprint's connections and automations, off
 
 ${bold("Flags")}
@@ -161,13 +161,17 @@ Example: scotty automation add standup octocat/Hello-World "Summarise yesterday'
   runs: `Usage: scotty runs [--automation name]
 List runs, newest first: what fired them, skipped (and why), started, steered or ended a session, or
 failed; and how that session's turn went. The last 100 are shown.`,
-  blueprint: `Usage: scotty blueprint install <file> --repo <owner/repo> [--agent codex|claude]
+  blueprint: `Usage: scotty blueprint install <file> [--repo <owner/repo>] [--target <name>=<owner/repo>…]
+                [--agent codex|claude]
 Add the connections and automations a blueprint file lists, all off, for that repo and agent.
+A blueprint with targets (Linear: a label per repo) takes a repeated --target instead of --repo,
+and makes its per-target automations once for each, named after the target.
 Pipe the secrets it asks for as one JSON object of connection name to secret; a missing one is
 named with the hook URLs to set up first. Prints each hook URL, generated secrets (once) and what
 to paste where; then turn the automations on with scotty automation enable <name>.
 Scotty's repository ships blueprints/pr-reviewer.json and blueprints/linear.json.
-Example: scotty blueprint install pr-reviewer.json --repo octocat/Hello-World < /secure/secrets.json`,
+Example: scotty blueprint install pr-reviewer.json --repo octocat/Hello-World < /secure/secrets.json
+Example: scotty blueprint install linear.json --target scotty:web=octocat/web --target scotty:api=octocat/api < /secure/secrets.json`,
   push: `Usage: scotty push skill <folder|zip…> | scotty push instructions <file|->
 skill          Upload skills; one with the same name is replaced and keeps its on/off setting.
 instructions   Set the text every session gets; - reads stdin, an empty file clears it.

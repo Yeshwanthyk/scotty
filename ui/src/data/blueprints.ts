@@ -16,7 +16,7 @@ export async function installBlueprint(blueprint: Blueprint, choices: Choices) {
   const plan = installation(blueprint, choices);
   if (!plan.ok) throw new Error(plan.problem);
   const [existing, current] = await Promise.all([connections(), automations()]);
-  const clash = taken(blueprint, {
+  const clash = taken(plan.installation, {
     connections: existing.map((connection) => connection.name),
     automations: current.map((automation) => automation.name),
   });
