@@ -123,7 +123,7 @@ const list = Command.make("ls", {}, () =>
 
 const enable = Command.make(
   "enable",
-  { name: Argument.String("name"), off: Flag.Boolean("off") },
+  { name: Argument.String("name"), off: Flag.Boolean("off").pipe(Flag.withDefault(false)) },
   ({ name, off }) =>
     Effect.gen(function* () {
       yield* checkName(name, "automation");

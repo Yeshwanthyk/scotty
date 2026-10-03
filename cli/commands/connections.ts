@@ -32,7 +32,7 @@ export const connect = Command.make(
     name: Argument.String("name"),
     host: Flag.String("host").pipe(Flag.optional),
     header: Flag.String("header").pipe(Flag.optional),
-    oauth: Flag.Boolean("oauth"),
+    oauth: Flag.Boolean("oauth").pipe(Flag.withDefault(false)),
     endpoint: Flag.String("endpoint").pipe(Flag.optional),
   },
   ({ kind, name, host, header, endpoint, oauth }) =>
