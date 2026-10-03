@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
-import { deadline, deadlines, fold, initial, type State } from "./fold.js";
+import { deadline, deadlines, fold, initial, startStep, type State } from "./fold.js";
+import { sessionView } from "./view.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
 describe("session fold", () => {
@@ -31,6 +32,106 @@ describe("session fold", () => {
     expect(state.phase).toBe("running");
     // The open turn stalls only after the agent is silent that long.
     expect(state.pending).toEqual([{ op: "stalled", due: delivered.at + deadlines.stalled }]);
+    check(state);
+  });
+
+  it("keeps a prompt that arrives while the workspace is made and sends it with the first", () => {
+    let state = [created, start].reduce(fold, initial);
+    const early = make(3, "prompt.requested", {
+      req: "early",
+      turn: "0",
+      text: "more",
+      images: [],
+    });
+    state = fold(state, early);
+    expect(state.requests.find((item) => item.req === "early")?.status).toBe("pending");
+    expect(command(state, early)).toBeUndefined();
+    check(state);
+    const again = make(4, "prompt.requested", {
+      req: "early",
+      turn: "0",
+      text: "x",
+      images: [],
+    });
+    state = fold(state, again);
+    expect(state.requests).toHaveLength(1);
+    check(state);
+    const up = make(5, "sup.hello", { gen: 1, version: "v1" });
+    const workspace = make(6, "workspace.ready", { gen: 1, branch: "main", commit: "abc" });
+    state = fold(fold(state, up), workspace);
+    const sent = command(state, workspace);
+    expect(sent?.kind).toBe("resend");
+    expect(sent?.kind === "resend" ? sent.requests.map((item) => item.req) : []).toEqual([
+      "initial:1",
+      "early",
+    ]);
+    expect(deadline(state)).toBeDefined();
+    check(state);
+    // An interrupt still has nothing to stop before the workspace exists.
+    const stop = make(3, "interrupt.requested", { req: "i", turn: "0" });
+    expect(
+      fold([created, start].reduce(fold, initial), stop).requests.find((r) => r.req === "i")
+        ?.status,
+    ).toBe("stale");
+  });
+
+  it("sends the first prompt under the creator's request id and ignores a retry of it", () => {
+    const named = make(1, "created", { ...created, req: "create-1" });
+    const retry = (seq: number) =>
+      make(seq, "prompt.requested", { req: "create-1", turn: "0", text: "hello", images: [] });
+    let state = [named, start, hello].reduce(fold, initial);
+    state = fold(state, retry(4));
+    expect(state.requests).toEqual([]);
+    const workspace = make(5, "workspace.ready", { gen: 1, branch: "main", commit: "abc" });
+    state = fold(state, workspace);
+    expect(command(state, workspace)).toEqual({
+      kind: "prompt",
+      req: "create-1",
+      turn: "0",
+      text: "hello",
+    });
+    state = fold(state, retry(6));
+    expect(state.requests.map((item) => item.req)).toEqual(["create-1"]);
+    check(state);
+  });
+
+  it("answers a start by what the session has already seen", () => {
+    const input = {
+      req: "create-1",
+      repo: "https://example.org/repo",
+      agent: "codex" as const,
+      prompt: "hello",
+    };
+    expect(startStep(initial, input)).toBe("create");
+    const named = make(1, "created", { ...created, req: "create-1" });
+    const first = make(5, "prompt.delivered", { req: "create-1" });
+    let state = [named, start, hello, ready, first].reduce(fold, initial);
+    expect(startStep(state, input)).toBe("duplicate");
+    expect(startStep(state, { ...input, prompt: "other" })).toBe("conflict");
+    expect(startStep(state, { ...input, repo: "https://example.org/other" })).toBe("conflict");
+    expect(startStep(state, { ...input, req: "steer-1", agent: "claude" })).toBe("conflict");
+    const steer = { ...input, req: "steer-1", prompt: "more" };
+    expect(startStep(state, steer)).toBe("prompt");
+    state = fold(
+      state,
+      make(6, "prompt.requested", { req: "steer-1", turn: "0", text: "more", images: [] }),
+    );
+    expect(startStep(state, steer)).toBe("duplicate");
+    expect(startStep(state, { ...steer, prompt: "else" })).toBe("conflict");
+    // A steer whose turn has since ended went in: its retry is still a duplicate.
+    state = fold(state, make(7, "prompt.delivered", { req: "steer-1" }));
+    state = fold(
+      state,
+      make(8, "turn.ended", { gen: 1, turn: "0", codexTurn: "cx", state: "completed" }),
+    );
+    expect(startStep(state, steer)).toBe("duplicate");
+    // One the session refused did not go in, and a retry cannot put it in.
+    state = fold(
+      state,
+      make(9, "prompt.requested", { req: "late", turn: "0", text: "late", images: [] }),
+    );
+    expect(state.requests.find((item) => item.req === "late")?.status).toBe("stale");
+    expect(startStep(state, { ...input, req: "late", prompt: "late" })).toBe("unavailable");
     check(state);
   });
 
@@ -207,7 +308,7 @@ describe("session fold", () => {
     check(state);
   });
 
-  it("records a retryable reason for each lifecycle timeout", () => {
+  it("records a retryable reason for each lifecycle timeout and destroys the container", () => {
     const started = fold(fold(initial, created), start);
     const cases = [
       { op: "container", state: started, code: "container_timeout" },
@@ -215,25 +316,27 @@ describe("session fold", () => {
     ];
     for (const item of cases) {
       const due = item.state.pending.find((p) => p.op === item.op)?.due;
-      const timed = fold(
-        item.state,
-        decodeSessionEvent({
-          seq: item.state.lastSeq + 1,
-          at: due,
-          src: "alarm",
-          kind: "timeout",
-          op: item.op,
-        }),
-      );
+      const event = decodeSessionEvent({
+        seq: item.state.lastSeq + 1,
+        at: due,
+        src: "alarm",
+        kind: "timeout",
+        op: item.op,
+      });
+      const timed = fold(item.state, event);
       expect(timed.failure).toEqual({ code: item.code, retryable: true });
+      // A start placed after its deadline would otherwise run until the inactivity timeout.
+      expect(command(timed, event)).toEqual({ kind: "destroy" });
       check(timed);
     }
   });
 
   it("fails at once when the supervisor reports a failed start", () => {
     const started = fold(fold(fold(initial, created), start), hello);
-    const failed = fold(started, make(4, "sup.error", { code: "workspace" }));
+    const error = make(4, "sup.error", { code: "workspace" });
+    const failed = fold(started, error);
     expect(failed.phase).toBe("failed");
+    expect(command(failed, error)).toEqual({ kind: "destroy" });
     expect(failed.failure).toEqual({ code: "workspace", retryable: true });
     expect(deadline(failed)).toBeUndefined();
     check(failed);
@@ -268,6 +371,57 @@ describe("session fold", () => {
     );
     expect(late).toEqual({ ...state, lastSeq: 7 });
     check(late);
+  });
+
+  it("ends a running session with reason ended", () => {
+    const state = fold(
+      boot(),
+      make(6, "container.stopped", { gen: 1, reason: "ended", req: "end" }),
+    );
+    expect(state.phase).toBe("stopped");
+    expect(state.stop).toEqual({ reason: "ended" });
+    check(state);
+  });
+
+  it("records an ended stop on a failed session without making it resumable or taking prompts", () => {
+    const failed = fold(
+      boot(),
+      make(6, "failed", { phase: "agent", code: "agent_exited", retryable: false }),
+    );
+    const old = make(7, "container.stopped", { gen: 0, reason: "ended", req: "old-end" });
+    const ignored = fold(failed, old);
+    expect(ignored.stopSeq).toBe(failed.stopSeq);
+    expect(command(ignored, old)).toBeUndefined();
+    const gone = fold(ignored, make(8, "container.stopped", { gen: 1, reason: "gone" }));
+    expect(gone.stopSeq).toBe(failed.stopSeq);
+    const stopped = make(8, "container.stopped", { gen: 1, reason: "ended", req: "end" });
+    const state = fold(ignored, stopped);
+    expect(state).toEqual({ ...failed, lastSeq: 8, stopSeq: 8 });
+    expect(command(state, stopped)).toEqual({ kind: "destroy" });
+    const resumed = fold(state, make(9, "resume.requested"));
+    expect(resumed).toEqual({ ...state, lastSeq: 9 });
+    const prompted = fold(
+      resumed,
+      make(10, "prompt.requested", { req: "new", turn: state.currentTurn, text: "hi", images: [] }),
+    );
+    expect(prompted.phase).toBe("failed");
+    expect(prompted.requests.find((request) => request.req === "new")?.status).toBe("stale");
+    check(prompted);
+  });
+
+  it("records when a session went to sleep and clears it on resume", () => {
+    const stopped = make(6, "container.stopped", { gen: 1 });
+    let state = fold(boot(), stopped);
+    expect(state.stoppedAt).toBe(stopped.at);
+    expect(sessionView("session-1", state).display.stoppedAt).toBe(
+      new Date(stopped.at).toISOString(),
+    );
+    state = fold(state, make(7, "agent.event", { gen: 1, n: 7, agentKind: "codex", event: null }));
+    expect(state.stoppedAt).toBe(stopped.at);
+    state = fold(state, make(8, "resume.requested"));
+    expect(state.phase).toBe("provisioning");
+    expect(state.stoppedAt).toBeUndefined();
+    expect(sessionView("session-1", state).display.stoppedAt).toBeNull();
   });
 
   it("saves after an accepted turn end and clears the save deadline on its result", () => {
@@ -365,6 +519,41 @@ describe("session fold", () => {
     check(state);
   });
 
+  it("keeps what started a session, and a steer on the same turn behaves as any other prompt", () => {
+    const origin = { kind: "hook", connection: "ci", delivery: "msg_1", key: "pr-7" };
+    const hooked = make(1, "created", { ...created, origin });
+    let state = fold(fold(initial, hooked), start);
+    expect(state.created?.origin).toEqual(origin);
+    expect(sessionView("session-1", state).display.origin).toEqual(origin);
+    expect(sessionView("session-1", fold(initial, created)).display.origin).toBeNull();
+    state = [hello, ready, delivered].reduce(fold, state);
+    state = fold(
+      state,
+      make(6, "prompt.requested", { req: "hook:ci:msg_2", turn: "0", text: "again", images: [] }),
+    );
+    expect(state.requests.map((item) => [item.req, item.status])).toEqual([
+      ["initial:1", "delivered"],
+      ["hook:ci:msg_2", "pending"],
+    ]);
+    // A retried delivery names the same req and does nothing.
+    const retried = make(7, "prompt.requested", {
+      req: "hook:ci:msg_2",
+      turn: "0",
+      text: "again",
+      images: [],
+    });
+    expect(fold(state, retried).requests).toHaveLength(2);
+    expect(state.created?.origin).toEqual(origin);
+    check(state);
+  });
+
+  it("decodes an api origin and refuses a hook origin without its connection", () => {
+    expect(() =>
+      decodeSessionEvent({ ...created, origin: { kind: "api", key: "nightly" } }),
+    ).not.toThrow();
+    expect(() => decodeSessionEvent({ ...created, origin: { kind: "hook" } })).toThrow();
+  });
+
   it("re-arms the watch deadline on each watch, re-watches when it fires and drops it on a stop", () => {
     const watches = (state: State) => state.pending.filter((item) => item.op === "watch");
     let state = fold(boot(), make(6, "container.watched", { gen: 1 }));
@@ -439,7 +628,12 @@ describe("session fold", () => {
     expect(state.pending).toEqual([{ op: "idle", due: due.at + deadlines.idle }]);
     const slept = make(15, "container.stopped", { gen: 1, reason: "idle", idleSeq: 14 });
     state = fold(state, slept);
-    expect(state).toMatchObject({ phase: "stopped", stop: { reason: "idle" }, pending: [] });
+    expect(state).toMatchObject({
+      phase: "stopped",
+      stoppedAt: slept.at,
+      stop: { reason: "idle" },
+      pending: [],
+    });
     expect(command(state, slept)).toEqual({ kind: "destroy" });
     check(state);
     // A steer that lands while the Session DO checks for use keeps the session awake.

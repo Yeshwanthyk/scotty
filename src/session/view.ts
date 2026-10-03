@@ -17,6 +17,27 @@ const turnState = (ended: string | undefined) =>
         ? ("failed" as const)
         : ("completed" as const);
 
+// A session's first prompt as shown to searches: long pastes are cut.
+const promptPreview = (prompt: string) => prompt.trim().slice(0, 300);
+
+// How the turn a prompt went into ended: the first prompt's when `req` is absent. A prompt the
+// session refused counts as failed; a turn cut short by a stop, as stopped.
+export function turnOutcome(state: State, req?: string) {
+  const request = state.requests.find(
+    (item) => item.kind === "prompt" && (req === undefined || item.req === req),
+  );
+  const ended = state.turns.find((turn) => turn.turn === request?.turn)?.state;
+  if (ended !== undefined) return turnState(ended);
+  if (
+    state.phase === "failed" ||
+    request?.status === "failed" ||
+    request?.status === "stale" ||
+    request?.status === "timed_out"
+  )
+    return "failed" as const;
+  return state.phase === "stopped" ? ("stopped" as const) : ("working" as const);
+}
+
 const iso = (at: number | undefined) => (at === undefined ? null : new Date(at).toISOString());
 
 export function sessionView(id: string, state: State) {
@@ -29,7 +50,11 @@ export function sessionView(id: string, state: State) {
       title,
       repository: created?.repo ?? "",
       branch,
+      prompt: promptPreview(created?.prompt ?? ""),
       agentKind: created?.agentKind ?? "codex",
+      origin: created?.origin ?? null,
+      stoppedAt: state.stoppedAt === undefined ? null : new Date(state.stoppedAt).toISOString(),
+      place: created?.place ?? ("cloudflare" as const),
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
     },

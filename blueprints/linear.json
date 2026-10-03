@@ -1,0 +1,71 @@
+{
+  "name": "linear",
+  "title": "Linear issue worker",
+  "description": "Starts a session on each Linear issue with a target's label, in that target's repo and keyed by the issue, and ends it when the issue is completed or canceled. The agent reads the issue through Linear's MCP server.",
+  "targets": { "ask": "a Linear label per repo, e.g. scotty:web → owner/web" },
+  "connections": [
+    {
+      "kind": "inbound",
+      "name": "linear-issues",
+      "signing": { "kind": "preset", "preset": "linear" },
+      "ask": {
+        "prompt": "the signing secret Linear shows for the webhook (create the webhook with the hook URL first)"
+      },
+      "setup": "In Linear's Settings → API → Webhooks, create a webhook with the hook URL and the Issues data change event, then paste the signing secret Linear shows."
+    },
+    {
+      "kind": "mcp",
+      "name": "linear",
+      "url": "https://mcp.linear.app/mcp",
+      "ask": {
+        "prompt": "a Linear API key, or nothing to sign in with OAuth after installing",
+        "optional": true
+      },
+      "setup": "Without an API key, sign in once: scotty mcp signin linear (or Connect in Settings → Connections). Tools are read-only until you widen them: scotty mcp policy linear all."
+    }
+  ],
+  "automations": [
+    {
+      "name": "linear-new-${target}",
+      "perTarget": true,
+      "when": { "kind": "event", "connection": "linear-issues" },
+      "only": {
+        "type": "Issue",
+        "action": "create",
+        "data.labels": { "kind": "contains", "value": "\"name\":\"${target}\"" }
+      },
+      "action": "start",
+      "key": "linear:{{data.id}}",
+      "prompt": "Work on Linear issue {{data.identifier}}: {{data.title}} ({{url}}).\n\nRead the issue and its comments with the Linear MCP server at http://linear.internal/api/mcp, then do the work on this branch, run the tests, and push it. Say what you did and what is left."
+    },
+    {
+      "name": "linear-labelled-${target}",
+      "perTarget": true,
+      "when": { "kind": "event", "connection": "linear-issues" },
+      "only": {
+        "type": "Issue",
+        "action": "update",
+        "updatedFrom.labelIds": { "kind": "contains", "value": "" },
+        "data.labels": { "kind": "contains", "value": "\"name\":\"${target}\"" }
+      },
+      "except": { "data.state.type": ["completed", "canceled"] },
+      "action": "start",
+      "key": "linear:{{data.id}}",
+      "prompt": "Work on Linear issue {{data.identifier}}: {{data.title}} ({{url}}). Its labels changed.\n\nRead the issue and its comments with the Linear MCP server at http://linear.internal/api/mcp, then do the work on this branch, run the tests, and push it. Say what you did and what is left."
+    },
+    {
+      "name": "linear-done-${target}",
+      "perTarget": true,
+      "when": { "kind": "event", "connection": "linear-issues" },
+      "only": {
+        "type": "Issue",
+        "action": "update",
+        "data.state.type": ["completed", "canceled"],
+        "data.labels": { "kind": "contains", "value": "\"name\":\"${target}\"" }
+      },
+      "action": "end",
+      "key": "linear:{{data.id}}",
+      "prompt": "The Linear issue was {{data.state.type}}."
+    }
+  ]
+}

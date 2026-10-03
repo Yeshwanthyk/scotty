@@ -1,5 +1,6 @@
 import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
+import { titleFrom } from "../../src/session/title.js";
 import { Conversation, Created, List, Log, Settings, View } from "../client.js";
 import {
   ago,
@@ -17,7 +18,7 @@ import {
   withClient,
 } from "./common.js";
 
-const repoName = (input: string) =>
+export const repoName = (input: string, command: string) =>
   Effect.gen(function* () {
     const value = input.startsWith("https://github.com/")
       ? input
@@ -26,17 +27,9 @@ const repoName = (input: string) =>
           .replace(/\/$/, "")
       : input;
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value))
-      return yield* usage("Expected owner/repo or https://github.com/owner/repo", "new");
+      return yield* usage("Expected owner/repo or https://github.com/owner/repo", command);
     return value;
   });
-
-// The first line of the prompt, cut at a word near 60 characters.
-const titleFrom = (prompt: string) => {
-  const line = prompt.trim().split("\n")[0] ?? "";
-  if (line.length <= 60) return line;
-  const cut = line.slice(0, 60);
-  return `${cut.slice(0, cut.lastIndexOf(" ") > 30 ? cut.lastIndexOf(" ") : 60)}…`;
-};
 
 export const create = Command.make(
   "new",
@@ -45,22 +38,32 @@ export const create = Command.make(
     prompt: Argument.String("prompt"),
     agent: Flag.Literals("agent", ["codex", "claude"]).pipe(Flag.withDefault("codex")),
     key: Flag.String("key").pipe(Flag.optional),
+    sessionKey: Flag.String("session-key").pipe(Flag.optional),
   },
-  ({ repository, prompt, agent, key }) =>
+  ({ repository, prompt, agent, key, sessionKey }) =>
     Effect.gen(function* () {
-      const repo = yield* repoName(repository);
+      const repo = yield* repoName(repository, "new");
       if (!prompt.trim()) return yield* usage("The prompt cannot be empty", "new");
       const api = yield* withClient;
       const created = yield* api("/api/sessions", Created, {
         method: "POST",
-        body: { repo, title: titleFrom(prompt), prompt, provider: "cloudflare", agent },
+        body: {
+          repo,
+          title: titleFrom(prompt),
+          prompt,
+          provider: "cloudflare",
+          agent,
+          ...(Option.isSome(sessionKey) ? { key: sessionKey.value } : {}),
+        },
         ...(Option.isSome(key) ? { key: key.value } : {}),
       });
       const url = new URL(created.url, api.url).href;
       yield* output(
         { ...created, url },
         [
-          `${green("✓")} Started ${bold(created.title)} on ${repo} ${dim(`(${agent})`)}`,
+          created.steered === true
+            ? `${green("✓")} Sent the prompt to ${bold(created.title)} ${dim("(that key has a session)")}`
+            : `${green("✓")} Started ${bold(created.title)} on ${repo} ${dim(`(${agent})`)}`,
           `  ${short(created.id)}  ${url}`,
           dim(`  Follow it: scotty read ${short(created.id)}`),
         ].join("\n"),
@@ -70,8 +73,11 @@ export const create = Command.make(
 
 export const ls = Command.make(
   "ls",
-  { what: Argument.Literals("what", ["skills"]).pipe(Argument.optional) },
-  ({ what }) =>
+  {
+    what: Argument.Literals("what", ["skills"]).pipe(Argument.optional),
+    search: Flag.String("search").pipe(Flag.optional),
+  },
+  ({ what, search }) =>
     Effect.gen(function* () {
       const api = yield* withClient;
       if (Option.isSome(what)) {
@@ -98,14 +104,17 @@ export const ls = Command.make(
           ].join("\n"),
         );
       }
-      const { sessions } = yield* api("/api/sessions", List);
+      const query = Option.isSome(search) ? `?q=${encodeURIComponent(search.value.trim())}` : "";
+      const { sessions } = yield* api(`/api/sessions${query}`, List);
       const sorted = [...sessions].sort((a, b) =>
         b.display.activeAt.localeCompare(a.display.activeAt),
       );
       yield* output(
         { sessions: sorted },
         sorted.length === 0
-          ? `No sessions yet. Start one: scotty new owner/repo "What to do"`
+          ? Option.isSome(search)
+            ? `No sessions match "${search.value}".`
+            : `No sessions yet. Start one: scotty new owner/repo "What to do"`
           : table([
               ["ID", "STATE", "AGENT", "ACTIVE", "REPOSITORY", "TITLE"],
               ...sorted.map((session) => [

@@ -10,7 +10,9 @@ import {
   target,
   View,
 } from "../cli/client.js";
+import { fixtureRepo } from "../protocol/supervisor.js";
 import { fold, initial } from "../src/session/fold.js";
+import { agent, prompt, real, sessionAgent } from "./lib/agent.js";
 import { Log, waiter } from "./lib/wait.js";
 
 const check = (ok: boolean, message: string) =>
@@ -44,10 +46,17 @@ const program = Effect.gen(function* () {
     method: "POST",
     key: crypto.randomUUID(),
     body: {
-      title: "e2e files",
-      repo: process.env.SCOTTY_HATCH_TEST_REPO ?? "",
-      prompt:
+      title: `e2e files (${agent})`,
+      // The real agent needs a dev server to film; the stand-in attaches files it writes.
+      repo: real ? (process.env.SCOTTY_HATCH_TEST_REPO ?? "") : fixtureRepo,
+      ...sessionAgent,
+      prompt: prompt(
         "Start the dev server, take a 390×844 screenshot of the page and a 5 second video of clicking the counter, and attach both to this chat.",
+        [
+          "run cd \"$(mktemp -d)\" && printf '\\x89PNG\\r\\n\\x1a\\n' > page.png && printf '\\x1a\\x45\\xdf\\xa3' > counter.webm && scotty-attach page.png && scotty-attach counter.webm",
+          "say attached",
+        ].join("\n"),
+      ),
       provider: "cloudflare",
     },
   });
@@ -90,17 +99,23 @@ const program = Effect.gen(function* () {
   // 4. A type off the list gets 415, a file over 25 MB gets 413, and neither is recorded.
   const before = yield* attached();
   const req = crypto.randomUUID();
+  const refused = [
+    "printf x | curl -s -o /dev/null -w '%{http_code}\\n' -X PUT -H 'content-type: text/plain' -H 'x-scotty-name: a.txt' --data-binary @- http://files.internal/",
+    "head -c 26214401 /dev/zero | curl -s -o /dev/null -w '%{http_code}\\n' -X PUT -H 'content-type: image/png' -H 'x-scotty-name: big.png' --data-binary @- http://files.internal/",
+  ];
   yield* request(`${prefix}/steer`, Reply, {
     method: "POST",
     key: req,
     body: {
       req,
       turn: "1",
-      text: [
-        "Run these two commands exactly and reply with only their two outputs, one per line:",
-        "printf x | curl -s -o /dev/null -w '%{http_code}\\n' -X PUT -H 'content-type: text/plain' -H 'x-scotty-name: a.txt' --data-binary @- http://files.internal/",
-        "head -c 26214401 /dev/zero | curl -s -o /dev/null -w '%{http_code}\\n' -X PUT -H 'content-type: image/png' -H 'x-scotty-name: big.png' --data-binary @- http://files.internal/",
-      ].join("\n"),
+      text: prompt(
+        [
+          "Run these two commands exactly and reply with only their two outputs, one per line:",
+          ...refused,
+        ].join("\n"),
+        `run ${refused.join("; ")}\nsay {{out}}`,
+      ),
     },
   });
   yield* ended("1");

@@ -1,0 +1,55 @@
+{
+  "name": "pr-reviewer",
+  "title": "PR reviewer",
+  "description": "Reviews each pull request in a session on its head branch, answers comments on it, and ends the session when the pull request closes. The agent posts its review through the github-api connection.",
+  "connections": [
+    {
+      "kind": "inbound",
+      "name": "github-prs",
+      "signing": { "kind": "preset", "preset": "github" },
+      "setup": "In the repository's Settings → Webhooks → Add webhook, paste the hook URL as the Payload URL, choose application/json, paste the secret, and send Pull requests and Issue comments."
+    },
+    {
+      "kind": "token",
+      "name": "github-api",
+      "host": "api.github.com",
+      "header": "Authorization: Bearer",
+      "ask": {
+        "prompt": "a fine-grained GitHub token for the repository with Pull requests: read and write"
+      },
+      "setup": "The token stays in Scotty; the agent posts reviews through http://github-api.internal/api/."
+    }
+  ],
+  "automations": [
+    {
+      "name": "pr-review",
+      "when": { "kind": "event", "connection": "github-prs" },
+      "only": { "event": "pull_request", "action": ["opened", "reopened", "ready_for_review"] },
+      "except": { "pull_request.draft": "true" },
+      "action": "start",
+      "key": "gh:{{repository.full_name}}#{{pull_request.number}}",
+      "branch": "{{pull_request.head.ref}}",
+      "prompt": "Review pull request #{{pull_request.number}} \"{{pull_request.title}}\" in {{repository.full_name}}. You are on its head branch; compare it with origin/{{pull_request.base.ref}}. Read .scotty/review.md first if the repository has one. Look for bugs, missing tests and unclear code, and run the tests if they are quick.\n\nPost one review with POST http://github-api.internal/api/repos/{{repository.full_name}}/pulls/{{pull_request.number}}/reviews and a JSON body {\"event\": \"COMMENT\", \"body\": ..., \"comments\": [...]}, with inline comments where they help. Don't push commits. Comments on the pull request come to you here; answer them the same way."
+    },
+    {
+      "name": "pr-review-comment",
+      "when": { "kind": "event", "connection": "github-prs" },
+      "only": {
+        "event": "issue_comment",
+        "action": "created",
+        "issue.pull_request.url": { "kind": "contains", "value": "/pulls/" }
+      },
+      "action": "wake",
+      "key": "gh:{{repository.full_name}}#{{issue.number}}",
+      "prompt": "{{comment.user.login}} commented on the pull request:\n\n{{comment.body}}\n\nAnswer with POST http://github-api.internal/api/repos/{{repository.full_name}}/issues/{{issue.number}}/comments if it needs an answer."
+    },
+    {
+      "name": "pr-review-end",
+      "when": { "kind": "event", "connection": "github-prs" },
+      "only": { "event": "pull_request", "action": "closed" },
+      "action": "end",
+      "key": "gh:{{repository.full_name}}#{{pull_request.number}}",
+      "prompt": "The pull request was closed."
+    }
+  ]
+}

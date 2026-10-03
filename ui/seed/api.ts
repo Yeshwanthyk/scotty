@@ -8,8 +8,24 @@ import type { Plugin } from "vite";
 import { WebSocketServer, type WebSocket } from "ws";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
 import { fold, initial, type State } from "../../src/session/fold.ts";
-import { conversationView, sessionView } from "../../src/session/view.ts";
+import { maxSearch, searchText } from "../../src/session/search.ts";
+import { conversationView, sessionView, turnOutcome } from "../../src/session/view.ts";
+import {
+  Definition,
+  NewAutomation,
+  RunStatus,
+  nextDue,
+  prepare,
+} from "../../src/automations/automation.ts";
 import { readSkill } from "../../src/settings/skill.ts";
+import {
+  type ConnectionMetadata,
+  ToolPolicy,
+  NewConnection,
+  configFor,
+  connectionView,
+} from "../../src/creds/connections.ts";
+import { signaturePresets } from "../../src/hooks/config.ts";
 import { codexLog, dummies } from "./dummy.ts";
 
 const here = new URL(".", import.meta.url);
@@ -192,7 +208,12 @@ const nextTemplate = (): Segment => {
   return segment;
 };
 
-function create(input: { title: string; repo: string; prompt: string }): Session {
+function create(input: {
+  title: string;
+  repo: string;
+  prompt: string;
+  baseBranch?: string;
+}): Session {
   const id = crypto.randomUUID().replaceAll("-", "");
   const template = templates.showcase[0];
   if (template?.kind !== "created") throw new Error("showcase log has no created event");
@@ -204,6 +225,7 @@ function create(input: { title: string; repo: string; prompt: string }): Session
     repo: input.repo,
     prompt: input.prompt,
     branch: `scotty/${id}`,
+    ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
   });
   append(session, { kind: "container.start", src: "session", gen: 1 });
   play(session, boot);
@@ -326,6 +348,514 @@ const owner = {
   claude: null as number | null,
   device: 0,
 };
+// Connections and their deliveries, in memory; the seeded deliveries point at seeded sessions.
+const hooks = {
+  connections: new Map<string, ConnectionMetadata>([
+    [
+      "sentry",
+      {
+        name: "sentry",
+        kind: "inbound",
+        signature: signaturePresets["standard-webhooks"],
+        created: Date.now() - 6 * 864e5,
+      },
+    ],
+    [
+      "github-events",
+      {
+        name: "github-events",
+        kind: "inbound",
+        signature: signaturePresets.github,
+        created: Date.now() - 864e5,
+      },
+    ],
+    [
+      "linear-events",
+      {
+        name: "linear-events",
+        kind: "inbound",
+        signature: signaturePresets.linear,
+        created: Date.now() - 864e5,
+      },
+    ],
+    [
+      "slack-events",
+      {
+        name: "slack-events",
+        kind: "inbound",
+        signature: signaturePresets.slack,
+        created: Date.now() - 864e5,
+      },
+    ],
+    [
+      "linear",
+      {
+        name: "linear",
+        kind: "mcp",
+        url: "https://mcp.linear.app/mcp",
+        signIn: "signed-in",
+        policy: { kind: "read-only" },
+        created: Date.now() - 2 * 864e5,
+      },
+    ],
+    [
+      "mcp-connect",
+      {
+        name: "mcp-connect",
+        kind: "mcp",
+        url: "https://example.com/mcp",
+        created: Date.now(),
+        signIn: "signed-out",
+        policy: { kind: "all" },
+      },
+    ],
+    [
+      "mcp-expired",
+      {
+        name: "mcp-expired",
+        kind: "mcp",
+        url: "https://example.com/mcp",
+        created: Date.now(),
+        signIn: "needs-sign-in",
+        policy: { kind: "named", tools: ["list_issues", "get_issue"] },
+      },
+    ],
+    [
+      "metrics",
+      {
+        name: "metrics",
+        kind: "token",
+        host: "api.example.com",
+        header: "X-Api-Key",
+        created: Date.now() - 864e5,
+      },
+    ],
+  ]),
+  deliveries: [
+    ...["linear-events", "slack-events"].flatMap((connection) => [
+      {
+        id: `${connection}-valid`,
+        connection,
+        minutesAgo: 1,
+        outcome: "skipped",
+        reason: "no_automation",
+        session: null,
+      },
+      {
+        id: `${connection}-tampered`,
+        connection,
+        minutesAgo: 0.5,
+        outcome: "rejected",
+        reason: "bad_signature",
+        session: null,
+      },
+    ]),
+    {
+      id: "8406f74c-fb1f-48fd-ac27-e48df5d9dce7",
+      connection: "github-events",
+      minutesAgo: 1,
+      outcome: "skipped",
+      reason: "no_automation",
+      session: null,
+    },
+    {
+      id: "f4a8ac65-66a1-4c75-bddd-d5f512d8ec06",
+      connection: "github-events",
+      minutesAgo: 3,
+      outcome: "accepted",
+      reason: null,
+      session: "d0cc0de5000000000000000000000002",
+    },
+    {
+      id: "f0e71f89-35b1-4114-99db-457353fc3c8b",
+      connection: "github-events",
+      minutesAgo: 2,
+      outcome: "skipped",
+      reason: "own_github_identity",
+      session: null,
+    },
+    // Each accepted delivery made its session at the same minute (dummy.ts `minutesAgo`).
+    {
+      id: "msg_8aB3dX",
+      connection: "sentry",
+      minutesAgo: 60 * 24 * 21,
+      outcome: "accepted",
+      reason: null,
+      session: "d0cc0de5000000000000000000000008",
+    },
+    {
+      id: "msg_c3Lm0R",
+      connection: "sentry",
+      minutesAgo: 40,
+      outcome: "rejected",
+      reason: "bad_signature",
+      session: null,
+    },
+    {
+      id: "msg_9dNe5W",
+      connection: "sentry",
+      minutesAgo: 12,
+      outcome: "rejected",
+      reason: "key_conflict",
+      session: null,
+    },
+    {
+      id: "msg_2kQ9fT",
+      connection: "sentry",
+      minutesAgo: 6,
+      outcome: "accepted",
+      reason: null,
+      session: "d0cc0de5000000000000000000000002",
+    },
+    // The sender retried it: the session already had it.
+    {
+      id: "msg_2kQ9fT",
+      connection: "sentry",
+      minutesAgo: 5,
+      outcome: "duplicate",
+      reason: null,
+      session: "d0cc0de5000000000000000000000002",
+    },
+  ],
+};
+async function hooksApi(req: IncomingMessage, res: ServerResponse, path: string, method: string) {
+  if (path === "/api/connections" && method === "GET")
+    return json(res, {
+      connections: [...hooks.connections.values()].map((item) =>
+        connectionView(item, `https://${req.headers.host ?? "localhost"}`),
+      ),
+    });
+  if (path === "/api/connections" && method === "POST") {
+    const input = Schema.decodeUnknownOption(NewConnection)(await body(req));
+    if (input._tag === "None" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(input.value.name))
+      return fail(res, "Expected a name of lowercase letters, digits and dashes");
+    const { name } = input.value;
+    if (hooks.connections.has(name)) return fail(res, "That name is taken", 409, "exists");
+    const checked = input.value;
+    const config = configFor(checked);
+    const row: ConnectionMetadata =
+      config.kind === "mcp"
+        ? {
+            name,
+            ...config,
+            created: Date.now(),
+            signIn: checked.secret === undefined ? "signed-out" : "signed-in",
+          }
+        : { name, ...config, created: Date.now() };
+    hooks.connections.set(name, row);
+    return json(
+      res,
+      {
+        ...connectionView(row, `https://${req.headers.host ?? "localhost"}`),
+        ...(row.kind === "inbound"
+          ? {
+              secret:
+                checked.secret === undefined
+                  ? `${row.signature.key.encoding === "base64" ? row.signature.key.prefix : "whsec_"}${Buffer.from(name.padEnd(24, "x")).toString("base64")}`
+                  : null,
+            }
+          : {}),
+      },
+      201,
+    );
+  }
+  const action = /^\/api\/connections\/([a-z0-9-]+)\/(connect|policy)$/.exec(path);
+  if (action !== null) {
+    const name = action[1] ?? "";
+    const row = hooks.connections.get(name);
+    if (row === undefined || row.kind !== "mcp") return fail(res, "Not found", 404);
+    if (action[2] === "connect" && method === "POST") {
+      hooks.connections.set(name, { ...row, signIn: "signed-in" });
+      return json(res, {
+        authorizationUrl: `http://${req.headers.host ?? "localhost"}/settings/connections`,
+      });
+    }
+    if (action[2] === "policy" && method === "PUT") {
+      const policy = Schema.decodeUnknownOption(ToolPolicy)(await body(req));
+      if (policy._tag === "None") return fail(res, "Invalid tool policy");
+      hooks.connections.set(name, { ...row, policy: policy.value });
+      return json(res, { name, policy: policy.value });
+    }
+  }
+  const name = /^\/api\/connections\/([a-z0-9-]+)$/.exec(path)?.[1];
+  if (name !== undefined && method === "DELETE")
+    return json(res, { name, removed: hooks.connections.delete(name) });
+  if (path === "/api/deliveries" && method === "GET") {
+    const only = new URL(req.url ?? "/", "http://localhost").searchParams.get("connection");
+    return json(res, {
+      // Newest first, as the Creds DO lists them.
+      deliveries: hooks.deliveries
+        .filter((item) => only === null || item.connection === only)
+        .toSorted((a, b) => a.minutesAgo - b.minutesAgo)
+        .map(({ minutesAgo, ...item }) => ({ ...item, at: Date.now() - minutesAgo * 60_000 })),
+    });
+  }
+  return fail(res, "Not found", 404, "not_found");
+}
+// Automations and their runs, in memory; the seeded runs point at seeded sessions, and the
+// turn outcome is read from them the way the Worker reads it from the Session DO.
+type SeedRun = {
+  id: string;
+  automation: string;
+  trigger: "schedule" | "event" | "manual";
+  at: number;
+  status: typeof RunStatus.Type;
+  reason: string | null;
+  session: string | null;
+  delivery: string | null;
+  key: string | null;
+};
+function seedRun(
+  index: number,
+  automation: string,
+  minutesAgo: number,
+  status: SeedRun["status"],
+  reason: string | null,
+  session: string | null,
+): SeedRun {
+  const event = automation !== "daily-digest" && automation !== "weekly-deps";
+  return {
+    id: `5eed${String(index).padStart(28, "0")}`,
+    automation,
+    trigger: event ? "event" : "schedule",
+    at: Date.now() - minutesAgo * 60_000,
+    status,
+    reason,
+    session,
+    delivery: event ? `msg_seed${index}` : null,
+    key: event && status !== "skipped" ? "issue-4821" : null,
+  };
+}
+const flows = {
+  automations: new Map<
+    string,
+    { definition: Definition; enabled: boolean; nextDue: number | null; created: number }
+  >([
+    [
+      "daily-digest",
+      {
+        definition: {
+          when: { kind: "calendar", cron: "0 9 * * 1-5", tz: "Europe/London" },
+          repo: "acme/storefront",
+          agent: "codex",
+          prompt: "Summarise yesterday's commits on main and flag anything risky.",
+        },
+        enabled: true,
+        nextDue: nextDue(
+          { kind: "calendar", cron: "0 9 * * 1-5", tz: "Europe/London" },
+          Date.now(),
+        ),
+        created: Date.now() - 14 * 864e5,
+      },
+    ],
+    [
+      "triage-sentry",
+      {
+        definition: {
+          when: { kind: "event", connection: "sentry" },
+          only: { action: ["created", "reopened"] },
+          except: { "data.issue.title": { kind: "contains", value: "[skip]" } },
+          action: "start",
+          key: "issue-{{data.issue.id}}",
+          branch: "{{data.issue.branch}}",
+          repo: "acme/storefront",
+          agent: "codex",
+          prompt: "Sentry reports {{data.issue.title}}. Find the cause and propose a fix.",
+        },
+        enabled: true,
+        nextDue: null,
+        created: Date.now() - 6 * 864e5,
+      },
+    ],
+    [
+      "follow-up",
+      {
+        definition: {
+          when: { kind: "event", connection: "sentry" },
+          action: "wake",
+          only: { action: "comment", "data.issue.title": { kind: "contains", value: "checkout" } },
+          key: "issue-{{data.issue.id}}",
+          repo: "acme/storefront",
+          agent: "codex",
+          prompt: "Follow up on {{data.issue.title}}: {{data.comment}}",
+        },
+        enabled: true,
+        nextDue: null,
+        created: Date.now() - 5 * 864e5,
+      },
+    ],
+    [
+      "close-issue",
+      {
+        definition: {
+          when: { kind: "event", connection: "sentry" },
+          action: "end",
+          only: { action: "resolved" },
+          key: "issue-{{data.issue.id}}",
+          repo: "acme/storefront",
+          agent: "codex",
+          prompt: "Issue resolved.",
+        },
+        enabled: true,
+        nextDue: null,
+        created: Date.now() - 5 * 864e5,
+      },
+    ],
+    [
+      "weekly-deps",
+      {
+        definition: {
+          when: { kind: "interval", minutes: 7 * 24 * 60 },
+          repo: "acme/storefront",
+          agent: "claude",
+          prompt: "Check for outdated dependencies and open a branch with safe upgrades.",
+        },
+        enabled: false,
+        nextDue: null,
+        created: Date.now() - 864e5,
+      },
+    ],
+  ]),
+  runs: [
+    seedRun(5, "follow-up", 5, "skipped", "no_session", null),
+    seedRun(6, "close-issue", 10, "ended", null, "d0cc0de5000000000000000000000002"),
+    seedRun(7, "follow-up", 15, "steered", null, "d0cc0de5000000000000000000000002"),
+    seedRun(0, "daily-digest", 60 * 5, "started", null, "d0cc0de5000000000000000000000009"),
+    seedRun(1, "triage-sentry", 120, "started", null, "d0cc0de5000000000000000000000002"),
+    seedRun(2, "triage-sentry", 75, "steered", null, "d0cc0de5000000000000000000000002"),
+    seedRun(3, "triage-sentry", 30, "skipped", 'not matched: action is "resolved"', null),
+    seedRun(4, "daily-digest", 60 * 29, "skipped", "missed", null),
+  ],
+};
+const sessionKeys = new Map<string, string>();
+const automationRow = (name: string) => {
+  const row = flows.automations.get(name);
+  if (row === undefined) return undefined;
+  const lastRun = flows.runs.find((run) => run.automation === name) ?? null;
+  return {
+    name,
+    ...row.definition,
+    enabled: row.enabled,
+    nextDue: row.nextDue,
+    created: row.created,
+    lastRun,
+  };
+};
+async function automationsApi(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  method: string,
+) {
+  if (path === "/api/automations" && method === "GET")
+    return json(res, { automations: [...flows.automations.keys()].sort().map(automationRow) });
+  if (path === "/api/automations" && method === "POST") {
+    const input = Schema.decodeUnknownOption(NewAutomation)(await body(req));
+    if (input._tag === "None") return fail(res, "Expected a name and a definition");
+    const { name, ...definition } = input.value;
+    if (flows.automations.has(name))
+      return fail(res, `An automation named ${name} exists`, 409, "exists");
+    flows.automations.set(name, { definition, enabled: false, nextDue: null, created: Date.now() });
+    return json(res, { name, enabled: false }, 201);
+  }
+  if (path === "/api/runs" && method === "GET") {
+    const only = new URL(req.url ?? "/", "http://localhost").searchParams.get("automation");
+    return json(res, {
+      runs: flows.runs
+        .filter((run) => only === null || run.automation === only)
+        .map((run) => {
+          const session = run.session === null ? undefined : sessions.get(run.session);
+          return {
+            ...run,
+            outcome:
+              session === undefined || run.status === "ended" ? null : turnOutcome(session.state),
+          };
+        }),
+    });
+  }
+  const match = /^\/api\/automations\/([a-z0-9-]+)(\/run)?$/.exec(path);
+  const name = match?.[1];
+  const row = name === undefined ? undefined : flows.automations.get(name);
+  if (name === undefined || row === undefined) return fail(res, "Not found", 404, "not_found");
+  if (match?.[2] !== undefined && method === "POST") {
+    const prepared = prepare(row.definition, { at: new Date().toISOString() });
+    const action = row.definition.action ?? "start";
+    const existing =
+      prepared.status === "received" && prepared.key !== null
+        ? sessionKeys.get(prepared.key)
+        : undefined;
+    let session = existing === undefined ? undefined : sessions.get(existing);
+    const run: SeedRun = {
+      id: crypto.randomUUID().replaceAll("-", ""),
+      automation: name,
+      trigger: "manual",
+      at: Date.now(),
+      status: "skipped",
+      reason: prepared.status === "skipped" ? prepared.reason : null,
+      session: session?.id ?? null,
+      delivery: null,
+      key: prepared.status === "received" ? prepared.key : null,
+    };
+    if (prepared.status === "received") {
+      if (session === undefined && action !== "start") run.reason = "no_session";
+      else if (action === "end" && session !== undefined) {
+        clearTimeout(session.timer);
+        session.timer = undefined;
+        session.queue = [];
+        session.playing = undefined;
+        append(session, {
+          kind: "container.stopped",
+          src: "api",
+          gen: session.state.gen,
+          req: `run:${run.id}`,
+        });
+        if (prepared.key !== null) sessionKeys.delete(prepared.key);
+        run.status = "ended";
+      } else if (session === undefined) {
+        session = create({
+          title: prepared.prompt.slice(0, 60),
+          repo: row.definition.repo,
+          prompt: prepared.prompt,
+          ...(prepared.branch === null ? {} : { baseBranch: prepared.branch }),
+        });
+        if (prepared.key !== null) sessionKeys.set(prepared.key, session.id);
+        run.status = "started";
+      } else {
+        append(session, {
+          kind: "prompt.requested",
+          src: "api",
+          req: `run:${run.id}`,
+          turn: session.state.currentTurn,
+          text: prepared.prompt,
+          images: [],
+        });
+        if (session.state.phase === "provisioning") play(session, boot);
+        play(session, nextTemplate(), { req: `run:${run.id}`, turn: session.state.currentTurn });
+        run.status = "steered";
+      }
+      run.session = session?.id ?? null;
+    }
+    flows.runs.unshift(run);
+    return json(res, run);
+  }
+  if (method === "PUT") {
+    const input = Schema.decodeUnknownOption(Definition)(await body(req));
+    if (input._tag === "None") return fail(res, "Expected a definition");
+    flows.automations.set(name, { ...row, definition: input.value, enabled: false, nextDue: null });
+    return json(res, { name, enabled: false });
+  }
+  if (method === "PATCH") {
+    const input = Schema.decodeUnknownOption(Schema.Struct({ enabled: Schema.Boolean }))(
+      await body(req),
+    );
+    if (input._tag === "None") return fail(res, "Expected {enabled: true|false}");
+    const due = input.value.enabled ? nextDue(row.definition.when, Date.now()) : null;
+    flows.automations.set(name, { ...row, enabled: input.value.enabled, nextDue: due });
+    return json(res, { name, enabled: input.value.enabled });
+  }
+  if (method === "DELETE") return json(res, { name, removed: flows.automations.delete(name) });
+  return fail(res, "Not found", 404, "not_found");
+}
 async function bytes(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -419,6 +949,10 @@ async function settingsApi(
 async function handle(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? "/", "http://localhost");
   const method = req.method ?? "GET";
+  if (url.pathname.startsWith("/api/connections") || url.pathname.startsWith("/api/deliveries"))
+    return hooksApi(req, res, url.pathname, method);
+  if (url.pathname.startsWith("/api/automations") || url.pathname === "/api/runs")
+    return automationsApi(req, res, url.pathname, method);
   if (
     url.pathname.startsWith("/api/settings") ||
     url.pathname.startsWith("/api/skills") ||
@@ -429,10 +963,28 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const list = [...sessions.values()].sort(
       (a, b) => (b.state.created?.at ?? 0) - (a.state.created?.at ?? 0),
     );
+    const q = url.searchParams.get("q")?.trim() ?? "";
+    if (q.length > maxSearch) return fail(res, `Search text is at most ${maxSearch} characters`);
+    // The Creds DO's search, over the same text it stores at create.
+    const matches = list
+      .filter((session) => {
+        const created = session.state.created;
+        if (q === "") return true;
+        if (created === undefined) return false;
+        const origin = created.origin;
+        const text = searchText({
+          ...created,
+          ...(origin?.key === undefined ? {} : { key: origin.key }),
+          ...(origin?.kind === "hook" ? { connection: origin.connection } : {}),
+          ...(origin?.kind === "automation" ? { automation: origin.automation } : {}),
+        });
+        return text.includes(q.toLowerCase());
+      })
+      .map((session) => view(session).session);
     return json(res, {
       version: 1,
-      sessions: list.map((session) => ({
-        ...view(session).session,
+      sessions: matches.map((session) => ({
+        ...session,
         projection: { projectedAt: new Date().toISOString() },
       })),
     });
@@ -576,6 +1128,10 @@ export function seedApi(): Plugin {
           ws.send(snapshot(session));
         });
       });
+      for (const session of sessions.values()) {
+        const key = session.state.created?.origin?.key;
+        if (key !== undefined) sessionKeys.set(key, session.id);
+      }
       server.middlewares.use((req, res, next) => {
         if (!req.url?.startsWith("/api/")) return next();
         handle(req, res).catch((error: unknown) => {

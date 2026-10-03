@@ -21,7 +21,10 @@ const writeConfig = (config: Extract<Config, { kind: "codex"; token: string }>, 
     yield* fs
       .writeFileString(
         `${home}/config.toml`,
-        `model = ${toml(config.model)}\nmodel_provider = "scotty-managed"\nmodel_reasoning_effort = ${toml(config.effort)}\n[features]\nplugins = false\n[analytics]\nenabled = false\n[model_providers.scotty-managed]\nname = "Scotty managed Codex"\nbase_url = ${toml(config.baseUrl)}\nwire_api = "responses"\nexperimental_bearer_token = ${toml(config.token)}\nhttp_headers = { "chatgpt-account-id" = ${toml(config.accountId)} }\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`,
+        `model = ${toml(config.model)}\nmodel_provider = "scotty-managed"\nmodel_reasoning_effort = ${toml(config.effort)}\n[features]\nplugins = false\n[analytics]\nenabled = false\n[model_providers.scotty-managed]\nname = "Scotty managed Codex"\nbase_url = ${toml(config.baseUrl)}\nwire_api = "responses"\nexperimental_bearer_token = ${toml(config.token)}\nhttp_headers = { "chatgpt-account-id" = ${toml(config.accountId)} }\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n` +
+          (config.mcp ?? [])
+            .map((server) => `\n[mcp_servers.${toml(server.name)}]\nurl = ${toml(server.url)}\n`)
+            .join(""),
         { mode: 0o600 },
       )
       .pipe(

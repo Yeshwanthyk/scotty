@@ -4,14 +4,23 @@ import { Config, Effect, Exit, Option, Schema, SchemaTransformation } from "effe
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import { fireRun } from "./automations/fire.js";
+import { reachHandler } from "./creds/reach.js";
+import { ConnectionName } from "./creds/connections.js";
 import { gitHandler } from "./creds/git.js";
 import CredsObject from "./creds/object.js";
+import { hookHandler, hookPath } from "./hooks/handler.js";
 import { apiHandler, hatchPort } from "./http/api.js";
 import SessionObject, { SessionArtifacts } from "./session/object.js";
 
-// Set by the Session DO when it routes its container's github.internal and files.internal
-// traffic here.
-const LoopbackProps = Schema.Struct({ session: Schema.String, repo: Schema.String });
+// Set by the Session DO when it routes a container's built-in or connection egress here.
+const LoopbackProps = Schema.Struct({
+  session: Schema.String,
+  repo: Schema.String,
+  connection: Schema.optionalKey(ConnectionName),
+});
+// Set by the Creds DO's alarm when it hands over an automation run to fire.
+const RunProps = Schema.Struct({ run: Schema.String });
 // A preview host is `<port>-<session id>.<SCOTTY_HATCH_BASE>`.
 const hatchLabel = /^(\d{1,5})-([a-z0-9-]{6,32})$/;
 const terminalPath = /^\/api\/sessions\/([a-z0-9-]{6,32})\/terminal$/;
@@ -57,7 +66,10 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
       name: `scotty-${stage}`,
       main: import.meta.url,
       domain: { name: host, zoneId },
-      compatibility: { date: "2026-09-01" },
+      compatibility: {
+        date: "2026-09-01",
+        flags: ["enable_request_signal", "global_fetch_strictly_public"],
+      },
       assets: {
         directory: "./ui/dist",
         notFoundHandling: "single-page-application",
@@ -83,6 +95,14 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
         Effect.orDie,
         Effect.provide(RuntimeContext.phantom),
       ),
+    );
+    // Sender-signed, not Access-signed: Access bypasses this path alone.
+    yield* router.add("*", "/hooks/*", (request) =>
+      Effect.gen(function* () {
+        const name = hookPath.exec(new URL(request.url, "https://scotty.internal").pathname)?.[1];
+        if (name === undefined) return HttpServerResponse.text("Not found", { status: 404 });
+        return yield* hookHandler(request, name, sessions, credentials);
+      }).pipe(Effect.orDie, Effect.provide(RuntimeContext.phantom)),
     );
     const api = router.asHttpEffect().pipe(Effect.orDie);
     // The bytes reach R2 before the Session DO records the file, so no event names missing bytes.
@@ -123,8 +143,18 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
     return {
       fetch: Effect.gen(function* () {
         const exec = yield* Cloudflare.WorkerExecutionContext;
+        const run = Schema.decodeUnknownOption(RunProps)(exec.raw.props);
+        if (Option.isSome(run))
+          return yield* fireRun(sessions, credentials.getByName("owner"), run.value.run).pipe(
+            Effect.as(HttpServerResponse.empty()),
+            Effect.orDie,
+          );
         const props = Schema.decodeUnknownOption(LoopbackProps)(exec.raw.props);
         const request = yield* HttpServerRequest.HttpServerRequest;
+        if (Option.isSome(props) && props.value.connection !== undefined)
+          return yield* reachHandler(request, props.value.connection, credentials).pipe(
+            Effect.orDie,
+          );
         if (Option.isSome(props) && request.headers["host"] === "files.internal")
           return yield* attach(request, props.value.session).pipe(Effect.orDie);
         if (Option.isSome(props))
@@ -139,9 +169,16 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
         const url = new URL(request.url, "https://scotty.internal");
         const terminal = terminalPath.exec(url.pathname)?.[1];
         const live = livePath.exec(url.pathname);
-        // A page on another site can't open these sockets with the owner's Access cookie.
+        // A page on another site can't open these sockets, or change anything through the API, with the owner's Access cookie.
         const origin = request.headers["origin"];
         const foreign = origin !== undefined && origin !== `https://${host}`;
+        if (
+          foreign &&
+          url.pathname.startsWith("/api/") &&
+          request.method !== "GET" &&
+          request.method !== "HEAD"
+        )
+          return HttpServerResponse.text("Forbidden", { status: 403 });
         if (terminal !== undefined) {
           if (foreign) return HttpServerResponse.text("Forbidden", { status: 403 });
           return yield* sessions.getByName(terminal).fetch(request).pipe(Effect.orDie);
@@ -155,7 +192,8 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
             return HttpServerResponse.text("Not found", { status: 404 });
           return yield* sessions.getByName(id).fetch(request).pipe(Effect.orDie);
         }
-        if (url.pathname.startsWith("/api/")) return yield* api;
+        if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/hooks/"))
+          return yield* api;
         const assets: unknown = env["ASSETS"];
         if (!isFetcher(assets)) return yield* Effect.die("ASSETS binding missing");
         return yield* Cloudflare.fromCloudflareFetcher(assets).fetch(request).pipe(Effect.orDie);

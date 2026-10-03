@@ -6,12 +6,21 @@ type Store = {
   list: ReadonlyArray<Session> | undefined;
   error: string;
   refresh: () => void;
+  // Set from Cmd-K: the sidebar then lists only this repository.
+  repo: string;
+  setRepo: (repo: string) => void;
 };
 
 const firstDelay = 1000;
 const maxDelay = 30_000;
 
-const Context = createContext<Store>({ list: undefined, error: "", refresh: () => undefined });
+const Context = createContext<Store>({
+  list: undefined,
+  error: "",
+  refresh: () => undefined,
+  repo: "",
+  setRepo: () => undefined,
+});
 
 const apply = (list: ReadonlyArray<Session>, frame: ListFrame): ReadonlyArray<Session> => {
   if (frame.kind === "removed") return list.filter((item) => item.identity.id !== frame.id);
@@ -26,6 +35,7 @@ const apply = (list: ReadonlyArray<Session>, frame: ListFrame): ReadonlyArray<Se
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const [list, setList] = useState<ReadonlyArray<Session>>();
   const [error, setError] = useState("");
+  const [repo, setRepo] = useState("");
   const refresh = useRef<() => void>(() => undefined);
   useEffect(() => {
     let stopped = false;
@@ -82,7 +92,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     };
   }, []);
   return (
-    <Context.Provider value={{ list, error, refresh: () => refresh.current() }}>
+    <Context.Provider value={{ list, error, refresh: () => refresh.current(), repo, setRepo }}>
       {children}
     </Context.Provider>
   );

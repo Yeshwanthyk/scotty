@@ -1,7 +1,8 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { sessions as searchSessions } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { ago, statusOf } from "../data/status";
+import { ago, matchesText, statusOf } from "../data/status";
 import { Icon } from "./Icon";
 import { sections } from "./Settings";
 import { StatusMark } from "./Sidebar";
@@ -17,10 +18,30 @@ type Command = {
 
 // Opened by keyboard many times a day, so it appears and leaves without animation.
 export function CommandMenu({ onClose }: { onClose: () => void }) {
-  const { list } = useSessions();
+  const { list, setRepo } = useSessions();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  // The server also matches the whole first prompt; its hits join the ones the list shows,
+  // but only while they answer the text in the box.
+  const [hits, setHits] = useState<{ query: string; ids: ReadonlySet<string> }>();
+  const text = query.trim();
+  const found = hits?.query === text ? hits.ids : undefined;
+  useEffect(() => {
+    if (text === "") return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      searchSessions(controller.signal, text.slice(0, 200)).then(
+        (sessions) =>
+          setHits({ query: text, ids: new Set(sessions.map((hit) => hit.identity.id)) }),
+        () => undefined,
+      );
+    }, 150);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [text]);
   const listRef = useRef<HTMLDivElement>(null);
   const commands = useMemo(() => {
     const go = (run: () => Promise<void>) => () => {
@@ -45,21 +66,46 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
         run: go(() => navigate({ to: "/settings/$section", params: { section: item.id } })),
       })),
     ];
-    const sessions: Command[] = (list ?? []).map((session) => ({
-      id: session.identity.id,
-      label: session.display.title,
-      detail: `${session.display.repository} · ${ago(session.display.activeAt)}`,
-      section: "Sessions",
-      mark: <StatusMark status={statusOf(session)} />,
-      run: go(() => navigate({ to: "/s/$sessionId", params: { sessionId: session.identity.id } })),
-    }));
     const needle = query.trim().toLowerCase();
-    return [...actions, ...sessions].filter(
-      (command) =>
-        needle === "" || `${command.label} ${command.detail}`.toLowerCase().includes(needle),
-    );
-  }, [list, query, navigate, onClose]);
-  useEffect(() => setActive(0), [query]);
+    // Sessions match on title, repository, branch and first prompt; a repository sets the
+    // sidebar's repository filter.
+    const sessions: Command[] = (list ?? [])
+      .filter((session) => matchesText(session, needle) || found?.has(session.identity.id) === true)
+      .map((session) => ({
+        id: session.identity.id,
+        label: session.display.title,
+        detail: `${session.display.repository} · ${ago(session.display.activeAt)}`,
+        section: "Sessions",
+        mark: <StatusMark status={statusOf(session)} />,
+        run: go(() =>
+          navigate({ to: "/s/$sessionId", params: { sessionId: session.identity.id } }),
+        ),
+      }));
+    const repos: Command[] = [...new Set((list ?? []).map((session) => session.display.repository))]
+      .filter((repo) => repo !== "" && needle !== "" && repo.toLowerCase().includes(needle))
+      .map((repo) => ({
+        id: `repo-${repo}`,
+        label: repo,
+        detail: "Show its sessions",
+        section: "Repositories",
+        mark: <Icon name="branch" />,
+        run: go(async () => {
+          setRepo(repo);
+          await navigate({ to: "/sessions" });
+        }),
+      }));
+    return [
+      ...actions.filter(
+        (command) =>
+          needle === "" || `${command.label} ${command.detail}`.toLowerCase().includes(needle),
+      ),
+      ...repos,
+      ...sessions,
+    ];
+  }, [list, query, found, navigate, onClose, setRepo]);
+  // The first row is active whenever the rows change; live updates to the same rows keep it.
+  const rows = commands.map((command) => command.id).join("\n");
+  useEffect(() => setActive(0), [rows]);
   useEffect(() => {
     listRef.current
       ?.querySelector(`[data-index="${active}"]`)
@@ -79,8 +125,8 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
           <input
             autoFocus
             value={query}
-            placeholder="Search sessions and actions"
-            aria-label="Search sessions and actions"
+            placeholder="Search sessions, repos and actions"
+            aria-label="Search sessions, repos and actions"
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {

@@ -482,10 +482,53 @@ kbd {
   box-shadow: 0 0 0 1px var(--line-strong);
 }
 
-.sidebar-actions {
-  display: grid;
-  gap: 1px;
-  padding: 2px 8px 6px;
+.sidebar-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 2px 8px 0;
+}
+
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+  color: var(--muted);
+  text-align: left;
+}
+
+.sidebar-search kbd {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+}
+
+.sidebar-tools .icon-button {
+  width: 30px;
+  height: 30px;
+  flex: none;
+}
+
+.sidebar-tools .icon-button[aria-current="page"] {
+  background: var(--selected);
+  color: var(--ink);
+}
+
+.sidebar-filter {
+  flex: none;
+}
+
+.sidebar-filter[data-filtered="true"] .icon-button {
+  color: var(--ink);
 }
 
 .nav-item {
@@ -505,20 +548,6 @@ kbd {
   color: var(--quiet);
   width: 15px;
   height: 15px;
-}
-
-.nav-item kbd {
-  margin-left: auto;
-  border: 0;
-  background: none;
-  padding: 0;
-  opacity: 0;
-  transition: opacity 120ms;
-}
-
-.nav-item:hover kbd,
-.nav-item:focus-visible kbd {
-  opacity: 1;
 }
 
 .nav-item[aria-current="page"] {
@@ -545,13 +574,14 @@ kbd {
   gap: 1px;
 }
 
-.stopped-group {
+.archived-group {
   display: grid;
   gap: 1px;
   margin-top: 8px;
 }
 
-.stopped-group summary {
+.archived-group summary,
+.deliveries summary {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -560,19 +590,22 @@ kbd {
   border-radius: var(--radius-md);
 }
 
-.stopped-group summary::-webkit-details-marker {
+.archived-group summary::-webkit-details-marker,
+.deliveries summary::-webkit-details-marker {
   display: none;
 }
 
-.stopped-group summary:hover {
+.archived-group summary:hover {
   color: var(--muted);
 }
 
-.stopped-group summary .icon {
+.archived-group summary .icon,
+.deliveries summary .icon {
   transition: transform 120ms ease;
 }
 
-.stopped-group[open] summary .icon {
+.archived-group[open] summary .icon,
+.deliveries[open] summary .icon {
   transform: rotate(90deg);
 }
 
@@ -591,11 +624,54 @@ kbd {
   background: var(--selected);
 }
 
+/* The whole title where it fits; two lines at most, then cut. */
 .session-row .title {
   font-size: 13px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+.session-filters {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 4px 8px 0;
+  color: var(--muted);
+  font-size: 11px;
   white-space: nowrap;
+}
+
+.session-filter {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding-left: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+}
+
+.session-filter-repo {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.session-filter-repo > span {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.session-filter-clear {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
 }
 
 .session-row[data-status="asleep"] .title,
@@ -640,11 +716,6 @@ kbd {
   color: var(--done);
 }
 
-.sidebar-bottom {
-  padding: 8px;
-  border-top: 1px solid var(--line);
-}
-
 .sidebar-empty {
   padding: 24px 12px;
   color: var(--quiet);
@@ -653,12 +724,19 @@ kbd {
 
 @media (hover: hover) and (pointer: fine) {
   .session-row:hover:not([aria-current="page"]),
-  .nav-item:hover:not([aria-current="page"]) {
+  .nav-item:hover:not([aria-current="page"]),
+  .session-filter-clear:hover {
     background: var(--hover);
   }
 
-  .nav-item:hover {
+  .nav-item:hover,
+  .session-filter-clear:hover,
+  .sidebar-search:hover {
     color: var(--ink);
+  }
+
+  .sidebar-search:hover {
+    background: var(--selected);
   }
 }
 
@@ -677,12 +755,13 @@ kbd {
 .header-title {
   min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-start;
   margin-right: auto;
 }
 
 .header-title h1 {
+  max-width: 100%;
   margin: 0;
   font-size: 13.5px;
   font-weight: 600;
@@ -692,48 +771,18 @@ kbd {
   text-overflow: ellipsis;
 }
 
-.crumbs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
+/* The session's repository, branch and origin: one muted line that ellipsizes as a whole. */
+.header-sub {
+  max-width: 100%;
+  overflow: hidden;
   white-space: nowrap;
-  overflow: hidden;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  height: 20px;
-  padding: 0 7px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--sunken);
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1;
-}
-
-.chip .icon {
-  flex: none;
-  color: var(--quiet);
-}
-
-.chip-text {
-  overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.chip-owner {
   color: var(--quiet);
+  font-size: 11.5px;
 }
 
-.chip-name {
+.header-sub a:hover {
   color: var(--ink);
-  font-weight: 500;
 }
 
 .header-actions {
@@ -750,28 +799,6 @@ kbd {
 
 .header.bare {
   border-bottom-color: transparent;
-}
-
-.phone-compose {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 48px;
-  padding: 0 8px 0 16px;
-  border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
-  color: var(--quiet);
-  font-size: 15px;
-  box-shadow: var(--shadow);
-}
-
-.phone-compose span:first-child {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* ---------- Session workspace ---------- */
@@ -1956,6 +1983,10 @@ button.diff-line {
   flex: none;
 }
 
+.menu-item[aria-checked="false"] .icon {
+  visibility: hidden;
+}
+
 .menu-item[data-tone="danger"],
 .menu-item[data-tone="danger"] .icon {
   color: var(--danger);
@@ -2264,9 +2295,37 @@ button.diff-line {
   margin-top: 2px;
 }
 
+.settings-row-detail.mono {
+  overflow-wrap: anywhere;
+}
+
+.secret-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.secret-row .settings-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
 .settings-size {
   font-size: 11.5px;
   font-weight: 400;
+}
+
+.deliveries summary {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.deliveries summary:hover {
+  color: var(--ink);
+}
+
+.deliveries[open] summary {
+  margin-bottom: 8px;
 }
 
 .settings-dot {
@@ -2330,6 +2389,57 @@ button.diff-line {
   margin: 0;
   color: var(--danger);
   font-size: 12.5px;
+}
+
+/* ---------- Automations ---------- */
+
+.automations {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  width: 100%;
+  max-width: 44rem;
+  padding: 24px 28px 48px;
+}
+
+.automations .settings-row-detail {
+  overflow-wrap: anywhere;
+}
+
+.automations-heading {
+  margin: 8px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.automation-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.automation-choices,
+.automation-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.automation-pair label {
+  flex: 1;
+  min-width: 180px;
+}
+
+.automation-form .settings-text {
+  min-height: 110px;
+}
+
+.automation-form .automation-only {
+  min-height: 56px;
 }
 
 .device-code {
@@ -2429,12 +2539,6 @@ button.diff-line {
     display: block;
   }
 
-  .sidebar-bottom {
-    border-top: 0;
-    padding: 8px 12px;
-    padding-bottom: max(12px, env(safe-area-inset-bottom));
-  }
-
   .sidebar-top {
     padding: 14px 12px 8px 18px;
     padding-top: max(14px, env(safe-area-inset-top));
@@ -2442,6 +2546,14 @@ button.diff-line {
 
   .brand {
     font-size: 17px;
+  }
+
+  .sidebar-search kbd {
+    display: none;
+  }
+
+  .session-groups {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
   }
 
   .session-row {
@@ -2458,6 +2570,8 @@ button.diff-line {
 
   .group-label {
     font-size: 12.5px;
+    padding-left: 10px;
+    padding-right: 10px;
   }
 
   .header {
@@ -2466,26 +2580,8 @@ button.diff-line {
     padding-left: 6px;
   }
 
-  .header-title {
-    flex-direction: column;
-    gap: 0;
-    align-items: flex-start;
-  }
-
   .header-title h1 {
     font-size: 14.5px;
-    max-width: 100%;
-  }
-
-  .crumbs {
-    max-width: 100%;
-    margin-top: 2px;
-  }
-
-  .chip {
-    height: 18px;
-    padding: 0 5px;
-    font-size: 11px;
   }
 
   .thread-inner {
@@ -2538,6 +2634,11 @@ button.diff-line {
 
   .mobile-only-text {
     display: inline;
+  }
+
+  .automations {
+    padding: 12px 12px 32px;
+    padding-bottom: max(32px, env(safe-area-inset-bottom));
   }
 
   .settings {
@@ -2614,4 +2715,8 @@ button.diff-line {
   .spinner {
     animation: none;
   }
+}
+
+.mcp-controls {
+  padding: 0 0 14px;
 }

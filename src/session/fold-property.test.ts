@@ -90,6 +90,8 @@ it.prop(
           (chosen.startsWith("initial:") || chosen.startsWith("stalled:"))
         )
           fields.req = "client-p";
+        // The first prompt keeps its `initial:<gen>` name, which the generated requests use.
+        if (kind === "created") delete fields.req;
         if (kind === "sup.error" && !step.withReq) delete fields.req;
         if (kind === "sup.hello") fields.n = 1;
         const event = decodeSessionEvent({
@@ -174,7 +176,8 @@ it.prop(
         for (const request of before.requests) {
           const status = state.requests.find((r) => r.req === request.req)?.status;
           if (request.status !== "pending") expect(status).toBe(request.status);
-          if (event.kind === "sup.error" && event.code === "timeout")
+          // A request timeout stays pending; a req-less startup error ends the session.
+          if (event.kind === "sup.error" && event.req !== undefined && event.code === "timeout")
             expect(status).toBe(request.status);
         }
         if (event.kind === "sup.error" && event.req !== undefined && state.lastN > before.lastN) {

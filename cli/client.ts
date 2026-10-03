@@ -1,6 +1,13 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Definition, RunStatus } from "../src/automations/automation.js";
+import {
+  Connection,
+  ConnectionCreated,
+  DeliveryOutcome,
+  DeliveryReason,
+} from "../src/creds/connections.js";
 
 export class CliFailure extends Schema.TaggedError<CliFailure>()("CliFailure", {
   code: Schema.String,
@@ -52,7 +59,71 @@ export const Created = Schema.Struct({
   provider: Schema.String,
   status: Schema.String,
   url: Schema.String,
+  // A create with a key already used steers that session instead of making one.
+  steered: Schema.optional(Schema.Boolean),
 });
+export { Connection, ConnectionCreated };
+export const InboundCreated = Schema.Struct({
+  ...ConnectionCreated.members[0].fields,
+  secret: Schema.String,
+});
+export const Connections = Schema.Struct({ connections: Schema.Array(Connection) });
+export const ConnectionRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
+export const Deliveries = Schema.Struct({
+  deliveries: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      connection: Schema.String,
+      at: Schema.Number,
+      outcome: DeliveryOutcome,
+      reason: Schema.NullOr(DeliveryReason),
+      session: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export const Run = Schema.Struct({
+  id: Schema.String,
+  automation: Schema.String,
+  trigger: Schema.Literals(["schedule", "event", "manual"]),
+  at: Schema.Number,
+  status: RunStatus,
+  reason: Schema.NullOr(Schema.String),
+  session: Schema.NullOr(Schema.String),
+  delivery: Schema.NullOr(Schema.String),
+  key: Schema.NullOr(Schema.String),
+});
+// How the turn a run sent went, read from its session; null when it reached none.
+export const Runs = Schema.Struct({
+  runs: Schema.Array(
+    Schema.Struct({
+      ...Run.fields,
+      outcome: Schema.NullOr(
+        Schema.Literals(["working", "completed", "aborted", "failed", "stopped"]),
+      ),
+    }),
+  ),
+});
+export const RunFired = Schema.Struct({
+  id: Schema.String,
+  automation: Schema.String,
+  status: Run.fields.status,
+  reason: Schema.NullOr(Schema.String),
+  session: Schema.NullOr(Schema.String),
+});
+export const Automations = Schema.Struct({
+  automations: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      ...Definition.fields,
+      enabled: Schema.Boolean,
+      nextDue: Schema.NullOr(Schema.Number),
+      created: Schema.Number,
+      lastRun: Schema.NullOr(Run),
+    }),
+  ),
+});
+export const AutomationSwitched = Schema.Struct({ name: Schema.String, enabled: Schema.Boolean });
+export const AutomationRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
 export const Reply = Schema.Struct({ status: Schema.String });
 export const Removed = Schema.Struct({ id: Schema.String, removed: Schema.Boolean });
 export const Settings = Schema.Struct({

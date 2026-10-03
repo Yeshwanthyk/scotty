@@ -11,6 +11,9 @@ import { doctor, login } from "./commands/setup.js";
 import { create, ls, log, open, read } from "./commands/sessions.js";
 import { hatch, interrupt, resume, rm, steer, stop } from "./commands/actions.js";
 import { push } from "./commands/push.js";
+import { connect, connections, deliveries, mcp } from "./commands/connections.js";
+import { automation, runs } from "./commands/automations.js";
+import { blueprint } from "./commands/blueprints.js";
 
 const overview = `${bold("scotty")} — Codex and Claude sessions in Cloudflare Containers
 
@@ -23,8 +26,9 @@ ${bold("Setup")}
   skill                           Print the guide to hand your own agent
 
 ${bold("Sessions")}
-  new <repo> <prompt>             Start a session (--agent claude, --key <retry key>)
-  ls                              List sessions
+  new <repo> <prompt>             Start a session (--agent claude, --key <retry key>,
+                                  --session-key <key>: a repeat steers that session)
+  ls [--search <text>]            List sessions; search title, repo, branch, prompt, key
   read <id>                       Read the latest messages (--last N, --role user|assistant)
   steer <id> <text>               Send text; a stopped session resumes
   interrupt <id>                  Interrupt the current turn
@@ -39,6 +43,26 @@ ${bold("What sessions get")}
   push instructions <file|->      Set the instructions every session gets
   ls skills                       List skills and the instructions
   rm skill <name>                 Delete a skill
+
+${bold("Hooks")}
+  connect <preset|kind> <name>    Add an inbound, token or MCP connection
+  mcp signin <name>               Sign in to an MCP server
+  mcp policy <name> <mode>        Set all, read-only or named tools (--tools name,other)
+  connections                     List connections
+  deliveries                      List deliveries, newest first (--connection <name>)
+  rm connection <name>            Delete a connection
+
+${bold("Automations")}
+  automation add <name> <repo> <prompt>
+                                  Add one, off: --cron "0 9 * * 1" --tz Europe/London,
+                                  --every <minutes> or --on <connection>
+  automation ls                   List automations and their last runs
+  automation enable <name>        Turn one on (--off turns it off)
+  automation run <name>           Run one now
+  automation rm <name>            Delete an automation
+  runs                            List runs, newest first (--automation <name>)
+  blueprint install <file> --repo <owner/repo> | --target <name>=<owner/repo>…
+                                  Add a blueprint's connections and automations, off
 
 ${bold("Flags")}
   --json      JSON output (the default when piped)
@@ -69,11 +93,14 @@ chatgpt   Opens the device-code page and waits for you to enter the code.
 github    Saves the token from \`gh auth token\`, or from stdin when piped.
 claude    Runs \`claude setup-token\` and saves the token, or reads it from stdin when piped.
 Example: gh auth token | scotty login github`,
-  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--key key]
+  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--key key] [--session-key key]
 Start a session with Codex (the default) or Claude. --key makes retries idempotent.
+--session-key names the session: the same key with the same repository and agent sends the
+prompt to that session (resuming it if stopped); with another repository or agent it is refused.
 Example: scotty new octocat/Hello-World "Describe the code"`,
-  ls: `Usage: scotty ls [skills]
-List sessions, newest activity first; \`ls skills\` lists skills and the instructions.`,
+  ls: `Usage: scotty ls [skills] [--search <text>]
+List sessions, newest activity first; \`ls skills\` lists skills and the instructions.
+--search keeps sessions whose title, repository, branch, first prompt or key contains the text (up to 200 characters, any case).`,
   read: `Usage: scotty read <id> [--last N] [--role user|assistant]
 Print the session state and its last N messages (default 1, at most 500), filtered by role first.
 Example: scotty read 3f2a --last 5 --role assistant`,
@@ -86,8 +113,8 @@ Interrupt the current turn.`,
 Stop a session's container; its work is saved and \`scotty resume\` or a steer picks it up.`,
   resume: `Usage: scotty resume <id>
 Resume a stopped session from its last save.`,
-  rm: `Usage: scotty rm <id…> | scotty rm skill <name>
-Delete stopped sessions with their saves and files, or delete a skill.`,
+  rm: `Usage: scotty rm <id…> | scotty rm skill <name> | scotty rm connection <name>
+Delete stopped sessions with their saves and files, or delete a skill or a connection.`,
   open: `Usage: scotty open [id]
 Open Scotty, or one session, in the default browser.`,
   hatch: `Usage: scotty hatch <id> <port>
@@ -98,6 +125,53 @@ Print a session's raw events (one JSON object per line in a terminal).`,
   skill: `Usage: scotty skill
 Print the Scotty skill: how an agent sets up and drives Scotty with this CLI.
 Save it for your agent: scotty skill > ~/.claude/skills/scotty/SKILL.md`,
+  connect: `Usage: scotty connect standard-webhooks|github|linear|slack <name>
+       scotty connect token <name> --host api.example.com --header "Authorization: Bearer"
+       scotty connect mcp <name> --endpoint https://example.com/mcp [--oauth]
+Inbound presets print a generated secret once and the hook URL. Pipe a provider signing secret (Linear or Slack), token or MCP secret on stdin; pasted secrets are never returned. For OAuth use --oauth, then mcp signin <name>.
+Agents reach token hosts at http://<name>.internal/api/ and MCP at /api/mcp.
+New connections are installed when a session starts or resumes after stopping.
+Example: cat /secure/token | scotty connect mcp linear --endpoint https://mcp.linear.app/mcp`,
+  mcp: `Usage: scotty mcp signin <name>
+       scotty mcp policy <name> all|read-only|named [--tools name,other]
+Sign in through your Access-signed-in browser, or edit a connection's tool policy.
+Read-only (default) uses the server's readOnlyHint; named allows only the listed names.
+Example: scotty mcp policy linear named --tools list_issues,get_issue`,
+  connections: `Usage: scotty connections
+List connections (names, kinds and URLs; secrets are never shown again).`,
+  deliveries: `Usage: scotty deliveries [--connection name]
+List what senders posted, newest first: accepted (with its session), rejected (and why) or
+duplicate, or skipped (and why). The last 200 are shown.`,
+  automation: `Usage: scotty automation add|ls|enable|run|rm
+add <name> <owner/repo> <prompt> (--cron "<5 fields>" --tz <IANA zone> | --every <minutes> | --on <connection>)
+    [--only field=value[,value…]] [--except field=value[,value…]] [--action start|wake|end]
+    [--key template] [--branch template] [--agent codex|claude]
+  Adds an automation, off; enable it to run. A calendar schedule is read in its zone; an interval
+  counts from when it is turned on; --on fires on each delivery to that connection.
+  --only keeps matching payloads; --except skips them. Repeat for more fields (a.b for nested).
+  Commas match any of the values; field=~text matches strings containing text.
+  The prompt, --key and --branch take {{field}} from the payload (schedules give {"at": time}).
+  start (default) starts or steers; wake only steers an existing key's session; end stops it and
+  releases the key. wake and end skip with no_session when no session holds the key.
+ls                   List automations in plain words, on or off, with the last run.
+enable <name> [--off]  Turn one on or off. A schedule missed while off does not run.
+run <name>           Run one now, on or off; prints the run and its session.
+rm <name>            Delete an automation; its runs stay listed.
+Example: scotty automation add standup octocat/Hello-World "Summarise yesterday's commits" --cron "0 9 * * 1-5" --tz Europe/London`,
+  runs: `Usage: scotty runs [--automation name]
+List runs, newest first: what fired them, skipped (and why), started, steered or ended a session, or
+failed; and how that session's turn went. The last 100 are shown.`,
+  blueprint: `Usage: scotty blueprint install <file> [--repo <owner/repo>] [--target <name>=<owner/repo>…]
+                [--agent codex|claude]
+Add the connections and automations a blueprint file lists, all off, for that repo and agent.
+A blueprint with targets (Linear: a label per repo) takes a repeated --target instead of --repo,
+and makes its per-target automations once for each, named after the target.
+Pipe the secrets it asks for as one JSON object of connection name to secret; a missing one is
+named with the hook URLs to set up first. Prints each hook URL, generated secrets (once) and what
+to paste where; then turn the automations on with scotty automation enable <name>.
+Scotty's repository ships blueprints/pr-reviewer.json and blueprints/linear.json.
+Example: scotty blueprint install pr-reviewer.json --repo octocat/Hello-World < /secure/secrets.json
+Example: scotty blueprint install linear.json --target scotty:web=octocat/web --target scotty:api=octocat/api < /secure/secrets.json`,
   push: `Usage: scotty push skill <folder|zip…> | scotty push instructions <file|->
 skill          Upload skills; one with the same name is replaced and keeps its on/off setting.
 instructions   Set the text every session gets; - reads stdin, an empty file clears it.
@@ -125,6 +199,13 @@ const root = Command.make("scotty").pipe(
     hatch,
     log,
     push,
+    connect,
+    connections,
+    mcp,
+    deliveries,
+    automation,
+    runs,
+    blueprint,
   ]),
 );
 

@@ -4,9 +4,19 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
-import { fixtureRepo } from "../../protocol/supervisor.js";
 import { AgentKind } from "../session/events.js";
-import { defaultBranch } from "./repository.js";
+import { maxSearch, SearchQuery } from "../session/search.js";
+import {
+  NewConnection,
+  connectionView,
+  connectionName,
+  ConnectionName,
+  ToolPolicy,
+  Key,
+} from "../creds/connections.js";
+import { githubHint, Prompt, Repo, startSession } from "./start.js";
+import { automationName, Definition, NewAutomation } from "../automations/automation.js";
+import { fireRun, runRequest } from "../automations/fire.js";
 import { version } from "../version.js";
 import {
   instructionsKey,
@@ -18,39 +28,59 @@ import {
   skillName,
 } from "../settings/skill.js";
 
-const Prompt = Schema.String.check(
-  Schema.isMinLength(1),
-  Schema.isMaxLength(256 * 1024),
-  Schema.makeFilter((text) => new TextEncoder().encode(text).byteLength <= 256 * 1024, {
-    expected: "at most 256 KiB of UTF-8 text",
-  }),
-);
-
 const Create = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
-  repo: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
+  repo: Repo,
   prompt: Prompt,
   provider: Schema.Literal("cloudflare"),
   agent: Schema.optional(AgentKind),
   // The agent's scripted stand-in, for e2e: no ChatGPT, Claude or GitHub sign-in needed.
   scripted: Schema.optional(Schema.Literal(true)),
+  // A second create with the same key steers the session the first one made.
+  key: Schema.optional(Key),
   // A shorter idle window, so e2e can watch a scripted session sleep.
   idleAfter: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 10_000, maximum: 600_000 })),
   ),
 });
+const Callback = Schema.Union([
+  Schema.Struct({
+    state: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/)),
+    code: Schema.String.check(Schema.isMinLength(1)),
+    error: Schema.optionalKey(Schema.Never),
+    iss: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({
+    state: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/)),
+    error: Schema.String.check(Schema.isMinLength(1)),
+    code: Schema.optionalKey(Schema.Never),
+  }),
+]);
+const callbackCode = Schema.Struct({ code: Schema.String, iss: Schema.optionalKey(Schema.String) });
+const connectionAction = /^\/api\/connections\/([^/]+)\/(connect|callback|policy)$/;
+const connectionPath = /^\/api\/connections\/([^/]+)$/;
+const RequestId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
+  Schema.makeFilter(
+    (id) => id.trim() !== "" && !id.startsWith("initial:") && !id.startsWith("stalled:"),
+    {
+      expected: "a non-blank request id that does not start with initial: or stalled:",
+    },
+  ),
+);
+const decodeRequestId = Schema.decodeUnknownEffect(RequestId);
 const Steer = Schema.Struct({
   text: Prompt,
   turn: Schema.String,
-  req: Schema.optional(Schema.String),
+  req: Schema.optional(RequestId),
 });
-const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(Schema.String) });
+const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(RequestId) });
 const path =
   /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log|hatch\/(\d{1,5})|files\/([a-f0-9]{32})))?$/;
 const GitHubToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_]{20,255}$/)),
 });
-const githubHint = "scotty login github";
 const ClaudeToken = Schema.Struct({
   token: Schema.String.check(Schema.isPattern(/^sk-ant-oat01-[A-Za-z0-9_-]{20,300}$/)),
 });
@@ -64,11 +94,24 @@ const Instructions = Schema.Struct({
 });
 const SkillSwitch = Schema.Struct({ enabled: Schema.Boolean });
 const skillPath = /^\/api\/skills\/([^/]+)$/;
+const AutomationSwitch = Schema.Struct({ enabled: Schema.Boolean });
+const automationPath = /^\/api\/automations\/([^/]+)(\/run)?$/;
+const definitionHint =
+  "when is {kind: calendar, cron, tz} | {kind: interval, minutes} | {kind: event, connection}";
 
 const bad = (message: string, status = 400, hint?: string) =>
   HttpServerResponse.json(
     { error: { message, code: status === 404 ? "not_found" : "bad_request", hint } },
     { status },
+  );
+
+const idempotencyKey = (header: string | undefined) =>
+  decodeRequestId(header ?? crypto.randomUUID()).pipe(
+    Effect.catchTag("SchemaError", () =>
+      bad(
+        "Idempotency-Key must be non-blank, at most 256 characters, and must not start with initial: or stalled:",
+      ),
+    ),
   );
 
 type ByteRange = { offset: number; length?: number } | { suffix: number };
@@ -189,51 +232,248 @@ export function apiHandler(
         return yield* HttpServerResponse.json({ name, removed: true });
       }
     }
+    const origin = `https://${request.headers["host"] ?? ""}`;
+    if (url.pathname === "/api/connections" && request.method === "GET")
+      return yield* HttpServerResponse.json({
+        connections: (yield* credential.connections()).map((connection) =>
+          connectionView(connection, origin),
+        ),
+      });
+    if (url.pathname === "/api/connections" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(NewConnection)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", (error) => bad(error.message)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const added = yield* credential.addConnection(body);
+      if (added.status === "exists")
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: `A connection named ${body.name} exists`,
+              code: "exists",
+              hint: `scotty connections`,
+            },
+          },
+          { status: 409 },
+        );
+      return yield* HttpServerResponse.json({
+        ...connectionView(added, origin),
+        ...(added.kind === "inbound" ? { secret: added.secret } : {}),
+      });
+    }
+    const actionMatch = connectionAction.exec(url.pathname);
+    if (actionMatch !== null) {
+      const name = yield* Schema.decodeUnknownEffect(ConnectionName)(actionMatch[1]).pipe(
+        Effect.catchTag("SchemaError", () => bad("Not a connection name")),
+      );
+      if (HttpServerResponse.isHttpServerResponse(name)) return name;
+      const action = actionMatch[2];
+      if (action === "connect" && request.method === "POST") {
+        const result = yield* credential.connectMcp(
+          name,
+          `${origin}/api/connections/${name}/callback`,
+        );
+        if (result.status === "not-found") return yield* bad("Not found", 404);
+        if (result.status === "failed") return yield* bad("Could not start MCP sign-in", 502);
+        return yield* HttpServerResponse.json({ authorizationUrl: result.authorizationUrl });
+      }
+      if (action === "callback" && request.method === "GET") {
+        if (
+          ["state", "code", "error", "iss"].some((key) => url.searchParams.getAll(key).length > 1)
+        )
+          return yield* bad("Invalid OAuth callback");
+        const query = yield* Schema.decodeUnknownEffect(Callback)(
+          Object.fromEntries(url.searchParams),
+        ).pipe(Effect.catchTag("SchemaError", () => bad("Invalid OAuth callback")));
+        if (HttpServerResponse.isHttpServerResponse(query)) return query;
+        const code = Schema.decodeUnknownOption(callbackCode)(query);
+        const result = yield* credential.finishMcp(
+          name,
+          query.state,
+          code._tag === "Some" ? { kind: "code", ...code.value } : { kind: "denied" },
+        );
+        if (result.status === "invalid-state")
+          return yield* bad("Unknown, expired or reused OAuth state");
+        if (result.status === "failed")
+          return yield* bad("MCP sign-in failed; connect again in Settings", 502);
+        return HttpServerResponse.empty({
+          status: 303,
+          headers: { location: "/settings/connections" },
+        });
+      }
+      if (action === "policy" && request.method === "PUT") {
+        const policy = yield* Schema.decodeUnknownEffect(ToolPolicy)(yield* request.json).pipe(
+          Effect.catchTag("SchemaError", () => bad("Expected all, read-only or named tools")),
+        );
+        if (HttpServerResponse.isHttpServerResponse(policy)) return policy;
+        if (!(yield* credential.setToolPolicy(name, policy))) return yield* bad("Not found", 404);
+        return yield* HttpServerResponse.json({ name, policy });
+      }
+    }
+    const connectionMatch = connectionPath.exec(url.pathname);
+    if (connectionMatch !== null && request.method === "DELETE") {
+      const name = connectionMatch[1] ?? "";
+      if (!connectionName.test(name) || !(yield* credential.removeConnection(name)))
+        return yield* bad("Not found", 404);
+      return yield* HttpServerResponse.json({ name, removed: true });
+    }
+    if (url.pathname === "/api/deliveries" && request.method === "GET") {
+      const connection = url.searchParams.get("connection") ?? undefined;
+      if (connection !== undefined && !connectionName.test(connection))
+        return yield* bad("Not a connection name");
+      return yield* HttpServerResponse.json({
+        deliveries: yield* credential.deliveries(connection),
+      });
+    }
+    if (url.pathname === "/api/automations" && request.method === "GET")
+      return yield* HttpServerResponse.json({ automations: yield* credential.automations() });
+    if (url.pathname === "/api/automations" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(NewAutomation)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", (error) => bad(error.message, 400, definitionHint)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const { name, ...definition } = body;
+      if (!(yield* credential.putAutomation(name, definition, false)))
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: `An automation named ${name} exists`,
+              code: "exists",
+              hint: "scotty automation ls",
+            },
+          },
+          { status: 409 },
+        );
+      return yield* HttpServerResponse.json({ name, enabled: false }, { status: 201 });
+    }
+    const automationMatch = automationPath.exec(url.pathname);
+    if (automationMatch !== null) {
+      const name = automationMatch[1] ?? "";
+      if (!automationName.test(name)) return yield* bad("Not found", 404);
+      if (automationMatch[2] !== undefined && request.method === "POST") {
+        const run = yield* credential.runAutomation(name);
+        if (run === null) return yield* bad("Not found", 404);
+        const outcome =
+          run.status === "received" ? yield* fireRun(sessions, credential, run.id) : null;
+        return yield* HttpServerResponse.json({
+          id: run.id,
+          automation: run.automation,
+          status: outcome?.status ?? run.status,
+          reason: outcome === null ? run.reason : (outcome.reason ?? null),
+          session: outcome === null ? run.session : (outcome.session ?? null),
+        });
+      }
+      if (automationMatch[2] === undefined && request.method === "PUT") {
+        const body = yield* Schema.decodeUnknownEffect(Definition)(yield* request.json).pipe(
+          Effect.catchTag("SchemaError", (error) => bad(error.message, 400, definitionHint)),
+        );
+        if (HttpServerResponse.isHttpServerResponse(body)) return body;
+        if (!(yield* credential.putAutomation(name, body, true)))
+          return yield* bad("Not found", 404);
+        return yield* HttpServerResponse.json({ name, enabled: false });
+      }
+      if (automationMatch[2] === undefined && request.method === "PATCH") {
+        const body = yield* Schema.decodeUnknownEffect(AutomationSwitch)(yield* request.json).pipe(
+          Effect.catchTag("SchemaError", () => bad("Expected {enabled: true|false}")),
+        );
+        if (HttpServerResponse.isHttpServerResponse(body)) return body;
+        if (!(yield* credential.enableAutomation(name, body.enabled)))
+          return yield* bad("Not found", 404);
+        return yield* HttpServerResponse.json({ name, enabled: body.enabled });
+      }
+      if (automationMatch[2] === undefined && request.method === "DELETE") {
+        if (!(yield* credential.removeAutomation(name))) return yield* bad("Not found", 404);
+        return yield* HttpServerResponse.json({ name, removed: true });
+      }
+    }
+    // Each run that reached a session carries how its turn went, read from that session.
+    if (url.pathname === "/api/runs" && request.method === "GET") {
+      const automation = url.searchParams.get("automation") ?? undefined;
+      if (automation !== undefined && !automationName.test(automation))
+        return yield* bad("Not an automation name");
+      const runs = yield* credential.runs(automation);
+      return yield* HttpServerResponse.json({
+        runs: yield* Effect.forEach(
+          runs,
+          (run) =>
+            Effect.gen(function* () {
+              const outcome =
+                run.session !== null && (run.status === "started" || run.status === "steered")
+                  ? yield* sessions
+                      .getByName(run.session)
+                      .outcome(run.status === "steered" ? runRequest(run.id) : undefined)
+                  : null;
+              return { ...run, outcome };
+            }),
+          { concurrency: 16 },
+        ),
+      });
+    }
     if (url.pathname === "/api/sessions" && request.method === "POST") {
+      const retry = yield* idempotencyKey(request.headers["idempotency-key"]);
+      if (HttpServerResponse.isHttpServerResponse(retry)) return retry;
       const body = yield* Schema.decodeUnknownEffect(Create)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
       if (body.idleAfter !== undefined && body.scripted !== true)
         return yield* bad("idleAfter is only for scripted sessions");
-      const baseBranch =
-        body.repo === fixtureRepo
-          ? "main"
-          : yield* Effect.gen(function* () {
-              const token = yield* credential.gitHubToken();
-              if (token === null) return yield* bad("GitHub token missing", 400, githubHint);
-              return yield* defaultBranch(body.repo, token).pipe(
-                Effect.catchTag("RepositoryFailure", (error) =>
-                  bad(error.message, 400, githubHint),
-                ),
-              );
-            });
-      if (HttpServerResponse.isHttpServerResponse(baseBranch)) return baseBranch;
-      const idempotency = request.headers["idempotency-key"] ?? crypto.randomUUID();
-      const id = yield* credential.reserve(idempotency, crypto.randomUUID().replaceAll("-", ""));
-      const stub = sessions.getByName(id);
-      const created = yield* stub.create({
-        id,
+      const started = yield* startSession(sessions, credential, {
         repo: body.repo,
-        baseBranch,
-        title: body.title,
         prompt: body.prompt,
-        agentKind: body.agent ?? "codex",
-        image: "default",
+        title: body.title,
+        agent: body.agent ?? "codex",
+        place: body.provider,
         ...(body.scripted === true ? { scripted: true } : {}),
+        ...(body.key === undefined
+          ? {}
+          : { key: body.key, origin: { kind: "api", key: body.key } }),
+        retry,
         ...(body.idleAfter === undefined ? {} : { idleAfter: body.idleAfter }),
       });
+      if (started.kind === "refused") return yield* bad(started.message, 400, started.hint);
+      if (started.kind === "conflict")
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message:
+                "That key or idempotency key belongs to a session for another repository, agent or prompt",
+              code: "key_conflict",
+              hint: `scotty read ${started.id}`,
+            },
+          },
+          { status: 409 },
+        );
+      if (started.kind === "unavailable")
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: "The session for that key is not taking prompts",
+              code: "session_unavailable",
+              hint: `scotty read ${started.id}`,
+            },
+          },
+          { status: 409 },
+        );
+      const created = started.session;
       return yield* HttpServerResponse.json({
-        id,
+        id: started.id,
         title: created.display.title,
         branch: created.display.branch,
-        provider: "cloudflare",
+        provider: created.display.place,
         status: created.authority.kind === "stable" ? created.authority.lifecycle : "booting",
-        url: `/s/${id}`,
+        url: `/s/${started.id}`,
+        steered: started.kind === "steered",
       });
     }
     if (url.pathname === "/api/sessions" && request.method === "GET") {
-      const ids = yield* credential.sessions();
+      const searched = Schema.decodeUnknownExit(SearchQuery)(
+        (url.searchParams.get("q") ?? "").trim(),
+      );
+      if (Exit.isFailure(searched))
+        return yield* bad(`Search text is at most ${maxSearch} characters`, 400);
+      const query = searched.value;
+      const ids = query === "" ? yield* credential.sessions() : yield* credential.search(query);
       // Each view may wake a cold Durable Object; one at a time, a long list outlasts the CLI.
       // A session that cannot open is left out rather than failing the whole list.
       const opened = yield* Effect.forEach(
@@ -320,11 +560,19 @@ export function apiHandler(
       const bytes = yield* object.bytes().pipe(Effect.orDie);
       return HttpServerResponse.uint8Array(bytes, { status, headers });
     }
-    if (request.method === "POST" && subpath === "stop")
-      return yield* HttpServerResponse.json(yield* stub.stop());
+    if (request.method === "POST" && subpath === "stop") {
+      const retry =
+        request.headers["idempotency-key"] === undefined
+          ? undefined
+          : yield* idempotencyKey(request.headers["idempotency-key"]);
+      if (retry !== undefined && HttpServerResponse.isHttpServerResponse(retry)) return retry;
+      return yield* HttpServerResponse.json(yield* stub.stop(retry));
+    }
     if (request.method === "POST" && subpath === "resume")
       return yield* HttpServerResponse.json(yield* stub.resume());
     if (request.method === "POST" && subpath === "steer") {
+      const retry = yield* idempotencyKey(request.headers["idempotency-key"]);
+      if (HttpServerResponse.isHttpServerResponse(retry)) return retry;
       const body = yield* Schema.decodeUnknownEffect(Steer)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
@@ -332,13 +580,15 @@ export function apiHandler(
       return yield* HttpServerResponse.json(
         yield* stub.request({
           kind: "prompt",
-          req: body.req ?? request.headers["idempotency-key"] ?? crypto.randomUUID(),
+          req: body.req ?? retry,
           turn: body.turn,
           text: body.text,
         }),
       );
     }
     if (request.method === "POST" && subpath === "interrupt") {
+      const retry = yield* idempotencyKey(request.headers["idempotency-key"]);
+      if (HttpServerResponse.isHttpServerResponse(retry)) return retry;
       const body = yield* Schema.decodeUnknownEffect(Interrupt)(yield* request.json).pipe(
         Effect.catchTag("SchemaError", (error) => bad(error.message)),
       );
@@ -346,7 +596,7 @@ export function apiHandler(
       return yield* HttpServerResponse.json(
         yield* stub.request({
           kind: "interrupt",
-          req: body.req ?? request.headers["idempotency-key"] ?? crypto.randomUUID(),
+          req: body.req ?? retry,
           turn: body.turn,
           text: "",
         }),

@@ -1,6 +1,7 @@
 import type { AgentKind, SessionEvent } from "./events.js";
 import type { State, Request } from "./fold.js";
 import { ackRecorded } from "./ack.js";
+import { firstReq } from "./state.js";
 
 type Resend =
   | { readonly req: string; readonly kind: "prompt"; readonly turn: string; readonly text: string }
@@ -46,9 +47,10 @@ const ackFor = (
 
 export function command(state: State, event: SessionEvent): Command | undefined {
   if (state.lastSeq !== event.seq) return undefined;
-  if (state.phase === "stopped")
+  // Ending a session, stopped or failed, destroys its container: a start that failed may still
+  // have placed one.
+  if (state.phase === "stopped" || state.phase === "failed")
     return state.stopSeq === event.seq ? { kind: "destroy" } : undefined;
-  if (state.phase === "failed") return undefined;
   switch (event.kind) {
     case "resume.requested":
       return state.gen !== undefined && state.startSeq === event.seq
@@ -111,13 +113,20 @@ export function command(state: State, event: SessionEvent): Command | undefined 
     case "workspace.ready": {
       const request = state.requests.find(
         (item) =>
-          item.req === `initial:${event.gen}` &&
+          state.created !== undefined &&
+          item.req === firstReq(state.created, event.gen) &&
           item.seq === event.seq &&
           item.status === "pending",
       );
-      if (state.gen === event.gen && request?.kind === "prompt")
-        return { kind: "prompt", req: request.req, turn: request.turn, text: request.text };
       const waiting = state.requests.filter((item) => item.status === "pending");
+      if (state.gen === event.gen && request?.kind === "prompt")
+        return waiting.length > 1
+          ? {
+              kind: "resend",
+              gen: event.gen,
+              requests: [request, ...waiting.filter((item) => item !== request)].map(toResend),
+            }
+          : { kind: "prompt", req: request.req, turn: request.turn, text: request.text };
       return state.gen === event.gen && state.readySeq === event.seq && waiting.length > 0
         ? { kind: "resend", gen: event.gen, requests: waiting.map(toResend) }
         : ackFor(state, event);

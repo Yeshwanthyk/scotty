@@ -14,6 +14,10 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Config } from "../cli/config.ts";
+import {
+  defaultClaudeSettings,
+  defaultCodexSettings,
+} from "../src/session/agents/agent-settings.js";
 import { copyImage } from "./image.ts";
 
 export const compatibilityDate = "2026-09-01";
@@ -70,9 +74,11 @@ const retry = { schedule: Schedule.spaced("3 seconds"), times: 40 } as const;
 
 const names = (config: Config) => ({
   script: `scotty-${config.stage}`,
+  mcpTest: `scotty-${config.stage}-mcp-test`,
   bucket: `scotty-${config.stage}-artifacts`,
   app: `scotty-${config.stage}-sessions`,
   access: `scotty-${config.stage}`,
+  hooks: `scotty-${config.stage}-hooks`,
   wildcard: `*.${config.domain}`,
   route: `*.${config.domain}/*`,
 });
@@ -127,7 +133,16 @@ export const deployStage = (
 ) =>
   Effect.gen(function* () {
     const { accountId, zoneId, domain, host, email, stage } = config;
+    const codex = config.codex ?? defaultCodexSettings;
+    const claude = config.claude ?? defaultClaudeSettings;
     const name = names(config);
+    if (
+      config.mcpOAuthTest !== undefined &&
+      (config.stage === "main" || config.mcpOAuthTest.host === config.host)
+    )
+      return yield* new DeployError({
+        message: "The OAuth test Worker requires a separate host on a stage other than main",
+      });
     const say = (text: string) => Effect.sync(() => progress(text));
     // The preview route matches the Worker's own host too; the Worker tells them apart by name.
     if (!host.endsWith(`.${domain}`) || /^\d{1,5}-[a-z0-9-]{6,32}\./.test(host))
@@ -194,7 +209,7 @@ export const deployStage = (
       metadata: {
         mainModule: "entry.js",
         compatibilityDate,
-        compatibilityFlags: [],
+        compatibilityFlags: ["enable_request_signal", "global_fetch_strictly_public"],
         assets: {
           jwt,
           config: { notFoundHandling: "single-page-application", runWorkerFirst: true },
@@ -213,6 +228,10 @@ export const deployStage = (
           text("SCOTTY_HOST", host),
           text("SCOTTY_HATCH_BASE", domain),
           text("SCOTTY_IMAGE", copied),
+          text("SCOTTY_CODEX_MODEL", codex.model),
+          text("SCOTTY_CODEX_EFFORT", codex.effort),
+          text("SCOTTY_CLAUDE_MODEL", claude.model),
+          text("SCOTTY_CLAUDE_EFFORT", claude.effort),
         ],
         containers: [{ className: "SessionObject" }],
         migrations: migrated
@@ -268,6 +287,55 @@ export const deployStage = (
       });
     }
 
+    if (config.mcpOAuthTest !== undefined) {
+      const test = config.mcpOAuthTest;
+      yield* say("Uploading the OAuth test Worker");
+      const testDir = join(dir, "mcp-oauth-test");
+      const testFiles = yield* Effect.forEach(
+        (yield* list(testDir)).filter((path) => path.endsWith(".js")),
+        (path) =>
+          read(path).pipe(
+            Effect.map(
+              (content) =>
+                new File([content], relative(testDir, path), {
+                  type: "application/javascript+module",
+                }),
+            ),
+          ),
+      );
+      const exists = [...(yield* namespaces(name.mcpTest))].some(
+        (namespace) => namespace.class === "McpTestObject",
+      );
+      yield* Workers.putScript({
+        accountId,
+        scriptName: name.mcpTest,
+        metadata: {
+          mainModule: "entry.js",
+          compatibilityDate,
+          compatibilityFlags: ["global_fetch_strictly_public"],
+          bindings: [
+            { type: "durable_object_namespace", name: "McpTestObject", className: "McpTestObject" },
+            text("ALCHEMY_PHASE", "runtime"),
+            text("ALCHEMY_WORKER_NAME", name.mcpTest),
+            text("ALCHEMY_STACK_NAME", "scotty"),
+            text("ALCHEMY_STAGE", stage),
+            text("ALCHEMY_CLOUDFLARE_ACCOUNT_ID", accountId),
+            text("SCOTTY_HOST", host),
+          ],
+          migrations: exists ? undefined : { newTag: "v1", newSqliteClasses: ["McpTestObject"] },
+        },
+        files: testFiles,
+      });
+      yield* Workers.putDomain({
+        accountId,
+        hostname: test.host,
+        service: name.mcpTest,
+        zoneId,
+      }).pipe(Effect.retry(retry));
+      // The stage's wildcard route outranks a custom domain; a more specific route does not.
+      yield* ensureRoute(zoneId, `${test.host}/*`, name.mcpTest);
+    }
+
     yield* say("Attaching the address");
     yield* Workers.putDomain({ accountId, hostname: host, service: name.script, zoneId }).pipe(
       Effect.retry(retry),
@@ -279,25 +347,15 @@ export const deployStage = (
       { type: "preview_worker", workerId },
     ];
     const policies = [{ decision: "allow", include: [{ email: { email } }] }];
-    const access = yield* accessApps(accountId, name.access);
-    const accessId = access[0]?.id;
-    if (accessId)
-      yield* ZeroTrust.updateAccessApplicationForAccount({
-        accountId,
-        appId: accessId,
-        type: "self_hosted",
-        name: name.access,
-        destinations,
-        policies,
-      });
-    else
-      yield* ZeroTrust.createAccessApplicationForAccount({
-        accountId,
-        type: "self_hosted",
-        name: name.access,
-        destinations,
-        policies,
-      });
+    yield* ensureAccessApp(accountId, name.access, destinations, policies);
+    // Senders of signed webhooks have no Access login; the Worker verifies their signatures. This
+    // app, with a path more specific than the Worker's, lets `/hooks/*` alone through.
+    yield* ensureAccessApp(
+      accountId,
+      name.hooks,
+      [{ type: "public", uri: `${host}/hooks/*` }],
+      [{ name: "signed webhooks", decision: "bypass", include: [{ everyone: {} }] }],
+    );
 
     yield* say("Setting up the preview address");
     if ((yield* wildcardRecords(zoneId, name.wildcard)).length === 0)
@@ -309,18 +367,32 @@ export const deployStage = (
         proxied: true,
         ttl: 1,
       });
+    yield* ensureRoute(zoneId, name.route, name.script);
+  });
+
+const ensureRoute = (zoneId: string, pattern: string, script: string) =>
+  Effect.gen(function* () {
     const route = [...(yield* Workers.listRoutes.items({ zoneId }).pipe(Stream.runCollect))].find(
-      (candidate) => candidate.pattern === name.route,
+      (candidate) => candidate.pattern === pattern,
     );
-    if (route === undefined)
-      yield* Workers.createRoute({ zoneId, pattern: name.route, script: name.script });
-    else if (route.script !== name.script)
-      yield* Workers.updateRoute({
-        zoneId,
-        routeId: route.id,
-        pattern: name.route,
-        script: name.script,
-      });
+    if (route === undefined) yield* Workers.createRoute({ zoneId, pattern, script });
+    else if (route.script !== script)
+      yield* Workers.updateRoute({ zoneId, routeId: route.id, pattern, script });
+  });
+
+type AccessApp = Parameters<typeof ZeroTrust.createAccessApplicationForAccount>[0];
+
+const ensureAccessApp = (
+  accountId: string,
+  name: string,
+  destinations: NonNullable<AccessApp["destinations"]>,
+  policies: NonNullable<AccessApp["policies"]>,
+) =>
+  Effect.gen(function* () {
+    const found = (yield* accessApps(accountId, name))[0]?.id;
+    const app = { accountId, type: "self_hosted", name, destinations, policies };
+    if (found) yield* ZeroTrust.updateAccessApplicationForAccount({ ...app, appId: found });
+    else yield* ZeroTrust.createAccessApplicationForAccount(app);
   });
 
 const accessApps = (accountId: string, name: string) =>
@@ -345,7 +417,10 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
     const say = (text: string) => Effect.sync(() => progress(text));
 
     yield* say("Removing the Access app");
-    for (const app of yield* accessApps(accountId, name.access))
+    for (const app of [
+      ...(yield* accessApps(accountId, name.access)),
+      ...(yield* accessApps(accountId, name.hooks)),
+    ])
       if (app.id) yield* ZeroTrust.deleteAccessApplicationForAccount({ accountId, appId: app.id });
 
     yield* say("Removing the container app");
@@ -362,9 +437,23 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
     for (const domain of domains)
       if (domain.id) yield* Workers.deleteDomain({ accountId, domainId: domain.id });
     for (const route of yield* Workers.listRoutes.items({ zoneId }).pipe(Stream.runCollect))
-      if (route.pattern === name.route && route.script === name.script)
+      if (
+        (route.pattern === name.route && route.script === name.script) ||
+        route.script === name.mcpTest
+      )
         yield* Workers.deleteRoute({ zoneId, routeId: route.id });
 
+    if (config.mcpOAuthTest !== undefined && config.stage !== "main") {
+      for (const domain of yield* Workers.listDomains
+        .items({ accountId, service: name.mcpTest })
+        .pipe(Stream.runCollect))
+        if (domain.id) yield* Workers.deleteDomain({ accountId, domainId: domain.id });
+      yield* Workers.deleteScript({
+        accountId,
+        scriptName: name.mcpTest,
+        force: true,
+      }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
+    }
     yield* say("Removing the Worker");
     yield* Workers.deleteScript({ accountId, scriptName: name.script, force: true }).pipe(
       Effect.catchTag("WorkerNotFound", () => Effect.void),
@@ -405,6 +494,7 @@ export const leftovers = (config: Config) =>
     const apps = yield* Containers.listContainerApplications({ accountId });
     const buckets = yield* R2.listBuckets({ accountId });
     const access = yield* accessApps(accountId, name.access);
+    const hooks = yield* accessApps(accountId, name.hooks);
     const records = yield* wildcardRecords(zoneId, name.wildcard);
     return [
       ...[
@@ -413,6 +503,7 @@ export const leftovers = (config: Config) =>
         ...(buckets.buckets ?? []).map((b) => b.name),
       ].filter(mine),
       ...access.map(() => `Access app ${name.access}`),
+      ...hooks.map(() => `Access app ${name.hooks}`),
       ...records.map(() => `DNS record ${name.wildcard}`),
     ];
   });

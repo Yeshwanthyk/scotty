@@ -21,6 +21,8 @@ export type State = {
   readonly lastSeq: number;
   // When the owner or the agent last did something worth sorting by: a prompt, a turn's end.
   readonly activeAt: number;
+  // When the session last went to sleep; undefined while it is up or failed.
+  readonly stoppedAt: number | undefined;
   readonly gen: number | undefined;
   readonly startSeq: number;
   readonly stopSeq: number;
@@ -53,6 +55,12 @@ export type State = {
   readonly created: Extract<SessionEvent, { kind: "created" }> | undefined;
 };
 
+// The request id the first prompt goes in under once the first workspace is ready.
+export const firstReq = (
+  created: Extract<SessionEvent, { kind: "created" }>,
+  gen: number,
+): string => created.req ?? `initial:${gen}`;
+
 // Stopped and failed sessions hold no connection, deadline or pending request.
 export const live = (state: State): boolean =>
   state.phase !== "failed" && state.phase !== "stopped";
@@ -61,6 +69,7 @@ export const initial: State = {
   phase: "provisioning",
   lastSeq: 0,
   activeAt: 0,
+  stoppedAt: undefined,
   gen: undefined,
   startSeq: 0,
   stopSeq: 0,

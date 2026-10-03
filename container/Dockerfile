@@ -20,14 +20,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && useradd --create-home --home-dir /home/scotty scotty \
     && echo "scotty ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/scotty && chmod 0440 /etc/sudoers.d/scotty \
     && mkdir /workspace && chown scotty:scotty /workspace
-# The e2e fixture repository (fixtureRepo in protocol/supervisor.ts): one README on main. It is
+# The e2e fixture repository (fixtureRepo in protocol/supervisor.ts): main and automation-base. It is
 # owned by scotty because git won't serve a repository owned by another user.
 # Pushes to it skip the Worker's refs/heads/scotty/* check; it lives only as long as the container.
 RUN git init -q --bare -b main /opt/scotty/fixture.git && mkdir /tmp/fixture \
     && git -C /tmp/fixture init -q -b main && echo "Scotty e2e fixture" > /tmp/fixture/README \
     && git -C /tmp/fixture add README \
     && git -C /tmp/fixture -c user.name=scotty -c user.email=scotty@localhost commit -q -m fixture \
-    && git -C /tmp/fixture push -q /opt/scotty/fixture.git main && rm -rf /tmp/fixture \
+    && git -C /tmp/fixture push -q /opt/scotty/fixture.git main \
+    && git -C /tmp/fixture checkout -q -b automation-base \
+    && echo "Automation branch fixture" > /tmp/fixture/automation-branch.txt \
+    && git -C /tmp/fixture add automation-branch.txt \
+    && git -C /tmp/fixture -c user.name=scotty -c user.email=scotty@localhost commit -q -m "automation branch" \
+    && git -C /tmp/fixture push -q /opt/scotty/fixture.git automation-base && rm -rf /tmp/fixture \
     && chown -R scotty:scotty /opt/scotty/fixture.git
 COPY container/AGENTS.md /etc/scotty/AGENTS.md
 COPY --chmod=755 container/scotty-attach /usr/local/bin/scotty-attach

@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { BunServices } from "@effect/platform-bun";
 import { Effect, FileSystem, Schema } from "effect";
+import { AgentSettings } from "../src/session/agents/agent-settings.js";
 import { failure } from "./client.js";
 
 const Hostname = Schema.String.check(Schema.isPattern(/^[a-z0-9-]+(\.[a-z0-9-]+)+$/));
@@ -16,6 +17,13 @@ export const Config = Schema.Struct({
   domain: Hostname,
   zoneId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)),
   host: Hostname,
+  codex: Schema.optional(AgentSettings),
+  claude: Schema.optional(AgentSettings),
+  mcpOAuthTest: Schema.optionalKey(
+    Schema.Struct({
+      host: Hostname,
+    }),
+  ),
 });
 export type Config = typeof Config.Type;
 

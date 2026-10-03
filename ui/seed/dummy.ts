@@ -40,6 +40,8 @@ export type DummySpec = {
   turns: TurnSpec[];
   // Where the session is left: stopped after its turns, waiting on the owner, or failed at boot.
   after?: "stopped" | "waiting" | "boot-failed";
+  // Set when a webhook or an automation made the session.
+  origin?: Json;
 };
 
 const read = (path: string) => ({
@@ -85,6 +87,7 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
     title: spec.title,
     prompt: spec.turns[0]?.prompt ?? "",
     image: "default",
+    ...(spec.origin === undefined ? {} : { origin: spec.origin }),
   });
   push({ src: "session", kind: "container.start", gen: 1 });
   at += 3400;
@@ -581,6 +584,7 @@ export const dummies: DummySpec[] = [
   },
   {
     id: "d0cc0de5000000000000000000000002",
+    origin: { kind: "hook", connection: "sentry", delivery: "msg_2kQ9fT", key: "issue-4821" },
     title: "Status dots and spinner in the session list",
     repo: "Yeshwanthyk/scotty-hatch-test",
     minutesAgo: 6,
@@ -720,6 +724,7 @@ export const dummies: DummySpec[] = [
     title: "Refactor the auth flow to passkeys",
     repo: "acme/storefront",
     minutesAgo: 60 * 24 * 3,
+    origin: { kind: "api", key: "passkeys-2026" },
     turns: [
       ...Array.from({ length: 9 }, (_, index): TurnSpec => ({
         prompt:
@@ -863,5 +868,69 @@ export const dummies: DummySpec[] = [
     minutesAgo: 60 * 24 * 12,
     after: "boot-failed",
     turns: [{ prompt: "reply ok", items: [] }],
+  },
+  // Stopped for over a week: the sidebar files these under Archived.
+  {
+    id: "d0cc0de5000000000000000000000007",
+    title: "Upgrade the image pipeline to sharp 0.34",
+    repo: "acme/storefront",
+    minutesAgo: 60 * 24 * 9,
+    turns: [
+      {
+        prompt: "Upgrade sharp to 0.34 and make sure product thumbnails still render.",
+        items: [
+          {
+            type: "say",
+            text: "Upgraded sharp to 0.34; thumbnails render the same.",
+            phase: "final_answer",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "d0cc0de5000000000000000000000008",
+    title: "Write a migration guide for the v2 webhooks",
+    repo: "Yeshwanthyk/scotty-hatch-test",
+    minutesAgo: 60 * 24 * 21,
+    origin: { kind: "hook", connection: "sentry", delivery: "msg_8aB3dX", key: "issue-3977" },
+    turns: [
+      {
+        prompt: "Write a migration guide for the v2 webhooks.",
+        items: [
+          { type: "say", text: "The guide is in docs/webhooks-v2.md.", phase: "final_answer" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "d0cc0de5000000000000000000000009",
+    title: "Summarise yesterday's commits on main",
+    repo: "acme/storefront",
+    minutesAgo: 60 * 5,
+    origin: {
+      kind: "automation",
+      automation: "daily-digest",
+      run: "5eed0000000000000000000000000000",
+      key: "digest:acme/storefront:main",
+    },
+    turns: [
+      {
+        prompt: "Summarise yesterday's commits on main and flag anything risky.",
+        items: [
+          {
+            type: "cmd",
+            command: "git log --since=yesterday --oneline main",
+            output:
+              "4be1c07 Cache product thumbnails for a day\n91d2e3a Drop the legacy checkout flag\n",
+          },
+          {
+            type: "say",
+            text: "Two commits landed yesterday.\n\n- **Cache product thumbnails for a day**: safe.\n- **Drop the legacy checkout flag**: risky; the flag still gates the Apple Pay button in `checkout/pay.tsx`.",
+            phase: "final_answer",
+          },
+        ],
+      },
+    ],
   },
 ];

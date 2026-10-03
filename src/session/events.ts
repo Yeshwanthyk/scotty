@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { PlaceKind } from "../places/place.js";
 
 const envelope = { seq: Schema.Natural, at: Schema.Finite, src: Schema.String };
 const fromSupervisor = {
@@ -9,11 +10,12 @@ const fromSupervisor = {
 export const AgentKind = Schema.Literals(["codex", "claude"]);
 // `initial:` and `stalled:` ids belong to the Session DO's own requests.
 const ClientReq = Schema.String.check(Schema.isPattern(/^(?!initial:|stalled:)/));
-// Why a container stopped: the owner stopped it, it slept (idle) or was stopped for making no
+// Why a container stopped: the owner stopped it, an automation ended it, it slept (idle) or was stopped for making no
 // progress (stalled), it exited on its own (crashed with an exit code, or exited cleanly), a
 // deploy replaced it, or it was found gone without a recorded exit.
 export const StopReason = Schema.Literals([
   "user",
+  "ended",
   "idle",
   "stalled",
   "crashed",
@@ -26,6 +28,24 @@ const TimeoutOp = Schema.Union([
   Schema.String.check(Schema.isPattern(/^req:/)),
 ]);
 
+// What started a session, when it was not a person in the UI or CLI without a key.
+export const Origin = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("hook"),
+    connection: Schema.String,
+    delivery: Schema.String,
+    key: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({ kind: Schema.Literal("api"), key: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("automation"),
+    automation: Schema.String,
+    run: Schema.String,
+    key: Schema.optionalKey(Schema.String),
+  }),
+]);
+export type Origin = typeof Origin.Type;
+
 export const SessionEvent = Schema.Union([
   Schema.Struct({
     ...envelope,
@@ -36,9 +56,15 @@ export const SessionEvent = Schema.Union([
     branch: Schema.String,
     title: Schema.String,
     prompt: Schema.String,
+    // The first prompt's request id, so a retried create is known as one. Absent in logs
+    // written before creators named it: those used `initial:<gen>`.
+    req: Schema.optionalKey(ClientReq),
     image: Schema.String,
+    // Absent in logs written before places: those ran on Cloudflare.
+    place: Schema.optionalKey(PlaceKind),
     // Runs the agent's scripted stand-in instead of the agent; only e2e asks for it.
     scripted: Schema.optionalKey(Schema.Literal(true)),
+    origin: Schema.optionalKey(Origin),
     // Milliseconds of idleness before the session sleeps, when shorter than the default.
     idleAfter: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   }),
@@ -119,6 +145,7 @@ export const SessionEvent = Schema.Union([
     ...envelope,
     kind: Schema.Literal("container.stopped"),
     gen: Schema.Natural,
+    req: Schema.optionalKey(ClientReq),
     // Absent in logs written before stops recorded a reason.
     reason: Schema.optionalKey(StopReason),
     exitCode: Schema.optionalKey(Schema.Int),

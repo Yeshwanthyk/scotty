@@ -48,9 +48,7 @@ const program = Effect.gen(function* () {
   const events = () => request(`${prefix}/log`, Log);
 
   // 1. A turn that prints nothing for longer than a quiet Session DO stays in memory.
-  yield* poll(events, (log) =>
-    log.some((e) => e.kind === "prompt.delivered" && e.req === "initial:1"),
-  );
+  yield* poll(events, (log) => log.some((e) => e.kind === "prompt.delivered"));
   const watched = (yield* events()).some((e) => e.kind === "container.watched");
   yield* check(watched, "The container was not watched once the supervisor answered");
   console.log(`Turn running; no requests to the session for ${silence + 30} s`);
@@ -113,7 +111,11 @@ const program = Effect.gen(function* () {
   yield* request(`${prefix}/steer`, Reply, {
     method: "POST",
     key: wake,
-    body: { req: wake, turn: "1", text: prompt("Reply with only the word again.", "say again") },
+    body: {
+      req: wake,
+      turn: "1",
+      text: prompt("Reply with only the word again.", "say again"),
+    },
   });
   const woke = yield* poll(events, (log) =>
     log.some((e) => e.kind === "turn.ended" && e.turn === "1" && e.state === "completed"),

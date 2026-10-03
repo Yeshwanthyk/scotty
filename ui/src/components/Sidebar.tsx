@@ -5,14 +5,18 @@ import type { Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import {
   ago,
+  archived,
   dormant,
+  stopLabel,
   grouped,
+  matchesFilter,
   statusLabel,
   statusOf,
-  stopLabel,
+  type Filter,
   type Status,
 } from "../data/status";
 import { Icon, Spinner } from "./Icon";
+import { Menu } from "./Menu";
 
 export function StatusMark({ status, title }: { status: Status; title?: string }) {
   return (
@@ -65,6 +69,13 @@ function Meta({ session, status }: { session: Session; status: Status }) {
   );
 }
 
+const filters: ReadonlyArray<{ id: Filter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "mine", label: "Mine" },
+  { id: "automations", label: "Automations" },
+  { id: "running", label: "Running" },
+];
+
 function Row({ session, current }: { session: Session; current: boolean }) {
   const status = statusOf(session, current);
   return (
@@ -98,11 +109,12 @@ function useMinuteTick() {
   }, []);
 }
 
+const archivedKey = "scotty.archivedOpen";
 const stoppedKey = "scotty.stoppedOpen";
-function useStoppedOpen() {
+function useSectionOpen(key: string) {
   const [open, setOpen] = useState(() => {
     try {
-      return localStorage.getItem(stoppedKey) === "1";
+      return localStorage.getItem(key) === "1";
     } catch {
       return false;
     }
@@ -111,7 +123,7 @@ function useStoppedOpen() {
     if (next === open) return;
     setOpen(next);
     try {
-      localStorage.setItem(stoppedKey, next ? "1" : "0");
+      localStorage.setItem(key, next ? "1" : "0");
     } catch {
       // Private windows can refuse storage; the section then starts closed.
     }
@@ -126,18 +138,26 @@ export function Sidebar({
   onSearch: () => void;
   onCollapse: () => void;
 }) {
-  const { list, error } = useSessions();
+  const { list, error, repo, setRepo } = useSessions();
+  const [filter, setFilter] = useState<Filter>("all");
   const params = useParams({ strict: false });
   const currentId = "sessionId" in params ? params.sessionId : undefined;
   useMinuteTick();
-  const [showStopped, toggleStopped] = useStoppedOpen();
-  // Asleep and stopped sessions hold no container; they fold away below the ones still running.
-  const all = list ?? [];
-  const live = grouped(all.filter((session) => !dormant(statusOf(session))));
+  const [showArchived, toggleArchived] = useSectionOpen(archivedKey);
+  const [showStopped, toggleStopped] = useSectionOpen(stoppedKey);
+  const all = (list ?? []).filter(
+    (session) =>
+      (repo === "" || session.display.repository === repo) && matchesFilter(session, filter),
+  );
+  const live = grouped(all.filter((session) => !archived(session) && !dormant(statusOf(session))));
   const stopped = all
-    .filter((session) => dormant(statusOf(session)))
+    .filter((session) => !archived(session) && dormant(statusOf(session)))
     .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
   const viewingStopped = stopped.some((session) => session.identity.id === currentId);
+  const old = all
+    .filter((session) => archived(session))
+    .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
+  const viewingArchived = old.some((session) => session.identity.id === currentId);
   return (
     <aside className="sidebar" aria-label="Sessions">
       <div className="sidebar-top">
@@ -145,14 +165,13 @@ export function Sidebar({
           <img src={scottyMark} alt="" />
           Scotty
         </Link>
-        <button
-          type="button"
+        <Link
+          to="/automations"
           className="icon-button pressable mobile-only"
-          aria-label="Search"
-          onClick={onSearch}
+          aria-label="Automations"
         >
-          <Icon name="search" />
-        </button>
+          <Icon name="refresh" />
+        </Link>
         <Link to="/settings" className="icon-button pressable mobile-only" aria-label="Settings">
           <Icon name="settings" />
         </Link>
@@ -165,24 +184,78 @@ export function Sidebar({
           <Icon name="sidebar" />
         </button>
       </div>
-      <nav className="sidebar-actions desktop-only">
+      <nav className="sidebar-tools" aria-label="Session controls">
+        <button type="button" className="sidebar-search pressable" onClick={onSearch}>
+          <Icon name="search" size={15} />
+          <span>Search</span>
+          <kbd>⌘K</kbd>
+        </button>
+        <div
+          className="sidebar-filter"
+          data-filtered={filter !== "all" || repo !== ""}
+          title="Filter sessions"
+        >
+          <Menu
+            label="Filter sessions"
+            items={filters.map((item) => ({
+              label: item.label,
+              icon: "check",
+              checked: filter === item.id,
+              onSelect: () => setFilter(item.id),
+            }))}
+          >
+            <Icon name="filter" size={15} />
+          </Menu>
+        </div>
         <Link
           to="/sessions/create"
-          className="nav-item pressable"
+          className="icon-button pressable"
+          aria-label="New session"
+          title="New session"
           activeProps={{ "aria-current": "page" }}
         >
           <Icon name="plus" />
-          New session
         </Link>
-        <button type="button" className="nav-item pressable" onClick={onSearch}>
-          <Icon name="search" />
-          Search
-          <kbd>⌘K</kbd>
-        </button>
       </nav>
+      {filter !== "all" || repo !== "" ? (
+        <div className="session-filters">
+          {filter !== "all" ? (
+            <span className="session-filter">
+              <span>{filters.find((item) => item.id === filter)?.label}</span>
+              <button
+                type="button"
+                className="session-filter-clear pressable"
+                aria-label="Clear session filter"
+                title="Clear session filter"
+                onClick={() => setFilter("all")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          ) : null}
+          {repo !== "" ? (
+            <span className="session-filter session-filter-repo">
+              <span title={repo}>{repo}</span>
+              <button
+                type="button"
+                className="session-filter-clear pressable"
+                aria-label={`Clear repository ${repo}`}
+                title={`Clear repository ${repo}`}
+                onClick={() => setRepo("")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className="session-groups" data-scroll>
         {list === undefined && error === "" ? <Placeholder /> : null}
-        {error && list === undefined ? <p className="sidebar-empty alert">{error}</p> : null}
+        {error && list === undefined ? (
+          <p className="sidebar-empty" title={error}>
+            Can't reach Scotty. Retrying…
+          </p>
+        ) : null}
         {list?.length === 0 ? (
           <p className="sidebar-empty">No sessions yet. Start one and it shows up here.</p>
         ) : null}
@@ -198,12 +271,16 @@ export function Sidebar({
             ))}
           </section>
         ))}
-        {list !== undefined && list.length > 0 && live.length === 0 ? (
-          <p className="sidebar-empty">Nothing running.</p>
+        {list !== undefined &&
+        list.length > 0 &&
+        live.length === 0 &&
+        stopped.length === 0 &&
+        old.length === 0 ? (
+          <p className="sidebar-empty">Nothing matches.</p>
         ) : null}
         {stopped.length > 0 ? (
           <details
-            className="stopped-group"
+            className="archived-group"
             open={showStopped || viewingStopped}
             onToggle={(event) => {
               // Opening for the session on screen doesn't change what the owner chose.
@@ -223,8 +300,38 @@ export function Sidebar({
             ))}
           </details>
         ) : null}
+        {old.length > 0 ? (
+          <details
+            className="archived-group"
+            open={showArchived || viewingArchived}
+            onToggle={(event) => {
+              // Opening for the session on screen doesn't change what the owner chose.
+              if (!viewingArchived) toggleArchived(event.currentTarget.open);
+            }}
+          >
+            <summary className="group-label">
+              <Icon name="chevronRight" size={12} />
+              Archived · {old.length}
+            </summary>
+            {old.map((session) => (
+              <Row
+                key={session.identity.id}
+                session={session}
+                current={session.identity.id === currentId}
+              />
+            ))}
+          </details>
+        ) : null}
       </div>
       <nav className="sidebar-foot desktop-only">
+        <Link
+          to="/automations"
+          className="nav-item pressable"
+          activeProps={{ "aria-current": "page" }}
+        >
+          <Icon name="refresh" />
+          Automations
+        </Link>
         <Link
           to="/settings"
           className="nav-item pressable"
@@ -234,14 +341,6 @@ export function Sidebar({
           Settings
         </Link>
       </nav>
-      <div className="sidebar-bottom mobile-only-block">
-        <Link to="/sessions/create" className="phone-compose pressable">
-          <span>Build, fix or explain…</span>
-          <span className="send-button" aria-hidden>
-            <Icon name="arrowUp" size={14} />
-          </span>
-        </Link>
-      </div>
     </aside>
   );
 }

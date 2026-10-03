@@ -19,7 +19,7 @@ import type {
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { Option, Schema } from "effect";
-import { fill, lines, shell, step } from "./script.js";
+import { call, fill, lines, shell, step, type Step } from "./script.js";
 
 const ControlRequest = Schema.Struct({
   type: Schema.Literal("control_request"),
@@ -56,6 +56,7 @@ type Turn = {
   readonly startedAt: number;
   interrupted: boolean;
   child: ChildProcess | undefined;
+  call: AbortController | undefined;
 };
 
 const flag = (name: string) =>
@@ -158,13 +159,19 @@ const say = (text: string) => {
   assistant([{ type: "text", text, citations: null }]);
 };
 
-const run = async (turn: Turn, command: string) => {
+const run = async (turn: Turn, next: Extract<Step, { kind: "run" | "call" }>) => {
+  const command = next.command;
   const id = `toolu_scripted_${crypto.randomUUID().replaceAll("-", "")}`;
   assistant([
     { type: "tool_use", id, name: "Bash", input: { command, description: "Run a scripted step" } },
   ]);
-  const { output, exitCode } = await shell(command, cwd, (child) => (turn.child = child));
+  if (next.kind === "call") turn.call = new AbortController();
+  const { output, exitCode } =
+    next.kind === "call" && turn.call !== undefined
+      ? await call(next.options, turn.call.signal)
+      : await shell(command, cwd, (child) => (turn.child = child));
   turn.child = undefined;
+  turn.call = undefined;
   lastOutput = output.trim();
   const message = {
     type: "user",
@@ -222,7 +229,7 @@ const perform = async (turn: Turn) => {
     line = turn.lines.shift()
   ) {
     const next = step(line);
-    if (next.kind === "run") await run(turn, next.command);
+    if (next.kind === "run" || next.kind === "call") await run(turn, next);
     else say(fill(next.text, lastOutput, recall));
   }
   if (active === turn) active = undefined;
@@ -264,6 +271,7 @@ const handle = (message: typeof Input.Type) => {
     if (active !== undefined) {
       active.interrupted = true;
       active.child?.kill();
+      active.call?.abort();
     }
     return control({
       subtype: "success",
@@ -286,6 +294,7 @@ const handle = (message: typeof Input.Type) => {
     startedAt: Date.now(),
     interrupted: false,
     child: undefined,
+    call: undefined,
   };
   active = turn;
   void perform(turn);
@@ -296,3 +305,4 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (Option.isSome(decoded)) handle(decoded.value);
 }
 active?.child?.kill();
+active?.call?.abort();

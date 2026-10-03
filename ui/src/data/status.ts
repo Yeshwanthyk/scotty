@@ -63,6 +63,8 @@ export function stopLabel(stop: { reason: string; exitCode?: number } | null | u
   switch (stop?.reason) {
     case "user":
       return "Stopped by you";
+    case "ended":
+      return "Ended by an automation";
     case "stalled":
       return "Stopped — no output";
     case "crashed":
@@ -97,6 +99,8 @@ export function stopSentence(stop: { reason: string; exitCode?: number } | null 
   switch (stop?.reason) {
     case "user":
       return "You stopped this session.";
+    case "ended":
+      return "An automation ended this session.";
     case "stalled":
       return "Stopped after 30 minutes with no output from the agent.";
     case "crashed":
@@ -165,15 +169,52 @@ export function duration(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-const groups = ["Today", "Yesterday", "This week", "This month", "Earlier"] as const;
+const groups = ["Today", "This week", "Older"] as const;
+// Calendar days in local time, so a day that is 23 or 25 hours long still counts as one.
 export function groupOf(iso: string, now = new Date()): (typeof groups)[number] {
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const at = Date.parse(iso);
-  if (at >= start) return "Today";
-  if (at >= start - 86_400_000) return "Yesterday";
-  if (at >= start - 6 * 86_400_000) return "This week";
-  if (at >= start - 30 * 86_400_000) return "This month";
-  return "Earlier";
+  const at = new Date(iso).getTime();
+  if (at >= new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) return "Today";
+  if (at >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6).getTime())
+    return "This week";
+  return "Older";
+}
+
+// A session asleep (stopped) for over a week moves out of the way, still searchable.
+// The week counts from when it went to sleep, not from its last activity.
+export function archived(session: Session, now = new Date()): boolean {
+  const { authority, display } = session;
+  if (authority.kind !== "stable" || authority.lifecycle !== "stopped") return false;
+  if (display.stoppedAt === null) return false;
+  return Date.parse(display.stoppedAt) < now.getTime() - 7 * 86_400_000;
+}
+
+// Mine: started by a person, in the UI or CLI or through the API with a key. Automations: a hook
+// or an automation.
+export type Filter = "all" | "mine" | "automations" | "running";
+export function matchesFilter(session: Session, filter: Filter): boolean {
+  const origin = session.display.origin;
+  if (filter === "mine") return origin === null || origin.kind === "api";
+  if (filter === "automations") return origin !== null && origin.kind !== "api";
+  if (filter === "running")
+    return session.authority.kind === "transitioning" || session.authority.lifecycle === "running";
+  return true;
+}
+
+// Case-insensitive substring over what the list already holds; the server adds the whole prompt.
+export function matchesText(session: Session, text: string): boolean {
+  const needle = text.trim().toLowerCase();
+  if (needle === "") return true;
+  const { title, repository, branch, prompt, origin } = session.display;
+  const fields = [
+    title,
+    repository,
+    branch,
+    prompt,
+    origin !== null && "key" in origin ? (origin.key ?? "") : "",
+    origin?.kind === "hook" ? origin.connection : "",
+    origin?.kind === "automation" ? origin.automation : "",
+  ];
+  return fields.some((field) => field.toLowerCase().includes(needle));
 }
 
 export function grouped(list: ReadonlyArray<Session>) {

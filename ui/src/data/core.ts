@@ -26,9 +26,28 @@ const Session = Schema.Struct({
     title: Schema.String,
     repository: Schema.String,
     branch: Schema.String,
+    prompt: Schema.String,
     agentKind: Schema.String,
+    stoppedAt: Schema.NullOr(Schema.String),
     createdAt: Schema.String,
     activeAt: Schema.String,
+    origin: Schema.NullOr(
+      Schema.Union([
+        Schema.Struct({
+          kind: Schema.Literal("hook"),
+          connection: Schema.String,
+          delivery: Schema.String,
+          key: Schema.optionalKey(Schema.String),
+        }),
+        Schema.Struct({ kind: Schema.Literal("api"), key: Schema.String }),
+        Schema.Struct({
+          kind: Schema.Literal("automation"),
+          automation: Schema.String,
+          run: Schema.String,
+          key: Schema.optionalKey(Schema.String),
+        }),
+      ]),
+    ),
   }),
   progress: Schema.Struct({
     working: Schema.Boolean,
@@ -121,9 +140,11 @@ export async function request(
   }
   return value;
 }
-export async function sessions(signal?: AbortSignal): Promise<ReadonlyArray<Session>> {
+// With `search`, the server matches the whole first prompt, key and connection too.
+export async function sessions(signal?: AbortSignal, search = ""): Promise<ReadonlyArray<Session>> {
+  const query = search === "" ? "" : `?q=${encodeURIComponent(search)}`;
   const result = Option.getOrUndefined(
-    decodeList(await request("/api/sessions", undefined, signal)),
+    decodeList(await request(`/api/sessions${query}`, undefined, signal)),
   );
   if (result === undefined) throw new Error("Unreadable session list");
   return result.sessions;
