@@ -119,7 +119,11 @@ function mismatch(filter: Filter, payload: unknown): string | undefined {
           ? asText(raw)?.includes(wanted.value) === true
           : value !== undefined && wanted.includes(value);
     if (!matched)
-      return `${path} is ${raw === undefined ? "missing" : value === undefined ? "a list or object" : JSON.stringify(value)}`;
+      return raw === undefined
+        ? `${path} is missing`
+        : typeof wanted !== "string" && "kind" in wanted
+          ? `${path} does not contain ${JSON.stringify(wanted.value)}`
+          : `${path} is ${value === undefined ? "a list or object" : JSON.stringify(value)}`;
   }
   return undefined;
 }
