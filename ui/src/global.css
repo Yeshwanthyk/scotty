@@ -580,7 +580,8 @@ kbd {
   margin-top: 8px;
 }
 
-.archived-group summary {
+.archived-group summary,
+.deliveries summary {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -589,7 +590,8 @@ kbd {
   border-radius: var(--radius-md);
 }
 
-.archived-group summary::-webkit-details-marker {
+.archived-group summary::-webkit-details-marker,
+.deliveries summary::-webkit-details-marker {
   display: none;
 }
 
@@ -597,11 +599,13 @@ kbd {
   color: var(--muted);
 }
 
-.archived-group summary .icon {
+.archived-group summary .icon,
+.deliveries summary .icon {
   transition: transform 120ms ease;
 }
 
-.archived-group[open] summary .icon {
+.archived-group[open] summary .icon,
+.deliveries[open] summary .icon {
   transform: rotate(90deg);
 }
 
@@ -751,12 +755,13 @@ kbd {
 .header-title {
   min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-start;
   margin-right: auto;
 }
 
 .header-title h1 {
+  max-width: 100%;
   margin: 0;
   font-size: 13.5px;
   font-weight: 600;
@@ -766,48 +771,18 @@ kbd {
   text-overflow: ellipsis;
 }
 
-.crumbs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
+/* The session's repository, branch and origin: one muted line that ellipsizes as a whole. */
+.header-sub {
+  max-width: 100%;
+  overflow: hidden;
   white-space: nowrap;
-  overflow: hidden;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  height: 20px;
-  padding: 0 7px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--sunken);
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1;
-}
-
-.chip .icon {
-  flex: none;
-  color: var(--quiet);
-}
-
-.chip-text {
-  overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.chip-owner {
   color: var(--quiet);
+  font-size: 11.5px;
 }
 
-.chip-name {
+.header-sub a:hover {
   color: var(--ink);
-  font-weight: 500;
 }
 
 .header-actions {
@@ -2339,6 +2314,20 @@ button.diff-line {
   font-weight: 400;
 }
 
+.deliveries summary {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.deliveries summary:hover {
+  color: var(--ink);
+}
+
+.deliveries[open] summary {
+  margin-bottom: 8px;
+}
+
 .settings-dot {
   width: 7px;
   height: 7px;
@@ -2591,26 +2580,8 @@ button.diff-line {
     padding-left: 6px;
   }
 
-  .header-title {
-    flex-direction: column;
-    gap: 0;
-    align-items: flex-start;
-  }
-
   .header-title h1 {
     font-size: 14.5px;
-    max-width: 100%;
-  }
-
-  .crumbs {
-    max-width: 100%;
-    margin-top: 2px;
-  }
-
-  .chip {
-    height: 18px;
-    padding: 0 5px;
-    font-size: 11px;
   }
 
   .thread-inner {

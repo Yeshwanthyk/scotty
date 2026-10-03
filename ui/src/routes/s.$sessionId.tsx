@@ -250,46 +250,15 @@ function SessionView({ sessionId }: { sessionId: string }) {
         <SidebarButton />
         <div className="header-title">
           <h1>{detail?.display.title ?? " "}</h1>
-          {detail ? (
-            <span className="crumbs">
-              <RepoChip repository={detail.display.repository} />
-              {/* Scotty's own branch name is the session id; only a chosen branch is worth showing. */}
-              {detail.display.branch && !detail.display.branch.startsWith("scotty/") ? (
-                <span className="chip" title={detail.display.branch}>
-                  <Icon name="branch" size={12} />
-                  <span className="chip-text">{detail.display.branch}</span>
-                </span>
-              ) : null}
-            </span>
-          ) : null}
-          {detail?.display.origin?.kind === "hook" ? (
-            <span className="crumbs">
-              <Icon name="globe" size={12} />
-              <span>
-                From webhook {detail.display.origin.connection}
-                {detail.display.origin.key ? ` · ${detail.display.origin.key}` : ""}
-              </span>
-            </span>
-          ) : null}
-          {detail?.display.origin?.kind === "automation" ? (
-            <Link
-              to="/automations/$name"
-              params={{ name: detail.display.origin.automation }}
-              className="crumbs"
-            >
-              <Icon name="refresh" size={12} />
-              <span>
-                From automation {detail.display.origin.automation}
-                {detail.display.origin.key ? ` · ${detail.display.origin.key}` : ""}
-              </span>
-            </Link>
-          ) : null}
+          {detail ? <SessionLine display={detail.display} /> : null}
         </div>
         <div className="header-actions">
-          {detail !== undefined && status !== undefined ? (
+          {/* One status: an idle session that will sleep shows when, in place of a pill. */}
+          {sleepsAt != null && (status === "idle" || status === "unseen") ? (
+            <SleepsIn at={sleepsAt} />
+          ) : detail !== undefined && status !== undefined ? (
             <StatusPill session={detail} status={status} />
           ) : null}
-          {sleepsAt != null ? <SleepsIn at={sleepsAt} /> : null}
           {/* The diff stat is the way into the panel: the header says what changed at a glance. */}
           {added > 0 || removed > 0 ? (
             <button
@@ -454,18 +423,44 @@ function ThreadPlaceholder() {
   );
 }
 
-// "owner / repo", with the repository itself carrying the weight.
-function RepoChip({ repository }: { repository: string }) {
+// Where the session works and what started it, as one line that ellipsizes as a whole. The phone
+// shows the repository's name without its owner.
+function SessionLine({ display }: { display: Session["display"] }) {
+  const { repository, branch, origin } = display;
   const slash = repository.lastIndexOf("/");
-  const owner = slash > 0 ? repository.slice(0, slash) : "";
+  const owner = slash > 0 ? repository.slice(0, slash + 1) : "";
   const name = repository.slice(slash + 1) || "No repository";
   return (
-    <span className="chip" title={repository}>
-      <Icon name="repo" size={12} />
-      <span className="chip-text">
-        {owner ? <span className="chip-owner">{owner}/</span> : null}
-        <span className="chip-name">{name}</span>
+    <span className="header-sub">
+      <span title={repository}>
+        {owner ? <span className="desktop-only">{owner}</span> : null}
+        {name}
       </span>
+      {/* Scotty's own branch name is the session id; only a chosen branch is worth showing. */}
+      {branch && !branch.startsWith("scotty/") ? <span title={branch}> · {branch}</span> : null}
+      {origin?.kind === "automation" ? (
+        <>
+          {" · "}
+          <Link
+            to="/automations/$name"
+            params={{ name: origin.automation }}
+            title={origin.key ?? undefined}
+          >
+            via {origin.automation}
+          </Link>
+        </>
+      ) : origin?.kind === "hook" ? (
+        <>
+          {" · "}
+          <Link
+            to="/settings/$section"
+            params={{ section: "connections" }}
+            title={origin.key ?? undefined}
+          >
+            via webhook {origin.connection}
+          </Link>
+        </>
+      ) : null}
     </span>
   );
 }

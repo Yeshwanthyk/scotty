@@ -39,7 +39,7 @@ firing is a run: skipped (and why), started, steered, ended or failed. Prompt ru
    (A1). `automation enable digest`.
 2. Wait for the minute; `runs --automation digest --json` into `02-runs.json`: one run, started,
    with a session (A2). `read <session>` answers; `runs` shows the turn completed.
-3. `ls --search digest` finds the session; in the UI its header says "From automation digest"
+3. `ls --search digest` finds the session; in the UI its header's second line says "via digest"
    and links back (A3).
 4. `connect standard-webhooks demo`; `automation add triage <owner/repo> "Look at {{issue.title}}" --on demo
 --only action=opened,reopened`; enable it; POST a signed `{"action":"closed", …}`: the answer

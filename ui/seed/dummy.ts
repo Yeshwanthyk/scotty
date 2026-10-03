@@ -912,6 +912,7 @@ export const dummies: DummySpec[] = [
       kind: "automation",
       automation: "daily-digest",
       run: "5eed0000000000000000000000000000",
+      key: "digest:acme/storefront:main",
     },
     turns: [
       {

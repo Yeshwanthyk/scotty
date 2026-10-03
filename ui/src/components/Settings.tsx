@@ -1,5 +1,5 @@
 import { Option, Schema } from "effect";
-import { SignaturePreset } from "../../../src/hooks/config";
+import { SignaturePreset, signaturePresets } from "../../../src/hooks/config";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { message } from "../data/core";
@@ -28,6 +28,7 @@ import {
   type Device,
   type Settings as SettingsState,
 } from "../data/settings";
+import { automations as loadAutomations, type Automation } from "../data/automations";
 import { blueprints, installBlueprint } from "../data/blueprints";
 import { Icon, Spinner, type IconName } from "./Icon";
 import { SidebarButton } from "./Layout";
@@ -546,9 +547,121 @@ const reasons: Record<DeliveryReason, string> = {
   session_unavailable: "Session unavailable",
 };
 
+const presetNames: Record<SignaturePreset, string> = {
+  "standard-webhooks": "Webhook",
+  github: "GitHub webhook",
+  linear: "Linear webhook",
+  slack: "Slack webhook",
+};
+
+// Structural equality of decoded JSON, so a stored signature config can be matched to its preset.
+function same(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  const right = new Map(Object.entries(b));
+  const left = Object.entries(a);
+  return (
+    left.length === right.size &&
+    left.every(([key, value]) => right.has(key) && same(value, right.get(key)))
+  );
+}
+
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
+
+// What a connection is, in a few words.
+function describe(item: Connection): string {
+  switch (item.kind) {
+    case "inbound": {
+      const preset = SignaturePreset.literals.find((name) =>
+        same(item.signature, signaturePresets[name]),
+      );
+      return preset === undefined ? "Webhook with a custom signature" : presetNames[preset];
+    }
+    case "token":
+      return `Token for ${item.host}`;
+    case "mcp":
+      return [
+        `MCP server · ${hostOf(item.url)}`,
+        item.signIn === "signed-in"
+          ? "signed in"
+          : item.signIn === "needs-sign-in"
+            ? "needs sign-in again"
+            : "not connected",
+        item.policy.kind === "named"
+          ? `${item.policy.tools.length} named tool${item.policy.tools.length === 1 ? "" : "s"}`
+          : item.policy.kind === "all"
+            ? "all tools"
+            : "read-only tools",
+      ].join(" · ");
+  }
+}
+
+function deliveryText(delivery: Delivery): string {
+  if (delivery.outcome === "rejected" || delivery.outcome === "skipped")
+    return delivery.reason === null
+      ? delivery.outcome === "skipped"
+        ? "Skipped"
+        : "Rejected"
+      : reasons[delivery.reason];
+  return delivery.outcome === "duplicate" ? "Already delivered" : "Accepted";
+}
+
+// One row per delivery id: a sender's retry folds into its first attempt. The list comes newest
+// first, so rows keep the order of their latest attempt and the last one seen is the original.
+type Attempts = { first: Delivery; retries: number; session: string | null };
+function foldRetries(deliveries: ReadonlyArray<Delivery>): Attempts[] {
+  const rows = new Map<string, Attempts>();
+  for (const delivery of deliveries) {
+    const seen = rows.get(delivery.id);
+    rows.set(delivery.id, {
+      first: delivery,
+      retries: seen === undefined ? 0 : seen.retries + 1,
+      session: seen?.session ?? delivery.session,
+    });
+  }
+  return [...rows.values()];
+}
+
+const tallyOrder = ["accepted", "bad signature", "rejected", "skipped", "already delivered"];
+function tally(rows: ReadonlyArray<Attempts>): string {
+  const counts = new Map<string, number>();
+  for (const { first } of rows) {
+    const label =
+      first.outcome === "rejected"
+        ? first.reason === "bad_signature"
+          ? "bad signature"
+          : "rejected"
+        : first.outcome === "duplicate"
+          ? "already delivered"
+          : first.outcome;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return tallyOrder
+    .flatMap((label) => {
+      const count = counts.get(label);
+      return count === undefined ? [] : [`${count} ${label}`];
+    })
+    .join(", ");
+}
+
+function since(at: number): string {
+  const text = ago(new Date(at).toISOString());
+  return text === "now" ? "just now" : /^\d/.test(text) ? `${text} ago` : `on ${text}`;
+}
+
+const shortId = (id: string) => (id.length > 12 ? `${id.slice(0, 8)}…` : id);
+
 function Connections() {
   const [items, setItems] = useState<Connection[]>();
   const [log, setLog] = useState<Delivery[]>([]);
+  const [users, setUsers] = useState<Automation[]>([]);
+  const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"inbound" | "token" | "mcp">("inbound");
   const [preset, setPreset] = useState<SignaturePreset>("standard-webhooks");
@@ -561,9 +674,14 @@ function Connections() {
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     try {
-      const [next, recent] = await Promise.all([loadConnections(), loadDeliveries()]);
+      const [next, recent, automations] = await Promise.all([
+        loadConnections(),
+        loadDeliveries(),
+        loadAutomations(),
+      ]);
       setItems(next);
       setLog(recent);
+      setUsers(automations);
     } catch (failure) {
       setError(message(failure, "Could not load connections"));
     }
@@ -586,71 +704,103 @@ function Connections() {
   if (items === undefined)
     return error ? <Problem text={error} /> : <div className="settings-card" aria-busy="true" />;
   return (
-    <div className="settings-card">
+    <>
       <p className="settings-intro">
-        A webhook starts a session from a signed POST with {"{repo, prompt, key?}"}; a repeated key
-        steers that session. GitHub events fire automations; paste the URL and generated secret into
-        GitHub webhook settings. Tokens and MCP servers let agents call a service through its
-        internal URL. New connections are available when a session starts or resumes after stopping.
+        A connection lets an outside service start sessions with a signed webhook, or lets agents
+        call an API or MCP server through its internal URL.
       </p>
       {created ? (
-        <div className="settings-row secret-row">
-          <div className="settings-row-text">
-            <div className="settings-row-title">
-              <span className="mono">{created.name}</span> secret, shown once
+        <div className="settings-card">
+          <div className="settings-row secret-row">
+            <div className="settings-row-text">
+              <div className="settings-row-title">
+                <span className="mono">{created.name}</span> secret, shown once
+              </div>
+              <div className="settings-row-detail mono">{created.secret}</div>
+              <div className="settings-row-detail mono">{created.url}</div>
             </div>
-            <div className="settings-row-detail mono">{created.secret}</div>
-            <div className="settings-row-detail mono">{created.url}</div>
-          </div>
-          <div className="settings-actions">
-            <button
-              type="button"
-              className="button pressable"
-              onClick={() => copy("secret", created.secret)}
-            >
-              <Icon name={copied === "secret" ? "check" : "copy"} size={13} />
-              Copy secret
-            </button>
-            <button
-              type="button"
-              className="button pressable"
-              onClick={() => copy("url", created.url)}
-            >
-              <Icon name={copied === "url" ? "check" : "copy"} size={13} />
-              Copy URL
-            </button>
-            <button
-              type="button"
-              className="button pressable"
-              onClick={() => setCreated(undefined)}
-            >
-              Done
-            </button>
+            <div className="settings-actions">
+              <button
+                type="button"
+                className="button pressable"
+                onClick={() => copy("secret", created.secret)}
+              >
+                <Icon name={copied === "secret" ? "check" : "copy"} size={13} />
+                Copy secret
+              </button>
+              <button
+                type="button"
+                className="button pressable"
+                onClick={() => copy("url", created.url)}
+              >
+                <Icon name={copied === "url" ? "check" : "copy"} size={13} />
+                Copy URL
+              </button>
+              <button
+                type="button"
+                className="button pressable"
+                onClick={() => setCreated(undefined)}
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
       {items.length === 0 ? (
-        <div className="settings-empty">No connections yet.</div>
+        <div className="settings-card">
+          <div className="settings-empty">No connections yet.</div>
+        </div>
       ) : (
         items.map((item) => {
-          const mine = log.filter((delivery) => delivery.connection === item.name).slice(0, 8);
+          const rows = foldRetries(log.filter((delivery) => delivery.connection === item.name));
+          const used = users.filter(
+            (automation) =>
+              automation.when.kind === "event" && automation.when.connection === item.name,
+          ).length;
+          const url = item.kind === "inbound" ? item.url : item.internalUrl;
+          const latest = rows[0]?.first;
+          const summary =
+            item.kind === "inbound"
+              ? [
+                  used === 0 ? "No automations" : null,
+                  latest === undefined ? "No deliveries yet" : `last delivery ${since(latest.at)}`,
+                  rows.length === 0 ? null : tally(rows),
+                ]
+                  .filter((part) => part !== null)
+                  .join(" · ")
+              : item.kind === "token"
+                ? `Adds the ${item.header} header`
+                : item.url;
           return (
-            <div key={item.name}>
+            <div key={item.name} className="settings-card">
               <div className="settings-row">
                 <div className="settings-row-text">
                   <div className="settings-row-title">
                     <span className="mono">{item.name}</span>
-                    <span className="quiet settings-size">{item.kind}</span>
+                    <span className="quiet settings-size">{describe(item)}</span>
                   </div>
-                  <div className="settings-row-detail mono">
-                    {item.kind === "inbound" ? item.url : item.internalUrl}
+                  <div className="settings-row-detail mono">{url}</div>
+                  <div className="settings-row-detail">
+                    {item.kind === "inbound" && used > 0 ? (
+                      <>
+                        <Link to="/automations">
+                          Used by {used} automation{used === 1 ? "" : "s"}
+                        </Link>
+                        {" · "}
+                      </>
+                    ) : null}
+                    {summary}
                   </div>
-                  {item.kind === "token" || item.kind === "mcp" ? (
-                    <div className="settings-row-detail mono">
-                      {item.kind === "token" ? `${item.host} · ${item.header}` : item.url}
-                    </div>
-                  ) : null}
                 </div>
+                <button
+                  type="button"
+                  className="icon-button pressable"
+                  aria-label={`Copy the URL of ${item.name}`}
+                  onClick={() => copy(`url:${item.name}`, url)}
+                >
+                  <Icon name={copied === `url:${item.name}` ? "check" : "copy"} size={14} />
+                </button>
                 <button
                   type="button"
                   className="icon-button pressable"
@@ -664,192 +814,219 @@ function Connections() {
                   <Icon name="trash" size={14} />
                 </button>
               </div>
-              {item.kind === "mcp" ? <McpControls item={item} busy={busy} run={run} /> : null}
-              {mine.map((delivery, index) => (
-                // A retried delivery has its own row with the same id.
-                <div key={`${delivery.id}:${index}`} className="settings-row">
-                  <div className="settings-row-text">
-                    <div className="settings-row-title">
-                      <span
-                        className="settings-dot"
-                        data-tone={delivery.outcome === "rejected" ? "warn" : "good"}
-                      />
-                      {delivery.outcome === "rejected" || delivery.outcome === "skipped"
-                        ? delivery.reason === null
-                          ? delivery.outcome === "skipped"
-                            ? "Skipped"
-                            : "Rejected"
-                          : reasons[delivery.reason]
-                        : delivery.outcome === "duplicate"
-                          ? "Already delivered"
-                          : "Accepted"}
-                      <span className="quiet tabular settings-size">
-                        {ago(new Date(delivery.at).toISOString())}
-                      </span>
+              {item.kind === "mcp" ? (
+                // Keyed by the stored policy, so a reload that changes it resets the choice.
+                <McpControls key={JSON.stringify(item.policy)} item={item} busy={busy} run={run} />
+              ) : null}
+              {rows.length > 0 ? (
+                <details className="deliveries">
+                  <summary>
+                    <Icon name="chevronRight" size={12} />
+                    Deliveries ({rows.length})
+                  </summary>
+                  {rows.map(({ first, retries, session }) => (
+                    <div key={first.id} className="settings-row">
+                      <div className="settings-row-text">
+                        <div className="settings-row-title">
+                          <span
+                            className="settings-dot"
+                            data-tone={first.outcome === "rejected" ? "warn" : "good"}
+                          />
+                          {deliveryText(first)}
+                          {retries > 0 ? (
+                            <span className="quiet settings-size">retried {retries}×</span>
+                          ) : null}
+                        </div>
+                        <div className="settings-row-detail quiet">
+                          <span className="tabular">{since(first.at)}</span> ·{" "}
+                          <span className="mono" title={first.id}>
+                            {shortId(first.id)}
+                          </span>
+                        </div>
+                      </div>
+                      {session ? (
+                        <Link
+                          to="/s/$sessionId"
+                          params={{ sessionId: session }}
+                          className="button pressable"
+                        >
+                          Open session
+                        </Link>
+                      ) : null}
                     </div>
-                    <div className="settings-row-detail mono">{delivery.id}</div>
-                  </div>
-                  {delivery.session ? (
-                    <Link
-                      to="/s/$sessionId"
-                      params={{ sessionId: delivery.session }}
-                      className="button pressable"
-                    >
-                      Open session
-                    </Link>
-                  ) : null}
-                </div>
-              ))}
+                  ))}
+                </details>
+              ) : null}
             </div>
           );
         })
       )}
-      <form
-        className="token-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void run(async () => {
-            const result = await addConnection(
-              kind === "inbound"
-                ? {
-                    kind,
-                    name: name.trim(),
-                    signing: { kind: "preset", preset },
-                    ...(secret.trim() === "" ? {} : { secret: secret.trim() }),
-                  }
-                : kind === "token"
-                  ? {
-                      kind,
-                      name: name.trim(),
-                      host: target.trim(),
-                      header: header.trim(),
-                      secret: secret.trim(),
-                    }
-                  : {
-                      kind,
-                      name: name.trim(),
-                      url: target.trim(),
-                      ...(secret.trim() === "" ? {} : { secret: secret.trim() }),
-                    },
-            );
-            setCreated(
-              result.kind === "inbound" && result.secret !== null
-                ? { name: result.name, url: result.url, secret: result.secret }
-                : undefined,
-            );
-            setSecret("");
-            setTarget("");
-            setCopied("");
-            setName("");
-          }, "Could not add the connection");
-        }}
-      >
-        <select
-          className="field"
-          aria-label="Connection kind"
-          value={kind}
-          onChange={(event) => {
-            const value = event.target.value;
-            if (value === "inbound" || value === "token" || value === "mcp") {
-              setKind(value);
-              setSecret("");
-              setTarget("");
-            }
-          }}
-        >
-          <option value="inbound">Webhook</option>
-          <option value="token">API token</option>
-          <option value="mcp">MCP server</option>
-        </select>
-        {kind === "inbound" ? (
-          <select
-            className="field"
-            aria-label="Signature preset"
-            value={preset}
-            onChange={(event) => {
-              const value = Schema.decodeUnknownOption(SignaturePreset)(event.target.value);
-              if (Option.isSome(value)) {
-                setPreset(value.value);
+      {adding ? (
+        <div className="settings-card">
+          <form
+            className="token-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void run(async () => {
+                const result = await addConnection(
+                  kind === "inbound"
+                    ? {
+                        kind,
+                        name: name.trim(),
+                        signing: { kind: "preset", preset },
+                        ...(secret.trim() === "" ? {} : { secret: secret.trim() }),
+                      }
+                    : kind === "token"
+                      ? {
+                          kind,
+                          name: name.trim(),
+                          host: target.trim(),
+                          header: header.trim(),
+                          secret: secret.trim(),
+                        }
+                      : {
+                          kind,
+                          name: name.trim(),
+                          url: target.trim(),
+                          ...(secret.trim() === "" ? {} : { secret: secret.trim() }),
+                        },
+                );
+                setCreated(
+                  result.kind === "inbound" && result.secret !== null
+                    ? { name: result.name, url: result.url, secret: result.secret }
+                    : undefined,
+                );
                 setSecret("");
-              }
+                setTarget("");
+                setCopied("");
+                setName("");
+                setAdding(false);
+              }, "Could not add the connection");
             }}
           >
-            <option value="standard-webhooks">Standard Webhooks</option>
-            <option value="github">GitHub</option>
-            <option value="linear">Linear</option>
-            <option value="slack">Slack</option>
-          </select>
-        ) : null}
-        <input
-          className="field"
-          placeholder="name, like sentry"
-          aria-label="Connection name"
-          autoComplete="off"
-          value={name}
-          onChange={(event) => setName(event.target.value.toLowerCase())}
-        />
-        {kind === "token" || kind === "mcp" ? (
-          <>
-            <input
+            <select
               className="field"
-              aria-label={kind === "token" ? "HTTPS host" : "MCP URL"}
-              placeholder={kind === "token" ? "api.example.com" : "https://example.com/mcp"}
-              value={target}
-              onChange={(event) => setTarget(event.target.value)}
-              autoComplete="off"
-            />
-            {kind === "token" ? (
-              <input
+              aria-label="Connection kind"
+              value={kind}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (value === "inbound" || value === "token" || value === "mcp") {
+                  setKind(value);
+                  setSecret("");
+                  setTarget("");
+                }
+              }}
+            >
+              <option value="inbound">Webhook</option>
+              <option value="token">API token</option>
+              <option value="mcp">MCP server</option>
+            </select>
+            {kind === "inbound" ? (
+              <select
                 className="field"
-                aria-label="Credential header"
-                placeholder="Authorization: Bearer or X-Api-Key"
-                value={header}
-                onChange={(event) => setHeader(event.target.value)}
-                autoComplete="off"
-              />
+                aria-label="Signature preset"
+                value={preset}
+                onChange={(event) => {
+                  const value = Schema.decodeUnknownOption(SignaturePreset)(event.target.value);
+                  if (Option.isSome(value)) {
+                    setPreset(value.value);
+                    setSecret("");
+                  }
+                }}
+              >
+                <option value="standard-webhooks">Standard Webhooks</option>
+                <option value="github">GitHub</option>
+                <option value="linear">Linear</option>
+                <option value="slack">Slack</option>
+              </select>
             ) : null}
             <input
               className="field"
-              type="password"
-              aria-label="Connection secret"
-              placeholder={
-                kind === "mcp" ? "Token (optional; leave blank for OAuth)" : "Paste token"
-              }
-              value={secret}
-              onChange={(event) => setSecret(event.target.value)}
+              placeholder="name, like sentry"
+              aria-label="Connection name"
               autoComplete="off"
+              value={name}
+              onChange={(event) => setName(event.target.value.toLowerCase())}
             />
-          </>
-        ) : null}
-        {kind === "inbound" ? (
-          <input
-            className="field"
-            type="password"
-            aria-label="Signing secret"
-            placeholder="Signing secret (leave blank to generate)"
-            value={secret}
-            onChange={(event) => setSecret(event.target.value)}
-            autoComplete="off"
-          />
-        ) : null}
-        <button
-          type="submit"
-          className="button pressable"
-          data-tone="primary"
-          disabled={
-            busy ||
-            name.trim() === "" ||
-            ((kind === "token" || kind === "mcp") && target.trim() === "") ||
-            (kind === "token" && secret.trim() === "") ||
-            (kind === "token" && header.trim() === "")
-          }
-        >
-          {busy ? <Spinner size={12} /> : <Icon name="plus" size={13} />}
-          Add connection
-        </button>
-      </form>
+            {kind === "token" || kind === "mcp" ? (
+              <>
+                <input
+                  className="field"
+                  aria-label={kind === "token" ? "HTTPS host" : "MCP URL"}
+                  placeholder={kind === "token" ? "api.example.com" : "https://example.com/mcp"}
+                  value={target}
+                  onChange={(event) => setTarget(event.target.value)}
+                  autoComplete="off"
+                />
+                {kind === "token" ? (
+                  <input
+                    className="field"
+                    aria-label="Credential header"
+                    placeholder="Authorization: Bearer or X-Api-Key"
+                    value={header}
+                    onChange={(event) => setHeader(event.target.value)}
+                    autoComplete="off"
+                  />
+                ) : null}
+                <input
+                  className="field"
+                  type="password"
+                  aria-label="Connection secret"
+                  placeholder={
+                    kind === "mcp" ? "Token (optional; leave blank for OAuth)" : "Paste token"
+                  }
+                  value={secret}
+                  onChange={(event) => setSecret(event.target.value)}
+                  autoComplete="off"
+                />
+              </>
+            ) : null}
+            {kind === "inbound" ? (
+              <input
+                className="field"
+                type="password"
+                aria-label="Signing secret"
+                placeholder="Signing secret (leave blank to generate)"
+                value={secret}
+                onChange={(event) => setSecret(event.target.value)}
+                autoComplete="off"
+              />
+            ) : null}
+            <button
+              type="submit"
+              className="button pressable"
+              data-tone="primary"
+              disabled={
+                busy ||
+                name.trim() === "" ||
+                ((kind === "token" || kind === "mcp") && target.trim() === "") ||
+                (kind === "token" && secret.trim() === "") ||
+                (kind === "token" && header.trim() === "")
+              }
+            >
+              {busy ? <Spinner size={12} /> : <Icon name="plus" size={13} />}
+              Add connection
+            </button>
+            <button
+              type="button"
+              className="button pressable"
+              disabled={busy}
+              onClick={() => setAdding(false)}
+            >
+              Cancel
+            </button>
+          </form>
+        </div>
+      ) : (
+        <div className="settings-actions">
+          <button type="button" className="button pressable" onClick={() => setAdding(true)}>
+            <Icon name="plus" size={13} />
+            Add connection
+          </button>
+        </div>
+      )}
       <Problem text={error} />
-    </div>
+    </>
   );
 }
 
@@ -877,13 +1054,6 @@ function McpControls({
   return (
     <div className="mcp-controls">
       <div className="settings-actions">
-        <span className="settings-row-detail" role="status">
-          {item.signIn === "signed-in"
-            ? "Signed in"
-            : item.signIn === "needs-sign-in"
-              ? "Needs sign-in again"
-              : "Not connected"}
-        </span>
         <button
           type="button"
           className="button pressable"
@@ -922,6 +1092,8 @@ function McpControls({
         <select
           className="field"
           aria-label={`Tool policy for ${item.name}`}
+          // The browser must not restore an earlier choice over the stored policy.
+          autoComplete="off"
           value={mode}
           disabled={busy}
           onChange={(event) => {
@@ -937,6 +1109,7 @@ function McpControls({
           <input
             className="field"
             aria-label={`Allowed tools for ${item.name}`}
+            autoComplete="off"
             placeholder="list_issues, get_issue"
             value={tools}
             disabled={busy}
