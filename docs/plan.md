@@ -661,6 +661,7 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 | R1    | Places                       | none       | todo   |                                                                                                                                                     |
 | R2    | Runners on the owner's boxes | R1         | todo   |                                                                                                                                                     |
 | R3    | Where a session runs         | R2, S4     | todo   |                                                                                                                                                     |
+| G1    | `gh` in sessions             | none       | todo   |                                                                                                                                                     |
 
 ### S1: sessions sleep
 
@@ -749,6 +750,17 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 - **Built:** line 1 is the title alone. Line 2 is one muted line that ellipsizes as a whole: the repository (its name alone on a phone), a chosen branch, and "via <automation>" (linked to it) or "via webhook <connection>"; the run key is the link's tooltip. An idle session that will sleep shows "Sleeps in …" in place of a pill, so there is one status. The panel button and the menu stay.
 - **Local checks:** as U1; checked at 390px and desktop width against the seed.
 
+### G1: `gh` in sessions
+
+- **Why (owner, 2026-10-11):** a session pushed `scotty/cmdk-running-sessions` but couldn't open its PR: the image has no `gh`, and `github.internal` answers 403 to everything but git smart HTTP. The old implementation (`3042018`) had `gh` because its egress proxy intercepted HTTPS to `api.github.com` and swapped a placeholder for the real token; the rebuild dropped both. The owner wants the real `gh`, with the token swapped in by the Worker as `name.internal` does.
+- **Spike first:** does the raw `interceptOutboundHttps("api.github.com", ctx.exports.default({ props }))` send a container's HTTPS request to the Worker, and what does the container need to trust the intercepting certificate (where the CA is, whether `gh` and git honour it)? Result in `design.md`, replacing "No HTTPS interception".
+- **In scope:**
+  - `gh` in `container/Dockerfile`, configured with a placeholder token in its config file (not the environment). The Worker drops incoming auth, adds the owner's GitHub token from the Creds DO and forwards to `https://api.github.com`. Any repository the token reaches, as `new` does.
+  - **Policy (owner, 2026-10-11): everything but direct writes.** Opening, commenting on and merging PRs, issues, checks and `gh api` reads all pass. The proxy refuses, with a 403 that says why, any write that moves a ref outside `refs/heads/scotty/*`: REST contents `PUT`/`DELETE`, `git/refs` create/update/delete, `merges`, branch rename and protection; GraphQL `createRef`, `updateRef`, `updateRefs`, `deleteRef`, `createCommitOnBranch` and `mergeBranch`. So `main` changes only through a PR merge.
+  - The owner's token needs Pull requests read/write as well as Contents and Metadata; `docs/setup.md` and `doctor` say so.
+- **Out of scope:** `uploads.github.com` (release assets), GitHub Apps, limiting `gh` to the session's repository.
+- **Done when:** `e2e github` has a scripted session push `scotty/<id>-base` and `scotty/<id>`, run `gh pr create --base scotty/<id>-base` and `gh pr merge`, and both succeed; `gh api -X PUT repos/<repo>/contents/x` on `main`, a `git/refs` create of a non-`scotty/*` branch and a GraphQL `updateRef` on `main` are refused; the token grep finds no token in the container. The e2e deletes its branches.
+
 ### R1: places
 
 - **Why:** sessions run only on Cloudflare Containers. The owner wants heavy work on their own Linux boxes, and other providers (Daytona and others) later, each one module.
@@ -778,7 +790,6 @@ Each item gets its own step before anyone builds it.
 - Custom providers.
 - The terminal (a PTY in the supervisor relayed Worker → DO → container).
 - `changes`/diff, `settings`, `repos` API for the UI.
-- `gh` inside the container.
 - **Dev-environment cache (step 8b review):** Build it when post-resume setup is > ~3 min on a real repo, or registry throttling makes item 3 flaky: `cache.internal` via `interceptOutboundHttp`, R2 `cache/<owner>/<repo>/<key>.tar` streamed by the Worker, a 15-line `scotty-cache restore|save` script, key chosen by the agent from the lockfile hash.
 - Warm per-repository environments: a setup script run once per repository, its result cached (for example a workspace tar in R2) so sessions start with dependencies installed.
 - User-supplied images, checked against the supervisor contract at `hello`.
