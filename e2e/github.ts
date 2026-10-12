@@ -149,11 +149,11 @@ const program = Effect.gen(function* () {
   console.log("Refused: contents PUT on main, a non-scotty ref and a GraphQL updateRef");
 
   // 5. No GitHub token anywhere the agent can look. Codex refuses to print env or config
-  // verbatim, so the command reports only match counts. /usr is image content, and the Codex
-  // binary there holds its own secret-detection patterns.
+  // verbatim, so the command reports only match counts. /usr and /opt are image content, and the
+  // Codex and gh binaries there hold their own token patterns.
   const scan = yield* run(
     "4",
-    `p='${tokenPattern}'; echo REWRITE=$(git config --global --get-regexp '^url\\..*github\\.internal' | wc -l); echo ENV=$(env | grep -cE "$p"); echo CONFIG=$(git config --list | grep -cE "$p"); echo ARGS=$(cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -cE "$p"); echo FILES=$(grep -rlE "$p" / --exclude-dir=proc --exclude-dir=sys --exclude-dir=usr 2>/dev/null | wc -l)`,
+    `p='${tokenPattern}'; echo REWRITE=$(git config --global --get-regexp '^url\\..*github\\.internal' | wc -l); echo ENV=$(env | grep -cE "$p"); echo CONFIG=$(git config --list | grep -cE "$p"); echo ARGS=$(cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -cE "$p"); echo FILES=$(grep -rlE "$p" / --exclude-dir=proc --exclude-dir=sys --exclude-dir=usr --exclude-dir=opt 2>/dev/null | wc -l)`,
     "reply with its output only",
   );
   yield* check(/REWRITE=1\b/.test(scan), "The reply lacks the github.internal rewrite");
