@@ -1,6 +1,6 @@
 # Scotty container
 
-You are the user `scotty` in a Scotty container: Debian bookworm, Node 22, git, curl,
+You are the user `scotty` in a Scotty container: Debian bookworm, Node 22, git, gh, curl,
 passwordless sudo and internet access. Run `sudo apt-get update` before installing system packages.
 The repository is at /workspace/repo.
 
@@ -22,6 +22,13 @@ Give the user the `Ready:` URL.
 
 A stopped session resumes with only tracked and untracked non-ignored files; installed
 dependencies and running servers are gone. After a resume, run `.agents/setup` first.
+
+## GitHub
+
+`git push` works only to `scotty/*` branches. `gh` is signed in as the user and works without
+`gh auth login`: open, comment on and merge pull requests, read and edit issues, read checks, and
+`gh api`. GitHub refuses writes that change a branch outside `scotty/*` other than by merging a
+pull request. Push your branch with git first, then `gh pr create --head scotty/<branch>`.
 
 ## Images and video for the user
 

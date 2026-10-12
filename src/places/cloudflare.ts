@@ -15,6 +15,11 @@ export const cloudflarePlace = (container: cf.Container, exports: object): Place
         Promise.all([
           container.interceptOutboundHttp("github.internal", fetcher),
           container.interceptOutboundHttp("files.internal", fetcher),
+          // gh: TLS ends at Cloudflare, so the Worker can swap in the token and check the request.
+          container.interceptOutboundHttps(
+            "api.github.com",
+            loopback({ props: { session: egress.session, repo: egress.repo, api: "github" } }),
+          ),
           ...egress.connections.map((connection) =>
             container.interceptOutboundHttp(
               `${connection}.internal`,

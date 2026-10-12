@@ -8,6 +8,7 @@ import { fireRun } from "./automations/fire.js";
 import { reachHandler } from "./creds/reach.js";
 import { ConnectionName } from "./creds/connections.js";
 import { gitHandler } from "./creds/git.js";
+import { gitHubApiHandler } from "./creds/github-api.js";
 import CredsObject from "./creds/object.js";
 import { hookHandler, hookPath } from "./hooks/handler.js";
 import { apiHandler, hatchPort } from "./http/api.js";
@@ -18,6 +19,7 @@ const LoopbackProps = Schema.Struct({
   session: Schema.String,
   repo: Schema.String,
   connection: Schema.optionalKey(ConnectionName),
+  api: Schema.optionalKey(Schema.Literal("github")),
 });
 // Set by the Creds DO's alarm when it hands over an automation run to fire.
 const RunProps = Schema.Struct({ run: Schema.String });
@@ -155,6 +157,8 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
           return yield* reachHandler(request, props.value.connection, credentials).pipe(
             Effect.orDie,
           );
+        if (Option.isSome(props) && props.value.api === "github")
+          return yield* gitHubApiHandler(request, credentials).pipe(Effect.orDie);
         if (Option.isSome(props) && request.headers["host"] === "files.internal")
           return yield* attach(request, props.value.session).pipe(Effect.orDie);
         if (Option.isSome(props))

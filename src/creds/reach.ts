@@ -229,7 +229,7 @@ const dropped =
   "host authorization proxy-authorization cookie x-api-key x-auth-token x-github-token x-forwarded-for connection keep-alive proxy-connection te trailer transfer-encoding upgrade".split(
     " ",
   );
-const clean = (incoming: Headers) => {
+export const clean = (incoming: Headers) => {
   const headers = new Headers(incoming);
   for (const name of (headers.get("connection") ?? "").split(","))
     if (name.trim() !== "") headers.delete(name.trim());

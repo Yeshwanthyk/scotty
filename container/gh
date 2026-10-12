@@ -1,0 +1,17 @@
+#!/bin/sh
+# gh reaches api.github.com through Cloudflare's HTTPS interception, which signs with the CA
+# below; the Worker replaces this placeholder with the owner's token and refuses writes that move
+# a branch outside scotty/*. Git's origin is rewritten to github.internal, which gh doesn't know
+# as a GitHub host, so the repository is read from it.
+export GH_TOKEN=scotty-placeholder
+export SSL_CERT_DIR="/etc/ssl/certs:/etc/cloudflare/certs"
+if [ -z "${GH_REPO:-}" ]; then
+  origin=$(git remote get-url origin 2>/dev/null)
+  case $origin in
+  http://github.internal/api/git/*)
+    repo=${origin#http://github.internal/api/git/}
+    export GH_REPO="${repo%.git}"
+    ;;
+  esac
+fi
+exec /opt/gh/bin/gh "$@"
