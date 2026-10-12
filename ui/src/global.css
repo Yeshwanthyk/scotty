@@ -2055,6 +2055,28 @@ button.diff-line {
   color: var(--ink);
 }
 
+.command-filters {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.command-filter {
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.command-filter[aria-checked="true"] {
+  background: var(--selected);
+  color: var(--ink);
+}
+
 .command-list {
   max-height: min(52vh, 420px);
   padding: 6px;
