@@ -15,6 +15,9 @@ FROM node:22-bookworm-slim
 LABEL scotty.supervisor="1"
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates procps curl sudo unzip xz-utils \
     && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o /tmp/gh.tar.gz https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz \
+    && echo "bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386  /tmp/gh.tar.gz" | sha256sum --check --strict \
+    && mkdir /opt/gh && tar -xzf /tmp/gh.tar.gz -C /opt/gh --strip-components=1 && rm /tmp/gh.tar.gz \
     && npm install --global --ignore-scripts --no-audit --no-fund @openai/codex@0.157.1 \
        @anthropic-ai/claude-agent-sdk-linux-x64@0.3.284 \
     && useradd --create-home --home-dir /home/scotty scotty \
@@ -36,6 +39,8 @@ RUN git init -q --bare -b main /opt/scotty/fixture.git && mkdir /tmp/fixture \
     && chown -R scotty:scotty /opt/scotty/fixture.git
 COPY container/AGENTS.md /etc/scotty/AGENTS.md
 COPY --chmod=755 container/scotty-attach /usr/local/bin/scotty-attach
+# The wrapper; the real gh is /opt/gh/bin/gh.
+COPY --chmod=755 container/gh /usr/local/bin/gh
 # Each agent reads its global instructions from its own path; all point at one file.
 RUN mkdir -m 700 /home/scotty/.codex && ln -s /etc/scotty/AGENTS.md /home/scotty/.codex/AGENTS.md \
     && mkdir -m 700 /home/scotty/.claude && ln -s /etc/scotty/AGENTS.md /home/scotty/.claude/CLAUDE.md \
