@@ -69,7 +69,7 @@ function Meta({ session, status }: { session: Session; status: Status }) {
   );
 }
 
-const filters: ReadonlyArray<{ id: Filter; label: string }> = [
+export const filters: ReadonlyArray<{ id: Filter; label: string }> = [
   { id: "all", label: "All" },
   { id: "mine", label: "Mine" },
   { id: "automations", label: "Automations" },

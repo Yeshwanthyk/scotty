@@ -2,10 +2,10 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { sessions as searchSessions } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { ago, matchesText, statusOf } from "../data/status";
+import { ago, type Filter, matchesFilter, matchesText, statusOf } from "../data/status";
 import { Icon } from "./Icon";
 import { sections } from "./Settings";
-import { StatusMark } from "./Sidebar";
+import { filters, StatusMark } from "./Sidebar";
 
 type Command = {
   id: string;
@@ -21,6 +21,7 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
   const { list, setRepo } = useSessions();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
   const [active, setActive] = useState(0);
   // The server also matches the whole first prompt; its hits join the ones the list shows,
   // but only while they answer the text in the box.
@@ -67,20 +68,24 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
       })),
     ];
     const needle = query.trim().toLowerCase();
-    // Sessions match on title, repository, branch and first prompt; a repository sets the
-    // sidebar's repository filter.
-    const sessions: Command[] = (list ?? [])
-      .filter((session) => matchesText(session, needle) || found?.has(session.identity.id) === true)
-      .map((session) => ({
-        id: session.identity.id,
-        label: session.display.title,
-        detail: `${session.display.repository} · ${ago(session.display.activeAt)}`,
-        section: "Sessions",
-        mark: <StatusMark status={statusOf(session)} />,
-        run: go(() =>
-          navigate({ to: "/s/$sessionId", params: { sessionId: session.identity.id } }),
-        ),
-      }));
+    // Sessions match on title, repository, branch and first prompt, then the status filter;
+    // running ones come first. A repository sets the sidebar's repository filter.
+    const matching = (list ?? []).filter(
+      (session) =>
+        (matchesText(session, needle) || found?.has(session.identity.id) === true) &&
+        matchesFilter(session, filter),
+    );
+    const sessions: Command[] = [
+      ...matching.filter((session) => matchesFilter(session, "running")),
+      ...matching.filter((session) => !matchesFilter(session, "running")),
+    ].map((session) => ({
+      id: session.identity.id,
+      label: session.display.title,
+      detail: `${session.display.repository} · ${ago(session.display.activeAt)}`,
+      section: matchesFilter(session, "running") ? "Running" : "Sessions",
+      mark: <StatusMark status={statusOf(session)} />,
+      run: go(() => navigate({ to: "/s/$sessionId", params: { sessionId: session.identity.id } })),
+    }));
     const repos: Command[] = [...new Set((list ?? []).map((session) => session.display.repository))]
       .filter((repo) => repo !== "" && needle !== "" && repo.toLowerCase().includes(needle))
       .map((repo) => ({
@@ -94,15 +99,22 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
           await navigate({ to: "/sessions" });
         }),
       }));
+    // Running sessions lead; a status filter narrows the menu to sessions.
     return [
-      ...actions.filter(
-        (command) =>
-          needle === "" || `${command.label} ${command.detail}`.toLowerCase().includes(needle),
-      ),
-      ...repos,
-      ...sessions,
+      ...sessions.filter((command) => command.section === "Running"),
+      ...(filter === "all"
+        ? [
+            ...actions.filter(
+              (command) =>
+                needle === "" ||
+                `${command.label} ${command.detail}`.toLowerCase().includes(needle),
+            ),
+            ...repos,
+          ]
+        : []),
+      ...sessions.filter((command) => command.section !== "Running"),
     ];
-  }, [list, query, found, navigate, onClose, setRepo]);
+  }, [list, query, filter, found, navigate, onClose, setRepo]);
   // The first row is active whenever the rows change; live updates to the same rows keep it.
   const rows = commands.map((command) => command.id).join("\n");
   useEffect(() => setActive(0), [rows]);
@@ -138,14 +150,39 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
               } else if (event.key === "Enter") {
                 event.preventDefault();
                 commands[active]?.run();
+              } else if (event.key === "Tab") {
+                // Tab and Shift+Tab step through the status filters.
+                event.preventDefault();
+                const step = event.shiftKey ? filters.length - 1 : 1;
+                const index = filters.findIndex((item) => item.id === filter);
+                const next = filters[(index + step) % filters.length];
+                if (next) setFilter(next.id);
               } else if (event.key === "Escape") onClose();
             }}
           />
           <kbd>esc</kbd>
         </div>
+        <div className="command-filters" role="radiogroup" aria-label="Filter sessions">
+          {filters.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="command-filter pressable"
+              role="radio"
+              aria-checked={filter === item.id}
+              // Keeps focus in the search box.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => setFilter(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
         <div className="command-list" data-scroll ref={listRef} role="listbox">
           {commands.length === 0 ? (
-            <div className="command-empty">Nothing matches “{query}”</div>
+            <div className="command-empty">
+              {text === "" ? "No sessions here" : `Nothing matches “${query}”`}
+            </div>
           ) : null}
           {commands.map((command, index) => {
             const heading = command.section !== section ? command.section : undefined;
