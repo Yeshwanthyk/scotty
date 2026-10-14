@@ -111,12 +111,14 @@ function useMinuteTick() {
 
 const archivedKey = "scotty.archivedOpen";
 const stoppedKey = "scotty.stoppedOpen";
+// Undefined until the owner opens or closes the section once.
 function useSectionOpen(key: string) {
-  const [open, setOpen] = useState(() => {
+  const [open, setOpen] = useState<boolean | undefined>(() => {
     try {
-      return localStorage.getItem(key) === "1";
+      const stored = localStorage.getItem(key);
+      return stored === null ? undefined : stored === "1";
     } catch {
-      return false;
+      return undefined;
     }
   });
   const toggle = (next: boolean) => {
@@ -125,10 +127,51 @@ function useSectionOpen(key: string) {
     try {
       localStorage.setItem(key, next ? "1" : "0");
     } catch {
-      // Private windows can refuse storage; the section then starts closed.
+      // Private windows can refuse storage; the choice then lasts until reload.
     }
   };
   return [open, toggle] as const;
+}
+
+function Fold({
+  label,
+  sessions,
+  open,
+  currentId,
+  onToggle,
+}: {
+  label: string;
+  sessions: ReadonlyArray<Session>;
+  open: boolean;
+  currentId: string | undefined;
+  onToggle: (open: boolean) => void;
+}) {
+  const viewing = sessions.some((session) => session.identity.id === currentId);
+  return (
+    <details
+      className="fold-group"
+      open={open || viewing}
+      onToggle={(event) => {
+        // Opening for the session on screen doesn't change what the owner chose.
+        if (!viewing) onToggle(event.currentTarget.open);
+      }}
+    >
+      <summary className="fold-toggle pressable">
+        <span>{label}</span>
+        <Icon name="chevronRight" size={12} />
+        <span className="fold-count">{sessions.length}</span>
+      </summary>
+      <div className="fold-rows">
+        {sessions.map((session) => (
+          <Row
+            key={session.identity.id}
+            session={session}
+            current={session.identity.id === currentId}
+          />
+        ))}
+      </div>
+    </details>
+  );
 }
 
 export function Sidebar({
@@ -153,11 +196,9 @@ export function Sidebar({
   const stopped = all
     .filter((session) => !archived(session) && dormant(statusOf(session)))
     .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
-  const viewingStopped = stopped.some((session) => session.identity.id === currentId);
   const old = all
     .filter((session) => archived(session))
     .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
-  const viewingArchived = old.some((session) => session.identity.id === currentId);
   return (
     <aside className="sidebar" aria-label="Sessions">
       <div className="sidebar-top">
@@ -278,49 +319,28 @@ export function Sidebar({
         old.length === 0 ? (
           <p className="sidebar-empty">Nothing matches.</p>
         ) : null}
-        {stopped.length > 0 ? (
-          <details
-            className="archived-group"
-            open={showStopped || viewingStopped}
-            onToggle={(event) => {
-              // Opening for the session on screen doesn't change what the owner chose.
-              if (!viewingStopped) toggleStopped(event.currentTarget.open);
-            }}
-          >
-            <summary className="group-label">
-              <Icon name="chevronRight" size={12} />
-              Stopped · {stopped.length}
-            </summary>
-            {stopped.map((session) => (
-              <Row
-                key={session.identity.id}
-                session={session}
-                current={session.identity.id === currentId}
+        {stopped.length > 0 || old.length > 0 ? (
+          <div className="folds">
+            {stopped.length > 0 ? (
+              <Fold
+                label="Stopped"
+                sessions={stopped}
+                // With nothing running, recent stopped work is what the owner returns to.
+                open={showStopped ?? live.length === 0}
+                currentId={currentId}
+                onToggle={toggleStopped}
               />
-            ))}
-          </details>
-        ) : null}
-        {old.length > 0 ? (
-          <details
-            className="archived-group"
-            open={showArchived || viewingArchived}
-            onToggle={(event) => {
-              // Opening for the session on screen doesn't change what the owner chose.
-              if (!viewingArchived) toggleArchived(event.currentTarget.open);
-            }}
-          >
-            <summary className="group-label">
-              <Icon name="chevronRight" size={12} />
-              Archived · {old.length}
-            </summary>
-            {old.map((session) => (
-              <Row
-                key={session.identity.id}
-                session={session}
-                current={session.identity.id === currentId}
+            ) : null}
+            {old.length > 0 ? (
+              <Fold
+                label="Archived"
+                sessions={old}
+                open={showArchived ?? false}
+                currentId={currentId}
+                onToggle={toggleArchived}
               />
-            ))}
-          </details>
+            ) : null}
+          </div>
         ) : null}
       </div>
       <nav className="sidebar-foot desktop-only">

@@ -574,13 +574,6 @@ kbd {
   gap: 1px;
 }
 
-.archived-group {
-  display: grid;
-  gap: 1px;
-  margin-top: 8px;
-}
-
-.archived-group summary,
 .deliveries summary {
   display: flex;
   align-items: center;
@@ -590,23 +583,72 @@ kbd {
   border-radius: var(--radius-md);
 }
 
-.archived-group summary::-webkit-details-marker,
 .deliveries summary::-webkit-details-marker {
   display: none;
 }
 
-.archived-group summary:hover {
-  color: var(--muted);
-}
-
-.archived-group summary .icon,
 .deliveries summary .icon {
   transition: transform 120ms ease;
 }
 
-.archived-group[open] summary .icon,
 .deliveries[open] summary .icon {
   transform: rotate(90deg);
+}
+
+/* Stopped and Archived: quiet headers that stack tight when closed. */
+.folds {
+  display: grid;
+  gap: 2px;
+  margin-top: 12px;
+}
+
+.session-groups > .folds:first-child {
+  margin-top: 8px;
+}
+
+.fold-group[open] + .fold-group {
+  margin-top: 10px;
+}
+
+.fold-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--quiet);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.fold-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.fold-toggle .icon {
+  opacity: 0.7;
+  transition: transform var(--fast) var(--ease-out);
+}
+
+.fold-group[open] .fold-toggle .icon {
+  transform: rotate(90deg);
+}
+
+.fold-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+.fold-rows {
+  display: grid;
+  gap: 1px;
+  padding-top: 2px;
 }
 
 .session-row {
@@ -725,11 +767,13 @@ kbd {
 @media (hover: hover) and (pointer: fine) {
   .session-row:hover:not([aria-current="page"]),
   .nav-item:hover:not([aria-current="page"]),
+  .fold-toggle:hover,
   .session-filter-clear:hover {
     background: var(--hover);
   }
 
   .nav-item:hover,
+  .fold-toggle:hover,
   .session-filter-clear:hover,
   .sidebar-search:hover {
     color: var(--ink);
@@ -2590,7 +2634,8 @@ button.diff-line {
     font-size: 12.5px;
   }
 
-  .group-label {
+  .group-label,
+  .fold-toggle {
     font-size: 12.5px;
     padding-left: 10px;
     padding-right: 10px;
