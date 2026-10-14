@@ -1,6 +1,5 @@
 import { Link, useParams } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import scottyMark from "../assets/brand/scotty-mark-128.png?url";
+import { useEffect, useRef, useState } from "react";
 import type { Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import {
@@ -41,6 +40,58 @@ export function StatusMark({ status, title }: { status: Status; title?: string }
         <span className="ring" />
       )}
     </span>
+  );
+}
+
+// The mark's dot field, drawn live: rings of dots around a bright centre. While a session works
+// the centre breathes slowly; when one finishes, a single ripple runs out through the rings.
+const rings = [
+  { radius: 3.4, count: 6, size: 0.75 },
+  { radius: 6.6, count: 11, size: 0.65 },
+  { radius: 9.8, count: 16, size: 0.55 },
+];
+function BrandMark({ working }: { working: number }) {
+  const [ripple, setRipple] = useState(0);
+  const before = useRef(working);
+  useEffect(() => {
+    if (working < before.current) setRipple((count) => count + 1);
+    before.current = working;
+  }, [working]);
+  return (
+    <svg
+      className="brand-mark"
+      data-working={working > 0}
+      viewBox="0 0 20 20"
+      width="20"
+      height="20"
+      aria-hidden="true"
+    >
+      <rect width="20" height="20" rx="5.5" />
+      <circle className="brand-core" cx="10" cy="10" r="1.25" />
+      {/* A new key restarts the ripple. */}
+      <g key={ripple} data-ripple={ripple > 0}>
+        {rings.map((ring, index) => (
+          <g
+            key={ring.radius}
+            className="brand-ring"
+            style={{ animationDelay: `${index * 140}ms` }}
+          >
+            {Array.from({ length: ring.count }, (_, dot) => {
+              // Each ring is turned a little, so the dots read as a swirl rather than spokes.
+              const angle = (dot / ring.count) * Math.PI * 2 + index * 0.45;
+              return (
+                <circle
+                  key={dot}
+                  cx={10 + Math.cos(angle) * ring.radius}
+                  cy={10 + Math.sin(angle) * ring.radius}
+                  r={ring.size}
+                />
+              );
+            })}
+          </g>
+        ))}
+      </g>
+    </svg>
   );
 }
 
@@ -204,7 +255,14 @@ export function Sidebar({
     <aside className="sidebar" aria-label="Sessions">
       <div className="sidebar-top">
         <Link to="/sessions" className="brand">
-          <img src={scottyMark} alt="" />
+          <BrandMark
+            working={
+              (list ?? []).filter((session) => {
+                const status = statusOf(session);
+                return status === "working" || status === "starting";
+              }).length
+            }
+          />
           Scotty
         </Link>
         <Link
