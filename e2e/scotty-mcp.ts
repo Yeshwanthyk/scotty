@@ -43,7 +43,11 @@ const program = Effect.gen(function* () {
   const bare = yield* attempt("unauthenticated POST", () =>
     fetch(endpoint, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
+      // The Accept an MCP client sends; with JSON alone, Access answers as it does a browser.
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
       body: "{}",
       redirect: "manual",
     }),
