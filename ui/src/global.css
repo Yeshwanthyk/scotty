@@ -482,12 +482,15 @@ kbd {
   overflow: hidden;
 }
 
+/* The same height as the main header, less its border, so the logo, the hide button and the
+   header's title and buttons share one centre line. */
 .sidebar-top {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 48px;
-  padding: 10px 10px 6px 16px;
+  height: 47px;
+  flex: none;
+  padding: 0 10px 0 16px;
 }
 
 .brand {
@@ -557,7 +560,7 @@ kbd {
   align-items: center;
   gap: 6px;
   flex: none;
-  padding: 2px 8px 0;
+  padding: 3px 8px 0;
 }
 
 .sidebar-field {
