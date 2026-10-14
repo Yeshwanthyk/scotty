@@ -375,6 +375,8 @@ export const deployStage = (
             "https://claude.com/api/mcp/auth_callback",
             "https://chatgpt.com/connector_platform_oauth_redirect",
             "https://chatgpt.com/connector/oauth/*",
+            // Executor (executor.sh), the owner's tool hub (owner, 2026-10-13).
+            "https://executor.sh/api/oauth/callback",
           ],
         },
         grant: { accessTokenLifetime: "15m", sessionDuration: "168h" },
