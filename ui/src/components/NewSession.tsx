@@ -1,11 +1,13 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { create, message } from "../data/core";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
+import { create, lifecycle, message, type Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import { claudeStatus } from "../data/settings";
+import { ago, archived, dormant, statusLabel, statusOf, type Status } from "../data/status";
 import { Composer } from "./Composer";
-import { Icon } from "./Icon";
+import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
+import { StatusMark } from "./Sidebar";
 
 const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const lastRepoKey = "scotty.repo";
@@ -33,6 +35,98 @@ const remember = (key: string, value: string) => {
     // Remembering choices is a convenience only.
   }
 };
+
+// A pasted github.com link to a repository, issue or pull request picks the repository and,
+// for an issue or pull request, writes a prompt the owner can edit before sending.
+const githubLink =
+  /^https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/(issues|pull)\/(\d+))?(?:[/?#]\S*)?$/u;
+function fromLink(text: string): { repo: string; prompt: string } | undefined {
+  const url = text.trim();
+  const match = githubLink.exec(url);
+  if (match === null) return undefined;
+  const [, owner, name, kind, number] = match;
+  if (owner === undefined || name === undefined) return undefined;
+  const repo = `${owner}/${name}`;
+  if (kind === "issues")
+    return {
+      repo,
+      prompt: `Fix issue #${number}: ${url}\n\nRead it with gh, make the change and open a pull request.`,
+    };
+  if (kind === "pull")
+    return {
+      repo,
+      prompt: `Review pull request #${number}: ${url}\n\nRead the diff with gh and list what's wrong, most serious first.`,
+    };
+  return { repo, prompt: "" };
+}
+
+// What needs the owner first: a reply they haven't read, a failure, work under way, then the rest.
+const urgency: Record<Status, number> = {
+  unseen: 0,
+  failed: 1,
+  starting: 2,
+  working: 2,
+  idle: 3,
+  asleep: 4,
+  stopped: 4,
+};
+const loud = new Set<Status>(["unseen", "failed", "starting", "working"]);
+
+function PickUp({
+  sessions,
+  onResume,
+  resuming,
+}: {
+  sessions: ReadonlyArray<{ session: Session; status: Status }>;
+  onResume: (session: Session) => void;
+  resuming: string | undefined;
+}) {
+  return (
+    <section className="pickup" aria-labelledby="pickup-label">
+      <h2 id="pickup-label">Pick up where you left off</h2>
+      <ul>
+        {sessions.map(({ session, status }) => {
+          const repo = session.display.repository.split("/").at(-1) ?? "";
+          return (
+            <li key={session.identity.id} className="pickup-row" data-status={status}>
+              <Link
+                to="/s/$sessionId"
+                params={{ sessionId: session.identity.id }}
+                className="pickup-link pressable"
+              >
+                <StatusMark status={status} />
+                <span className="pickup-title">{session.display.title}</span>
+                <span className="pickup-meta">
+                  {loud.has(status) ? (
+                    <span data-status={status}>{statusLabel[status]}</span>
+                  ) : null}
+                  <span>
+                    {repo || "No repository"} · {ago(session.display.activeAt)}
+                  </span>
+                </span>
+              </Link>
+              {dormant(status) ? (
+                <button
+                  type="button"
+                  className="pickup-action pressable"
+                  disabled={resuming !== undefined}
+                  onClick={() => onResume(session)}
+                >
+                  {resuming === session.identity.id ? (
+                    <Spinner size={12} />
+                  ) : (
+                    <Icon name="resume" size={12} />
+                  )}
+                  Resume
+                </button>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
 
 function AgentSwitch({
   value,
@@ -74,6 +168,8 @@ export function NewSession() {
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [filled, setFilled] = useState("");
+  const [resuming, setResuming] = useState<string>();
   const attempt = useRef<{ input: string; key: string }>(undefined);
   const recent = useMemo(
     () =>
@@ -81,6 +177,25 @@ export function NewSession() {
         0,
         3,
       ),
+    [list],
+  );
+  const pickup = useMemo(
+    () =>
+      (list ?? [])
+        .filter((session) => !archived(session))
+        .map((session) => {
+          const status = statusOf(session);
+          // A failure from days ago is history, not something to act on now.
+          const stale =
+            status === "failed" && Date.parse(session.display.activeAt) < Date.now() - 86_400_000;
+          return { session, status, rank: stale ? urgency.stopped : urgency[status] };
+        })
+        .sort(
+          (a, b) =>
+            a.rank - b.rank ||
+            Date.parse(b.session.display.activeAt) - Date.parse(a.session.display.activeAt),
+        )
+        .slice(0, 5),
     [list],
   );
   useEffect(() => {
@@ -102,6 +217,29 @@ export function NewSession() {
     setClaudeHint(false);
     setAgent(next);
     remember(lastAgentKey, next);
+  }
+  function paste(event: ClipboardEvent) {
+    if (prompt.trim() !== "") return;
+    const link = fromLink(event.clipboardData.getData("text"));
+    if (link === undefined) return;
+    event.preventDefault();
+    setRepo(link.repo);
+    setPrompt(link.prompt);
+    setError("");
+    setFilled(link.repo);
+  }
+  async function resume(session: Session) {
+    setResuming(session.identity.id);
+    setError("");
+    try {
+      await lifecycle(session.identity.id, "resume");
+      refresh();
+      await navigate({ to: "/s/$sessionId", params: { sessionId: session.identity.id } });
+    } catch (failure) {
+      setError(message(failure, "Could not resume session"));
+    } finally {
+      setResuming(undefined);
+    }
   }
   async function submit() {
     if (!validRepo) {
@@ -145,14 +283,15 @@ export function NewSession() {
         </div>
       </header>
       <div className="new-session">
-        <div className="new-session-inner">
+        <div className="new-session-field" aria-hidden="true" />
+        <div className="new-session-inner" onPaste={paste}>
           <h1 className="desktop-only">What should we work on?</h1>
           <Composer
             label="Prompt"
             value={prompt}
             onChange={setPrompt}
             onSubmit={() => void submit()}
-            placeholder={`Ask ${agentName[chosen]} to build, fix or explain…`}
+            placeholder={`Ask ${agentName[chosen]} to build, fix or explain… or paste a GitHub link`}
             busy={busy}
             autoFocus
           >
@@ -160,7 +299,10 @@ export function NewSession() {
               <Icon name="repo" size={14} />
               <input
                 value={repo}
-                onChange={(event) => setRepo(event.target.value)}
+                onChange={(event) => {
+                  setRepo(event.target.value);
+                  setFilled("");
+                }}
                 placeholder="owner/repo"
                 aria-label="Repository"
                 aria-invalid={repo !== "" && !validRepo}
@@ -172,6 +314,12 @@ export function NewSession() {
             </label>
             <AgentSwitch value={chosen} claudeReady={claudeReady !== false} onChange={pick} />
           </Composer>
+          {filled !== "" ? (
+            <p className="composer-note">
+              <Icon name="check" size={13} />
+              <span>Repository set to {filled} from the link</span>
+            </p>
+          ) : null}
           {claudeHint ? (
             <p className="composer-note">
               <Icon name="alert" size={13} />
@@ -197,13 +345,23 @@ export function NewSession() {
                   type="button"
                   key={name}
                   className="suggestion pressable"
-                  onClick={() => setRepo(name)}
+                  onClick={() => {
+                    setRepo(name);
+                    setFilled("");
+                  }}
                 >
                   <Icon name="repo" size={13} />
                   {name}
                 </button>
               ))}
             </div>
+          ) : null}
+          {pickup.length > 0 ? (
+            <PickUp
+              sessions={pickup}
+              onResume={(session) => void resume(session)}
+              resuming={resuming}
+            />
           ) : null}
         </div>
       </div>

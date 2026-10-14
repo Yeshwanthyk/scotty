@@ -152,8 +152,9 @@ function Fold({
       className="fold-group"
       open={open || viewing}
       onToggle={(event) => {
-        // Opening for the session on screen doesn't change what the owner chose.
-        if (!viewing) onToggle(event.currentTarget.open);
+        // Only a click is the owner's choice; opening for the session on screen or by default
+        // also fires toggle.
+        if (!viewing && event.currentTarget.open !== open) onToggle(event.currentTarget.open);
       }}
     >
       <summary className="fold-toggle pressable">
