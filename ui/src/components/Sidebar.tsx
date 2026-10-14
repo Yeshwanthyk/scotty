@@ -285,31 +285,34 @@ export function Sidebar({
         </button>
       </div>
       <nav className="sidebar-tools" aria-label="Session controls">
-        <button type="button" className="sidebar-search pressable" onClick={onSearch}>
-          <Icon name="search" size={15} />
-          <span>Search</span>
-          <kbd>⌘K</kbd>
-        </button>
-        <div
-          className="sidebar-filter"
-          data-filtered={filter !== "all" || repo !== ""}
-          title="Filter sessions"
-        >
-          <Menu
-            label="Filter sessions"
-            items={filters.map((item) => ({
-              label: item.label,
-              icon: "check",
-              checked: filter === item.id,
-              onSelect: () => setFilter(item.id),
-            }))}
+        {/* Search and its filter share one field; New session stands apart as the main action. */}
+        <div className="sidebar-field">
+          <button type="button" className="sidebar-search pressable" onClick={onSearch}>
+            <Icon name="search" size={15} />
+            <span>Search</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <div
+            className="sidebar-filter"
+            data-filtered={filter !== "all" || repo !== ""}
+            title="Filter sessions"
           >
-            <Icon name="filter" size={15} />
-          </Menu>
+            <Menu
+              label="Filter sessions"
+              items={filters.map((item) => ({
+                label: item.label,
+                icon: "check",
+                checked: filter === item.id,
+                onSelect: () => setFilter(item.id),
+              }))}
+            >
+              <Icon name="filter" size={15} />
+            </Menu>
+          </div>
         </div>
         <Link
           to="/sessions/create"
-          className="icon-button pressable"
+          className="sidebar-new pressable"
           aria-label="New session"
           title="New session"
           activeProps={{ "aria-current": "page" }}

@@ -529,9 +529,20 @@ kbd {
 .sidebar-tools {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex: none;
   padding: 2px 8px 0;
+}
+
+.sidebar-field {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+  transition: background var(--fast) var(--ease-out);
 }
 
 .sidebar-search {
@@ -540,10 +551,9 @@ kbd {
   gap: 6px;
   flex: 1;
   min-width: 0;
-  height: 30px;
+  height: 100%;
   padding: 0 8px;
-  border-radius: var(--radius-sm);
-  background: var(--hover);
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
   color: var(--muted);
   text-align: left;
 }
@@ -556,23 +566,47 @@ kbd {
   color: var(--muted);
 }
 
-.sidebar-tools .icon-button {
-  width: 30px;
-  height: 30px;
-  flex: none;
-}
-
-.sidebar-tools .icon-button[aria-current="page"] {
-  background: var(--selected);
-  color: var(--ink);
-}
-
 .sidebar-filter {
   flex: none;
+  display: flex;
+  align-items: center;
+}
+
+/* A hairline divides the filter from the search text. */
+.sidebar-filter::before {
+  content: "";
+  width: 1px;
+  height: 14px;
+  background: var(--line-strong);
+}
+
+.sidebar-filter .icon-button {
+  width: 30px;
+  height: 30px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
 .sidebar-filter[data-filtered="true"] .icon-button {
+  color: var(--accent);
+}
+
+.sidebar-new {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
   color: var(--ink);
+  transition:
+    opacity var(--fast) var(--ease-out),
+    box-shadow var(--fast) var(--ease-out);
+}
+
+.sidebar-new[aria-current="page"] {
+  opacity: 0.55;
 }
 
 .nav-item {
@@ -823,8 +857,12 @@ kbd {
     color: var(--ink);
   }
 
-  .sidebar-search:hover {
+  .sidebar-field:has(.sidebar-search:hover) {
     background: var(--selected);
+  }
+
+  .sidebar-new:hover:not([aria-current="page"]) {
+    box-shadow: inset 0 0 0 1px var(--line-hover);
   }
 }
 
