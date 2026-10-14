@@ -11,7 +11,7 @@ import {
   prepareWorkspace,
   saveWorkspace,
   storeSave,
-  storeSkill,
+  storeSkills,
   WorkspaceError,
 } from "./workspace.js";
 
@@ -178,9 +178,9 @@ export class Controller {
       : Effect.fail(new WorkspaceError({ message: "workspace already started" }));
   }
   // A start sent again after a reconnect finds the skills already installed.
-  skill(name: string, zip: Uint8Array): Effect.Effect<void, WorkspaceError> {
+  skills(commit: string, tarball: Uint8Array): Effect.Effect<void, WorkspaceError> {
     return this.startState === undefined
-      ? storeSkill(name, zip).pipe(Effect.provide(BunServices.layer))
+      ? storeSkills(commit, tarball).pipe(Effect.provide(BunServices.layer))
       : Effect.void;
   }
   receive(message: ToSupervisorMessage): Effect.Effect<void> {

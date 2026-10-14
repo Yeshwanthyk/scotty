@@ -7,7 +7,7 @@ function main(): void {
     serve((message) => controller.receive(message), {
       save: (gen) => controller.save(gen),
       load: (tar) => controller.load(tar),
-      skill: (name, zip) => controller.skill(name, zip),
+      skills: (commit, tarball) => controller.skills(commit, tarball),
     }),
   );
 }

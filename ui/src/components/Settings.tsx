@@ -13,21 +13,24 @@ import {
   deliveries as loadDeliveries,
   removeConnection,
   pollChatGpt,
-  removeSkill,
+  removeSource,
+  addSource,
+  refreshSource,
   saveInstructions,
   setClaude,
   setGitHub,
   settings,
   startChatGpt,
   switchSkill,
-  uploadSkill,
   type Accounts as AccountState,
   type Connection,
   type Delivery,
   type DeliveryReason,
   type Device,
   type Settings as SettingsState,
+  type SourceSaved,
 } from "../data/settings";
+import { parseSource } from "../../../src/settings/skills";
 import { automations as loadAutomations, type Automation } from "../data/automations";
 import { blueprints, installBlueprint } from "../data/blueprints";
 import { Icon, Spinner, type IconName } from "./Icon";
@@ -133,7 +136,7 @@ export function SettingsPage({ section }: { section?: Section }) {
           ) : shown === "instructions" ? (
             <Instructions saved={data.settings.instructions} reload={load} />
           ) : shown === "skills" ? (
-            <Skills skills={data.settings.skills} reload={load} />
+            <Skills sources={data.settings.sources} reload={load} />
           ) : shown === "connections" ? (
             <Connections />
           ) : shown === "blueprints" ? (
@@ -437,96 +440,226 @@ function Instructions({ saved, reload }: { saved: string; reload: () => void }) 
   );
 }
 
-function Skills({ skills, reload }: { skills: SettingsState["skills"]; reload: () => void }) {
+// Rows a refresh changed glow once and new ones slide in; `round` replays it on the next refresh.
+type Changed = { source: string; added: string[]; updated: string[]; round: number };
+
+function Skills({
+  sources,
+  reload,
+}: {
+  sources: SettingsState["sources"];
+  reload: () => Promise<void>;
+}) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const input = useRef<HTMLInputElement>(null);
+  const [note, setNote] = useState("");
+  const [spec, setSpec] = useState("");
+  const [open, setOpen] = useState<ReadonlySet<string>>(
+    () => new Set(sources.length === 1 ? sources.map((source) => source.id) : []),
+  );
+  const [changed, setChanged] = useState<Changed>();
+  const [expanded, setExpanded] = useState("");
+  const field = useRef<HTMLInputElement>(null);
   async function run(key: string, action: () => Promise<void>, fallback: string) {
     setBusy(key);
     setError("");
+    setNote("");
     try {
       await action();
-      reload();
+      await reload();
     } catch (failure) {
       setError(message(failure, fallback));
     } finally {
       setBusy("");
     }
   }
+  function saved(result: SourceSaved) {
+    setOpen((current) => new Set([...current, result.source]));
+    setChanged((current) => ({
+      source: result.source,
+      added: [...result.added],
+      updated: [...result.updated],
+      round: (current?.round ?? 0) + 1,
+    }));
+    const quiet =
+      result.added.length + result.updated.length + result.removed.length === 0 ? "Up to date" : "";
+    setNote(
+      [quiet, ...result.skipped.map((reason) => `Skipped ${reason}`)].filter(Boolean).join(" · "),
+    );
+  }
+  // A pasted GitHub link flashes the field, as on the new-session page.
+  function pasted(text: string) {
+    if (parseSource(text) === undefined) return;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent");
+    field.current?.animate(
+      [
+        {
+          boxShadow: `0 0 0 1.5px ${accent}`,
+          background: `color-mix(in srgb, ${accent} 22%, transparent)`,
+        },
+        {},
+      ],
+      { duration: 1100, easing: "ease-out" },
+    );
+  }
   return (
-    <div className="settings-card">
-      <p className="settings-intro">
-        A skill is a zip with SKILL.md at its root or in one folder. Uploading one with the same
-        name replaces it. From a terminal: <code>scotty push skill ./folder</code>
-      </p>
-      {skills.length === 0 ? (
-        <div className="settings-empty">No skills yet.</div>
-      ) : (
-        skills.map((skill) => (
-          <div key={skill.name} className="settings-row" data-off={!skill.enabled || undefined}>
-            <div className="settings-row-text">
-              <div className="settings-row-title">
-                <span className="mono">{skill.name}</span>
-                <span className="quiet tabular settings-size">
-                  {Math.max(1, Math.round(skill.size / 1024))} KB
-                </span>
-              </div>
-              <div className="settings-row-detail">{skill.description}</div>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              className="switch"
-              aria-checked={skill.enabled}
-              aria-label={`${skill.name} on`}
-              disabled={busy !== ""}
-              onClick={() =>
-                void run(
-                  skill.name,
-                  () => switchSkill(skill.name, !skill.enabled),
-                  "Could not switch it",
-                )
-              }
-            >
-              <span />
-            </button>
-            <button
-              type="button"
-              className="icon-button pressable"
-              aria-label={`Delete ${skill.name}`}
-              disabled={busy !== ""}
-              onClick={() => {
-                if (window.confirm(`Delete the ${skill.name} skill?`))
-                  void run(skill.name, () => removeSkill(skill.name), "Could not delete it");
-              }}
-            >
-              <Icon name="trash" size={14} />
-            </button>
-          </div>
-        ))
-      )}
-      <div className="settings-actions">
+    <div className="settings-card skills">
+      <form
+        className="token-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const text = spec.trim();
+          if (text === "") return;
+          void run(
+            "add",
+            async () => {
+              saved(await addSource(text));
+              setSpec("");
+            },
+            "Could not add the skills",
+          );
+        }}
+      >
         <input
-          ref={input}
-          type="file"
-          accept=".zip,application/zip"
-          hidden
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = "";
-            if (file) void run("upload", () => uploadSkill(file), "Could not upload the skill");
-          }}
+          ref={field}
+          className="field"
+          value={spec}
+          onChange={(event) => setSpec(event.target.value)}
+          onPaste={(event) => pasted(event.clipboardData.getData("text"))}
+          placeholder="owner/repo/skills or a GitHub link"
+          aria-label="GitHub repository with skills"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
         />
         <button
-          type="button"
+          type="submit"
           className="button pressable"
-          disabled={busy !== ""}
-          onClick={() => input.current?.click()}
+          data-tone="primary"
+          disabled={busy !== "" || spec.trim() === ""}
         >
-          {busy === "upload" ? <Spinner size={12} /> : <Icon name="plus" size={13} />}
-          Upload zip
+          {busy === "add" ? <Spinner size={12} /> : null}
+          Add
         </button>
-      </div>
+      </form>
+      {sources.map((source) => {
+        const on = source.skills.filter((skill) => skill.enabled).length;
+        const fresh = changed?.source === source.id ? changed : undefined;
+        return (
+          <details
+            key={source.id}
+            className="fold-group skill-source"
+            open={open.has(source.id)}
+            onToggle={(event) => {
+              const isOpen = event.currentTarget.open;
+              if (isOpen === open.has(source.id)) return;
+              setOpen((current) => {
+                const next = new Set(current);
+                if (isOpen) next.add(source.id);
+                else next.delete(source.id);
+                return next;
+              });
+            }}
+          >
+            <summary className="fold-toggle pressable">
+              <span className="skill-source-name">
+                {source.id}
+                {source.ref === null ? null : <span className="quiet">@{source.ref}</span>}
+              </span>
+              <Icon name="chevronRight" size={12} />
+              <span className="fold-count">
+                {on} of {source.skills.length}
+              </span>
+            </summary>
+            <div className="fold-rows">
+              {source.skills.map((skill) => (
+                <div
+                  key={`${skill.name}-${fresh?.round ?? 0}`}
+                  className="settings-row skill-row"
+                  data-off={!skill.enabled || undefined}
+                  data-fresh={fresh?.added.includes(skill.name) || undefined}
+                  data-flash={fresh?.updated.includes(skill.name) || undefined}
+                >
+                  <button
+                    type="button"
+                    className="settings-row-text skill-text"
+                    aria-expanded={expanded === skill.name}
+                    onClick={() =>
+                      setExpanded((current) => (current === skill.name ? "" : skill.name))
+                    }
+                  >
+                    <span className="settings-row-title">
+                      <span className="mono">{skill.name}</span>
+                      {skill.manual ? <span className="quiet skill-manual">manual</span> : null}
+                    </span>
+                    <span className="settings-row-detail skill-description">
+                      {skill.description}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="switch"
+                    className="switch"
+                    aria-checked={skill.enabled}
+                    aria-label={skill.name}
+                    disabled={busy !== ""}
+                    onClick={() =>
+                      void run(
+                        skill.name,
+                        () => switchSkill(skill.name, !skill.enabled),
+                        "Could not switch it",
+                      )
+                    }
+                  >
+                    <span />
+                  </button>
+                </div>
+              ))}
+              <div className="settings-row skill-source-foot">
+                <span className="quiet tabular">
+                  {source.commit.slice(0, 7)} · fetched{" "}
+                  {ago(new Date(source.fetched).toISOString())}
+                </span>
+                <button
+                  type="button"
+                  className="icon-button pressable"
+                  aria-label={`Refresh ${source.id}`}
+                  disabled={busy !== ""}
+                  onClick={() =>
+                    void run(
+                      `refresh:${source.id}`,
+                      async () => saved(await refreshSource(source.id)),
+                      "Could not refresh it",
+                    )
+                  }
+                >
+                  {busy === `refresh:${source.id}` ? (
+                    <Spinner size={12} />
+                  ) : (
+                    <Icon name="refresh" size={14} />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="icon-button pressable"
+                  aria-label={`Remove ${source.id}`}
+                  disabled={busy !== ""}
+                  onClick={() => {
+                    if (
+                      window.confirm(`Remove ${source.id} and its ${source.skills.length} skills?`)
+                    )
+                      void run(source.id, () => removeSource(source.id), "Could not remove it");
+                  }}
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
+            </div>
+          </details>
+        );
+      })}
+      {note === "" ? null : <p className="settings-intro">{note}</p>}
       <Problem text={error} />
     </div>
   );

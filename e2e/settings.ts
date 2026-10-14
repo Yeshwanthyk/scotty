@@ -1,9 +1,4 @@
-import { BunServices } from "@effect/platform-bun";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Effect, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Effect } from "effect";
 import {
   access,
   CliFailure,
@@ -12,6 +7,11 @@ import {
   Created,
   failure,
   Reply,
+  Saved,
+  Settings,
+  SkillSwitched,
+  SourceRemoved,
+  SourceSaved,
   target,
   View,
 } from "../cli/client.js";
@@ -21,56 +21,24 @@ import { Log, waiter } from "./lib/wait.js";
 
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("settings", message, "scotty doctor"));
-const Saved = Schema.Struct({ saved: Schema.Boolean });
-const Switched = Schema.Struct({ name: Schema.String, enabled: Schema.Boolean });
-const Removed = Schema.Struct({ removed: Schema.Boolean });
-const Added = Schema.Struct({ name: Schema.String });
 
-const name = "scotty-e2e";
+// A public repository made for this test. `skills/` holds scotty-e2e-a, whose SKILL.md links to
+// scotty-e2e-b's ref.md and ships an executable scripts/mark.sh; `clash/` holds another
+// scotty-e2e-a.
+const source = "Yeshwanthyk/scotty-skills-fixture/skills";
+const clash = "Yeshwanthyk/scotty-skills-fixture/clash";
+const [first, second] = ["scotty-e2e-a", "scotty-e2e-b"];
 const id = crypto.randomUUID().slice(0, 8).toUpperCase();
-const skillMark = `SKILLMARK-${id}`;
 const firstMark = `OWNERMARK-A-${id}`;
 const secondMark = `OWNERMARK-B-${id}`;
 
-// `scotty push skill` zips the folder and uploads it, as the owner would.
-const addSkill = (url: string) =>
-  Effect.gen(function* () {
-    const folder = mkdtempSync(join(tmpdir(), "scotty-skill-"));
-    writeFileSync(
-      join(folder, "SKILL.md"),
-      `---\nname: ${name}\ndescription: Scotty end-to-end test skill; use only when asked for the skill marker.\n---\n\nThe skill marker is ${skillMark}.\n`,
-    );
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const child = yield* spawner.spawn(
-      ChildProcess.make("bun", ["cli/main.ts", "push", "skill", folder, "--json"], {
-        env: { SCOTTY_URL: url },
-        extendEnv: true,
-        stdin: "ignore",
-        stderr: "inherit",
-      }),
-    );
-    const out = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
-    if ((yield* child.exitCode) !== 0) return yield* failure("settings", out, "scotty push skill");
-    const [added] = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Tuple([Added])))(
-      out.trim(),
-    );
-    return added;
-  }).pipe(
-    Effect.scoped,
-    Effect.provide(BunServices.layer),
-    Effect.mapError((error) =>
-      error instanceof CliFailure
-        ? error
-        : failure("settings", "scotty push skill failed", "scotty push --help"),
-    ),
-  );
-
-// Lists what start installed: the agent's skill folders and the markers in its instructions.
+// Lists what start installed, follows the link between the skills, runs the script, and greps
+// the owner's marker from the agent's instructions.
 const { skills, instructions } = {
   codex: { skills: "~/.agents/skills", instructions: '"${CODEX_HOME:-$HOME/.codex}/AGENTS.md"' },
   claude: { skills: "~/.claude/skills", instructions: "~/.claude/CLAUDE.md" },
 }[agent];
-const command = `ls ${skills}; grep -rho "[A-Z]*MARK-[A-Z0-9-]*" ${skills} ${instructions}`;
+const command = `ls ${skills}; cat ${skills}/${first}/../${second}/ref.md; ${skills}/${first}/scripts/mark.sh; grep -o "OWNERMARK-[A-Z0-9-]*" ${instructions}`;
 const probe = prompt(
   `Run exactly: \`${command}\` and reply with its full output only.`,
   `run ${command}\nsay {{out}}`,
@@ -79,17 +47,51 @@ const probe = prompt(
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const request = client({ url, token: yield* access(url) });
+  const remove = (id: string) =>
+    request("/api/skill-sources/remove", SourceRemoved, { method: "POST", body: { source: id } });
+  const toggle = (name: string, enabled: boolean) =>
+    request(`/api/skills/${name}`, SkillSwitched, { method: "PATCH", body: { enabled } });
 
-  // 1. A skill added with the CLI and owner instructions.
-  const added = yield* addSkill(url);
-  yield* check(added.name === name, `push skill returned ${added.name}`);
+  // 1. The source, fresh: both skills arrive off; a refresh finds nothing new; a second source
+  // with a skill of the same name is refused.
+  yield* remove(source).pipe(Effect.ignore);
+  const added = yield* request("/api/skill-sources", SourceSaved, {
+    method: "POST",
+    body: { source },
+  });
+  yield* check(
+    added.added.includes(first) && added.added.includes(second),
+    `Add found ${added.added.join(", ")}`,
+  );
+  const listed = (yield* request("/api/settings", Settings)).sources.find((s) => s.id === source);
+  yield* check(
+    listed !== undefined && listed.skills.every((skill) => !skill.enabled),
+    "New skills are not all off",
+  );
+  const refreshed = yield* request("/api/skill-sources/refresh", SourceSaved, {
+    method: "POST",
+    body: { source },
+  });
+  yield* check(
+    refreshed.added.length + refreshed.updated.length + refreshed.removed.length === 0,
+    "Refresh at the same commit reported changes",
+  );
+  const clashed = yield* request("/api/skill-sources", SourceSaved, {
+    method: "POST",
+    body: { source: clash },
+  }).pipe(Effect.flip);
+  yield* check(
+    clashed.message.includes(`${first} (${source})`),
+    `Clash not refused: ${clashed.message}`,
+  );
+  console.log(`Source ${source} at ${added.commit.slice(0, 7)}: two skills off; clash refused`);
+
+  // 2. One skill on and owner instructions; a new session's agent gets the whole folder.
+  yield* toggle(first, true);
   yield* request("/api/settings/instructions", Saved, {
     method: "PUT",
     body: { text: `The owner marker is ${firstMark}.` },
   });
-  console.log(`Skill ${name} added; instructions set`);
-
-  // 2. A new session's agent sees both.
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
     key: crypto.randomUUID(),
@@ -111,16 +113,15 @@ const program = Effect.gen(function* () {
       const conversation = yield* request(`${prefix}/conversation`, Conversation);
       return conversation.turns.at(-1)?.assistant ?? "";
     });
-  const first = yield* reply("0");
-  yield* check(first.includes(name) && first.includes(skillMark), "Skill not installed");
-  yield* check(
-    first.includes(firstMark),
-    "Owner instructions not in the agent's instructions file",
-  );
-  console.log("Start: skill and owner marker present");
+  const start = yield* reply("0");
+  yield* check(start.includes(first) && start.includes(second), "Source folder not installed");
+  yield* check(start.includes("LINKMARK-B"), "A skill's link to another skill doesn't resolve");
+  yield* check(start.includes("SCRIPTMARK-A"), "A skill's script didn't run");
+  yield* check(start.includes(firstMark), "Owner instructions not in the agent's instructions");
+  console.log("Start: both skills installed, link resolves, script runs, owner marker present");
 
-  // 3. Skill off and new instructions; a stop and resume picks up both.
-  yield* request(`/api/skills/${name}`, Switched, { method: "PATCH", body: { enabled: false } });
+  // 3. The skill off and new instructions; a stop and resume picks up both.
+  yield* toggle(first, false);
   yield* request("/api/settings/instructions", Saved, {
     method: "PUT",
     body: { text: `The owner marker is ${secondMark}.` },
@@ -133,17 +134,17 @@ const program = Effect.gen(function* () {
     key: req,
     body: { req, turn: "1", text: probe },
   });
-  const second = yield* reply("1");
-  yield* check(!second.includes(skillMark), "Switched-off skill still installed after resume");
+  const resumed = yield* reply("1");
+  yield* check(!resumed.includes("SCRIPTMARK-A"), "A source with no skill on is still installed");
   yield* check(
-    second.includes(secondMark) && !second.includes(firstMark),
+    resumed.includes(secondMark) && !resumed.includes(firstMark),
     "Resume kept the old instructions",
   );
-  console.log("Resume: skill gone, new owner marker present");
+  console.log("Resume: no skills, new owner marker present");
 
   // 4. Clean up so other tests start without settings.
   yield* request(`${prefix}/stop`, View, { method: "POST" });
-  yield* request(`/api/skills/${name}`, Removed, { method: "DELETE" });
+  yield* remove(source);
   yield* request("/api/settings/instructions", Saved, { method: "PUT", body: { text: "" } });
   console.log("Cleaned up");
 });

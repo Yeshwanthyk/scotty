@@ -1,7 +1,7 @@
 import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { titleFrom } from "../../src/session/title.js";
-import { Conversation, Created, List, Log, Settings, View } from "../client.js";
+import { Conversation, Created, List, Log, View } from "../client.js";
 import {
   ago,
   bold,
@@ -74,36 +74,11 @@ export const create = Command.make(
 export const ls = Command.make(
   "ls",
   {
-    what: Argument.Literals("what", ["skills"]).pipe(Argument.optional),
     search: Flag.String("search").pipe(Flag.optional),
   },
-  ({ what, search }) =>
+  ({ search }) =>
     Effect.gen(function* () {
       const api = yield* withClient;
-      if (Option.isSome(what)) {
-        const settings = yield* api("/api/settings", Settings);
-        const lines = settings.instructions.trim().split("\n").length;
-        return yield* output(
-          settings,
-          [
-            settings.skills.length === 0
-              ? `No skills yet. Add one: scotty push skill ./my-skill`
-              : table([
-                  ["NAME", "ON", "DESCRIPTION"],
-                  ...settings.skills.map((skill) => [
-                    skill.name,
-                    skill.enabled ? "yes" : "no",
-                    skill.description,
-                  ]),
-                ]),
-            dim(
-              settings.instructions.trim() === ""
-                ? "No instructions. Set them: scotty push instructions ./AGENTS.md"
-                : `Instructions: ${lines} line${lines === 1 ? "" : "s"}`,
-            ),
-          ].join("\n"),
-        );
-      }
       const query = Option.isSome(search) ? `?q=${encodeURIComponent(search.value.trim())}` : "";
       const { sessions } = yield* api(`/api/sessions${query}`, List);
       const sorted = [...sessions].sort((a, b) =>

@@ -11,6 +11,7 @@ import { doctor, login } from "./commands/setup.js";
 import { create, ls, log, open, read } from "./commands/sessions.js";
 import { hatch, interrupt, resume, rm, steer, stop } from "./commands/actions.js";
 import { push } from "./commands/push.js";
+import { skills } from "./commands/skills.js";
 import { connect, connections, deliveries, mcp } from "./commands/connections.js";
 import { automation, runs } from "./commands/automations.js";
 import { blueprint } from "./commands/blueprints.js";
@@ -39,10 +40,13 @@ ${bold("Sessions")}
   log <id>                        Print raw events
 
 ${bold("What sessions get")}
-  push skill <path…>              Upload skills (a folder with SKILL.md, or a zip)
+  skills add <owner/repo[/folder]>[@ref]
+                                  Add a GitHub repository's skills, all off
+  skills ls                       List skills, by source, and the instructions
+  skills on|off <name…>           Turn skills on or off
+  skills refresh [source]         Fetch sources again and show what changed
+  skills rm <source>              Remove a source and its skills
   push instructions <file|->      Set the instructions every session gets
-  ls skills                       List skills and the instructions
-  rm skill <name>                 Delete a skill
 
 ${bold("Hooks")}
   connect <preset|kind> <name>    Add an inbound, token or MCP connection
@@ -98,8 +102,8 @@ Start a session with Codex (the default) or Claude. --key makes retries idempote
 --session-key names the session: the same key with the same repository and agent sends the
 prompt to that session (resuming it if stopped); with another repository or agent it is refused.
 Example: scotty new octocat/Hello-World "Describe the code"`,
-  ls: `Usage: scotty ls [skills] [--search <text>]
-List sessions, newest activity first; \`ls skills\` lists skills and the instructions.
+  ls: `Usage: scotty ls [--search <text>]
+List sessions, newest activity first.
 --search keeps sessions whose title, repository, branch, first prompt or key contains the text (up to 200 characters, any case).`,
   read: `Usage: scotty read <id> [--last N] [--role user|assistant]
 Print the session state and its last N messages (default 1, at most 500), filtered by role first.
@@ -113,8 +117,8 @@ Interrupt the current turn.`,
 Stop a session's container; its work is saved and \`scotty resume\` or a steer picks it up.`,
   resume: `Usage: scotty resume <id>
 Resume a stopped session from its last save.`,
-  rm: `Usage: scotty rm <id…> | scotty rm skill <name> | scotty rm connection <name>
-Delete stopped sessions with their saves and files, or delete a skill or a connection.`,
+  rm: `Usage: scotty rm <id…> | scotty rm connection <name>
+Delete stopped sessions with their saves and files, or delete a connection.`,
   open: `Usage: scotty open [id]
 Open Scotty, or one session, in the default browser.`,
   hatch: `Usage: scotty hatch <id> <port>
@@ -172,11 +176,21 @@ to paste where; then turn the automations on with scotty automation enable <name
 Scotty's repository ships blueprints/pr-reviewer.json and blueprints/linear.json.
 Example: scotty blueprint install pr-reviewer.json --repo octocat/Hello-World < /secure/secrets.json
 Example: scotty blueprint install linear.json --target scotty:web=octocat/web --target scotty:api=octocat/api < /secure/secrets.json`,
-  push: `Usage: scotty push skill <folder|zip…> | scotty push instructions <file|->
-skill          Upload skills; one with the same name is replaced and keeps its on/off setting.
-instructions   Set the text every session gets; - reads stdin, an empty file clears it.
+  push: `Usage: scotty push instructions <file|->
+Set the text every session gets; - reads stdin, an empty file clears it.
 New sessions and resumes get the change.
 Example: scotty push instructions ./AGENTS.md`,
+  skills: `Usage: scotty skills add|ls|on|off|refresh|rm
+A source is a folder of skills in a GitHub repository, each skill a folder holding SKILL.md. The
+whole folder is installed, so skills can use each other's files; a skill that is off is installed
+but hidden from the agent. Scotty fetches with your GitHub token and keeps the tarball at one commit.
+add <source>       owner/repo, owner/repo/folder, either with @ref, or a github.com link. New skills
+                   arrive off. A skill name another source has is refused.
+refresh [source]   Fetch the ref again; new skills arrive off, updated ones keep their switch.
+                   No source refreshes them all.
+on|off <name…>     New sessions and resumes get the change.
+rm <source>        Remove the source and its skills.
+Example: scotty skills add Yeshwanthyk/agent-skills/skills && scotty skills on diagnose plan`,
 };
 
 const root = Command.make("scotty").pipe(
@@ -199,6 +213,7 @@ const root = Command.make("scotty").pipe(
     hatch,
     log,
     push,
+    skills,
     connect,
     connections,
     mcp,

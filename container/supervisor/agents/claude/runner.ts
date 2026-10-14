@@ -171,6 +171,12 @@ export class ClaudeRunner implements Runner {
           ...(scripted ? {} : { effort: this.agent.effort }),
           systemPrompt: { type: "preset", preset: "claude_code" },
           settingSources: ["user", "project"],
+          // Owner-switched-off skills are installed (other skills link into them) but hidden.
+          settings: {
+            skillOverrides: Object.fromEntries(
+              (this.agent.skillsOff ?? []).map((name) => [name, "off" as const]),
+            ),
+          },
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
           disallowedTools: ["AskUserQuestion", "ExitPlanMode"],

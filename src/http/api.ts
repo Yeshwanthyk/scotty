@@ -1,4 +1,4 @@
-import { Effect, Exit, Result, Schema } from "effect";
+import { Effect, Exit, Result, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
@@ -19,14 +19,20 @@ import { automationName, Definition, NewAutomation } from "../automations/automa
 import { fireRun, runRequest } from "../automations/fire.js";
 import { version } from "../version.js";
 import {
+  fetchTarball,
   instructionsKey,
   maxInstructionBytes,
-  maxSkillBytes,
-  readSkill,
-  sha256,
-  skillKey,
+  parseSource,
+  partsStream,
+  resolveCommit,
+  scanTarball,
   skillName,
-} from "../settings/skill.js";
+  SourceFailure,
+  SourceId,
+  sourceId,
+  sourceKey,
+  type SourceSpec,
+} from "../settings/skills.js";
 
 const Create = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
@@ -93,6 +99,9 @@ const Instructions = Schema.Struct({
   ),
 });
 const SkillSwitch = Schema.Struct({ enabled: Schema.Boolean });
+const NewSource = Schema.Struct({ source: Schema.String });
+const KnownSource = Schema.Struct({ source: SourceId });
+const sourceHint = "owner/repo[/folder][@ref] or a github.com link";
 const skillPath = /^\/api\/skills\/([^/]+)$/;
 const AutomationSwitch = Schema.Struct({ enabled: Schema.Boolean });
 const automationPath = /^\/api\/automations\/([^/]+)(\/run)?$/;
@@ -188,7 +197,7 @@ export function apiHandler(
       const saved = yield* bucket.get(instructionsKey);
       return yield* HttpServerResponse.json({
         instructions: saved === null ? "" : yield* saved.text(),
-        skills: yield* credential.skills(),
+        sources: yield* credential.skillSources(),
         email: request.headers["cf-access-authenticated-user-email"] ?? null,
       });
     }
@@ -201,18 +210,91 @@ export function apiHandler(
       else yield* bucket.put(instructionsKey, body.text);
       return yield* HttpServerResponse.json({ saved: true });
     }
-    if (url.pathname === "/api/skills" && request.method === "PUT") {
-      if (Number(request.headers["content-length"] ?? maxSkillBytes + 1) > maxSkillBytes)
-        return yield* bad("A skill zip must be at most 5 MiB", 413);
-      const zip = new Uint8Array(yield* request.arrayBuffer);
-      if (zip.byteLength > maxSkillBytes)
-        return yield* bad("A skill zip must be at most 5 MiB", 413);
-      const skill = yield* Effect.promise(() => readSkill(zip));
-      if (typeof skill === "string") return yield* bad(skill);
-      const digest = yield* Effect.promise(() => sha256(zip));
-      yield* bucket.put(skillKey(skill.name), zip);
-      yield* credential.putSkill({ ...skill, sha256: digest, size: zip.byteLength });
-      return yield* HttpServerResponse.json({ ...skill, sha256: digest, size: zip.byteLength });
+    // Fetches the source at its ref, keeps the tarball and records what changed.
+    const saveSource = (spec: SourceSpec) =>
+      Effect.gen(function* () {
+        const token = yield* credential.gitHubToken();
+        if (token === null)
+          return yield* bad("Skills come from GitHub; add a token first", 400, githubHint);
+        const id = sourceId(spec);
+        const sources = yield* credential.skillSources();
+        const commit = yield* resolveCommit(spec, token);
+        const known = sources.find((source) => source.id === id);
+        if (known !== undefined && known.commit === commit && known.ref === spec.ref)
+          return yield* HttpServerResponse.json({
+            source: id,
+            commit,
+            added: [],
+            updated: [],
+            removed: [],
+            skipped: [],
+          });
+        const tarball = yield* fetchTarball(spec.repo, commit, token);
+        const scan = yield* scanTarball(partsStream(tarball.parts), spec.path);
+        if (scan.skills.length === 0)
+          return yield* bad(
+            `No skills in ${id}: each is a folder holding SKILL.md${scan.skipped.length > 0 ? `; ${scan.skipped.join("; ")}` : ""}`,
+            400,
+            sourceHint,
+          );
+        const key = sourceKey(spec.repo, commit);
+        yield* bucket.put(key, Stream.fromIterable(tarball.parts), {
+          contentLength: tarball.size,
+        });
+        const result = yield* credential.putSource(
+          { id, repo: spec.repo, path: spec.path, ref: spec.ref, commit, size: tarball.size },
+          scan.skills,
+        );
+        if (result.status === "clash") {
+          if (!sources.some((source) => source.repo === spec.repo && source.commit === commit))
+            yield* bucket.delete(key);
+          return yield* bad(
+            `Skill names already taken: ${result.clashes.map((clash) => `${clash.name} (${clash.source})`).join(", ")}`,
+            409,
+          );
+        }
+        if (result.stale !== null) yield* bucket.delete(sourceKey(spec.repo, result.stale));
+        return yield* HttpServerResponse.json({
+          source: id,
+          commit,
+          added: result.added,
+          updated: result.updated,
+          removed: result.removed,
+          skipped: scan.skipped,
+        });
+      }).pipe(
+        Effect.catchTag("SourceFailure", (error: SourceFailure) =>
+          bad(error.message, error.status ?? 502, error.status === 404 ? sourceHint : undefined),
+        ),
+      );
+    if (url.pathname === "/api/skill-sources" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(NewSource)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () => bad("Expected {source}", 400, sourceHint)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const spec = parseSource(body.source);
+      if (spec === undefined)
+        return yield* bad(`Not a skill source: ${body.source}`, 400, sourceHint);
+      return yield* saveSource(spec);
+    }
+    if (url.pathname === "/api/skill-sources/refresh" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(KnownSource)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () => bad("Expected {source: owner/repo[/folder]}")),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const known = (yield* credential.skillSources()).find((source) => source.id === body.source);
+      if (known === undefined) return yield* bad("Not found", 404);
+      return yield* saveSource({ repo: known.repo, path: known.path, ref: known.ref });
+    }
+    if (url.pathname === "/api/skill-sources/remove" && request.method === "POST") {
+      const body = yield* Schema.decodeUnknownEffect(KnownSource)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () => bad("Expected {source: owner/repo[/folder]}")),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const removed = yield* credential.removeSource(body.source);
+      if (removed === null) return yield* bad("Not found", 404);
+      if (!removed.shared) yield* bucket.delete(sourceKey(removed.repo, removed.commit));
+      return yield* HttpServerResponse.json({ source: body.source, removed: true });
     }
     const skillMatch = skillPath.exec(url.pathname);
     if (skillMatch !== null) {
@@ -225,11 +307,6 @@ export function apiHandler(
         if (HttpServerResponse.isHttpServerResponse(body)) return body;
         if (!(yield* credential.setSkill(name, body.enabled))) return yield* bad("Not found", 404);
         return yield* HttpServerResponse.json({ name, enabled: body.enabled });
-      }
-      if (request.method === "DELETE") {
-        if (!(yield* credential.removeSkill(name))) return yield* bad("Not found", 404);
-        yield* bucket.delete(skillKey(name));
-        return yield* HttpServerResponse.json({ name, removed: true });
       }
     }
     const origin = `https://${request.headers["host"] ?? ""}`;

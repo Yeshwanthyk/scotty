@@ -110,16 +110,20 @@ and give the owner the URL. It works only while the session is running.
 
 ## What sessions get
 
-Every new or resumed session gets the enabled skills and the owner's instructions.
+Every new or resumed session gets the skills that are on and the owner's instructions. Skills
+come from GitHub repositories: each is a folder holding `SKILL.md`. New skills arrive off.
 
 ```sh
-scotty push skill ./my-skill                 # a folder with SKILL.md, or a .zip; same name replaces
+scotty skills add owner/repo/skills          # or owner/repo[@ref], or a github.com link
+scotty skills ls --json                      # every source, its skills and which are on
+scotty skills on <name…>                     # off works the same way
+scotty skills refresh [source]               # fetch again; says what was added, updated, removed
+scotty skills rm <source>
 scotty push instructions ./AGENTS.md         # - reads stdin; an empty file clears them
-scotty ls skills --json
-scotty rm skill <name>
 ```
 
-Turning a skill on or off is in the web page's Settings.
+A skill name can come from only one source; adding a second source with the same name is
+refused. Settings → Skills in the web page does the same.
 
 ## Keeping it working
 

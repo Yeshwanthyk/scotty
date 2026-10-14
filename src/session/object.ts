@@ -34,7 +34,7 @@ import {
   defaultCodexSettings,
 } from "./agents/agent-settings.js";
 import type { AgentKind, Origin } from "./events.js";
-import { instructionsKey, skillKey } from "../settings/skill.js";
+import { instructionsKey, sourceKey } from "../settings/skills.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
 import { deadlines, idleWindow, inactivityTimeout } from "./deadlines.js";
@@ -331,7 +331,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   name: connection.name,
                   url: internalUrl(connection.name, "mcp"),
                 }));
-              const agent = { ...configured, mcp };
+              const skills = yield* credentials.getByName("owner").sessionSkills();
+              const agent = { ...configured, mcp, skillsOff: skills.off };
               // The deployer always sets SCOTTY_HATCH_BASE to the stage's domain.
               const hatchBase = yield* Effect.orDie(Config.String("SCOTTY_HATCH_BASE"));
               // Resume only when the save reached the new container; otherwise start clean.
@@ -355,22 +356,19 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               // A failed read fails the start (start_failed, retryable) rather than drop a setting.
               const saved = yield* Effect.orDie(bucket.get(instructionsKey));
               const instructions = saved === null ? "" : yield* Effect.orDie(saved.text());
-              const skills = (yield* credentials.getByName("owner").skills()).filter(
-                (skill) => skill.enabled,
-              );
-              const installed = yield* Effect.forEach(skills, (skill) =>
-                bucket.get(skillKey(skill.name)).pipe(
-                  Effect.flatMap((zip) =>
-                    zip === null
+              const installed = yield* Effect.forEach(skills.sources, (source) =>
+                bucket.get(sourceKey(source.repo, source.commit)).pipe(
+                  Effect.flatMap((tarball) =>
+                    tarball === null
                       ? Effect.succeed([])
-                      : zip.arrayBuffer().pipe(
+                      : tarball.arrayBuffer().pipe(
                           Effect.flatMap((body) =>
-                            supervisor(
-                              `/skill?gen=${action.gen}&name=${encodeURIComponent(skill.name)}`,
-                              { method: "PUT", body },
-                            ),
+                            supervisor(`/skills?gen=${action.gen}&commit=${source.commit}`, {
+                              method: "PUT",
+                              body,
+                            }),
                           ),
-                          Effect.as([skill.name]),
+                          Effect.as([{ commit: source.commit, path: source.path }]),
                         ),
                   ),
                   Effect.orDie,

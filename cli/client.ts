@@ -126,25 +126,38 @@ export const AutomationSwitched = Schema.Struct({ name: Schema.String, enabled: 
 export const AutomationRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
 export const Reply = Schema.Struct({ status: Schema.String });
 export const Removed = Schema.Struct({ id: Schema.String, removed: Schema.Boolean });
-export const Settings = Schema.Struct({
-  instructions: Schema.String,
+export const SkillSource = Schema.Struct({
+  id: Schema.String,
+  repo: Schema.String,
+  path: Schema.String,
+  ref: Schema.NullOr(Schema.String),
+  commit: Schema.String,
+  size: Schema.Number,
+  fetched: Schema.Number,
   skills: Schema.Array(
     Schema.Struct({
       name: Schema.String,
       description: Schema.String,
+      manual: Schema.Boolean,
       enabled: Schema.Boolean,
-      size: Schema.Number,
     }),
   ),
 });
-export const Skill = Schema.Struct({
-  name: Schema.String,
-  description: Schema.String,
-  sha256: Schema.String,
-  size: Schema.Number,
+export const Settings = Schema.Struct({
+  instructions: Schema.String,
+  sources: Schema.Array(SkillSource),
 });
+export const SourceSaved = Schema.Struct({
+  source: Schema.String,
+  commit: Schema.String,
+  added: Schema.Array(Schema.String),
+  updated: Schema.Array(Schema.String),
+  removed: Schema.Array(Schema.String),
+  skipped: Schema.Array(Schema.String),
+});
+export const SourceRemoved = Schema.Struct({ source: Schema.String, removed: Schema.Boolean });
+export const SkillSwitched = Schema.Struct({ name: Schema.String, enabled: Schema.Boolean });
 export const Saved = Schema.Struct({ saved: Schema.Boolean });
-export const SkillRemoved = Schema.Struct({ name: Schema.String, removed: Schema.Boolean });
 export const Conversation = Schema.Struct({
   version: Schema.Number,
   currentTurn: Schema.String,
@@ -284,11 +297,7 @@ export function client(settings: { readonly url: string; readonly token: string 
         "cf-access-token": settings.token,
         accept: "application/json",
       });
-      // Bytes go as they are (a skill zip); anything else is JSON.
-      const raw =
-        options?.body instanceof Uint8Array ? new Blob([new Uint8Array(options.body)]) : undefined;
-      if (options?.body !== undefined)
-        headers.set("content-type", raw ? "application/zip" : "application/json");
+      if (options?.body !== undefined) headers.set("content-type", "application/json");
       if (options?.key) headers.set("idempotency-key", options.key);
       const response = yield* Effect.tryPromise({
         try: () =>
@@ -296,7 +305,7 @@ export function client(settings: { readonly url: string; readonly token: string 
             method: options?.method ?? "GET",
             headers,
             signal: AbortSignal.timeout(15000),
-            ...(options?.body === undefined ? {} : { body: raw ?? JSON.stringify(options.body) }),
+            ...(options?.body === undefined ? {} : { body: JSON.stringify(options.body) }),
           }),
         catch: () =>
           failure(
