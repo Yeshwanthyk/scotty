@@ -560,10 +560,13 @@ kbd {
 
 .sidebar-search kbd {
   margin-left: auto;
-  padding: 0;
-  border: 0;
+  padding: 0 5px;
+  line-height: 17px;
+  border-color: var(--line-strong);
   background: none;
-  color: var(--muted);
+  color: var(--quiet);
+  letter-spacing: 0.04em;
+  transition: color var(--fast) var(--ease-out);
 }
 
 .sidebar-filter {
@@ -859,6 +862,10 @@ kbd {
 
   .sidebar-field:has(.sidebar-search:hover) {
     background: var(--selected);
+  }
+
+  .sidebar-search:hover kbd {
+    color: var(--muted);
   }
 
   .sidebar-new:hover:not([aria-current="page"]) {
@@ -2043,11 +2050,6 @@ button.diff-line {
 
 .pickup-meta [data-status="failed"] {
   color: var(--danger);
-}
-
-.pickup-meta [data-status="working"],
-.pickup-meta [data-status="starting"] {
-  color: var(--working);
 }
 
 .pickup-action {

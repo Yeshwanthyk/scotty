@@ -70,7 +70,8 @@ const urgency: Record<Status, number> = {
   asleep: 4,
   stopped: 4,
 };
-const loud = new Set<Status>(["unseen", "failed", "starting", "working"]);
+// Words only where the mark alone could be missed; a spinner already says "working".
+const loud = new Set<Status>(["unseen", "failed"]);
 
 function PickUp({
   sessions,
