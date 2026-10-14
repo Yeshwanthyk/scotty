@@ -286,7 +286,7 @@ export function NewSession() {
       <div className="new-session">
         <div className="new-session-field" aria-hidden="true" />
         <div className="new-session-inner" onPaste={paste}>
-          <h1 className="desktop-only">What should we work on?</h1>
+          <h1 className="desktop-only sr-only">New session</h1>
           <Composer
             label="Prompt"
             value={prompt}

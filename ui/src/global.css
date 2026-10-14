@@ -1961,10 +1961,10 @@ button.diff-line {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 16vh 20px 40px;
+  padding: 22vh 20px 40px;
 }
 
-/* The mark's dot field, faded out from behind the heading and drifting slowly. */
+/* The mark's dot field, faded out from behind the box and drifting slowly. */
 .new-session-field {
   position: absolute;
   inset: 0 0 auto;
@@ -1973,13 +1973,13 @@ button.diff-line {
   pointer-events: none;
   background:
     radial-gradient(
-      ellipse 40% 45% at 50% 32%,
+      ellipse 40% 45% at 50% 40%,
       color-mix(in srgb, var(--accent) 14%, transparent),
       transparent 70%
     ),
     radial-gradient(circle, color-mix(in srgb, var(--ink) 22%, transparent) 1px, transparent 1.5px)
       0 0 / 22px 22px;
-  mask-image: radial-gradient(ellipse 55% 60% at 50% 30%, #000 10%, transparent 75%);
+  mask-image: radial-gradient(ellipse 55% 60% at 50% 38%, #000 10%, transparent 75%);
   animation: field-drift 60s linear infinite;
 }
 
@@ -1997,14 +1997,6 @@ button.diff-line {
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-
-.new-session h1 {
-  margin: 0 0 10px;
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.025em;
-  text-align: center;
 }
 
 .new-session .composer {
@@ -2204,12 +2196,14 @@ button.diff-line {
   margin-right: 2px;
 }
 
+/* Below the box everything hangs from one line, 10px in from its edge: "Recent", the pick-up
+   heading and the pick-up status marks. */
 .suggestions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  justify-content: center;
+  padding: 0 10px;
 }
 
 .suggestion {
