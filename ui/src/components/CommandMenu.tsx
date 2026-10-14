@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { sessions as searchSessions } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import { ago, type Filter, matchesFilter, matchesText, statusOf } from "../data/status";
@@ -17,7 +17,8 @@ type Command = {
   mark: React.ReactNode;
 };
 
-// Opened by keyboard many times a day, so it appears and leaves without animation.
+// Opened by keyboard many times a day, so it appears and leaves without animation. Inside, one
+// highlight glides between rows as the active row changes.
 export function CommandMenu({ onClose }: { onClose: () => void }) {
   const { list, setRepo } = useSessions();
   const { sidebar, toggleSidebar } = useLayout();
@@ -138,6 +139,11 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
       ?.querySelector(`[data-index="${active}"]`)
       ?.scrollIntoView({ block: "nearest" });
   }, [active]);
+  const [highlight, setHighlight] = useState<{ top: number; height: number }>();
+  useLayoutEffect(() => {
+    const item = listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`);
+    setHighlight(item ? { top: item.offsetTop, height: item.offsetHeight } : undefined);
+  }, [active, rows]);
   let section = "";
   return (
     <div
@@ -194,6 +200,13 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
           ))}
         </div>
         <div className="command-list" data-scroll ref={listRef} role="listbox">
+          {highlight ? (
+            <div
+              className="command-highlight"
+              aria-hidden="true"
+              style={{ height: highlight.height, transform: `translateY(${highlight.top}px)` }}
+            />
+          ) : null}
           {commands.length === 0 ? (
             <div className="command-empty">
               {text === "" ? "No sessions here" : `Nothing matches “${query}”`}

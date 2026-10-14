@@ -226,6 +226,22 @@ a {
   color: var(--working);
 }
 
+/* A mark that changes on screen pops in. */
+.status-mark[data-pop] > * {
+  animation: mark-pop 360ms var(--ease-out);
+}
+
+@keyframes mark-pop {
+  0% {
+    scale: 0.4;
+    opacity: 0;
+  }
+  60% {
+    scale: 1.25;
+    opacity: 1;
+  }
+}
+
 .status-mark[data-status="unseen"] {
   color: var(--done);
 }
@@ -543,6 +559,11 @@ kbd {
 }
 
 /* Each ring brightens in turn, so light seems to travel outward from the centre. */
+/* Scattered dots may fly past the tile's edge. */
+.brand-mark {
+  overflow: visible;
+}
+
 @keyframes brand-ripple {
   35% {
     opacity: 1;
@@ -755,6 +776,23 @@ kbd {
   font-weight: 400;
 }
 
+/* Opening and closing slide where the browser can animate to the content's height. */
+.fold-group {
+  interpolate-size: allow-keywords;
+}
+
+.fold-group::details-content {
+  block-size: 0;
+  overflow: clip;
+  transition:
+    block-size var(--standard) var(--ease-out),
+    content-visibility var(--standard) allow-discrete;
+}
+
+.fold-group[open]::details-content {
+  block-size: auto;
+}
+
 .fold-rows {
   display: grid;
   gap: 1px;
@@ -774,6 +812,36 @@ kbd {
 
 .session-row[aria-current="page"] {
   background: var(--selected);
+}
+
+/* A session started moments ago opens its own space at the top of the list. */
+.session-row[data-fresh] {
+  interpolate-size: allow-keywords;
+  animation: row-in 320ms var(--ease-out);
+}
+
+@keyframes row-in {
+  from {
+    height: 0;
+    padding-block: 0;
+    opacity: 0;
+    translate: 0 -6px;
+  }
+}
+
+/* A row that turns into a new reply or a failure glows once. */
+.session-row[data-flash] {
+  animation: row-flash 1.4s var(--ease-out);
+}
+
+.session-row[data-status="failed"][data-flash] {
+  --flash: var(--danger);
+}
+
+@keyframes row-flash {
+  from {
+    background: color-mix(in srgb, var(--flash, var(--done)) 18%, transparent);
+  }
 }
 
 /* The whole title where it fits; two lines at most, then cut. */
@@ -1980,7 +2048,19 @@ button.diff-line {
     radial-gradient(circle, color-mix(in srgb, var(--ink) 22%, transparent) 1px, transparent 1.5px)
       0 0 / 22px 22px;
   mask-image: radial-gradient(ellipse 55% 60% at 50% 38%, #000 10%, transparent 75%);
+  opacity: 0.8;
   animation: field-drift 60s linear infinite;
+  /* Leans a few pixels toward the mouse and brightens while you type. */
+  transition:
+    translate 1.2s var(--ease-out),
+    opacity 600ms var(--ease-out);
+}
+
+.new-session-field[data-typing] {
+  opacity: 1;
+  transition:
+    translate 1.2s var(--ease-out),
+    opacity 160ms var(--ease-out);
 }
 
 @keyframes field-drift {
@@ -1997,6 +2077,30 @@ button.diff-line {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* The box, the chips and the list rise in one after another. */
+.new-session-inner > * {
+  animation: rise 360ms var(--ease-out) both;
+}
+
+.new-session-inner > :nth-child(3) {
+  animation-delay: 40ms;
+}
+
+.new-session-inner > :nth-child(4) {
+  animation-delay: 80ms;
+}
+
+.new-session-inner > :nth-child(n + 5) {
+  animation-delay: 120ms;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
 }
 
 .new-session .composer {
@@ -2037,7 +2141,7 @@ button.diff-line {
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: 16px minmax(0, 1fr) auto 18px;
   align-items: center;
   column-gap: 10px;
   padding: 8px 10px;
@@ -2073,6 +2177,60 @@ button.diff-line {
   color: var(--danger);
 }
 
+/* An arrow on hover; with the keyboard in the list, each row's number instead. */
+.pickup-go {
+  display: grid;
+  place-items: center;
+  color: var(--quiet);
+}
+
+.pickup-go > * {
+  grid-area: 1 / 1;
+  opacity: 0;
+  transition:
+    opacity var(--fast) var(--ease-out),
+    translate var(--fast) var(--ease-out);
+}
+
+.pickup-go .icon {
+  translate: -3px 0;
+}
+
+.pickup-go kbd {
+  min-width: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 15px;
+  text-align: center;
+}
+
+.pickup-link:focus-visible {
+  outline: none;
+  background: var(--hover);
+}
+
+.pickup ul:has(.pickup-link:focus-visible) .pickup-go kbd {
+  opacity: 1;
+}
+
+.pickup-link:focus-visible .pickup-go kbd {
+  color: var(--ink);
+}
+
+/* Touch has neither hover nor number keys. */
+@media (hover: none) {
+  .pickup-link {
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+  }
+
+  .pickup-go {
+    display: none;
+  }
+}
+
 .pickup-action {
   flex: none;
   display: inline-flex;
@@ -2094,6 +2252,11 @@ button.diff-line {
 @media (hover: hover) and (pointer: fine) {
   .pickup-row:hover {
     background: var(--hover);
+  }
+
+  .pickup ul:not(:has(.pickup-link:focus-visible)) .pickup-row:hover .pickup-go .icon {
+    opacity: 1;
+    translate: 0 0;
   }
 
   .pickup-action:hover:not(:disabled) {
@@ -2161,6 +2324,7 @@ button.diff-line {
 }
 
 .agent-switch {
+  position: relative;
   display: inline-flex;
   padding: 2px;
   border-radius: 999px;
@@ -2179,11 +2343,27 @@ button.diff-line {
 }
 
 .agent-switch button[aria-pressed="true"] {
-  background: var(--surface);
   color: var(--ink);
+}
+
+/* Slides under whichever option is chosen. */
+.agent-switch-pill {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface);
   box-shadow:
     0 0 0 1px var(--line-strong),
     0 1px 2px rgb(0 0 0 / 0.12);
+  transition:
+    transform 260ms var(--ease-out),
+    width 260ms var(--ease-out);
+}
+
+.agent-switch button {
+  position: relative;
 }
 
 .agent-switch button[data-locked] {
@@ -2366,8 +2546,24 @@ button.diff-line {
 }
 
 .command-list {
+  position: relative;
   max-height: min(52vh, 420px);
   padding: 6px;
+}
+
+.command-highlight {
+  position: absolute;
+  top: 0;
+  left: 6px;
+  right: 6px;
+  border-radius: var(--radius-md);
+  background: var(--selected);
+  pointer-events: none;
+  transition: transform 140ms var(--ease-out);
+}
+
+.command-item {
+  position: relative;
 }
 
 .command-label {
@@ -2401,10 +2597,6 @@ button.diff-line {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.command-item[aria-selected="true"] {
-  background: var(--selected);
 }
 
 .command-empty {
@@ -2834,6 +3026,7 @@ button.diff-line {
 
   .app[data-route="list"] .sidebar {
     visibility: visible;
+    opacity: 1;
     border-right: 0;
   }
 
@@ -3027,8 +3220,77 @@ button.diff-line {
   .new-session-field {
     animation: none;
   }
+
+  .new-session-field {
+    translate: none !important;
+  }
 }
 
 .mcp-controls {
   padding: 0 0 14px;
+}
+
+/* ---------- Page changes ---------- */
+
+/* Pages crossfade. Sending from the new-session page carries the box down into the session's
+   box. On a phone, opening a page pushes it in from the right and going back pops it off. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 180ms;
+}
+
+html:active-view-transition-type(compose) .new-session .composer,
+html:active-view-transition-type(compose) .composer-wrap .composer {
+  view-transition-name: composer;
+}
+
+::view-transition-group(composer) {
+  animation-duration: 380ms;
+  animation-timing-function: var(--ease-out);
+}
+
+@media (max-width: 767px) {
+  html:active-view-transition-type(push)::view-transition-old(root) {
+    animation: 300ms var(--ease-out) both page-out;
+  }
+
+  html:active-view-transition-type(push)::view-transition-new(root) {
+    animation: 300ms var(--ease-out) both page-in;
+  }
+
+  html:active-view-transition-type(pop)::view-transition-old(root) {
+    animation: 300ms var(--ease-out) reverse both page-in;
+  }
+
+  html:active-view-transition-type(pop)::view-transition-new(root) {
+    animation: 300ms var(--ease-out) reverse both page-out;
+  }
+
+  /* The page coming in sits above the one it covers. */
+  html:active-view-transition-type(push)::view-transition-new(root),
+  html:active-view-transition-type(pop)::view-transition-old(root) {
+    z-index: 1;
+    box-shadow: -8px 0 24px rgb(0 0 0 / 0.18);
+  }
+}
+
+@keyframes page-in {
+  from {
+    translate: 100% 0;
+  }
+}
+
+@keyframes page-out {
+  to {
+    translate: -25% 0;
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }

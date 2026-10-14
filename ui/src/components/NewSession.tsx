@@ -1,5 +1,14 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type PointerEvent,
+} from "react";
 import { create, lifecycle, message, type Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import { claudeStatus } from "../data/settings";
@@ -73,6 +82,33 @@ const urgency: Record<Status, number> = {
 // Words only where the mark alone could be missed; a spinner already says "working".
 const loud = new Set<Status>(["unseen", "failed"]);
 
+// As many rows as the window has room for below the box, between three and nine.
+const pickupRoom = () =>
+  typeof window === "undefined"
+    ? 5
+    : Math.max(3, Math.min(9, Math.floor((window.innerHeight - 480) / 40)));
+
+// From the empty box, ↓ steps into the list; there ↑ and ↓ move, Enter opens and a number
+// jumps straight to its row.
+const pickupLinks = (from: Element) => [
+  ...(from.closest(".new-session-inner")?.querySelectorAll<HTMLElement>(".pickup-link") ?? []),
+];
+
+function pickupKeys(event: KeyboardEvent<HTMLElement>) {
+  const links = pickupLinks(event.currentTarget);
+  const index = links.findIndex((link) => link === document.activeElement);
+  if (index < 0) return;
+  const jump = /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : undefined;
+  if (jump !== undefined) links[jump]?.click();
+  else if (event.key === "ArrowDown") links[index + 1]?.focus();
+  else if (event.key === "ArrowUp") {
+    if (index === 0)
+      event.currentTarget.closest(".new-session-inner")?.querySelector("textarea")?.focus();
+    else links[index - 1]?.focus();
+  } else return;
+  event.preventDefault();
+}
+
 function PickUp({
   sessions,
   onResume,
@@ -85,8 +121,8 @@ function PickUp({
   return (
     <section className="pickup" aria-labelledby="pickup-label">
       <h2 id="pickup-label">Pick up where you left off</h2>
-      <ul>
-        {sessions.map(({ session, status }) => {
+      <ul onKeyDown={pickupKeys}>
+        {sessions.map(({ session, status }, index) => {
           const repo = session.display.repository.split("/").at(-1) ?? "";
           return (
             <li key={session.identity.id} className="pickup-row" data-status={status}>
@@ -104,6 +140,10 @@ function PickUp({
                   <span>
                     {repo || "No repository"} · {ago(session.display.activeAt)}
                   </span>
+                </span>
+                <span className="pickup-go" aria-hidden="true">
+                  <kbd>{index + 1}</kbd>
+                  <Icon name="arrowRight" size={13} />
                 </span>
               </Link>
               {dormant(status) ? (
@@ -138,12 +178,32 @@ function AgentSwitch({
   claudeReady: boolean;
   onChange: (agent: Agent) => void;
 }) {
+  // One pill slides under the chosen option instead of each option lighting up.
+  const buttons = useRef<Partial<Record<Agent, HTMLButtonElement | null>>>({});
+  const [pill, setPill] = useState<{ x: number; width: number }>();
+  useLayoutEffect(() => {
+    const measure = () => {
+      const button = buttons.current[value];
+      if (button) setPill({ x: button.offsetLeft, width: button.offsetWidth });
+    };
+    measure();
+    void document.fonts.ready.then(measure);
+  }, [value]);
   return (
     <div className="agent-switch" role="group" aria-label="Agent">
+      {pill ? (
+        <span
+          className="agent-switch-pill"
+          style={{ width: pill.width, transform: `translateX(${pill.x}px)` }}
+        />
+      ) : null}
       {(["codex", "claude"] as const).map((agent) => (
         <button
           type="button"
           key={agent}
+          ref={(button) => {
+            buttons.current[agent] = button;
+          }}
           className="pressable"
           aria-pressed={value === agent}
           data-locked={agent === "claude" && !claudeReady ? "" : undefined}
@@ -171,6 +231,13 @@ export function NewSession() {
   const [error, setError] = useState("");
   const [filled, setFilled] = useState("");
   const [resuming, setResuming] = useState<string>();
+  // Counts link pastes, so each one shows what it filled.
+  const [pasted, setPasted] = useState(0);
+  const [typing, setTyping] = useState(false);
+  const typingTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const field = useRef<HTMLDivElement>(null);
+  const inner = useRef<HTMLDivElement>(null);
+  const [room] = useState(pickupRoom);
   const attempt = useRef<{ input: string; key: string }>(undefined);
   const recent = useMemo(
     () =>
@@ -196,8 +263,8 @@ export function NewSession() {
             a.rank - b.rank ||
             Date.parse(b.session.display.activeAt) - Date.parse(a.session.display.activeAt),
         )
-        .slice(0, 5),
-    [list],
+        .slice(0, room),
+    [list, room],
   );
   useEffect(() => {
     const abort = new AbortController();
@@ -207,6 +274,41 @@ export function NewSession() {
     );
     return () => abort.abort();
   }, []);
+  useEffect(() => () => clearTimeout(typingTimer.current), []);
+  // A pasted link flashes the repository it set and fades in the prompt it wrote.
+  useEffect(() => {
+    if (pasted === 0 || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const picker = inner.current?.querySelector(".repo-picker");
+    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent");
+    picker?.animate(
+      [
+        {
+          boxShadow: `0 0 0 1.5px ${accent}`,
+          background: `color-mix(in srgb, ${accent} 22%, transparent)`,
+        },
+        {},
+      ],
+      { duration: 1100, easing: "ease-out" },
+    );
+    inner.current
+      ?.querySelector("textarea")
+      ?.animate([{ opacity: 0, translate: "0 4px" }, {}], { duration: 360, easing: "ease-out" });
+  }, [pasted]);
+  function typed(value: string) {
+    setPrompt(value);
+    // The field brightens while keys are coming and settles a moment after they stop.
+    setTyping(true);
+    clearTimeout(typingTimer.current);
+    typingTimer.current = setTimeout(() => setTyping(false), 700);
+  }
+  function drift(event: PointerEvent) {
+    if (event.pointerType !== "mouse" || field.current === null) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    // A few pixels toward the mouse, at most.
+    const x = ((event.clientX - box.left) / box.width - 0.5) * 12;
+    const y = ((event.clientY - box.top) / box.height - 0.5) * 12;
+    field.current.style.translate = `${x.toFixed(1)}px ${y.toFixed(1)}px`;
+  }
   const chosen: Agent = agent === "claude" && claudeReady === false ? "codex" : agent;
   const others = recent.filter((name) => name !== repo.trim());
   const validRepo = repoPattern.test(repo.trim());
@@ -228,6 +330,7 @@ export function NewSession() {
     setPrompt(link.prompt);
     setError("");
     setFilled(link.repo);
+    setPasted((count) => count + 1);
   }
   async function resume(session: Session) {
     setResuming(session.identity.id);
@@ -283,14 +386,35 @@ export function NewSession() {
           <h1>New session</h1>
         </div>
       </header>
-      <div className="new-session">
-        <div className="new-session-field" aria-hidden="true" />
-        <div className="new-session-inner" onPaste={paste}>
+      <div className="new-session" onPointerMove={drift}>
+        <div
+          ref={field}
+          className="new-session-field"
+          data-typing={typing || undefined}
+          aria-hidden="true"
+        />
+        <div
+          ref={inner}
+          className="new-session-inner"
+          onPaste={paste}
+          onKeyDown={(event) => {
+            if (
+              event.key === "ArrowDown" &&
+              event.target instanceof HTMLTextAreaElement &&
+              prompt === ""
+            ) {
+              const first = pickupLinks(event.currentTarget)[0];
+              if (first === undefined) return;
+              event.preventDefault();
+              first.focus();
+            }
+          }}
+        >
           <h1 className="desktop-only sr-only">New session</h1>
           <Composer
             label="Prompt"
             value={prompt}
-            onChange={setPrompt}
+            onChange={typed}
             onSubmit={() => void submit()}
             placeholder={`Ask ${agentName[chosen]} to build, fix or explain… or paste a GitHub link`}
             busy={busy}

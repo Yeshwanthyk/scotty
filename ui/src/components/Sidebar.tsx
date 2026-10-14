@@ -17,27 +17,42 @@ import {
 import { Icon, Spinner } from "./Icon";
 import { Menu } from "./Menu";
 
+// How many times a value has changed since mount, counted during render so the change shows
+// in the same frame.
+function useChanges<T>(value: T) {
+  const [last, setLast] = useState(value);
+  const [count, setCount] = useState(0);
+  if (last !== value) {
+    setLast(value);
+    setCount((changes) => changes + 1);
+  }
+  return count;
+}
+
 export function StatusMark({ status, title }: { status: Status; title?: string }) {
+  // A mark that changes while on screen pops in; one that is simply shown does not.
+  const changed = useChanges(status) > 0;
   return (
     <span
       className="status-mark"
       data-status={status}
+      data-pop={changed || undefined}
       title={title ?? statusLabel[status]}
       role="img"
       aria-label={title ?? statusLabel[status]}
     >
       {status === "working" || status === "starting" ? (
-        <Spinner size={13} />
+        <Spinner key="spin" size={13} />
       ) : status === "failed" ? (
-        <Icon name="alert" size={14} />
+        <Icon key="alert" name="alert" size={14} />
       ) : status === "unseen" ? (
-        <span className="dot" />
+        <span key="dot" className="dot" />
       ) : status === "asleep" ? (
-        <Icon name="moon" size={13} />
+        <Icon key="moon" name="moon" size={13} />
       ) : status === "stopped" ? (
-        <Icon name="branch" size={14} />
+        <Icon key="branch" name="branch" size={14} />
       ) : (
-        <span className="ring" />
+        <span key="ring" className="ring" />
       )}
     </span>
   );
@@ -45,20 +60,40 @@ export function StatusMark({ status, title }: { status: Status; title?: string }
 
 // The mark's dot field, drawn live: rings of dots around a bright centre. While a session works
 // the centre breathes slowly; when one finishes, a single ripple runs out through the rings.
+// Three quick clicks scatter the dots, and they settle back.
 const rings = [
   { radius: 3.4, count: 6, size: 0.75 },
   { radius: 6.6, count: 11, size: 0.65 },
   { radius: 9.8, count: 16, size: 0.55 },
 ];
-function BrandMark({ working }: { working: number }) {
+function BrandMark({ working, scatter }: { working: number; scatter: number }) {
   const [ripple, setRipple] = useState(0);
   const before = useRef(working);
+  const mark = useRef<SVGSVGElement>(null);
   useEffect(() => {
     if (working < before.current) setRipple((count) => count + 1);
     before.current = working;
   }, [working]);
+  useEffect(() => {
+    if (scatter === 0 || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    // Each dot flies outward from the centre an uneven distance, then springs back.
+    mark.current?.querySelectorAll<SVGCircleElement>(".brand-ring circle").forEach((dot, index) => {
+      const dx = dot.cx.baseVal.value - 10;
+      const dy = dot.cy.baseVal.value - 10;
+      const reach = (5 + ((index * 7) % 5)) / Math.hypot(dx, dy);
+      dot.animate(
+        [
+          { translate: "0 0" },
+          { translate: `${dx * reach}px ${dy * reach}px`, offset: 0.3 },
+          { translate: "0 0" },
+        ],
+        { duration: 900 + ((index * 37) % 200), easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+      );
+    });
+  }, [scatter]);
   return (
     <svg
+      ref={mark}
       className="brand-mark"
       data-working={working > 0}
       viewBox="0 0 20 20"
@@ -127,14 +162,22 @@ export const filters: ReadonlyArray<{ id: Filter; label: string }> = [
   { id: "running", label: "Running" },
 ];
 
+// A row that asks for attention flashes once when it changes to that state.
+const loudStatus = (status: Status) => status === "unseen" || status === "failed";
+
 function Row({ session, current }: { session: Session; current: boolean }) {
   const status = statusOf(session, current);
+  const flashes = useChanges(loudStatus(status));
+  // A session started moments ago slides in at the top rather than appearing.
+  const [fresh] = useState(() => Date.now() - Date.parse(session.display.createdAt) < 10_000);
   return (
     <Link
       to="/s/$sessionId"
       params={{ sessionId: session.identity.id }}
       className="session-row"
       data-status={status}
+      data-fresh={fresh || undefined}
+      data-flash={(loudStatus(status) && flashes > 0) || undefined}
       aria-current={current ? "page" : undefined}
     >
       <StatusMark
@@ -238,6 +281,7 @@ export function Sidebar({
   const params = useParams({ strict: false });
   const currentId = "sessionId" in params ? params.sessionId : undefined;
   useMinuteTick();
+  const [scatter, setScatter] = useState(0);
   const [showArchived, toggleArchived] = useSectionOpen(archivedKey);
   const [showStopped, toggleStopped] = useSectionOpen(stoppedKey);
   const all = (list ?? []).filter(
@@ -254,8 +298,15 @@ export function Sidebar({
   return (
     <aside className="sidebar" aria-label="Sessions">
       <div className="sidebar-top">
-        <Link to="/sessions" className="brand">
+        <Link
+          to="/sessions"
+          className="brand"
+          onClick={(event) => {
+            if (event.detail === 3) setScatter((count) => count + 1);
+          }}
+        >
           <BrandMark
+            scatter={scatter}
             working={
               (list ?? []).filter((session) => {
                 const status = statusOf(session);
