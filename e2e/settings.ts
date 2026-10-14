@@ -22,23 +22,22 @@ import { Log, waiter } from "./lib/wait.js";
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("settings", message, "scotty doctor"));
 
-// A public repository made for this test. `skills/` holds scotty-e2e-a, whose SKILL.md links to
-// scotty-e2e-b's ref.md and ships an executable scripts/mark.sh; `clash/` holds another
-// scotty-e2e-a.
-const source = "Yeshwanthyk/scotty-skills-fixture/skills";
-const clash = "Yeshwanthyk/scotty-skills-fixture/clash";
-const [first, second] = ["scotty-e2e-a", "scotty-e2e-b"];
+// The owner's own public skill repositories. In agent-skills, yesh-router links to
+// ../plan/SKILL.md and ships an executable references/decision-trail/log.sh.
+const source = "Yeshwanthyk/agent-skills/skills";
+const other = "Yeshwanthyk/scotty/skills";
+const [router, linked, scotty] = ["yesh-router", "plan", "scotty"];
 const id = crypto.randomUUID().slice(0, 8).toUpperCase();
 const firstMark = `OWNERMARK-A-${id}`;
 const secondMark = `OWNERMARK-B-${id}`;
 
-// Lists what start installed, follows the link between the skills, runs the script, and greps
-// the owner's marker from the agent's instructions.
+// Lists what start installed, follows yesh-router's link, checks its script kept its mode, and
+// greps the owner's marker from the agent's instructions.
 const { skills, instructions } = {
   codex: { skills: "~/.agents/skills", instructions: '"${CODEX_HOME:-$HOME/.codex}/AGENTS.md"' },
   claude: { skills: "~/.claude/skills", instructions: "~/.claude/CLAUDE.md" },
 }[agent];
-const command = `ls ${skills}; cat ${skills}/${first}/../${second}/ref.md; ${skills}/${first}/scripts/mark.sh; grep -o "OWNERMARK-[A-Z0-9-]*" ${instructions}`;
+const command = `ls ${skills}; test -f ${skills}/${router}/../${linked}/SKILL.md && echo LINK-OK; test -x ${skills}/${router}/references/decision-trail/log.sh && echo EXEC-OK; grep -o "OWNERMARK-[A-Z0-9-]*" ${instructions}`;
 const probe = prompt(
   `Run exactly: \`${command}\` and reply with its full output only.`,
   `run ${command}\nsay {{out}}`,
@@ -47,20 +46,22 @@ const probe = prompt(
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const request = client({ url, token: yield* access(url) });
+  const add = (id: string) =>
+    request("/api/skill-sources", SourceSaved, { method: "POST", body: { source: id } });
   const remove = (id: string) =>
     request("/api/skill-sources/remove", SourceRemoved, { method: "POST", body: { source: id } });
   const toggle = (name: string, enabled: boolean) =>
     request(`/api/skills/${name}`, SkillSwitched, { method: "PATCH", body: { enabled } });
 
-  // 1. The source, fresh: both skills arrive off; a refresh finds nothing new; a second source
-  // with a skill of the same name is refused.
-  yield* remove(source).pipe(Effect.ignore);
-  const added = yield* request("/api/skill-sources", SourceSaved, {
-    method: "POST",
-    body: { source },
-  });
+  // The owner may use these sources and instructions; note them to put back at the end.
+  const owner = yield* request("/api/settings", Settings);
+  const before = owner.sources.filter((known) => known.id === source || known.id === other);
+  for (const known of before) yield* remove(known.id);
+
+  // 1. Added fresh, every skill is off; a refresh at the same commit finds nothing new.
+  const added = yield* add(source);
   yield* check(
-    added.added.includes(first) && added.added.includes(second),
+    added.added.includes(router) && added.added.includes(linked),
     `Add found ${added.added.join(", ")}`,
   );
   const listed = (yield* request("/api/settings", Settings)).sources.find((s) => s.id === source);
@@ -76,18 +77,12 @@ const program = Effect.gen(function* () {
     refreshed.added.length + refreshed.updated.length + refreshed.removed.length === 0,
     "Refresh at the same commit reported changes",
   );
-  const clashed = yield* request("/api/skill-sources", SourceSaved, {
-    method: "POST",
-    body: { source: clash },
-  }).pipe(Effect.flip);
-  yield* check(
-    clashed.message.includes(`${first} (${source})`),
-    `Clash not refused: ${clashed.message}`,
-  );
-  console.log(`Source ${source} at ${added.commit.slice(0, 7)}: two skills off; clash refused`);
+  yield* add(other);
+  console.log(`${source} at ${added.commit.slice(0, 7)}: ${added.added.length} skills, all off`);
 
-  // 2. One skill on and owner instructions; a new session's agent gets the whole folder.
-  yield* toggle(first, true);
+  // 2. One skill on in each source and owner instructions; a new session gets both folders whole.
+  yield* toggle(router, true);
+  yield* toggle(scotty, true);
   yield* request("/api/settings/instructions", Saved, {
     method: "PUT",
     body: { text: `The owner marker is ${firstMark}.` },
@@ -114,14 +109,18 @@ const program = Effect.gen(function* () {
       return conversation.turns.at(-1)?.assistant ?? "";
     });
   const start = yield* reply("0");
-  yield* check(start.includes(first) && start.includes(second), "Source folder not installed");
-  yield* check(start.includes("LINKMARK-B"), "A skill's link to another skill doesn't resolve");
-  yield* check(start.includes("SCRIPTMARK-A"), "A skill's script didn't run");
+  yield* check(
+    [router, linked, scotty].every((name) => start.includes(name)),
+    `Both sources not installed: ${start}`,
+  );
+  yield* check(start.includes("LINK-OK"), "A skill's link to another skill doesn't resolve");
+  yield* check(start.includes("EXEC-OK"), "A skill's script lost its execute bit");
   yield* check(start.includes(firstMark), "Owner instructions not in the agent's instructions");
-  console.log("Start: both skills installed, link resolves, script runs, owner marker present");
+  console.log("Start: both sources installed, link resolves, script executable, owner marker");
 
-  // 3. The skill off and new instructions; a stop and resume picks up both.
-  yield* toggle(first, false);
+  // 3. Every skill off and new instructions; a stop and resume picks up both.
+  yield* toggle(router, false);
+  yield* toggle(scotty, false);
   yield* request("/api/settings/instructions", Saved, {
     method: "PUT",
     body: { text: `The owner marker is ${secondMark}.` },
@@ -135,17 +134,25 @@ const program = Effect.gen(function* () {
     body: { req, turn: "1", text: probe },
   });
   const resumed = yield* reply("1");
-  yield* check(!resumed.includes("SCRIPTMARK-A"), "A source with no skill on is still installed");
+  yield* check(!resumed.includes("LINK-OK"), "A source with no skill on is still installed");
   yield* check(
     resumed.includes(secondMark) && !resumed.includes(firstMark),
     "Resume kept the old instructions",
   );
   console.log("Resume: no skills, new owner marker present");
 
-  // 4. Clean up so other tests start without settings.
+  // 4. Clean up, and put back the owner's sources and instructions as they were.
   yield* request(`${prefix}/stop`, View, { method: "POST" });
   yield* remove(source);
-  yield* request("/api/settings/instructions", Saved, { method: "PUT", body: { text: "" } });
+  yield* remove(other);
+  yield* request("/api/settings/instructions", Saved, {
+    method: "PUT",
+    body: { text: owner.instructions },
+  });
+  for (const known of before) {
+    yield* add(`${known.id}${known.ref === null ? "" : `@${known.ref}`}`);
+    for (const skill of known.skills) if (skill.enabled) yield* toggle(skill.name, true);
+  }
   console.log("Cleaned up");
 });
 

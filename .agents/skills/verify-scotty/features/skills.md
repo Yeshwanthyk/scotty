@@ -23,23 +23,25 @@ get the folder whole, with switched-off skills hidden.
 ## Entry points
 
 - CLI `scotty skills add|ls|on|off|refresh|rm`. e2e: `npm run --silent e2e -- settings` (SK1,
-  SK2 at the same commit, SK3, SK4). Browser at 390×844 and desktop width, light and dark, for
+  SK2 at the same commit, SK4) on `Yeshwanthyk/agent-skills/skills` and `Yeshwanthyk/scotty/skills`. Browser at 390×844 and desktop width, light and dark, for
   SK6; `npm run ui:dev` seeds sources and serves refresh.
 
 ## Drive
 
-1. `skills add Yeshwanthyk/scotty-skills-fixture/skills --json` into `01-add.json`: `added` has
-   `scotty-e2e-a` and `scotty-e2e-b` (SK1). `skills ls --json` into `02-ls.json`: both off.
-2. `skills refresh Yeshwanthyk/scotty-skills-fixture/skills --json` into `03-refresh.json`:
-   empty `added`, `updated` and `removed` (SK2).
-3. `skills add Yeshwanthyk/scotty-skills-fixture/clash`: exit 1, message names
-   `scotty-e2e-a (Yeshwanthyk/scotty-skills-fixture/skills)` (SK3).
-4. `skills on scotty-e2e-a`, then a [core-loop](core-loop.md) session on any repo asked to run
-   `ls ~/.agents/skills; ~/.agents/skills/scotty-e2e-a/scripts/mark.sh` (SK4).
-5. With `--real` and a Codex session, ask it to list its skills: `scotty-e2e-b` is absent though
-   its folder is installed (SK5). Repeat with `--agent claude`.
+1. `skills add Yeshwanthyk/agent-skills/skills --json` into `01-add.json`: `added` lists every
+   skill, `yesh-router` and `plan` among them (SK1). `skills ls --json` into `02-ls.json`: all off.
+2. `skills refresh Yeshwanthyk/agent-skills/skills --json` into `03-refresh.json`: empty `added`,
+   `updated` and `removed` (SK2).
+3. Add a second source holding a name already taken, such as a fork of agent-skills
+   (`skills add <you>/agent-skills/skills`): exit 1, the message names the skill and
+   `Yeshwanthyk/agent-skills/skills` (SK3).
+4. `skills on yesh-router`, then a [core-loop](core-loop.md) session asked to run
+   `ls ~/.agents/skills; test -x ~/.agents/skills/yesh-router/references/decision-trail/log.sh && echo ok`:
+   every agent-skills folder is listed and `ok` prints (SK4).
+5. With `--real` and a Codex session, ask it to list its skills: `plan` is absent though its
+   folder is installed (SK5). Repeat with `--agent claude`.
 6. Open `/settings/skills`, refresh, paste a github.com tree link into Add; screenshot each (SK6).
-7. `skills rm Yeshwanthyk/scotty-skills-fixture/skills`.
+7. Put the owner's sources and switches back as `02-ls.json` had them before step 1.
 
 ## Gotchas
 
