@@ -5,10 +5,16 @@ import { CommandMenu } from "./CommandMenu";
 import { Icon } from "./Icon";
 import { Sidebar } from "./Sidebar";
 
-type LayoutState = { sidebar: boolean; showSidebar: () => void; search: () => void };
+type LayoutState = {
+  sidebar: boolean;
+  showSidebar: () => void;
+  toggleSidebar: () => void;
+  search: () => void;
+};
 const Context = createContext<LayoutState>({
   sidebar: true,
   showSidebar: () => undefined,
+  toggleSidebar: () => undefined,
   search: () => undefined,
 });
 export const useLayout = () => useContext(Context);
@@ -27,14 +33,14 @@ export function Layout() {
   const [menu, setMenu] = useState(false);
   const path = useLocation({ select: (location) => location.pathname });
   const list = path.replace(/\/$/, "") === "/sessions";
-  const toggle = useCallback((open: boolean) => {
-    setSidebar(open);
+  // Every way of opening or closing it (button, ⌘\, Cmd-K) is remembered.
+  useEffect(() => {
     try {
-      localStorage.setItem(sidebarKey, open ? "open" : "closed");
+      localStorage.setItem(sidebarKey, sidebar ? "open" : "closed");
     } catch {
       // Storage can be refused; the choice then lasts for this page only.
     }
-  }, []);
+  }, [sidebar]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -53,14 +59,19 @@ export function Layout() {
   return (
     <SessionsProvider>
       <Context.Provider
-        value={{ sidebar, showSidebar: () => toggle(true), search: () => setMenu(true) }}
+        value={{
+          sidebar,
+          showSidebar: () => setSidebar(true),
+          toggleSidebar: () => setSidebar((open) => !open),
+          search: () => setMenu(true),
+        }}
       >
         <div
           className="app"
           data-sidebar={sidebar ? "open" : "closed"}
           data-route={list ? "list" : "page"}
         >
-          <Sidebar onSearch={() => setMenu(true)} onCollapse={() => toggle(false)} />
+          <Sidebar onSearch={() => setMenu(true)} onCollapse={() => setSidebar(false)} />
           <main className="main">
             <Outlet />
           </main>

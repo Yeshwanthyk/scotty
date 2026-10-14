@@ -4,6 +4,7 @@ import { sessions as searchSessions } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import { ago, type Filter, matchesFilter, matchesText, statusOf } from "../data/status";
 import { Icon } from "./Icon";
+import { useLayout } from "./Layout";
 import { sections } from "./Settings";
 import { filters, StatusMark } from "./Sidebar";
 
@@ -19,6 +20,7 @@ type Command = {
 // Opened by keyboard many times a day, so it appears and leaves without animation.
 export function CommandMenu({ onClose }: { onClose: () => void }) {
   const { list, setRepo } = useSessions();
+  const { sidebar, toggleSidebar } = useLayout();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -58,6 +60,19 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
         mark: <Icon name="plus" />,
         run: go(() => navigate({ to: "/sessions/create" })),
       },
+      // A phone has no sidebar to hide.
+      ...(window.matchMedia("(min-width: 768px)").matches
+        ? [
+            {
+              id: "sidebar",
+              label: sidebar ? "Hide sidebar" : "Show sidebar",
+              detail: "⌘\\",
+              section: "Actions",
+              mark: <Icon name="sidebar" />,
+              run: go(async () => toggleSidebar()),
+            },
+          ]
+        : []),
       ...sections.map((item) => ({
         id: `settings-${item.id}`,
         label: `Settings: ${item.label}`,
@@ -114,7 +129,7 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
         : []),
       ...sessions.filter((command) => command.section !== "Running"),
     ];
-  }, [list, query, filter, found, navigate, onClose, setRepo]);
+  }, [list, query, filter, found, navigate, onClose, setRepo, sidebar, toggleSidebar]);
   // The first row is active whenever the rows change; live updates to the same rows keep it.
   const rows = commands.map((command) => command.id).join("\n");
   useEffect(() => setActive(0), [rows]);

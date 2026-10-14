@@ -16,6 +16,7 @@
   --standard: 180ms;
 
   --sidebar-width: 264px;
+  --sidebar-slide: 220ms;
   --thread-width: 44rem;
 
   --bg: #fbfbfa;
@@ -433,6 +434,31 @@ kbd {
 
 .app[data-sidebar="closed"] .sidebar {
   visibility: hidden;
+  opacity: 0;
+}
+
+/* The sidebar slides rather than snaps. Its contents keep their full width while the column
+   narrows, so nothing rewraps mid-slide; it hides only once the slide has finished. */
+@media (min-width: 768px) {
+  .app {
+    transition: grid-template-columns var(--sidebar-slide) var(--ease-out);
+  }
+
+  .sidebar {
+    transition:
+      opacity var(--sidebar-slide) var(--ease-out),
+      visibility 0s;
+  }
+
+  .app[data-sidebar="closed"] .sidebar {
+    transition:
+      opacity var(--sidebar-slide) var(--ease-out),
+      visibility 0s var(--sidebar-slide);
+  }
+
+  .sidebar > * {
+    width: calc(var(--sidebar-width) - 1px);
+  }
 }
 
 .main {
