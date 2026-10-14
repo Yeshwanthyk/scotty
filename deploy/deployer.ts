@@ -79,6 +79,7 @@ const names = (config: Config) => ({
   app: `scotty-${config.stage}-sessions`,
   access: `scotty-${config.stage}`,
   hooks: `scotty-${config.stage}-hooks`,
+  mcp: `scotty-${config.stage}-mcp`,
   wildcard: `*.${config.domain}`,
   route: `*.${config.domain}/*`,
 });
@@ -356,6 +357,29 @@ export const deployStage = (
       [{ type: "public", uri: `${host}/hooks/*` }],
       [{ name: "signed webhooks", decision: "bypass", include: [{ everyone: {} }] }],
     );
+    // MCP clients sign in by OAuth, with Access as the server: Managed OAuth registers each
+    // client and sends the Worker the usual Access identity. Only these redirects may register.
+    yield* ensureAccessApp(
+      accountId,
+      name.mcp,
+      [{ type: "public", uri: `${host}/mcp` }],
+      policies,
+      {
+        enabled: true,
+        dynamicClientRegistration: {
+          enabled: true,
+          allowAnyOnLocalhost: true,
+          allowAnyOnLoopback: true,
+          allowedUris: [
+            "https://claude.ai/api/mcp/auth_callback",
+            "https://claude.com/api/mcp/auth_callback",
+            "https://chatgpt.com/connector_platform_oauth_redirect",
+            "https://chatgpt.com/connector/oauth/*",
+          ],
+        },
+        grant: { accessTokenLifetime: "15m", sessionDuration: "168h" },
+      },
+    );
 
     yield* say("Setting up the preview address");
     if ((yield* wildcardRecords(zoneId, name.wildcard)).length === 0)
@@ -387,10 +411,18 @@ const ensureAccessApp = (
   name: string,
   destinations: NonNullable<AccessApp["destinations"]>,
   policies: NonNullable<AccessApp["policies"]>,
+  oauthConfiguration?: AccessApp["oauthConfiguration"],
 ) =>
   Effect.gen(function* () {
     const found = (yield* accessApps(accountId, name))[0]?.id;
-    const app = { accountId, type: "self_hosted", name, destinations, policies };
+    const app = {
+      accountId,
+      type: "self_hosted",
+      name,
+      destinations,
+      policies,
+      ...(oauthConfiguration === undefined ? {} : { oauthConfiguration }),
+    };
     if (found) yield* ZeroTrust.updateAccessApplicationForAccount({ ...app, appId: found });
     else yield* ZeroTrust.createAccessApplicationForAccount(app);
   });
@@ -420,6 +452,7 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
     for (const app of [
       ...(yield* accessApps(accountId, name.access)),
       ...(yield* accessApps(accountId, name.hooks)),
+      ...(yield* accessApps(accountId, name.mcp)),
     ])
       if (app.id) yield* ZeroTrust.deleteAccessApplicationForAccount({ accountId, appId: app.id });
 
@@ -495,6 +528,7 @@ export const leftovers = (config: Config) =>
     const buckets = yield* R2.listBuckets({ accountId });
     const access = yield* accessApps(accountId, name.access);
     const hooks = yield* accessApps(accountId, name.hooks);
+    const mcp = yield* accessApps(accountId, name.mcp);
     const records = yield* wildcardRecords(zoneId, name.wildcard);
     return [
       ...[
@@ -504,6 +538,7 @@ export const leftovers = (config: Config) =>
       ].filter(mine),
       ...access.map(() => `Access app ${name.access}`),
       ...hooks.map(() => `Access app ${name.hooks}`),
+      ...mcp.map(() => `Access app ${name.mcp}`),
       ...records.map(() => `DNS record ${name.wildcard}`),
     ];
   });

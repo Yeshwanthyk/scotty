@@ -35,6 +35,8 @@ src/
   creds/
     object.ts         Creds DO: ChatGPT sign-in, session access token, GitHub token; refresh deferred
     git.ts            git smart-HTTP handler for github.internal
+  mcp/
+    server.ts         /mcp: Scotty's own MCP server; its tools call the API handler
 container/
   Dockerfile          default image: Node, git, Codex, the dev toolchain, supervisor
   supervisor/         scotty-sup: WebSocket server; runs codex app-server; git; per-turn save and resume
@@ -451,7 +453,7 @@ pending; local checks and release bundling do not prove them.
 The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{message,code?,hint?}}`.
 For API methods other than GET/HEAD and for terminal requests, a present `Origin` must equal
 `https://<host>` or the Worker returns 403. Requests without Origin, including CLI requests, are
-accepted; `/hooks/*` keeps its sender-signature checks.
+accepted; `/hooks/*` keeps its sender-signature checks. `/mcp` refuses any foreign Origin.
 
 The conversation snapshot includes top-level `currentTurn`, the authoritative turn identity for steer and interrupt writes. `turns[].id` remains the stable message identity.
 
@@ -474,6 +476,7 @@ The conversation snapshot includes top-level `currentTurn`, the authoritative tu
 | `GET /api/settings`, `PUT /api/settings/instructions`                        | Creds DO instructions and skill list                 |
 | `PUT /api/skills`, `PATCH/DELETE /api/skills/:name`                          | R2 `skills/<name>` and the Creds DO skill list       |
 | `GET /api/version`                                                           | The deployed Worker's version                        |
+| `POST /mcp`                                                                  | Scotty's MCP server (below), on the API handler      |
 
 ### Live updates
 
@@ -482,6 +485,24 @@ The UI doesn't poll; the server pushes. Both sockets are hibernatable WebSockets
 - **Session:** `/api/sessions/:id/live` is accepted by the Session DO. On connect, and after appends, it sends `{kind:"snapshot", seq, session, conversation}`: `session` and `conversation` are what `GET /api/sessions/:id` (its `session`) and `/conversation` return, and `seq` is the last event's, so a client drops an older frame. The conversation replays the log, so pushes are coalesced: after an append, one push 250 ms later carries everything appended meanwhile. Watching isn't using: the live route doesn't touch the idle window, so an open page doesn't keep a session awake.
 - **List:** `/api/sessions/live` is accepted by the owner's Creds DO, which holds the session index. When a push finds the session's view changed from the last one it sent (kept in memory), the Session DO calls the Creds DO, which sends `{kind:"session", session}`; deleting a session sends `{kind:"removed", id}`. The client reads `GET /api/sessions` on each connect, then applies frames.
 - A push is not state: a lost one is repaired by the next, or by the snapshot a reconnect gets. The UI reconnects with backoff (1 s doubling to 30 s), at once when the tab shows again or the network returns, and says "Reconnecting…" after 3 s without a socket.
+
+### Scotty as an MCP server
+
+Any MCP client (claude.ai and ChatGPT on the phone, Claude Code and Codex anywhere) drives
+Scotty at `https://<host>/mcp` once the owner signs in. Containers don't get this server.
+
+- **Sign-in:** Access [Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/) on its own app, `scotty-<stage>-mcp`, for `<host>/mcp` (a `public` destination, beside the Worker's app, as `/hooks/*` is). Access is the OAuth server: discovery, DCR, PKCE and refresh. The owner signs in on the Access page, and the Worker gets the usual Access headers. Scotty stores no tokens. Redirects that may register: `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`, `https://chatgpt.com/connector_platform_oauth_redirect`, `https://chatgpt.com/connector/oauth/*`, and any localhost or loopback address. The access token lasts 15 minutes, the grant one week.
+- **No JWT check in the Worker.** Access is the only way in: the Worker's workers.dev and preview URLs are off, and its custom domain is under Access. So `/mcp` trusts Access as every other route does.
+- **Stateless:** each `POST` is one JSON-RPC message answered with JSON. There is no `Mcp-Session-Id` and no SSE (`GET` is 405), so any isolate serves any request. Effect's `McpServer.layerHttp` keeps sessions in an isolate's memory, so it isn't used. The methods are `initialize` (the client's protocol version if supported, else `2025-11-25`), `ping`, `tools/list` and `tools/call`. A notification gets 202; anything else gets `-32601`.
+- **Tools** call `apiHandler` in-process, so they keep the API's checks and errors; an API error is a tool result with `isError`. They are `list_sessions`, `read_session` (read-only), `new_session`, `steer_session` and `interrupt_session` (each takes the turn from the conversation's `currentTurn`), `stop_session` and `resume_session`. `read_session` returns `working`, so a client reads again instead of waiting on the server.
+- **Spike (2026-10-13), on a throwaway Worker and app:**
+  - An unauthenticated client got a 401 whose `WWW-Authenticate` leads to Access's OAuth metadata.
+  - DCR took only the allowed redirects.
+  - A loopback client, as Claude Code is, completed sign-in and refresh; refresh rotates the refresh token.
+  - claude.ai added the connector, signed in and called a tool. The Worker got `cf-access-authenticated-user-email` and a `Cf-Access-Jwt-Assertion` for the MCP app's AUD.
+  - The token works only on `/mcp`: elsewhere it gets the login redirect.
+  - Access returns no RFC 9207 `iss`, so ChatGPT uses its `connector/oauth/<callback id>` redirect.
+  - claude.ai first sends `server/discover` (an `Mcp-Method` header) and falls back to `initialize` after `-32601`.
 
 ### Later
 
@@ -507,7 +528,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - **Image:** CI builds the default image from `container/Dockerfile` (supervisor included), publishes it to a public OCI registry, and records its linux/amd64 manifest digest; `container/image.digest` pins it, and each CLI release embeds it. The image's `scotty.supervisor` label is `supervisorVersion` from `protocol/supervisor.ts`. No local Docker is needed to deploy or develop.
 - **Release:** `deploy/release.ts` bundles `deploy/entry.js` (Alchemy's generated Worker entry, reading the stage from the Worker's `ALCHEMY_STAGE`, so one bundle serves every stage) with rolldown and `@alchemy.run/cloudflare-runtime`, copies `ui/dist` without its prerender `server/`, and writes `release.json` (`version`, the pinned image, `supervisor`). Alchemy stays the Worker's runtime; it no longer deploys.
 - **Binary:** `deploy/compile.ts` builds a release, packs it with `skills/scotty/SKILL.md` into `dist/release.pack` (paths to base64), and compiles `cli/binary.ts` for darwin-arm64, darwin-x64 and linux-x64 with the pack embedded (`with { type: "file" }`); macOS binaries are ad-hoc signed. The binary unpacks the release into a temporary folder for a deploy. From a checkout the CLI builds the release in a `bun` subprocess instead, so the binary never bundles rolldown. `.github/workflows/release.yml` runs on a tag `v<version>`: it publishes the three tarballs, `checksums.txt` and `install.sh` on GitHub Releases, then writes `Formula/scotty.rb` (depends on `cloudflared`) to the tap `Yeshwanthyk/homebrew-scotty`.
-- **Deployer:** `scotty deploy` takes that release and `deploy/deployer.ts` applies it with direct Cloudflare API calls: it copies the pinned image into `registry.cloudflare.com/<account>/scotty@sha256:<digest>` over the OCI distribution API with short-lived registry credentials (verifying every digest, streaming blobs, never logging or persisting the credential), then makes or updates the bucket, the web app's assets (wrangler's hash: the first 32 hex of sha256(bytes + extension), so unchanged files are skipped), the Worker (both DOs, one migration `v1` only when its `SessionObject` namespace is new, the container binding, and the plain-text vars Alchemy's runtime reads: `ALCHEMY_PHASE=runtime`, `ALCHEMY_WORKER_NAME`, `ALCHEMY_STACK_NAME`, `ALCHEMY_STAGE`, `ALCHEMY_CLOUDFLARE_ACCOUNT_ID`), the container app (a changed image is a 100% rolling rollout), the custom domain, the Access application (owner email only), the preview record and the route. Proved on `main` by a spike (2026-09-29).
+- **Deployer:** `scotty deploy` takes that release and `deploy/deployer.ts` applies it with direct Cloudflare API calls: it copies the pinned image into `registry.cloudflare.com/<account>/scotty@sha256:<digest>` over the OCI distribution API with short-lived registry credentials (verifying every digest, streaming blobs, never logging or persisting the credential), then makes or updates the bucket, the web app's assets (wrangler's hash: the first 32 hex of sha256(bytes + extension), so unchanged files are skipped), the Worker (both DOs, one migration `v1` only when its `SessionObject` namespace is new, the container binding, and the plain-text vars Alchemy's runtime reads: `ALCHEMY_PHASE=runtime`, `ALCHEMY_WORKER_NAME`, `ALCHEMY_STACK_NAME`, `ALCHEMY_STAGE`, `ALCHEMY_CLOUDFLARE_ACCOUNT_ID`), the container app (a changed image is a 100% rolling rollout), the custom domain, the Access applications (owner email only; `/hooks/*` bypassed; `/mcp` with Managed OAuth), the preview record and the route. Proved on `main` by a spike (2026-09-29).
 - **Nothing is remembered between runs.** Every resource is found by its name, so `teardown` removes a stage by name and then lists what is left; the config is kept until nothing is.
 - Copy rather than pull: Cloudflare can pull public Docker Hub images directly but does not cache them, so every cold start would pull from Docker Hub under its rate limits; GHCR is not a supported pull source.
 - **Custom images:** `deploy --image docker.io/<repo>@sha256:<digest>` deploys an image built `FROM` the pinned one through the same copy. Before anything is pushed, its config's `scotty.supervisor` label must equal the release's `supervisor`, or the deploy is refused and names the image to build from. It lasts until the next deploy without `--image`.

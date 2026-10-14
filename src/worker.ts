@@ -12,6 +12,7 @@ import { gitHubApiHandler } from "./creds/github-api.js";
 import CredsObject from "./creds/object.js";
 import { hookHandler, hookPath } from "./hooks/handler.js";
 import { apiHandler, hatchPort } from "./http/api.js";
+import { mcpHandler } from "./mcp/server.js";
 import SessionObject, { SessionArtifacts } from "./session/object.js";
 
 // Set by the Session DO when it routes a container's built-in or connection egress here.
@@ -183,6 +184,13 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
           request.method !== "HEAD"
         )
           return HttpServerResponse.text("Forbidden", { status: 403 });
+        // Access Managed OAuth signs MCP clients in on its own app for this path.
+        if (url.pathname === "/mcp") {
+          if (foreign) return HttpServerResponse.text("Forbidden", { status: 403 });
+          return yield* mcpHandler(request, sessions, credentials, bucket, hatchBase).pipe(
+            Effect.orDie,
+          );
+        }
         if (terminal !== undefined) {
           if (foreign) return HttpServerResponse.text("Forbidden", { status: 403 });
           return yield* sessions.getByName(terminal).fetch(request).pipe(Effect.orDie);
