@@ -674,7 +674,7 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 
 ### S2: find sessions
 
-- **In scope:** the sessions list groups Today / This week / Older, filters All · Mine · Automations · Running, and puts sessions asleep over 7 days under Archived. Cmd-K searches every session by title, repo, key and first prompt (the Creds DO index gains what it needs), and filters by repo. Titles: the first prompt line, shown whole where there is room.
+- **In scope:** the sessions list groups Today / This week / Older, filters All · Mine · Automations · Running. Every stopped session is under Stopped (owner, 2026-10-17: no separate Archived fold). Cmd-K searches every session by title, repo, key and first prompt (the Creds DO index gains what it needs), and filters by repo. Titles: the first prompt line, shown whole where there is room.
 - **Done when:** `GET /api/sessions?q=` and `scotty ls --search` return matches from the index; screenshots at phone and desktop width; `e2e` asserts a search finds a created session.
 
 ### S3: hooks, keys and deliveries

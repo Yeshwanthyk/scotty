@@ -21,8 +21,6 @@ export type State = {
   readonly lastSeq: number;
   // When the owner or the agent last did something worth sorting by: a prompt, a turn's end.
   readonly activeAt: number;
-  // When the session last went to sleep; undefined while it is up or failed.
-  readonly stoppedAt: number | undefined;
   readonly gen: number | undefined;
   readonly startSeq: number;
   readonly stopSeq: number;
@@ -69,7 +67,6 @@ export const initial: State = {
   phase: "provisioning",
   lastSeq: 0,
   activeAt: 0,
-  stoppedAt: undefined,
   gen: undefined,
   startSeq: 0,
   stopSeq: 0,

@@ -28,7 +28,6 @@ const Session = Schema.Struct({
     branch: Schema.String,
     prompt: Schema.String,
     agentKind: Schema.String,
-    stoppedAt: Schema.NullOr(Schema.String),
     createdAt: Schema.String,
     activeAt: Schema.String,
     origin: Schema.NullOr(

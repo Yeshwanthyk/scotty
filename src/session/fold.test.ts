@@ -409,21 +409,6 @@ describe("session fold", () => {
     check(prompted);
   });
 
-  it("records when a session went to sleep and clears it on resume", () => {
-    const stopped = make(6, "container.stopped", { gen: 1 });
-    let state = fold(boot(), stopped);
-    expect(state.stoppedAt).toBe(stopped.at);
-    expect(sessionView("session-1", state).display.stoppedAt).toBe(
-      new Date(stopped.at).toISOString(),
-    );
-    state = fold(state, make(7, "agent.event", { gen: 1, n: 7, agentKind: "codex", event: null }));
-    expect(state.stoppedAt).toBe(stopped.at);
-    state = fold(state, make(8, "resume.requested"));
-    expect(state.phase).toBe("provisioning");
-    expect(state.stoppedAt).toBeUndefined();
-    expect(sessionView("session-1", state).display.stoppedAt).toBeNull();
-  });
-
   it("saves after an accepted turn end and clears the save deadline on its result", () => {
     const end = make(6, "turn.ended", { gen: 1, turn: "0", codexTurn: "cx", state: "completed" });
     const ended = fold(boot(), end);
@@ -630,7 +615,6 @@ describe("session fold", () => {
     state = fold(state, slept);
     expect(state).toMatchObject({
       phase: "stopped",
-      stoppedAt: slept.at,
       stop: { reason: "idle" },
       pending: [],
     });
