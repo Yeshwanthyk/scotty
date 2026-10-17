@@ -74,6 +74,14 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
             },
           ]
         : []),
+      {
+        id: "stats",
+        label: "Stats",
+        detail: "Hours, turns and failures per repository",
+        section: "Actions",
+        mark: <Icon name="gauge" />,
+        run: go(() => navigate({ to: "/stats" })),
+      },
       ...sections.map((item) => ({
         id: `settings-${item.id}`,
         label: `Settings: ${item.label}`,
