@@ -1,6 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { Marked, type MarkedToken, type Token, type Tokens } from "marked";
 import { createElement, Fragment, type ReactNode, useMemo } from "react";
+import { CodeBlock } from "./CodeBlock";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { colors, spacing } from "../theme/tokens.stylex";
 
@@ -82,24 +83,7 @@ const styles = stylex.create({
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: "0.88em",
   },
-  codeBlock: {
-    boxSizing: "border-box",
-    width: "100%",
-    maxWidth: "100%",
-    margin: `0 0 ${spacing.lg}`,
-    padding: spacing.lg,
-    overflowX: "auto",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: colors.lineSoft,
-    borderRadius: "8px",
-    backgroundColor: colors.control,
-    color: colors.muted,
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-    fontSize: "12px",
-    lineHeight: 1.6,
-    whiteSpace: "pre",
-  },
+  codeBlock: { margin: `0 0 ${spacing.lg}`, minWidth: 0 },
   link: {
     color: colors.focus,
     textDecorationLine: "underline",
@@ -344,16 +328,22 @@ function renderProseBlock(
 function renderTechnicalBlock(token: MarkedToken, key: string, isLast: boolean): ReactNode {
   if (token.type === "code" && token.lang?.trim().toLowerCase() === "mermaid")
     return <MermaidDiagram key={key} source={token.text} />;
-  if (token.type === "code")
+  if (token.type === "code") {
+    const lang = token.lang?.trim().split(/\s/)[0]?.toLowerCase() ?? "";
+    const shell = ["sh", "bash", "zsh", "shell", "console"].includes(lang);
     return (
-      <pre
-        key={key}
-        data-scrollbar="quiet"
-        {...stylex.props(styles.codeBlock, isLast && styles.lastBlock)}
-      >
-        <code>{token.text}</code>
-      </pre>
+      <div key={key} {...stylex.props(styles.codeBlock, isLast && styles.lastBlock)}>
+        <CodeBlock
+          code={token.text}
+          title={lang || undefined}
+          icon={shell ? "terminal" : "file"}
+          lineNumbers={!shell && lang !== "diff" && token.text.split("\n").length > 3}
+          diff={lang === "diff"}
+          collapseAfter={24}
+        />
+      </div>
     );
+  }
   if (token.type === "table") return renderTable(token, key, isLast);
   if (token.type === "hr") return <hr key={key} {...stylex.props(styles.rule)} />;
   return (

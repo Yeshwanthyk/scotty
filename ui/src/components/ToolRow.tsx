@@ -2,6 +2,7 @@ import { useState } from "react";
 import { changeDiff } from "../data/diff";
 import { duration } from "../data/status";
 import type { Tool } from "../protocol/session/conversation";
+import { CodeBlock } from "./CodeBlock";
 import { DiffLines, DiffStat } from "./DiffLines";
 import { Icon, Spinner, type IconName } from "./Icon";
 
@@ -125,10 +126,36 @@ function ToolBody({ tool }: { tool: Tool }) {
       </div>
     );
   const command = tool.category === "run" || tool.category === "check";
+  const failed = tool.status === "failed" || (tool.exitCode !== null && tool.exitCode !== 0);
+  const output = tool.output.replace(/^\n+/, "");
+  // A one-line command heads its output, as a terminal shows it; a longer one gets its own block.
+  const inline = command && output !== "" && !tool.input.includes("\n") && tool.input.length <= 120;
   return (
     <div className="tool-body">
-      {tool.input ? <pre className={command ? "command" : undefined}>{tool.input}</pre> : null}
-      {tool.output ? <pre>{tool.output.replace(/\n+$/, "")}</pre> : null}
+      {tool.input && !inline ? (
+        <CodeBlock
+          code={tool.input}
+          size="sm"
+          prompt={command}
+          wrap
+          title={command ? "Command" : "Input"}
+          icon={command ? "terminal" : "file"}
+        />
+      ) : null}
+      {output ? (
+        <CodeBlock
+          code={output}
+          size="sm"
+          wrap
+          tone={failed ? "destructive" : "default"}
+          title={inline ? `$ ${tool.input}` : "Output"}
+          trailing={
+            tool.exitCode !== null && tool.exitCode !== 0 ? `exit ${tool.exitCode}` : undefined
+          }
+          icon={failed ? "alert" : command ? "terminal" : "list"}
+          collapseAfter={40}
+        />
+      ) : null}
     </div>
   );
 }
