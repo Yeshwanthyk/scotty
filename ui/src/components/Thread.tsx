@@ -3,7 +3,7 @@ import { duration } from "../data/status";
 import type { Item, Tool, Turn } from "../protocol/session/conversation";
 import { Icon, Spinner } from "./Icon";
 import { Markdown } from "./Markdown";
-import { ExploreGroup, ToolRow } from "./ToolRow";
+import { ExploreGroup, SubagentTools, ToolRow } from "./ToolRow";
 
 // The last few turns stay open; older ones fold behind one button, as in pecan.
 const openTurns = 3;
@@ -68,13 +68,21 @@ function UserMessage({ text }: { text: string }) {
   );
 }
 
-// The answer is the turn's last final message; everything before it is the work log.
+// The answer is the turn's last final message; everything before it is the work log. Tools a
+// subagent ran sit under its row, not in the log.
 function split(turn: Turn) {
-  const last = turn.items.findLastIndex((item) => item.kind === "text");
-  const answer = turn.items[last];
+  const subagents = new Map<string, Tool[]>();
+  const items: Item[] = [];
+  for (const item of turn.items) {
+    if (item.kind === "tool" && item.parent !== undefined)
+      subagents.set(item.parent, [...(subagents.get(item.parent) ?? []), item]);
+    else items.push(item);
+  }
+  const last = items.findLastIndex((item) => item.kind === "text");
+  const answer = items[last];
   if (answer?.kind === "text" && (answer.final || turn.state !== "streaming"))
-    return { log: turn.items.filter((_, index) => index !== last), answer: answer.text };
-  return { log: turn.items, answer: turn.items.length === 0 ? turn.assistant : "" };
+    return { log: items.filter((_, index) => index !== last), answer: answer.text, subagents };
+  return { log: items, answer: items.length === 0 ? turn.assistant : "", subagents };
 }
 
 export function useNow(live: boolean, every = 1000) {
@@ -96,7 +104,7 @@ function TurnView({ sessionId, turn, mode }: { sessionId: string; turn: Turn; mo
   const state = turn.state === "streaming" && cutOff ? "aborted" : turn.state;
   const live = state === "streaming";
   const now = useNow(live && mode === "live");
-  const { log, answer } = split(turn);
+  const { log, answer, subagents } = split(turn);
   const [open, setOpen] = useState(false);
   const started = turn.startedAt === null ? undefined : Date.parse(turn.startedAt);
   // A cut-off turn has no end time, so it has no duration either.
@@ -107,85 +115,87 @@ function TurnView({ sessionId, turn, mode }: { sessionId: string; turn: Turn; mo
   const [copied, setCopied] = useState(false);
   return (
     <article className="turn" data-turn={turn.id}>
-      <UserMessage text={turn.user} />
-      <div className="assistant">
-        {live && mode === "booting" ? null : live ? (
-          <>
-            <WorkLog items={log} live />
-            {answer ? <Markdown source={answer} /> : null}
-            <div className="live">
-              <Spinner size={13} />
-              <span className="shimmer">Working</span>
-              {took ? <span className="quiet tabular">{took}</span> : null}
-            </div>
-          </>
-        ) : (
-          <>
-            {log.length > 0 ? (
-              <>
-                <button
-                  type="button"
-                  className="worked"
-                  aria-expanded={open}
-                  onClick={() => setOpen((value) => !value)}
-                >
-                  <span>
-                    {state === "completed" ? "Worked" : "Ran"}
-                    {took ? (
-                      <>
-                        {" for "}
-                        <b className="tabular">{took}</b>
-                      </>
-                    ) : null}
-                    {steps > 0 ? ` · ${steps} ${steps === 1 ? "step" : "steps"}` : null}
-                  </span>
-                  <Icon name="chevronRight" size={12} className="chevron" />
-                </button>
-                {open ? <WorkLog items={log.filter((item) => !errors.includes(item))} /> : null}
-              </>
-            ) : null}
-            {errors.map((item) =>
-              item.kind === "notice" ? (
-                <Notice key={item.id} text={item.text} tone="error" />
-              ) : null,
-            )}
-            {answer ? (
-              <div className="answer">
-                <Markdown source={answer} />
+      <SubagentTools value={subagents}>
+        <UserMessage text={turn.user} />
+        <div className="assistant">
+          {live && mode === "booting" ? null : live ? (
+            <>
+              <WorkLog items={log} live />
+              {answer ? <Markdown source={answer} /> : null}
+              <div className="live">
+                <Spinner size={13} />
+                <span className="shimmer">Working</span>
+                {took ? <span className="quiet tabular">{took}</span> : null}
               </div>
-            ) : null}
-            <Files sessionId={sessionId} files={turn.files} />
-            <div className="turn-end" data-state={state}>
-              {state === "aborted" ? (
-                <span className="interrupted">
-                  <Icon name="stop" size={9} /> Interrupted
-                </span>
-              ) : state === "failed" ? (
+            </>
+          ) : (
+            <>
+              {log.length > 0 ? (
                 <>
-                  <Icon name="alert" size={13} /> Turn failed
-                </>
-              ) : null}
-              {answer ? (
-                <span className="answer-actions">
                   <button
                     type="button"
-                    className="icon-button pressable"
-                    aria-label="Copy answer"
-                    onClick={() =>
-                      void navigator.clipboard.writeText(answer).then(() => {
-                        setCopied(true);
-                        setTimeout(() => setCopied(false), 1200);
-                      })
-                    }
+                    className="worked"
+                    aria-expanded={open}
+                    onClick={() => setOpen((value) => !value)}
                   >
-                    <Icon name={copied ? "check" : "copy"} size={14} />
+                    <span>
+                      {state === "completed" ? "Worked" : "Ran"}
+                      {took ? (
+                        <>
+                          {" for "}
+                          <b className="tabular">{took}</b>
+                        </>
+                      ) : null}
+                      {steps > 0 ? ` · ${steps} ${steps === 1 ? "step" : "steps"}` : null}
+                    </span>
+                    <Icon name="chevronRight" size={12} className="chevron" />
                   </button>
-                </span>
+                  {open ? <WorkLog items={log.filter((item) => !errors.includes(item))} /> : null}
+                </>
               ) : null}
-            </div>
-          </>
-        )}
-      </div>
+              {errors.map((item) =>
+                item.kind === "notice" ? (
+                  <Notice key={item.id} text={item.text} tone="error" />
+                ) : null,
+              )}
+              {answer ? (
+                <div className="answer">
+                  <Markdown source={answer} />
+                </div>
+              ) : null}
+              <Files sessionId={sessionId} files={turn.files} />
+              <div className="turn-end" data-state={state}>
+                {state === "aborted" ? (
+                  <span className="interrupted">
+                    <Icon name="stop" size={9} /> Interrupted
+                  </span>
+                ) : state === "failed" ? (
+                  <>
+                    <Icon name="alert" size={13} /> Turn failed
+                  </>
+                ) : null}
+                {answer ? (
+                  <span className="answer-actions">
+                    <button
+                      type="button"
+                      className="icon-button pressable"
+                      aria-label="Copy answer"
+                      onClick={() =>
+                        void navigator.clipboard.writeText(answer).then(() => {
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 1200);
+                        })
+                      }
+                    >
+                      <Icon name={copied ? "check" : "copy"} size={14} />
+                    </button>
+                  </span>
+                ) : null}
+              </div>
+            </>
+          )}
+        </div>
+      </SubagentTools>
     </article>
   );
 }

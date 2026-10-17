@@ -240,6 +240,7 @@ function create(input: {
 function seed() {
   const saved: [string, string?][] = [
     ["rich-markdown", "Markdown, mermaid and code"],
+    ["claude-subagent", "A subagent lists files and reads README"],
     ["phone-files", "Screenshot and video of the counter"],
     ["two-turns"],
     ["hatch-env"],

@@ -19,6 +19,8 @@ export type Item =
       exitCode: number | null;
       durationMs: number | null;
       changes: Change[];
+      // The subagent call this tool ran under.
+      parent?: string;
     }
   | { kind: "plan"; id: string; steps: { step: string; status: string }[] }
   | { kind: "notice"; id: string; text: string; tone: "info" | "error" };
