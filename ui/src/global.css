@@ -1305,27 +1305,203 @@ kbd {
   overflow: hidden;
 }
 
-.tool-body pre {
+.tool-body:has(> .code-block) {
+  border: 0;
+  background: none;
+  overflow: visible;
+  display: grid;
+  gap: 6px;
+}
+
+/* ---------- Code block ---------- */
+
+.code-block {
+  position: relative;
   margin: 0;
-  padding: 10px 12px;
-  max-height: 280px;
-  overflow: auto;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.55;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--sunken);
+  overflow: hidden;
+  --code-size: 12px;
+  --code-pad-y: 12px;
+  --code-pad-x: 14px;
+}
+
+.code-block[data-size="sm"] {
+  --code-size: 11.5px;
+  --code-pad-y: 8px;
+  --code-pad-x: 12px;
+}
+
+.code-block[data-tone="destructive"] {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+  background: color-mix(in srgb, var(--danger) 5%, var(--sunken));
+}
+
+.code-block-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 4px 0 12px;
+  border-bottom: 1px solid var(--line);
   color: var(--muted);
+  font-size: 12px;
+}
+
+.code-block[data-size="sm"] .code-block-head {
+  min-height: 28px;
+  padding-left: 10px;
+  font-size: 11.5px;
+}
+
+.code-block-title {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.code-block-title > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+}
+
+.code-block-trailing {
+  flex: none;
+  font-family: var(--font-mono);
+}
+
+.code-block[data-tone="destructive"] .code-block-trailing,
+.code-block[data-tone="destructive"] .code-block-title > svg {
+  color: var(--danger);
+}
+
+.code-block-actions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.code-block-actions .icon-button {
+  width: 26px;
+  height: 26px;
+}
+
+/* Without a header the copy button floats over the code, shown on hover or focus. */
+.code-block-actions[data-floating] {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+  opacity: 0;
+  transition: opacity 120ms;
+}
+
+.code-block:hover .code-block-actions[data-floating],
+.code-block:focus-within .code-block-actions[data-floating] {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .code-block-actions[data-floating] {
+    opacity: 1;
+  }
+}
+
+.code-block-content {
+  margin: 0;
+  padding: var(--code-pad-y) 0;
+  overflow: auto;
+  max-height: var(--code-max, none);
+  font-family: var(--font-mono);
+  font-size: var(--code-size);
+  line-height: 1.6;
+  color: var(--muted);
+  white-space: pre;
+  tab-size: 2;
+  counter-reset: line;
+}
+
+.code-block[data-size="sm"] .code-block-content {
+  --code-max: 280px;
+}
+
+.code-block-content:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: -2px;
+}
+
+.code-block-content[data-wrap="true"] {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.tool-body .command {
+.code-block-content[data-prompt="true"] {
   color: var(--ink);
-  border-bottom: 1px solid var(--line);
 }
 
-.tool-body .command::before {
+.code-block-content[data-prompt="true"] .code-line:first-child::before {
   content: "$ ";
   color: var(--quiet);
+  user-select: none;
+}
+
+.code-line {
+  display: block;
+  padding: 0 var(--code-pad-x);
+  min-width: max-content;
+  counter-increment: line;
+}
+
+.code-block-content[data-wrap="true"] .code-line {
+  min-width: 0;
+}
+
+.code-block-content[data-numbers="true"] .code-line::before {
+  content: counter(line);
+  display: inline-block;
+  width: 3ch;
+  margin-right: 14px;
+  text-align: right;
+  color: var(--quiet);
+  opacity: 0.7;
+  user-select: none;
+}
+
+.code-line[data-kind="added"] {
+  color: var(--diff-add);
+  background: var(--diff-add-bg);
+}
+
+.code-line[data-kind="hunk"] {
+  color: var(--quiet);
+}
+
+.code-line[data-kind="removed"] {
+  color: var(--diff-del);
+  background: var(--diff-del-bg);
+}
+
+.code-block-more {
+  width: 100%;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.code-block-more[aria-expanded="true"] .chevron {
+  rotate: 180deg;
 }
 
 .group-row .count {

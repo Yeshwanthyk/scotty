@@ -27,7 +27,12 @@ export function Thread({
   return (
     <>
       {hidden > 0 ? (
-        <button type="button" className="earlier pressable" onClick={() => setShowAll(true)}>
+        <button
+          type="button"
+          className="earlier pressable"
+          aria-expanded={false}
+          onClick={() => setShowAll(true)}
+        >
           <Icon name="chevronDown" size={14} />
           <span>
             {hidden} earlier {hidden === 1 ? "turn" : "turns"}
@@ -101,7 +106,7 @@ function TurnView({ sessionId, turn, mode }: { sessionId: string; turn: Turn; mo
   const steps = log.filter((item) => item.kind === "tool").length;
   const [copied, setCopied] = useState(false);
   return (
-    <article className="turn">
+    <article className="turn" data-turn={turn.id}>
       <UserMessage text={turn.user} />
       <div className="assistant">
         {live && mode === "booting" ? null : live ? (

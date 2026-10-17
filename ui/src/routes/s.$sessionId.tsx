@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentChip, Composer } from "../components/Composer";
 import { DiffStat } from "../components/DiffLines";
 import { Icon } from "../components/Icon";
@@ -8,6 +8,7 @@ import { Menu } from "../components/Menu";
 import { SidebarButton } from "../components/Layout";
 import { SidePanel, type PanelTab } from "../components/SidePanel";
 import { Thread, type ThreadMode } from "../components/Thread";
+import { useTranscript } from "../components/transcript";
 import {
   decodeSessionFrame,
   lifecycle,
@@ -42,9 +43,6 @@ const readPanel = (): PanelTab | undefined => {
   }
 };
 
-// Follow new output only while the reader is already near the bottom.
-const pinDistance = 140;
-
 // "closed": the server ended the socket, yet the session is still there.
 type Link = Connection | "closed" | "missing";
 const linkNote: Record<Link, string> = {
@@ -70,8 +68,6 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const [panel, setPanel] = useState<PanelTab | undefined>(() =>
     typeof window !== "undefined" && window.innerWidth >= 1100 ? readPanel() : undefined,
   );
-  const [pinned, setPinned] = useState(true);
-  const thread = useRef<HTMLDivElement>(null);
   const refresh = useRef<() => void>(() => undefined);
   const attempt = useRef<{ input: string; req: string }>(undefined);
   useEffect(() => {
@@ -117,27 +113,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
       live.stop();
     };
   }, [sessionId]);
-  // What changes when the agent adds output; polls that change nothing don't move the view.
-  const last = snapshot?.turns.at(-1);
-  const growth = `${snapshot?.turns.length}:${last?.state}:${last?.items.length}:${JSON.stringify(last?.items.at(-1) ?? "").length}`;
-  useLayoutEffect(() => {
-    const element = thread.current;
-    if (element === null || !pinned) return;
-    element.scrollTop = element.scrollHeight;
-    // Mermaid and images grow just after render; follow them briefly, then leave the reader be.
-    const content = element.firstElementChild;
-    if (content === null) return;
-    const until = Date.now() + 1500;
-    const observer = new ResizeObserver(() => {
-      if (Date.now() < until) element.scrollTop = element.scrollHeight;
-    });
-    observer.observe(content);
-    const timer = setTimeout(() => observer.disconnect(), 1500);
-    return () => {
-      clearTimeout(timer);
-      observer.disconnect();
-    };
-  }, [growth, pinned]);
+  const transcript = useTranscript(snapshot?.turns.at(-1)?.id);
   const status = detail === undefined ? undefined : statusOf(detail, true);
   const working = status === "working";
   const failed = status === "failed";
@@ -165,7 +141,8 @@ function SessionView({ sessionId }: { sessionId: string }) {
       );
       if (action === "steer" && (result === "pending" || result === "delivered"))
         setText((current) => (current.trim() === submitted ? "" : current));
-      setPinned(true);
+      if (working) transcript.jump();
+      else transcript.expectTurn();
       refresh.current();
       sessions.refresh();
     } catch (failure) {
@@ -324,15 +301,19 @@ function SessionView({ sessionId }: { sessionId: string }) {
           <div
             className="thread"
             data-scroll
-            ref={thread}
-            onScroll={(event) => {
-              const element = event.currentTarget;
-              setPinned(
-                element.scrollHeight - element.scrollTop - element.clientHeight < pinDistance,
-              );
-            }}
+            ref={transcript.viewport}
+            role="region"
+            aria-label="Conversation"
+            tabIndex={0}
+            {...transcript.handlers}
           >
-            <div className="thread-inner">
+            <div
+              className="thread-inner"
+              ref={transcript.content}
+              role="log"
+              aria-relevant="additions"
+              aria-busy={working}
+            >
               {snapshot === undefined && link !== "missing" ? <ThreadPlaceholder /> : null}
               {snapshot !== undefined ? (
                 <Thread sessionId={sessionId} turns={turns} mode={mode} />
@@ -346,10 +327,11 @@ function SessionView({ sessionId }: { sessionId: string }) {
                   onResume={() => void act("resume")}
                 />
               ) : null}
+              <div ref={transcript.spacer} aria-hidden="true" hidden />
             </div>
           </div>
-          {!pinned ? (
-            <button type="button" className="jump pressable" onClick={() => setPinned(true)}>
+          {!transcript.atEnd ? (
+            <button type="button" className="jump pressable" onClick={transcript.jump}>
               <Icon name="arrowDown" size={13} />
               Latest
             </button>
