@@ -21,6 +21,7 @@ import {
   setGitHub,
   settings,
   startChatGpt,
+  setClaudeStyle,
   switchSkill,
   type Accounts as AccountState,
   type Connection,
@@ -136,7 +137,11 @@ export function SettingsPage({ section }: { section?: Section }) {
           ) : shown === "instructions" ? (
             <Instructions saved={data.settings.instructions} reload={load} />
           ) : shown === "skills" ? (
-            <Skills sources={data.settings.sources} reload={load} />
+            <Skills
+              sources={data.settings.sources}
+              claudeStyle={data.settings.claudeStyle}
+              reload={load}
+            />
           ) : shown === "connections" ? (
             <Connections />
           ) : shown === "blueprints" ? (
@@ -445,9 +450,11 @@ type Changed = { source: string; added: string[]; updated: string[]; round: numb
 
 function Skills({
   sources,
+  claudeStyle,
   reload,
 }: {
   sources: SettingsState["sources"];
+  claudeStyle: string | null;
   reload: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState("");
@@ -543,6 +550,33 @@ function Skills({
           Add
         </button>
       </form>
+      {sources.length === 0 ? null : (
+        <label className="settings-row">
+          <span className="settings-row-text">
+            <span className="settings-row-title">Claude output style</span>
+            <span className="settings-row-detail">A skill Claude sessions run as their mode</span>
+          </span>
+          <select
+            className="field"
+            aria-label="Claude output style"
+            value={claudeStyle ?? ""}
+            disabled={busy !== ""}
+            onChange={(event) => {
+              const skill = event.target.value === "" ? null : event.target.value;
+              void run("style", () => setClaudeStyle(skill), "Could not set the style");
+            }}
+          >
+            <option value="">None</option>
+            {sources
+              .flatMap((source) => source.skills)
+              .map((skill) => (
+                <option key={skill.name} value={skill.name}>
+                  {skill.name}
+                </option>
+              ))}
+          </select>
+        </label>
+      )}
       {sources.map((source) => {
         const on = source.skills.filter((skill) => skill.enabled).length;
         const fresh = changed?.source === source.id ? changed : undefined;

@@ -13,6 +13,8 @@ interface AgentFiles {
   readonly instructions: string;
   // The folder the agent loads skills from.
   readonly skills: string;
+  // The folder the agent loads output styles from; only Claude has them.
+  readonly styles: string | undefined;
   // The session's state file: `find <dir> -name <name>` run in home.
   readonly state: (session: string) => { readonly dir: string; readonly name: string };
 }
@@ -35,6 +37,7 @@ export const makeAgent = (config: Config): Agent => {
           home: codexHome(),
           instructions: "AGENTS.md",
           skills: `${home()}/.agents/skills`,
+          styles: undefined,
           state: (session) => ({ dir: "sessions", name: `rollout-*${session}*.jsonl` }),
         },
         runner: (cwd) => CodexRunner.make(config, cwd),
@@ -46,6 +49,7 @@ export const makeAgent = (config: Config): Agent => {
           home: `${home()}/.claude`,
           instructions: "CLAUDE.md",
           skills: `${home()}/.claude/skills`,
+          styles: `${home()}/.claude/output-styles`,
           // Claude names a project folder after its cwd: /workspace/repo.
           state: (session) => ({ dir: "projects/-workspace-repo", name: `${session}.jsonl` }),
         },

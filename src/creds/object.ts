@@ -178,6 +178,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // A skill's name is unique across sources, since every source unpacks into one folder.
       yield* sql`CREATE TABLE IF NOT EXISTS skill_sources (id TEXT PRIMARY KEY, repo TEXT NOT NULL, path TEXT NOT NULL, ref TEXT, commit_sha TEXT NOT NULL, size INTEGER NOT NULL, fetched INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS source_skills (name TEXT PRIMARY KEY, source TEXT NOT NULL, description TEXT NOT NULL, manual INTEGER NOT NULL, enabled INTEGER NOT NULL, digest TEXT NOT NULL)`;
+      // The skill Claude sessions use as their output style.
+      yield* sql`CREATE TABLE IF NOT EXISTS claude_style (id INTEGER PRIMARY KEY CHECK (id = 1), skill TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (id TEXT PRIMARY KEY)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
       yield* sql`CREATE TABLE IF NOT EXISTS request_sessions (req TEXT PRIMARY KEY, id TEXT)`;
@@ -951,6 +953,29 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                   : null;
             return { status: "saved" as const, added, updated, removed, stale };
           }).pipe(sql.withTransaction),
+        claudeStyle: () =>
+          sql`SELECT skill FROM claude_style`.pipe(
+            Effect.flatMap((rows) =>
+              rows[0] === undefined
+                ? Effect.succeed(null)
+                : Schema.decodeUnknownEffect(Schema.Struct({ skill: Schema.String }))(rows[0]).pipe(
+                    Effect.map((row) => row.skill),
+                  ),
+            ),
+          ),
+        // A style skill is switched on, since the style is built from its installed folder.
+        setClaudeStyle: (name: string | null) =>
+          Effect.gen(function* () {
+            if (name === null) {
+              yield* sql`DELETE FROM claude_style`;
+              return true;
+            }
+            const found =
+              yield* sql`UPDATE source_skills SET enabled = 1 WHERE name = ${name} RETURNING name`;
+            if (found.length === 0) return false;
+            yield* sql`INSERT OR REPLACE INTO claude_style (id, skill) VALUES (1, ${name})`;
+            return true;
+          }).pipe(sql.withTransaction),
         setSkill: (name: string, enabled: boolean) =>
           sql`UPDATE source_skills SET enabled = ${enabled ? 1 : 0} WHERE name = ${name} RETURNING name`.pipe(
             Effect.map((rows) => rows.length > 0),
@@ -978,6 +1003,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               yield* sql`SELECT name, source, description, manual, enabled, digest FROM source_skills WHERE enabled = 0 ORDER BY name`,
               (row) => Schema.decodeUnknownEffect(SkillRow)(row),
             );
+            const style =
+              yield* sql`SELECT skill FROM claude_style WHERE skill IN (SELECT name FROM source_skills WHERE enabled = 1)`;
             return {
               sources: sources.map((source) => ({
                 id: source.id,
@@ -985,6 +1012,13 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                 path: source.path,
                 commit: source.commit_sha,
               })),
+              // Only an installed skill can be the style.
+              style:
+                style[0] === undefined
+                  ? undefined
+                  : (yield* Schema.decodeUnknownEffect(Schema.Struct({ skill: Schema.String }))(
+                      style[0],
+                    )).skill,
               off: off
                 .filter((skill) => sources.some((source) => source.id === skill.source))
                 .map((skill) => skill.name),

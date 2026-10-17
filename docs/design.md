@@ -477,6 +477,14 @@ There is no upload: a skill lives in a repository.
   `config.toml`, Claude `settings.skillOverrides {name: "off"}`. The scripted agents ignore those
   settings, so e2e checks the installed tree and only `--real` proves the deny-lists. New and
   resumed sessions get changes; running ones don't.
+- **Claude output style:** the owner may name one skill as Claude's output style (the
+  `claude_style` row in the Creds DO); setting it switches that skill on. A Claude session whose
+  style skill is installed gets `~/.claude/output-styles/<name>.md`, built by the supervisor as
+  the owner's `build-mode.py` builds `powerball` from `yesh-router`: the `SKILL.md` text without
+  frontmatter, relative links made absolute under the installed folder, and
+  `keep-coding-instructions: true`. The runner passes `settings.outputStyle: <name>`. The folder is
+  rebuilt on every start, so a resume after the style is cleared has none. Codex has no output
+  styles and ignores it.
 - **The GitHub token** stays in the Creds DO and the Worker. R2 holds only the tarball.
 
 ## API the UI needs
@@ -506,6 +514,7 @@ The conversation snapshot includes top-level `currentTurn`, the authoritative tu
 | `GET/POST /api/credentials/claude`                                           | Creds DO Claude token status                         |
 | `GET /api/settings`, `PUT /api/settings/instructions`                        | Creds DO instructions and skill sources              |
 | `POST /api/skill-sources[/refresh,/remove]`, `PATCH /api/skills/:name`       | Skills from repositories (above)                     |
+| `PUT /api/settings/claude-style`                                             | Claude output style (above)                          |
 | `GET /api/version`                                                           | The deployed Worker's version                        |
 | `POST /mcp`                                                                  | Scotty's MCP server (below), on the API handler      |
 
@@ -568,7 +577,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - **Setup:** `doctor` checks the address, Access, the Worker's version, and each sign-in (ChatGPT, GitHub, Claude), with each account's expiry and the fix for each problem. `login chatgpt` runs the device code: it prints the code, opens the page, and polls. `login github` saves the token from stdin, or from `gh auth token`. `login claude` runs `claude setup-token` and saves the token, or reads it from stdin.
 - **Sessions:** `new <owner/repo> <prompt> [--agent codex|claude] [--key k]` is idempotent on `--key` and uses the repository's default branch. `ls` lists sessions. `read <id> [--last N] [--role user|assistant]` prints the session state and recent messages (default 1, maximum 500; role filtering precedes the limit; empty assistant text is omitted). `log <id>` prints the raw events. There is no `watch`: callers choose when to read again. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries. `stop`, `resume`, `open [id]` and `hatch <id> <port>` do what they say. `rm <id…>` deletes stopped or failed sessions with their saves and files, after resolving every id; a running one answers 409 with the hint `scotty stop <id>`.
 - **Blueprints:** `blueprint install <file> [--repo <owner/repo>] [--target <name>=<owner/repo>…] [--agent codex|claude]`, with secrets as one JSON object on stdin; everything is created off.
-- **What sessions get:** `skills add <source>`, `skills ls`, `skills on|off <name…>`, `skills refresh [source]`, `skills rm <source>`, and `push instructions <file|->`.
+- **What sessions get:** `skills add <source>`, `skills ls`, `skills on|off <name…>`, `skills style <name>|--none`, `skills refresh [source]`, `skills rm <source>`, and `push instructions <file|->`.
 - **Help:** `scotty --help` lists every command; `scotty <command> --help` is short and most end with one runnable example.
 
 ## Deploy

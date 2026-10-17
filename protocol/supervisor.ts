@@ -33,6 +33,8 @@ const mcp = Schema.optionalKey(
 const skillName = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
 // Installed skills the agent hides, through its own skill settings.
 const skillsOff = Schema.optionalKey(Schema.Array(skillName));
+// The installed skill Claude uses as its output style.
+const style = Schema.optionalKey(skillName);
 const CodexAgent = Schema.Struct({
   kind: Schema.Literal("codex"),
   mcp,
@@ -48,6 +50,7 @@ const ClaudeAgent = Schema.Struct({
   kind: Schema.Literal("claude"),
   mcp,
   skillsOff,
+  style,
   model: Schema.String,
   effort: Schema.Literals(["low", "medium", "high", "xhigh", "max"]),
   token: credentialString,
@@ -64,6 +67,7 @@ const ScriptedClaudeAgent = Schema.Struct({
   kind: Schema.Literal("claude"),
   mcp,
   skillsOff,
+  style,
   scripted: Schema.Literal(true),
   model: Schema.String,
 });

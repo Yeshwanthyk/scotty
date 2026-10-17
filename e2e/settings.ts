@@ -12,6 +12,7 @@ import {
   SkillSwitched,
   SourceRemoved,
   SourceSaved,
+  StyleSet,
   target,
   View,
 } from "../cli/client.js";
@@ -33,11 +34,20 @@ const secondMark = `OWNERMARK-B-${id}`;
 
 // Lists what start installed, follows yesh-router's link, checks its script kept its mode, and
 // greps the owner's marker from the agent's instructions.
-const { skills, instructions } = {
-  codex: { skills: "~/.agents/skills", instructions: '"${CODEX_HOME:-$HOME/.codex}/AGENTS.md"' },
-  claude: { skills: "~/.claude/skills", instructions: "~/.claude/CLAUDE.md" },
+// Claude also gets yesh-router as its output style, with its links made absolute.
+const { skills, instructions, style } = {
+  codex: {
+    skills: "~/.agents/skills",
+    instructions: '"${CODEX_HOME:-$HOME/.codex}/AGENTS.md"',
+    style: "",
+  },
+  claude: {
+    skills: "~/.claude/skills",
+    instructions: "~/.claude/CLAUDE.md",
+    style: `; grep -q "](/home/scotty/.claude/skills/${router}/" ~/.claude/output-styles/${router}.md && echo STYLE-OK`,
+  },
 }[agent];
-const command = `ls ${skills}; test -f ${skills}/${router}/../${linked}/SKILL.md && echo LINK-OK; test -x ${skills}/${router}/references/decision-trail/log.sh && echo EXEC-OK; grep -o "OWNERMARK-[A-Z0-9-]*" ${instructions}`;
+const command = `ls ${skills}; test -f ${skills}/${router}/../${linked}/SKILL.md && echo LINK-OK; test -x ${skills}/${router}/references/decision-trail/log.sh && echo EXEC-OK; grep -o "OWNERMARK-[A-Z0-9-]*" ${instructions}${style}`;
 const probe = prompt(
   `Run exactly: \`${command}\` and reply with its full output only.`,
   `run ${command}\nsay {{out}}`,
@@ -81,7 +91,10 @@ const program = Effect.gen(function* () {
   console.log(`${source} at ${added.commit.slice(0, 7)}: ${added.added.length} skills, all off`);
 
   // 2. One skill on in each source and owner instructions; a new session gets both folders whole.
-  yield* toggle(router, true);
+  const setStyle = (skill: string | null) =>
+    request("/api/settings/claude-style", StyleSet, { method: "PUT", body: { skill } });
+  // Setting the style switches yesh-router on.
+  yield* setStyle(router);
   yield* toggle(scotty, true);
   yield* request("/api/settings/instructions", Saved, {
     method: "PUT",
@@ -116,6 +129,10 @@ const program = Effect.gen(function* () {
   yield* check(start.includes("LINK-OK"), "A skill's link to another skill doesn't resolve");
   yield* check(start.includes("EXEC-OK"), "A skill's script lost its execute bit");
   yield* check(start.includes(firstMark), "Owner instructions not in the agent's instructions");
+  yield* check(
+    agent === "codex" || start.includes("STYLE-OK"),
+    "Claude's output style was not built from yesh-router",
+  );
   console.log("Start: both sources installed, link resolves, script executable, owner marker");
 
   // 3. Every skill off and new instructions; a stop and resume picks up both.
@@ -135,6 +152,7 @@ const program = Effect.gen(function* () {
   });
   const resumed = yield* reply("1");
   yield* check(!resumed.includes("LINK-OK"), "A source with no skill on is still installed");
+  yield* check(!resumed.includes("STYLE-OK"), "A style whose skill is off is still installed");
   yield* check(
     resumed.includes(secondMark) && !resumed.includes(firstMark),
     "Resume kept the old instructions",
@@ -149,10 +167,12 @@ const program = Effect.gen(function* () {
     method: "PUT",
     body: { text: owner.instructions },
   });
+  yield* setStyle(null);
   for (const known of before) {
     yield* add(`${known.id}${known.ref === null ? "" : `@${known.ref}`}`);
     for (const skill of known.skills) if (skill.enabled) yield* toggle(skill.name, true);
   }
+  if (owner.claudeStyle !== null) yield* setStyle(owner.claudeStyle);
   console.log("Cleaned up");
 });
 

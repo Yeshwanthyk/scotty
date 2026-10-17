@@ -332,7 +332,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   url: internalUrl(connection.name, "mcp"),
                 }));
               const skills = yield* credentials.getByName("owner").sessionSkills();
-              const agent = { ...configured, mcp, skillsOff: skills.off };
+              const agent = {
+                ...configured,
+                mcp,
+                skillsOff: skills.off,
+                ...(configured.kind === "claude" && skills.style !== undefined
+                  ? { style: skills.style }
+                  : {}),
+              };
               // The deployer always sets SCOTTY_HATCH_BASE to the stage's domain.
               const hatchBase = yield* Effect.orDie(Config.String("SCOTTY_HATCH_BASE"));
               // Resume only when the save reached the new container; otherwise start clean.

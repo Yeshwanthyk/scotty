@@ -1,7 +1,7 @@
 import { Effect, Option } from "effect";
-import { Argument, Command } from "effect/unstable/cli";
-import { Settings, SkillSwitched, SourceRemoved, SourceSaved } from "../client.js";
-import { ago, bold, dim, green, output, table, withClient } from "./common.js";
+import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Settings, SkillSwitched, SourceRemoved, SourceSaved, StyleSet } from "../client.js";
+import { ago, bold, dim, green, output, table, usage, withClient } from "./common.js";
 
 const changes = (saved: typeof SourceSaved.Type) => {
   const parts = [
@@ -38,6 +38,11 @@ const list = Command.make("ls", {}, () =>
                 ),
               ].join("\n"),
             )),
+        dim(
+          settings.claudeStyle === null
+            ? "No Claude output style. Set one: scotty skills style <name>"
+            : `Claude output style: ${settings.claudeStyle}`,
+        ),
         dim(
           settings.instructions.trim() === ""
             ? "No instructions. Set them: scotty push instructions ./AGENTS.md"
@@ -110,6 +115,34 @@ const toggle = (name: "on" | "off") =>
     }),
   );
 
+// Claude sessions run the skill as their output style; setting one switches the skill on.
+const style = Command.make(
+  "style",
+  {
+    name: Argument.String("name").pipe(Argument.optional),
+    none: Flag.Boolean("none").pipe(Flag.withDefault(false)),
+  },
+  ({ name, none }) =>
+    Effect.gen(function* () {
+      if (none === Option.isSome(name))
+        return yield* usage("Name a skill or pass --none, not both", "skills style");
+      const api = yield* withClient;
+      const set = yield* api("/api/settings/claude-style", StyleSet, {
+        method: "PUT",
+        body: { skill: Option.getOrNull(name) },
+      });
+      yield* output(
+        set,
+        [
+          set.claudeStyle === null
+            ? `${green("✓")} Claude sessions have no output style`
+            : `${green("✓")} Claude sessions run ${bold(set.claudeStyle)} as their output style`,
+          dim("New sessions and resumes get the change."),
+        ].join("\n"),
+      );
+    }),
+);
+
 export const skills = Command.make("skills").pipe(
-  Command.withSubcommands([list, add, refresh, remove, toggle("on"), toggle("off")]),
+  Command.withSubcommands([list, add, refresh, remove, toggle("on"), toggle("off"), style]),
 );

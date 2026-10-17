@@ -99,6 +99,9 @@ const Instructions = Schema.Struct({
   ),
 });
 const SkillSwitch = Schema.Struct({ enabled: Schema.Boolean });
+const ClaudeStyle = Schema.Struct({
+  skill: Schema.NullOr(Schema.String.check(Schema.isPattern(skillName))),
+});
 const NewSource = Schema.Struct({ source: Schema.String });
 const KnownSource = Schema.Struct({ source: SourceId });
 const sourceHint = "owner/repo[/folder][@ref] or a github.com link";
@@ -198,6 +201,7 @@ export function apiHandler(
       return yield* HttpServerResponse.json({
         instructions: saved === null ? "" : yield* saved.text(),
         sources: yield* credential.skillSources(),
+        claudeStyle: yield* credential.claudeStyle(),
         email: request.headers["cf-access-authenticated-user-email"] ?? null,
       });
     }
@@ -209,6 +213,15 @@ export function apiHandler(
       if (body.text.trim() === "") yield* bucket.delete(instructionsKey);
       else yield* bucket.put(instructionsKey, body.text);
       return yield* HttpServerResponse.json({ saved: true });
+    }
+    if (url.pathname === "/api/settings/claude-style" && request.method === "PUT") {
+      const body = yield* Schema.decodeUnknownEffect(ClaudeStyle)(yield* request.json).pipe(
+        Effect.catchTag("SchemaError", () => bad("Expected {skill: name|null}")),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      if (!(yield* credential.setClaudeStyle(body.skill)))
+        return yield* bad(`No skill named ${body.skill}`, 404);
+      return yield* HttpServerResponse.json({ claudeStyle: body.skill });
     }
     // Fetches the source at its ref, keeps the tarball and records what changed.
     const saveSource = (spec: SourceSpec) =>

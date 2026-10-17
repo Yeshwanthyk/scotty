@@ -8,6 +8,7 @@ import { AgentError, type AgentReady, type Runner } from "./runner.js";
 import type { Output } from "./wire.js";
 import {
   installSettings,
+  installStyle,
   prepareWorkspace,
   saveWorkspace,
   storeSave,
@@ -84,6 +85,10 @@ export class Controller {
           message.resume,
         );
         yield* installSettings(agent, message.instructions, message.skills);
+        yield* installStyle(
+          agent,
+          message.agent.kind === "claude" ? message.agent.style : undefined,
+        );
         const scope = yield* Scope.make();
         this.scope = scope;
         const runner = yield* agent.runner(workspace.dir);

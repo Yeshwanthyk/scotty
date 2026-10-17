@@ -385,6 +385,7 @@ const refreshSeed = (source: SeedSource) => {
 // Settings and accounts live in memory. Skill sources are made up; nothing reaches GitHub.
 const owner = {
   instructions: "",
+  claudeStyle: null as string | null,
   sources: [
     {
       id: "Yeshwanthyk/agent-skills/skills",
@@ -952,8 +953,22 @@ async function settingsApi(
     return json(res, {
       instructions: owner.instructions,
       sources: owner.sources,
+      claudeStyle: owner.claudeStyle,
       email: "owner@example.com",
     });
+  if (path === "/api/settings/claude-style" && method === "PUT") {
+    const input = Schema.decodeUnknownOption(
+      Schema.Struct({ skill: Schema.NullOr(Schema.String) }),
+    )(await body(req));
+    if (input._tag === "None") return fail(res, "Expected {skill: name|null}");
+    const skill = owner.sources
+      .flatMap((source) => source.skills)
+      .find((known) => known.name === input.value.skill);
+    if (input.value.skill !== null && skill === undefined) return fail(res, "No such skill", 404);
+    if (skill !== undefined) skill.enabled = true;
+    owner.claudeStyle = input.value.skill;
+    return json(res, { claudeStyle: owner.claudeStyle });
+  }
   if (path === "/api/settings/instructions" && method === "PUT") {
     const input = Schema.decodeUnknownOption(Schema.Struct({ text: Schema.String }))(
       await body(req),

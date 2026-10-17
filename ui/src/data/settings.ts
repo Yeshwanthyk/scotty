@@ -29,6 +29,7 @@ const SkillSource = Schema.Struct({
 const Settings = Schema.Struct({
   instructions: Schema.String,
   sources: Schema.Array(SkillSource),
+  claudeStyle: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
 });
 const SourceSaved = Schema.Struct({
@@ -151,6 +152,11 @@ export async function switchSkill(name: string, enabled: boolean): Promise<void>
     undefined,
     "PATCH",
   );
+}
+
+// Setting a style also switches its skill on.
+export async function setClaudeStyle(skill: string | null): Promise<void> {
+  await request("/api/settings/claude-style", { skill }, undefined, undefined, "PUT");
 }
 
 export async function startChatGpt(): Promise<Device> {

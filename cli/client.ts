@@ -146,7 +146,9 @@ export const SkillSource = Schema.Struct({
 export const Settings = Schema.Struct({
   instructions: Schema.String,
   sources: Schema.Array(SkillSource),
+  claudeStyle: Schema.NullOr(Schema.String),
 });
+export const StyleSet = Schema.Struct({ claudeStyle: Schema.NullOr(Schema.String) });
 export const SourceSaved = Schema.Struct({
   source: Schema.String,
   commit: Schema.String,

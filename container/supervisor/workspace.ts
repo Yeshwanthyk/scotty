@@ -241,3 +241,28 @@ export const installSettings = (
     ],
     workspaceRoot(),
   );
+
+// The owner's style skill as a Claude output style, as the owner's build-mode script makes it:
+// the skill's text without its frontmatter, its relative links made absolute so they resolve
+// from any cwd, and keep-coding-instructions so Claude Code's own prompt stays. The folder is
+// rebuilt on every start, so a resume without a style has none.
+export const installStyle = (agent: Agent, name: string | undefined) =>
+  Effect.gen(function* () {
+    const styles = agent.files.styles;
+    if (styles === undefined) return;
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.remove(styles, { recursive: true, force: true });
+    if (name === undefined) return;
+    const dir = `${agent.files.skills}/${name}`;
+    const body = (yield* fs.readFileString(`${dir}/SKILL.md`))
+      .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
+      .replace(/(\]\()([^)\s]+)(\))/g, (link, open: string, target: string, close: string) =>
+        /^(?:https?:|mailto:|#|\/)/.test(target) ? link : `${open}${dir}/${target}${close}`,
+      )
+      .trimStart();
+    yield* fs.makeDirectory(styles, { recursive: true });
+    yield* fs.writeFileString(
+      `${styles}/${name}.md`,
+      `---\nname: ${name}\ndescription: The ${name} skill\nkeep-coding-instructions: true\n---\n\n${body}`,
+    );
+  }).pipe(Effect.mapError(failure));
