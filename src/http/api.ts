@@ -6,6 +6,7 @@ import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { AgentKind } from "../session/events.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
+import { repoStats, StatsWindow } from "../session/stats.js";
 import {
   NewConnection,
   connectionView,
@@ -489,6 +490,21 @@ export function apiHandler(
           projection: { projectedAt: new Date().toISOString() },
         })),
       });
+    }
+    if (url.pathname === "/api/stats" && request.method === "GET") {
+      const window = Schema.decodeUnknownExit(StatsWindow)(url.searchParams.get("window") ?? "7d");
+      if (Exit.isFailure(window)) return yield* bad("window is 7d, 30d or all");
+      const ids = yield* credential.sessions();
+      // As the session list does: 16 at a time, leaving out a session that cannot open.
+      const opened = yield* Effect.forEach(
+        ids,
+        (entry) => Effect.exit(sessions.getByName(entry.id).stats()),
+        { concurrency: 16 },
+      );
+      const summaries = opened.flatMap((exit) =>
+        Exit.isSuccess(exit) && exit.value !== null ? [exit.value] : [],
+      );
+      return yield* HttpServerResponse.json(repoStats(summaries, window.value, Date.now()));
     }
     const match = path.exec(url.pathname);
     if (!match) return yield* bad("Not found", 404);

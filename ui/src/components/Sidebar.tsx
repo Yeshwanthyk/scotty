@@ -323,6 +323,9 @@ export function Sidebar({
         >
           <Icon name="refresh" />
         </Link>
+        <Link to="/stats" className="icon-button pressable mobile-only" aria-label="Stats">
+          <Icon name="gauge" />
+        </Link>
         <Link to="/settings" className="icon-button pressable mobile-only" aria-label="Settings">
           <Icon name="settings" />
         </Link>
@@ -464,6 +467,10 @@ export function Sidebar({
         >
           <Icon name="refresh" />
           Automations
+        </Link>
+        <Link to="/stats" className="nav-item pressable" activeProps={{ "aria-current": "page" }}>
+          <Icon name="gauge" />
+          Stats
         </Link>
         <Link
           to="/settings"

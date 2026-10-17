@@ -9,6 +9,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
 import { fold, initial, type State } from "../../src/session/fold.ts";
 import { maxSearch, searchText } from "../../src/session/search.ts";
+import { repoStats, sessionStats, StatsWindow } from "../../src/session/stats.ts";
 import { conversationView, sessionView, turnOutcome } from "../../src/session/view.ts";
 import {
   Definition,
@@ -959,6 +960,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     url.pathname.startsWith("/api/credentials")
   )
     return settingsApi(req, res, url.pathname, method);
+  // The Worker's grouping over the same per-session summaries the Session DO returns.
+  if (url.pathname === "/api/stats" && method === "GET") {
+    const window = Schema.decodeUnknownOption(StatsWindow)(url.searchParams.get("window") ?? "7d");
+    if (window._tag === "None") return fail(res, "window is 7d, 30d or all");
+    const summaries = [...sessions.values()].flatMap((session) => {
+      const summary = sessionStats(session.history);
+      return summary === null ? [] : [summary];
+    });
+    return json(res, repoStats(summaries, window.value, Date.now()));
+  }
   if (url.pathname === "/api/sessions" && method === "GET") {
     const list = [...sessions.values()].sort(
       (a, b) => (b.state.created?.at ?? 0) - (a.state.created?.at ?? 0),

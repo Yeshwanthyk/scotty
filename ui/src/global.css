@@ -3007,6 +3007,162 @@ button.diff-line {
   }
 }
 
+/* ---------- Stats ---------- */
+
+.stats {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  width: 100%;
+  max-width: 76rem;
+  padding: 24px 28px 48px;
+}
+
+.stats-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.stats-asof {
+  font-size: 11.5px;
+}
+
+.stats-loading {
+  min-height: 160px;
+}
+
+.stats-note {
+  font-size: 11.5px;
+  color: var(--quiet);
+}
+
+.stats-table {
+  padding: 4px 0;
+  overflow-x: auto;
+}
+
+.stats-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.stats-table th,
+.stats-table td {
+  padding: 9px 12px;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.stats-table thead th {
+  color: var(--quiet);
+  font-size: 11.5px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--line);
+}
+
+.stats-table tbody tr + tr {
+  border-top: 1px solid var(--line);
+}
+
+.stats-table tfoot tr {
+  border-top: 1px solid var(--line-strong);
+  font-weight: 600;
+}
+
+.stats-table .stats-repo {
+  font-weight: 500;
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stats-tally {
+  display: grid;
+  gap: 1px;
+}
+
+.stats-tally[data-zero] {
+  color: var(--quiet);
+}
+
+.stats-tally:not([data-zero]) > .tabular {
+  color: var(--danger);
+}
+
+.stats-detail {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.stats-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stats-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--working);
+  box-shadow: 0 0 0 3px rgb(47 143 220 / 0.18);
+}
+
+.stats-cards {
+  display: none;
+}
+
+.stats-card {
+  gap: 10px;
+}
+
+.stats-card[data-total] {
+  background: var(--raised);
+}
+
+.stats-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stats-card-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.stats-figures {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.stats-figures dt {
+  color: var(--quiet);
+  font-size: 11.5px;
+}
+
+.stats-figures dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.stats-figures .stats-detail {
+  overflow-wrap: anywhere;
+}
 /* ---------- Phone ---------- */
 
 @media (max-width: 767px) {
@@ -3143,6 +3299,16 @@ button.diff-line {
   .automations {
     padding: 12px 12px 32px;
     padding-bottom: max(32px, env(safe-area-inset-bottom));
+  }
+
+  .stats {
+    padding: 12px 12px 32px;
+    padding-bottom: max(32px, env(safe-area-inset-bottom));
+  }
+
+  .stats-cards {
+    display: grid;
+    gap: 10px;
   }
 
   .settings {

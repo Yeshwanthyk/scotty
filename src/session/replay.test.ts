@@ -6,6 +6,7 @@ import { Schema } from "effect";
 import { command } from "./commands.js";
 import { deadlines } from "./deadlines.js";
 import { SessionEvent } from "./events.js";
+import { repoStats, sessionStats } from "./stats.js";
 import { fold, initial, invariants, type State } from "./fold.js";
 import { conversationView, sessionView } from "./view.js";
 
@@ -194,5 +195,58 @@ describe("saved session event logs", () => {
     });
     expect(state.pending.some((item) => item.op === "save")).toBe(false);
     expect(sessionView("s", state).progress.working).toBe(false);
+  });
+});
+
+describe("stats from saved session event logs", () => {
+  const read = async (file: string) =>
+    (await readFile(join(logs, file), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => decodeLine(line));
+  const at = (events: readonly (typeof SessionEvent.Type)[], seq: number) =>
+    events.find((event) => event.seq === seq)?.at;
+
+  it("times a run from its container.start to the container.stopped that ended it", async () => {
+    const events = await read("2026-09-30-idle-container-stopped.jsonl");
+    const stats = sessionStats(events);
+    expect(stats).toMatchObject({ repo: "Yeshwanthyk/scotty", agentKind: "claude", live: false });
+    expect(stats?.runs).toEqual([{ gen: 1, start: at(events, 2), end: at(events, 20) }]);
+    expect(stats?.turns).toEqual([at(events, 20)]);
+    expect(stats?.failures).toEqual([]);
+  });
+  it("ends a run at its failure and starts the next at the resume, left open while live", async () => {
+    const events = await read("2026-09-30-queued-prompt-startup-timeout.jsonl");
+    const stats = sessionStats(events);
+    expect(stats?.runs).toEqual([
+      { gen: 1, start: 124_000, end: 371_000 },
+      { gen: 2, start: 372_000, end: null },
+    ]);
+    expect(stats).toMatchObject({
+      live: true,
+      failures: [{ at: 371_000, code: "timeout" }],
+      turns: [371_000, 377_000],
+    });
+    if (stats === null) return;
+    const now = 372_000 + 3_600_000;
+    const all = repoStats([stats], "all", now);
+    expect(all.total).toMatchObject({
+      sessions: 1,
+      runMs: 247_000 + 3_600_000,
+      turns: 2,
+      failed: 1,
+      failureCodes: [{ key: "timeout", count: 1 }],
+      running: 1,
+      agents: { codex: { sessions: 1, runMs: 247_000 + 3_600_000 } },
+    });
+    // Seven days after the failure, only the open run's last week counts.
+    const later = repoStats([stats], "7d", 371_000 + 8 * 86_400_000);
+    expect(later.total).toMatchObject({ sessions: 1, runMs: 7 * 86_400_000, failed: 0, turns: 0 });
+  });
+  it("starts a run at the prompt that wakes a stopped session", async () => {
+    const events = await read("2026-09-27-crash-kill-unnoticed.jsonl");
+    const runs = sessionStats(events)?.runs ?? [];
+    expect(runs[0]).toEqual({ gen: 1, start: at(events, 2), end: at(events, 31) });
+    expect(runs[1]).toMatchObject({ gen: 2, start: at(events, 33) });
   });
 });

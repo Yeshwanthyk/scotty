@@ -41,6 +41,7 @@ import { deadlines, idleWindow, inactivityTimeout } from "./deadlines.js";
 import { deadline, startStep } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
+import { sessionStats } from "./stats.js";
 import { SupervisorLink, type SocketInput } from "./supervisor-link.js";
 import { supervisorEvent } from "./supervisor-events.js";
 import { conversationView, sessionView, turnOutcome } from "./view.js";
@@ -694,6 +695,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         outcome: (req?: string) =>
           Effect.sync(() => (log.state.created === undefined ? null : turnOutcome(log.state, req))),
         log: () => Effect.sync(() => log.history),
+        // Read-only: what the log says about this session's runs, for the stats page.
+        stats: () => Effect.sync(() => sessionStats(log.history)),
         // A preview request from the Worker, whose Host is `<port>-<id>.<base>`, or the
         // terminal socket at `/api/sessions/<id>/terminal`. It never starts a container and
         // appends nothing.
