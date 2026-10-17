@@ -19,7 +19,7 @@ get the folder whole, with switched-off skills hidden.
   skill list (Codex `[[skills.config]] enabled = false`, Claude `skillOverrides`).
 - **SK7** `skills style yesh-router` switches it on; a new Claude session gets
   `~/.claude/output-styles/yesh-router.md` with absolute links and runs it as its output style
-  (with `--real`, replies open with `Method:`). `skills style --none` and a resume leave none.
+  (a real session names it when asked for its output style). `skills style --none` and a resume leave none.
 - **SK6** Settings → Skills: a fold per source with "N of M"; refresh slides in new rows and
   flashes updated ones, or says "Up to date"; a pasted GitHub link flashes the field.
 
@@ -44,8 +44,8 @@ get the folder whole, with switched-off skills hidden.
 5. With `--real` and a Codex session, ask it to list its skills: `plan` is absent though its
    folder is installed (SK5). Repeat with `--agent claude`.
 6. Open `/settings/skills`, refresh, paste a github.com tree link into Add; screenshot each (SK6).
-7. `skills style yesh-router`, then a `--real --agent claude` session: its first reply opens with
-   a `Method:` line (SK7).
+7. `skills style yesh-router`, then `scotty new <repo> "Which output style is active?" --agent
+claude`: it names yesh-router (SK7).
 8. Put the owner's sources, switches and style back as `02-ls.json` had them before step 1.
 
 ## Gotchas
