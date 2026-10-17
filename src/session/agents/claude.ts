@@ -52,6 +52,28 @@ const notice = (turn: TurnItems, text: string, tone: "info" | "error"): TurnItem
 const commentary = (items: Item[]) =>
   items.map((item) => (item.kind === "text" && item.final ? { ...item, final: false } : item));
 
+const toolUse = (block: Json, name: string, input: Json, parent?: string) =>
+  tool(string(block["id"]), name, {
+    ...namedTool(name, input),
+    status: "running",
+    input: name === "Bash" ? unwrapShell(string(input["command"])) : JSON.stringify(input, null, 2),
+    ...(parent === undefined ? {} : { parent }),
+  });
+
+// A subagent's tools nest under its Agent row; its text and plan stay inside the subagent.
+function subagent(turn: TurnItems, message: Json, parent: string): TurnItems {
+  if (message["type"] === "user") return user(turn, message);
+  if (message["type"] !== "assistant") return turn;
+  let items = turn.items;
+  for (const entry of array(record(message["message"])?.["content"])) {
+    const block = record(entry);
+    const name = string(block?.["name"]);
+    if (block?.["type"] !== "tool_use" || name === "TodoWrite") continue;
+    items = upsert(items, toolUse(block, name, record(block["input"]) ?? {}, parent));
+  }
+  return { ...turn, items };
+}
+
 function assistant(turn: TurnItems, message: Json): TurnItems {
   const uuid = string(message["uuid"]);
   // Streamed text is replaced by the message it became.
@@ -78,15 +100,7 @@ function assistant(turn: TurnItems, message: Json): TurnItems {
         items = upsert(items, { kind: "plan", id: "plan", steps });
         return;
       }
-      const command = string(input["command"]);
-      items = upsert(
-        items,
-        tool(string(block["id"]), name, {
-          ...namedTool(name, input),
-          status: "running",
-          input: name === "Bash" ? unwrapShell(command) : JSON.stringify(input, null, 2),
-        }),
-      );
+      items = upsert(items, toolUse(block, name, input));
     }
   });
   const next = { ...turn, items };
@@ -114,10 +128,12 @@ function user(turn: TurnItems, message: Json): TurnItems {
   return { ...turn, items };
 }
 
-// Folds one Claude SDK message into a turn's items. Subagent messages show only as their Task row.
+// Folds one Claude SDK message into a turn's items.
 export function step(turn: TurnItems, event: unknown): TurnItems {
   const message = record(event);
-  if (message === undefined || (message["parent_tool_use_id"] ?? null) !== null) return turn;
+  if (message === undefined) return turn;
+  const parent = string(message["parent_tool_use_id"]);
+  if (parent !== "") return subagent(turn, message, parent);
   switch (message["type"]) {
     case "stream_event": {
       const stream = record(message["event"]);

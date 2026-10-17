@@ -26,6 +26,7 @@ const Item = Schema.Union([
     exitCode: Schema.NullOr(Schema.Number),
     durationMs: Schema.NullOr(Schema.Number),
     changes: Schema.Array(Change),
+    parent: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({
     kind: Schema.Literal("plan"),

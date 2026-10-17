@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { changeDiff } from "../data/diff";
 import { duration } from "../data/status";
 import type { Tool } from "../protocol/session/conversation";
@@ -35,8 +35,14 @@ const tenses: Record<string, [string, string]> = {
   Run: ["Running", "Ran"],
 };
 
+// The tools each subagent call ran, by the call's id; a turn provides them for its rows.
+export const SubagentTools = createContext<ReadonlyMap<string, ReadonlyArray<Tool>>>(new Map());
+
 export function phrase(tool: Tool): { verb: string; target: string; mono: boolean } {
   const running = tool.status === "running";
+  // Claude's subagent calls are summarised by their own description, which has no tense to change.
+  if (tool.name === "Agent" || tool.name === "Task")
+    return { verb: tool.summary, target: "", mono: false };
   if (tool.category === "run" || tool.category === "check")
     return {
       verb: tool.status === "failed" ? "Failed" : running ? "Running" : "Ran",
@@ -82,7 +88,10 @@ const hasBody = (tool: Tool) => tool.changes.length > 0 || tool.output !== "" ||
 export function ToolRow({ tool }: { tool: Tool }) {
   const [open, setOpen] = useState(false);
   const { verb, target, mono } = phrase(tool);
-  const expandable = hasBody(tool);
+  const children = useContext(SubagentTools).get(tool.id) ?? [];
+  const expandable = hasBody(tool) || children.length > 0;
+  // A running subagent shows the step it is on; an opened one shows every step, then its report.
+  const current = tool.status === "running" && !open ? children.at(-1) : undefined;
   return (
     <div className="tool" data-status={tool.status}>
       <button
@@ -97,11 +106,28 @@ export function ToolRow({ tool }: { tool: Tool }) {
         <span className="verb">{verb}</span>
         {target ? <span className={mono ? "target mono" : "target"}>{target}</span> : null}
         <span className="trail">
+          {children.length > 0 ? (
+            <span className="tabular">
+              {children.length} {children.length === 1 ? "step" : "steps"}
+            </span>
+          ) : null}
           <Trail tool={tool} />
           {expandable ? <Icon name="chevronRight" size={12} className="chevron" /> : null}
         </span>
       </button>
-      {open ? <ToolBody tool={tool} /> : null}
+      {current !== undefined ? (
+        <div className="group-children" data-current>
+          <ToolRow key={current.id} tool={current} />
+        </div>
+      ) : null}
+      {open && children.length > 0 ? (
+        <div className="group-children">
+          {children.map((child) => (
+            <ToolRow key={child.id} tool={child} />
+          ))}
+        </div>
+      ) : null}
+      {open && hasBody(tool) ? <ToolBody tool={tool} /> : null}
     </div>
   );
 }

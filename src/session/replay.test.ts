@@ -196,6 +196,36 @@ describe("saved session event logs", () => {
     expect(state.pending.some((item) => item.op === "save")).toBe(false);
     expect(sessionView("s", state).progress.working).toBe(false);
   });
+  it("replays a Claude subagent, nesting its tools under the Agent row", async () => {
+    const file = "2026-10-17-claude-subagent.jsonl";
+    const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
+    let state = initial;
+    for (const [index, line] of lines.entries()) state = replayLine(state, line, file, index + 1);
+    const [turn] = conversationView(
+      state,
+      lines.map((line) => decodeLine(line)),
+    ).turns;
+    const items = turn?.items ?? [];
+    const agent = "toolu_012sDFHhwGCthMth9dkxHu8t";
+    expect(items.find((item) => item.id === agent)).toMatchObject({
+      kind: "tool",
+      category: "agent",
+      summary: "List files and read README",
+      status: "done",
+    });
+    const children = items.filter((item) => item.kind === "tool" && item.parent === agent);
+    expect(children.map((item) => item.kind === "tool" && item.name)).toEqual([
+      "Bash",
+      "Bash",
+      "Read",
+      "Bash",
+      "Bash",
+    ]);
+    expect(children.every((item) => item.kind === "tool" && item.status === "done")).toBe(true);
+    // The subagent's own words stay in its result; the turn's answer is the parent's last text.
+    expect(items.filter((item) => item.kind === "text" && item.final)).toHaveLength(1);
+    expect(items.every((item) => item.kind !== "text" || !("parent" in item))).toBe(true);
+  });
 });
 
 describe("stats from saved session event logs", () => {
