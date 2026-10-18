@@ -444,9 +444,15 @@ kbd {
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
 }
 
-/* Opened from the iOS home screen, 100dvh leaves out the status bar while the page starts under
-   it, so the app stopped that far short of the bottom. Pinning it to the screen's edges fills it. */
+/* Opened from the iOS home screen with the translucent status bar, iOS 26 lays the page out a
+   status bar's height short of the screen (WebKit bug 301108): 100%, dvh and fixed edges all stop
+   there. A document at least as tall as the screen gets the full viewport, and the app, pinned to
+   its edges, reaches the bottom. The min() keeps a page that isn't short from scrolling. */
 @media (display-mode: standalone) {
+  html {
+    min-height: min(100lvh, calc(100% + env(safe-area-inset-top)));
+  }
+
   .app {
     position: fixed;
     inset: 0;
