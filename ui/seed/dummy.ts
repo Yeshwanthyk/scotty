@@ -517,6 +517,61 @@ const withinFile = ["day", "week", "month", "quarter", "year", "decade"]
   )
   .join("\n");
 
+// A hunk whose unchanged runs are 8 lines (folded only on a phone) and 12 lines (folded everywhere).
+const indexPath = "packages/server/src/durable/sessions/history/index.ts";
+const context = (from: number, count: number) =>
+  Array.from(
+    { length: count },
+    (_, at) => ` export const step${from + at} = "${from + at}";\n`,
+  ).join("");
+const indexDiff = `@@ -1,23 +1,23 @@
+-export { RetentionWindow } from "./retention";
++export { RetentionWindow } from "./retention-window";
+${context(1, 8)}-export const defaultDays = 30;
++export const defaultDays = 30; // the owner can change it in Settings
+${context(9, 12)}-export type Pinned = string[];
++export type Pinned = ReadonlySet<string>;
+ export const end = true;
+`;
+
+const pickerPath = "ui/src/settings/RetentionPicker.tsx";
+const pickerFile = `import { useState } from "react";
+
+// How many days of history a session keeps.
+export function RetentionPicker({ days, onPick }: { days: number; onPick: (days: number) => void }) {
+  const [value, setValue] = useState(days);
+  return (
+    <label className="field-row">
+      <span>Keep history for</span>
+      <select value={value} onChange={(event) => setValue(Number(event.target.value))}>
+        {[7, 30, 90, 365].map((option) => (
+          <option key={option} value={option}>
+            {option} days
+          </option>
+        ))}
+      </select>
+      <button type="button" onClick={() => onPick(value)}>
+        Save
+      </button>
+    </label>
+  );
+}
+`;
+
+const prunePath = "src/legacy/prune.ts";
+const pruneFile = `// Replaced by RetentionWindow.prune.
+export function prune(events: { at: number }[], now: number) {
+  return events.filter((event) => now - event.at < 30 * 24 * 60 * 60 * 1000);
+}
+`;
+
+const added = (text: string) =>
+  text
+    .replace(/\n$/, "")
+    .split("\n")
+    .map((line) => `+${line}\n`)
+    .join("");
+
 export const dummies: DummySpec[] = [
   {
     id: "d0cc0de5000000000000000000000001",
@@ -1015,6 +1070,9 @@ export const dummies: DummySpec[] = [
                 .map((line) => `+${line}\n`)
                 .join(""),
               "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -3,2 +3,2 @@\n A storefront for the Acme catalogue.\n-History is kept for 30 days.\n+History is kept for as long as the owner chooses in Settings, 30 days by default.\n",
+              `diff --git a/${indexPath} b/${indexPath}\n--- a/${indexPath}\n+++ b/${indexPath}\n${indexDiff}`,
+              `diff --git a/${pickerPath} b/${pickerPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${pickerPath}\n@@ -0,0 +1,21 @@\n${added(pickerFile)}`,
+              `diff --git a/${prunePath} b/${prunePath}\ndeleted file mode 100644\n--- a/${prunePath}\n+++ /dev/null\n@@ -1,4 +0,0 @@\n${added(pruneFile).replace(/^\+/gm, "-")}`,
             ].join(""),
           },
           {

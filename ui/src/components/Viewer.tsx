@@ -5,6 +5,9 @@ import { Icon } from "./Icon";
 // a phone, and Escape, the close button or the phone's Back to leave. It pushes a history entry
 // while open, so Back closes it instead of leaving the session; every close goes through that
 // entry, and `onClose` runs once it is gone.
+const isViewerEntry = (state: unknown) =>
+  typeof state === "object" && state !== null && "viewer" in state && state.viewer === true;
+
 export function Viewer({
   label,
   index,
@@ -39,7 +42,8 @@ export function Viewer({
     element.showModal();
     // showModal focuses the first control; Close is the one to start on.
     closeButton.current?.focus();
-    history.pushState({ ...history.state, viewer: true }, "");
+    // One entry, even when the effect is set up twice.
+    if (!isViewerEntry(history.state)) history.pushState({ ...history.state, viewer: true }, "");
     // Closed before `onClose`, so the page is no longer inert and can take focus back.
     const onPop = () => {
       element.close();

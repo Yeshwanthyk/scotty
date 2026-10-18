@@ -2,7 +2,7 @@ import { lazy, Suspense, useState } from "react";
 import { fileHref, hatch, message } from "../data/core";
 import type { FileDiff } from "../data/diff";
 import type { Turn } from "../protocol/session/conversation";
-import { DiffFile, DiffStat } from "./DiffLines";
+import { Changes } from "./Changes";
 import { Icon, Spinner, type IconName } from "./Icon";
 import { useLightbox } from "./Lightbox";
 
@@ -51,7 +51,7 @@ export function SidePanel({
         ))}
       </div>
       <div className="panel-body" data-scroll>
-        {tab === "changes" ? <Changes changes={changes} /> : null}
+        {tab === "changes" ? <ChangesTab changes={changes} /> : null}
         {tab === "preview" ? <Preview sessionId={sessionId} running={running} /> : null}
         {tab === "terminal" ? (
           running ? (
@@ -82,54 +82,12 @@ function Empty({ icon, title, detail }: { icon: IconName; title: string; detail:
   );
 }
 
-// Long lines wrap on a phone and scroll sideways on a desktop, until the owner picks otherwise.
-const wrapKey = "scotty.diffWrap";
-const storedWrap = () => {
-  try {
-    const value = localStorage.getItem(wrapKey);
-    return value === null ? window.matchMedia("(max-width: 767px)").matches : value === "1";
-  } catch {
-    return false;
-  }
-};
-
-function Changes({ changes }: { changes: ReadonlyArray<FileDiff> }) {
-  const [wrap, setWrap] = useState(storedWrap);
+function ChangesTab({ changes }: { changes: ReadonlyArray<FileDiff> }) {
   if (changes.length === 0)
     return (
       <Empty icon="diff" title="No changes yet" detail="Files the agent edits show up here." />
     );
-  const added = changes.reduce((sum, file) => sum + file.added, 0);
-  const removed = changes.reduce((sum, file) => sum + file.removed, 0);
-  return (
-    <>
-      <div className="diff-summary">
-        <span>
-          {changes.length} {changes.length === 1 ? "file" : "files"} changed
-        </span>
-        <DiffStat added={added} removed={removed} />
-        <button
-          type="button"
-          className="icon-button pressable"
-          aria-label="Wrap lines"
-          aria-pressed={wrap}
-          onClick={() => {
-            setWrap(!wrap);
-            try {
-              localStorage.setItem(wrapKey, wrap ? "0" : "1");
-            } catch {
-              // Storage can be refused; the choice then lasts for this page only.
-            }
-          }}
-        >
-          <Icon name="wrap" size={13} />
-        </button>
-      </div>
-      {changes.map((file) => (
-        <DiffFile key={file.path} file={file} open={changes.length <= 6} wrap={wrap} />
-      ))}
-    </>
-  );
+  return <Changes changes={changes} />;
 }
 
 function Preview({ sessionId, running }: { sessionId: string; running: boolean }) {

@@ -1970,8 +1970,11 @@ kbd {
   color: var(--muted);
 }
 
-.diff-summary .icon-button {
+.diff-tools {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .panel-body {
@@ -1998,7 +2001,25 @@ kbd {
   text-align: left;
 }
 
-.diff-file-head > .icon {
+/* In the Changes tab the header is two buttons: collapse, and view full screen. */
+.diff-file > .diff-file-head {
+  gap: 0;
+  padding: 0 6px 0 0;
+}
+
+.diff-file-toggle {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  text-align: left;
+}
+
+.diff-file-head .icon,
+.diff-file-view {
   flex: none;
 }
 
@@ -2119,18 +2140,211 @@ button.diff-line {
   color: var(--diff-del);
 }
 
-.diff-line[data-kind="hunk"] {
+.diff-line[data-kind="hunk"],
+.diff-line[data-kind="fold"] {
   --row: var(--sunken);
   color: var(--quiet);
 }
 
-.diff-line[data-kind="hunk"] code {
+button.diff-line[data-kind="fold"] {
+  font: inherit;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  button.diff-line[data-kind="fold"]:hover {
+    color: var(--ink);
+  }
+}
+
+.diff-line[data-kind="hunk"] code,
+.diff-line[data-kind="fold"] code {
   padding-top: 2px;
   padding-bottom: 2px;
 }
 
+/* Room after the last file, so a jump can bring any file's header up under the toolbar. */
+.changes::after {
+  content: "";
+  display: block;
+  height: calc(100dvh - 200px);
+}
+
+/* Previous and next file, at the bottom right while reading. */
+.diff-jump {
+  position: sticky;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 12px 0;
+  pointer-events: none;
+}
+
+.diff-jump .viewer-button {
+  pointer-events: auto;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+}
+
+/* The list of changed files: a sheet from the bottom. */
+.sheet {
+  position: fixed;
+  inset: auto 0 0;
+  width: 100%;
+  max-width: 480px;
+  max-height: 75vh;
+  margin: 0 auto;
+  padding: 0 0 env(safe-area-inset-bottom);
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.sheet[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.sheet::backdrop {
+  background: var(--overlay);
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 10px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.sheet-head > span {
+  margin-right: auto;
+}
+
+.sheet-list {
+  padding: 6px;
+}
+
+.sheet-file {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.sheet-file .icon {
+  flex: none;
+  color: var(--muted);
+}
+
+.sheet-file .path,
+.file-view-title .path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  white-space: nowrap;
+}
+
+.sheet-file .path .dir,
+.file-view-title .path .dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  color: var(--quiet);
+}
+
+.sheet-file .path b,
+.file-view-title .path b {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sheet-file:hover {
+    background: var(--hover);
+  }
+}
+
+/* One file's diff, full screen. */
+.file-view-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.file-view-title > .icon {
+  flex: none;
+}
+
+.file-view-body {
+  position: absolute;
+  inset: 0;
+  padding-bottom: 72px;
+  background: var(--surface);
+}
+
+.file-view .viewer-step {
+  top: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  translate: none;
+}
+
+.file-view .viewer-step[data-side="prev"] {
+  left: auto;
+  right: calc(max(12px, env(safe-area-inset-right)) + 52px);
+}
+
 /* On a phone the Changes tab shows one number: the old one for a removed line, else the new. */
 @media (max-width: 767px) {
+  /* Every control in the Changes tab is a 44px target. */
+  .panel-body {
+    --diff-summary-height: 56px;
+  }
+
+  .diff-tools .button,
+  .diff-tools .icon-button {
+    height: 44px;
+    min-width: 44px;
+  }
+
+  .diff-file > .diff-file-head {
+    height: 44px;
+    padding-right: 0;
+  }
+
+  .diff-file-view {
+    width: 44px;
+    height: 44px;
+  }
+
+  button.diff-line[data-kind="fold"] {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .sheet-head .button {
+    height: 44px;
+  }
+
   .panel .diff-line .n {
     width: 34px;
   }
