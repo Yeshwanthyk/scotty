@@ -1,5 +1,5 @@
 import * as stylex from "@stylexjs/stylex";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { colors, spacing } from "../theme/tokens.stylex";
 
 const styles = stylex.create({
@@ -30,7 +30,7 @@ const styles = stylex.create({
     ":hover": { backgroundColor: colors.panelRaised },
   },
   viewport: { overflow: "auto", padding: spacing.lg },
-  // Never larger than mermaid drew it: a tall, narrow flowchart stretched to the column is huge.
+  // Never larger than it was drawn: a tall, narrow flowchart stretched to the column is huge.
   image: { display: "block", maxWidth: "100%", height: "auto", marginInline: "auto" },
   enlarged: { width: "max(100%, 1000px)", maxWidth: "none" },
   status: { padding: spacing.md, margin: 0, color: colors.muted, fontSize: "13px" },
@@ -49,88 +49,46 @@ const styles = stylex.create({
   },
 });
 
+// Pele reads its colors from CSS variables; an <img> can't inherit them, so each render writes them into the SVG.
 const palette = (dark: boolean) =>
   dark
     ? {
         bg: "#161616",
-        node: "#232323",
-        border: "#4a4a4a",
+        fg: "#ececec",
+        muted: "#a1a1a1",
         line: "#8a8a8a",
-        text: "#ececec",
-        soft: "#1c1c1c",
+        surface: "#232323",
+        "surface-alt": "#1c1c1c",
+        border: "#4a4a4a",
+        accent: "#8aa4e8",
       }
     : {
         bg: "#ffffff",
-        node: "#f4f4f5",
-        border: "#c9c9ce",
+        fg: "#1d1d1f",
+        muted: "#6e6e76",
         line: "#6e6e76",
-        text: "#1d1d1f",
-        soft: "#fafafa",
+        surface: "#f4f4f5",
+        "surface-alt": "#fafafa",
+        border: "#c9c9ce",
+        accent: "#5b7bd5",
       };
 
-// Mermaid's config is global, so each render sets it for the scheme it draws in.
-const configure = (mermaid: typeof import("mermaid").default, dark: boolean) => {
-  const color = palette(dark);
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: "strict",
-    suppressErrorRendering: true,
-    theme: "base",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    htmlLabels: false,
-    secure: [
-      "secure",
-      "securityLevel",
-      "startOnLoad",
-      "maxTextSize",
-      "maxEdges",
-      "suppressErrorRendering",
-      "htmlLabels",
-      "theme",
-      "themeVariables",
-      "fontFamily",
-    ],
-    themeVariables: {
-      darkMode: dark,
-      // Mermaid 12's base theme glows every node; flat reads calmer.
-      dropShadow: "none",
-      fontSize: "14px",
-      background: color.bg,
-      primaryColor: color.node,
-      primaryTextColor: color.text,
-      primaryBorderColor: color.border,
-      secondaryColor: color.soft,
-      tertiaryColor: color.soft,
-      lineColor: color.line,
-      textColor: color.text,
-      nodeTextColor: color.text,
-      mainBkg: color.node,
-      edgeLabelBackground: color.bg,
-      actorBkg: color.node,
-      actorBorder: color.border,
-      actorTextColor: color.text,
-      actorLineColor: color.line,
-      signalColor: color.line,
-      signalTextColor: color.text,
-      labelBoxBkgColor: color.soft,
-      labelTextColor: color.text,
-      noteBkgColor: color.soft,
-      noteTextColor: color.text,
-    },
-  });
+const fontFamily = "ui-sans-serif, system-ui, sans-serif";
+
+const themed = (svg: string, dark: boolean) => {
+  const vars = Object.entries(palette(dark))
+    .map(([name, value]) => `--pele-${name}:${value};`)
+    .join("");
+  return svg.replace(/^<svg([^>]*?) style="/, `<svg$1 style="${vars}`);
 };
 
 // Rendered SVGs are displayed as images so diagram content cannot join the app DOM.
-const renderer = () => import("mermaid").then(({ default: mermaid }) => mermaid);
-
-// The drawn width, from the viewBox mermaid writes on its root <svg>.
-const naturalWidth = (svg: string) => {
-  const box = /viewBox="[\d.-]+ [\d.-]+ ([\d.]+) [\d.]+"/.exec(svg);
-  const width = Number(box?.[1]);
-  return Number.isFinite(width) && width > 0 ? Math.ceil(width) : undefined;
-};
+// `pele/lazy` loads only the module for the diagram type it meets.
+const renderer = () => import("pele/lazy");
+let peleRenderer: ReturnType<typeof renderer> | undefined;
 
 const darkQuery = "(prefers-color-scheme: dark)";
+
 function useDark() {
   const [dark, setDark] = useState(
     () => typeof window !== "undefined" && window.matchMedia(darkQuery).matches,
@@ -143,7 +101,22 @@ function useDark() {
   }, []);
   return dark;
 }
-let mermaidRenderer: ReturnType<typeof renderer> | undefined;
+
+// The width the diagram may fill (the figure less the viewport's padding), so wide flowcharts
+// turn vertical on a phone.
+function useWidth() {
+  const [element, setElement] = useState<HTMLElement | null>(null);
+  const [width, setWidth] = useState<number>();
+  useEffect(() => {
+    if (element === null) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry !== undefined) setWidth(Math.max(0, Math.floor(entry.contentRect.width) - 32));
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [element]);
+  return [setElement, width] as const;
+}
 
 export function MermaidDiagram({ source }: { readonly source: string }) {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
@@ -154,46 +127,53 @@ export function MermaidDiagram({ source }: { readonly source: string }) {
   }>();
   const [enlarged, setEnlarged] = useState(false);
   const dark = useDark();
+  const [measure, width] = useWidth();
   const current = result?.source === source ? result : undefined;
+  const drawn = useRef(false);
 
   useEffect(() => {
+    if (width === undefined) return;
     let cancelled = false;
-    const timer = setTimeout(() => {
-      mermaidRenderer ??= renderer();
-      void mermaidRenderer
-        .then(async (mermaid) => {
+    const draw = () => {
+      peleRenderer ??= renderer();
+      void peleRenderer
+        .then((pele) =>
+          pele.renderAsync(source, {
+            idPrefix: `diagram-${id}`,
+            fontFamily,
+            fontSize: 14,
+            maxWidth: width,
+            responsive: false,
+            links: false,
+            images: false,
+          }),
+        )
+        .then(({ svg, width: drawnWidth }) => {
           if (cancelled) return;
-          const container = document.createElement("div");
-          container.style.position = "fixed";
-          container.style.visibility = "hidden";
-          container.style.pointerEvents = "none";
-          container.setAttribute("aria-hidden", "true");
-          document.body.append(container);
-          try {
-            configure(mermaid, dark);
-            const { svg } = await mermaid.render(`mermaid-${id}`, source, container);
-            if (!cancelled)
-              setResult({
-                source,
-                image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
-                width: naturalWidth(svg),
-              });
-          } finally {
-            container.remove();
-          }
+          drawn.current = true;
+          setResult({
+            source,
+            image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(themed(svg, dark))}`,
+            width: Math.ceil(drawnWidth),
+          });
         })
         .catch(() => {
-          if (!cancelled) setResult({ source });
+          if (cancelled) return;
+          drawn.current = true;
+          setResult({ source });
         });
-    }, 250);
+    };
+    // The first draw is immediate; while a reply streams, redraws wait for the source to settle.
+    const timer = drawn.current ? setTimeout(draw, 150) : undefined;
+    if (timer === undefined) draw();
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [id, source, dark]);
+  }, [id, source, dark, width]);
 
   return (
-    <figure data-mermaid {...stylex.props(styles.figure)}>
+    <figure data-mermaid ref={measure} {...stylex.props(styles.figure)}>
       <figcaption {...stylex.props(styles.toolbar)}>
         <span>Mermaid diagram</span>
         {current?.image === undefined ? null : (
