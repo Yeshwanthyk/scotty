@@ -81,7 +81,19 @@ function Empty({ icon, title, detail }: { icon: IconName; title: string; detail:
   );
 }
 
+// Long lines wrap on a phone and scroll sideways on a desktop, until the owner picks otherwise.
+const wrapKey = "scotty.diffWrap";
+const storedWrap = () => {
+  try {
+    const value = localStorage.getItem(wrapKey);
+    return value === null ? window.matchMedia("(max-width: 767px)").matches : value === "1";
+  } catch {
+    return false;
+  }
+};
+
 function Changes({ changes }: { changes: ReadonlyArray<FileDiff> }) {
+  const [wrap, setWrap] = useState(storedWrap);
   if (changes.length === 0)
     return (
       <Empty icon="diff" title="No changes yet" detail="Files the agent edits show up here." />
@@ -95,9 +107,25 @@ function Changes({ changes }: { changes: ReadonlyArray<FileDiff> }) {
           {changes.length} {changes.length === 1 ? "file" : "files"} changed
         </span>
         <DiffStat added={added} removed={removed} />
+        <button
+          type="button"
+          className="icon-button pressable"
+          aria-label="Wrap lines"
+          aria-pressed={wrap}
+          onClick={() => {
+            setWrap(!wrap);
+            try {
+              localStorage.setItem(wrapKey, wrap ? "0" : "1");
+            } catch {
+              // Storage can be refused; the choice then lasts for this page only.
+            }
+          }}
+        >
+          <Icon name="wrap" size={13} />
+        </button>
       </div>
       {changes.map((file) => (
-        <DiffFile key={file.path} file={file} open={changes.length <= 6} />
+        <DiffFile key={file.path} file={file} open={changes.length <= 6} wrap={wrap} />
       ))}
     </>
   );

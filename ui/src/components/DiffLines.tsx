@@ -1,19 +1,47 @@
 import { useState } from "react";
-import { compact, type FileDiff } from "../data/diff";
+import { compact, type DiffLine, type FileDiff } from "../data/diff";
 import { Icon } from "./Icon";
 
 // Unchanged runs longer than this fold into a "N hidden lines" row, as in a review.
 const foldAfter = 8;
 
-export function DiffLines({ file, limit }: { file: FileDiff; limit?: number }) {
+// The gutter holds both line numbers and the +/- marker; a phone shows one number (CSS picks it).
+// It stays put when a long line wraps or the rows scroll sideways.
+function Gutter({ line }: { line?: DiffLine }) {
+  return (
+    <span className="gutter">
+      <span className="n" data-side="old">
+        {line?.old ?? ""}
+      </span>
+      <span className="n" data-side="new">
+        {line?.new ?? ""}
+      </span>
+      <span className="mark" />
+    </span>
+  );
+}
+
+export function DiffLines({
+  file,
+  limit,
+  wrap = false,
+}: {
+  file: FileDiff;
+  limit?: number;
+  wrap?: boolean;
+}) {
   const [all, setAll] = useState(false);
   const shown = limit === undefined || all ? file.lines : file.lines.slice(0, limit);
   return (
-    <div className="diff-lines" role="table" aria-label={`Changes to ${file.path}`}>
+    <div
+      className="diff-lines"
+      data-wrap={wrap}
+      role="table"
+      aria-label={`Changes to ${file.path}`}
+    >
       {shown.map((line, index) => (
         <div className="diff-line" data-kind={line.kind} key={index} role="row">
-          <span className="n">{line.old ?? ""}</span>
-          <span className="n">{line.new ?? ""}</span>
+          <Gutter line={line} />
           <code>
             {line.kind === "hunk" ? line.text.replace(/^@@.*?@@\s?/, "") || "···" : line.text}
           </code>
@@ -26,8 +54,7 @@ export function DiffLines({ file, limit }: { file: FileDiff; limit?: number }) {
           data-kind="hunk"
           onClick={() => setAll(true)}
         >
-          <span className="n" />
-          <span className="n" />
+          <Gutter />
           <code>{file.lines.length - shown.length} more lines</code>
         </button>
       ) : null}
@@ -49,7 +76,15 @@ const split = (path: string) => {
   return { dir: at < 0 ? "" : path.slice(0, at + 1), name: path.slice(at + 1) };
 };
 
-export function DiffFile({ file, open: initial = true }: { file: FileDiff; open?: boolean }) {
+export function DiffFile({
+  file,
+  open: initial = true,
+  wrap = false,
+}: {
+  file: FileDiff;
+  open?: boolean;
+  wrap?: boolean;
+}) {
   const [open, setOpen] = useState(initial);
   const { dir, name } = split(file.path);
   return (
@@ -65,17 +100,20 @@ export function DiffFile({ file, open: initial = true }: { file: FileDiff; open?
           name={file.kind === "add" ? "filePlus" : file.kind === "delete" ? "fileMinus" : "file"}
           size={14}
         />
-        <span className="path mono">
-          <bdi>
-            <span>{dir}</span>
-            <b>{name}</b>
-          </bdi>
+        {/* The name stays whole; the directory gives way first, losing its start. */}
+        <span className="path mono" title={file.path}>
+          {dir ? (
+            <span className="dir">
+              <bdi>{dir}</bdi>
+            </span>
+          ) : null}
+          <b>{name}</b>
         </span>
-        <span className="stats">
+        <span className="diff-file-stat">
           <DiffStat added={file.added} removed={file.removed} />
         </span>
       </button>
-      {open ? <DiffLines file={foldContext(file)} limit={400} /> : null}
+      {open ? <DiffLines file={foldContext(file)} limit={400} wrap={wrap} /> : null}
     </section>
   );
 }

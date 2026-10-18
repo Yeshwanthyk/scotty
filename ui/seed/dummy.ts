@@ -464,6 +464,46 @@ flowchart LR
 
 One thing to decide: shipping is still taxed in CA. That matches the current spec, but tell me if you want it exempt too.`;
 
+// For the Changes tab on a phone: a deep path, a line over 200 characters, a removal-and-addition
+// pair, two hunks with a gap between them, and a new file that is one long run of additions.
+const retentionPath = "packages/server/src/durable/sessions/history/retention-window.ts";
+const retentionDiff = `@@ -1,6 +1,7 @@
+ import type { SessionEvent } from "../../../events";
+-import { DurableObject } from "cloudflare:workers";
++import { DurableObject, type DurableObjectState } from "cloudflare:workers";
++import { foldHistory, type HistoryWindow } from "../history";
+ // Events older than the window are pruned on the alarm.
+ const day = 24 * 60 * 60 * 1000;
+ const defaultDays = 30;
+@@ -40,8 +41,18 @@ export class RetentionWindow extends DurableObject {
+   async prune(events: readonly SessionEvent[]): Promise<number> {
+-    const cutoff = Date.now() - defaultDays * day;
+-    return events.filter((event) => event.at < cutoff).length;
++    const window = await this.window();
++    const cutoff = window.end - window.days * day;
++    const stale = events.filter((event) => event.at < cutoff && !window.pinned.has(event.id));
++    if (stale.length === 0) return 0;
++    await this.ctx.storage.delete(stale.map((event) => "event:" + event.id));
++    return stale.length;
+   }
++
++  private async window(): Promise<HistoryWindow> {
++    const saved = await this.ctx.storage.get<HistoryWindow>("window");
++    return saved ?? { end: Date.now(), days: defaultDays, pinned: new Set(), reason: "No retention window was saved for this session yet, so the default thirty-day window applies until the owner picks one." };
++  }
+   async alarm(): Promise<void> {
+     const events = await this.ctx.storage.list<SessionEvent>({ prefix: "event:" });
+     await this.prune([...events.values()]);
+`;
+
+const withinPath = "packages/server/src/durable/sessions/history/within-days.ts";
+const withinFile = ["day", "week", "month", "quarter", "year", "decade"]
+  .map(
+    (unit, index) =>
+      `// True when \`at\` falls within the last \`count\` ${unit}s before \`now\`.\nexport function within${unit[0]?.toUpperCase()}${unit.slice(1)}s(at: number, count: number, now: number): boolean {\n  return now - at <= count * ${[1, 7, 30, 91, 365, 3650][index]} * 24 * 60 * 60 * 1000;\n}\n`,
+  )
+  .join("\n");
+
 export const dummies: DummySpec[] = [
   {
     id: "d0cc0de5000000000000000000000001",
@@ -927,6 +967,46 @@ export const dummies: DummySpec[] = [
           {
             type: "say",
             text: "Two commits landed yesterday.\n\n- **Cache product thumbnails for a day**: safe.\n- **Drop the legacy checkout flag**: risky; the flag still gates the Apple Pay button in `checkout/pay.tsx`.",
+            phase: "final_answer",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "d0cc0de500000000000000000000000a",
+    title: "Let the owner choose how long history is kept",
+    repo: "acme/storefront",
+    minutesAgo: 3,
+    turns: [
+      {
+        prompt:
+          "Let the owner choose how long session history is kept, and never prune pinned events.",
+        seconds: 80,
+        items: [
+          {
+            type: "patch",
+            changes: [
+              { path: retentionPath, kind: "update", diff: retentionDiff },
+              { path: withinPath, kind: "add", diff: withinFile },
+            ],
+          },
+          {
+            type: "diff",
+            diff: [
+              `diff --git a/${retentionPath} b/${retentionPath}\n--- a/${retentionPath}\n+++ b/${retentionPath}\n${retentionDiff}`,
+              `diff --git a/${withinPath} b/${withinPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${withinPath}\n@@ -0,0 +1,29 @@\n`,
+              withinFile
+                .replace(/\n$/, "")
+                .split("\n")
+                .map((line) => `+${line}\n`)
+                .join(""),
+              "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -3,2 +3,2 @@\n A storefront for the Acme catalogue.\n-History is kept for 30 days.\n+History is kept for as long as the owner chooses in Settings, 30 days by default.\n",
+            ].join(""),
+          },
+          {
+            type: "say",
+            text: "History now keeps a per-session window, 30 days by default, and pruning skips pinned events.",
             phase: "final_answer",
           },
         ],

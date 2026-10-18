@@ -1958,24 +1958,34 @@ kbd {
 .diff-summary {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  height: var(--diff-summary-height);
+  padding: 0 8px 0 14px;
   background: var(--sidebar);
   border-bottom: 1px solid var(--line);
   font-size: 12px;
   color: var(--muted);
 }
 
+.diff-summary .icon-button {
+  margin-left: auto;
+}
+
+.panel-body {
+  --diff-summary-height: 40px;
+}
+
 .diff-file {
   border-bottom: 1px solid var(--line);
 }
 
+/* Stuck right under the summary, opaque and above the rows, so nothing shows past its edges. */
 .diff-file-head {
   position: sticky;
-  top: 41px;
+  top: var(--diff-summary-height);
   z-index: 1;
   width: 100%;
   display: flex;
@@ -1988,26 +1998,37 @@ kbd {
   text-align: left;
 }
 
+.diff-file-head > .icon {
+  flex: none;
+}
+
 .diff-file-head .path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  white-space: nowrap;
+}
+
+/* The directory is cut from its start, leaving the end that is nearest the name. */
+.diff-file-head .path .dir {
   min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
   direction: rtl;
   text-align: left;
+  color: var(--quiet);
 }
 
 .diff-file-head .path b {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 500;
   color: var(--ink);
 }
 
-.diff-file-head .path span {
-  color: var(--quiet);
-}
-
-.diff-file-head .stats {
-  margin-left: auto;
+.diff-file-stat {
   flex: none;
   font-family: var(--font-mono);
   font-size: 11px;
@@ -2015,7 +2036,10 @@ kbd {
   gap: 6px;
 }
 
+/* One grid column as wide as the longest row, so every row's colour spans the scroll width. */
 .diff-lines {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
   font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.6;
@@ -2024,9 +2048,10 @@ kbd {
 }
 
 .diff-line {
+  --row: transparent;
   display: grid;
-  grid-template-columns: 40px 40px minmax(0, 1fr);
-  min-width: max-content;
+  grid-template-columns: auto minmax(0, 1fr);
+  background: var(--row);
 }
 
 button.diff-line {
@@ -2035,12 +2060,25 @@ button.diff-line {
   color: var(--quiet);
 }
 
+/* Line numbers and marker; it stays at the left edge when the rows scroll sideways. */
+.diff-line .gutter {
+  position: sticky;
+  left: 0;
+  display: flex;
+  background: linear-gradient(var(--row), var(--row)), var(--surface);
+  user-select: none;
+}
+
 .diff-line .n {
+  width: 40px;
   padding-right: 8px;
   text-align: right;
   color: var(--quiet);
-  user-select: none;
   opacity: 0.8;
+}
+
+.diff-line .mark {
+  width: 1ch;
 }
 
 .diff-line code {
@@ -2049,35 +2087,62 @@ button.diff-line {
   font: inherit;
 }
 
-.diff-line[data-kind="add"] {
-  background: var(--diff-add-bg);
+/* Wrapped, a continuation line hangs two characters in from where the line began. */
+.diff-lines[data-wrap="true"] {
+  grid-template-columns: minmax(0, 1fr);
+  overflow-x: visible;
 }
 
-.diff-line[data-kind="add"] code::before {
+.diff-lines[data-wrap="true"] code {
+  padding-left: 2ch;
+  text-indent: -2ch;
+  padding-right: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-line[data-kind="add"] {
+  --row: var(--diff-add-bg);
+}
+
+.diff-line[data-kind="add"] .mark::before {
   content: "+";
   color: var(--diff-add);
 }
 
 .diff-line[data-kind="del"] {
-  background: var(--diff-del-bg);
+  --row: var(--diff-del-bg);
 }
 
-.diff-line[data-kind="del"] code::before {
+.diff-line[data-kind="del"] .mark::before {
   content: "-";
   color: var(--diff-del);
 }
 
-.diff-line[data-kind="ctx"] code::before {
-  content: " ";
-}
-
 .diff-line[data-kind="hunk"] {
+  --row: var(--sunken);
   color: var(--quiet);
-  background: var(--sunken);
 }
 
 .diff-line[data-kind="hunk"] code {
-  padding: 2px 0;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+/* On a phone the Changes tab shows one number: the old one for a removed line, else the new. */
+@media (max-width: 767px) {
+  .panel .diff-line .n {
+    width: 34px;
+  }
+
+  .panel .diff-line .n[data-side="old"],
+  .panel .diff-line[data-kind="del"] .n[data-side="new"] {
+    display: none;
+  }
+
+  .panel .diff-line[data-kind="del"] .n[data-side="old"] {
+    display: block;
+  }
 }
 
 /* Preview */
