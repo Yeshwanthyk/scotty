@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { fileHref } from "../data/core";
 import { duration } from "../data/status";
 import type { Item, Tool, Turn } from "../protocol/session/conversation";
 import { Icon, Spinner } from "./Icon";
+import { useLightbox } from "./Lightbox";
 import { Markdown } from "./Markdown";
 import { ExploreGroup, SubagentTools, ToolRow } from "./ToolRow";
 
@@ -315,25 +317,34 @@ function Notice({ text, tone }: { text: string; tone: "info" | "error" }) {
 }
 
 function Files({ sessionId, files }: { sessionId: string; files: Turn["files"] }) {
+  const shown = files.map((file) => ({
+    file,
+    href: fileHref(sessionId, file.id),
+    label: file.caption ?? file.name,
+  }));
+  const images = shown.filter(({ file }) => !file.type.startsWith("video/"));
+  const lightbox = useLightbox(images);
   if (files.length === 0) return null;
   return (
     <div className="attachments">
-      {files.map((file) => {
-        const href = `/api/sessions/${encodeURIComponent(sessionId)}/files/${file.id}`;
-        const label = file.caption ?? file.name;
-        return (
-          <figure key={file.id} className="attachment">
-            {file.type.startsWith("video/") ? (
-              <video src={href} controls playsInline preload="metadata" />
-            ) : (
-              <a href={href} target="_blank" rel="noreferrer">
-                <img src={href} alt={label} loading="lazy" />
-              </a>
-            )}
-            <figcaption>{label}</figcaption>
-          </figure>
-        );
-      })}
+      {shown.map(({ file, href, label }) => (
+        <figure key={file.id} className="attachment">
+          {file.type.startsWith("video/") ? (
+            <video src={href} controls playsInline preload="metadata" />
+          ) : (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              onClick={lightbox.open(images.findIndex((image) => image.file.id === file.id))}
+            >
+              <img src={href} alt={label} loading="lazy" />
+            </a>
+          )}
+          <figcaption>{label}</figcaption>
+        </figure>
+      ))}
+      {lightbox.view}
     </div>
   );
 }

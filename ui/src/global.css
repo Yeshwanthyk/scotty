@@ -3492,6 +3492,157 @@ button.diff-line {
 .stats-figures .stats-detail {
   overflow-wrap: anywhere;
 }
+/* ---------- Viewer: an image or a file's diff, full screen ---------- */
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+  border: 0;
+  background: var(--bg);
+  color: var(--ink);
+  overscroll-behavior: contain;
+}
+
+.viewer[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer::backdrop {
+  background: transparent;
+}
+
+/* The page behind stays where it was. */
+html:has(.viewer[open]) {
+  overflow: hidden;
+}
+
+.viewer-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 52px;
+  padding: 4px 4px 4px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.viewer-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.viewer-count {
+  flex: none;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--quiet);
+}
+
+.viewer-link {
+  flex: none;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.viewer-button {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  color: inherit;
+}
+
+.viewer-button:disabled {
+  opacity: 0.3;
+}
+
+.viewer-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.viewer-step {
+  position: absolute;
+  top: 50%;
+  translate: 0 -50%;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.viewer-step[data-side="prev"] {
+  left: max(12px, env(safe-area-inset-left));
+}
+
+.viewer-step[data-side="next"] {
+  right: max(12px, env(safe-area-inset-right));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .viewer-button:hover:not(:disabled),
+  .viewer-link:hover {
+    color: var(--ink);
+  }
+}
+
+/* Images sit on a dark scrim in either theme. */
+.lightbox {
+  background: #0b0b0a;
+  color: #f2f2f0;
+  color-scheme: dark;
+}
+
+.lightbox .viewer-bar {
+  border-bottom: 0;
+}
+
+.lightbox .viewer-count,
+.lightbox .viewer-link {
+  color: rgb(242 242 240 / 0.65);
+}
+
+.lightbox .viewer-step {
+  background: rgb(255 255 255 / 0.1);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.lightbox-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  padding: 0 0 12px;
+}
+
+.lightbox-stage img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* On a phone the picture is swiped, not stepped with buttons. */
+@media (hover: none) {
+  .lightbox .viewer-step {
+    display: none;
+  }
+}
+
 /* ---------- Phone ---------- */
 
 @media (max-width: 767px) {

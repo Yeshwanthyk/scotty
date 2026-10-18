@@ -1,9 +1,10 @@
 import { lazy, Suspense, useState } from "react";
-import { hatch, message } from "../data/core";
+import { fileHref, hatch, message } from "../data/core";
 import type { FileDiff } from "../data/diff";
 import type { Turn } from "../protocol/session/conversation";
 import { DiffFile, DiffStat } from "./DiffLines";
 import { Icon, Spinner, type IconName } from "./Icon";
+import { useLightbox } from "./Lightbox";
 
 // xterm loads only when the terminal tab opens.
 const Terminal = lazy(() => import("./Terminal"));
@@ -211,6 +212,14 @@ function Preview({ sessionId, running }: { sessionId: string; running: boolean }
 }
 
 function FileList({ sessionId, files }: { sessionId: string; files: Turn["files"] }) {
+  const images = files
+    .filter((file) => file.type.startsWith("image/"))
+    .map((file) => ({
+      id: file.id,
+      href: fileHref(sessionId, file.id),
+      label: file.caption ?? file.name,
+    }));
+  const lightbox = useLightbox(images);
   if (files.length === 0)
     return (
       <Empty
@@ -222,9 +231,17 @@ function FileList({ sessionId, files }: { sessionId: string; files: Turn["files"
   return (
     <div className="file-list">
       {files.map((file) => {
-        const href = `/api/sessions/${encodeURIComponent(sessionId)}/files/${file.id}`;
+        const href = fileHref(sessionId, file.id);
+        const image = images.findIndex((item) => item.id === file.id);
         return (
-          <a key={file.id} className="file-item" href={href} target="_blank" rel="noreferrer">
+          <a
+            key={file.id}
+            className="file-item"
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            onClick={image === -1 ? undefined : lightbox.open(image)}
+          >
             {file.type.startsWith("image/") ? (
               <img className="thumb" src={href} alt="" loading="lazy" />
             ) : (
@@ -241,6 +258,7 @@ function FileList({ sessionId, files }: { sessionId: string; files: Turn["files"
           </a>
         );
       })}
+      {lightbox.view}
     </div>
   );
 }

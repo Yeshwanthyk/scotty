@@ -20,6 +20,8 @@ export type Spec =
   | { type: "web"; query?: string; url?: string }
   | { type: "agent"; tool: "spawnAgent" | "wait"; prompt?: string }
   | { type: "image"; path: string }
+  // A file the agent shares; the seed API serves it by name (ui/seed/api.ts).
+  | { type: "attach"; name: string; mime: string; caption?: string }
   | { type: "plan"; steps: [string, "pending" | "inProgress" | "completed"][] }
   | { type: "diff"; diff: string }
   | { type: "error"; message: string; info: string; retry?: boolean }
@@ -315,6 +317,17 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
           lifecycle(base, base);
           break;
         }
+        case "attach":
+          push({
+            src: "files",
+            kind: "file.attached",
+            file: `f11e${spec.id.slice(4, 24)}${item.toString(16).padStart(8, "0")}`,
+            name: entry.name,
+            type: entry.mime,
+            size: 4096,
+            ...(entry.caption === undefined ? {} : { caption: entry.caption }),
+          });
+          break;
         case "plan":
           agent("turn/plan/updated", {
             turnId,
@@ -1008,6 +1021,46 @@ export const dummies: DummySpec[] = [
             type: "say",
             text: "History now keeps a per-session window, 30 days by default, and pruning skips pinned events.",
             phase: "final_answer",
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "d0cc0de500000000000000000000000b",
+    title: "Screenshots of the new brand assets",
+    repo: "acme/storefront",
+    minutesAgo: 2,
+    turns: [
+      {
+        prompt: "Take screenshots of the new brand assets and the phone layout.",
+        seconds: 40,
+        items: [
+          { type: "say", phase: "commentary", text: "Here they are." },
+          {
+            type: "attach",
+            name: "phone-390x844.png",
+            mime: "image/png",
+            caption: "Phone layout at 390×844",
+          },
+          {
+            type: "attach",
+            name: "hero-16x9.png",
+            mime: "image/png",
+            caption: "Hero image, 16:9",
+          },
+          { type: "attach", name: "mark-512.png", mime: "image/png", caption: "App icon, 512px" },
+          {
+            type: "attach",
+            name: "maskable-512.png",
+            mime: "image/png",
+            caption: "Maskable icon with its safe zone",
+          },
+          { type: "attach", name: "counter.webm", mime: "video/webm", caption: "Counter video" },
+          { type: "attach", name: "favicon-page.png", mime: "image/png" },
+          {
+            type: "say",
+            text: "Four screenshots, one video and the page with the favicon. The maskable icon keeps the mark inside the safe zone.",
           },
         ],
       },
