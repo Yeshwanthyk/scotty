@@ -179,15 +179,6 @@ export function groupOf(iso: string, now = new Date()): (typeof groups)[number] 
   return "Older";
 }
 
-// A session asleep (stopped) for over a week moves out of the way, still searchable.
-// The week counts from when it went to sleep, not from its last activity.
-export function archived(session: Session, now = new Date()): boolean {
-  const { authority, display } = session;
-  if (authority.kind !== "stable" || authority.lifecycle !== "stopped") return false;
-  if (display.stoppedAt === null) return false;
-  return Date.parse(display.stoppedAt) < now.getTime() - 7 * 86_400_000;
-}
-
 // Mine: started by a person, in the UI or CLI or through the API with a key. Automations: a hook
 // or an automation.
 export type Filter = "all" | "mine" | "automations" | "running";

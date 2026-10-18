@@ -1,9 +1,4 @@
-import { BunServices } from "@effect/platform-bun";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Effect, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Effect } from "effect";
 import {
   access,
   CliFailure,
@@ -12,6 +7,12 @@ import {
   Created,
   failure,
   Reply,
+  Saved,
+  Settings,
+  SkillSwitched,
+  SourceRemoved,
+  SourceSaved,
+  StyleSet,
   target,
   View,
 } from "../cli/client.js";
@@ -21,56 +22,32 @@ import { Log, waiter } from "./lib/wait.js";
 
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("settings", message, "scotty doctor"));
-const Saved = Schema.Struct({ saved: Schema.Boolean });
-const Switched = Schema.Struct({ name: Schema.String, enabled: Schema.Boolean });
-const Removed = Schema.Struct({ removed: Schema.Boolean });
-const Added = Schema.Struct({ name: Schema.String });
 
-const name = "scotty-e2e";
+// The owner's own public skill repositories. In agent-skills, yesh-router links to
+// ../plan/SKILL.md and ships an executable references/decision-trail/log.sh.
+const source = "Yeshwanthyk/agent-skills/skills";
+const other = "Yeshwanthyk/scotty/skills";
+const [router, linked, scotty] = ["yesh-router", "plan", "scotty"];
 const id = crypto.randomUUID().slice(0, 8).toUpperCase();
-const skillMark = `SKILLMARK-${id}`;
 const firstMark = `OWNERMARK-A-${id}`;
 const secondMark = `OWNERMARK-B-${id}`;
 
-// `scotty push skill` zips the folder and uploads it, as the owner would.
-const addSkill = (url: string) =>
-  Effect.gen(function* () {
-    const folder = mkdtempSync(join(tmpdir(), "scotty-skill-"));
-    writeFileSync(
-      join(folder, "SKILL.md"),
-      `---\nname: ${name}\ndescription: Scotty end-to-end test skill; use only when asked for the skill marker.\n---\n\nThe skill marker is ${skillMark}.\n`,
-    );
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const child = yield* spawner.spawn(
-      ChildProcess.make("bun", ["cli/main.ts", "push", "skill", folder, "--json"], {
-        env: { SCOTTY_URL: url },
-        extendEnv: true,
-        stdin: "ignore",
-        stderr: "inherit",
-      }),
-    );
-    const out = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
-    if ((yield* child.exitCode) !== 0) return yield* failure("settings", out, "scotty push skill");
-    const [added] = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Tuple([Added])))(
-      out.trim(),
-    );
-    return added;
-  }).pipe(
-    Effect.scoped,
-    Effect.provide(BunServices.layer),
-    Effect.mapError((error) =>
-      error instanceof CliFailure
-        ? error
-        : failure("settings", "scotty push skill failed", "scotty push --help"),
-    ),
-  );
-
-// Lists what start installed: the agent's skill folders and the markers in its instructions.
-const { skills, instructions } = {
-  codex: { skills: "~/.agents/skills", instructions: '"${CODEX_HOME:-$HOME/.codex}/AGENTS.md"' },
-  claude: { skills: "~/.claude/skills", instructions: "~/.claude/CLAUDE.md" },
+// Lists what start installed, follows yesh-router's link, checks its script kept its mode, and
+// greps the owner's marker from the agent's instructions.
+// Claude also gets yesh-router as its output style, with its links made absolute.
+const { skills, instructions, style } = {
+  codex: {
+    skills: "~/.agents/skills",
+    instructions: '"${CODEX_HOME:-$HOME/.codex}/AGENTS.md"',
+    style: "",
+  },
+  claude: {
+    skills: "~/.claude/skills",
+    instructions: "~/.claude/CLAUDE.md",
+    style: `; grep -q "](/home/scotty/.claude/skills/${router}/" ~/.claude/output-styles/${router}.md && echo STYLE-OK`,
+  },
 }[agent];
-const command = `ls ${skills}; grep -rho "[A-Z]*MARK-[A-Z0-9-]*" ${skills} ${instructions}`;
+const command = `ls ${skills}; test -f ${skills}/${router}/../${linked}/SKILL.md && echo LINK-OK; test -x ${skills}/${router}/references/decision-trail/log.sh && echo EXEC-OK; grep -o "OWNERMARK-[A-Z0-9-]*" ${instructions}${style}`;
 const probe = prompt(
   `Run exactly: \`${command}\` and reply with its full output only.`,
   `run ${command}\nsay {{out}}`,
@@ -79,17 +56,50 @@ const probe = prompt(
 const program = Effect.gen(function* () {
   const url = yield* target(process.env.SCOTTY_URL);
   const request = client({ url, token: yield* access(url) });
+  const add = (id: string) =>
+    request("/api/skill-sources", SourceSaved, { method: "POST", body: { source: id } });
+  const remove = (id: string) =>
+    request("/api/skill-sources/remove", SourceRemoved, { method: "POST", body: { source: id } });
+  const toggle = (name: string, enabled: boolean) =>
+    request(`/api/skills/${name}`, SkillSwitched, { method: "PATCH", body: { enabled } });
 
-  // 1. A skill added with the CLI and owner instructions.
-  const added = yield* addSkill(url);
-  yield* check(added.name === name, `push skill returned ${added.name}`);
+  // The owner may use these sources and instructions; note them to put back at the end.
+  const owner = yield* request("/api/settings", Settings);
+  const before = owner.sources.filter((known) => known.id === source || known.id === other);
+  for (const known of before) yield* remove(known.id);
+
+  // 1. Added fresh, every skill is off; a refresh at the same commit finds nothing new.
+  const added = yield* add(source);
+  yield* check(
+    added.added.includes(router) && added.added.includes(linked),
+    `Add found ${added.added.join(", ")}`,
+  );
+  const listed = (yield* request("/api/settings", Settings)).sources.find((s) => s.id === source);
+  yield* check(
+    listed !== undefined && listed.skills.every((skill) => !skill.enabled),
+    "New skills are not all off",
+  );
+  const refreshed = yield* request("/api/skill-sources/refresh", SourceSaved, {
+    method: "POST",
+    body: { source },
+  });
+  yield* check(
+    refreshed.added.length + refreshed.updated.length + refreshed.removed.length === 0,
+    "Refresh at the same commit reported changes",
+  );
+  yield* add(other);
+  console.log(`${source} at ${added.commit.slice(0, 7)}: ${added.added.length} skills, all off`);
+
+  // 2. One skill on in each source and owner instructions; a new session gets both folders whole.
+  const setStyle = (skill: string | null) =>
+    request("/api/settings/claude-style", StyleSet, { method: "PUT", body: { skill } });
+  // Setting the style switches yesh-router on.
+  yield* setStyle(router);
+  yield* toggle(scotty, true);
   yield* request("/api/settings/instructions", Saved, {
     method: "PUT",
     body: { text: `The owner marker is ${firstMark}.` },
   });
-  console.log(`Skill ${name} added; instructions set`);
-
-  // 2. A new session's agent sees both.
   const session = yield* request("/api/sessions", Created, {
     method: "POST",
     key: crypto.randomUUID(),
@@ -111,16 +121,23 @@ const program = Effect.gen(function* () {
       const conversation = yield* request(`${prefix}/conversation`, Conversation);
       return conversation.turns.at(-1)?.assistant ?? "";
     });
-  const first = yield* reply("0");
-  yield* check(first.includes(name) && first.includes(skillMark), "Skill not installed");
+  const start = yield* reply("0");
   yield* check(
-    first.includes(firstMark),
-    "Owner instructions not in the agent's instructions file",
+    [router, linked, scotty].every((name) => start.includes(name)),
+    `Both sources not installed: ${start}`,
   );
-  console.log("Start: skill and owner marker present");
+  yield* check(start.includes("LINK-OK"), "A skill's link to another skill doesn't resolve");
+  yield* check(start.includes("EXEC-OK"), "A skill's script lost its execute bit");
+  yield* check(start.includes(firstMark), "Owner instructions not in the agent's instructions");
+  yield* check(
+    agent === "codex" || start.includes("STYLE-OK"),
+    "Claude's output style was not built from yesh-router",
+  );
+  console.log("Start: both sources installed, link resolves, script executable, owner marker");
 
-  // 3. Skill off and new instructions; a stop and resume picks up both.
-  yield* request(`/api/skills/${name}`, Switched, { method: "PATCH", body: { enabled: false } });
+  // 3. Every skill off and new instructions; a stop and resume picks up both.
+  yield* toggle(router, false);
+  yield* toggle(scotty, false);
   yield* request("/api/settings/instructions", Saved, {
     method: "PUT",
     body: { text: `The owner marker is ${secondMark}.` },
@@ -133,18 +150,29 @@ const program = Effect.gen(function* () {
     key: req,
     body: { req, turn: "1", text: probe },
   });
-  const second = yield* reply("1");
-  yield* check(!second.includes(skillMark), "Switched-off skill still installed after resume");
+  const resumed = yield* reply("1");
+  yield* check(!resumed.includes("LINK-OK"), "A source with no skill on is still installed");
+  yield* check(!resumed.includes("STYLE-OK"), "A style whose skill is off is still installed");
   yield* check(
-    second.includes(secondMark) && !second.includes(firstMark),
+    resumed.includes(secondMark) && !resumed.includes(firstMark),
     "Resume kept the old instructions",
   );
-  console.log("Resume: skill gone, new owner marker present");
+  console.log("Resume: no skills, new owner marker present");
 
-  // 4. Clean up so other tests start without settings.
+  // 4. Clean up, and put back the owner's sources and instructions as they were.
   yield* request(`${prefix}/stop`, View, { method: "POST" });
-  yield* request(`/api/skills/${name}`, Removed, { method: "DELETE" });
-  yield* request("/api/settings/instructions", Saved, { method: "PUT", body: { text: "" } });
+  yield* remove(source);
+  yield* remove(other);
+  yield* request("/api/settings/instructions", Saved, {
+    method: "PUT",
+    body: { text: owner.instructions },
+  });
+  yield* setStyle(null);
+  for (const known of before) {
+    yield* add(`${known.id}${known.ref === null ? "" : `@${known.ref}`}`);
+    for (const skill of known.skills) if (skill.enabled) yield* toggle(skill.name, true);
+  }
+  if (owner.claudeStyle !== null) yield* setStyle(owner.claudeStyle);
   console.log("Cleaned up");
 });
 

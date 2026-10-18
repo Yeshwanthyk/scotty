@@ -869,7 +869,7 @@ export const dummies: DummySpec[] = [
     after: "boot-failed",
     turns: [{ prompt: "reply ok", items: [] }],
   },
-  // Stopped for over a week: the sidebar files these under Archived.
+  // Stopped for over a week.
   {
     id: "d0cc0de5000000000000000000000007",
     title: "Upgrade the image pipeline to sharp 0.34",

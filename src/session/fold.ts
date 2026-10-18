@@ -37,13 +37,10 @@ const turnOpen = (state: State): boolean =>
 const endAll = (
   state: State,
   phase: "stopped" | "failed",
-  at: number,
   stop: State["stop"] = undefined,
 ): State => ({
   ...state,
   phase,
-  // How long a session has slept counts from here; a new generation clears it.
-  stoppedAt: phase === "stopped" ? at : undefined,
   stop: phase === "stopped" ? stop : undefined,
   stopSeq: state.lastSeq,
   connected: false,
@@ -65,11 +62,11 @@ const stalled = (state: State, turn: string): boolean =>
   state.requests.some((item) => item.req === stallReq(turn));
 // A save settles the last turn; after a stall, the session then stops unless the owner has
 // started another turn.
-const saved = (state: State, next: State, at: number): State => {
+const saved = (state: State, next: State): State => {
   const turn = state.turns.at(-1)?.turn;
   const settled = { ...next, pending: remove(state.pending, "save") };
   return turn !== undefined && live(state) && stalled(state, turn) && !turnOpen(next)
-    ? endAll(settled, "stopped", at, { reason: "stalled" })
+    ? endAll(settled, "stopped", { reason: "stalled" })
     : settled;
 };
 
@@ -77,7 +74,6 @@ const saved = (state: State, next: State, at: number): State => {
 const resume = (state: State, at: number): State => ({
   ...state,
   phase: "provisioning",
-  stoppedAt: undefined,
   failure: undefined,
   stop: undefined,
   gen: (state.gen ?? 0) + 1,
@@ -148,7 +144,7 @@ function step(state: State, event: SessionEvent): State {
       // A different supervisor for this generation means the container was replaced under
       // the session, as a deploy does; its work since the last save is gone.
       if (state.boot !== undefined && state.boot !== event.boot)
-        return endAll(next, "stopped", event.at, { reason: "deploy" });
+        return endAll(next, "stopped", { reason: "deploy" });
       if (state.connected || (!has(state.pending, "container") && !has(state.pending, "dial")))
         return next;
       return {
@@ -287,7 +283,6 @@ function step(state: State, event: SessionEvent): State {
             lastAckSeq: state.lastAckSeq,
           },
           "stopped",
-          event.at,
           { reason: "agent" },
         );
       // The supervisor reports a failed start once; waiting out the workspace deadline adds nothing.
@@ -300,7 +295,6 @@ function step(state: State, event: SessionEvent): State {
             failure: { code: event.code, retryable: true },
           },
           "failed",
-          event.at,
         );
       if (
         event.req === undefined ||
@@ -347,7 +341,7 @@ function step(state: State, event: SessionEvent): State {
     case "save.done":
     case "save.failed":
       // Only the latest turn's save owns the deadline; an older save's result changes nothing.
-      return state.turns.at(-1)?.turn === event.turn ? saved(state, next, event.at) : next;
+      return state.turns.at(-1)?.turn === event.turn ? saved(state, next) : next;
     case "socket.closed":
       if (event.gen !== state.gen || !live(state) || !state.connected) return next;
       return {
@@ -385,7 +379,7 @@ function step(state: State, event: SessionEvent): State {
       )
         return next;
       // The container is gone or unreachable; its saved work can still resume.
-      if (event.op === "dial") return endAll(next, "stopped", event.at, { reason: "gone" });
+      if (event.op === "dial") return endAll(next, "stopped", { reason: "gone" });
       if (event.op === "container" || event.op === "workspace")
         return endAll(
           {
@@ -393,12 +387,11 @@ function step(state: State, event: SessionEvent): State {
             failure: { code: `${event.op}_timeout`, retryable: true },
           },
           "failed",
-          event.at,
         );
       // The Session DO re-watches the container, or records it gone.
       if (event.op === "watch") return { ...next, pending: remove(state.pending, "watch") };
       // A lost save leaves the previous save in place; the session carries on.
-      if (event.op === "save") return saved(state, next, event.at);
+      if (event.op === "save") return saved(state, next);
       // The Session DO stops the container, unless the owner used it within the window; the
       // idle deadline starts again either way.
       if (event.op === "idle")
@@ -407,7 +400,7 @@ function step(state: State, event: SessionEvent): State {
       if (event.op === "stalled") {
         const req = stallReq(state.currentTurn);
         if (stalled(state, state.currentTurn))
-          return endAll(next, "stopped", event.at, { reason: "stalled" });
+          return endAll(next, "stopped", { reason: "stalled" });
         return {
           ...next,
           requests: [
@@ -450,7 +443,7 @@ function step(state: State, event: SessionEvent): State {
       return event.reason !== "idle" ||
         (has(state.pending, "idle") &&
           (event.idleSeq === undefined || event.idleSeq === state.idleSeq))
-        ? endAll(next, "stopped", event.at, {
+        ? endAll(next, "stopped", {
             reason: event.reason ?? "gone",
             ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
           })
@@ -486,7 +479,6 @@ function step(state: State, event: SessionEvent): State {
           failure: { code: event.code, retryable: event.retryable },
         },
         "failed",
-        event.at,
       );
     case "file.attached": {
       const { seq: _seq, at: _at, src: _src, kind: _kind, ...file } = event;

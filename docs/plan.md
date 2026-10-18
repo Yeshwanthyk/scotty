@@ -663,6 +663,8 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 | R3    | Where a session runs         | R2, S4     | todo   |                                                                                                                                                                                                                                                                                                                                                                                                           |
 | G1    | `gh` in sessions             | none       | built  | Built and deployed to `main` (owner, 2026-10-12; image `c76bd03`, `sha256:2d096e59…`). `e2e github` passes: push, refused push, gh PR create and merge, three refused writes, no token. `e2e core` passes cold start and turn 0; its mid-test redeploy fails on Cloudflare API errors (Access `internal_server_error`, "completion token already consumed") that alternate with successful plain deploys. |
 | A1    | Scotty as an MCP server      | none       | built  | Spike passed (claude.ai and loopback sign-in). Built: Access app, stateless `/mcp`, seven tools, `e2e scotty-mcp`. Deployed to `main`; `e2e scotty-mcp` passes. Phone check pending.                                                                                                                                                                                                                      |
+| K1    | Skills from repositories     | none       | built  | Worker fetch to R2, Creds DO sources, supervisor unpack, deny-lists, CLI, Settings → Skills, recipe, `e2e settings` rewritten on the owner's agent-skills and scotty repos. Local checks pass; deploy and e2e pending.                                                                                                                                                                                    |
+| K2    | Claude output style          | K1         | built  | Deployed to `main` (image `72b36e66`). `e2e settings` passes with `--agent claude` and Codex; a real Claude session names yesh-router as its output style.                                                                                                                                                                                                                                                |
 
 ### S1: sessions sleep
 
@@ -672,7 +674,7 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 
 ### S2: find sessions
 
-- **In scope:** the sessions list groups Today / This week / Older, filters All · Mine · Automations · Running, and puts sessions asleep over 7 days under Archived. Cmd-K searches every session by title, repo, key and first prompt (the Creds DO index gains what it needs), and filters by repo. Titles: the first prompt line, shown whole where there is room.
+- **In scope:** the sessions list groups Today / This week / Older, filters All · Mine · Automations · Running. Every stopped session is under Stopped (owner, 2026-10-17: no separate Archived fold). Cmd-K searches every session by title, repo, key and first prompt (the Creds DO index gains what it needs), and filters by repo. Titles: the first prompt line, shown whole where there is room.
 - **Done when:** `GET /api/sessions?q=` and `scotty ls --search` return matches from the index; screenshots at phone and desktop width; `e2e` asserts a search finds a created session.
 
 ### S3: hooks, keys and deliveries
@@ -768,6 +770,19 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 - **Spike: passed (2026-10-13).** Access Managed OAuth on a `/mcp` app works with claude.ai and loopback clients; the results are in `design.md` "Scotty as an MCP server".
 - **In scope:** the deployer's `scotty-<stage>-mcp` Access app with Managed OAuth; a stateless `POST /mcp` in the Worker (no DO, no JWT check: Access is the only way in); tools that call the API handler: `list_sessions`, `read_session`, `new_session`, `steer_session`, `interrupt_session`, `stop_session`, `resume_session`. Containers don't get this MCP.
 - **Done when:** `e2e scotty-mcp` gets a 401 with `WWW-Authenticate` when signed out, then, with the official MCP client, lists the tools, creates a scripted session, reads its reply, steers it, finds it in the list and stops it; the owner adds Scotty as a claude.ai connector on the phone and starts a session.
+
+### K1: skills from repositories
+
+- **Why (owner, 2026-10-14):** add a GitHub repository's skills (the model is `Yeshwanthyk/agent-skills`, folder `skills/`), see them all and turn each on or off, as gitgud does; refresh by hand and see what changed. Skills there link into each other (playbooks, a router) and ship scripts, so a skill is a folder, not a file.
+- **In scope:** a source is `owner/repo[/folder][@ref]` or a github.com link. The Worker resolves the ref, fetches the tarball (at most 64 MiB) into R2 `skills/<owner>/<repo>/<commit>.tar.gz` and reads every `SKILL.md` in one streaming tar pass; the Creds DO keeps `skill_sources` and `source_skills`. Names clash across sources with 409; new skills arrive off; refresh diffs a per-folder digest. Session start PUTs each source with a skill on to the supervisor, which unpacks the folder whole into the agent's skills folder; switched-off skills are hidden by Codex `[[skills.config]]` and Claude `skillOverrides`. API `POST /api/skill-sources[/refresh,/remove]`, `PATCH /api/skills/:name`; CLI `scotty skills add|ls|on|off|refresh|rm`; Settings → Skills (a fold per source, motion as in `design.md` "UI motion"). Zip upload, `push skill`, `rm skill` and `ls skills` go.
+- **Out of scope:** per-repository overrides (owner asked for global plus per-repo; per-repo waits for its own slice), automatic refresh, sources outside GitHub.
+- **Done when:** `e2e settings` adds `Yeshwanthyk/agent-skills/skills` (every skill off) and refreshes it with no changes, adds `Yeshwanthyk/scotty/skills`, starts a session with `yesh-router` and `scotty` on that sees both folders whole (yesh-router's `../plan` link resolves, its `log.sh` is executable), then resumes with both off and sees no skills; it puts back any of the owner's sources and instructions it touched. A name clash (409) is driven by hand in the [skills recipe](../.agents/skills/verify-scotty/features/skills.md), as is SK5 with `--real` (a switched-off skill hidden from Codex and Claude). Settings → Skills checked at phone and desktop width, light and dark.
+
+### K2: Claude output style
+
+- **Why (owner, 2026-10-17):** Claude sessions should run in the owner's powerball mode, the output style `build-mode.py` makes from `yesh-router` in agent-skills.
+- **In scope:** the Creds DO `claude_style` row; `PUT /api/settings/claude-style {skill|null}` (switches the skill on) and `claudeStyle` in `GET /api/settings`; `style` in the Claude agent config; the supervisor builds `~/.claude/output-styles/<name>.md` from the installed `SKILL.md` and the runner sets `outputStyle`; CLI `scotty skills style <name>|--none`; a select in Settings → Skills.
+- **Done when:** `e2e settings -- --agent claude` finds the built style with absolute links at start and none after a resume with the skill off; a real Claude session with `yesh-router` as the style names it as its active output style and finds the built file.
 
 ### R1: places
 

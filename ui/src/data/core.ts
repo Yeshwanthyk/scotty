@@ -28,7 +28,6 @@ const Session = Schema.Struct({
     branch: Schema.String,
     prompt: Schema.String,
     agentKind: Schema.String,
-    stoppedAt: Schema.NullOr(Schema.String),
     createdAt: Schema.String,
     activeAt: Schema.String,
     origin: Schema.NullOr(
@@ -105,7 +104,6 @@ export class RequestError extends Error {
   }
 }
 
-// A Blob body (a skill zip) goes as it is; any other body is JSON.
 export async function request(
   path: string,
   body?: object,
@@ -113,17 +111,14 @@ export async function request(
   key?: string,
   method?: "PUT" | "PATCH" | "DELETE",
 ): Promise<unknown> {
-  const raw = body instanceof Blob;
   const response = await fetch(path, {
     method: method ?? (body === undefined ? "GET" : "POST"),
     headers: {
       accept: "application/json",
-      ...(body === undefined
-        ? {}
-        : { "content-type": raw ? "application/zip" : "application/json" }),
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
       ...(key === undefined ? {} : { "idempotency-key": key }),
     },
-    body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(body),
     credentials: "same-origin",
     cache: "no-store",
     signal,

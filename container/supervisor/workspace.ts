@@ -192,27 +192,28 @@ export const prepareWorkspace = (
     return { dir, commit, ms, retried };
   });
 
-// Skills arrive over HTTP before start, like a save; start installs the ones it names.
+// Skill sources arrive over HTTP before start, like a save: GitHub tarballs named by commit.
 const skillsDir = () => `${workspaceRoot()}/skills`;
-const skillFile = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const commitFile = /^[0-9a-f]{40}$/;
 
-export const storeSkill = (name: string, zip: Uint8Array) =>
+export const storeSkills = (commit: string, tarball: Uint8Array) =>
   Effect.gen(function* () {
-    if (!skillFile.test(name)) return yield* new WorkspaceError({ message: "invalid skill name" });
+    if (!commitFile.test(commit)) return yield* new WorkspaceError({ message: "invalid commit" });
     const fs = yield* FileSystem.FileSystem;
     yield* fs.makeDirectory(skillsDir(), { recursive: true }).pipe(Effect.mapError(failure));
-    yield* fs.writeFile(`${skillsDir()}/${name}.zip`, zip).pipe(Effect.mapError(failure));
+    yield* fs.writeFile(`${skillsDir()}/${commit}.tar.gz`, tarball).pipe(Effect.mapError(failure));
   });
 
-// Each skill's folder (the one holding SKILL.md) goes to the agent's skills folder. The agent's
-// instructions file becomes Scotty's instructions followed by the owner's.
+// Each source's folder is unpacked whole into the agent's skills folder, so a skill's links to
+// files in another skill still resolve. The agent's instructions file becomes Scotty's
+// instructions followed by the owner's.
 const settingsScript = `set -e
 skills="$1"; instructions="$2"; incoming="$3"; owner="$4"; shift 4
 rm -rf "$skills" && mkdir -p "$skills"
-for name in "$@"; do
-  t=$(mktemp -d); unzip -q "$incoming/$name.zip" -d "$t" -x '__MACOSX/*'
-  file=$(find "$t" -maxdepth 2 -name SKILL.md | head -n 1); test -n "$file"
-  mv "$(dirname "$file")" "$skills/$name"; rm -rf "$t"
+while [ $# -gt 1 ]; do
+  t=$(mktemp -d); tar -xzf "$incoming/$1.tar.gz" -C "$t" --strip-components=1
+  test -d "$t/$2" && cp -a "$t/$2/." "$skills/"
+  rm -rf "$t"; shift 2
 done
 mkdir -p "$(dirname "$instructions")" && rm -f "$instructions"
 { cat /etc/scotty/AGENTS.md; if [ -n "$owner" ]; then printf '\\n\\n# From the owner\\n\\n%s\\n' "$owner"; fi; } > "$instructions"`;
@@ -220,7 +221,7 @@ mkdir -p "$(dirname "$instructions")" && rm -f "$instructions"
 export const installSettings = (
   agent: Agent,
   instructions: string,
-  skills: ReadonlyArray<string>,
+  skills: ReadonlyArray<{ readonly commit: string; readonly path: string }>,
 ) =>
   run(
     [
@@ -232,7 +233,36 @@ export const installSettings = (
       `${agent.files.home}/${agent.files.instructions}`,
       skillsDir(),
       instructions,
-      ...skills.filter((name) => skillFile.test(name)),
+      ...skills.flatMap((source) =>
+        commitFile.test(source.commit)
+          ? [source.commit, source.path === "" ? "." : source.path]
+          : [],
+      ),
     ],
     workspaceRoot(),
   );
+
+// The owner's style skill as a Claude output style, as the owner's build-mode script makes it:
+// the skill's text without its frontmatter, its relative links made absolute so they resolve
+// from any cwd, and keep-coding-instructions so Claude Code's own prompt stays. The folder is
+// rebuilt on every start, so a resume without a style has none.
+export const installStyle = (agent: Agent, name: string | undefined) =>
+  Effect.gen(function* () {
+    const styles = agent.files.styles;
+    if (styles === undefined) return;
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.remove(styles, { recursive: true, force: true });
+    if (name === undefined) return;
+    const dir = `${agent.files.skills}/${name}`;
+    const body = (yield* fs.readFileString(`${dir}/SKILL.md`))
+      .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
+      .replace(/(\]\()([^)\s]+)(\))/g, (link, open: string, target: string, close: string) =>
+        /^(?:https?:|mailto:|#|\/)/.test(target) ? link : `${open}${dir}/${target}${close}`,
+      )
+      .trimStart();
+    yield* fs.makeDirectory(styles, { recursive: true });
+    yield* fs.writeFileString(
+      `${styles}/${name}.md`,
+      `---\nname: ${name}\ndescription: The ${name} skill\nkeep-coding-instructions: true\n---\n\n${body}`,
+    );
+  }).pipe(Effect.mapError(failure));

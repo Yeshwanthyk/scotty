@@ -1,7 +1,6 @@
 import { Effect, Exit, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { Log, Removed, Reply, View, failure } from "../client.js";
-import { removeSkill } from "./push.js";
 import { removeConnection } from "./connections.js";
 import {
   dim,
@@ -66,19 +65,13 @@ const lifecycle = (name: "stop" | "resume", past: string) =>
 export const stop = lifecycle("stop", "Stopping");
 export const resume = lifecycle("resume", "Resuming");
 
-// `rm <id…>` deletes sessions; `rm skill <name>` and `rm connection <name>` delete those.
+// `rm <id…>` deletes sessions; `rm connection <name>` deletes that.
 // Every id is resolved before anything is deleted.
 export const rm = Command.make(
   "rm",
   { ids: Argument.String("id").pipe(Argument.atLeast(1)) },
   ({ ids }) =>
     Effect.gen(function* () {
-      if (ids[0] === "skill") {
-        const [, name, ...rest] = ids;
-        if (name === undefined || rest.length > 0)
-          return yield* usage("Name one skill: scotty rm skill <name>", "rm");
-        return yield* removeSkill(yield* withClient, name);
-      }
       if (ids[0] === "connection") {
         const [, name, ...rest] = ids;
         if (name === undefined || rest.length > 0)

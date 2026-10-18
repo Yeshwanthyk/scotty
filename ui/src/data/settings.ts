@@ -13,14 +13,32 @@ import { request } from "./core";
 const Skill = Schema.Struct({
   name: Schema.String,
   description: Schema.String,
+  manual: Schema.Boolean,
   enabled: Schema.Boolean,
+});
+const SkillSource = Schema.Struct({
+  id: Schema.String,
+  repo: Schema.String,
+  path: Schema.String,
+  ref: Schema.NullOr(Schema.String),
+  commit: Schema.String,
   size: Schema.Number,
-  updated: Schema.Number,
+  fetched: Schema.Number,
+  skills: Schema.Array(Skill),
 });
 const Settings = Schema.Struct({
   instructions: Schema.String,
-  skills: Schema.Array(Skill),
+  sources: Schema.Array(SkillSource),
+  claudeStyle: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
+});
+const SourceSaved = Schema.Struct({
+  source: Schema.String,
+  commit: Schema.String,
+  added: Schema.Array(Schema.String),
+  updated: Schema.Array(Schema.String),
+  removed: Schema.Array(Schema.String),
+  skipped: Schema.Array(Schema.String),
 });
 const ChatGpt = Schema.Struct({
   status: Schema.Literals(["signed-in", "expiring", "signed-out"]),
@@ -70,6 +88,8 @@ export type Delivery = (typeof Deliveries.Type)["deliveries"][number];
 export type DeliveryReason = typeof DeliveryReason.Type;
 export type Settings = typeof Settings.Type;
 export type Skill = typeof Skill.Type;
+export type SkillSource = typeof SkillSource.Type;
+export type SourceSaved = typeof SourceSaved.Type;
 export type Accounts = {
   chatgpt: typeof ChatGpt.Type;
   claude: typeof ChatGpt.Type;
@@ -108,8 +128,20 @@ export async function saveInstructions(text: string): Promise<void> {
   await request("/api/settings/instructions", { text }, undefined, undefined, "PUT");
 }
 
-export async function uploadSkill(zip: Blob): Promise<void> {
-  await request("/api/skills", zip, undefined, undefined, "PUT");
+export async function addSource(source: string): Promise<SourceSaved> {
+  return decode(SourceSaved, await request("/api/skill-sources", { source }), "skill source");
+}
+
+export async function refreshSource(source: string): Promise<SourceSaved> {
+  return decode(
+    SourceSaved,
+    await request("/api/skill-sources/refresh", { source }),
+    "skill source",
+  );
+}
+
+export async function removeSource(source: string): Promise<void> {
+  await request("/api/skill-sources/remove", { source });
 }
 
 export async function switchSkill(name: string, enabled: boolean): Promise<void> {
@@ -122,14 +154,9 @@ export async function switchSkill(name: string, enabled: boolean): Promise<void>
   );
 }
 
-export async function removeSkill(name: string): Promise<void> {
-  await request(
-    `/api/skills/${encodeURIComponent(name)}`,
-    undefined,
-    undefined,
-    undefined,
-    "DELETE",
-  );
+// Setting a style also switches its skill on.
+export async function setClaudeStyle(skill: string | null): Promise<void> {
+  await request("/api/settings/claude-style", { skill }, undefined, undefined, "PUT");
 }
 
 export async function startChatGpt(): Promise<Device> {

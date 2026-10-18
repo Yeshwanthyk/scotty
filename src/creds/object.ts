@@ -70,13 +70,22 @@ const ClaudeRow = Schema.Struct({
   token: Schema.String,
   expires_at: Schema.Number,
 });
+const SourceRow = Schema.Struct({
+  id: Schema.String,
+  repo: Schema.String,
+  path: Schema.String,
+  ref: Schema.NullOr(Schema.String),
+  commit_sha: Schema.String,
+  size: Schema.Number,
+  fetched: Schema.Number,
+});
 const SkillRow = Schema.Struct({
   name: Schema.String,
+  source: Schema.String,
   description: Schema.String,
+  manual: Schema.Number,
   enabled: Schema.Number,
-  sha256: Schema.String,
-  size: Schema.Number,
-  updated: Schema.Number,
+  digest: Schema.String,
 });
 const ConnectionRow = Schema.Struct({
   name: Schema.String,
@@ -164,7 +173,13 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), device_auth_id TEXT NOT NULL, user_code TEXT NOT NULL, interval INTEGER NOT NULL, expires_at INTEGER NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS github (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, login TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS claude (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, expires_at INTEGER NOT NULL)`;
-      yield* sql`CREATE TABLE IF NOT EXISTS skills (name TEXT PRIMARY KEY, description TEXT NOT NULL, enabled INTEGER NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, updated INTEGER NOT NULL)`;
+      // The zip-upload skills table this replaced; its zips in R2 are orphaned.
+      yield* sql`DROP TABLE IF EXISTS skills`;
+      // A skill's name is unique across sources, since every source unpacks into one folder.
+      yield* sql`CREATE TABLE IF NOT EXISTS skill_sources (id TEXT PRIMARY KEY, repo TEXT NOT NULL, path TEXT NOT NULL, ref TEXT, commit_sha TEXT NOT NULL, size INTEGER NOT NULL, fetched INTEGER NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS source_skills (name TEXT PRIMARY KEY, source TEXT NOT NULL, description TEXT NOT NULL, manual INTEGER NOT NULL, enabled INTEGER NOT NULL, digest TEXT NOT NULL)`;
+      // The skill Claude sessions use as their output style.
+      yield* sql`CREATE TABLE IF NOT EXISTS claude_style (id INTEGER PRIMARY KEY CHECK (id = 1), skill TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (id TEXT PRIMARY KEY)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
       yield* sql`CREATE TABLE IF NOT EXISTS request_sessions (req TEXT PRIMARY KEY, id TEXT)`;
@@ -849,32 +864,166 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               Schema.decodeUnknownEffect(SessionRow)(row),
             );
           }),
-        // The zip itself is in R2 at skills/<name>.zip before its row is written.
-        skills: () =>
+        // Each source's tarball is in R2 at sourceKey(repo, commit) before its row is written.
+        skillSources: () =>
           Effect.gen(function* () {
-            const rows =
-              yield* sql`SELECT name, description, enabled, sha256, size, updated FROM skills ORDER BY name`;
-            const skills = yield* Effect.forEach(rows, (row) =>
-              Schema.decodeUnknownEffect(SkillRow)(row),
+            const sources = yield* Effect.forEach(
+              yield* sql`SELECT id, repo, path, ref, commit_sha, size, fetched FROM skill_sources ORDER BY id`,
+              (row) => Schema.decodeUnknownEffect(SourceRow)(row),
             );
-            return skills.map((skill) => ({
-              ...skill,
-              enabled: skill.enabled === 1,
+            const skills = yield* Effect.forEach(
+              yield* sql`SELECT name, source, description, manual, enabled, digest FROM source_skills ORDER BY name`,
+              (row) => Schema.decodeUnknownEffect(SkillRow)(row),
+            );
+            return sources.map((source) => ({
+              id: source.id,
+              repo: source.repo,
+              path: source.path,
+              ref: source.ref,
+              commit: source.commit_sha,
+              size: source.size,
+              fetched: source.fetched,
+              skills: skills
+                .filter((skill) => skill.source === source.id)
+                .map((skill) => ({
+                  name: skill.name,
+                  description: skill.description,
+                  manual: skill.manual === 1,
+                  enabled: skill.enabled === 1,
+                })),
             }));
           }),
-        // Replacing a skill keeps whether it is on.
-        putSkill: (skill: { name: string; description: string; sha256: string; size: number }) =>
-          sql`INSERT INTO skills (name, description, enabled, sha256, size, updated) VALUES (${skill.name}, ${skill.description}, 1, ${skill.sha256}, ${skill.size}, ${Date.now()}) ON CONFLICT(name) DO UPDATE SET description = excluded.description, sha256 = excluded.sha256, size = excluded.size, updated = excluded.updated`.pipe(
-            Effect.asVoid,
+        // Adds or refreshes a source. New skills arrive off; an updated one keeps its switch.
+        // A name another source already has refuses the whole source.
+        putSource: (
+          source: {
+            id: string;
+            repo: string;
+            path: string;
+            ref: string | null;
+            commit: string;
+            size: number;
+          },
+          found: ReadonlyArray<{
+            name: string;
+            description: string;
+            manual: boolean;
+            digest: string;
+          }>,
+        ) =>
+          Effect.gen(function* () {
+            const taken = yield* Effect.forEach(
+              yield* sql`SELECT name, source, description, manual, enabled, digest FROM source_skills`,
+              (row) => Schema.decodeUnknownEffect(SkillRow)(row),
+            );
+            const clashes = found.flatMap((skill) =>
+              taken
+                .filter((row) => row.name === skill.name && row.source !== source.id)
+                .map((row) => ({ name: row.name, source: row.source })),
+            );
+            if (clashes.length > 0) return { status: "clash" as const, clashes };
+            const before = yield* sql`SELECT commit_sha FROM skill_sources WHERE id = ${source.id}`;
+            const previous =
+              before[0] === undefined
+                ? null
+                : (yield* Schema.decodeUnknownEffect(Schema.Struct({ commit_sha: Schema.String }))(
+                    before[0],
+                  )).commit_sha;
+            yield* sql`INSERT INTO skill_sources (id, repo, path, ref, commit_sha, size, fetched) VALUES (${source.id}, ${source.repo}, ${source.path}, ${source.ref}, ${source.commit}, ${source.size}, ${Date.now()}) ON CONFLICT(id) DO UPDATE SET ref = excluded.ref, commit_sha = excluded.commit_sha, size = excluded.size, fetched = excluded.fetched`;
+            const mine = taken.filter((row) => row.source === source.id);
+            const added: string[] = [];
+            const updated: string[] = [];
+            for (const skill of found) {
+              const old = mine.find((row) => row.name === skill.name);
+              if (old === undefined) added.push(skill.name);
+              else if (old.digest !== skill.digest) updated.push(skill.name);
+              yield* sql`INSERT INTO source_skills (name, source, description, manual, enabled, digest) VALUES (${skill.name}, ${source.id}, ${skill.description}, ${skill.manual ? 1 : 0}, 0, ${skill.digest}) ON CONFLICT(name) DO UPDATE SET description = excluded.description, manual = excluded.manual, digest = excluded.digest`;
+            }
+            const removed = mine
+              .filter((row) => !found.some((skill) => skill.name === row.name))
+              .map((row) => row.name);
+            for (const name of removed) yield* sql`DELETE FROM source_skills WHERE name = ${name}`;
+            // The old tarball can go once no source still points at it.
+            const stale =
+              previous === null || previous === source.commit
+                ? null
+                : (yield* sql`SELECT id FROM skill_sources WHERE repo = ${source.repo} AND commit_sha = ${previous}`)
+                      .length === 0
+                  ? previous
+                  : null;
+            return { status: "saved" as const, added, updated, removed, stale };
+          }).pipe(sql.withTransaction),
+        claudeStyle: () =>
+          sql`SELECT skill FROM claude_style`.pipe(
+            Effect.flatMap((rows) =>
+              rows[0] === undefined
+                ? Effect.succeed(null)
+                : Schema.decodeUnknownEffect(Schema.Struct({ skill: Schema.String }))(rows[0]).pipe(
+                    Effect.map((row) => row.skill),
+                  ),
+            ),
           ),
+        // A style skill is switched on, since the style is built from its installed folder.
+        setClaudeStyle: (name: string | null) =>
+          Effect.gen(function* () {
+            if (name === null) {
+              yield* sql`DELETE FROM claude_style`;
+              return true;
+            }
+            const found =
+              yield* sql`UPDATE source_skills SET enabled = 1 WHERE name = ${name} RETURNING name`;
+            if (found.length === 0) return false;
+            yield* sql`INSERT OR REPLACE INTO claude_style (id, skill) VALUES (1, ${name})`;
+            return true;
+          }).pipe(sql.withTransaction),
         setSkill: (name: string, enabled: boolean) =>
-          sql`UPDATE skills SET enabled = ${enabled ? 1 : 0}, updated = ${Date.now()} WHERE name = ${name} RETURNING name`.pipe(
+          sql`UPDATE source_skills SET enabled = ${enabled ? 1 : 0} WHERE name = ${name} RETURNING name`.pipe(
             Effect.map((rows) => rows.length > 0),
           ),
-        removeSkill: (name: string) =>
-          sql`DELETE FROM skills WHERE name = ${name} RETURNING name`.pipe(
-            Effect.map((rows) => rows.length > 0),
-          ),
+        // What the caller may delete from R2: the tarball, unless another source shares it.
+        removeSource: (id: string) =>
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`DELETE FROM skill_sources WHERE id = ${id} RETURNING id, repo, path, ref, commit_sha, size, fetched`;
+            if (rows[0] === undefined) return null;
+            const source = yield* Schema.decodeUnknownEffect(SourceRow)(rows[0]);
+            yield* sql`DELETE FROM source_skills WHERE source = ${id}`;
+            const shared =
+              yield* sql`SELECT id FROM skill_sources WHERE repo = ${source.repo} AND commit_sha = ${source.commit_sha}`;
+            return { repo: source.repo, commit: source.commit_sha, shared: shared.length > 0 };
+          }).pipe(sql.withTransaction),
+        // What a starting session installs: each source with a skill on, and the names to hide.
+        sessionSkills: () =>
+          Effect.gen(function* () {
+            const sources = yield* Effect.forEach(
+              yield* sql`SELECT id, repo, path, ref, commit_sha, size, fetched FROM skill_sources WHERE id IN (SELECT source FROM source_skills WHERE enabled = 1) ORDER BY id`,
+              (row) => Schema.decodeUnknownEffect(SourceRow)(row),
+            );
+            const off = yield* Effect.forEach(
+              yield* sql`SELECT name, source, description, manual, enabled, digest FROM source_skills WHERE enabled = 0 ORDER BY name`,
+              (row) => Schema.decodeUnknownEffect(SkillRow)(row),
+            );
+            const style =
+              yield* sql`SELECT skill FROM claude_style WHERE skill IN (SELECT name FROM source_skills WHERE enabled = 1)`;
+            return {
+              sources: sources.map((source) => ({
+                id: source.id,
+                repo: source.repo,
+                path: source.path,
+                commit: source.commit_sha,
+              })),
+              // Only an installed skill can be the style.
+              style:
+                style[0] === undefined
+                  ? undefined
+                  : (yield* Schema.decodeUnknownEffect(Schema.Struct({ skill: Schema.String }))(
+                      style[0],
+                    )).skill,
+              off: off
+                .filter((skill) => sources.some((source) => source.id === skill.source))
+                .map((skill) => skill.name),
+            };
+          }),
         startChatGpt: () =>
           Effect.gen(function* () {
             const device = yield* startDevice;

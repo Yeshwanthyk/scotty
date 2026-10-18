@@ -12,7 +12,7 @@ import {
 import { create, lifecycle, message, type Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import { claudeStatus } from "../data/settings";
-import { ago, archived, dormant, statusLabel, statusOf, type Status } from "../data/status";
+import { ago, dormant, statusLabel, statusOf, type Status } from "../data/status";
 import { Composer } from "./Composer";
 import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
@@ -250,7 +250,6 @@ export function NewSession() {
   const pickup = useMemo(
     () =>
       (list ?? [])
-        .filter((session) => !archived(session))
         .map((session) => {
           const status = statusOf(session);
           // A failure from days ago is history, not something to act on now.

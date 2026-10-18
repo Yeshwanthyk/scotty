@@ -4,7 +4,6 @@ import type { Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import {
   ago,
-  archived,
   dormant,
   stopLabel,
   grouped,
@@ -203,7 +202,6 @@ function useMinuteTick() {
   }, []);
 }
 
-const archivedKey = "scotty.archivedOpen";
 const stoppedKey = "scotty.stoppedOpen";
 // Undefined until the owner opens or closes the section once.
 function useSectionOpen(key: string) {
@@ -282,18 +280,14 @@ export function Sidebar({
   const currentId = "sessionId" in params ? params.sessionId : undefined;
   useMinuteTick();
   const [scatter, setScatter] = useState(0);
-  const [showArchived, toggleArchived] = useSectionOpen(archivedKey);
   const [showStopped, toggleStopped] = useSectionOpen(stoppedKey);
   const all = (list ?? []).filter(
     (session) =>
       (repo === "" || session.display.repository === repo) && matchesFilter(session, filter),
   );
-  const live = grouped(all.filter((session) => !archived(session) && !dormant(statusOf(session))));
+  const live = grouped(all.filter((session) => !dormant(statusOf(session))));
   const stopped = all
-    .filter((session) => !archived(session) && dormant(statusOf(session)))
-    .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
-  const old = all
-    .filter((session) => archived(session))
+    .filter((session) => dormant(statusOf(session)))
     .sort((a, b) => Date.parse(b.display.activeAt) - Date.parse(a.display.activeAt));
   return (
     <aside className="sidebar" aria-label="Sessions">
@@ -428,34 +422,19 @@ export function Sidebar({
             ))}
           </section>
         ))}
-        {list !== undefined &&
-        list.length > 0 &&
-        live.length === 0 &&
-        stopped.length === 0 &&
-        old.length === 0 ? (
+        {list !== undefined && list.length > 0 && live.length === 0 && stopped.length === 0 ? (
           <p className="sidebar-empty">Nothing matches.</p>
         ) : null}
-        {stopped.length > 0 || old.length > 0 ? (
+        {stopped.length > 0 ? (
           <div className="folds">
-            {stopped.length > 0 ? (
-              <Fold
-                label="Stopped"
-                sessions={stopped}
-                // With nothing running, recent stopped work is what the owner returns to.
-                open={showStopped ?? live.length === 0}
-                currentId={currentId}
-                onToggle={toggleStopped}
-              />
-            ) : null}
-            {old.length > 0 ? (
-              <Fold
-                label="Archived"
-                sessions={old}
-                open={showArchived ?? false}
-                currentId={currentId}
-                onToggle={toggleArchived}
-              />
-            ) : null}
+            <Fold
+              label="Stopped"
+              sessions={stopped}
+              // With nothing running, recent stopped work is what the owner returns to.
+              open={showStopped ?? live.length === 0}
+              currentId={currentId}
+              onToggle={toggleStopped}
+            />
           </div>
         ) : null}
       </div>

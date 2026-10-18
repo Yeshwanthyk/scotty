@@ -448,6 +448,45 @@ pending; local checks and release bundling do not prove them.
 - **HTTPS interception only for gh.** Git goes over plain HTTP to `github.internal`. `api.github.com` alone is intercepted over HTTPS with the raw `interceptOutboundHttps`, which Alchemy doesn't wrap (see gh above).
 - **Port from `3042018`:** the header cleanup for the git handler in `worker/src/egress/worker.ts:95-123,164-240,428-443`, and the Codex config shape in `worker/src/agent/codex/process.ts:204-270`.
 
+## Skills from repositories
+
+The owner adds a GitHub repository as a skill source, sees every skill in it, and turns each on
+or off, as gitgud does. A source is `owner/repo[/folder][@ref]` or a github.com link to the
+repository or a folder in it; each skill is a folder right under that folder holding `SKILL.md`.
+There is no upload: a skill lives in a repository.
+
+- **Add and refresh happen in the Worker,** which has the GitHub token from the Creds DO. It
+  resolves the ref (none is the default branch) to a commit through the commits API, fetches the
+  tarball at that commit (at most 64 MiB), stores it as it came in R2 at
+  `skills/<owner>/<repo>/<commit>.tar.gz`, and reads every `SKILL.md` in one streaming tar pass
+  (`src/settings/tar.ts`: ustar, pax `path` and GNU long names). `SKILL.md`'s `name` must be its
+  folder's; it needs a `description`; `disable-model-invocation: true` shows as "manual". Folders
+  that fail are listed as skipped.
+- **The Creds DO owns the lists:** `skill_sources` (id, repo, folder, ref, commit, size, fetched)
+  and `source_skills` (name, source, description, manual, on, digest). A skill's name is unique
+  across sources, since all unpack into one folder, so a clash is refused with 409. New skills
+  arrive off. Refresh is manual: it compares each skill folder's digest (a hash of its paths and
+  bytes) with the last one and answers what was added, updated and removed; an updated skill keeps
+  its switch. A tarball no source points at any more is deleted from R2.
+- **Session start:** the Session DO PUTs the tarball of each source with a skill on to the
+  supervisor (`/skills?gen=&commit=`, like `/save`), and `start` names `{commit, path}` per
+  source. The supervisor unpacks each source's folder whole into the agent's skills folder
+  (`~/.agents/skills` for Codex, `~/.claude/skills` for Claude), so one skill's links to another's
+  files and its scripts' modes survive. Skills switched off in a source that is installed are
+  hidden by the agent's own deny-list: Codex `[[skills.config]] name = … enabled = false` in
+  `config.toml`, Claude `settings.skillOverrides {name: "off"}`. The scripted agents ignore those
+  settings, so e2e checks the installed tree and only `--real` proves the deny-lists. New and
+  resumed sessions get changes; running ones don't.
+- **Claude output style:** the owner may name one skill as Claude's output style (the
+  `claude_style` row in the Creds DO); setting it switches that skill on. A Claude session whose
+  style skill is installed gets `~/.claude/output-styles/<name>.md`, built by the supervisor as
+  the owner's `build-mode.py` builds `powerball` from `yesh-router`: the `SKILL.md` text without
+  frontmatter, relative links made absolute under the installed folder, and
+  `keep-coding-instructions: true`. The runner passes `settings.outputStyle: <name>`. The folder is
+  rebuilt on every start, so a resume after the style is cleared has none. Codex has no output
+  styles and ignores it.
+- **The GitHub token** stays in the Creds DO and the Worker. R2 holds only the tarball.
+
 ## API the UI needs
 
 The same origin serves `/api/*` and `ui/dist`, with the error format `{error:{message,code?,hint?}}`.
@@ -473,8 +512,9 @@ The conversation snapshot includes top-level `currentTurn`, the authoritative tu
 | `GET /api/sessions/:id/terminal` (WebSocket)                                 | A shell in the session's container                   |
 | `GET /api/sessions/live`, `GET /api/sessions/:id/live` (WebSocket)           | Pushed list and session updates (below)              |
 | `GET/POST /api/credentials/claude`                                           | Creds DO Claude token status                         |
-| `GET /api/settings`, `PUT /api/settings/instructions`                        | Creds DO instructions and skill list                 |
-| `PUT /api/skills`, `PATCH/DELETE /api/skills/:name`                          | R2 `skills/<name>` and the Creds DO skill list       |
+| `GET /api/settings`, `PUT /api/settings/instructions`                        | Creds DO instructions and skill sources              |
+| `POST /api/skill-sources[/refresh,/remove]`, `PATCH /api/skills/:name`       | Skills from repositories (above)                     |
+| `PUT /api/settings/claude-style`                                             | Claude output style (above)                          |
 | `GET /api/version`                                                           | The deployed Worker's version                        |
 | `POST /mcp`                                                                  | Scotty's MCP server (below), on the API handler      |
 
@@ -508,6 +548,23 @@ Scotty at `https://<host>/mcp` once the owner signs in. Containers don't get thi
 
 `changes[/patch]` and `repos`.
 
+## UI motion
+
+Motion says what changed; it never decorates. These hold on every page.
+
+- None on keyboard-opened things (Cmd-K) or anything used many times a day. Sheets and drawers
+  ease out in at most 250 ms. Pressables scale to 0.97 on `:active`. Hover effects only under
+  `(hover: hover) and (pointer: fine)`, so touch never sticks in a hover state.
+- A row that appears slides in (`row-in`, 320 ms); a row whose content changed flashes once
+  (`row-flash`, 1.4 s). A pasted value flashes its field. Folds slide open.
+- A switch moves only its thumb; the track changes colour without moving.
+- `prefers-reduced-motion` keeps only fades.
+- **Settings → Skills:** one fold per source, its summary the source and "N of M" on the right,
+  rows on the summary's left edge. Each row is the name, "manual" in quiet text when it applies,
+  a one-line description that expands on tap, and a switch labelled with the name. Refresh
+  slides in new skills and flashes updated ones, or says "Up to date". Checked at phone and
+  desktop width, light and dark.
+
 ## CLI
 
 Agent-first: an agent or a script is the primary user, and a person reading it gets the same clarity.
@@ -520,7 +577,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 - **Setup:** `doctor` checks the address, Access, the Worker's version, and each sign-in (ChatGPT, GitHub, Claude), with each account's expiry and the fix for each problem. `login chatgpt` runs the device code: it prints the code, opens the page, and polls. `login github` saves the token from stdin, or from `gh auth token`. `login claude` runs `claude setup-token` and saves the token, or reads it from stdin.
 - **Sessions:** `new <owner/repo> <prompt> [--agent codex|claude] [--key k]` is idempotent on `--key` and uses the repository's default branch. `ls` lists sessions. `read <id> [--last N] [--role user|assistant]` prints the session state and recent messages (default 1, maximum 500; role filtering precedes the limit; empty assistant text is omitted). `log <id>` prints the raw events. There is no `watch`: callers choose when to read again. `steer <id> <text>` and `interrupt <id>` take an optional `--req` for retries. `stop`, `resume`, `open [id]` and `hatch <id> <port>` do what they say. `rm <id…>` deletes stopped or failed sessions with their saves and files, after resolving every id; a running one answers 409 with the hint `scotty stop <id>`.
 - **Blueprints:** `blueprint install <file> [--repo <owner/repo>] [--target <name>=<owner/repo>…] [--agent codex|claude]`, with secrets as one JSON object on stdin; everything is created off.
-- **What sessions get:** `push skill <folder|zip…>`, `push instructions <file|->`, `ls skills` and `rm skill <name>`.
+- **What sessions get:** `skills add <source>`, `skills ls`, `skills on|off <name…>`, `skills style <name>|--none`, `skills refresh [source]`, `skills rm <source>`, and `push instructions <file|->`.
 - **Help:** `scotty --help` lists every command; `scotty <command> --help` is short and most end with one runnable example.
 
 ## Deploy

@@ -22,6 +22,7 @@ directory. Conventions, evidence and cleanup: [SKILL.md](../SKILL.md).
 | [mcp-oauth](mcp-oauth.md)         | OAuth sign-in, refresh and tool policy through internal MCP URLs                               | OAuth      | `mcp-oauth`          |
 | [automations](automations.md)     | A schedule or a webhook delivery fires a run into a session, or a listed skip                  | A1–A6      | `automations`        |
 | [blueprints](blueprints.md)       | One install makes a use's connections and automations off, and shows what to paste where       | B1–B5      | `blueprints`         |
+| [skills](skills.md)               | A repository's skills are listed, switched on or off, refreshed, and reach new sessions        | SK1–SK6    | `settings`           |
 | [ui](ui.md)                       | The phone UI creates, answers, steers and interrupts, and shows files                          | U1–U6      | none                 |
 
 An e2e proves the same behaviours automatically; drive the recipe when a change needs a human-

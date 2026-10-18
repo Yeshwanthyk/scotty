@@ -30,9 +30,15 @@ const mcp = Schema.optionalKey(
     }),
   ),
 );
+const skillName = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
+// Installed skills the agent hides, through its own skill settings.
+const skillsOff = Schema.optionalKey(Schema.Array(skillName));
+// The installed skill Claude uses as its output style.
+const style = Schema.optionalKey(skillName);
 const CodexAgent = Schema.Struct({
   kind: Schema.Literal("codex"),
   mcp,
+  skillsOff,
   model: tomlString,
   effort: tomlString,
   baseUrl: credentialString,
@@ -43,6 +49,8 @@ const CodexAgent = Schema.Struct({
 const ClaudeAgent = Schema.Struct({
   kind: Schema.Literal("claude"),
   mcp,
+  skillsOff,
+  style,
   model: Schema.String,
   effort: Schema.Literals(["low", "medium", "high", "xhigh", "max"]),
   token: credentialString,
@@ -51,12 +59,15 @@ const ClaudeAgent = Schema.Struct({
 const ScriptedCodexAgent = Schema.Struct({
   kind: Schema.Literal("codex"),
   mcp,
+  skillsOff,
   scripted: Schema.Literal(true),
   model: tomlString,
 });
 const ScriptedClaudeAgent = Schema.Struct({
   kind: Schema.Literal("claude"),
   mcp,
+  skillsOff,
+  style,
   scripted: Schema.Literal(true),
   model: Schema.String,
 });
@@ -81,9 +92,20 @@ export const ToSupervisor = Schema.Union([
     git: Schema.Struct({ name: tomlString, email: tomlString }),
     // Preview URL for a port in this session, with `{port}` to fill in.
     hatch: Schema.String,
-    // The owner's instructions, appended to Scotty's; skills already PUT to /skill.
+    // The owner's instructions, appended to Scotty's.
     instructions: Schema.String,
-    skills: Schema.Array(Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/))),
+    // Skill sources, each a GitHub tarball already PUT to /skills by commit; the folder at path
+    // in it is unpacked into the agent's skills folder.
+    skills: Schema.Array(
+      Schema.Struct({
+        commit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
+        path: Schema.String.check(
+          Schema.isPattern(
+            /^(?:(?!\.\.?(?:\/|$))[A-Za-z0-9._-]+(?:\/(?!\.\.?(?:\/|$))[A-Za-z0-9._-]+)*)?$/,
+          ),
+        ),
+      }),
+    ),
     resume: Schema.optionalKey(
       Schema.Struct({
         threadId: identifier,

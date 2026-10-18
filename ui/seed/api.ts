@@ -18,7 +18,7 @@ import {
   nextDue,
   prepare,
 } from "../../src/automations/automation.ts";
-import { readSkill } from "../../src/settings/skill.ts";
+import { parseSource, sourceId } from "../../src/settings/skills.ts";
 import {
   type ConnectionMetadata,
   ToolPolicy,
@@ -338,13 +338,100 @@ async function body(req: IncomingMessage): Promise<unknown> {
   return text === "" ? {} : JSON.parse(text);
 }
 
-// Settings and accounts live in memory; a skill upload runs the Worker's own zip check.
+type SeedSkill = { name: string; description: string; manual: boolean; enabled: boolean };
+type SeedSource = {
+  id: string;
+  repo: string;
+  path: string;
+  ref: string | null;
+  commit: string;
+  size: number;
+  fetched: number;
+  skills: SeedSkill[];
+};
+const seedSkill = (name: string, description: string, manual = false, enabled = false) => ({
+  name,
+  description,
+  manual,
+  enabled,
+});
+const fakeCommit = () =>
+  [...crypto.getRandomValues(new Uint8Array(20))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+// Any other source added here gets these, so the add flow can be tried without GitHub.
+const sampleSkills = () => [
+  seedSkill("changelog", "Write the changelog entry for the commits since the last tag."),
+  seedSkill("release", "Cut a release: bump the version, tag it and draft the notes.", true),
+  seedSkill("triage", "Label and route new issues by area and urgency."),
+];
+
+// A refresh alternates between finding one new skill and one changed skill, then nothing.
+let refreshes = 0;
+const refreshSeed = (source: SeedSource) => {
+  const round = refreshes++ % 3;
+  const added =
+    round === 0 && !source.skills.some((skill) => skill.name === "recap") ? ["recap"] : [];
+  if (added.length > 0) {
+    source.skills.push(
+      seedSkill("recap", "Summarise what a long session did, what is left and what to check."),
+    );
+    source.skills.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  const updated = round === 1 && source.skills[0] !== undefined ? [source.skills[0].name] : [];
+  if (round !== 2) source.commit = fakeCommit();
+  source.fetched = Date.now();
+  return { source: source.id, commit: source.commit, added, updated, removed: [], skipped: [] };
+};
+
+// Settings and accounts live in memory. Skill sources are made up; nothing reaches GitHub.
 const owner = {
   instructions: "",
-  skills: new Map<
-    string,
-    { name: string; description: string; enabled: boolean; size: number; updated: number }
-  >(),
+  claudeStyle: null as string | null,
+  sources: [
+    {
+      id: "Yeshwanthyk/agent-skills/skills",
+      repo: "Yeshwanthyk/agent-skills",
+      path: "skills",
+      ref: null,
+      commit: fakeCommit(),
+      size: 791_552,
+      fetched: Date.now() - 3 * 3600e3,
+      skills: [
+        seedSkill(
+          "diagnose",
+          "Find the root cause of a bug before changing code: reproduce, bisect, explain.",
+          false,
+          true,
+        ),
+        seedSkill(
+          "plan",
+          "Turn a goal into a short, ordered plan with a done-when check for each step.",
+          false,
+          true,
+        ),
+        seedSkill(
+          "research",
+          "Answer a question from sources, citing each claim, and say what is still unknown.",
+        ),
+        seedSkill(
+          "unslop",
+          "Rewrite text so it says what it means in plain words, with nothing padded.",
+          true,
+        ),
+        seedSkill(
+          "viz",
+          "Build a self-contained HTML chart or diagram when a picture says more than prose.",
+        ),
+        seedSkill(
+          "yesh-router",
+          "Route a request to the playbook that fits it and follow the playbook's steps.",
+          false,
+          true,
+        ),
+      ],
+    },
+  ] as SeedSource[],
   github: "octocat" as string | null,
   chatgpt: "signed-in" as "signed-in" | "signed-out",
   claude: null as number | null,
@@ -858,11 +945,6 @@ async function automationsApi(
   if (method === "DELETE") return json(res, { name, removed: flows.automations.delete(name) });
   return fail(res, "Not found", 404, "not_found");
 }
-async function bytes(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
-  return new Uint8Array(Buffer.concat(chunks));
-}
 async function settingsApi(
   req: IncomingMessage,
   res: ServerResponse,
@@ -872,9 +954,23 @@ async function settingsApi(
   if (path === "/api/settings" && method === "GET")
     return json(res, {
       instructions: owner.instructions,
-      skills: [...owner.skills.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      sources: owner.sources,
+      claudeStyle: owner.claudeStyle,
       email: "owner@example.com",
     });
+  if (path === "/api/settings/claude-style" && method === "PUT") {
+    const input = Schema.decodeUnknownOption(
+      Schema.Struct({ skill: Schema.NullOr(Schema.String) }),
+    )(await body(req));
+    if (input._tag === "None") return fail(res, "Expected {skill: name|null}");
+    const skill = owner.sources
+      .flatMap((source) => source.skills)
+      .find((known) => known.name === input.value.skill);
+    if (input.value.skill !== null && skill === undefined) return fail(res, "No such skill", 404);
+    if (skill !== undefined) skill.enabled = true;
+    owner.claudeStyle = input.value.skill;
+    return json(res, { claudeStyle: owner.claudeStyle });
+  }
   if (path === "/api/settings/instructions" && method === "PUT") {
     const input = Schema.decodeUnknownOption(Schema.Struct({ text: Schema.String }))(
       await body(req),
@@ -883,22 +979,54 @@ async function settingsApi(
     owner.instructions = input.value.text.trim() === "" ? "" : input.value.text;
     return json(res, { saved: true });
   }
-  if (path === "/api/skills" && method === "PUT") {
-    const zip = await bytes(req);
-    const skill = await readSkill(zip);
-    if (typeof skill === "string") return fail(res, skill);
-    const enabled = owner.skills.get(skill.name)?.enabled ?? true;
-    owner.skills.set(skill.name, { ...skill, enabled, size: zip.byteLength, updated: Date.now() });
-    return json(res, { ...skill, sha256: "", size: zip.byteLength });
+  if (path === "/api/skill-sources" && method === "POST") {
+    const input = Schema.decodeUnknownOption(Schema.Struct({ source: Schema.String }))(
+      await body(req),
+    );
+    const spec = input._tag === "None" ? undefined : parseSource(input.value.source);
+    if (spec === undefined) return fail(res, "Not a skill source");
+    const id = sourceId(spec);
+    const known = owner.sources.find((source) => source.id === id);
+    if (known !== undefined) return json(res, refreshSeed(known));
+    const skills = sampleSkills();
+    const taken = skills.filter((skill) =>
+      owner.sources.some((source) => source.skills.some((other) => other.name === skill.name)),
+    );
+    if (taken.length > 0)
+      return fail(
+        res,
+        `Skill names already taken: ${taken.map((skill) => skill.name).join(", ")}`,
+        409,
+      );
+    const source = { id, ...spec, commit: fakeCommit(), size: 52_000, fetched: Date.now(), skills };
+    owner.sources.push(source);
+    owner.sources.sort((a, b) => a.id.localeCompare(b.id));
+    return json(res, {
+      source: id,
+      commit: source.commit,
+      added: skills.map((skill) => skill.name),
+      updated: [],
+      removed: [],
+      skipped: [],
+    });
+  }
+  if (path === "/api/skill-sources/refresh" || path === "/api/skill-sources/remove") {
+    const input = Schema.decodeUnknownOption(Schema.Struct({ source: Schema.String }))(
+      await body(req),
+    );
+    const known =
+      input._tag === "None"
+        ? undefined
+        : owner.sources.find((source) => source.id === input.value.source);
+    if (known === undefined) return fail(res, "Not found", 404, "not_found");
+    if (path.endsWith("/refresh")) return json(res, refreshSeed(known));
+    owner.sources = owner.sources.filter((source) => source !== known);
+    return json(res, { source: known.id, removed: true });
   }
   const skill = /^\/api\/skills\/([a-z0-9-]+)$/.exec(path)?.[1];
-  if (skill !== undefined) {
-    const row = owner.skills.get(skill);
+  const row = owner.sources.flatMap((source) => source.skills).find((each) => each.name === skill);
+  if (skill !== undefined && method === "PATCH") {
     if (row === undefined) return fail(res, "Not found", 404, "not_found");
-    if (method === "DELETE") {
-      owner.skills.delete(skill);
-      return json(res, { name: skill, removed: true });
-    }
     const input = Schema.decodeUnknownOption(Schema.Struct({ enabled: Schema.Boolean }))(
       await body(req),
     );
@@ -958,6 +1086,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (
     url.pathname.startsWith("/api/settings") ||
     url.pathname.startsWith("/api/skills") ||
+    url.pathname.startsWith("/api/skill-sources") ||
     url.pathname.startsWith("/api/credentials")
   )
     return settingsApi(req, res, url.pathname, method);
