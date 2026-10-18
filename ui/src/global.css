@@ -444,6 +444,16 @@ kbd {
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
 }
 
+/* Opened from the iOS home screen, 100dvh leaves out the status bar while the page starts under
+   it, so the app stopped that far short of the bottom. Pinning it to the screen's edges fills it. */
+@media (display-mode: standalone) {
+  .app {
+    position: fixed;
+    inset: 0;
+    height: auto;
+  }
+}
+
 .app[data-sidebar="closed"] {
   grid-template-columns: 0 minmax(0, 1fr);
 }
