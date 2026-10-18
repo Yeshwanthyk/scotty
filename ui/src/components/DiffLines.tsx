@@ -1,33 +1,111 @@
 import { useState } from "react";
-import { compact, type FileDiff } from "../data/diff";
+import { compact, type DiffLine, type FileDiff } from "../data/diff";
 import { Icon } from "./Icon";
 
-// Unchanged runs longer than this fold into a "N hidden lines" row, as in a review.
-const foldAfter = 8;
+// Unchanged runs longer than `after` lines fold to `keep` lines either side of the changes, as in
+// a review. A phone folds tighter, so there is less to scroll past, though never to hide one line.
+export type Fold = { after: number; keep: number };
+export const wideFold: Fold = { after: 8, keep: 3 };
+export const narrowFold: Fold = { after: 7, keep: 3 };
 
-export function DiffLines({ file, limit }: { file: FileDiff; limit?: number }) {
+type Row = { kind: "line"; line: DiffLine } | { kind: "fold"; at: number; lines: DiffLine[] };
+
+function rows(lines: ReadonlyArray<DiffLine>, fold: Fold | undefined): Row[] {
+  const out: Row[] = [];
+  for (let at = 0; at < lines.length;) {
+    let end = at;
+    while (lines[end]?.kind === "ctx") end++;
+    const run = lines.slice(at, end);
+    if (fold !== undefined && run.length > fold.after) {
+      const hidden = run.slice(fold.keep, run.length - fold.keep);
+      for (const line of run.slice(0, fold.keep)) out.push({ kind: "line", line });
+      out.push({ kind: "fold", at: at + fold.keep, lines: hidden });
+      for (const line of run.slice(run.length - fold.keep)) out.push({ kind: "line", line });
+    } else for (const line of run) out.push({ kind: "line", line });
+    const line = lines[end];
+    if (line !== undefined) out.push({ kind: "line", line });
+    at = end + 1;
+  }
+  return out;
+}
+
+// The gutter holds both line numbers and the +/- marker; a phone shows one number (CSS picks it).
+// It stays put when a long line wraps or the rows scroll sideways.
+function Gutter({ line }: { line?: DiffLine }) {
+  return (
+    <span className="gutter">
+      <span className="n" data-side="old">
+        {line?.old ?? ""}
+      </span>
+      <span className="n" data-side="new">
+        {line?.new ?? ""}
+      </span>
+      <span className="mark" />
+    </span>
+  );
+}
+
+function Line({ line }: { line: DiffLine }) {
+  return (
+    <div className="diff-line" data-kind={line.kind} role="row">
+      <Gutter line={line} />
+      <code>
+        {line.kind === "hunk" ? line.text.replace(/^@@.*?@@\s?/, "") || "···" : line.text}
+      </code>
+    </div>
+  );
+}
+
+export function DiffLines({
+  file,
+  limit,
+  wrap = false,
+  fold,
+}: {
+  file: FileDiff;
+  limit?: number;
+  wrap?: boolean;
+  fold?: Fold;
+}) {
   const [all, setAll] = useState(false);
+  // Folds the reader opened, by the index of their first hidden line.
+  const [opened, setOpened] = useState<ReadonlySet<number>>(new Set());
   const shown = limit === undefined || all ? file.lines : file.lines.slice(0, limit);
   return (
-    <div className="diff-lines" role="table" aria-label={`Changes to ${file.path}`}>
-      {shown.map((line, index) => (
-        <div className="diff-line" data-kind={line.kind} key={index} role="row">
-          <span className="n">{line.old ?? ""}</span>
-          <span className="n">{line.new ?? ""}</span>
-          <code>
-            {line.kind === "hunk" ? line.text.replace(/^@@.*?@@\s?/, "") || "···" : line.text}
-          </code>
-        </div>
-      ))}
+    <div
+      className="diff-lines"
+      data-wrap={wrap}
+      role="table"
+      aria-label={`Changes to ${file.path}`}
+    >
+      {rows(shown, fold).map((row, index) =>
+        row.kind === "line" ? (
+          <Line key={index} line={row.line} />
+        ) : opened.has(row.at) ? (
+          row.lines.map((line, at) => <Line key={`${index}:${at}`} line={line} />)
+        ) : (
+          <button
+            key={index}
+            type="button"
+            className="diff-line pressable"
+            data-kind="fold"
+            onClick={() => setOpened((set) => new Set(set).add(row.at))}
+          >
+            <Gutter />
+            <code>
+              {row.lines.length} unchanged {row.lines.length === 1 ? "line" : "lines"}
+            </code>
+          </button>
+        ),
+      )}
       {shown.length < file.lines.length ? (
         <button
           type="button"
           className="diff-line pressable"
-          data-kind="hunk"
+          data-kind="fold"
           onClick={() => setAll(true)}
         >
-          <span className="n" />
-          <span className="n" />
+          <Gutter />
           <code>{file.lines.length - shown.length} more lines</code>
         </button>
       ) : null}
@@ -49,52 +127,60 @@ const split = (path: string) => {
   return { dir: at < 0 ? "" : path.slice(0, at + 1), name: path.slice(at + 1) };
 };
 
-export function DiffFile({ file, open: initial = true }: { file: FileDiff; open?: boolean }) {
-  const [open, setOpen] = useState(initial);
-  const { dir, name } = split(file.path);
+export const fileIcon = (file: FileDiff) =>
+  file.kind === "add" ? "filePlus" : file.kind === "delete" ? "fileMinus" : "file";
+
+// The name stays whole; the directory gives way first, losing its start.
+export function DiffPath({ path }: { path: string }) {
+  const { dir, name } = split(path);
   return (
-    <section className="diff-file">
-      <button
-        type="button"
-        className="diff-file-head"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <Icon name="chevronRight" size={14} className="chevron" />
-        <Icon
-          name={file.kind === "add" ? "filePlus" : file.kind === "delete" ? "fileMinus" : "file"}
-          size={14}
-        />
-        <span className="path mono">
-          <bdi>
-            <span>{dir}</span>
-            <b>{name}</b>
-          </bdi>
+    <span className="path mono" title={path}>
+      {dir ? (
+        <span className="dir">
+          <bdi>{dir}</bdi>
         </span>
-        <span className="stats">
-          <DiffStat added={file.added} removed={file.removed} />
-        </span>
-      </button>
-      {open ? <DiffLines file={foldContext(file)} limit={400} /> : null}
-    </section>
+      ) : null}
+      <b>{name}</b>
+    </span>
   );
 }
 
-// Long unchanged stretches become one hunk row so the eye lands on what changed.
-function foldContext(file: FileDiff): FileDiff {
-  const lines = file.lines.flatMap((line, index, list) => {
-    if (line.kind !== "ctx") return [line];
-    let start = index;
-    while (start > 0 && list[start - 1]?.kind === "ctx") start--;
-    let end = index;
-    while (end < list.length - 1 && list[end + 1]?.kind === "ctx") end++;
-    const run = end - start + 1;
-    if (run <= foldAfter) return [line];
-    const keep = 3;
-    if (index - start < keep || end - index < keep) return [line];
-    return index - start === keep
-      ? [{ kind: "hunk" as const, text: `${run - keep * 2} unchanged lines`, old: null, new: null }]
-      : [];
-  });
-  return { ...file, lines };
+export function DiffFile({
+  file,
+  open,
+  onToggle,
+  onView,
+  wrap = false,
+  fold,
+}: {
+  file: FileDiff;
+  open: boolean;
+  onToggle: () => void;
+  onView: () => void;
+  wrap?: boolean;
+  fold?: Fold;
+}) {
+  return (
+    <section className="diff-file" data-path={file.path}>
+      <div className="diff-file-head">
+        <button type="button" className="diff-file-toggle" aria-expanded={open} onClick={onToggle}>
+          <Icon name="chevronRight" size={14} className="chevron" />
+          <Icon name={fileIcon(file)} size={14} />
+          <DiffPath path={file.path} />
+          <span className="diff-file-stat">
+            <DiffStat added={file.added} removed={file.removed} />
+          </span>
+        </button>
+        <button
+          type="button"
+          className="icon-button pressable diff-file-view"
+          aria-label={`View ${file.path} full screen`}
+          onClick={onView}
+        >
+          <Icon name="expand" size={14} />
+        </button>
+      </div>
+      {open ? <DiffLines file={file} limit={400} wrap={wrap} fold={fold} /> : null}
+    </section>
+  );
 }
