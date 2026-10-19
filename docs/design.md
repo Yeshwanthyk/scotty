@@ -609,10 +609,6 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
   3. `stop` → `resume`: the Codex thread continues, and a marker file written in the first turn survives.
   4. Killing the container mid-turn ends `stopped` and resumes from the last finished turn.
 
-## Slices
-
-The order of work is in `plan.md` ("Order of work"): stop and resume, private repositories and push, Hatch, images and video in chat, Claude, then the UI. ChatGPT refresh, `scotty deploy` and cutover are deferred.
-
 ## Open questions to settle early
 
 - ~~Can the Worker run the ChatGPT device-code sign-in itself (Codex's `login --device-auth` flow), and what does the refresh endpoint look like?~~ **Answered by spike 1a (deployed, 2026-09-26): yes.** No bot check on Worker egress to `auth.openai.com`. The refresh token rotated on the one refresh. The ID token lives one hour; the access token's lifetime was not measured. The first run failed because Effect's `bodyText` sets `text/plain` over an explicit content type (`HttpClientRequest.ts:693-700`, `internal/httpBody.ts:9-11`); the code exchange must use `bodyUrlParams`. The fallback (CLI sign-in) is not needed. Not covered: a second refresh with the rotated token, a refresh that races another, and whether re-polling after a successful exchange is safe.
