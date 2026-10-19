@@ -74,11 +74,7 @@ const types: Record<string, string> = {
 // Distilled can't say what a durable_object container app needs: its create sends max_instances
 // and an image, which such an app refuses, its list expects both back, and its Worker upload has
 // no image map. These calls go to the API as Cloudflare documents them.
-const Envelope = Schema.Struct({
-  success: Schema.Boolean,
-  errors: Schema.Array(Schema.Struct({ message: Schema.String })),
-  result: Schema.Unknown,
-});
+const Envelope = Schema.Struct({ success: Schema.Boolean, result: Schema.Unknown });
 const cloudflare = <S extends Schema.Top>(
   path: string,
   result: S,
@@ -96,12 +92,18 @@ const cloudflare = <S extends Schema.Top>(
           ? HttpClientRequest.bodyFormData(base, init.body)
           : HttpClientRequest.bodyJsonUnsafe(base, init.body);
     const response = yield* (yield* HttpClient.HttpClient).execute(request);
-    const envelope = yield* Schema.decodeUnknownEffect(Envelope)(yield* response.json);
-    if (!envelope.success)
-      return yield* new DeployError({
-        message: `Cloudflare ${init.method} ${path} answered HTTP ${response.status}: ${envelope.errors.map((error) => error.message).join("; ")}`,
-      });
-    return yield* Schema.decodeUnknownEffect(result)(envelope.result);
+    const body = yield* response.text;
+    // Any answer that isn't a success with the expected result fails with what Cloudflare said.
+    const failed = new DeployError({
+      message: `Cloudflare ${init.method} ${path} answered HTTP ${response.status}: ${body.slice(0, 1000)}`,
+    });
+    const envelope = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Envelope))(body).pipe(
+      Effect.mapError(() => failed),
+    );
+    if (!envelope.success) return yield* failed;
+    return yield* Schema.decodeUnknownEffect(result)(envelope.result).pipe(
+      Effect.mapError(() => failed),
+    );
   }).pipe(
     Effect.mapError((error) =>
       error instanceof DeployError
@@ -114,7 +116,12 @@ const containerApps = (accountId: string) =>
   cloudflare(
     `/accounts/${accountId}/containers/applications`,
     Schema.Array(
-      Schema.Struct({ id: Schema.String, name: Schema.String, scheduling_policy: Schema.String }),
+      // The list is account-wide; other apps may not say their policy.
+      Schema.Struct({
+        id: Schema.String,
+        name: Schema.String,
+        scheduling_policy: Schema.optional(Schema.String),
+      }),
     ),
   );
 
@@ -302,7 +309,6 @@ export const deployStage = (
         text("ALCHEMY_CLOUDFLARE_ACCOUNT_ID", accountId),
         text("SCOTTY_HOST", host),
         text("SCOTTY_HATCH_BASE", domain),
-        text("SCOTTY_IMAGE", copied),
         text("SCOTTY_CODEX_MODEL", codex.model),
         text("SCOTTY_CODEX_EFFORT", codex.effort),
         text("SCOTTY_CLAUDE_MODEL", claude.model),
@@ -335,14 +341,19 @@ export const deployStage = (
     // so the app is only its name, policy and namespace.
     if (!apps.some((app) => app.name === name.app && app.scheduling_policy === "durable_object")) {
       yield* say("Setting up the container app");
-      yield* cloudflare(`/accounts/${accountId}/containers/applications`, Schema.Unknown, {
-        method: "POST",
-        body: {
-          name: name.app,
-          scheduling_policy: "durable_object",
-          durable_objects: { namespace_id: namespaceId },
+      // A create that raced the old app's delete, or made something else, fails here.
+      yield* cloudflare(
+        `/accounts/${accountId}/containers/applications`,
+        Schema.Struct({ id: Schema.String, scheduling_policy: Schema.Literal("durable_object") }),
+        {
+          method: "POST",
+          body: {
+            name: name.app,
+            scheduling_policy: "durable_object",
+            durable_objects: { namespace_id: namespaceId },
+          },
         },
-      });
+      );
     }
 
     if (config.mcpOAuthTest !== undefined) {

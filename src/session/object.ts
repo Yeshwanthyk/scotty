@@ -57,18 +57,12 @@ const scriptedStart = (
 
 export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
   "SessionContainer",
-  Effect.gen(function* () {
-    // deploy/deployer.ts makes the app and sets SCOTTY_IMAGE on the Worker; the default is never
-    // used. Each start picks the size (src/places/cloudflare.ts).
-    const image = yield* Config.String("SCOTTY_IMAGE").pipe(Config.withDefault(""));
-    const { stage } = yield* Stack;
-    return {
-      name: `scotty-${stage}-sessions`,
-      image,
-      registryId: "registry.cloudflare.com",
-      schedulingPolicy: "durable_object" as const,
-    };
-  }),
+  // deploy/deployer.ts makes the app; each start names its image and size
+  // (src/places/cloudflare.ts), so the declaration holds no image.
+  Effect.map(Stack, ({ stage }) => ({
+    name: `scotty-${stage}-sessions`,
+    schedulingPolicy: "durable_object" as const,
+  })),
 ) {}
 
 export const SessionArtifacts = Cloudflare.R2.Bucket(
@@ -76,6 +70,10 @@ export const SessionArtifacts = Cloudflare.R2.Bucket(
   // Teardown removes the stage with its files; nothing in it outlives the stage.
   Effect.map(Stack, ({ stage }) => ({ name: `scotty-${stage}-artifacts`, forceDestroy: true })),
 );
+
+// The deployer sets SCOTTY_MAX_RUNNING from the stage's maxRunning. It is read from the raw env:
+// Alchemy's Config inside a DO JSON-parses "2" into a number, which Config.Int then refuses.
+const MaxRunning = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
 
 // workerd rejects monitor() with the exit code when a container exits non-zero.
 const ExitStatus = Schema.Struct({ exitCode: Schema.Int });
@@ -90,9 +88,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
     const credentials = yield* CredsObject;
     // This class's own namespace, to ask another session whether it still runs.
     const sessions = yield* Cloudflare.DurableObjectScope;
+    const env = yield* Cloudflare.WorkerEnvironment;
     yield* bindSessionContainer(SessionContainer);
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(SessionArtifacts);
     return Effect.gen(function* () {
+      const rawMax: unknown = env["SCOTTY_MAX_RUNNING"];
+      const max = yield* Schema.decodeUnknownEffect(MaxRunning)(rawMax);
       // The container handle exists only at run time.
       const container = storage.container;
       if (container === undefined) return yield* Effect.die("Session container binding missing");
@@ -237,8 +238,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (!current(action.gen)) return;
               if (action.fresh && (yield* where().running())) yield* where().destroy();
               if (!(yield* where().running())) {
-                // The deployer always sets SCOTTY_MAX_RUNNING from the stage's maxRunning.
-                const max = yield* Effect.orDie(Config.Int("SCOTTY_MAX_RUNNING"));
                 const owner = credentials.getByName("owner");
                 let claim = yield* owner.claim(id(), max);
                 // A full cap first drops the claims of sessions that no longer run, so a lost
@@ -472,9 +471,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
             }
             case "destroy":
-              if (yield* where().running()) yield* where().destroy();
-              // Every stop and failure ends here, so this is where the running slot goes back.
-              yield* credentials.getByName("owner").release(id());
+              // Every stop and failure ends here, so this is where the running slot goes back,
+              // even when the destroy fails.
+              yield* Effect.ensuring(
+                Effect.gen(function* () {
+                  if (yield* where().running()) yield* where().destroy();
+                }),
+                credentials.getByName("owner").release(id()).pipe(Effect.ignoreCause),
+              );
               return;
             case "idle": {
               if (!current(action.gen)) return;

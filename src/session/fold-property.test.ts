@@ -18,7 +18,6 @@ const hits: Record<string, number> = {};
 const bump = (name: string): void => {
   hits[name] = (hits[name] ?? 0) + 1;
 };
-// Generations whose start was refused by the cap; none of their output may land.
 let shortest = Infinity;
 let longest = 0;
 
@@ -32,6 +31,7 @@ it.prop(
       let state: State = initial;
       let at = 4_000;
       let priorDial: number | undefined;
+      // Generations whose start was refused by the cap; none of their output may land.
       const capped = new Set<number>();
       for (const event of prefix) {
         state = fold(state, event);

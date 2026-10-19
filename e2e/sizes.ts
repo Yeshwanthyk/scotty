@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import {
   access,
   CliFailure,
@@ -19,25 +19,17 @@ import { fixtureRepo } from "../protocol/supervisor.js";
 const check = (ok: boolean, message: string) =>
   ok ? Effect.void : Effect.fail(failure("sizes", message, "scotty doctor"));
 
-// The stage's maxRunning, set by whoever deployed it for this test; `track` uses 2.
-const cap = Schema.decodeUnknownOption(Schema.NumberFromString.check(Schema.isInt()))(
-  process.env.SCOTTY_E2E_MAX_RUNNING,
-);
+// Filling a bigger cap would start that many containers.
+const largest = 3;
 
 const program = Effect.gen(function* () {
-  if (cap._tag === "None") {
-    console.log(
-      "Skipped the running cap: set SCOTTY_E2E_MAX_RUNNING to the stage's maxRunning (deploy it with maxRunning: 2)",
-    );
-    return;
-  }
-  const max = cap.value;
   const url = yield* target(process.env.SCOTTY_URL);
   const request = client({ url, token: yield* access(url) });
   const settings = yield* request("/api/settings", Settings);
+  const max = settings.maxRunning;
   yield* check(
-    settings.maxRunning === max,
-    `The stage's maxRunning is ${settings.maxRunning}, not ${max}; set maxRunning and deploy`,
+    max <= largest,
+    `The stage's maxRunning is ${max}; set "maxRunning": 2 in its config and deploy`,
   );
   // Fill the cap with sessions of our own, so one of them can be stopped to make room.
   const fill = max - settings.running;
@@ -108,11 +100,22 @@ const program = Effect.gen(function* () {
     console.log(`Refused: "${message}"`);
 
     // 3. Stopping one makes room; the refused session resumes and answers.
-    const [first] = running;
-    if (first !== undefined) yield* request(`${first}/stop`, View, { method: "POST" });
+    const first = running[0];
+    if (first === undefined) return yield* failure("sizes", "No session filled the cap", "");
+    yield* request(`${first}/stop`, View, { method: "POST" });
+    // The stop's destroy releases the slot after the stop returns; resume only once it has.
+    yield* waiter(request, first)(
+      () => Effect.all([request(first, View), request("/api/settings", Settings)]),
+      ([view, now]) =>
+        view.session.authority.kind === "stable" &&
+        view.session.authority.lifecycle === "stopped" &&
+        now.running < max,
+      { stopped: "expected" },
+    );
+    console.log("Stopped one; its slot was released");
     yield* request(`${extra}/resume`, View, { method: "POST" });
     yield* answered(extra, "room");
-    console.log("Stopped one; the refused session resumed and answered");
+    console.log("The refused session resumed and answered");
   }).pipe(
     Effect.ensuring(
       Effect.forEach(made, (id) =>

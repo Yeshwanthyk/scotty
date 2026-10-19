@@ -22,8 +22,9 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
 ## Entry points
 
 - CLI `scotty doctor | new | ls | stop | resume | log | auth status`, Settings → Running. e2e:
-  `SCOTTY_E2E_MAX_RUNNING=2 npm run --silent e2e -- sizes` (Z3, Z4) against a stage deployed with
-  `"maxRunning": 2` in its config.
+  `npm run --silent e2e -- sizes` (Z3, Z4) against a stage deployed with `"maxRunning": 2` in its
+  config. It reads the cap from `GET /api/settings`, fails on a cap over 3, and resumes the refused
+  session only after the stopped one's slot is released.
 
 ## Drive
 
