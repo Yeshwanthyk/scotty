@@ -665,6 +665,12 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 | A1    | Scotty as an MCP server      | none       | built  | Spike passed (claude.ai and loopback sign-in). Built: Access app, stateless `/mcp`, seven tools, `e2e scotty-mcp`. Deployed to `main`; `e2e scotty-mcp` passes. Phone check pending.                                                                                                                                                                                                                      |
 | K1    | Skills from repositories     | none       | built  | Worker fetch to R2, Creds DO sources, supervisor unpack, deny-lists, CLI, Settings → Skills, recipe, `e2e settings` rewritten on the owner's agent-skills and scotty repos. Local checks pass; deploy and e2e pending.                                                                                                                                                                                    |
 | K2    | Claude output style          | K1         | built  | Deployed to `main` (image `72b36e66`). `e2e settings` passes with `--agent claude` and Codex; a real Claude session names yesh-router as its output style.                                                                                                                                                                                                                                                |
+| C1    | Durable Object scheduling    | none       | todo   | Owner (2026-10-19): old sessions are not kept; the Creds DO is.                                                                                                                                                                                                                                                                                                                                           |
+| C2    | Size per session             | C1         | todo   |                                                                                                                                                                                                                                                                                                                                                                                                           |
+| C3    | Size per repo                | C2         | todo   |                                                                                                                                                                                                                                                                                                                                                                                                           |
+| C4    | Resume at another size       | C2         | todo   |                                                                                                                                                                                                                                                                                                                                                                                                           |
+| C5    | Hours and cost by size       | C2         | todo   |                                                                                                                                                                                                                                                                                                                                                                                                           |
+| C6    | The agent asks for more      | C4, S6     | todo   |                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ### S1: sessions sleep
 
@@ -800,8 +806,90 @@ These slices are built on one branch, `track/automations-runners`, and land as o
 
 ### R3: where a session runs
 
-- **In scope:** a default place per repo; an automation's `on:`; `--on runners` picks the least busy online runner; a runner that is offline at create fails fast with a clear message rather than falling back silently. The UI's new-session sheet has a place picker.
+- **In scope:** a default place per repo, kept in C3's per-repo record beside the size; an automation's `on:`; `--on runners` picks the least busy online runner; a runner that is offline at create fails fast with a clear message rather than falling back silently. The UI's new-session sheet has a place picker. Work bigger than `standard-4` goes to a runner (owner, 2026-10-18); a runner session has no Cloudflare size, and a size given with `--on <runner>` is a 400.
 - **Done when:** `e2e runner` creates by repo default and by automation.
+
+### C: container sizes (owner, 2026-10-18)
+
+Every session runs as `standard-1` today (`deploy/deployer.ts`, `src/session/object.ts` `SessionContainer`). The owner wants a size per session: `standard-1` stays the default, a session, a repo or an automation can ask for more, and work bigger than `standard-4` goes to runners (R2, R3). Cloudflare picks a size per start only under the `durable_object` scheduling policy (`ctx.container.start({ instance })`), and a container app's policy can't be changed, so C1 replaces the app before any size exists.
+
+**Invariants (every C slice):**
+
+- A session's size is in its event log: `created.size`, changed only by `resume.requested.size` (C4). The fold's current size is the only input to a start. A running container never changes size.
+- An absent size means `standard-1`, so every log written before C2 still folds.
+- The size is resolved before the event is appended, in this order: the request, then the automation, then the repo default (C3), then `standard-1`. The Session DO never reads settings to choose a size.
+- A size is decoded with one Schema, `standard-1` to `standard-4` (owner, 2026-10-19), wherever it enters: API, MCP, CLI, automations, blueprints, hooks. `lite`, `basic`, custom sizes and unknown names are a 400 there and never reach `start`.
+
+### C1: Durable Object scheduling
+
+- **Why:** a size per start needs the `durable_object` policy. Cloudflare's migration guide says an app's policy can't be changed in place, and that under it `max_instances` is unsupported and app-wide rollouts are gone. So this slice replaces the app, moves the session cap into Scotty, and changes nothing a session can see: every session is still `standard-1`.
+- **Spike first (on `track`, never `main`):** create a `durable_object` app for SessionObject after deleting the `default` one, and record in `design.md`: does it bind to the existing SessionObject namespace? How is the image referenced (the named, digest-pinned `images` entry in Cloudflare's registry)? Do the outbound intercepts, `getTcpPort`, the inactivity timeout and `enableInternet` still work? What do `nproc` and `MemTotal` show at each size from `standard-1` to `standard-4` (the readings become C2's thresholds)? Does a deploy with a new image leave running containers alone?
+- **Shape:**
+  - The deployer creates the app with `schedulingPolicy: "durable_object"` and no `maxInstances`. When it finds an app with another policy, it deletes it and creates the new one. If the spike shows the new app doesn't bind to the old namespace, the deployer instead adds a migration that deletes and recreates the SessionObject class. Either way the Creds DO (tokens, connections, automations, skills) is untouched.
+  - **Old sessions are not kept (owner, 2026-10-19).** Before `main` is switched, the owner removes its sessions (`scotty rm`), and nothing converts them.
+  - **The cap moves into Scotty and stays adjustable (owner, 2026-10-19):** `maxRunning` in the stage config (default 20, today's `maxInstances`), passed to the Worker as `SCOTTY_MAX_RUNNING`. Changing it is an edit and a redeploy.
+  - The Creds DO is the only writer of a `running` table. The `container.start` perform claims a slot (`claim(id, max)`, idempotent per id) before calling the place, and the stop path releases it. A refused claim is a start failure with reason `cap`, and the session goes to `stopped` and says "<cap> sessions are running; stop one or raise maxRunning". A refused claim first asks each claimed session if it still runs and drops the stale ones, so a lost release can't hold a slot forever.
+  - Under the new policy, a deploy doesn't replace running containers; only new starts get the new image. The deployer's rollout code is deleted. The `deploy` stop reason stays, because the fold still detects a replaced supervisor (`fold.ts`, `sup.hello` with a new boot). Its `design.md` wording changes from "a rollout" to "the container was replaced".
+- **In scope:** the above; `scotty doctor` and Settings show running/cap; the redeploy recipe says what a deploy now does to a running session.
+- **Out of scope:** any size other than `standard-1`; a vCPU budget; keeping or converting old sessions.
+- **Touch:** `deploy/deployer.ts`, `cli/config.ts`, `src/session/object.ts`, `src/places/cloudflare.ts`, `src/creds/object.ts`, `src/session/events.ts` (reason `cap`), `src/session/fold.ts` and its tests, `src/http/api.ts`, `cli/commands/setup.ts` (doctor), `ui/src/components/Settings.tsx`, `ui/seed/`, `docs/design.md` (Deployer, stop reasons, Containers), `.agents/skills/verify-scotty/features/redeploy.md`, a new `.agents/skills/verify-scotty/features/sizes.md`, `docs/plan.md`.
+- **Done when:**
+  - The spike's answers are in `design.md`, and the spike is deleted.
+  - On `track`: the Cloudflare API shows the session app with `scheduling_policy: durable_object`, and `auth status` still shows every credential after the switch.
+  - `e2e core`, `e2e lifecycle`, `e2e stop-resume`, `e2e hatch` and `e2e reach` pass on `track`.
+  - With `maxRunning: 2`, `e2e sizes` starts two scripted sessions, sees the third refused with reason `cap` and the message, stops one, and resumes the third. A deploy mid-turn leaves the turn running (`e2e core`'s redeploy step).
+  - Fold tests cover reason `cap`.
+  - The owner removes `main`'s sessions, then deploys `main`; a new session there answers.
+
+### C2: size per session
+
+- **Why:** the first use of C1: a heavy repo gets more CPU and memory without changing the default.
+- **Shape:** `size` on `created` (`Schema.optionalKey`, absent = `standard-1`). It is carried by the API's `Create` and `StartInput`, the `start.create` RPC, MCP `new_session`, `scotty new --size <name>`, an automation's and a blueprint's `size`, and the hook payload. `src/places/cloudflare.ts` passes it as `start({ instance, enableInternet: true })`; the `Place` interface gains it as an input of `start`.
+- **In scope:** the above; the view and `scotty read`/`ls --json` return `size`; the new-session page has a size picker next to the agent switch (default `standard-1`, each size with its vCPU, memory and hourly price); the session header's muted line and the details panel show the size; `skills/scotty/SKILL.md` (Sessions: `--size`, the four names, the default, "bigger than `standard-4` goes to a runner"); `docs/setup.md`; the sizes recipe.
+- **Out of scope:** the repo default (C3), changing size (C4), cost (C5).
+- **Touch:** `src/session/events.ts`, `src/session/fold.ts`, `src/session/view.ts`, `src/session/object.ts`, `src/places/place.ts`, `src/places/cloudflare.ts`, `src/http/api.ts`, `src/http/start.ts`, `src/mcp/server.ts`, `cli/commands/sessions.ts`, `cli/main.ts`, `src/automations/automation.ts`, `src/automations/fire.ts`, `src/blueprints/blueprint.ts`, `src/hooks/handler.ts`, `ui/src/components/NewSession.tsx`, `ui/src/routes/s.$sessionId.tsx`, `ui/seed/`, `skills/scotty/SKILL.md`, `docs/design.md`, `docs/setup.md`, `.agents/skills/verify-scotty/features/sizes.md`, `e2e/sizes.ts`, `docs/plan.md`.
+- **Done when:**
+  - Fold tests: `created` with and without `size`, and a replay of a log saved before C2 folds to `standard-1`.
+  - `e2e sizes` on `track` starts a scripted session at `standard-3` and one with no size. Each runs `run nproc; grep MemTotal /proc/meminfo`, and the readings match C1's table for its size. The bigger session stops and resumes, then reads the same size again.
+  - A create with `basic`, `lite` or `standard-9` is a 400 naming the field, from the API, MCP and the CLI (exit 2).
+  - An automation with `size: standard-2` fires a session whose `read` shows it.
+  - Screenshots of the picker and the header at 390px and desktop width against the seed.
+
+### C3: size per repo
+
+- **Why:** a repo that always needs more shouldn't need `--size` every time.
+- **Shape:** a per-repo settings record in the Creds DO (`repo_settings {repo, size}`), the record R3 later adds a place to. It is set from Settings → Repositories, `scotty repo set <owner/repo> --size <name>|--default`, and `PUT /api/repos/:owner/:repo`. Start resolves the size before `created` in the invariants' order, so changing a default never changes an existing session.
+- **In scope:** the above; the new-session picker preselects the repo's default and says where it came from.
+- **Out of scope:** any other per-repo setting.
+- **Touch:** `src/creds/object.ts`, `src/http/api.ts`, `src/http/start.ts`, `cli/commands/` (new `repo.ts`), `cli/main.ts`, `ui/src/components/Settings.tsx`, `ui/src/components/NewSession.tsx`, `ui/seed/`, `skills/scotty/SKILL.md`, the sizes recipe, `e2e/sizes.ts`, `docs/plan.md`.
+- **Done when:** `e2e sizes` sets the fixture repo's default to `standard-2`. A session started with no size gets `standard-2`, and `--size standard-1` overrides it. After the default is cleared, the earlier session still resumes at `standard-2`. Screenshots of Settings → Repositories.
+
+### C4: resume at another size
+
+- **Why (owner, 2026-10-19):** a session that turns out to need more (or less) shouldn't have to start over.
+- **Shape:** `resume.requested` gains an optional `size`. The fold's current size becomes it, and the next `container.start` uses it. The workspace comes back from the R2 save as on any resume. A running session can't change size: the request is a 409 that says to stop it first.
+- **In scope:** `scotty resume <id> --size <name>`, MCP `resume_session {size}`, `POST /api/sessions/:id/resume {size}`, a size choice beside Resume in the UI; the header shows the current size.
+- **Out of scope:** a resize without a stop; the agent asking (C6).
+- **Touch:** `src/session/events.ts`, `src/session/fold.ts`, `src/session/object.ts`, `src/http/api.ts`, `src/mcp/server.ts`, `cli/commands/actions.ts`, `ui/src/routes/s.$sessionId.tsx`, `ui/seed/`, `skills/scotty/SKILL.md`, the sizes recipe, `e2e/sizes.ts`, `docs/plan.md`.
+- **Done when:** fold tests cover a resume with and without `size` and a later resume without one (the size stays). `e2e sizes` stops a `standard-1` session, resumes it at `standard-3`, and reads the bigger `nproc`. A file the agent wrote before the stop is still there. A resize of a running session is a 409.
+
+### C5: hours and cost by size
+
+- **Why (owner, 2026-10-19):** see what the bigger sizes cost.
+- **Shape:** Stats already has each generation's start and end (`src/session/stats.ts`). Each run carries the size it started at, Stats sums hours by size, and an estimated cost uses one rate table in code. The table's source and date are in a comment: Cloudflare Containers pricing, read when the slice is built. The cost is shown as "estimated" and counts a container's whole life as busy, so it is an upper bound.
+- **In scope:** hours and estimated cost by size, per repo and in total, on the Stats page and in `GET /api/stats`.
+- **Out of scope:** Cloudflare's billing API; budgets or alerts.
+- **Touch:** `src/session/stats.ts`, `src/http/api.ts`, `ui/src/components/Stats.tsx`, `ui/seed/`, the sizes recipe, `docs/plan.md`.
+- **Done when:** after `e2e sizes`, `GET /api/stats` shows hours at `standard-1` and `standard-3` that match the runs' start and end in each session's log (within a minute). The estimate equals hours × the table's rate. Screenshots of Stats at both widths.
+
+### C6: the agent asks for more
+
+- **Why (owner, 2026-10-19):** an agent that runs out of memory or time on a build should be able to say so, without the owner noticing first.
+- **Shape:** from inside a session (S6's `scotty` at `scotty.internal`), `scotty resize --size <name> --why <text>` appends `size.requested {size, why}`. The owner approves or denies from the session page or with `scotty resize <id> --approve|--deny`. An approval is C4's stop and resume at that size, after the current turn ends, then a prompt that says the session now runs at the new size. The agent never waits on the owner, and an unanswered request expires when the session stops. A request is never applied without the owner's approval, because it costs money (owner to confirm).
+- **In scope:** the above; the request shows in the session's thread and in the sessions list; `skills/scotty/SKILL.md` tells agents when to ask (out of memory, a build slower than its timeout).
+- **Out of scope:** automatic resizing; sizes above `standard-4` (the agent is told to suggest a runner).
+- **Touch:** `src/session/events.ts`, `src/session/fold.ts`, `src/session/object.ts`, `src/http/api.ts`, `cli/commands/` (resize), `ui/src/routes/s.$sessionId.tsx`, `ui/src/components/` (sessions list), `ui/seed/`, `skills/scotty/SKILL.md`, the sizes recipe, `e2e/sizes.ts`, `docs/plan.md`.
+- **Done when:** fold tests cover request, approve, deny and expiry. `e2e sizes` has a scripted session run `scotty resize --size standard-2 --why test`; the request shows in `read`. Approving it stops and resumes the session at `standard-2`, and the next turn reads the bigger `nproc`. A denied request changes nothing. Screenshots of the request in the thread.
 
 ## Later
 
