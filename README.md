@@ -1,5 +1,7 @@
 # Scotty
 
+![Scotty](ui/src/assets/brand/scotty-hero-16x9.png)
+
 Codex and Claude sessions in Cloudflare Containers, driven from your phone or one CLI. It runs on your own Cloudflare account, behind Cloudflare Access, for one user.
 
 - **Sessions** on any GitHub repository: steer them, review their diffs, open the ports they serve. A stopped session resumes where it left off.
