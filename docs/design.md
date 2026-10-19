@@ -11,9 +11,7 @@ Scotty runs coding-agent sessions in Cloudflare Containers and drives them from 
 
   - A Claude setup token, used by Claude Code. The owner signs in on a laptop with the official `claude setup-token` and pushes the token once, like the GitHub token.
 
-  Pi providers, custom providers and `gh` come later, with the same providers shape.
-
-- **Two agents: Codex and Claude.** Codex runs as `codex app-server` over stdio; Claude through the Agent SDK. The supervisor's `start` carries `agent: {kind, ...}`, agent output is `agent {n, kind, event}`, and each agent lives in its own folder: `container/supervisor/agents/<kind>/` (runner and files, picked by `makeAgent`, the only switch on kind) and `src/session/agents/<kind>.ts` (its events as items and text, and its start config). Pi is added the same way.
+- **Two agents: Codex and Claude.** Codex runs as `codex app-server` over stdio; Claude through the Agent SDK. The supervisor's `start` carries `agent: {kind, ...}`, agent output is `agent {n, kind, event}`, and each agent lives in its own folder: `container/supervisor/agents/<kind>/` (runner and files, picked by `makeAgent`, the only switch on kind) and `src/session/agents/<kind>.ts` (its events as items and text, and its start config).
 - **One runtime: a Cloudflare Container.** It runs the default image this repository ships, or an image the user supplies that meets the supervisor contract.
 - **The UI has the core flow plus settings, terminal, files and hatch previews.** Every feature ships its CLI command first.
 
@@ -613,7 +611,7 @@ Agent-first: an agent or a script is the primary user, and a person reading it g
 
 ## Slices
 
-The order of work is in `plan.md` ("Order of work"): stop and resume, private repositories and push, Hatch, images and video in chat, Claude, Pi, then the UI. ChatGPT refresh, `scotty deploy` and cutover are deferred.
+The order of work is in `plan.md` ("Order of work"): stop and resume, private repositories and push, Hatch, images and video in chat, Claude, then the UI. ChatGPT refresh, `scotty deploy` and cutover are deferred.
 
 ## Open questions to settle early
 
