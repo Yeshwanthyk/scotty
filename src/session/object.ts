@@ -1,5 +1,5 @@
 import { cloudflarePlace } from "../places/cloudflare.js";
-import type { Place, PlaceKind } from "../places/place.js";
+import type { Place, PlaceKind, Size } from "../places/place.js";
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy";
@@ -38,7 +38,7 @@ import { instructionsKey, sourceKey } from "../settings/skills.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
 import { deadlines, idleWindow, inactivityTimeout } from "./deadlines.js";
-import { deadline, startStep } from "./fold.js";
+import { deadline, sessionSize, startStep } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
 import { sessionStats } from "./stats.js";
@@ -276,6 +276,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 yield* where().start({
                   session: id(),
                   repo: log.state.created?.repo ?? "",
+                  size: sessionSize(log.state),
                   connections,
                 });
               }
@@ -589,8 +590,11 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           prompt: string;
           repo: string;
           agentKind: typeof AgentKind.Type;
+          // The size the caller asked for; another size than the session's is a conflict.
+          size?: typeof Size.Type;
           create?: {
             id: string;
+            size: typeof Size.Type;
             baseBranch: string;
             title: string;
             image: string;
@@ -624,6 +628,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     req: input.req,
                     image: create.image,
                     place: create.place,
+                    size: create.size,
                     ...(create.scripted === true ? { scripted: true } : {}),
                     ...(create.origin === undefined ? {} : { origin: create.origin }),
                     ...(create.idleAfter === undefined ? {} : { idleAfter: create.idleAfter }),

@@ -5,6 +5,7 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { AgentKind } from "../session/events.js";
+import { Size } from "../places/place.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
 import { repoStats, StatsWindow } from "../session/stats.js";
 import {
@@ -41,6 +42,7 @@ const Create = Schema.Struct({
   prompt: Prompt,
   provider: Schema.Literal("cloudflare"),
   agent: Schema.optional(AgentKind),
+  size: Schema.optional(Size),
   // The agent's scripted stand-in, for e2e: no ChatGPT, Claude or GitHub sign-in needed.
   scripted: Schema.optional(Schema.Literal(true)),
   // A second create with the same key steers the session the first one made.
@@ -518,6 +520,7 @@ export function apiHandler(
         title: body.title,
         agent: body.agent ?? "codex",
         place: body.provider,
+        ...(body.size === undefined ? {} : { size: body.size }),
         ...(body.scripted === true ? { scripted: true } : {}),
         ...(body.key === undefined
           ? {}
@@ -531,7 +534,7 @@ export function apiHandler(
           {
             error: {
               message:
-                "That key or idempotency key belongs to a session for another repository, agent or prompt",
+                "That key or idempotency key belongs to a session for another repository, agent, size or prompt",
               code: "key_conflict",
               hint: `scotty read ${started.id}`,
             },

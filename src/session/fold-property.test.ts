@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
-import { deadline, fold, initial, type State } from "./fold.js";
+import { deadline, fold, initial, sessionSize, type State } from "./fold.js";
 import { live } from "./state.js";
 import { check, created, generated, hello, kinds, ready, start } from "./fold-fixtures.js";
 
@@ -22,7 +22,7 @@ let shortest = Infinity;
 let longest = 0;
 
 it.prop(
-  "fold obeys output acceptance, acknowledgements, and pending-work deadlines",
+  "fold obeys output acceptance, acknowledgements, pending-work deadlines and one size",
   [Arbitrary.array(generated, { minLength: 20, maxLength: 200 })],
   ([steps]) => {
     shortest = Math.min(shortest, steps.length);
@@ -33,6 +33,8 @@ it.prop(
       let priorDial: number | undefined;
       // Generations whose start was refused by the cap; none of their output may land.
       const capped = new Set<number>();
+      // The first `created` event's size; none is `standard-1`.
+      let size: string | undefined;
       for (const event of prefix) {
         state = fold(state, event);
         check(state);
@@ -94,6 +96,7 @@ it.prop(
           fields.req = "client-p";
         // The first prompt keeps its `initial:<gen>` name, which the generated requests use.
         if (kind === "created") delete fields.req;
+        if (kind === "created" && step.size !== "none") fields.size = step.size;
         if (kind === "sup.error" && !step.withReq) delete fields.req;
         if (kind === "sup.hello") fields.n = 1;
         const cap = kind === "cap";
@@ -113,6 +116,11 @@ it.prop(
         state = fold(before, event);
         const issued = command(state, event);
         check(state);
+        if (event.kind === "created" && before.created === undefined) {
+          size = event.size;
+          bump(size === undefined ? "created without size" : "created with size");
+        }
+        expect(sessionSize(state)).toBe(size ?? "standard-1");
         // Output numbering restarts with each resumed generation.
         if (state.gen === before.gen) expect(state.lastN).toBeGreaterThanOrEqual(before.lastN);
         if (!live(before) && !live(state)) expect(issued).toBeUndefined();
@@ -248,4 +256,6 @@ it("covers generated paths", () => {
   expect(hits["stalled"]).toBeGreaterThan(0);
   expect(hits["cap at start"]).toBeGreaterThan(0);
   expect(hits["output after cap"]).toBeGreaterThan(0);
+  expect(hits["created without size"]).toBeGreaterThan(0);
+  expect(hits["created with size"]).toBeGreaterThan(0);
 });

@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect";
+import { Size } from "../../../src/places/place";
 import {
   decodeCanonicalConversationSnapshotSync,
   type CanonicalConversationSnapshot,
@@ -32,6 +33,7 @@ const Session = Schema.Struct({
     branch: Schema.String,
     prompt: Schema.String,
     agentKind: Schema.String,
+    size: Size,
     createdAt: Schema.String,
     activeAt: Schema.String,
     origin: Schema.NullOr(
@@ -153,9 +155,10 @@ export async function create(
   repo: string,
   prompt: string,
   key: string,
-  agent: "codex" | "claude" = "codex",
+  agent: "codex" | "claude",
+  size: typeof Size.Type,
 ): Promise<string> {
-  const body = { title, repo, prompt, agent, provider: "cloudflare" };
+  const body = { title, repo, prompt, agent, size, provider: "cloudflare" };
   const result = Option.getOrUndefined(
     decodeCreated(await request("/api/sessions", body, undefined, key)),
   );

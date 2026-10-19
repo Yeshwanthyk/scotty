@@ -43,6 +43,8 @@ export type DummySpec = {
   after?: "stopped" | "waiting" | "boot-failed" | "cap";
   // Set when a webhook or an automation made the session.
   origin?: Json;
+  // The container size; absent: standard-1.
+  size?: string;
 };
 
 const read = (path: string) => ({
@@ -88,6 +90,7 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
     title: spec.title,
     prompt: spec.turns[0]?.prompt ?? "",
     image: "default",
+    ...(spec.size === undefined ? {} : { size: spec.size }),
     ...(spec.origin === undefined ? {} : { origin: spec.origin }),
   });
   push({ src: "session", kind: "container.start", gen: 1 });
@@ -474,6 +477,7 @@ export const dummies: DummySpec[] = [
     id: "d0cc0de5000000000000000000000001",
     title: "Fix gift card tax in checkout",
     repo: "acme/storefront",
+    size: "standard-3",
     minutesAgo: 95,
     turns: [
       {

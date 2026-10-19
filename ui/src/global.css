@@ -2449,6 +2449,9 @@ button.diff-line {
 
 .new-session .composer-bar {
   padding: 8px 10px 10px 12px;
+  /* On a phone the size and send drop to a second row rather than squeeze the repository. */
+  flex-wrap: wrap;
+  row-gap: 8px;
 }
 
 .new-session .composer-note {
@@ -2497,6 +2500,27 @@ button.diff-line {
 .repo-picker input::placeholder {
   color: var(--quiet);
   font-weight: 400;
+}
+
+/* The pill shows the size's name; the native select over it opens the full list. */
+.size-picker {
+  position: relative;
+  flex: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.size-picker span {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.size-picker select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 16px;
 }
 
 .agent-switch {
@@ -3430,6 +3454,10 @@ button.diff-line {
 /* ---------- Phone ---------- */
 
 @media (max-width: 767px) {
+  .new-session .send-button {
+    margin-left: auto;
+  }
+
   body {
     font-size: 14px;
   }

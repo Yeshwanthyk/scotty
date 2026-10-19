@@ -17,6 +17,9 @@ export { deadline, deadlines } from "./deadlines.js";
 export { invariants } from "./invariants.js";
 export type { Violation } from "./invariants.js";
 
+// The size every start of this session uses.
+export const sessionSize = (state: State) => state.created?.size ?? "standard-1";
+
 const settle = (
   requests: readonly Request[],
   req: string,
@@ -496,19 +499,25 @@ function step(state: State, event: SessionEvent): State {
 
 // What a start does to this session: make it, prompt it, or answer from what it already holds.
 // A request id seen before is answered as it was the first time; one reused for another
-// repository, agent or prompt is a conflict.
+// repository, agent or prompt, or that names another size, is a conflict.
 export function startStep(
   state: State,
   input: {
     readonly req: string;
     readonly repo: string;
     readonly agent: string;
+    readonly size?: string;
     readonly prompt: string;
   },
 ): "create" | "prompt" | "duplicate" | "unavailable" | "conflict" {
   const created = state.created;
   if (created === undefined) return "create";
-  if (created.repo !== input.repo || created.agentKind !== input.agent) return "conflict";
+  if (
+    created.repo !== input.repo ||
+    created.agentKind !== input.agent ||
+    (input.size !== undefined && sessionSize(state) !== input.size)
+  )
+    return "conflict";
   if (created.req === input.req) return created.prompt === input.prompt ? "duplicate" : "conflict";
   const seen = state.requests.find((item) => item.req === input.req);
   if (seen === undefined) return "prompt";

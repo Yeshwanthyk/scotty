@@ -29,6 +29,7 @@ import {
 } from "../../src/creds/connections.ts";
 import { signaturePresets } from "../../src/hooks/config.ts";
 import { codexLog, dummies } from "./dummy.ts";
+import { Size } from "../../src/places/place.ts";
 
 const here = new URL(".", import.meta.url);
 const speed = 4;
@@ -214,6 +215,7 @@ function create(input: {
   title: string;
   repo: string;
   prompt: string;
+  size?: typeof Size.Type;
   baseBranch?: string;
 }): Session {
   const id = crypto.randomUUID().replaceAll("-", "");
@@ -227,6 +229,7 @@ function create(input: {
     repo: input.repo,
     prompt: input.prompt,
     branch: `scotty/${id}`,
+    ...(input.size === undefined ? {} : { size: input.size }),
     ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
   });
   append(session, { kind: "container.start", src: "session", gen: 1 });
@@ -309,6 +312,7 @@ const CreateBody = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
   repo: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
   prompt: Schema.String.check(Schema.isMinLength(1)),
+  size: Schema.optionalKey(Size),
 });
 const SteerBody = Schema.Struct({
   text: Schema.String.check(Schema.isMinLength(1)),

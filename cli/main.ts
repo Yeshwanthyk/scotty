@@ -27,8 +27,9 @@ ${bold("Setup")}
   skill                           Print the guide to hand your own agent
 
 ${bold("Sessions")}
-  new <repo> <prompt>             Start a session (--agent claude, --key <retry key>,
-                                  --session-key <key>: a repeat steers that session)
+  new <repo> <prompt>             Start a session (--agent claude, --size standard-1..4,
+                                  --key <retry key>, --session-key <key>: a repeat steers
+                                  that session)
   ls [--search <text>]            List sessions; search title, repo, branch, prompt, key
   read <id>                       Read the latest messages (--last N, --role user|assistant)
   steer <id> <text>               Send text; a stopped session resumes
@@ -97,8 +98,10 @@ chatgpt   Opens the device-code page and waits for you to enter the code.
 github    Saves the token from \`gh auth token\`, or from stdin when piped.
 claude    Runs \`claude setup-token\` and saves the token, or reads it from stdin when piped.
 Example: gh auth token | scotty login github`,
-  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--key key] [--session-key key]
+  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--size name] [--key key] [--session-key key]
 Start a session with Codex (the default) or Claude. --key makes retries idempotent.
+--size is the container: standard-1 (the default, 1/2 vCPU, 4 GiB), standard-2 (1 vCPU, 6 GiB),
+standard-3 (2 vCPU, 8 GiB) or standard-4 (4 vCPU, 12 GiB). Bigger work goes to a runner.
 --session-key names the session: the same key with the same repository and agent sends the
 prompt to that session (resuming it if stopped); with another repository or agent it is refused.
 Example: scotty new octocat/Hello-World "Describe the code"`,

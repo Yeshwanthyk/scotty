@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { PlaceKind } from "../places/place.js";
+import { PlaceKind, Size } from "../places/place.js";
 
 const envelope = { seq: Schema.Natural, at: Schema.Finite, src: Schema.String };
 const fromSupervisor = {
@@ -64,6 +64,9 @@ export const SessionEvent = Schema.Union([
     image: Schema.String,
     // Absent in logs written before places: those ran on Cloudflare.
     place: Schema.optionalKey(PlaceKind),
+    // The container's size, resolved before this event; absent in logs written before sizes,
+    // which ran as `standard-1`.
+    size: Schema.optionalKey(Size),
     // Runs the agent's scripted stand-in instead of the agent; only e2e asks for it.
     scripted: Schema.optionalKey(Schema.Literal(true)),
     origin: Schema.optionalKey(Origin),

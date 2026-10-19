@@ -5,12 +5,12 @@ import { ContainerStartFailed, type Place } from "./place.js";
 import { isLoopback } from "../loopback.js";
 
 export const cloudflarePlace = (container: cf.Container, exports: object): Place => ({
-  start: (egress) =>
+  start: (input) =>
     Effect.gen(function* () {
       // A new container needs the interceptor; Alchemy's wrapper drops this promise.
       const loopback: unknown = Reflect.get(exports, "default");
       if (!isLoopback(loopback)) return yield* Effect.die("no ctx.exports.default");
-      const fetcher = loopback({ props: { session: egress.session, repo: egress.repo } });
+      const fetcher = loopback({ props: { session: input.session, repo: input.repo } });
       yield* Effect.tryPromise(() =>
         Promise.all([
           container.interceptOutboundHttp("github.internal", fetcher),
@@ -18,12 +18,12 @@ export const cloudflarePlace = (container: cf.Container, exports: object): Place
           // gh: TLS ends at Cloudflare, so the Worker can swap in the token and check the request.
           container.interceptOutboundHttps(
             "api.github.com",
-            loopback({ props: { session: egress.session, repo: egress.repo, api: "github" } }),
+            loopback({ props: { session: input.session, repo: input.repo, api: "github" } }),
           ),
-          ...egress.connections.map((connection) =>
+          ...input.connections.map((connection) =>
             container.interceptOutboundHttp(
               `${connection}.internal`,
-              loopback({ props: { session: egress.session, repo: egress.repo, connection } }),
+              loopback({ props: { session: input.session, repo: input.repo, connection } }),
             ),
           ),
         ]),
@@ -33,7 +33,7 @@ export const cloudflarePlace = (container: cf.Container, exports: object): Place
       const image = container.images["session"];
       if (image === undefined) return yield* Effect.die("no session image in the image map");
       yield* Effect.try({
-        try: () => container.start({ image, instance: "standard-1", enableInternet: true }),
+        try: () => container.start({ image, instance: input.size, enableInternet: true }),
         catch: () => new ContainerStartFailed(),
       });
     }),

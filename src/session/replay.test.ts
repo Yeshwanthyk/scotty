@@ -27,7 +27,7 @@ const replayLine = (state: State, text: string, file: string, line: number): Sta
 };
 
 describe("saved session event logs", () => {
-  it("decodes and checks every JSONL replay, including an empty directory", async () => {
+  it("decodes and checks every JSONL replay, including an empty directory, at the default size", async () => {
     const files = (await readdir(logs)).filter((name) => name.endsWith(".jsonl"));
     const contents = await Promise.all(files.map((file) => readFile(join(logs, file), "utf8")));
     for (const [fileIndex, content] of contents.entries()) {
@@ -36,6 +36,8 @@ describe("saved session event logs", () => {
       for (const [index, line] of content.split("\n").entries()) {
         if (line.trim().length > 0) state = replayLine(state, line, file, index + 1);
       }
+      // Every saved log predates sizes: its session ran, and still folds, as `standard-1`.
+      expect(sessionView("replay", state).display.size, file).toBe("standard-1");
     }
   });
   it("identifies malformed and out-of-order log lines", () => {

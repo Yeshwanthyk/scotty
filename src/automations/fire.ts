@@ -36,7 +36,7 @@ export function fireRun(
           : stopped.kind === "conflict"
             ? {
                 status: "failed" as const,
-                reason: "key or retry id used by another repo, agent or prompt",
+                reason: "key or retry id used by another repo, agent, size or prompt",
                 session: run.session,
               }
             : { status: "ended" as const, session: run.session };
@@ -50,6 +50,7 @@ export function fireRun(
                 prompt: run.prompt,
                 repo: run.repo,
                 agentKind: run.agent,
+                ...(run.size === null ? {} : { size: run.size }),
               })),
               id: run.session,
             }
@@ -60,6 +61,7 @@ export function fireRun(
               prompt: run.prompt,
               title: titleFrom(run.prompt),
               agent: run.agent,
+              ...(run.size === null ? {} : { size: run.size }),
               ...(run.scripted === 1 ? { scripted: true } : {}),
               ...key,
               retry: runRequest(id),
@@ -87,7 +89,7 @@ export function fireRun(
               : started.kind === "conflict"
                 ? {
                     status: "failed",
-                    reason: "key or retry id used by another repo, agent or prompt",
+                    reason: "key or retry id used by another repo, agent, size or prompt",
                     session: started.id,
                   }
                 : { status: "failed", reason: "session not taking prompts", session: started.id };

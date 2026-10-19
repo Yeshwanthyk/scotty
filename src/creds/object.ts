@@ -23,6 +23,7 @@ import { authorizeMcp, refreshMcp, StoredMcpOAuth } from "./mcp-oauth.js";
 import { isLoopback } from "../loopback.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
+import { Size } from "../places/place.js";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { SessionView } from "../session/view.js";
@@ -139,6 +140,7 @@ const FireRow = Schema.Struct({
   session: Schema.NullOr(Schema.String),
   scripted: Schema.Number,
 });
+const SizeRow = Schema.Struct({ size: Size });
 const RunAnswer = Schema.Struct({
   status: Schema.Literals(["started", "steered", "ended", "skipped", "failed"]),
   reason: Schema.NullOr(Schema.String),
@@ -199,6 +201,9 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // firing finds the same run. What it fires is fixed when it is received.
       yield* sql`CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, automation TEXT NOT NULL, source TEXT NOT NULL, trigger TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, session TEXT, delivery TEXT, repo TEXT NOT NULL, agent TEXT NOT NULL, prompt TEXT, key TEXT, branch TEXT, action TEXT NOT NULL, scripted INTEGER NOT NULL, tried INTEGER NOT NULL DEFAULT 0, UNIQUE (automation, source))`;
       yield* sql`CREATE INDEX IF NOT EXISTS runs_by_automation ON runs (automation, seq)`;
+      // The size a run asks for, when its automation names one. A table of its own, so adding sizes
+      // left the stored `runs` table as it was.
+      yield* sql`CREATE TABLE IF NOT EXISTS run_sizes (id TEXT PRIMARY KEY, size TEXT NOT NULL)`;
 
       const refreshing = new Map<
         string,
@@ -293,7 +298,10 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               : crypto.randomUUID().replaceAll("-", "");
           const inserted =
             yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, branch, action, scripted) VALUES (${id}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${received?.branch ?? null}, ${input.definition.action ?? "start"}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
+          if (inserted.length > 0 && input.definition.size !== undefined)
+            yield* sql`INSERT INTO run_sizes (id, size) VALUES (${id}, ${input.definition.size})`;
           yield* sql`DELETE FROM runs WHERE seq <= (SELECT MAX(seq) FROM runs) - ${keptRuns}`;
+          yield* sql`DELETE FROM run_sizes WHERE id NOT IN (SELECT id FROM runs)`;
           const run = yield* runRow(
             (yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs WHERE automation = ${input.automation} AND source = ${input.source}`)[0],
           );
@@ -792,10 +800,15 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                     };
                   }
                   yield* sql`UPDATE runs SET session = ${session} WHERE id = ${id}`;
+                  const sized = (yield* sql`SELECT size FROM run_sizes WHERE id = ${id}`)[0];
                   return {
                     kind: "received" as const,
                     ...run,
                     ...target,
+                    size:
+                      sized === undefined
+                        ? null
+                        : (yield* Schema.decodeUnknownEffect(SizeRow)(sized)).size,
                   };
                 }
                 const answer =

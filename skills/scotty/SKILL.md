@@ -76,7 +76,11 @@ shortened to its first 4+ characters.
 ```sh
 scotty new owner/repo "Fix the failing test in src/parse.ts" --json   # Codex
 scotty new owner/repo "Review the README" --agent claude --json
+scotty new owner/repo "Run the full test suite" --size standard-3 --json   # 2 vCPU, 8 GiB
 ```
+
+`--size` is `standard-1` (the default, 1/2 vCPU, 4 GiB), `standard-2` (1 vCPU, 6 GiB), `standard-3`
+or `standard-4` (4 vCPU, 12 GiB); bigger work goes to a runner. `read --json` shows `size`.
 
 The reply has `id` and `url` (the page the owner can open). The first line of the prompt is the
 title. Starting a container takes up to a minute or two. Then follow it:

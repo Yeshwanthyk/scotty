@@ -135,6 +135,28 @@ describe("session fold", () => {
     check(state);
   });
 
+  it("keeps the size the session was created with; none is standard-1", () => {
+    const unsized = fold(initial, created);
+    expect(sessionView("s", unsized).display.size).toBe("standard-1");
+    const sized = fold(
+      initial,
+      make(1, "created", { ...created, req: "create-1", size: "standard-3" }),
+    );
+    expect(sessionView("s", sized).display.size).toBe("standard-3");
+    const input = {
+      req: "create-1",
+      repo: "https://example.org/repo",
+      agent: "codex",
+      prompt: "hello",
+    };
+    // A retry naming another size is a conflict; one naming none, or the same, is not.
+    expect(startStep(sized, { ...input, size: "standard-1" })).toBe("conflict");
+    expect(startStep(sized, { ...input, size: "standard-3" })).toBe("duplicate");
+    expect(startStep(sized, input)).toBe("duplicate");
+    expect(startStep(unsized, { ...input, req: "steer-1", size: "standard-2" })).toBe("conflict");
+    check(sized);
+  });
+
   it("deduplicates start and request ids; rejects reserved initial names and stale turns", () => {
     let state = fold(fold(initial, created), start);
     const repeated = make(3, "container.start", { gen: 1 });

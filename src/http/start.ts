@@ -4,7 +4,7 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { fixtureRepo } from "../../protocol/supervisor.js";
 import type { AgentKind, Origin } from "../session/events.js";
-import type { PlaceKind } from "../places/place.js";
+import type { PlaceKind, Size } from "../places/place.js";
 import { defaultBranch } from "./repository.js";
 
 export const githubHint = "scotty login github";
@@ -24,6 +24,8 @@ export type StartInput = {
   agent: typeof AgentKind.Type;
   // Where the container runs; hooks leave it to the default.
   place?: typeof PlaceKind.Type;
+  // Absent: `standard-1`.
+  size?: typeof Size.Type;
   scripted?: true;
   idleAfter?: number;
   // An automation run reserves its target before dispatch, so retries keep that session.
@@ -49,6 +51,7 @@ export function startSession(
       prompt: input.prompt,
       repo: input.repo,
       agentKind: input.agent,
+      ...(input.size === undefined ? {} : { size: input.size }),
     };
     // Automations already resolved their target; a made session needs no repository lookup.
     const keyed = input.id ?? (yield* credential.resolveSession(input.retry, input.key ?? null));
@@ -105,6 +108,7 @@ export function startSession(
       ...request,
       create: {
         id,
+        size: input.size ?? "standard-1",
         baseBranch: branch.branch,
         title: input.title,
         image: "default",

@@ -2,6 +2,7 @@ import { BunServices } from "@effect/platform-bun";
 import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Definition, RunStatus } from "../src/automations/automation.js";
+import { Size } from "../src/places/place.js";
 import {
   Connection,
   ConnectionCreated,
@@ -47,6 +48,7 @@ export const Session = Schema.Struct({
     repository: Schema.String,
     branch: Schema.String,
     agentKind: Schema.String,
+    size: Size,
     activeAt: Schema.String,
   }),
   progress: Schema.Struct({

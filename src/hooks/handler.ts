@@ -5,6 +5,7 @@ import type * as Cloudflare from "alchemy/Cloudflare";
 import { connectionName, type DeliveryReason, Key } from "../creds/connections.js";
 import type CredsObject from "../creds/object.js";
 import { AgentKind } from "../session/events.js";
+import { Size } from "../places/place.js";
 import type SessionObject from "../session/object.js";
 import { Prompt, Repo, startSession } from "../http/start.js";
 import { titleFrom } from "../session/title.js";
@@ -18,6 +19,7 @@ const Payload = Schema.Struct({
   prompt: Prompt,
   key: Schema.optional(Key),
   agent: Schema.optional(AgentKind),
+  size: Schema.optional(Size),
   title: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))),
   // The agent's scripted stand-in, for e2e, as on the API.
   scripted: Schema.optional(Schema.Literal(true)),
@@ -100,6 +102,7 @@ export function hookHandler(
       prompt,
       title: title ?? titleFrom(prompt),
       agent: agent ?? "codex",
+      ...(payload.value.size === undefined ? {} : { size: payload.value.size }),
       ...(scripted === true ? { scripted } : {}),
       ...(key === undefined ? {} : { key }),
       // A retried delivery is answered with what the first one did.
