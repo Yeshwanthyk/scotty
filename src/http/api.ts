@@ -1,4 +1,4 @@
-import { Effect, Exit, Result, Schema, Stream } from "effect";
+import { Config, Effect, Exit, Result, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
@@ -204,6 +204,9 @@ export function apiHandler(
         sources: yield* credential.skillSources(),
         claudeStyle: yield* credential.claudeStyle(),
         email: request.headers["cf-access-authenticated-user-email"] ?? null,
+        running: yield* credential.runningCount(),
+        // The deployer always sets SCOTTY_MAX_RUNNING from the stage's maxRunning.
+        maxRunning: yield* Effect.orDie(Config.Int("SCOTTY_MAX_RUNNING")),
       });
     }
     if (url.pathname === "/api/settings/instructions" && request.method === "PUT") {

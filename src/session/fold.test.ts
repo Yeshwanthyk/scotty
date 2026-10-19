@@ -359,6 +359,22 @@ describe("session fold", () => {
     check(state);
   });
 
+  it("stops with reason cap when the start's claim is refused, and resumes later", () => {
+    const refused = make(3, "container.stopped", { gen: 1, reason: "cap", max: 2 });
+    const state = fold(fold(fold(initial, created), start), refused);
+    expect(state.phase).toBe("stopped");
+    expect(state.stop).toEqual({ reason: "cap", max: 2 });
+    expect(state.requests.every((r) => r.status !== "pending")).toBe(true);
+    expect(command(state, refused)).toEqual({ kind: "destroy" });
+    expect(deadline(state)).toBeUndefined();
+    check(state);
+    const resume = make(4, "resume.requested");
+    const resumed = fold(state, resume);
+    expect(resumed).toMatchObject({ phase: "provisioning", gen: 2, stop: undefined });
+    expect(command(resumed, resume)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    check(resumed);
+  });
+
   it("stops on container.stopped, ends pending requests and ignores later output", () => {
     const stopped = make(6, "container.stopped", { gen: 1 });
     const state = fold(boot(), stopped);

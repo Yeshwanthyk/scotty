@@ -39,7 +39,11 @@ export type State = {
   readonly failure: { readonly code: string; readonly retryable: boolean } | undefined;
   // Why the session last stopped; `agent` is the agent exiting in a running container.
   readonly stop:
-    | { readonly reason: typeof StopReason.Type | "agent"; readonly exitCode?: number }
+    | {
+        readonly reason: typeof StopReason.Type | "agent";
+        readonly exitCode?: number;
+        readonly max?: number;
+      }
     | undefined;
   readonly lastHelloSeq: number;
   readonly lastRedialSeq: number;

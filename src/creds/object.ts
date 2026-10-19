@@ -158,6 +158,8 @@ const day = 24 * 60 * 60 * 1000;
 // `claude setup-token` makes a token that lasts a year and doesn't say when it expires.
 const claudeLifetime = 365 * day;
 const claudeWarning = 14 * day;
+const Claims = Schema.Array(Schema.Struct({ id: Schema.String, token: Schema.String }));
+const Count = Schema.Array(Schema.Struct({ count: Schema.Number }));
 class CredentialStoreError extends Schema.TaggedError<CredentialStoreError>()(
   "CredentialStoreError",
   { message: Schema.String },
@@ -181,6 +183,9 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // The skill Claude sessions use as their output style.
       yield* sql`CREATE TABLE IF NOT EXISTS claude_style (id INTEGER PRIMARY KEY CHECK (id = 1), skill TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (id TEXT PRIMARY KEY)`;
+      // Sessions holding one of the stage's running slots (maxRunning). A claim's token changes on
+      // every claim, so dropping a stale claim never drops a newer one for the same session.
+      yield* sql`CREATE TABLE IF NOT EXISTS running (id TEXT PRIMARY KEY, token TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
       yield* sql`CREATE TABLE IF NOT EXISTS request_sessions (req TEXT PRIMARY KEY, id TEXT)`;
       // What a search matches (`searchText`). Sessions made before it have no row: they are
@@ -387,11 +392,36 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session}`;
             return rows.length > 0;
           }),
+        // Takes a running slot for the session unless `max` are taken; a session that holds one
+        // keeps it. Answers with every claim, so a refused caller can look for stale ones.
+        claim: (id: string, max: number) =>
+          Effect.gen(function* () {
+            const token = crypto.randomUUID();
+            yield* sql`UPDATE running SET token = ${token} WHERE id = ${id}`;
+            yield* sql`INSERT OR IGNORE INTO running (id, token) SELECT ${id}, ${token} WHERE (SELECT COUNT(*) FROM running) < ${max}`;
+            const claims = yield* Schema.decodeUnknownEffect(Claims)(
+              yield* sql`SELECT id, token FROM running ORDER BY id`,
+            );
+            return { granted: claims.some((claim) => claim.id === id), claims };
+          }),
+        release: (id: string) => sql`DELETE FROM running WHERE id = ${id}`.pipe(Effect.asVoid),
+        dropClaims: (claims: typeof Claims.Type) =>
+          Effect.forEach(
+            claims,
+            (claim) => sql`DELETE FROM running WHERE id = ${claim.id} AND token = ${claim.token}`,
+            { discard: true },
+          ),
+        runningCount: () =>
+          sql`SELECT COUNT(*) AS count FROM running`.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Count)),
+            Effect.map(([row]) => row?.count ?? 0),
+          ),
         forget: (id: string) =>
           Effect.gen(function* () {
             yield* sql`DELETE FROM session_keys WHERE id = ${id}`;
             yield* sql`DELETE FROM session_search WHERE id = ${id}`;
             yield* sql`DELETE FROM session_index WHERE id = ${id}`;
+            yield* sql`DELETE FROM running WHERE id = ${id}`;
             yield* broadcast({ kind: "removed", id });
           }),
         connections: () =>

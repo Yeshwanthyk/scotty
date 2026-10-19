@@ -38,8 +38,9 @@ export type DummySpec = {
   repo: string;
   minutesAgo: number;
   turns: TurnSpec[];
-  // Where the session is left: stopped after its turns, waiting on the owner, or failed at boot.
-  after?: "stopped" | "waiting" | "boot-failed";
+  // Where the session is left: stopped after its turns, waiting on the owner, failed at boot, or
+  // stopped before its container because the running cap was full.
+  after?: "stopped" | "waiting" | "boot-failed" | "cap";
   // Set when a webhook or an automation made the session.
   origin?: Json;
 };
@@ -90,6 +91,10 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
     ...(spec.origin === undefined ? {} : { origin: spec.origin }),
   });
   push({ src: "session", kind: "container.start", gen: 1 });
+  if (spec.after === "cap") {
+    push({ src: "session", kind: "container.stopped", gen: 1, reason: "cap", max: 20 });
+    return events;
+  }
   at += 3400;
   sup({
     kind: "sup.hello",
@@ -868,6 +873,14 @@ export const dummies: DummySpec[] = [
     minutesAgo: 60 * 24 * 12,
     after: "boot-failed",
     turns: [{ prompt: "reply ok", items: [] }],
+  },
+  {
+    id: "d0cc0de500000000000000000000000c",
+    title: "Bump the checkout SDK while 20 others run",
+    repo: "acme/storefront",
+    minutesAgo: 30,
+    after: "cap",
+    turns: [{ prompt: "Bump @acme/checkout-sdk to 5.2 and fix the type errors.", items: [] }],
   },
   // Stopped for over a week.
   {

@@ -7,7 +7,8 @@ directory. Conventions, evidence and cleanup: [SKILL.md](../SKILL.md).
 | --------------------------------- | ---------------------------------------------------------------------------------------------- | ---------- | -------------------- |
 | [signin](signin.md)               | ChatGPT and GitHub are connected so Codex can answer and push                                  | S1–S5      | none                 |
 | [core-loop](core-loop.md)         | A session on a public repo answers, takes a steer and stops on interrupt                       | C1–C5      | `core`               |
-| [redeploy](redeploy.md)           | A session survives a Worker redeploy with no lost or duplicated message                        | R1–R2      | `core`               |
+| [redeploy](redeploy.md)           | A session survives a Worker redeploy with no lost or duplicated message                        | R1–R3      | `core`               |
+| [sizes](sizes.md)                 | Sessions run on the durable_object policy; a start over `maxRunning` stops with reason cap     | Z1–Z5      | `sizes`              |
 | [stop-resume](stop-resume.md)     | A stopped session resumes with its thread and files                                            | L1–L4      | `stop-resume`        |
 | [lifecycle](lifecycle.md)         | A quiet turn keeps running; an idle session sleeps, frees its container and wakes on a message | W1–W4      | `lifecycle`          |
 | [live](live.md)                   | An open page and the session list update by push, without polling                              | V1–V5      | `live`               |

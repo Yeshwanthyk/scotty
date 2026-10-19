@@ -59,7 +59,9 @@ export const statusLabel: Record<Status, string> = {
 export const dormant = (status: Status | undefined) => status === "asleep" || status === "stopped";
 
 // Why a session stopped, in plain words; unknown reasons from a newer server read as "Stopped".
-export function stopLabel(stop: { reason: string; exitCode?: number } | null | undefined): string {
+type Stop = { reason: string; exitCode?: number; max?: number };
+
+export function stopLabel(stop: Stop | null | undefined): string {
   switch (stop?.reason) {
     case "user":
       return "Stopped by you";
@@ -74,7 +76,9 @@ export function stopLabel(stop: { reason: string; exitCode?: number } | null | u
     case "agent":
       return "Agent exited";
     case "deploy":
-      return "Restarted by a deploy";
+      return "Container replaced";
+    case "cap":
+      return "Too many running";
     case "gone":
       return "Container lost";
     default:
@@ -95,7 +99,7 @@ export function stopWord(stop: { reason: string } | null | undefined): string {
 }
 
 // The same, as a sentence for the thread.
-export function stopSentence(stop: { reason: string; exitCode?: number } | null | undefined) {
+export function stopSentence(stop: Stop | null | undefined) {
   switch (stop?.reason) {
     case "user":
       return "You stopped this session.";
@@ -112,7 +116,9 @@ export function stopSentence(stop: { reason: string; exitCode?: number } | null 
     case "agent":
       return "The agent exited.";
     case "deploy":
-      return "A deploy replaced the container.";
+      return "The container was replaced, so work since the last save is gone.";
+    case "cap":
+      return `${stop.max} sessions are running; stop one or raise maxRunning.`;
     case "gone":
       return "The container was lost.";
     default:

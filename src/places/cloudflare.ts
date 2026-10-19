@@ -28,8 +28,12 @@ export const cloudflarePlace = (container: cf.Container, exports: object): Place
           ),
         ]),
       ).pipe(Effect.mapError(() => new ContainerStartFailed()));
+      // The deployer names the release's image `session` in the Worker's image map. A start
+      // without `instance` gets `lite`, so the size is always named.
+      const image = container.images["session"];
+      if (image === undefined) return yield* Effect.die("no session image in the image map");
       yield* Effect.try({
-        try: () => container.start({ enableInternet: true }),
+        try: () => container.start({ image, instance: "standard-1", enableInternet: true }),
         catch: () => new ContainerStartFailed(),
       });
     }),

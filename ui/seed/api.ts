@@ -8,6 +8,7 @@ import type { Plugin } from "vite";
 import { WebSocketServer, type WebSocket } from "ws";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
 import { fold, initial, type State } from "../../src/session/fold.ts";
+import { live } from "../../src/session/state.ts";
 import { maxSearch, searchText } from "../../src/session/search.ts";
 import { repoStats, sessionStats, StatsWindow } from "../../src/session/stats.ts";
 import { conversationView, sessionView, turnOutcome } from "../../src/session/view.ts";
@@ -957,6 +958,10 @@ async function settingsApi(
       sources: owner.sources,
       claudeStyle: owner.claudeStyle,
       email: "owner@example.com",
+      running: [...sessions.values()].filter(
+        (session) => live(session.state) && session.state.gen !== undefined,
+      ).length,
+      maxRunning: 20,
     });
   if (path === "/api/settings/claude-style" && method === "PUT") {
     const input = Schema.decodeUnknownOption(

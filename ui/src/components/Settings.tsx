@@ -53,6 +53,7 @@ export const sections = [
     icon: "nodes",
     detail: "Connections and automations for one use",
   },
+  { id: "running", label: "Running", icon: "play", detail: "Sessions running and the cap" },
   { id: "signed-in", label: "Signed in", icon: "circle", detail: "Cloudflare Access" },
 ] as const satisfies ReadonlyArray<{ id: string; label: string; icon: IconName; detail: string }>;
 export type Section = (typeof sections)[number]["id"];
@@ -146,6 +147,8 @@ export function SettingsPage({ section }: { section?: Section }) {
             <Connections />
           ) : shown === "blueprints" ? (
             <Blueprints />
+          ) : shown === "running" ? (
+            <Running running={data.settings.running} maxRunning={data.settings.maxRunning} />
           ) : (
             <SignedIn email={data.settings.email} />
           )}
@@ -1584,6 +1587,22 @@ function Blueprints() {
         </button>
       </form>
       <Problem text={error} />
+    </div>
+  );
+}
+
+function Running({ running, maxRunning }: { running: number; maxRunning: number }) {
+  return (
+    <div className="settings-card">
+      <Row
+        title={`${running} of ${maxRunning} running`}
+        tone={running >= maxRunning ? "warn" : "good"}
+        detail={
+          running >= maxRunning
+            ? "The cap is full: a new or resumed session stops until one ends. Raise maxRunning in the stage config and deploy to allow more."
+            : "Each session with a container holds a slot until it stops or sleeps. maxRunning in the stage config sets the cap."
+        }
+      />
     </div>
   );
 }

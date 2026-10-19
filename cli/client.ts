@@ -34,7 +34,11 @@ export const Session = Schema.Struct({
     Schema.Struct({
       kind: Schema.Literal("stable"),
       lifecycle: Schema.String,
-      stop: Schema.optional(Schema.NullOr(Schema.Struct({ reason: Schema.String }))),
+      stop: Schema.optional(
+        Schema.NullOr(
+          Schema.Struct({ reason: Schema.String, max: Schema.optional(Schema.Number) }),
+        ),
+      ),
     }),
     Schema.Struct({ kind: Schema.Literal("transitioning"), action: Schema.String }),
   ]),
@@ -147,6 +151,8 @@ export const Settings = Schema.Struct({
   instructions: Schema.String,
   sources: Schema.Array(SkillSource),
   claudeStyle: Schema.NullOr(Schema.String),
+  running: Schema.Number,
+  maxRunning: Schema.Number,
 });
 export const StyleSet = Schema.Struct({ claudeStyle: Schema.NullOr(Schema.String) });
 export const SourceSaved = Schema.Struct({

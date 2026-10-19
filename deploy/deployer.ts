@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
+import { Credentials, formatHeaders } from "@distilled.cloud/cloudflare/Credentials";
 import * as Dns from "@distilled.cloud/cloudflare/dns";
 import * as DurableObjects from "@distilled.cloud/cloudflare/durable-objects";
 import * as R2 from "@distilled.cloud/cloudflare/r2";
@@ -13,6 +14,8 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type { Config } from "../cli/config.ts";
 import {
   defaultClaudeSettings,
@@ -67,6 +70,53 @@ const types: Record<string, string> = {
   txt: "text/plain",
   webmanifest: "application/manifest+json",
 };
+
+// Distilled can't say what a durable_object container app needs: its create sends max_instances
+// and an image, which such an app refuses, its list expects both back, and its Worker upload has
+// no image map. These calls go to the API as Cloudflare documents them.
+const Envelope = Schema.Struct({
+  success: Schema.Boolean,
+  errors: Schema.Array(Schema.Struct({ message: Schema.String })),
+  result: Schema.Unknown,
+});
+const cloudflare = <S extends Schema.Top>(
+  path: string,
+  result: S,
+  init: { method: "GET" | "POST" | "PUT"; body?: FormData | object } = { method: "GET" },
+) =>
+  Effect.gen(function* () {
+    const credentials = yield* yield* Credentials;
+    const base = HttpClientRequest.make(init.method)(`${credentials.apiBaseUrl}${path}`, {
+      headers: formatHeaders(credentials),
+    });
+    const request =
+      init.body === undefined
+        ? base
+        : init.body instanceof FormData
+          ? HttpClientRequest.bodyFormData(base, init.body)
+          : HttpClientRequest.bodyJsonUnsafe(base, init.body);
+    const response = yield* (yield* HttpClient.HttpClient).execute(request);
+    const envelope = yield* Schema.decodeUnknownEffect(Envelope)(yield* response.json);
+    if (!envelope.success)
+      return yield* new DeployError({
+        message: `Cloudflare ${init.method} ${path} answered HTTP ${response.status}: ${envelope.errors.map((error) => error.message).join("; ")}`,
+      });
+    return yield* Schema.decodeUnknownEffect(result)(envelope.result);
+  }).pipe(
+    Effect.mapError((error) =>
+      error instanceof DeployError
+        ? error
+        : new DeployError({ message: `Cloudflare ${init.method} ${path} failed` }),
+    ),
+  );
+
+const containerApps = (accountId: string) =>
+  cloudflare(
+    `/accounts/${accountId}/containers/applications`,
+    Schema.Array(
+      Schema.Struct({ id: Schema.String, name: Schema.String, scheduling_policy: Schema.String }),
+    ),
+  );
 
 // Cloudflare waits on a new Worker before its domain attaches, and on a Worker's objects before
 // its bucket can go.
@@ -170,6 +220,33 @@ export const deployStage = (
       ),
     );
 
+    // A durable_object app starts only images Cloudflare has prepared.
+    yield* say("Preparing the container image");
+    const prepared = yield* cloudflare(
+      `/accounts/${accountId}/containers/image-preparations`,
+      Schema.Struct({ status: Schema.String, reason: Schema.optional(Schema.String) }),
+      { method: "POST", body: { image: copied } },
+    ).pipe(
+      Effect.repeat({
+        schedule: Schedule.spaced("2 seconds"),
+        until: (preparation) => preparation.status !== "pending",
+        times: 450,
+      }),
+    );
+    if (prepared.status !== "ready")
+      return yield* new DeployError({
+        message: `Cloudflare did not prepare ${copied}: ${prepared.reason ?? prepared.status}`,
+      });
+
+    // A container app's scheduling policy can't change. One made under `default` is deleted
+    // with its containers and made again; the Creds DO and its storage are untouched.
+    const apps = yield* containerApps(accountId);
+    for (const app of apps)
+      if (app.name === name.app && app.scheduling_policy !== "durable_object") {
+        yield* say("Replacing the container app");
+        yield* Containers.deleteContainerApplication({ accountId, applicationId: app.id });
+      }
+
     yield* say("Setting up the bucket");
     yield* R2.getBucket({ accountId, bucketName: name.bucket }).pipe(
       Effect.catchTag("NoSuchBucket", () => R2.createBucket({ accountId, name: name.bucket })),
@@ -204,87 +281,67 @@ export const deployStage = (
       text: value,
     });
     yield* say("Uploading the Worker");
-    const script = yield* Workers.putScript({
-      accountId,
-      scriptName: name.script,
-      metadata: {
-        mainModule: "entry.js",
-        compatibilityDate,
-        compatibilityFlags: ["enable_request_signal", "global_fetch_strictly_public"],
-        assets: {
-          jwt,
-          config: { notFoundHandling: "single-page-application", runWorkerFirst: true },
-        },
-        bindings: [
-          { type: "durable_object_namespace", name: "CredsObject", className: "CredsObject" },
-          { type: "durable_object_namespace", name: "SessionObject", className: "SessionObject" },
-          { type: "r2_bucket", name: "SessionArtifacts", bucketName: name.bucket },
-          { type: "assets", name: "ASSETS" },
-          // Alchemy's runtime reads these to find its bindings.
-          text("ALCHEMY_PHASE", "runtime"),
-          text("ALCHEMY_WORKER_NAME", name.script),
-          text("ALCHEMY_STACK_NAME", "scotty"),
-          text("ALCHEMY_STAGE", stage),
-          text("ALCHEMY_CLOUDFLARE_ACCOUNT_ID", accountId),
-          text("SCOTTY_HOST", host),
-          text("SCOTTY_HATCH_BASE", domain),
-          text("SCOTTY_IMAGE", copied),
-          text("SCOTTY_CODEX_MODEL", codex.model),
-          text("SCOTTY_CODEX_EFFORT", codex.effort),
-          text("SCOTTY_CLAUDE_MODEL", claude.model),
-          text("SCOTTY_CLAUDE_EFFORT", claude.effort),
-        ],
-        containers: [{ className: "SessionObject" }],
-        migrations: migrated
-          ? undefined
-          : { newTag: "v1", newSqliteClasses: ["CredsObject", "SessionObject"] },
-        observability: { enabled: true, logs: { enabled: true, invocationLogs: true } },
+    const metadata = {
+      main_module: "entry.js",
+      compatibility_date: compatibilityDate,
+      compatibility_flags: ["enable_request_signal", "global_fetch_strictly_public"],
+      assets: {
+        jwt,
+        config: { not_found_handling: "single-page-application", run_worker_first: true },
       },
-      files,
-    });
-    const workerId = script.tag;
-    if (!workerId) return yield* new DeployError({ message: "Cloudflare returned no Worker id" });
+      bindings: [
+        { type: "durable_object_namespace", name: "CredsObject", class_name: "CredsObject" },
+        { type: "durable_object_namespace", name: "SessionObject", class_name: "SessionObject" },
+        { type: "r2_bucket", name: "SessionArtifacts", bucket_name: name.bucket },
+        { type: "assets", name: "ASSETS" },
+        // Alchemy's runtime reads these to find its bindings.
+        text("ALCHEMY_PHASE", "runtime"),
+        text("ALCHEMY_WORKER_NAME", name.script),
+        text("ALCHEMY_STACK_NAME", "scotty"),
+        text("ALCHEMY_STAGE", stage),
+        text("ALCHEMY_CLOUDFLARE_ACCOUNT_ID", accountId),
+        text("SCOTTY_HOST", host),
+        text("SCOTTY_HATCH_BASE", domain),
+        text("SCOTTY_IMAGE", copied),
+        text("SCOTTY_CODEX_MODEL", codex.model),
+        text("SCOTTY_CODEX_EFFORT", codex.effort),
+        text("SCOTTY_CLAUDE_MODEL", claude.model),
+        text("SCOTTY_CLAUDE_EFFORT", claude.effort),
+        text("SCOTTY_MAX_RUNNING", String(config.maxRunning ?? 20)),
+      ],
+      // Sessions start the image named `session` (src/places/cloudflare.ts). Running containers
+      // keep the image they started with; a new image map reaches new starts only.
+      containers: [{ class_name: "SessionObject", images: { session: copied } }],
+      ...(migrated
+        ? {}
+        : { migrations: { new_tag: "v1", new_sqlite_classes: ["CredsObject", "SessionObject"] } }),
+      observability: { enabled: true, logs: { enabled: true, invocation_logs: true } },
+    };
+    const form = new FormData();
+    form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+    for (const file of files) form.set(file.name, file);
+    const { tag: workerId } = yield* cloudflare(
+      `/accounts/${accountId}/workers/scripts/${name.script}`,
+      Schema.Struct({ tag: Schema.String }),
+      { method: "PUT", body: form },
+    );
 
     const namespaceId = [...(yield* namespaces(name.script))].find(
       (namespace) => namespace.class === "SessionObject",
     )?.id;
     if (!namespaceId)
       return yield* new DeployError({ message: "Cloudflare made no SessionObject namespace" });
-    const configuration = {
-      image: copied,
-      instanceType: "standard-1",
-      environmentVariables: [{ name: "ALCHEMY_CLOUDFLARE_ACCOUNT_ID", value: accountId }],
-    };
-    const app = (yield* Containers.listContainerApplications({ accountId })).find(
-      (candidate) => candidate.name === name.app,
-    );
-    if (app === undefined) {
+    // The cap is Scotty's (maxRunning), not the app's, and the image and size come with each start,
+    // so the app is only its name, policy and namespace.
+    if (!apps.some((app) => app.name === name.app && app.scheduling_policy === "durable_object")) {
       yield* say("Setting up the container app");
-      yield* Containers.createContainerApplication({
-        accountId,
-        name: name.app,
-        maxInstances: 20,
-        instances: 0,
-        schedulingPolicy: "default",
-        constraints: {},
-        configuration,
-        durableObjects: { namespaceId },
-      });
-    } else if (app.configuration.image !== copied) {
-      yield* say("Rolling out the container image");
-      yield* Containers.updateContainerApplication({
-        accountId,
-        applicationId: app.id,
-        configuration,
-      });
-      yield* Containers.createContainerApplicationRollout({
-        accountId,
-        applicationId: app.id,
-        description: "Immediate update",
-        strategy: "rolling",
-        kind: "full_auto",
-        stepPercentage: 100,
-        targetConfiguration: configuration,
+      yield* cloudflare(`/accounts/${accountId}/containers/applications`, Schema.Unknown, {
+        method: "POST",
+        body: {
+          name: name.app,
+          scheduling_policy: "durable_object",
+          durable_objects: { namespace_id: namespaceId },
+        },
       });
     }
 
@@ -459,7 +516,7 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
       if (app.id) yield* ZeroTrust.deleteAccessApplicationForAccount({ accountId, appId: app.id });
 
     yield* say("Removing the container app");
-    for (const app of yield* Containers.listContainerApplications({ accountId }))
+    for (const app of yield* containerApps(accountId))
       if (app.name === name.app)
         yield* Containers.deleteContainerApplication({ accountId, applicationId: app.id }).pipe(
           Effect.catchTag("ContainerApplicationNotFound", () => Effect.void),
@@ -526,7 +583,7 @@ export const leftovers = (config: Config) =>
       Stream.map((script) => script.id),
       Stream.runCollect,
     );
-    const apps = yield* Containers.listContainerApplications({ accountId });
+    const apps = yield* containerApps(accountId);
     const buckets = yield* R2.listBuckets({ accountId });
     const access = yield* accessApps(accountId, name.access);
     const hooks = yield* accessApps(accountId, name.hooks);

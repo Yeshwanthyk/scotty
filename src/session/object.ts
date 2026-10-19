@@ -58,14 +58,15 @@ const scriptedStart = (
 export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
   "SessionContainer",
   Effect.gen(function* () {
-    // deploy/deployer.ts sets SCOTTY_IMAGE on the Worker; the default is never used.
+    // deploy/deployer.ts makes the app and sets SCOTTY_IMAGE on the Worker; the default is never
+    // used. Each start picks the size (src/places/cloudflare.ts).
     const image = yield* Config.String("SCOTTY_IMAGE").pipe(Config.withDefault(""));
     const { stage } = yield* Stack;
     return {
       name: `scotty-${stage}-sessions`,
       image,
       registryId: "registry.cloudflare.com",
-      instanceType: "standard-1" as const,
+      schedulingPolicy: "durable_object" as const,
     };
   }),
 ) {}
@@ -87,6 +88,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
   Effect.gen(function* () {
     const storage = yield* Cloudflare.DurableObjectState;
     const credentials = yield* CredsObject;
+    // This class's own namespace, to ask another session whether it still runs.
+    const sessions = yield* Cloudflare.DurableObjectScope;
     yield* bindSessionContainer(SessionContainer);
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(SessionArtifacts);
     return Effect.gen(function* () {
@@ -234,6 +237,40 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (!current(action.gen)) return;
               if (action.fresh && (yield* where().running())) yield* where().destroy();
               if (!(yield* where().running())) {
+                // The deployer always sets SCOTTY_MAX_RUNNING from the stage's maxRunning.
+                const max = yield* Effect.orDie(Config.Int("SCOTTY_MAX_RUNNING"));
+                const owner = credentials.getByName("owner");
+                let claim = yield* owner.claim(id(), max);
+                // A full cap first drops the claims of sessions that no longer run, so a lost
+                // release can't hold a slot. A session that doesn't answer keeps its claim.
+                if (!claim.granted) {
+                  const stale = yield* Effect.filter(
+                    claim.claims,
+                    (held) =>
+                      sessions
+                        .getByName(held.id)
+                        .fetch(HttpServerRequest.fromWeb(new Request("http://session/running")))
+                        .pipe(
+                          Effect.map((response) => response.status === 410),
+                          Effect.orElseSucceed(() => false),
+                        ),
+                    { concurrency: "unbounded" },
+                  );
+                  if (stale.length > 0) {
+                    yield* owner.dropClaims(stale);
+                    claim = yield* owner.claim(id(), max);
+                  }
+                }
+                if (!claim.granted) {
+                  if (current(action.gen))
+                    yield* dispatch(
+                      yield* append(
+                        { kind: "container.stopped", gen: action.gen, reason: "cap", max },
+                        "session",
+                      ),
+                    );
+                  return;
+                }
                 const connections = (yield* connectionsFor(action.gen))
                   .filter((connection) => connection.kind !== "inbound")
                   .map((connection) => connection.name);
@@ -436,6 +473,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             }
             case "destroy":
               if (yield* where().running()) yield* where().destroy();
+              // Every stop and failure ends here, so this is where the running slot goes back.
+              yield* credentials.getByName("owner").release(id());
               return;
             case "idle": {
               if (!current(action.gen)) return;
@@ -711,6 +750,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           ).pipe(Effect.orDie);
           const url = new URL(request.url);
           const label = /^(\d{1,5})-/.exec(url.hostname);
+          // Another session asking, when the cap is full, whether this one still holds its slot.
+          // The Worker forwards only previews, the terminal and `/live`, so only a DO gets here.
+          if (label === null && url.pathname === "/running")
+            return HttpServerResponse.empty({
+              status: live(log.state) && log.state.gen !== undefined ? 204 : 410,
+            });
           // Watching isn't using: a live socket leaves the idle window alone.
           if (label === null && url.pathname.endsWith("/live")) {
             if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")

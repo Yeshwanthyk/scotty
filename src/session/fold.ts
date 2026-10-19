@@ -446,6 +446,7 @@ function step(state: State, event: SessionEvent): State {
         ? endAll(next, "stopped", {
             reason: event.reason ?? "gone",
             ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
+            ...(event.max === undefined ? {} : { max: event.max }),
           })
         : next;
     case "active":

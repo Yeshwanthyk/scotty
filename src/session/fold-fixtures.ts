@@ -100,6 +100,8 @@ export const kinds = [
   "dial.failed",
   "sup.redial",
   "failed",
+  // A start whose running-cap claim was refused.
+  "cap",
   "active",
   "invariant.violated",
 ] as const;

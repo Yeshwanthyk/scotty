@@ -31,6 +31,8 @@ const Settings = Schema.Struct({
   sources: Schema.Array(SkillSource),
   claudeStyle: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
+  running: Schema.Number,
+  maxRunning: Schema.Number,
 });
 const SourceSaved = Schema.Struct({
   source: Schema.String,

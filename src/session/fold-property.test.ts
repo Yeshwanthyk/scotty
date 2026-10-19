@@ -18,6 +18,7 @@ const hits: Record<string, number> = {};
 const bump = (name: string): void => {
   hits[name] = (hits[name] ?? 0) + 1;
 };
+// Generations whose start was refused by the cap; none of their output may land.
 let shortest = Infinity;
 let longest = 0;
 
@@ -31,6 +32,7 @@ it.prop(
       let state: State = initial;
       let at = 4_000;
       let priorDial: number | undefined;
+      const capped = new Set<number>();
       for (const event of prefix) {
         state = fold(state, event);
         check(state);
@@ -94,6 +96,13 @@ it.prop(
         if (kind === "created") delete fields.req;
         if (kind === "sup.error" && !step.withReq) delete fields.req;
         if (kind === "sup.hello") fields.n = 1;
+        const cap = kind === "cap";
+        if (cap) {
+          kind = "container.stopped";
+          fields.reason = "cap";
+          fields.max = 2;
+          delete fields.req;
+        }
         const event = decodeSessionEvent({
           seq: index + prefix.length + 1,
           at,
@@ -107,6 +116,19 @@ it.prop(
         // Output numbering restarts with each resumed generation.
         if (state.gen === before.gen) expect(state.lastN).toBeGreaterThanOrEqual(before.lastN);
         if (!live(before) && !live(state)) expect(issued).toBeUndefined();
+        if (cap) {
+          if (live(before) && before.gen === gen) {
+            expect(state).toMatchObject({ phase: "stopped", stop: { reason: "cap", max: 2 } });
+            expect(state.pending).toEqual([]);
+            expect(issued).toEqual({ kind: "destroy" });
+            capped.add(gen);
+            bump(before.hello ? "cap" : "cap at start");
+          } else expect(state).toEqual({ ...before, lastSeq: event.seq });
+        }
+        if (supervisor.has(event.kind) && "gen" in event && capped.has(event.gen)) {
+          expect(state.lastN).toBe(before.lastN);
+          bump("output after cap");
+        }
         if (!live(before) && live(state)) {
           expect(issued).toEqual({ kind: "container.start", gen: state.gen, fresh: true });
           bump("resume");
@@ -224,4 +246,6 @@ it("covers generated paths", () => {
   expect(hits["error settled request"]).toBeGreaterThan(0);
   expect(hits["idle"]).toBeGreaterThan(0);
   expect(hits["stalled"]).toBeGreaterThan(0);
+  expect(hits["cap at start"]).toBeGreaterThan(0);
+  expect(hits["output after cap"]).toBeGreaterThan(0);
 });
