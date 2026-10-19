@@ -26,4 +26,4 @@ directory. Conventions, evidence and cleanup: [SKILL.md](../SKILL.md).
 | [ui](ui.md)                       | The phone UI creates, answers, steers and interrupts, and shows files                          | U1–U6      | none                 |
 
 An e2e proves the same behaviours automatically; drive the recipe when a change needs a human-
-readable trail or the e2e is not enough. Not covered yet (not built): the terminal, Claude, Pi.
+readable trail or the e2e is not enough. Not covered yet (not built): the terminal, Claude.
