@@ -13,7 +13,11 @@ const Session = Schema.Struct({
       // Why a stopped session stopped, and how a failed one recovers; older payloads omit them.
       stop: Schema.optional(
         Schema.NullOr(
-          Schema.Struct({ reason: Schema.String, exitCode: Schema.optional(Schema.Number) }),
+          Schema.Struct({
+            reason: Schema.String,
+            exitCode: Schema.optional(Schema.Number),
+            max: Schema.optional(Schema.Number),
+          }),
         ),
       ),
       failure: Schema.optional(
