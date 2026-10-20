@@ -456,6 +456,8 @@ export function NewSession() {
             <AgentSwitch value={chosen} claudeReady={claudeReady !== false} onChange={pick} />
             <SizePicker
               value={size}
+              // Unread defaults: the Worker still applies the repository's, whatever it is.
+              {...(own === undefined && defaultsFailed ? { label: "repo default" } : {})}
               onChange={(next) => setPicked({ repo: repo.trim(), size: next })}
             />
           </Composer>

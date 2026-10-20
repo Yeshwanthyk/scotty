@@ -17,17 +17,20 @@ const sizeLabel = (size: typeof Size.Type) => {
   return `${size} · ${vcpu === 0.5 ? "½" : vcpu} vCPU · ${memory} GiB · up to $${price.toFixed(2)}/h`;
 };
 
-// The closed picker shows only the name; the open list shows what each size has and costs.
+// The closed picker shows only the name, or `label` when the size isn't known yet; the open
+// list shows what each size has and costs.
 export function SizePicker({
   value,
+  label,
   onChange,
 }: {
   value: typeof Size.Type;
+  label?: string;
   onChange: (size: typeof Size.Type) => void;
 }) {
   return (
     <label className="repo-picker size-picker">
-      <span>{value}</span>
+      <span>{label ?? value}</span>
       <select
         aria-label="Size"
         value={value}
