@@ -1,5 +1,5 @@
 import type { SessionEvent } from "./events.js";
-import { fold, initial, sessionSize, type State } from "./fold.js";
+import { fold, initial, type State } from "./fold.js";
 import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
 import type { TurnItems } from "./items.js";
@@ -54,7 +54,7 @@ export function sessionView(id: string, state: State) {
       agentKind: created?.agentKind ?? "codex",
       origin: created?.origin ?? null,
       place: created?.place ?? ("cloudflare" as const),
-      size: sessionSize(state),
+      size: state.size,
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),
     },

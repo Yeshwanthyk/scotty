@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
-import { deadline, fold, initial, sessionSize, type State } from "./fold.js";
+import { deadline, fold, initial, resizeConflict, type State } from "./fold.js";
 import { live } from "./state.js";
 import { check, created, generated, hello, kinds, ready, start } from "./fold-fixtures.js";
 
@@ -33,8 +33,8 @@ it.prop(
       let priorDial: number | undefined;
       // Generations whose start was refused by the cap; none of their output may land.
       const capped = new Set<number>();
-      // The first `created` event's size; none is `standard-1`.
-      let size: string | undefined;
+      // The first `created` event's size, then the last applied resume's that named one.
+      let size: string = "standard-1";
       for (const event of prefix) {
         state = fold(state, event);
         check(state);
@@ -96,7 +96,8 @@ it.prop(
           fields.req = "client-p";
         // The first prompt keeps its `initial:<gen>` name, which the generated requests use.
         if (kind === "created") delete fields.req;
-        if (kind === "created" && step.size !== "none") fields.size = step.size;
+        if ((kind === "created" || kind === "resume.requested") && step.size !== "none")
+          fields.size = step.size;
         if (kind === "sup.error" && !step.withReq) delete fields.req;
         if (kind === "sup.hello") fields.n = 1;
         const cap = kind === "cap";
@@ -117,10 +118,23 @@ it.prop(
         const issued = command(state, event);
         check(state);
         if (event.kind === "created" && before.created === undefined) {
-          size = event.size;
-          bump(size === undefined ? "created without size" : "created with size");
+          size = event.size ?? "standard-1";
+          bump(event.size === undefined ? "created without size" : "created with size");
         }
-        expect(sessionSize(state)).toBe(size ?? "standard-1");
+        if (event.kind === "resume.requested") {
+          const applied = !live(before) && live(state);
+          if (applied && event.size !== undefined) size = event.size;
+          bump(
+            `resume ${applied ? "applied" : "ignored"} ${event.size === undefined ? "without" : "with"} size`,
+          );
+          // The API refuses exactly the sized resumes the fold would ignore and that change size.
+          expect(resizeConflict(before, event.size)).toBe(
+            !applied && event.size !== undefined && event.size !== before.size,
+          );
+        }
+        expect(state.size).toBe(size);
+        // A running container never changes size.
+        if (before.created !== undefined && live(before)) expect(state.size).toBe(before.size);
         // Output numbering restarts with each resumed generation.
         if (state.gen === before.gen) expect(state.lastN).toBeGreaterThanOrEqual(before.lastN);
         if (!live(before) && !live(state)) expect(issued).toBeUndefined();
@@ -238,7 +252,7 @@ it.prop(
       }
     }
   },
-  { arbitrary: { runs: 200, seed: "fold-v2", size: 200 } },
+  { arbitrary: { runs: 200, seed: "fold-v10", size: 200 } },
 );
 
 it("covers generated paths", () => {
@@ -258,4 +272,7 @@ it("covers generated paths", () => {
   expect(hits["output after cap"]).toBeGreaterThan(0);
   expect(hits["created without size"]).toBeGreaterThan(0);
   expect(hits["created with size"]).toBeGreaterThan(0);
+  expect(hits["resume applied with size"]).toBeGreaterThan(0);
+  expect(hits["resume applied without size"]).toBeGreaterThan(0);
+  expect(hits["resume ignored with size"]).toBeGreaterThan(0);
 });

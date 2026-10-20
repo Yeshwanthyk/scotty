@@ -7,7 +7,7 @@ import { Schema } from "effect";
 import type { Plugin } from "vite";
 import { WebSocketServer, type WebSocket } from "ws";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
-import { fold, initial, type State } from "../../src/session/fold.ts";
+import { fold, initial, resizeConflict, type State } from "../../src/session/fold.ts";
 import { live } from "../../src/session/state.ts";
 import { maxSearch, searchText } from "../../src/session/search.ts";
 import { repoStats, sessionStats, StatsWindow } from "../../src/session/stats.ts";
@@ -314,6 +314,7 @@ const CreateBody = Schema.Struct({
   prompt: Schema.String.check(Schema.isMinLength(1)),
   size: Schema.optionalKey(Size),
 });
+const ResumeBody = Schema.Struct({ size: Schema.optionalKey(Size) });
 const SteerBody = Schema.Struct({
   text: Schema.String.check(Schema.isMinLength(1)),
   turn: Schema.String,
@@ -1192,7 +1193,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return json(res, view(session));
   }
   if (method === "POST" && sub === "resume") {
-    append(session, { kind: "resume.requested", src: "api" });
+    const input = Schema.decodeUnknownOption(ResumeBody)(await body(req));
+    if (input._tag === "None") return fail(res, "Expected {size?}");
+    const size = input.value.size;
+    if (resizeConflict(session.state, size))
+      return fail(res, "Stop the session before changing its size", 409, "running");
+    append(session, {
+      kind: "resume.requested",
+      src: "api",
+      ...(size === undefined ? {} : { size }),
+    });
     if (session.state.phase === "provisioning") play(session, boot);
     return json(res, view(session));
   }

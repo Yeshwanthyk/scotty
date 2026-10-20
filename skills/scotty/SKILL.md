@@ -81,6 +81,8 @@ scotty new owner/repo "Run the full test suite" --size standard-3 --json
 
 `--size`: `standard-1` (default; 1/2 vCPU, 4 GiB), `standard-2` (1 vCPU, 6 GiB), `standard-3` (2 vCPU,
 8 GiB), `standard-4` (4 vCPU, 12 GiB). Bigger work goes to a runner. `read --json` shows `size`.
+A session keeps its size until `scotty resume <id> --size <name>` changes it; a running session
+must be stopped first (`scotty stop <id>`), or the resume exits 1 with code `running`.
 
 The reply has `id` and `url` (the page the owner can open). The first line of the prompt is the
 title. Starting a container takes up to a minute or two. Then follow it:
@@ -94,17 +96,18 @@ scotty read <id> --last 5 --json    # more history
 `read` every 10–20 seconds until it is not `streaming`, then read the assistant message. A
 message's `files` are links to files the agent attached.
 
-| Want                                           | Command                    |
-| ---------------------------------------------- | -------------------------- |
-| List sessions, newest first                    | `scotty ls --json`         |
-| Send more instructions (resumes a stopped one) | `scotty steer <id> "text"` |
-| Stop the current turn                          | `scotty interrupt <id>`    |
-| Stop the container (work is saved)             | `scotty stop <id>`         |
-| Pick up from the last save                     | `scotty resume <id>`       |
-| Delete stopped sessions                        | `scotty rm <id> [<id>…]`   |
-| Preview a server on a port                     | `scotty hatch <id> <port>` |
-| Open the page for the owner                    | `scotty open [id]`         |
-| Raw events, for debugging                      | `scotty log <id>`          |
+| Want                                           | Command                                |
+| ---------------------------------------------- | -------------------------------------- |
+| List sessions, newest first                    | `scotty ls --json`                     |
+| Send more instructions (resumes a stopped one) | `scotty steer <id> "text"`             |
+| Stop the current turn                          | `scotty interrupt <id>`                |
+| Stop the container (work is saved)             | `scotty stop <id>`                     |
+| Pick up from the last save                     | `scotty resume <id>`                   |
+| Pick up at another size (stop it first)        | `scotty resume <id> --size standard-3` |
+| Delete stopped sessions                        | `scotty rm <id> [<id>…]`               |
+| Preview a server on a port                     | `scotty hatch <id> <port>`             |
+| Open the page for the owner                    | `scotty open [id]`                     |
+| Raw events, for debugging                      | `scotty log <id>`                      |
 
 `authority.kind` in `ls` is `stable` (with `lifecycle`: `provisioning`, `running`, `stopped` or `failed`) or
 `transitioning` (with `action`, such as `create` or `resume`). Wait out a transition.

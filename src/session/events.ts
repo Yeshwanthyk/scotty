@@ -160,7 +160,12 @@ export const SessionEvent = Schema.Union([
   }),
   // The Session DO watches the running container for this generation until its watch deadline.
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.watched"), gen: Schema.Natural }),
-  Schema.Struct({ ...envelope, kind: Schema.Literal("resume.requested") }),
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("resume.requested"),
+    // The size to resume at; absent keeps the current one, as in logs written before resizing.
+    size: Schema.optionalKey(Size),
+  }),
   // The owner used the session's terminal or a preview; it pushes back the idle deadline.
   Schema.Struct({ ...envelope, kind: Schema.Literal("active") }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("save.done"), turn: Schema.String }),

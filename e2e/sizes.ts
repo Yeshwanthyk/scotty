@@ -52,7 +52,9 @@ const refused = ["basic", "lite", "standard-9"];
 const say = (word: string) => prompt(`Reply with only the word ${word}.`, `say ${word}`);
 
 const CliError = Schema.fromJsonString(
-  Schema.Struct({ error: Schema.Struct({ code: Schema.String, message: Schema.String }) }),
+  Schema.Struct({
+    error: Schema.Struct({ code: Schema.String, message: Schema.String, hint: Schema.String }),
+  }),
 );
 
 // The CLI as the owner runs it: its exit code, its JSON and anything on stderr.
@@ -251,6 +253,18 @@ const program = Effect.gen(function* () {
           `The session's size is ${view.session.display.size}, not ${size}`,
         );
       });
+    const stopped = (prefix: string) =>
+      Effect.gen(function* () {
+        yield* request(`${prefix}/stop`, View, { method: "POST" });
+        yield* waiter(request, prefix)(
+          () => request(prefix, View),
+          (view) =>
+            view.session.authority.kind === "stable" &&
+            view.session.authority.lifecycle === "stopped",
+          { stopped: "expected" },
+        );
+        yield* freeSlot;
+      });
 
     // 1. With no size a session is standard-1; at standard-3 it has standard-3's CPUs and memory.
     const key = `e2e-size-${suffix}`;
@@ -291,14 +305,7 @@ const program = Effect.gen(function* () {
     const first = yield* measured(big, "0", "standard-3");
 
     // 3. Stopped and resumed by a steer, the bigger session reads the same again.
-    yield* request(`${big}/stop`, View, { method: "POST" });
-    yield* waiter(request, big)(
-      () => request(big, View),
-      (view) =>
-        view.session.authority.kind === "stable" && view.session.authority.lifecycle === "stopped",
-      { stopped: "expected" },
-    );
-    yield* freeSlot;
+    yield* stopped(big);
     const again = yield* measureNext(big, "1", "standard-3");
     // Only the first start is an event; a resume's new container says hello on a later gen.
     yield* check(
@@ -312,7 +319,108 @@ const program = Effect.gen(function* () {
     console.log("standard-3 stopped, resumed and read the same");
     yield* clean;
 
-    // 4. lite, basic and unknown sizes are refused by the API, MCP and the CLI, naming the field.
+    const endpoint = new URL("/mcp", url);
+    const token = yield* access(endpoint.href);
+    const mcp = new Client({ name: "scotty-e2e-sizes", version: "1.0.0" });
+    const attempt = <A>(what: string, run: () => Promise<A>) =>
+      Effect.tryPromise({
+        try: run,
+        catch: () => failure("sizes", `MCP ${what} failed`, "scotty doctor"),
+      });
+    yield* attempt("connect", () =>
+      mcp.connect(
+        new StreamableHTTPClientTransport(endpoint, {
+          requestInit: { headers: { "cf-access-token": token } },
+        }),
+      ),
+    );
+
+    // 4. Stopped, a standard-1 session resumes at standard-3 with its files; running, it can't.
+    yield* freeSlot;
+    const resized = yield* create(
+      "resized",
+      prompt(
+        "Run exactly: `echo kept > kept.txt` and reply with only the word written.",
+        "run echo kept > kept.txt\nsay written",
+      ),
+    );
+    const resizedId = resized.slice("/api/sessions/".length);
+    yield* answered(resized, "written");
+    const conflict = yield* request(`${resized}/resume`, View, {
+      method: "POST",
+      body: { size: "standard-3" },
+    }).pipe(Effect.flip);
+    yield* check(
+      conflict.code === "running" && conflict.hint === `scotty stop ${resizedId}`,
+      `A resize of the running session answered ${conflict.code}: ${conflict.message}`,
+    );
+    const byMcp = yield* attempt("resume_session", () =>
+      mcp.callTool({ name: "resume_session", arguments: { id: resizedId, size: "standard-3" } }),
+    );
+    const mcpText = byMcp.content[0]?.type === "text" ? byMcp.content[0].text : "";
+    yield* check(
+      byMcp.isError === true && mcpText.includes("Stop the session before changing its size"),
+      `MCP answered a resize of the running session with: ${mcpText}`,
+    );
+    const byCliRunning = yield* cli(["resume", resizedId, "--size", "standard-3"]);
+    const cliConflict = Schema.decodeUnknownOption(CliError)(byCliRunning.out);
+    yield* check(
+      byCliRunning.exit === 1 &&
+        Option.isSome(cliConflict) &&
+        cliConflict.value.error.code === "running" &&
+        cliConflict.value.error.hint === `scotty stop ${resizedId}`,
+      `scotty resume --size on a running session exited ${byCliRunning.exit}: ${byCliRunning.out}${byCliRunning.err}`,
+    );
+    yield* shows(resized, "standard-1");
+    yield* check(
+      !(yield* request(`${resized}/log`, Log)).some((e) => e.kind === "resume.requested"),
+      "A refused resize appended resume.requested",
+    );
+    console.log("A resize of a running session: 409 running, an MCP error, CLI exit 1");
+    yield* stopped(resized);
+    yield* request(`${resized}/resume`, View, { method: "POST", body: { size: "standard-3" } });
+    yield* shows(resized, "standard-3");
+    yield* readsSize(resizedId, "standard-3");
+    yield* measureNext(resized, "1", "standard-3");
+    const catReq = crypto.randomUUID();
+    yield* request(`${resized}/steer`, Reply, {
+      method: "POST",
+      key: catReq,
+      body: {
+        req: catReq,
+        turn: "2",
+        text: prompt(
+          "Run exactly: `cat kept.txt` and reply with its full output.",
+          "run cat kept.txt\nsay {{out}}",
+        ),
+      },
+    });
+    yield* ended(resized, "2");
+    const kept = (yield* request(`${resized}/conversation`, Conversation)).turns.at(-1)?.assistant;
+    yield* check(kept?.includes("kept") === true, `After the resize, kept.txt reads ${kept}`);
+    console.log("Stopped at standard-1, resumed at standard-3 with kept.txt");
+    // A resume naming no size keeps standard-3; the CLI's --size changes it once more.
+    yield* stopped(resized);
+    yield* request(`${resized}/resume`, View, { method: "POST" });
+    yield* shows(resized, "standard-3");
+    yield* waiter(request, resized)(
+      () => request(resized, View),
+      (view) =>
+        view.session.authority.kind === "stable" && view.session.authority.lifecycle === "running",
+    );
+    yield* stopped(resized);
+    const cliResume = yield* cli(["resume", resizedId, "--size", "standard-2"]);
+    const cliView = Schema.decodeUnknownOption(Schema.fromJsonString(View))(cliResume.out);
+    yield* check(
+      cliResume.exit === 0 &&
+        Option.isSome(cliView) &&
+        cliView.value.session.display.size === "standard-2",
+      `scotty resume --size standard-2 printed ${cliResume.out}${cliResume.err}`,
+    );
+    console.log("A resume with no size stayed standard-3; scotty resume --size made it standard-2");
+    yield* clean;
+
+    // 5. lite, basic and unknown sizes are refused by the API, MCP and the CLI, naming the field.
     for (const size of refused) {
       const answer = yield* request("/api/sessions", Created, {
         method: "POST",
@@ -331,21 +439,6 @@ const program = Effect.gen(function* () {
         `The API answered size ${size} with ${answer.code}: ${answer.message}`,
       );
     }
-    const endpoint = new URL("/mcp", url);
-    const token = yield* access(endpoint.href);
-    const mcp = new Client({ name: "scotty-e2e-sizes", version: "1.0.0" });
-    const attempt = <A>(what: string, run: () => Promise<A>) =>
-      Effect.tryPromise({
-        try: run,
-        catch: () => failure("sizes", `MCP ${what} failed`, "scotty doctor"),
-      });
-    yield* attempt("connect", () =>
-      mcp.connect(
-        new StreamableHTTPClientTransport(endpoint, {
-          requestInit: { headers: { "cf-access-token": token } },
-        }),
-      ),
-    );
     for (const size of refused) {
       const result = yield* attempt("new_session", () =>
         mcp.callTool({
@@ -375,7 +468,7 @@ const program = Effect.gen(function* () {
     }
     console.log(`Sizes ${refused.join(", ")}: 400 from the API, an MCP error, CLI exit 2`);
 
-    // 5. A valid --size from the CLI makes a session that `scotty read` shows at that size. The CLI
+    // 6. A valid --size from the CLI makes a session that `scotty read` shows at that size. The CLI
     // starts the real agent; the check needs only the create and the read.
     yield* freeSlot;
     const byCli = yield* cli([
@@ -399,7 +492,7 @@ const program = Effect.gen(function* () {
     yield* clean;
     console.log("scotty new --size standard-2 made a session that reads standard-2");
 
-    // 6. An automation's size reaches the session it starts.
+    // 7. An automation's size reaches the session it starts.
     yield* request("/api/automations", AutomationSwitched, {
       method: "POST",
       body: {

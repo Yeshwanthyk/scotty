@@ -1,5 +1,6 @@
 import { Effect, Exit, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Size } from "../../src/places/place.js";
 import { Log, Removed, Reply, View, failure } from "../client.js";
 import { removeConnection } from "./connections.js";
 import {
@@ -50,20 +51,31 @@ export const interrupt = Command.make("interrupt", { id, req }, ({ id: value, re
   }),
 );
 
-const lifecycle = (name: "stop" | "resume", past: string) =>
-  Command.make(name, { id }, ({ id: value }) =>
-    Effect.gen(function* () {
-      const api = yield* withClient;
-      const path = yield* sessionPath(api, value, name);
-      const view = yield* api(`${path}/${name}`, View, { method: "POST" });
-      yield* output(
-        view,
-        `${green("✓")} ${past} ${short(view.session.identity.id)} ${dim(`(${state(view.session)})`)}`,
-      );
-    }),
-  );
-export const stop = lifecycle("stop", "Stopping");
-export const resume = lifecycle("resume", "Resuming");
+const lifecycle = (
+  name: "stop" | "resume",
+  past: string,
+  value: string,
+  body?: { size: typeof Size.Type },
+) =>
+  Effect.gen(function* () {
+    const api = yield* withClient;
+    const path = yield* sessionPath(api, value, name);
+    const view = yield* api(`${path}/${name}`, View, { method: "POST", body });
+    yield* output(
+      view,
+      `${green("✓")} ${past} ${short(view.session.identity.id)} ${dim(`(${state(view.session)} · ${view.session.display.size})`)}`,
+    );
+  });
+export const stop = Command.make("stop", { id }, ({ id: value }) =>
+  lifecycle("stop", "Stopping", value),
+);
+// A size resumes the stopped session in a container of that size.
+export const resume = Command.make(
+  "resume",
+  { id, size: Flag.Literals("size", Size.literals).pipe(Flag.optional) },
+  ({ id: value, size }) =>
+    lifecycle("resume", "Resuming", value, Option.isSome(size) ? { size: size.value } : undefined),
+);
 
 // `rm <id…>` deletes sessions; `rm connection <name>` deletes that.
 // Every id is resolved before anything is deleted.

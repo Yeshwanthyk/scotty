@@ -18,8 +18,14 @@ export { deadline, deadlines } from "./deadlines.js";
 export { invariants } from "./invariants.js";
 export type { Violation } from "./invariants.js";
 
-// The size every start of this session uses.
-export const sessionSize = (state: State) => state.created?.size ?? defaultSize;
+// A stopped session, or one whose failure a fresh container may get past, can resume.
+const resumable = (state: State): boolean =>
+  state.phase === "stopped" || (state.phase === "failed" && state.failure?.retryable === true);
+
+// A running container never changes size, so a resume naming another size needs a resumable
+// session; the same size, or none, is an ordinary resume.
+export const resizeConflict = (state: State, size: typeof Size.Type | undefined): boolean =>
+  size !== undefined && size !== state.size && !resumable(state);
 
 const settle = (
   requests: readonly Request[],
@@ -134,7 +140,9 @@ function step(state: State, event: SessionEvent): State {
   const next = { ...state, lastSeq: event.seq };
   switch (event.kind) {
     case "created":
-      return state.created === undefined ? { ...next, created: event, activeAt: event.at } : next;
+      return state.created === undefined
+        ? { ...next, created: event, activeAt: event.at, size: event.size ?? state.size }
+        : next;
     case "container.start":
       if (state.created === undefined || !live(state) || state.gen !== undefined) return next;
       return {
@@ -433,8 +441,8 @@ function step(state: State, event: SessionEvent): State {
         pending: remove(state.pending, event.op),
       };
     case "resume.requested":
-      return state.phase === "stopped" || (state.phase === "failed" && state.failure?.retryable)
-        ? resume({ ...next, activeAt: event.at }, event.at)
+      return resumable(state)
+        ? resume({ ...next, activeAt: event.at, size: event.size ?? state.size }, event.at)
         : next;
     case "container.stopped":
       if (event.gen !== state.gen) return next;
@@ -501,7 +509,8 @@ function step(state: State, event: SessionEvent): State {
 // What a start does to this session: make it, prompt it, or answer from what it already holds.
 // A request id seen before is answered as it was the first time; one reused for another
 // repository, agent or prompt is a conflict. Only a creating start names a size (a steer or wake
-// joins the session at its size), and a retried create naming another size is a conflict too.
+// joins the session at its size), and a retried create naming a size it was not created at is a
+// conflict too; a resize since then does not change that.
 export function startStep(
   state: State,
   input: {
@@ -517,7 +526,7 @@ export function startStep(
   if (
     created.repo !== input.repo ||
     created.agentKind !== input.agent ||
-    (input.size !== undefined && sessionSize(state) !== input.size)
+    (input.size !== undefined && (created.size ?? defaultSize) !== input.size)
   )
     return "conflict";
   if (created.req === input.req) return created.prompt === input.prompt ? "duplicate" : "conflict";

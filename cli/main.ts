@@ -35,6 +35,7 @@ ${bold("Sessions")}
   steer <id> <text>               Send text; a stopped session resumes
   interrupt <id>                  Interrupt the current turn
   stop <id> / resume <id>         Stop a container, or resume from its last save
+                                  (--size standard-1..4 resumes at that size)
   rm <id…>                        Delete stopped sessions
   open [id]                       Open Scotty, or a session, in the browser
   hatch <id> <port>               Print the preview URL for a port
@@ -118,8 +119,9 @@ Example: scotty steer 3f2a "Run the checks"`,
 Interrupt the current turn.`,
   stop: `Usage: scotty stop <id>
 Stop a session's container; its work is saved and \`scotty resume\` or a steer picks it up.`,
-  resume: `Usage: scotty resume <id>
-Resume a stopped session from its last save.`,
+  resume: `Usage: scotty resume <id> [--size <name>]
+Resume a stopped session from its last save, at its size or at --size standard-1..4.
+A running session must be stopped first to change its size.`,
   rm: `Usage: scotty rm <id…> | scotty rm connection <name>
 Delete stopped sessions with their saves and files, or delete a connection.`,
   open: `Usage: scotty open [id]

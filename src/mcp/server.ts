@@ -241,8 +241,23 @@ export function mcpHandler(
       false,
       ({ id }) => passThrough("POST", `/api/sessions/${id}/stop`),
     ),
-    tool("resume_session", "Start a stopped session's container again.", Id, false, ({ id }) =>
-      passThrough("POST", `/api/sessions/${id}/resume`),
+    tool(
+      "resume_session",
+      "Start a stopped session's container again. A size changes its container; a running session must be stopped first.",
+      Schema.Struct({
+        id: Schema.String,
+        size: Schema.optionalKey(Size).annotate({
+          description:
+            "The container size; default the session's current one. Bigger than standard-4 needs a runner.",
+        }),
+      }),
+      false,
+      ({ id, size }) =>
+        passThrough(
+          "POST",
+          `/api/sessions/${id}/resume`,
+          size === undefined ? undefined : { size },
+        ),
     ),
   ];
 

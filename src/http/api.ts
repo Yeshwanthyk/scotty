@@ -85,6 +85,7 @@ const Steer = Schema.Struct({
   req: Schema.optional(RequestId),
 });
 const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(RequestId) });
+const Resume = Schema.fromJsonString(Schema.Struct({ size: Schema.optionalKey(Size) }));
 const path =
   /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log|hatch\/(\d{1,5})|files\/([a-f0-9]{32})))?$/;
 const GitHubToken = Schema.Struct({
@@ -680,8 +681,27 @@ export function apiHandler(
       if (retry !== undefined && HttpServerResponse.isHttpServerResponse(retry)) return retry;
       return yield* HttpServerResponse.json(yield* stub.stop(retry));
     }
-    if (request.method === "POST" && subpath === "resume")
-      return yield* HttpServerResponse.json(yield* stub.resume());
+    if (request.method === "POST" && subpath === "resume") {
+      // The body is optional: a bare resume keeps the session's size.
+      const text = yield* request.text;
+      const body = yield* Schema.decodeUnknownEffect(Resume)(text === "" ? "{}" : text).pipe(
+        Effect.catchTag("SchemaError", (error) => bad(error.message)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const resumed = yield* stub.resume(body.size);
+      if (resumed.kind === "running")
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              message: "Stop the session before changing its size",
+              code: "running",
+              hint: `scotty stop ${id}`,
+            },
+          },
+          { status: 409 },
+        );
+      return yield* HttpServerResponse.json({ version: resumed.version, session: resumed.session });
+    }
     if (request.method === "POST" && subpath === "steer") {
       const retry = yield* idempotencyKey(request.headers["idempotency-key"]);
       if (HttpServerResponse.isHttpServerResponse(retry)) return retry;

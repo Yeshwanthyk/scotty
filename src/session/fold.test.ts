@@ -1,7 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
-import { deadline, deadlines, fold, initial, startStep, type State } from "./fold.js";
+import {
+  deadline,
+  deadlines,
+  fold,
+  initial,
+  resizeConflict,
+  startStep,
+  type State,
+} from "./fold.js";
 import { sessionView } from "./view.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
@@ -493,6 +501,44 @@ describe("session fold", () => {
       gen: 2,
       resume: { threadId: "thread-1", commit: "abc" },
     });
+    check(state);
+  });
+
+  it("resumes at a named size and keeps it until a resume names another", () => {
+    const stopped = stoppedWithThread();
+    expect(resizeConflict(stopped, "standard-3")).toBe(false);
+    const sized = make(8, "resume.requested", { size: "standard-3" });
+    let state = fold(stopped, sized);
+    expect(state).toMatchObject({ phase: "provisioning", gen: 2, size: "standard-3" });
+    expect(command(state, sized)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    // A live container never changes size: the API refuses a resize, and the fold ignores one.
+    expect(resizeConflict(state, "standard-2")).toBe(true);
+    expect(resizeConflict(state, "standard-3")).toBe(false);
+    expect(resizeConflict(state, undefined)).toBe(false);
+    expect(fold(state, make(9, "resume.requested", { size: "standard-2" })).size).toBe(
+      "standard-3",
+    );
+    // A later resume without a size, and a steer that resumes, keep it.
+    state = [make(9, "container.stopped", { gen: 2 }), make(10, "resume.requested")].reduce(
+      fold,
+      state,
+    );
+    expect(state).toMatchObject({ phase: "provisioning", gen: 3, size: "standard-3" });
+    state = fold(state, make(11, "container.stopped", { gen: 3 }));
+    state = fold(
+      state,
+      make(12, "prompt.requested", {
+        req: "s1",
+        turn: state.currentTurn,
+        text: "again",
+        images: [],
+      }),
+    );
+    expect(state).toMatchObject({ phase: "provisioning", gen: 4, size: "standard-3" });
+    expect(sessionView("s", state).display.size).toBe("standard-3");
+    // A keyed start naming the size the session was created at still reaches it.
+    const input = { repo: "https://example.org/repo", agent: "codex", prompt: "wake" };
+    expect(startStep(state, { ...input, req: "run:wake-1", size: "standard-1" })).toBe("prompt");
     check(state);
   });
 

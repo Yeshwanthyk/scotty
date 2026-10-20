@@ -2,7 +2,8 @@
 
 Sessions run under the container app's `durable_object` scheduling policy, so each start names
 its image and size. A session's size is `standard-1` unless its create (API, MCP, `scotty new
---size`, hook payload) or its automation names `standard-2`, `standard-3` or `standard-4`.
+--size`, hook payload) or its automation names `standard-2`, `standard-3` or `standard-4`. A
+stopped session can resume at another size (`scotty resume <id> --size`); a running one can't.
 Scotty caps how many run at once: `maxRunning` in the stage config (default 20). A start over the
 cap stops at once with reason `cap` and says how to make room.
 
@@ -32,11 +33,18 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
 - **Z9** An automation at `standard-2` with `action: wake` reaches a `standard-1` session by its
   key: the run is `steered`, and the session stays `standard-1`. A size applies only when a session
   is made.
+- **Z10** A scripted `standard-1` session writes `kept.txt` and stops. `POST …/resume
+{size: "standard-3"}` resumes it: `read --json` and the header show `standard-3`, it reads
+  `standard-3`'s row, and `cat kept.txt` says `kept`. While it runs, a resume naming another size
+  is refused and nothing is appended: the API answers 409 `{code: "running", hint: "scotty stop
+<id>"}`, MCP `resume_session` a tool error, `scotty resume --size` exit 1 with code `running`. A
+  later resume with no size stays `standard-3`; `scotty resume <id> --size standard-2` on the
+  stopped session makes it `standard-2`.
 
 ## Entry points
 
 - CLI `scotty doctor | new | ls | stop | resume | log | auth status`, Settings → Running. e2e:
-  `npm run --silent e2e -- sizes` (Z3, Z4, Z6–Z9) against a stage deployed with
+  `npm run --silent e2e -- sizes` (Z3, Z4, Z6–Z10) against a stage deployed with
   `"maxRunning": 2` in its config. It reads the cap from `GET /api/settings`, fails on a cap over
   3, and resumes the refused session only after the stopped one's slot is released. The size checks
   run one session at a time, waiting for a free slot.
@@ -61,14 +69,21 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
    `read <session> --json > 11-automation-read.json` (Z8). Make one with `"action": "wake"` and the
    `key` of a running `standard-1` session, run it; save the run as `12-wake-run.json` (Z9). Remove
    the automations and sessions.
-8. Z5 has no drive step: a lost release can't be arranged from outside. Report it as not driven;
+8. Start a scripted `standard-1` session whose prompt runs `echo kept > kept.txt`. While it runs,
+   `resume <id> --size standard-3; echo $? > 13-resize-running.txt` (Z10). `stop`, then
+   `resume <id> --size standard-3`, `read <id> --json > 14-resized.json`, and steer it
+   `run nproc; grep MemTotal /proc/meminfo` and `run cat kept.txt` (Z10). `stop`, `resume <id>`,
+   `read --json > 15-resumed.json` (still `standard-3`). Screenshot the stopped banner's size
+   picker beside Resume as `16-banner.png`.
+9. Z5 has no drive step: a lost release can't be arranged from outside. Report it as not driven;
    the path is `container.start` in `src/session/object.ts`.
 
 ## Proof
 
 `03-app.json` with `durable_object`; `01` and `04` with the same credentials; the doctor line; the
 third session's `07-log.json` cap stop and its `08-log.json` answer after the resume; the `size`
-and readings in `09-*`, exit 2 in `10-*`, `standard-2` in `11-*`, `steered` in `12-*`.
+and readings in `09-*`, exit 2 in `10-*`, `standard-2` in `11-*`, `steered` in `12-*`, exit 1 in
+`13-*`, `standard-3` and `kept` in `14-*`, `standard-3` in `15-*`.
 
 ## Gotchas
 
@@ -88,5 +103,8 @@ and readings in `09-*`, exit 2 in `10-*`, `standard-2` in `11-*`, `steered` in `
   as a `sup.hello` with a later `gen`.
 - An automation run keeps the size its definition had when the run was received (`run_sizes` in
   the Creds DO).
+- A resize is a stop and a resume: the size is `resume.requested.size` in the log, and the new
+  container's `sup.hello` has the next `gen`. The UI's size picker sits in the stopped banner, not
+  the menu; the menu's Resume keeps the size.
 - A start without `instance` runs as `lite`. If a session's `nproc`/`MemTotal` look small, check
   `src/places/cloudflare.ts` still passes `instance`.

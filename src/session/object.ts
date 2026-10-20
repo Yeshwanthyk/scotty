@@ -38,7 +38,7 @@ import { instructionsKey, sourceKey } from "../settings/skills.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
 import { deadlines, idleWindow, inactivityTimeout } from "./deadlines.js";
-import { deadline, sessionSize, startStep } from "./fold.js";
+import { deadline, resizeConflict, startStep } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
 import { sessionStats } from "./stats.js";
@@ -276,7 +276,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 yield* where().start({
                   session: id(),
                   repo: log.state.created?.repo ?? "",
-                  size: sessionSize(log.state),
+                  size: log.state.size,
                   connections,
                 });
               }
@@ -714,10 +714,17 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             );
             return answer("ended");
           }),
-        resume: () =>
+        // Absent `size` keeps the current one.
+        resume: (size?: typeof Size.Type) =>
           Effect.gen(function* () {
-            yield* dispatch(yield* append({ kind: "resume.requested" }, "api"));
-            return { version: 1, session: sessionView(id(), log.state) };
+            if (resizeConflict(log.state, size)) return { kind: "running" as const };
+            yield* dispatch(
+              yield* append(
+                { kind: "resume.requested", ...(size === undefined ? {} : { size }) },
+                "api",
+              ),
+            );
+            return { kind: "resumed" as const, version: 1, session: sessionView(id(), log.state) };
           }),
         // The Worker calls this only after the bytes are in R2.
         attach: (file: {

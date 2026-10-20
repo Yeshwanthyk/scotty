@@ -103,6 +103,7 @@ export const kinds = [
   "failed",
   // A start whose running-cap claim was refused.
   "cap",
+  "resume.requested",
   "active",
   "invariant.violated",
 ] as const;
@@ -136,7 +137,7 @@ export const generated = Arbitrary.schema(
     withReq: Schema.Boolean,
     op: Schema.Literals(["container", "workspace", "dial", "redial", "req:p", "req:initial:1"]),
     dt: Schema.Literals([0, 1_000, 2_000, 30_000, 120_000]),
-    // A generated `created` without a size, or with one.
+    // A generated `created` or `resume.requested` without a size, or with one.
     size: Schema.Literals(["none", ...Size.literals]),
   }),
 );

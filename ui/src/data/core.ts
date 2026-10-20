@@ -202,8 +202,13 @@ export async function session(id: string): Promise<Session | undefined> {
 }
 
 // Stop and resume answer with the session; the live socket shows it, so the body is not read.
-export async function lifecycle(id: string, action: "stop" | "resume"): Promise<void> {
-  await request(sessionPath(id) + "/" + action, {});
+// A resume naming a size restarts the stopped session at that size.
+export async function lifecycle(
+  id: string,
+  action: "stop" | "resume",
+  size?: typeof Size.Type,
+): Promise<void> {
+  await request(sessionPath(id) + "/" + action, size === undefined ? {} : { size });
 }
 
 export async function remove(id: string): Promise<void> {
