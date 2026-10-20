@@ -421,6 +421,8 @@ const ensureAccessApp = (
       accountId,
       type: "self_hosted",
       name,
+      // One sign-in lasts 30 days on the phone and the CLI; Access's default is 24 hours (owner, 2026-10-19).
+      sessionDuration: "720h",
       destinations,
       policies,
       ...(oauthConfiguration === undefined ? {} : { oauthConfiguration }),
