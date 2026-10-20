@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ratesDated } from "../../../src/places/place";
 import { message } from "../data/core";
 import { stats as loadStats, type RepoStats, type Stats, type StatsWindow } from "../data/stats";
 import { ago } from "../data/status";
@@ -92,7 +93,9 @@ export function StatsPage() {
         )}
         <p className="settings-intro stats-note">
           Read from each session's event log. A run counts from its start, container boot included,
-          to its stop; hours are cut to the window. Deleted sessions are not counted.
+          to its stop; hours are cut to the window. Deleted sessions are not counted. Est. cost is
+          an upper bound: it counts a container's whole life as busy CPU and leaves out the plan's
+          included usage, at Cloudflare's Containers rates dated {ratesDated}.
         </p>
       </div>
     </>
@@ -148,6 +151,15 @@ const hours = (ms: number): string =>
     : ms < 3_600_000
       ? `${Math.max(1, Math.round(ms / 60_000))}m`
       : `${(ms / 3_600_000).toFixed(1)}h`;
+const usd = (cost: number): string =>
+  cost === 0 ? "$0" : cost < 0.01 ? "<$0.01" : `$${cost.toFixed(2)}`;
+// One line per size under a figure, so the Hours and Est. cost lines match up.
+const bySize = (row: RepoStats, figure: (share: RepoStats["sizes"][number]) => string) =>
+  row.sizes.map((share) => (
+    <div key={share.size} className="stats-detail">
+      {figure(share)}
+    </div>
+  ));
 const seconds = (ms: number | null): string =>
   ms === null ? "–" : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 const top = (counts: RepoStats["failureCodes"], label = (key: string) => key): string =>
@@ -205,7 +217,14 @@ function Row({ row, now, total }: { row: RepoStats; now: number; total?: boolean
         {total ? row.repo : <span className="mono">{row.repo}</span>}
       </th>
       <td className="tabular">{row.sessions}</td>
-      <td className="tabular">{hours(row.runMs)}</td>
+      <td className="tabular">
+        {hours(row.runMs)}
+        {bySize(row, (share) => `${share.size} ${hours(share.runMs)}`)}
+      </td>
+      <td className="tabular">
+        {usd(row.cost)}
+        {bySize(row, (share) => usd(share.cost))}
+      </td>
       <td className="tabular">{row.turns}</td>
       <td>
         <Running count={row.running} />
@@ -235,6 +254,9 @@ function Table({ stats }: { stats: Stats }) {
             <th scope="col">Repository</th>
             <th scope="col">Sessions</th>
             <th scope="col">Hours</th>
+            <th scope="col" title="An upper bound: the whole run counted as busy">
+              Est. cost
+            </th>
             <th scope="col">Turns</th>
             <th scope="col">Running</th>
             <th scope="col">Last run</th>
@@ -275,12 +297,22 @@ function Card({ row, now, total }: { row: RepoStats; now: number; total?: boolea
       </div>
       <dl className="stats-figures">
         <div>
-          <dt>Sessions</dt>
-          <dd className="tabular">{row.sessions}</dd>
+          <dt>Hours</dt>
+          <dd className="tabular">
+            {hours(row.runMs)}
+            {bySize(row, (share) => `${share.size} ${hours(share.runMs)}`)}
+          </dd>
         </div>
         <div>
-          <dt>Hours</dt>
-          <dd className="tabular">{hours(row.runMs)}</dd>
+          <dt>Est. cost</dt>
+          <dd className="tabular">
+            {usd(row.cost)}
+            {bySize(row, (share) => usd(share.cost))}
+          </dd>
+        </div>
+        <div>
+          <dt>Sessions</dt>
+          <dd className="tabular">{row.sessions}</dd>
         </div>
         <div>
           <dt>Turns</dt>

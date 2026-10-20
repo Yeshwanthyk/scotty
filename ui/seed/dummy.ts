@@ -46,6 +46,8 @@ export type DummySpec = {
   origin?: Json;
   // The container size; absent: the default.
   size?: typeof Size.Type;
+  // After the stop, resumed at this size for a while and stopped again.
+  resized?: typeof Size.Type;
 };
 
 const read = (path: string) => ({
@@ -369,6 +371,34 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
     at += 30_000;
     push({ src: "api", kind: "container.stopped", gen: 1 });
     push({ src: "supervisor", kind: "socket.closed", gen: 1 });
+    if (spec.resized !== undefined) {
+      at += 10 * 60_000;
+      push({ src: "api", kind: "resume.requested", size: spec.resized });
+      at += 3400;
+      const gen = { src: "supervisor", gen: 2 };
+      push({
+        ...gen,
+        n: 1,
+        kind: "sup.hello",
+        version: "step-2",
+        boot: `b00701${spec.id.slice(0, 2)}-0000-4000-8000-000000000000`,
+      });
+      at += 1600;
+      push({
+        ...gen,
+        n: 2,
+        kind: "workspace.ready",
+        base: "main",
+        branch: `scotty/${spec.id}`,
+        commit: "4f37cf512cdbfb48f6ef8f5ea64f2f6bf51097cf",
+        ms: 1580,
+        retried: [],
+      });
+      push({ ...gen, n: 3, kind: "agent.ready", agentKind: "codex", session: thread });
+      at += 40 * 60_000;
+      push({ src: "api", kind: "container.stopped", gen: 2 });
+      push({ src: "supervisor", kind: "socket.closed", gen: 2 });
+    }
   }
   return events;
 }
@@ -689,6 +719,7 @@ export const dummies: DummySpec[] = [
     id: "d0cc0de5000000000000000000000003",
     title: "Research: iOS video Range requests",
     repo: "Yeshwanthyk/scotty-hatch-test",
+    size: "standard-2",
     minutesAgo: 60 * 26,
     turns: [
       {
@@ -734,6 +765,7 @@ export const dummies: DummySpec[] = [
     title: "Refactor the auth flow to passkeys",
     repo: "acme/storefront",
     minutesAgo: 60 * 24 * 3,
+    resized: "standard-3",
     origin: { kind: "api", key: "passkeys-2026" },
     turns: [
       ...Array.from({ length: 9 }, (_, index): TurnSpec => ({
@@ -925,6 +957,7 @@ export const dummies: DummySpec[] = [
     id: "d0cc0de5000000000000000000000009",
     title: "Summarise yesterday's commits on main",
     repo: "acme/storefront",
+    size: "standard-4",
     minutesAgo: 60 * 5,
     origin: {
       kind: "automation",

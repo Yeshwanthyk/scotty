@@ -518,6 +518,15 @@ The conversation snapshot includes top-level `currentTurn`, the authoritative tu
 | `GET /api/version`                                                           | The deployed Worker's version                        |
 | `POST /mcp`                                                                  | Scotty's MCP server (below), on the API handler      |
 
+### Stats
+
+`GET /api/stats?window=7d|30d|all` replays each indexed session's log (`sessionStats` in `src/session/stats.ts`, inside its Session DO) and sums per repository and in total (`repoStats`). Every time is an event's `at`; a deleted session is not counted. Stats is display data: the fold doesn't change for it.
+
+- **Runs.** A run opens at the event that makes it the fold's start (`state.startSeq`: the first `container.start`, a resume, a wake) and closes when the session stops being live. It carries the fold's `State.size` when it opens: a running container never changes size, so that is the size it ran at. A resize is a stop and a resume, so it ends one run and opens another at the new size.
+- **Window.** A run counts only its part inside `[now − window, now]`; an open run counts up to `now`. Each repository's `sizes` lists the sizes that ran in the window, in `Size` order, as `{size, runMs, cost}`; their `runMs` sum to the repository's `runMs`, and `cost` is their sum.
+- **Rates.** One table beside `Size` (`sizeSpec`, `hourlyRate` in `src/places/place.ts`): each size's vCPU, GiB and GB and Workers Paid's per-second prices beyond the included usage ($0.000020 per vCPU-second, $0.0000025 per GiB-second, $0.00000007 per GB-second), from Cloudflare's Containers pricing page dated 2026-10-05 (read 2026-10-20). The new-session size picker shows the same rate. `standard-1` to `standard-4` come to $0.0740, $0.1290, $0.2200 and $0.4010 an hour.
+- **Upper bound.** Memory and disk are billed as provisioned, but CPU only while busy, and the plan includes 375 vCPU-minutes, 25 GiB-hours and 200 GB-hours a month. The estimate counts a container's whole run as busy CPU and subtracts no included usage, so the bill is at most this. The UI says "Est. cost" and gives the rates' date.
+
 ### Live updates
 
 The UI doesn't poll; the server pushes. Both sockets are hibernatable WebSockets accepted by a Durable Object, and a client sends nothing on them (a message closes the socket).

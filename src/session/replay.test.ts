@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Schema } from "effect";
 import { command } from "./commands.js";
 import { deadlines } from "./deadlines.js";
+import { hourlyRate } from "../places/place.js";
 import { SessionEvent } from "./events.js";
 import { repoStats, sessionStats } from "./stats.js";
 import { fold, initial, invariants, type State } from "./fold.js";
@@ -27,17 +28,23 @@ const replayLine = (state: State, text: string, file: string, line: number): Sta
 };
 
 describe("saved session event logs", () => {
-  it("decodes and checks every JSONL replay, including an empty directory, at the default size", async () => {
+  it("decodes and checks every JSONL replay, including an empty directory, and a log naming no size runs at the default", async () => {
     const files = (await readdir(logs)).filter((name) => name.endsWith(".jsonl"));
     const contents = await Promise.all(files.map((file) => readFile(join(logs, file), "utf8")));
     for (const [fileIndex, content] of contents.entries()) {
       const file = files[fileIndex] ?? "unknown log";
       let state = initial;
+      let sized = false;
       for (const [index, line] of content.split("\n").entries()) {
-        if (line.trim().length > 0) state = replayLine(state, line, file, index + 1);
+        if (line.trim().length === 0) continue;
+        state = replayLine(state, line, file, index + 1);
+        const event = decodeLine(line);
+        sized ||=
+          (event.kind === "created" || event.kind === "resume.requested") &&
+          event.size !== undefined;
       }
-      // Every saved log predates sizes: its session ran, and still folds, as `standard-1`.
-      expect(sessionView("replay", state).display.size, file).toBe("standard-1");
+      // A log written before sizes ran, and still folds, as `standard-1`.
+      if (!sized) expect(sessionView("replay", state).display.size, file).toBe("standard-1");
     }
   });
   it("identifies malformed and out-of-order log lines", () => {
@@ -243,7 +250,9 @@ describe("stats from saved session event logs", () => {
     const events = await read("2026-09-30-idle-container-stopped.jsonl");
     const stats = sessionStats(events);
     expect(stats).toMatchObject({ repo: "Yeshwanthyk/scotty", agentKind: "claude", live: false });
-    expect(stats?.runs).toEqual([{ gen: 1, start: at(events, 2), end: at(events, 20) }]);
+    expect(stats?.runs).toEqual([
+      { gen: 1, size: "standard-1", start: at(events, 2), end: at(events, 20) },
+    ]);
     expect(stats?.turns).toEqual([at(events, 20)]);
     expect(stats?.failures).toEqual([]);
   });
@@ -251,8 +260,8 @@ describe("stats from saved session event logs", () => {
     const events = await read("2026-09-30-queued-prompt-startup-timeout.jsonl");
     const stats = sessionStats(events);
     expect(stats?.runs).toEqual([
-      { gen: 1, start: 124_000, end: 371_000 },
-      { gen: 2, start: 372_000, end: null },
+      { gen: 1, size: "standard-1", start: 124_000, end: 371_000 },
+      { gen: 2, size: "standard-1", start: 372_000, end: null },
     ]);
     expect(stats).toMatchObject({
       live: true,
@@ -278,7 +287,51 @@ describe("stats from saved session event logs", () => {
   it("starts a run at the prompt that wakes a stopped session", async () => {
     const events = await read("2026-09-27-crash-kill-unnoticed.jsonl");
     const runs = sessionStats(events)?.runs ?? [];
-    expect(runs[0]).toEqual({ gen: 1, start: at(events, 2), end: at(events, 31) });
+    expect(runs[0]).toEqual({
+      gen: 1,
+      size: "standard-1",
+      start: at(events, 2),
+      end: at(events, 31),
+    });
     expect(runs[1]).toMatchObject({ gen: 2, start: at(events, 33) });
+  });
+  it("gives each run the size it started at, and sums hours and cost by size", async () => {
+    const events = await read("2026-10-20-resize-standard-3.jsonl");
+    const runs = sessionStats(events)?.runs ?? [];
+    // Stopped at standard-1 (seq 21), resumed at standard-3 (seq 23), stopped again (seq 29).
+    const [first, second] = [
+      { start: at(events, 2) ?? 0, end: at(events, 21) ?? 0 },
+      { start: at(events, 23) ?? 0, end: at(events, 29) ?? 0 },
+    ];
+    expect(runs).toEqual([
+      { gen: 1, size: "standard-1", ...first },
+      { gen: 2, size: "standard-3", ...second },
+    ]);
+    const stats = sessionStats(events);
+    if (stats === null) return;
+    const hours = (ms: number) => ms / 3_600_000;
+    const covered = repoStats([stats], "7d", second.end + 60_000).total;
+    expect(covered.sizes).toEqual([
+      {
+        size: "standard-1",
+        runMs: first.end - first.start,
+        cost: hours(first.end - first.start) * hourlyRate("standard-1"),
+      },
+      {
+        size: "standard-3",
+        runMs: second.end - second.start,
+        cost: hours(second.end - second.start) * hourlyRate("standard-3"),
+      },
+    ]);
+    expect(covered.runMs).toBe(first.end - first.start + (second.end - second.start));
+    expect(covered.cost).toBeCloseTo(
+      covered.sizes.reduce((sum, share) => sum + share.cost, 0),
+      12,
+    );
+    // A window that opens during the second run counts only its last 10 s, at standard-3.
+    const late = repoStats([stats], "7d", second.end - 10_000 + 7 * 86_400_000).total;
+    expect(late.sizes).toEqual([
+      { size: "standard-3", runMs: 10_000, cost: hours(10_000) * hourlyRate("standard-3") },
+    ]);
   });
 });

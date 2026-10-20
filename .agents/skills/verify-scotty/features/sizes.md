@@ -51,12 +51,18 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
   session reads `standard-2` again. A default of `basic`, `lite` or `standard-9`, and
   `/api/repos/fixture`, `/api/repos/a/b/c` or `/api/repos/a%20b/c`, answer 400. The default is set
   only around those creates and cleared however the run ends.
+- **Z12** `GET /api/stats?window=7d`'s `_scotty/fixture` row has a `sizes` entry for every size
+  its remaining sessions ran at, at least `standard-1` and `standard-3`. Each `runMs` is within
+  a minute of the runs in those sessions' logs (a run from the event that starts it to the one
+  that ends it, at the size it started at, cut to the window), and each `cost` is within a cent
+  of hours × that size's rate (`hourlyRate`, `src/places/place.ts`). Stats shows the same as
+  "Hours" with a line per size and "Est. cost", on desktop and phone.
 
 ## Entry points
 
 - CLI `scotty doctor | new | ls | stop | resume | repo | log | auth status`, Settings → Running and
   Repositories. e2e:
-  `npm run --silent e2e -- sizes` (Z3, Z4, Z6–Z11) against a stage deployed with
+  `npm run --silent e2e -- sizes` (Z3, Z4, Z6–Z12) against a stage deployed with
   `"maxRunning": 2` in its config. It reads the cap from `GET /api/settings`, fails on a cap over
   3, and resumes the refused session only after the stopped one's slot is released. The size checks
   run one session at a time, waiting for a free slot. Run `sizes` alone on a stage: it fills the
@@ -94,7 +100,10 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
 _scotty/fixture --default`, then `stop` and `steer` the first and `read --json > 18-after.json`
    (still `standard-2`). Screenshot Settings → Repositories as `19-repos.png`. Leave the default
    cleared.
-10. Z5 has no drive step: a lost release can't be arranged from outside. Report it as not driven;
+10. `curl /api/stats?window=7d > 20-stats.json` and `log <id>` for each remaining
+    `_scotty/fixture` session; sum each size's run time from the logs and compare (Z12).
+    Screenshot Stats at 1440 and 390 wide as `21-stats-desktop.png` and `22-stats-phone.png`.
+11. Z5 has no drive step: a lost release can't be arranged from outside. Report it as not driven;
     the path is `container.start` in `src/session/object.ts`.
 
 ## Proof
@@ -102,7 +111,8 @@ _scotty/fixture --default`, then `stop` and `steer` the first and `read --json >
 `03-app.json` with `durable_object`; `01` and `04` with the same credentials; the doctor line; the
 third session's `07-log.json` cap stop and its `08-log.json` answer after the resume; the `size`
 and readings in `09-*`, exit 2 in `10-*`, `standard-2` in `11-*`, `steered` in `12-*`, exit 1 in
-`13-*`, `standard-3` and `kept` in `14-*`, `standard-3` in `15-*`.
+`13-*`, `standard-3` and `kept` in `14-*`, `standard-3` in `15-*`, the fixture row's `sizes` in `20-*`
+matching the logs.
 
 ## Gotchas
 
@@ -127,5 +137,9 @@ and readings in `09-*`, exit 2 in `10-*`, `standard-2` in `11-*`, `steered` in `
 - A resize is a stop and a resume: the size is `resume.requested.size` in the log, and the new
   container's `sup.hello` has the next `gen`. The UI's size picker sits in the stopped banner, not
   the menu; the menu's Resume keeps the size.
+- e2e keeps the resized session (Z10: `standard-1`, `standard-3`, `standard-2`) stopped until
+  the stats check (Z12), then removes it. Sessions removed earlier are in neither the stats nor
+  the list, so they don't skew the match. A test running alongside that adds or removes a
+  `_scotty/fixture` session between the two reads can.
 - A start without `instance` runs as `lite`. If a session's `nproc`/`MemTotal` look small, check
   `src/places/cloudflare.ts` still passes `instance`.

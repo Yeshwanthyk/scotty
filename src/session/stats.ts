@@ -1,11 +1,18 @@
 import { Schema } from "effect";
+import { hourlyRate, Size } from "../places/place.js";
 import type { AgentKind, SessionEvent } from "./events.js";
 import { fold, initial, type State } from "./fold.js";
 import { live } from "./state.js";
 
 // One container run: from the event that began its generation to the one that ended it, or
-// still open. A run counts from the start intent, so it includes the container's boot.
-export type Run = { readonly gen: number; readonly start: number; readonly end: number | null };
+// still open. A run counts from the start intent, so it includes the container's boot. Its size
+// is the fold's when the run begins: a running container never changes size.
+export type Run = {
+  readonly gen: number;
+  readonly size: typeof Size.Type;
+  readonly start: number;
+  readonly end: number | null;
+};
 
 // What one session's log says, read by replaying the fold; every time is an event's `at`.
 export type SessionStats = {
@@ -42,7 +49,7 @@ export function sessionStats(events: readonly SessionEvent[]): SessionStats | nu
     state = fold(before, event);
     const gen = state.gen;
     if (state.startSeq === event.seq && before.startSeq !== event.seq && gen !== undefined)
-      runs.push({ gen, start: event.at, end: null });
+      runs.push({ gen, size: state.size, start: event.at, end: null });
     const open = runs.at(-1);
     if (live(before) && !live(state) && open !== undefined && open.end === null) {
       runs[runs.length - 1] = { ...open, end: event.at };
@@ -89,6 +96,8 @@ const windowMs: Record<StatsWindow, number> = {
 
 const Count = Schema.Struct({ key: Schema.String, count: Schema.Number });
 const AgentShare = Schema.Struct({ sessions: Schema.Number, runMs: Schema.Number });
+// Estimated USD: hours × the size's `hourlyRate`, an upper bound.
+const SizeShare = Schema.Struct({ size: Size, runMs: Schema.Number, cost: Schema.Number });
 export const RepoStats = Schema.Struct({
   repo: Schema.String,
   sessions: Schema.Number,
@@ -104,6 +113,9 @@ export const RepoStats = Schema.Struct({
   timeouts: Schema.Array(Count),
   running: Schema.Number,
   agents: Schema.Struct({ codex: AgentShare, claude: AgentShare }),
+  // The sizes that ran in the window, in `Size` order; their `runMs` sum to the repo's.
+  sizes: Schema.Array(SizeShare),
+  cost: Schema.Number,
 });
 export type RepoStats = typeof RepoStats.Type;
 export const Stats = Schema.Struct({
@@ -152,6 +164,13 @@ function summarize(
   const failures = shown.flatMap((session) => session.failures.filter((f) => inWindow(f.at)));
   const crashes = shown.flatMap((session) => session.crashes.filter((c) => inWindow(c.at)));
   const starts = shown.flatMap((session) => session.runs.map((run) => run.start));
+  const runs = shown.flatMap((session) => session.runs);
+  const sizes = Size.literals
+    .map((size) => {
+      const ms = runs.reduce((sum, run) => sum + (run.size === size ? clipped(run) : 0), 0);
+      return { size, runMs: ms, cost: (ms / 3_600_000) * hourlyRate(size) };
+    })
+    .filter((share) => share.runMs > 0);
   return {
     repo,
     sessions: shown.length,
@@ -171,6 +190,8 @@ function summarize(
     ),
     running: shown.filter((session) => session.live).length,
     agents: { codex: share("codex"), claude: share("claude") },
+    sizes,
+    cost: sizes.reduce((sum, share) => sum + share.cost, 0),
   };
 }
 

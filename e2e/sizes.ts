@@ -11,6 +11,7 @@ import {
   Conversation,
   Created,
   failure,
+  List,
   Removed,
   Reply,
   Repos,
@@ -21,7 +22,8 @@ import {
   View,
 } from "../cli/client.js";
 import { state } from "../cli/commands/common.js";
-import type { Size } from "../src/places/place.js";
+import { hourlyRate, Size } from "../src/places/place.js";
+import { sessionStats, Stats } from "../src/session/stats.js";
 import { agent, prompt, real, sessionAgent } from "./lib/agent.js";
 import { Log, waiter } from "./lib/wait.js";
 import { fixtureRepo } from "../protocol/supervisor.js";
@@ -90,6 +92,8 @@ const program = Effect.gen(function* () {
   const fill = max - settings.running;
   yield* check(fill >= 1, `${settings.running} of ${max} slots are taken; stop a session first`);
   const made: string[] = [];
+  // Sessions whose runs the stats check reads; removed only at the very end.
+  const forStats: string[] = [];
   // Stops and removes every session made so far, even when a check failed.
   const clean = Effect.suspend(() =>
     Effect.forEach(made.splice(0), (id) =>
@@ -436,7 +440,9 @@ const program = Effect.gen(function* () {
       `scotty resume --size standard-2 printed ${cliResume.out}${cliResume.err}`,
     );
     console.log("A resume with no size stayed standard-3; scotty resume --size made it standard-2");
-    yield* clean;
+    // Stopped but kept, so the stats check below sees its runs at three sizes.
+    yield* stopped(resized);
+    forStats.push(...made.splice(0));
 
     // 5. lite, basic and unknown sizes are refused by the API, MCP and the CLI, naming the field.
     for (const size of refused) {
@@ -606,10 +612,54 @@ const program = Effect.gen(function* () {
       yield* check(answer.code === "bad_request", `PUT ${path} answered ${answer.code}`);
     }
     console.log(`Repo defaults ${refused.join(", ")} and malformed repositories: 400`);
+
+    // 9. Stats: the fixture repository's hours by size match the runs in its sessions' logs, and
+    // each size's cost is its hours × the rate. Sessions removed above are in neither. 7 days is
+    // the smallest window, and covers this run.
+    const stats = yield* request("/api/stats?window=7d", Stats);
+    const row = stats.repos.find((repo) => repo.repo === fixtureRepo);
+    const from = stats.now - 7 * 86_400_000;
+    const fixtureSessions = (yield* request("/api/sessions", List)).sessions.filter(
+      (session) => session.display.repository === fixtureRepo,
+    );
+    const expected = new Map<typeof Size.Type, number>();
+    for (const session of fixtureSessions) {
+      const log = yield* request(`/api/sessions/${session.identity.id}/log`, Log);
+      for (const run of sessionStats(log)?.runs ?? []) {
+        const ms = Math.min(run.end ?? stats.now, stats.now) - Math.max(run.start, from);
+        if (ms > 0) expected.set(run.size, (expected.get(run.size) ?? 0) + ms);
+      }
+    }
+    for (const size of Size.literals) {
+      const want = expected.get(size) ?? 0;
+      const got = row?.sizes.find((share) => share.size === size);
+      console.log(
+        `${size}: logs ${Math.round(want / 1000)} s, stats ${Math.round((got?.runMs ?? 0) / 1000)} s`,
+      );
+      yield* check(
+        Math.abs((got?.runMs ?? 0) - want) <= 60_000,
+        `${fixtureRepo} at ${size}: /api/stats has ${got?.runMs ?? 0} ms, the logs ${want} ms`,
+      );
+      const cost = (want / 3_600_000) * hourlyRate(size);
+      yield* check(
+        Math.abs((got?.cost ?? 0) - cost) < 0.01,
+        `${fixtureRepo} at ${size}: /api/stats costs ${got?.cost ?? 0} USD, the logs ${cost}`,
+      );
+    }
+    yield* check(
+      ["standard-1", "standard-3"].every((size) => row?.sizes.some((share) => share.size === size)),
+      `/api/stats shows ${fixtureRepo} at ${JSON.stringify(row?.sizes)}, not standard-1 and standard-3`,
+    );
+    console.log(`/api/stats: ${fixtureRepo} hours by size match the logs; cost = hours × rate`);
   }).pipe(
     Effect.ensuring(
       Effect.all([
         clean,
+        Effect.suspend(() =>
+          Effect.forEach(forStats.splice(0), (id) =>
+            Effect.ignore(request(`/api/sessions/${id}`, Removed, { method: "DELETE" })),
+          ),
+        ),
         // Other e2e tests expect the fixture repository at standard-1.
         Effect.ignore(request(repoPath, RepoSize, { method: "DELETE" })),
         ...[starter, waker].map((name) =>
