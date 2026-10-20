@@ -16,7 +16,7 @@ import {
   ToolPolicy,
   Key,
 } from "../creds/connections.js";
-import { githubHint, Prompt, Repo, startSession } from "./start.js";
+import { githubHint, Prompt, Repo, repoKey, startSession } from "./start.js";
 import { automationName, Definition, NewAutomation } from "../automations/automation.js";
 import { fireRun, runRequest } from "../automations/fire.js";
 import { version } from "../version.js";
@@ -249,7 +249,7 @@ export function apiHandler(
             );
       if (HttpServerResponse.isHttpServerResponse(size)) return size;
       yield* credential.setRepoSize(repo, size);
-      return yield* HttpServerResponse.json({ repo: repo.toLowerCase(), size });
+      return yield* HttpServerResponse.json({ repo: repoKey(repo), size });
     }
     // Fetches the source at its ref, keeps the tarball and records what changed.
     const saveSource = (spec: SourceSpec) =>

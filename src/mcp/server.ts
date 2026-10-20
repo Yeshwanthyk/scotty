@@ -173,7 +173,7 @@ export function mcpHandler(
         agent: Schema.optionalKey(AgentKind),
         size: Schema.optionalKey(Size).annotate({
           description:
-            "The container size; default standard-1 (1/2 vCPU, 4 GiB). Bigger than standard-4 needs a runner.",
+            "The container size; default: the repository's default, else standard-1 (1/2 vCPU, 4 GiB). Bigger than standard-4 needs a runner.",
         }),
         // Scotty's own e2e tests run the agent's scripted stand-in.
         scripted: Schema.optionalKey(Schema.Literal(true)).annotate({

@@ -15,6 +15,7 @@ import {
   pollChatGpt,
   removeSource,
   repoDefaults,
+  repoPattern,
   setRepoSize,
   addSource,
   refreshSource,
@@ -37,8 +38,7 @@ import {
 import { parseSource } from "../../../src/settings/skills";
 import { automations as loadAutomations, type Automation } from "../data/automations";
 import { blueprints, installBlueprint } from "../data/blueprints";
-import { Size } from "../../../src/places/place";
-import { repoPattern } from "./NewSession";
+import { defaultSize, type Size } from "../../../src/places/place";
 import { Icon, Spinner, type IconName } from "./Icon";
 import { SidebarButton } from "./Layout";
 import { SizePicker } from "./SizePicker";
@@ -1668,7 +1668,7 @@ function Repositories() {
           <div className="skeleton" style={{ height: 12, width: "50%" }} />
         )
       ) : items.length === 0 ? (
-        <Row title="No defaults" detail="Every new session starts at standard-1." />
+        <Row title="No defaults" detail={`Every new session starts at ${defaultSize}.`} />
       ) : (
         items.map((item) => (
           <Row key={item.repo} title={item.repo} detail="New sessions start at this size">

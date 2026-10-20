@@ -9,6 +9,8 @@ import { defaultBranch } from "./repository.js";
 
 export const githubHint = "scotty login github";
 export const Repo = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/));
+// What a repository's settings are stored under: GitHub names ignore case.
+export const repoKey = (repo: string) => repo.toLowerCase();
 export const Prompt = Schema.String.check(
   Schema.makeFilter((text) => text.trim() !== "", { expected: "a prompt that is not blank" }),
   Schema.isMaxLength(256 * 1024),

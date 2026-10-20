@@ -24,6 +24,7 @@ import { isLoopback } from "../loopback.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
 import { Size } from "../places/place.js";
+import { repoKey } from "../http/start.js";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { SessionView } from "../session/view.js";
@@ -205,7 +206,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // The size a run asks for, when its automation names one. A table of its own, so adding sizes
       // left the stored `runs` table as it was.
       yield* sql`CREATE TABLE IF NOT EXISTS run_sizes (id TEXT PRIMARY KEY, size TEXT NOT NULL)`;
-      // A repository's own defaults, keyed by its lowercased owner/repo: GitHub names ignore case.
+      // A repository's own defaults, under its `repoKey`.
       yield* sql`CREATE TABLE IF NOT EXISTS repo_settings (repo TEXT PRIMARY KEY, size TEXT NOT NULL)`;
 
       const refreshing = new Map<
@@ -1010,7 +1011,7 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             Effect.flatMap(Schema.decodeUnknownEffect(RepoSettings)),
           ),
         repoSize: (repo: string) =>
-          sql`SELECT size FROM repo_settings WHERE repo = ${repo.toLowerCase()}`.pipe(
+          sql`SELECT size FROM repo_settings WHERE repo = ${repoKey(repo)}`.pipe(
             Effect.flatMap((rows) =>
               rows[0] === undefined
                 ? Effect.succeed(null)
@@ -1020,8 +1021,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
         // No size clears the default.
         setRepoSize: (repo: string, size: typeof Size.Type | null) =>
           (size === null
-            ? sql`DELETE FROM repo_settings WHERE repo = ${repo.toLowerCase()}`
-            : sql`INSERT OR REPLACE INTO repo_settings (repo, size) VALUES (${repo.toLowerCase()}, ${size})`
+            ? sql`DELETE FROM repo_settings WHERE repo = ${repoKey(repo)}`
+            : sql`INSERT OR REPLACE INTO repo_settings (repo, size) VALUES (${repoKey(repo)}, ${size})`
           ).pipe(Effect.asVoid),
         claudeStyle: () =>
           sql`SELECT skill FROM claude_style`.pipe(

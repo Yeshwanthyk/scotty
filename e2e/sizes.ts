@@ -204,14 +204,16 @@ const program = Effect.gen(function* () {
     return decoded.value.repos;
   });
   yield* Effect.gen(function* () {
-    const freeSlot = Effect.gen(function* () {
-      const started = Date.now();
-      while ((yield* request("/api/settings", Settings)).running >= max) {
-        if (Date.now() - started > 120_000)
-          return yield* failure("sizes", "No running slot came free", "scotty ls");
-        yield* Effect.sleep("2 seconds");
-      }
-    });
+    const freeSlots = (count: number) =>
+      Effect.gen(function* () {
+        const started = Date.now();
+        while ((yield* request("/api/settings", Settings)).running > max - count) {
+          if (Date.now() - started > 120_000)
+            return yield* failure("sizes", `No ${count} running slots came free`, "scotty ls");
+          yield* Effect.sleep("2 seconds");
+        }
+      });
+    const freeSlot = freeSlots(1);
     const ended = (prefix: string, turn: string) =>
       waiter(request, prefix)(
         () => request(`${prefix}/log`, Log),
@@ -536,35 +538,16 @@ const program = Effect.gen(function* () {
     console.log(`The automation's session ${run.session} reads standard-2`);
     yield* clean;
 
-    // 8. The repository default sizes a session that names none, and only when it is made.
+    // 8. The repository default sizes a session that names none, and only when it is made. It is
+    // set only around the creates that need it, since other tests expect standard-1.
+    yield* freeSlots(2);
     yield* request(repoPath, RepoSize, { method: "PUT", body: { size: "standard-2" } });
-    const listed = yield* repoDefaults;
-    yield* check(
-      listed.some((row) => row.repo === fixtureRepo && row.size === "standard-2"),
-      `scotty repo ls shows ${JSON.stringify(listed)}, not ${fixtureRepo} at standard-2`,
-    );
-    yield* freeSlot;
     const retry = crypto.randomUUID();
     const byDefault = yield* create("at the repo default", measure, undefined, undefined, retry);
-    yield* shows(byDefault, "standard-2");
-    yield* measured(byDefault, "0", "standard-2");
-    yield* stopped(byDefault);
     const override = yield* create("over the repo default", measure, "standard-1");
-    yield* shows(override, "standard-1");
-    yield* measured(override, "0", "standard-1");
-    yield* stopped(override);
-    console.log("With the default at standard-2: no size reads standard-2, size standard-1 wins");
-    const cleared = yield* cli(["repo", "set", fixtureRepo, "--default"]);
-    const clearedSize = Schema.decodeUnknownOption(Schema.fromJsonString(RepoSize))(cleared.out);
-    yield* check(
-      cleared.exit === 0 && Option.isSome(clearedSize) && clearedSize.value.size === null,
-      `scotty repo set --default printed ${cleared.out}${cleared.err}`,
-    );
-    yield* check(
-      !(yield* repoDefaults).some((row) => row.repo === fixtureRepo),
-      "scotty repo ls still shows the cleared default",
-    );
-    // A retry of the first create, naming no size, is that session and not a conflict.
+    // A retry of the first create, naming no size, after the default changed: that session, not
+    // a conflict, and still at the size it was made at.
+    yield* request(repoPath, RepoSize, { method: "PUT", body: { size: "standard-3" } });
     const retried = yield* request("/api/sessions", Created, {
       method: "POST",
       key: retry,
@@ -580,6 +563,29 @@ const program = Effect.gen(function* () {
       `/api/sessions/${retried.id}` === byDefault,
       `A retried create after the default changed answered ${retried.id}`,
     );
+    const listed = yield* repoDefaults;
+    yield* check(
+      listed.some((row) => row.repo === fixtureRepo && row.size === "standard-3"),
+      `scotty repo ls shows ${JSON.stringify(listed)}, not ${fixtureRepo} at standard-3`,
+    );
+    const cleared = yield* cli(["repo", "set", fixtureRepo, "--default"]);
+    const clearedSize = Schema.decodeUnknownOption(Schema.fromJsonString(RepoSize))(cleared.out);
+    yield* check(
+      cleared.exit === 0 && Option.isSome(clearedSize) && clearedSize.value.size === null,
+      `scotty repo set --default printed ${cleared.out}${cleared.err}`,
+    );
+    yield* check(
+      !(yield* repoDefaults).some((row) => row.repo === fixtureRepo),
+      "scotty repo ls still shows the cleared default",
+    );
+    console.log("A keyed retry after the default changed was the same session; default cleared");
+    yield* shows(byDefault, "standard-2");
+    yield* measured(byDefault, "0", "standard-2");
+    yield* shows(override, "standard-1");
+    yield* measured(override, "0", "standard-1");
+    console.log("With the default at standard-2: no size read standard-2, size standard-1 won");
+    yield* stopped(override);
+    yield* stopped(byDefault);
     yield* shows(byDefault, "standard-2");
     yield* measureNext(byDefault, "1", "standard-2");
     console.log("After the default was cleared, the first session resumed at standard-2");

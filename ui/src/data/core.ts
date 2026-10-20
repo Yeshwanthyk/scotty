@@ -156,9 +156,17 @@ export async function create(
   prompt: string,
   key: string,
   agent: "codex" | "claude",
-  size: typeof Size.Type,
+  // Absent: the Worker picks the repository's default, else standard-1.
+  size?: typeof Size.Type,
 ): Promise<string> {
-  const body = { title, repo, prompt, agent, size, provider: "cloudflare" };
+  const body = {
+    title,
+    repo,
+    prompt,
+    agent,
+    ...(size === undefined ? {} : { size }),
+    provider: "cloudflare",
+  };
   const result = Option.getOrUndefined(
     decodeCreated(await request("/api/sessions", body, undefined, key)),
   );

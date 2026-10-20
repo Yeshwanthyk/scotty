@@ -42,14 +42,15 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
   later resume with no size stays `standard-3`; `scotty resume <id> --size standard-2` on the
   stopped session makes it `standard-2`.
 
-- **Z11** With `_scotty/fixture`'s default set to `standard-2` (`PUT /api/repos/_scotty/fixture`),
-  `scotty repo ls --json` lists it, a session naming no size is `standard-2` and reads its row, and
-  one naming `standard-1` reads `standard-1`'s. `scotty repo set _scotty/fixture --default` clears
-  it (`size: null`, gone from `repo ls`). Then the first session still shows `standard-2`, a
-  retry of its create with the same Idempotency-Key and no size answers that session (not 409),
-  and after a stop and a steer it reads `standard-2` again. A default of `basic`, `lite` or
-  `standard-9`, and `/api/repos/fixture`, `/api/repos/a/b/c` or `/api/repos/a%20b/c`, answer 400.
-  The run clears the default however it ends, since other tests expect `standard-1`.
+- **Z11** With `_scotty/fixture`'s default at `standard-2` (`PUT /api/repos/_scotty/fixture`), a
+  session naming no size is `standard-2` and reads its row, and one naming `standard-1` reads
+  `standard-1`'s. After the default changes to `standard-3`, a retry of the first create with the
+  same Idempotency-Key and no size answers that session (not 409, not a new one) and it stays
+  `standard-2`; `scotty repo ls --json` shows `standard-3`. `scotty repo set _scotty/fixture
+--default` clears it (`size: null`, gone from `repo ls`), and after a stop and a steer the first
+  session reads `standard-2` again. A default of `basic`, `lite` or `standard-9`, and
+  `/api/repos/fixture`, `/api/repos/a/b/c` or `/api/repos/a%20b/c`, answer 400. The default is set
+  only around those creates and cleared however the run ends.
 
 ## Entry points
 
@@ -58,7 +59,9 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
   `npm run --silent e2e -- sizes` (Z3, Z4, Z6–Z11) against a stage deployed with
   `"maxRunning": 2` in its config. It reads the cap from `GET /api/settings`, fails on a cap over
   3, and resumes the refused session only after the stopped one's slot is released. The size checks
-  run one session at a time, waiting for a free slot.
+  run one session at a time, waiting for a free slot. Run `sizes` alone on a stage: it fills the
+  cap, and while it holds `_scotty/fixture`'s default every other test's no-size session on the
+  fixture would start at that size.
 
 ## Drive
 

@@ -71,6 +71,7 @@ const GitHubSet = Schema.Union([
   Schema.Struct({ status: Schema.Literal("set"), login: Schema.String }),
   Schema.Struct({ status: Schema.Literal("refused"), httpStatus: Schema.Number }),
 ]);
+export const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const Repos = Schema.Struct({
   repos: Schema.Array(Schema.Struct({ repo: Schema.String, size: Size })),
 });
