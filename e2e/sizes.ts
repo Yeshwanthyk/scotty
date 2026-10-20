@@ -22,7 +22,7 @@ import {
   View,
 } from "../cli/client.js";
 import { state } from "../cli/commands/common.js";
-import { hourlyRate, Size } from "../src/places/place.js";
+import { defaultSize, hourlyRate, Size } from "../src/places/place.js";
 import { sessionStats, Stats } from "../src/session/stats.js";
 import { agent, prompt, real, sessionAgent } from "./lib/agent.js";
 import { Log, waiter } from "./lib/wait.js";
@@ -650,6 +650,25 @@ const program = Effect.gen(function* () {
       ["standard-1", "standard-3"].every((size) => row?.sizes.some((share) => share.size === size)),
       `/api/stats shows ${fixtureRepo} at ${JSON.stringify(row?.sizes)}, not standard-1 and standard-3`,
     );
+    // Both sides above size runs with `sessionStats`; the resized session's raw events say what
+    // they should be: `created.size`, then each resume's, the last kept when one names none.
+    for (const id of forStats) {
+      const log = yield* request(`/api/sessions/${id}/log`, Log);
+      const named: (typeof Size.Type)[] = [];
+      for (const event of log) {
+        if (event.kind === "created") named.push(event.size ?? defaultSize);
+        if (event.kind === "resume.requested")
+          named.push(event.size ?? named.at(-1) ?? defaultSize);
+      }
+      const runs = (sessionStats(log)?.runs ?? []).map((run) => run.size);
+      const sequence = ["standard-1", "standard-3", "standard-3", "standard-2"];
+      yield* check(
+        JSON.stringify(named) === JSON.stringify(sequence) &&
+          JSON.stringify(runs) === JSON.stringify(named),
+        `The resized session's runs are ${runs.join(", ")}; its events name ${named.join(", ")}`,
+      );
+      console.log(`The resized session ran at ${runs.join(", ")}, as its events name`);
+    }
     console.log(`/api/stats: ${fixtureRepo} hours by size match the logs; cost = hours × rate`);
   }).pipe(
     Effect.ensuring(

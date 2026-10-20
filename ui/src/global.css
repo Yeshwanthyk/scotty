@@ -3349,10 +3349,19 @@ button.diff-line {
 
 .stats-table th,
 .stats-table td {
-  padding: 9px 12px;
+  padding: 9px 8px;
   text-align: left;
   vertical-align: top;
   white-space: nowrap;
+}
+
+/* Tight between columns so twelve fit at desktop widths; the card's edges keep their inset. */
+.stats-table :is(th, td):first-child {
+  padding-left: 12px;
+}
+
+.stats-table :is(th, td):last-child {
+  padding-right: 12px;
 }
 
 .stats-table thead th {

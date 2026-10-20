@@ -55,8 +55,11 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
   its remaining sessions ran at, at least `standard-1` and `standard-3`. Each `runMs` is within
   a minute of the runs in those sessions' logs (a run from the event that starts it to the one
   that ends it, at the size it started at, cut to the window), and each `cost` is within a cent
-  of hours × that size's rate (`hourlyRate`, `src/places/place.ts`). Stats shows the same as
-  "Hours" with a line per size and "Est. cost", on desktop and phone.
+  of hours × that size's rate (`hourlyRate`, `src/places/place.ts`). Z10's session ran
+  `standard-1`, `standard-3`, `standard-3`, `standard-2`: the sizes its raw events name
+  (`created.size`, then each `resume.requested.size`, the last kept when one names none) match
+  its runs in order. Stats shows the same under "Hours", one line per size with its hours and
+  cost, and the total in "Est. cost", on desktop and phone, with no horizontal scroll at 1440.
 
 ## Entry points
 

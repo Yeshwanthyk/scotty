@@ -23,9 +23,9 @@ export const sizeSpec: Record<
   "standard-4": { vcpu: 4, memory: 12, disk: 20 },
 };
 const perSecond = { vcpu: 0.00002, memory: 0.0000025, disk: 0.00000007 };
-// USD for an hour at this size, an upper bound: memory and disk are billed as provisioned, vCPU
-// only while busy, here counted as busy for the container's whole life; no included usage is
-// subtracted.
+// USD for an hour of run time at this size, an upper bound for that hour: memory and disk are
+// billed as provisioned, vCPU only while busy, here counted as busy throughout; no included usage
+// is subtracted.
 export const hourlyRate = (size: typeof Size.Type): number => {
   const { vcpu, memory, disk } = sizeSpec[size];
   return 3600 * (vcpu * perSecond.vcpu + memory * perSecond.memory + disk * perSecond.disk);

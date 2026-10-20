@@ -371,6 +371,7 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
     at += 30_000;
     push({ src: "api", kind: "container.stopped", gen: 1 });
     push({ src: "supervisor", kind: "socket.closed", gen: 1 });
+    // Only a stopped spec resumes; on any other `after`, `resized` does nothing.
     if (spec.resized !== undefined) {
       at += 10 * 60_000;
       push({ src: "api", kind: "resume.requested", size: spec.resized });
