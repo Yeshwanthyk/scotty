@@ -90,22 +90,23 @@ export function LifecycleNotice({
   // A size only when the owner picked one; otherwise the session keeps its own.
   onResume: (size: typeof Size.Type | undefined) => void;
 }) {
-  // A size picked here and not yet resumed at; otherwise the session's own.
-  const [picked, setPicked] = useState<typeof Size.Type>();
+  // A size picked here holds while the session is still at the size it was picked against, so
+  // a failed resume keeps it and a resume that changed the size drops it.
+  const [picked, setPicked] = useState<{ size: typeof Size.Type; from: typeof Size.Type }>();
   const authority = session.authority;
   if (authority.kind !== "stable") return null;
-  const size = picked ?? session.display.size;
+  const chosen = picked?.from === session.display.size ? picked.size : undefined;
   const resume = (
     <div className="lifecycle-resume">
-      <SizePicker value={size} onChange={setPicked} />
+      <SizePicker
+        value={chosen ?? session.display.size}
+        onChange={(size) => setPicked({ size, from: session.display.size })}
+      />
       <button
         type="button"
         className="button pressable"
         disabled={busy}
-        onClick={() => {
-          setPicked(undefined);
-          onResume(picked);
-        }}
+        onClick={() => onResume(chosen)}
       >
         <Icon name="resume" size={13} />
         Resume

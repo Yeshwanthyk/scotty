@@ -245,7 +245,7 @@ export function mcpHandler(
       "resume_session",
       "Start a stopped session's container again. A size changes its container; a running session must be stopped first.",
       Schema.Struct({
-        id: Schema.String,
+        ...Id.fields,
         size: Schema.optionalKey(Size).annotate({
           description:
             "The container size; default the session's current one. Bigger than standard-4 needs a runner.",

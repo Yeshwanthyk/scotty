@@ -689,14 +689,21 @@ export function apiHandler(
       );
       if (HttpServerResponse.isHttpServerResponse(body)) return body;
       const resumed = yield* stub.resume(body.size);
-      if (resumed.kind === "running")
+      if (resumed.kind !== "resumed")
         return yield* HttpServerResponse.json(
           {
-            error: {
-              message: "Stop the session before changing its size",
-              code: "running",
-              hint: `scotty stop ${id}`,
-            },
+            error:
+              resumed.kind === "running"
+                ? {
+                    message: "Stop the session before changing its size",
+                    code: "running",
+                    hint: `scotty stop ${id}`,
+                  }
+                : {
+                    message: "The session failed and can't be resumed; start a new one",
+                    code: "failed",
+                    hint: `scotty read ${id}`,
+                  },
           },
           { status: 409 },
         );

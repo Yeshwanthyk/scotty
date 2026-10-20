@@ -717,7 +717,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         // Absent `size` keeps the current one.
         resume: (size?: typeof Size.Type) =>
           Effect.gen(function* () {
-            if (resizeConflict(log.state, size)) return { kind: "running" as const };
+            const conflict = resizeConflict(log.state, size);
+            if (conflict !== undefined) return { kind: conflict };
             yield* dispatch(
               yield* append(
                 { kind: "resume.requested", ...(size === undefined ? {} : { size }) },

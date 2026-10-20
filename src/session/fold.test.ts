@@ -506,15 +506,15 @@ describe("session fold", () => {
 
   it("resumes at a named size and keeps it until a resume names another", () => {
     const stopped = stoppedWithThread();
-    expect(resizeConflict(stopped, "standard-3")).toBe(false);
+    expect(resizeConflict(stopped, "standard-3")).toBeUndefined();
     const sized = make(8, "resume.requested", { size: "standard-3" });
     let state = fold(stopped, sized);
     expect(state).toMatchObject({ phase: "provisioning", gen: 2, size: "standard-3" });
     expect(command(state, sized)).toEqual({ kind: "container.start", gen: 2, fresh: true });
     // A live container never changes size: the API refuses a resize, and the fold ignores one.
-    expect(resizeConflict(state, "standard-2")).toBe(true);
-    expect(resizeConflict(state, "standard-3")).toBe(false);
-    expect(resizeConflict(state, undefined)).toBe(false);
+    expect(resizeConflict(state, "standard-2")).toBe("running");
+    expect(resizeConflict(state, "standard-3")).toBeUndefined();
+    expect(resizeConflict(state, undefined)).toBeUndefined();
     expect(fold(state, make(9, "resume.requested", { size: "standard-2" })).size).toBe(
       "standard-3",
     );
@@ -799,6 +799,9 @@ describe("session fold", () => {
     const fatal = make(6, "failed", { phase: "start", code: "broken", retryable: false });
     state = fold(fold(boot(), fatal), make(7, "resume.requested"));
     expect(state.phase).toBe("failed");
+    // It can never resume, so a resize is refused as failed: stopping it would not help.
+    expect(resizeConflict(state, "standard-3")).toBe("failed");
+    expect(resizeConflict(fold(boot(), retryable), "standard-3")).toBeUndefined();
     check(state);
   });
 });

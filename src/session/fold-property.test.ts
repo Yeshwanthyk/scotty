@@ -4,7 +4,16 @@ import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
 import { deadline, fold, initial, resizeConflict, type State } from "./fold.js";
 import { live } from "./state.js";
-import { check, created, generated, hello, kinds, ready, start } from "./fold-fixtures.js";
+import {
+  check,
+  created,
+  delivered,
+  generated,
+  hello,
+  kinds,
+  ready,
+  start,
+} from "./fold-fixtures.js";
 
 const supervisor = new Set([
   "workspace.ready",
@@ -27,7 +36,11 @@ it.prop(
   ([steps]) => {
     shortest = Math.min(shortest, steps.length);
     longest = Math.max(longest, steps.length);
-    for (const prefix of [[], [created, start, hello, ready]]) {
+    for (const prefix of [
+      [],
+      [created, start, hello, ready],
+      [created, start, hello, ready, delivered],
+    ]) {
       let state: State = initial;
       let at = 4_000;
       let priorDial: number | undefined;
@@ -129,7 +142,11 @@ it.prop(
           );
           // The API refuses exactly the sized resumes the fold would ignore and that change size.
           expect(resizeConflict(before, event.size)).toBe(
-            !applied && event.size !== undefined && event.size !== before.size,
+            applied || event.size === undefined || event.size === before.size
+              ? undefined
+              : before.phase === "failed"
+                ? "failed"
+                : "running",
           );
         }
         expect(state.size).toBe(size);
@@ -252,7 +269,7 @@ it.prop(
       }
     }
   },
-  { arbitrary: { runs: 200, seed: "fold-v10", size: 200 } },
+  { arbitrary: { runs: 200, seed: "fold-v2", size: 200 } },
 );
 
 it("covers generated paths", () => {

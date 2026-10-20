@@ -103,6 +103,8 @@ and readings in `09-*`, exit 2 in `10-*`, `standard-2` in `11-*`, `steered` in `
   as a `sup.hello` with a later `gen`.
 - An automation run keeps the size its definition had when the run was received (`run_sizes` in
   the Creds DO).
+- A failed session that can't be retried answers a resize with 409 `failed` and hint
+  `scotty read <id>`, not `scotty stop`: stopping it leaves it failed.
 - A resize is a stop and a resume: the size is `resume.requested.size` in the log, and the new
   container's `sup.hello` has the next `gen`. The UI's size picker sits in the stopped banner, not
   the menu; the menu's Resume keeps the size.

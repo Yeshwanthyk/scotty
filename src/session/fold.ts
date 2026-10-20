@@ -23,9 +23,17 @@ const resumable = (state: State): boolean =>
   state.phase === "stopped" || (state.phase === "failed" && state.failure?.retryable === true);
 
 // A running container never changes size, so a resume naming another size needs a resumable
-// session; the same size, or none, is an ordinary resume.
-export const resizeConflict = (state: State, size: typeof Size.Type | undefined): boolean =>
-  size !== undefined && size !== state.size && !resumable(state);
+// session; the same size, or none, is an ordinary resume. A session that failed for good can
+// never resume, so stopping it would not help.
+export const resizeConflict = (
+  state: State,
+  size: typeof Size.Type | undefined,
+): "running" | "failed" | undefined =>
+  size === undefined || size === state.size || resumable(state)
+    ? undefined
+    : state.phase === "failed"
+      ? "failed"
+      : "running";
 
 const settle = (
   requests: readonly Request[],
@@ -141,7 +149,7 @@ function step(state: State, event: SessionEvent): State {
   switch (event.kind) {
     case "created":
       return state.created === undefined
-        ? { ...next, created: event, activeAt: event.at, size: event.size ?? state.size }
+        ? { ...next, created: event, activeAt: event.at, size: event.size ?? defaultSize }
         : next;
     case "container.start":
       if (state.created === undefined || !live(state) || state.gen !== undefined) return next;

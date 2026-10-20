@@ -1196,8 +1196,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const input = Schema.decodeUnknownOption(ResumeBody)(await body(req));
     if (input._tag === "None") return fail(res, "Expected {size?}");
     const size = input.value.size;
-    if (resizeConflict(session.state, size))
+    const conflict = resizeConflict(session.state, size);
+    if (conflict === "running")
       return fail(res, "Stop the session before changing its size", 409, "running");
+    if (conflict === "failed")
+      return fail(res, "The session failed and can't be resumed; start a new one", 409, "failed");
     append(session, {
       kind: "resume.requested",
       src: "api",
