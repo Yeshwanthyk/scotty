@@ -194,13 +194,15 @@ const program = Effect.gen(function* () {
         yield* Effect.sleep("2 seconds");
       }
     });
+    const ended = (prefix: string, turn: string) =>
+      waiter(request, prefix)(
+        () => request(`${prefix}/log`, Log),
+        (log) => log.some((e) => e.kind === "turn.ended" && e.turn === turn),
+      );
     // Waits for the turn and checks its reading against the size's row in the table.
     const measured = (prefix: string, turn: string, size: typeof Size.Type) =>
       Effect.gen(function* () {
-        yield* waiter(request, prefix)(
-          () => request(`${prefix}/log`, Log),
-          (log) => log.some((e) => e.kind === "turn.ended" && e.turn === turn),
-        );
+        yield* ended(prefix, turn);
         const conversation = yield* request(`${prefix}/conversation`, Conversation);
         const text = conversation.turns.at(-1)?.assistant ?? "";
         const found = reading(text);
@@ -229,6 +231,18 @@ const program = Effect.gen(function* () {
           `scotty read ${id} printed ${read.out}${read.err}, not size ${size}`,
         );
       });
+    // Sends `measure` as the next turn. A steer's text is not a template, unlike an automation's
+    // prompt, where the stand-in's `{{out}}` would be a missing payload field and skip the run.
+    const measureNext = (prefix: string, turn: string, size: typeof Size.Type) =>
+      Effect.gen(function* () {
+        const req = crypto.randomUUID();
+        yield* request(`${prefix}/steer`, Reply, {
+          method: "POST",
+          key: req,
+          body: { req, turn, text: measure },
+        });
+        return yield* measured(prefix, turn, size);
+      });
     const shows = (prefix: string, size: typeof Size.Type) =>
       Effect.gen(function* () {
         const view = yield* request(prefix, View);
@@ -255,7 +269,7 @@ const program = Effect.gen(function* () {
         key,
         repo: fixtureRepo,
         agent,
-        prompt: measure,
+        prompt: say("woke"),
         size: "standard-2",
         ...(real ? {} : { scripted: true }),
       },
@@ -265,7 +279,8 @@ const program = Effect.gen(function* () {
       woke.status === "steered" && woke.session === small.slice("/api/sessions/".length),
       `The wake's run is ${woke.status} (${woke.reason}) on ${woke.session}`,
     );
-    yield* measured(small, "1", "standard-1");
+    yield* ended(small, "1");
+    yield* measureNext(small, "2", "standard-1");
     yield* shows(small, "standard-1");
     console.log("A wake at standard-2 reached the standard-1 session; it stayed standard-1");
     yield* request(`${small}/stop`, View, { method: "POST" });
@@ -284,13 +299,7 @@ const program = Effect.gen(function* () {
       { stopped: "expected" },
     );
     yield* freeSlot;
-    const req = crypto.randomUUID();
-    yield* request(`${big}/steer`, Reply, {
-      method: "POST",
-      key: req,
-      body: { req, turn: "1", text: measure },
-    });
-    const again = yield* measured(big, "1", "standard-3");
+    const again = yield* measureNext(big, "1", "standard-3");
     // Only the first start is an event; a resume's new container says hello on a later gen.
     yield* check(
       (yield* request(`${big}/log`, Log)).some((e) => e.kind === "sup.hello" && e.gen > 1),
@@ -398,7 +407,7 @@ const program = Effect.gen(function* () {
         when: { kind: "interval", minutes: 7 * 24 * 60 },
         repo: fixtureRepo,
         agent,
-        prompt: measure,
+        prompt: say("sized"),
         size: "standard-2",
         ...(real ? {} : { scripted: true }),
       },
@@ -413,7 +422,8 @@ const program = Effect.gen(function* () {
       );
     made.push(run.session);
     yield* readsSize(run.session, "standard-2");
-    yield* measured(`/api/sessions/${run.session}`, "0", "standard-2");
+    yield* ended(`/api/sessions/${run.session}`, "0");
+    yield* measureNext(`/api/sessions/${run.session}`, "1", "standard-2");
     console.log(`The automation's session ${run.session} reads standard-2`);
   }).pipe(
     Effect.ensuring(
