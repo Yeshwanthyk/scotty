@@ -9,10 +9,10 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
-import { defaultSize } from "../../../src/places/place";
+import { defaultSize, type Size } from "../../../src/places/place";
 import { create, lifecycle, message, type Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { claudeStatus } from "../data/settings";
+import { claudeStatus, repoDefaults, type RepoDefault } from "../data/settings";
 import { ago, dormant, statusLabel, statusOf, type Status } from "../data/status";
 import { Composer } from "./Composer";
 import { Icon, Spinner } from "./Icon";
@@ -20,7 +20,7 @@ import { SidebarButton } from "./Layout";
 import { SizePicker } from "./SizePicker";
 import { StatusMark } from "./Sidebar";
 
-const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+export const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const lastRepoKey = "scotty.repo";
 const lastAgentKey = "scotty.agent";
 type Agent = "codex" | "claude";
@@ -225,7 +225,9 @@ export function NewSession() {
   const [agent, setAgent] = useState<Agent>(() =>
     read(lastAgentKey) === "claude" ? "claude" : "codex",
   );
-  const [size, setSize] = useState(defaultSize);
+  // A size picked by hand, for the repository it was picked for.
+  const [picked, setPicked] = useState<{ repo: string; size: typeof Size.Type }>();
+  const [defaults, setDefaults] = useState<RepoDefault[]>([]);
   // Unknown until the status loads; Claude can be picked only with its token set.
   const [claudeReady, setClaudeReady] = useState<boolean | undefined>(undefined);
   const [claudeHint, setClaudeHint] = useState(false);
@@ -276,6 +278,11 @@ export function NewSession() {
     );
     return () => abort.abort();
   }, []);
+  useEffect(() => {
+    const abort = new AbortController();
+    repoDefaults(abort.signal).then(setDefaults, () => {});
+    return () => abort.abort();
+  }, []);
   useEffect(() => () => clearTimeout(typingTimer.current), []);
   // A pasted link flashes the repository it set and fades in the prompt it wrote.
   useEffect(() => {
@@ -314,6 +321,8 @@ export function NewSession() {
   const chosen: Agent = agent === "claude" && claudeReady === false ? "codex" : agent;
   const others = recent.filter((name) => name !== repo.trim());
   const validRepo = repoPattern.test(repo.trim());
+  const repoDefault = defaults.find((item) => item.repo === repo.trim().toLowerCase());
+  const size = picked?.repo === repo.trim() ? picked.size : (repoDefault?.size ?? defaultSize);
   function pick(next: Agent) {
     if (next === "claude" && claudeReady === false) {
       setClaudeHint(true);
@@ -441,12 +450,23 @@ export function NewSession() {
               />
             </label>
             <AgentSwitch value={chosen} claudeReady={claudeReady !== false} onChange={pick} />
-            <SizePicker value={size} onChange={setSize} />
+            <SizePicker
+              value={size}
+              onChange={(next) => setPicked({ repo: repo.trim(), size: next })}
+            />
           </Composer>
           {filled !== "" ? (
             <p className="composer-note">
               <Icon name="check" size={13} />
               <span>Repository set to {filled} from the link</span>
+            </p>
+          ) : null}
+          {repoDefault !== undefined && picked?.repo !== repo.trim() ? (
+            <p className="composer-note">
+              <Icon name="check" size={13} />
+              <span>
+                {repoDefault.size}: the {repoDefault.repo} default
+              </span>
             </p>
           ) : null}
           {claudeHint ? (

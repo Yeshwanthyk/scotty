@@ -112,6 +112,8 @@ const sourceHint = "owner/repo[/folder][@ref] or a github.com link";
 const skillPath = /^\/api\/skills\/([^/]+)$/;
 const AutomationSwitch = Schema.Struct({ enabled: Schema.Boolean });
 const automationPath = /^\/api\/automations\/([^/]+)(\/run)?$/;
+const repoPath = /^\/api\/repos\/(.+)$/;
+const RepoDefault = Schema.Struct({ size: Size });
 const definitionHint =
   "when is {kind: calendar, cron, tz} | {kind: interval, minutes} | {kind: event, connection}";
 
@@ -229,6 +231,25 @@ export function apiHandler(
       if (!(yield* credential.setClaudeStyle(body.skill)))
         return yield* bad(`No skill named ${body.skill}`, 404);
       return yield* HttpServerResponse.json({ claudeStyle: body.skill });
+    }
+    if (url.pathname === "/api/repos" && request.method === "GET")
+      return yield* HttpServerResponse.json({ repos: yield* credential.repoSettings() });
+    const repoMatch = repoPath.exec(url.pathname);
+    if (repoMatch !== null && (request.method === "PUT" || request.method === "DELETE")) {
+      const repo = yield* Schema.decodeUnknownEffect(Repo)(repoMatch[1]).pipe(
+        Effect.catchTag("SchemaError", () => bad("Expected /api/repos/owner/repo")),
+      );
+      if (HttpServerResponse.isHttpServerResponse(repo)) return repo;
+      const size =
+        request.method === "DELETE"
+          ? null
+          : yield* Schema.decodeUnknownEffect(RepoDefault)(yield* request.json).pipe(
+              Effect.map((body) => body.size),
+              Effect.catchTag("SchemaError", (error) => bad(error.message)),
+            );
+      if (HttpServerResponse.isHttpServerResponse(size)) return size;
+      yield* credential.setRepoSize(repo, size);
+      return yield* HttpServerResponse.json({ repo: repo.toLowerCase(), size });
     }
     // Fetches the source at its ref, keeps the tarball and records what changed.
     const saveSource = (spec: SourceSpec) =>

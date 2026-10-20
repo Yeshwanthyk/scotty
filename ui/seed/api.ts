@@ -390,6 +390,9 @@ const refreshSeed = (source: SeedSource) => {
   return { source: source.id, commit: source.commit, added, updated, removed: [], skipped: [] };
 };
 
+// Repository defaults, keyed by lowercased owner/repo as the Creds DO keys them.
+const repoSizes = new Map<string, typeof Size.Type>([["acme/storefront", "standard-3"]]);
+
 // Settings and accounts live in memory. Skill sources are made up; nothing reaches GitHub.
 const owner = {
   instructions: "",
@@ -968,6 +971,24 @@ async function settingsApi(
       ).length,
       maxRunning: 20,
     });
+  if (path === "/api/repos" && method === "GET")
+    return json(res, {
+      repos: [...repoSizes].sort().map(([repo, size]) => ({ repo, size })),
+    });
+  if (path.startsWith("/api/repos/") && (method === "PUT" || method === "DELETE")) {
+    const repo = path.slice("/api/repos/".length).toLowerCase();
+    if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo))
+      return fail(res, "Expected /api/repos/owner/repo");
+    if (method === "DELETE") {
+      repoSizes.delete(repo);
+      return json(res, { repo, size: null });
+    }
+    const input = Schema.decodeUnknownOption(Schema.Struct({ size: Size }))(await body(req));
+    if (input._tag === "None")
+      return fail(res, "size is standard-1, standard-2, standard-3 or standard-4");
+    repoSizes.set(repo, input.value.size);
+    return json(res, { repo, size: input.value.size });
+  }
   if (path === "/api/settings/claude-style" && method === "PUT") {
     const input = Schema.decodeUnknownOption(
       Schema.Struct({ skill: Schema.NullOr(Schema.String) }),
@@ -1095,6 +1116,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return automationsApi(req, res, url.pathname, method);
   if (
     url.pathname.startsWith("/api/settings") ||
+    url.pathname.startsWith("/api/repos") ||
     url.pathname.startsWith("/api/skills") ||
     url.pathname.startsWith("/api/skill-sources") ||
     url.pathname.startsWith("/api/credentials")

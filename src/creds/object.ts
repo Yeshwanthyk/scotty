@@ -141,6 +141,7 @@ const FireRow = Schema.Struct({
   scripted: Schema.Number,
 });
 const SizeRow = Schema.Struct({ size: Size });
+const RepoSettings = Schema.Array(Schema.Struct({ repo: Schema.String, size: Size }));
 const RunAnswer = Schema.Struct({
   status: Schema.Literals(["started", "steered", "ended", "skipped", "failed"]),
   reason: Schema.NullOr(Schema.String),
@@ -204,6 +205,8 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // The size a run asks for, when its automation names one. A table of its own, so adding sizes
       // left the stored `runs` table as it was.
       yield* sql`CREATE TABLE IF NOT EXISTS run_sizes (id TEXT PRIMARY KEY, size TEXT NOT NULL)`;
+      // A repository's own defaults, keyed by its lowercased owner/repo: GitHub names ignore case.
+      yield* sql`CREATE TABLE IF NOT EXISTS repo_settings (repo TEXT PRIMARY KEY, size TEXT NOT NULL)`;
 
       const refreshing = new Map<
         string,
@@ -1002,6 +1005,24 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                   : null;
             return { status: "saved" as const, added, updated, removed, stale };
           }).pipe(sql.withTransaction),
+        repoSettings: () =>
+          sql`SELECT repo, size FROM repo_settings ORDER BY repo`.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(RepoSettings)),
+          ),
+        repoSize: (repo: string) =>
+          sql`SELECT size FROM repo_settings WHERE repo = ${repo.toLowerCase()}`.pipe(
+            Effect.flatMap((rows) =>
+              rows[0] === undefined
+                ? Effect.succeed(null)
+                : Schema.decodeUnknownEffect(SizeRow)(rows[0]).pipe(Effect.map((row) => row.size)),
+            ),
+          ),
+        // No size clears the default.
+        setRepoSize: (repo: string, size: typeof Size.Type | null) =>
+          (size === null
+            ? sql`DELETE FROM repo_settings WHERE repo = ${repo.toLowerCase()}`
+            : sql`INSERT OR REPLACE INTO repo_settings (repo, size) VALUES (${repo.toLowerCase()}, ${size})`
+          ).pipe(Effect.asVoid),
         claudeStyle: () =>
           sql`SELECT skill FROM claude_style`.pipe(
             Effect.flatMap((rows) =>

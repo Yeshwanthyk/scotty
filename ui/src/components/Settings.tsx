@@ -14,6 +14,8 @@ import {
   removeConnection,
   pollChatGpt,
   removeSource,
+  repoDefaults,
+  setRepoSize,
   addSource,
   refreshSource,
   saveInstructions,
@@ -28,19 +30,24 @@ import {
   type Delivery,
   type DeliveryReason,
   type Device,
+  type RepoDefault,
   type Settings as SettingsState,
   type SourceSaved,
 } from "../data/settings";
 import { parseSource } from "../../../src/settings/skills";
 import { automations as loadAutomations, type Automation } from "../data/automations";
 import { blueprints, installBlueprint } from "../data/blueprints";
+import { Size } from "../../../src/places/place";
+import { repoPattern } from "./NewSession";
 import { Icon, Spinner, type IconName } from "./Icon";
 import { SidebarButton } from "./Layout";
+import { SizePicker } from "./SizePicker";
 
 export const sections = [
   { id: "accounts", label: "Accounts", icon: "globe", detail: "ChatGPT, Claude and GitHub" },
   { id: "instructions", label: "Instructions", icon: "file", detail: "Added to every session" },
   { id: "skills", label: "Skills", icon: "list", detail: "Installed in new sessions" },
+  { id: "repositories", label: "Repositories", icon: "repo", detail: "The size new sessions get" },
   {
     id: "connections",
     label: "Connections",
@@ -143,6 +150,8 @@ export function SettingsPage({ section }: { section?: Section }) {
               claudeStyle={data.settings.claudeStyle}
               reload={load}
             />
+          ) : shown === "repositories" ? (
+            <Repositories />
           ) : shown === "connections" ? (
             <Connections />
           ) : shown === "blueprints" ? (
@@ -1586,6 +1595,97 @@ function Blueprints() {
           Install, off
         </button>
       </form>
+      <Problem text={error} />
+    </div>
+  );
+}
+
+function Repositories() {
+  const [items, setItems] = useState<RepoDefault[]>();
+  const [repo, setRepo] = useState("");
+  const [size, setSize] = useState<typeof Size.Type>("standard-2");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try {
+      setItems(await repoDefaults());
+    } catch (failure) {
+      setError(message(failure, "Could not load repositories"));
+    }
+  }, []);
+  useEffect(() => void load(), [load]);
+  const valid = repoPattern.test(repo.trim());
+  async function save(name: string, next: typeof Size.Type | null) {
+    setBusy(name);
+    setError("");
+    try {
+      await setRepoSize(name, next);
+      if (name === repo.trim()) setRepo("");
+      await load();
+    } catch (failure) {
+      setError(message(failure, "Could not save"));
+    } finally {
+      setBusy("");
+    }
+  }
+  return (
+    <div className="settings-card">
+      <p className="settings-intro">
+        New sessions on a repository start at its size unless they pick one. A session keeps the
+        size it was made at.
+      </p>
+      <form
+        className="token-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (valid) void save(repo.trim(), size);
+        }}
+      >
+        <input
+          className="field"
+          value={repo}
+          onChange={(event) => setRepo(event.target.value)}
+          placeholder="owner/repo"
+          aria-label="Repository"
+          aria-invalid={repo !== "" && !valid}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+        />
+        <SizePicker value={size} onChange={setSize} />
+        <button
+          type="submit"
+          className="button pressable"
+          data-tone="primary"
+          disabled={busy !== "" || !valid}
+        >
+          {busy !== "" && busy === repo.trim() ? <Spinner size={12} /> : null}
+          Set
+        </button>
+      </form>
+      {items === undefined ? (
+        error ? null : (
+          <div className="skeleton" style={{ height: 12, width: "50%" }} />
+        )
+      ) : items.length === 0 ? (
+        <Row title="No defaults" detail="Every new session starts at standard-1." />
+      ) : (
+        items.map((item) => (
+          <Row key={item.repo} title={item.repo} detail="New sessions start at this size">
+            <SizePicker value={item.size} onChange={(next) => void save(item.repo, next)} />
+            <button
+              type="button"
+              className="button pressable"
+              disabled={busy !== ""}
+              aria-label={`Clear ${item.repo}`}
+              onClick={() => void save(item.repo, null)}
+            >
+              {busy === item.repo ? <Spinner size={12} /> : null}
+              Clear
+            </button>
+          </Row>
+        ))
+      )}
       <Problem text={error} />
     </div>
   );

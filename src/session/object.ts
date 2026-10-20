@@ -598,6 +598,8 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             title: string;
             image: string;
             place: typeof PlaceKind.Type;
+            // The repository's default, used when the request names no size.
+            repoSize?: typeof Size.Type;
             scripted?: true;
             idleAfter?: number;
             origin?: Origin;
@@ -614,6 +616,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             if (step === "create") {
               const create = input.create;
               if (create === undefined) return { kind: "uncreated" as const };
+              const size = input.size ?? create.repoSize;
               yield* dispatch(
                 yield* append(
                   {
@@ -627,7 +630,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     req: input.req,
                     image: create.image,
                     place: create.place,
-                    ...(input.size === undefined ? {} : { size: input.size }),
+                    ...(size === undefined ? {} : { size }),
                     ...(create.scripted === true ? { scripted: true } : {}),
                     ...(create.origin === undefined ? {} : { origin: create.origin }),
                     ...(create.idleAfter === undefined ? {} : { idleAfter: create.idleAfter }),

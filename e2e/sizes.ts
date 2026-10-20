@@ -13,6 +13,8 @@ import {
   failure,
   Removed,
   Reply,
+  Repos,
+  RepoSize,
   RunFired,
   Settings,
   target,
@@ -98,11 +100,17 @@ const program = Effect.gen(function* () {
       ),
     ),
   );
-  const create = (title: string, text: string, size?: typeof Size.Type, sessionKey?: string) =>
+  const create = (
+    title: string,
+    text: string,
+    size?: typeof Size.Type,
+    sessionKey?: string,
+    retry = crypto.randomUUID(),
+  ) =>
     Effect.gen(function* () {
       const session = yield* request("/api/sessions", Created, {
         method: "POST",
-        key: crypto.randomUUID(),
+        key: retry,
         body: {
           title: `e2e sizes ${title} (${agent})`,
           repo: fixtureRepo,
@@ -187,6 +195,14 @@ const program = Effect.gen(function* () {
   const suffix = crypto.randomUUID().slice(0, 8);
   const starter = `e2e-size-${suffix}`;
   const waker = `e2e-wake-${suffix}`;
+  const repoPath = `/api/repos/${fixtureRepo}`;
+  const repoDefaults = Effect.gen(function* () {
+    const listed = yield* cli(["repo", "ls"]);
+    const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(Repos))(listed.out);
+    if (Option.isNone(decoded))
+      return yield* failure("sizes", `scotty repo ls printed ${listed.out}${listed.err}`, "");
+    return decoded.value.repos;
+  });
   yield* Effect.gen(function* () {
     const freeSlot = Effect.gen(function* () {
       const started = Date.now();
@@ -518,10 +534,78 @@ const program = Effect.gen(function* () {
     yield* ended(`/api/sessions/${run.session}`, "0");
     yield* measureNext(`/api/sessions/${run.session}`, "1", "standard-2");
     console.log(`The automation's session ${run.session} reads standard-2`);
+    yield* clean;
+
+    // 8. The repository default sizes a session that names none, and only when it is made.
+    yield* request(repoPath, RepoSize, { method: "PUT", body: { size: "standard-2" } });
+    const listed = yield* repoDefaults;
+    yield* check(
+      listed.some((row) => row.repo === fixtureRepo && row.size === "standard-2"),
+      `scotty repo ls shows ${JSON.stringify(listed)}, not ${fixtureRepo} at standard-2`,
+    );
+    yield* freeSlot;
+    const retry = crypto.randomUUID();
+    const byDefault = yield* create("at the repo default", measure, undefined, undefined, retry);
+    yield* shows(byDefault, "standard-2");
+    yield* measured(byDefault, "0", "standard-2");
+    yield* stopped(byDefault);
+    const override = yield* create("over the repo default", measure, "standard-1");
+    yield* shows(override, "standard-1");
+    yield* measured(override, "0", "standard-1");
+    yield* stopped(override);
+    console.log("With the default at standard-2: no size reads standard-2, size standard-1 wins");
+    const cleared = yield* cli(["repo", "set", fixtureRepo, "--default"]);
+    const clearedSize = Schema.decodeUnknownOption(Schema.fromJsonString(RepoSize))(cleared.out);
+    yield* check(
+      cleared.exit === 0 && Option.isSome(clearedSize) && clearedSize.value.size === null,
+      `scotty repo set --default printed ${cleared.out}${cleared.err}`,
+    );
+    yield* check(
+      !(yield* repoDefaults).some((row) => row.repo === fixtureRepo),
+      "scotty repo ls still shows the cleared default",
+    );
+    // A retry of the first create, naming no size, is that session and not a conflict.
+    const retried = yield* request("/api/sessions", Created, {
+      method: "POST",
+      key: retry,
+      body: {
+        title: `e2e sizes at the repo default (${agent})`,
+        repo: fixtureRepo,
+        ...sessionAgent,
+        prompt: measure,
+        provider: "cloudflare",
+      },
+    });
+    yield* check(
+      `/api/sessions/${retried.id}` === byDefault,
+      `A retried create after the default changed answered ${retried.id}`,
+    );
+    yield* shows(byDefault, "standard-2");
+    yield* measureNext(byDefault, "1", "standard-2");
+    console.log("After the default was cleared, the first session resumed at standard-2");
+    for (const size of refused) {
+      const answer = yield* request(repoPath, RepoSize, { method: "PUT", body: { size } }).pipe(
+        Effect.flip,
+      );
+      yield* check(
+        answer.code === "bad_request",
+        `A repo default of ${size} answered ${answer.code}: ${answer.message}`,
+      );
+    }
+    for (const path of ["/api/repos/fixture", "/api/repos/a/b/c", "/api/repos/a%20b/c"]) {
+      const answer = yield* request(path, RepoSize, {
+        method: "PUT",
+        body: { size: "standard-2" },
+      }).pipe(Effect.flip);
+      yield* check(answer.code === "bad_request", `PUT ${path} answered ${answer.code}`);
+    }
+    console.log(`Repo defaults ${refused.join(", ")} and malformed repositories: 400`);
   }).pipe(
     Effect.ensuring(
       Effect.all([
         clean,
+        // Other e2e tests expect the fixture repository at standard-1.
+        Effect.ignore(request(repoPath, RepoSize, { method: "DELETE" })),
         ...[starter, waker].map((name) =>
           Effect.ignore(
             request(`/api/automations/${name}`, AutomationRemoved, { method: "DELETE" }),

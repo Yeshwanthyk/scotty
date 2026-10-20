@@ -156,6 +156,10 @@ export const Settings = Schema.Struct({
   running: Schema.Number,
   maxRunning: Schema.Number,
 });
+export const RepoSize = Schema.Struct({ repo: Schema.String, size: Schema.NullOr(Size) });
+export const Repos = Schema.Struct({
+  repos: Schema.Array(Schema.Struct({ repo: Schema.String, size: Size })),
+});
 export const StyleSet = Schema.Struct({ claudeStyle: Schema.NullOr(Schema.String) });
 export const SourceSaved = Schema.Struct({
   source: Schema.String,

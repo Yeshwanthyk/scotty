@@ -81,6 +81,8 @@ scotty new owner/repo "Run the full test suite" --size standard-3 --json
 
 `--size`: `standard-1` (default; 1/2 vCPU, 4 GiB), `standard-2` (1 vCPU, 6 GiB), `standard-3` (2 vCPU,
 8 GiB), `standard-4` (4 vCPU, 12 GiB). Bigger work goes to a runner. `read --json` shows `size`.
+A session that names no size starts at its repository's default (`scotty repo set owner/repo
+--size standard-3`, cleared with `--default`; `scotty repo ls` lists them), else `standard-1`.
 A session keeps its size until `scotty resume <id> --size <name>` changes it; a running session
 must be stopped first (`scotty stop <id>`), or the resume exits 1 with code `running`. A session
 that failed for good answers code `failed`: start a new one.

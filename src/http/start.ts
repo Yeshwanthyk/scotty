@@ -24,7 +24,7 @@ export type StartInput = {
   agent: typeof AgentKind.Type;
   // Where the container runs; hooks leave it to the default.
   place?: typeof PlaceKind.Type;
-  // Absent: the default size.
+  // Absent: the repository's default, else the default size.
   size?: typeof Size.Type;
   scripted?: true;
   idleAfter?: number;
@@ -103,11 +103,16 @@ export function startSession(
           ? { automation: input.origin.automation, run: input.origin.run }
           : {}),
       }));
+    // The repository default is read only when the request names no size, and goes in as
+    // `repoSize`: a retried create is compared with the size it named, never with a default
+    // that changed since.
+    const repoSize = input.size === undefined ? yield* credential.repoSize(input.repo) : null;
     const answer = yield* sessions.getByName(id).start({
       ...request,
       // The size applies only to the session this call makes; a keyed steer above sends none.
       ...(input.size === undefined ? {} : { size: input.size }),
       create: {
+        ...(repoSize === null ? {} : { repoSize }),
         id,
         baseBranch: branch.branch,
         title: input.title,

@@ -12,6 +12,7 @@ import { create, ls, log, open, read } from "./commands/sessions.js";
 import { hatch, interrupt, resume, rm, steer, stop } from "./commands/actions.js";
 import { push } from "./commands/push.js";
 import { skills } from "./commands/skills.js";
+import { repo } from "./commands/repo.js";
 import { connect, connections, deliveries, mcp } from "./commands/connections.js";
 import { automation, runs } from "./commands/automations.js";
 import { blueprint } from "./commands/blueprints.js";
@@ -49,6 +50,9 @@ ${bold("What sessions get")}
   skills refresh [source]         Fetch sources again and show what changed
   skills rm <source>              Remove a source and its skills
   push instructions <file|->      Set the instructions every session gets
+  repo set <owner/repo> --size <name>|--default
+                                  Set or clear the size new sessions on a repo start at
+  repo ls                         List repositories with a default size
 
 ${bold("Hooks")}
   connect <preset|kind> <name>    Add an inbound, token or MCP connection
@@ -196,6 +200,13 @@ refresh [source]   Fetch the ref again; new skills arrive off, updated ones keep
 on|off <name…>     New sessions and resumes get the change.
 rm <source>        Remove the source and its skills.
 Example: scotty skills add Yeshwanthyk/agent-skills/skills && scotty skills on diagnose plan`,
+  repo: `Usage: scotty repo set <owner/repo> --size <name> | --default
+       scotty repo ls
+set --size     New sessions on the repository start at that size (standard-1..4) when they
+               name none. --size on scotty new, or an automation's size, still wins.
+set --default  Clear it: new sessions start at standard-1.
+A session keeps the size it was made at; changing a default never resizes one.
+Example: scotty repo set acme/storefront --size standard-3`,
 };
 
 const root = Command.make("scotty").pipe(
@@ -219,6 +230,7 @@ const root = Command.make("scotty").pipe(
     log,
     push,
     skills,
+    repo,
     connect,
     connections,
     mcp,

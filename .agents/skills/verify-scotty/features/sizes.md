@@ -2,7 +2,8 @@
 
 Sessions run under the container app's `durable_object` scheduling policy, so each start names
 its image and size. A session's size is `standard-1` unless its create (API, MCP, `scotty new
---size`, hook payload) or its automation names `standard-2`, `standard-3` or `standard-4`. A
+--size`, hook payload) or its automation names `standard-2`, `standard-3` or `standard-4`, else its repository's default
+(`scotty repo set <owner/repo> --size <name>|--default`, Settings → Repositories), else `standard-1`. A
 stopped session can resume at another size (`scotty resume <id> --size`); a running one can't.
 Scotty caps how many run at once: `maxRunning` in the stage config (default 20). A start over the
 cap stops at once with reason `cap` and says how to make room.
@@ -41,10 +42,20 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
   later resume with no size stays `standard-3`; `scotty resume <id> --size standard-2` on the
   stopped session makes it `standard-2`.
 
+- **Z11** With `_scotty/fixture`'s default set to `standard-2` (`PUT /api/repos/_scotty/fixture`),
+  `scotty repo ls --json` lists it, a session naming no size is `standard-2` and reads its row, and
+  one naming `standard-1` reads `standard-1`'s. `scotty repo set _scotty/fixture --default` clears
+  it (`size: null`, gone from `repo ls`). Then the first session still shows `standard-2`, a
+  retry of its create with the same Idempotency-Key and no size answers that session (not 409),
+  and after a stop and a steer it reads `standard-2` again. A default of `basic`, `lite` or
+  `standard-9`, and `/api/repos/fixture`, `/api/repos/a/b/c` or `/api/repos/a%20b/c`, answer 400.
+  The run clears the default however it ends, since other tests expect `standard-1`.
+
 ## Entry points
 
-- CLI `scotty doctor | new | ls | stop | resume | log | auth status`, Settings → Running. e2e:
-  `npm run --silent e2e -- sizes` (Z3, Z4, Z6–Z10) against a stage deployed with
+- CLI `scotty doctor | new | ls | stop | resume | repo | log | auth status`, Settings → Running and
+  Repositories. e2e:
+  `npm run --silent e2e -- sizes` (Z3, Z4, Z6–Z11) against a stage deployed with
   `"maxRunning": 2` in its config. It reads the cap from `GET /api/settings`, fails on a cap over
   3, and resumes the refused session only after the stopped one's slot is released. The size checks
   run one session at a time, waiting for a free slot.
@@ -75,8 +86,13 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
    `run nproc; grep MemTotal /proc/meminfo` and `run cat kept.txt` (Z10). `stop`, `resume <id>`,
    `read --json > 15-resumed.json` (still `standard-3`). Screenshot the stopped banner's size
    picker beside Resume as `16-banner.png`.
-9. Z5 has no drive step: a lost release can't be arranged from outside. Report it as not driven;
-   the path is `container.start` in `src/session/object.ts`.
+9. `repo set _scotty/fixture --size standard-2`, `repo ls > 17-repos.json`, start a scripted session
+   with no size and one with `--size standard-1`, `read --json` each (Z11). `repo set
+_scotty/fixture --default`, then `stop` and `steer` the first and `read --json > 18-after.json`
+   (still `standard-2`). Screenshot Settings → Repositories as `19-repos.png`. Leave the default
+   cleared.
+10. Z5 has no drive step: a lost release can't be arranged from outside. Report it as not driven;
+    the path is `container.start` in `src/session/object.ts`.
 
 ## Proof
 
