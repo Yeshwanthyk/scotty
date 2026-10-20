@@ -64,8 +64,7 @@ export const SessionEvent = Schema.Union([
     image: Schema.String,
     // Absent in logs written before places: those ran on Cloudflare.
     place: Schema.optionalKey(PlaceKind),
-    // The container's size, resolved before this event; absent in logs written before sizes,
-    // which ran as `standard-1`.
+    // The container's size; absent is the default size, as in logs written before sizes.
     size: Schema.optionalKey(Size),
     // Runs the agent's scripted stand-in instead of the agent; only e2e asks for it.
     scripted: Schema.optionalKey(Schema.Literal(true)),

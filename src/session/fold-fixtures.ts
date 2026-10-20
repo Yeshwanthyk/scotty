@@ -4,6 +4,7 @@ import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
 import { decodeSessionEvent, type SessionEvent } from "./events.js";
 import { deadline, fold, initial, invariants, type State } from "./fold.js";
 import { live } from "./state.js";
+import { Size } from "../places/place.js";
 
 const supervisorKinds = new Set([
   "sup.hello",
@@ -136,6 +137,6 @@ export const generated = Arbitrary.schema(
     op: Schema.Literals(["container", "workspace", "dial", "redial", "req:p", "req:initial:1"]),
     dt: Schema.Literals([0, 1_000, 2_000, 30_000, 120_000]),
     // A generated `created` without a size, or with one.
-    size: Schema.Literals(["none", "standard-1", "standard-2", "standard-3", "standard-4"]),
+    size: Schema.Literals(["none", ...Size.literals]),
   }),
 );

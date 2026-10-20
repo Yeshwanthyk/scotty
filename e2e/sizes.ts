@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { Effect, Schema, Stream } from "effect";
+import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   access,
@@ -30,8 +30,13 @@ const check = (ok: boolean, message: string) =>
 // Filling a bigger cap would start that many containers.
 const largest = 3;
 
-// `nproc` at each size: Cloudflare's 1/2 vCPU shows as one CPU.
-const cpus = { "standard-1": 1, "standard-3": 2 } as const;
+// What each size reads on track (docs/design.md, Containers): Cloudflare's 1/2 vCPU shows as one CPU.
+const measuredSizes = {
+  "standard-1": { cpus: 1, memory: 4401424 },
+  "standard-2": { cpus: 1, memory: 6498576 },
+  "standard-3": { cpus: 2, memory: 8595728 },
+  "standard-4": { cpus: 4, memory: 12790032 },
+} satisfies Record<typeof Size.Type, { cpus: number; memory: number }>;
 const measure = prompt(
   "Run exactly: `nproc; grep MemTotal /proc/meminfo` and reply with its full output.",
   "run nproc; grep MemTotal /proc/meminfo\nsay {{out}}",
@@ -46,18 +51,22 @@ const reading = (text: string) => {
 const refused = ["basic", "lite", "standard-9"];
 const say = (word: string) => prompt(`Reply with only the word ${word}.`, `say ${word}`);
 
-// The CLI as the owner runs it: its exit code and its JSON.
+const CliError = Schema.fromJsonString(
+  Schema.Struct({ error: Schema.Struct({ code: Schema.String, message: Schema.String }) }),
+);
+
+// The CLI as the owner runs it: its exit code, its JSON and anything on stderr.
 const cli = (args: readonly string[]) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
-      ChildProcess.make("bun", ["cli/main.ts", ...args, "--json"], {
-        stdin: "ignore",
-        stderr: "ignore",
-      }),
+      ChildProcess.make("bun", ["cli/main.ts", ...args, "--json"], { stdin: "ignore" }),
     );
-    const out = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
-    return { out, exit: yield* child.exitCode };
+    const text = (stream: typeof child.stdout) => stream.pipe(Stream.decodeText(), Stream.mkString);
+    const [out, err] = yield* Effect.all([text(child.stdout), text(child.stderr)], {
+      concurrency: 2,
+    });
+    return { out, err, exit: yield* child.exitCode };
   }).pipe(
     Effect.scoped,
     Effect.provide(BunServices.layer),
@@ -87,7 +96,7 @@ const program = Effect.gen(function* () {
       ),
     ),
   );
-  const create = (title: string, text: string, size?: typeof Size.Type) =>
+  const create = (title: string, text: string, size?: typeof Size.Type, sessionKey?: string) =>
     Effect.gen(function* () {
       const session = yield* request("/api/sessions", Created, {
         method: "POST",
@@ -99,6 +108,7 @@ const program = Effect.gen(function* () {
           prompt: text,
           provider: "cloudflare",
           ...(size === undefined ? {} : { size }),
+          ...(sessionKey === undefined ? {} : { key: sessionKey }),
         },
       });
       made.push(session.id);
@@ -172,7 +182,9 @@ const program = Effect.gen(function* () {
   }).pipe(Effect.ensuring(clean));
 
   // Sizes, one session at a time so a cap of 2 is enough.
-  const automation = `e2e-size-${crypto.randomUUID().slice(0, 8)}`;
+  const suffix = crypto.randomUUID().slice(0, 8);
+  const starter = `e2e-size-${suffix}`;
+  const waker = `e2e-wake-${suffix}`;
   yield* Effect.gen(function* () {
     const freeSlot = Effect.gen(function* () {
       const started = Date.now();
@@ -182,7 +194,8 @@ const program = Effect.gen(function* () {
         yield* Effect.sleep("2 seconds");
       }
     });
-    const measured = (prefix: string, turn: string) =>
+    // Waits for the turn and checks its reading against the size's row in the table.
+    const measured = (prefix: string, turn: string, size: typeof Size.Type) =>
       Effect.gen(function* () {
         yield* waiter(request, prefix)(
           () => request(`${prefix}/log`, Log),
@@ -193,64 +206,104 @@ const program = Effect.gen(function* () {
         const found = reading(text);
         if (found === undefined)
           return yield* failure("sizes", `${prefix} answered no reading: ${text}`, "scotty read");
+        console.log(`${size} (turn ${turn}): nproc ${found.cpus}, MemTotal ${found.memory} kB`);
+        const expected = measuredSizes[size];
+        yield* check(
+          found.cpus === expected.cpus,
+          `${size} has ${found.cpus} CPUs, not ${expected.cpus}`,
+        );
+        yield* check(
+          Math.abs(found.memory - expected.memory) <= expected.memory * 0.05,
+          `${size} has MemTotal ${found.memory} kB, not within 5% of ${expected.memory} kB`,
+        );
         return found;
       });
-    const sized = (size: keyof typeof cpus | undefined) =>
+    const readsSize = (id: string, size: typeof Size.Type) =>
       Effect.gen(function* () {
-        yield* freeSlot;
-        const name = size ?? "standard-1";
-        const prefix = yield* create(`at ${size ?? "no size"}`, measure, size);
+        const read = yield* cli(["read", id]);
+        const shown = Schema.decodeUnknownOption(
+          Schema.fromJsonString(Schema.Struct({ size: Schema.String })),
+        )(read.out);
+        yield* check(
+          Option.isSome(shown) && shown.value.size === size,
+          `scotty read ${id} printed ${read.out}${read.err}, not size ${size}`,
+        );
+      });
+    const shows = (prefix: string, size: typeof Size.Type) =>
+      Effect.gen(function* () {
         const view = yield* request(prefix, View);
         yield* check(
-          view.session.display.size === name,
-          `The session's size is ${view.session.display.size}, not ${name}`,
+          view.session.display.size === size,
+          `The session's size is ${view.session.display.size}, not ${size}`,
         );
-        const found = yield* measured(prefix, "0");
-        console.log(`${name}: nproc ${found.cpus}, MemTotal ${found.memory} kB`);
-        yield* check(
-          found.cpus === cpus[name],
-          `${name} has ${found.cpus} CPUs, not ${cpus[name]}`,
-        );
-        return { prefix, found };
       });
 
-    // 1. With no size and at standard-3, a session has that size's CPUs; the bigger has more memory.
-    const small = yield* sized(undefined);
-    yield* request(`${small.prefix}/stop`, View, { method: "POST" });
-    const big = yield* sized("standard-3");
-    yield* check(
-      big.found.memory > small.found.memory,
-      `standard-3 has ${big.found.memory} kB, not more than standard-1's ${small.found.memory} kB`,
-    );
+    // 1. With no size a session is standard-1; at standard-3 it has standard-3's CPUs and memory.
+    const key = `e2e-size-${suffix}`;
+    yield* freeSlot;
+    const small = yield* create("at no size", measure, undefined, key);
+    yield* shows(small, "standard-1");
+    yield* measured(small, "0", "standard-1");
 
-    // 2. Stopped and resumed by a steer, the bigger session reads the same again.
-    yield* request(`${big.prefix}/stop`, View, { method: "POST" });
-    yield* waiter(request, big.prefix)(
-      () => request(big.prefix, View),
+    // 2. A wake from an automation at standard-2 reaches the standard-1 session, which stays so.
+    yield* request("/api/automations", AutomationSwitched, {
+      method: "POST",
+      body: {
+        name: waker,
+        when: { kind: "interval", minutes: 7 * 24 * 60 },
+        action: "wake",
+        key,
+        repo: fixtureRepo,
+        agent,
+        prompt: measure,
+        size: "standard-2",
+        ...(real ? {} : { scripted: true }),
+      },
+    });
+    const woke = yield* request(`/api/automations/${waker}/run`, RunFired, { method: "POST" });
+    yield* check(
+      woke.status === "steered" && woke.session === small.slice("/api/sessions/".length),
+      `The wake's run is ${woke.status} (${woke.reason}) on ${woke.session}`,
+    );
+    yield* measured(small, "1", "standard-1");
+    yield* shows(small, "standard-1");
+    console.log("A wake at standard-2 reached the standard-1 session; it stayed standard-1");
+    yield* request(`${small}/stop`, View, { method: "POST" });
+
+    yield* freeSlot;
+    const big = yield* create("at standard-3", measure, "standard-3");
+    yield* shows(big, "standard-3");
+    const first = yield* measured(big, "0", "standard-3");
+
+    // 3. Stopped and resumed by a steer, the bigger session reads the same again.
+    yield* request(`${big}/stop`, View, { method: "POST" });
+    yield* waiter(request, big)(
+      () => request(big, View),
       (view) =>
         view.session.authority.kind === "stable" && view.session.authority.lifecycle === "stopped",
       { stopped: "expected" },
     );
     yield* freeSlot;
     const req = crypto.randomUUID();
-    yield* request(`${big.prefix}/steer`, Reply, {
+    yield* request(`${big}/steer`, Reply, {
       method: "POST",
       key: req,
       body: { req, turn: "1", text: measure },
     });
-    const again = yield* measured(big.prefix, "1");
-    const starts = (yield* request(`${big.prefix}/log`, Log)).filter(
-      (e) => e.kind === "container.start",
-    );
-    yield* check(starts.length >= 2, "The resume did not start a new container");
+    const again = yield* measured(big, "1", "standard-3");
+    // Only the first start is an event; a resume's new container says hello on a later gen.
     yield* check(
-      again.cpus === big.found.cpus && again.memory === big.found.memory,
+      (yield* request(`${big}/log`, Log)).some((e) => e.kind === "sup.hello" && e.gen > 1),
+      "The resume did not start a new container",
+    );
+    yield* check(
+      again.cpus === first.cpus && again.memory === first.memory,
       `After the resume, standard-3 reads nproc ${again.cpus}, MemTotal ${again.memory} kB`,
     );
     console.log("standard-3 stopped, resumed and read the same");
     yield* clean;
 
-    // 3. lite, basic and unknown sizes are refused by the API, MCP and the CLI, naming the field.
+    // 4. lite, basic and unknown sizes are refused by the API, MCP and the CLI, naming the field.
     for (const size of refused) {
       const answer = yield* request("/api/sessions", Created, {
         method: "POST",
@@ -291,35 +344,67 @@ const program = Effect.gen(function* () {
           arguments: { repo: fixtureRepo, prompt: say("no"), ...sessionAgent, size },
         }),
       );
-      const first = result.content[0];
-      const text = first?.type === "text" ? first.text : "";
+      const content = result.content[0];
+      const text = content?.type === "text" ? content.text : "";
       yield* check(
         result.isError === true && text.includes(`["size"]`),
         `MCP answered size ${size} with: ${text}`,
       );
     }
     yield* attempt("close", () => mcp.close());
+    // Piped, the CLI prints its errors as JSON on stdout; stderr stays empty.
     for (const size of refused) {
       const ran = yield* cli(["new", fixtureRepo, "no", "--size", size]);
-      yield* check(ran.exit === 2, `scotty new --size ${size} exited ${ran.exit}, not 2`);
+      const error = Schema.decodeUnknownOption(CliError)(ran.out);
+      yield* check(
+        ran.exit === 2 &&
+          Option.isSome(error) &&
+          error.value.error.code === "usage" &&
+          error.value.error.message.includes("--size"),
+        `scotty new --size ${size} exited ${ran.exit}: ${ran.out}${ran.err}`,
+      );
     }
     console.log(`Sizes ${refused.join(", ")}: 400 from the API, an MCP error, CLI exit 2`);
 
-    // 4. An automation's size reaches the session it starts.
+    // 5. A valid --size from the CLI makes a session that `scotty read` shows at that size. The CLI
+    // starts the real agent; the check needs only the create and the read.
+    yield* freeSlot;
+    const byCli = yield* cli([
+      "new",
+      fixtureRepo,
+      "Reply with only the word sized.",
+      "--size",
+      "standard-2",
+    ]);
+    const createdByCli = Schema.decodeUnknownOption(
+      Schema.fromJsonString(Schema.Struct({ id: Schema.String })),
+    )(byCli.out);
+    if (byCli.exit !== 0 || Option.isNone(createdByCli))
+      return yield* failure(
+        "sizes",
+        `scotty new --size standard-2 printed ${byCli.out}${byCli.err}`,
+        "",
+      );
+    made.push(createdByCli.value.id);
+    yield* readsSize(createdByCli.value.id, "standard-2");
+    yield* clean;
+    console.log("scotty new --size standard-2 made a session that reads standard-2");
+
+    // 6. An automation's size reaches the session it starts.
     yield* request("/api/automations", AutomationSwitched, {
       method: "POST",
       body: {
-        name: automation,
+        name: starter,
         when: { kind: "interval", minutes: 7 * 24 * 60 },
         repo: fixtureRepo,
         agent,
-        prompt: say("sized"),
+        prompt: measure,
         size: "standard-2",
         ...(real ? {} : { scripted: true }),
       },
     });
     yield* freeSlot;
-    const run = yield* request(`/api/automations/${automation}/run`, RunFired, { method: "POST" });
+    const run = yield* request(`/api/automations/${starter}/run`, RunFired, { method: "POST" });
     if (run.session === null)
       return yield* failure(
         "sizes",
@@ -327,20 +412,17 @@ const program = Effect.gen(function* () {
         "scotty runs",
       );
     made.push(run.session);
-    const read = yield* cli(["read", run.session]);
-    const shown = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.Struct({ size: Schema.String })),
-    )(read.out).pipe(
-      Effect.mapError(() => failure("sizes", `scotty read printed ${read.out}`, "")),
-    );
-    yield* check(shown.size === "standard-2", `scotty read shows size ${shown.size}`);
+    yield* readsSize(run.session, "standard-2");
+    yield* measured(`/api/sessions/${run.session}`, "0", "standard-2");
     console.log(`The automation's session ${run.session} reads standard-2`);
   }).pipe(
     Effect.ensuring(
       Effect.all([
         clean,
-        Effect.ignore(
-          request(`/api/automations/${automation}`, AutomationRemoved, { method: "DELETE" }),
+        ...[starter, waker].map((name) =>
+          Effect.ignore(
+            request(`/api/automations/${name}`, AutomationRemoved, { method: "DELETE" }),
+          ),
         ),
       ]),
     ),

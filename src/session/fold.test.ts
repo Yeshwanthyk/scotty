@@ -149,11 +149,13 @@ describe("session fold", () => {
       agent: "codex",
       prompt: "hello",
     };
-    // A retry naming another size is a conflict; one naming none, or the same, is not.
+    // A retried create naming another size is a conflict; one naming none, or the same, is not.
     expect(startStep(sized, { ...input, size: "standard-1" })).toBe("conflict");
     expect(startStep(sized, { ...input, size: "standard-3" })).toBe("duplicate");
     expect(startStep(sized, input)).toBe("duplicate");
-    expect(startStep(unsized, { ...input, req: "steer-1", size: "standard-2" })).toBe("conflict");
+    // A wake or keyed steer names no size, so it reaches a session of any size.
+    expect(startStep(sized, { ...input, req: "run:wake-1", prompt: "wake" })).toBe("prompt");
+    expect(startStep(unsized, { ...input, req: "run:wake-1", prompt: "wake" })).toBe("prompt");
     check(sized);
   });
 

@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
-import { Size } from "../../../src/places/place";
+import { defaultSize, Size } from "../../../src/places/place";
 import { create, lifecycle, message, type Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
 import { claudeStatus } from "../data/settings";
@@ -270,7 +270,7 @@ export function NewSession() {
   const [agent, setAgent] = useState<Agent>(() =>
     read(lastAgentKey) === "claude" ? "claude" : "codex",
   );
-  const [size, setSize] = useState<typeof Size.Type>("standard-1");
+  const [size, setSize] = useState(defaultSize);
   // Unknown until the status loads; Claude can be picked only with its token set.
   const [claudeReady, setClaudeReady] = useState<boolean | undefined>(undefined);
   const [claudeHint, setClaudeHint] = useState(false);

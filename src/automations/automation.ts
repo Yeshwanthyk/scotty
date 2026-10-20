@@ -55,7 +55,7 @@ export const Definition = Schema.Struct({
   branch: Schema.optionalKey(Template.check(Schema.isMaxLength(200))),
   repo: Repo,
   agent: AgentKind,
-  // The size of the sessions it starts; absent: `standard-1`.
+  // The size of the sessions it starts; absent: the default size.
   size: Schema.optionalKey(Size),
   prompt: Template,
   // Runs the agent's scripted stand-in instead of the agent; only e2e asks for it.

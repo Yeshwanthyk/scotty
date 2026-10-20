@@ -24,7 +24,7 @@ export type StartInput = {
   agent: typeof AgentKind.Type;
   // Where the container runs; hooks leave it to the default.
   place?: typeof PlaceKind.Type;
-  // Absent: `standard-1`.
+  // Absent: the default size.
   size?: typeof Size.Type;
   scripted?: true;
   idleAfter?: number;
@@ -51,7 +51,6 @@ export function startSession(
       prompt: input.prompt,
       repo: input.repo,
       agentKind: input.agent,
-      ...(input.size === undefined ? {} : { size: input.size }),
     };
     // Automations already resolved their target; a made session needs no repository lookup.
     const keyed = input.id ?? (yield* credential.resolveSession(input.retry, input.key ?? null));
@@ -106,9 +105,10 @@ export function startSession(
       }));
     const answer = yield* sessions.getByName(id).start({
       ...request,
+      // The size applies only to the session this call makes; a keyed steer above sends none.
+      ...(input.size === undefined ? {} : { size: input.size }),
       create: {
         id,
-        size: input.size ?? "standard-1",
         baseBranch: branch.branch,
         title: input.title,
         image: "default",

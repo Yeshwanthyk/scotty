@@ -1,6 +1,7 @@
 // Synthetic sessions in the exact Codex app-server shapes (surveyed 2026-09-28 from two weeks of
 // real rollouts, structure only), written as Scotty event logs so they go through the real fold.
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
+import type { Size } from "../../src/places/place.ts";
 
 type Json = Record<string, unknown>;
 
@@ -43,8 +44,8 @@ export type DummySpec = {
   after?: "stopped" | "waiting" | "boot-failed" | "cap";
   // Set when a webhook or an automation made the session.
   origin?: Json;
-  // The container size; absent: standard-1.
-  size?: string;
+  // The container size; absent: the default.
+  size?: typeof Size.Type;
 };
 
 const read = (path: string) => ({

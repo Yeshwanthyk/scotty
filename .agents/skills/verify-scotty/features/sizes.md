@@ -20,16 +20,23 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
 - **Z5** A slot whose release was lost is reclaimed: when the cap is full, a claimed session that
   no longer runs loses its slot, and the start goes ahead.
 - **Z6** A session started with `--size standard-3` shows `standard-3` in `read --json`, `ls --json`
-  and the page header, and `nproc` in it is 2. One started with no size is `standard-1`, `nproc` 1.
-  After a stop and a resume, the `standard-3` session reads the same `nproc` and `MemTotal`.
+  and the page header, and reads `standard-3`'s row of the table in design.md (Containers): `nproc`
+  exactly, `MemTotal` within 5%. One started with no size is `standard-1` and reads its row. After
+  a stop and a resume, the `standard-3` session reads the same again.
 - **Z7** `lite`, `basic` and `standard-9` are refused: the API answers 400 naming `["size"]`, MCP
-  `new_session` answers a tool error naming it, and `scotty new --size` exits 2. No session is made.
-- **Z8** An automation with `size: standard-2` starts sessions whose `read` shows `standard-2`.
+  `new_session` answers a tool error naming it, and `scotty new --size` exits 2 with a `usage` error
+  naming `--size` (JSON on stdout when piped). No session is made. `scotty new --size standard-2`
+  makes a session whose `read --json` shows `standard-2`.
+- **Z8** An automation with `size: standard-2` starts sessions whose `read` shows `standard-2` and
+  that read `standard-2`'s row.
+- **Z9** An automation at `standard-2` with `action: wake` reaches a `standard-1` session by its
+  key: the run is `steered`, and the session stays `standard-1`. A size applies only when a session
+  is made.
 
 ## Entry points
 
 - CLI `scotty doctor | new | ls | stop | resume | log | auth status`, Settings → Running. e2e:
-  `npm run --silent e2e -- sizes` (Z3, Z4, Z6, Z7, Z8) against a stage deployed with
+  `npm run --silent e2e -- sizes` (Z3, Z4, Z6–Z9) against a stage deployed with
   `"maxRunning": 2` in its config. It reads the cap from `GET /api/settings`, fails on a cap over
   3, and resumes the refused session only after the stopped one's slot is released. The size checks
   run one session at a time, waiting for a free slot.
@@ -51,7 +58,9 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
    `--size`; `read <id> --json > 09-read-<size>.json` each once answered (Z6). `stop`, `steer` it the
    same prompt, `read` again (Z6). `new … --size basic; echo $? > 10-cli-basic.txt` (Z7).
 7. Make an automation with `"size": "standard-2"`, run it (`POST /api/automations/<name>/run`),
-   `read <session> --json > 11-automation-read.json` (Z8). Remove the automation and sessions.
+   `read <session> --json > 11-automation-read.json` (Z8). Make one with `"action": "wake"` and the
+   `key` of a running `standard-1` session, run it; save the run as `12-wake-run.json` (Z9). Remove
+   the automations and sessions.
 8. Z5 has no drive step: a lost release can't be arranged from outside. Report it as not driven;
    the path is `container.start` in `src/session/object.ts`.
 
@@ -59,7 +68,7 @@ raise maxRunning`. Its log has `container.stopped {reason: "cap", max}` and no `
 
 `03-app.json` with `durable_object`; `01` and `04` with the same credentials; the doctor line; the
 third session's `07-log.json` cap stop and its `08-log.json` answer after the resume; the `size`
-and readings in `09-*`, exit 2 in `10-*`, `standard-2` in `11-*`.
+and readings in `09-*`, exit 2 in `10-*`, `standard-2` in `11-*`, `steered` in `12-*`.
 
 ## Gotchas
 
@@ -72,9 +81,12 @@ and readings in `09-*`, exit 2 in `10-*`, `standard-2` in `11-*`.
 - If a session ends `failed` with `container_start` right after the switch, the app may not be
   bound to the SessionObject namespace: check `durable_objects.namespace_id` in `03-app.json`
   against the SessionObject id in `GET /accounts/<account>/workers/durable_objects/namespaces`.
-- e2e prints each size's `nproc` and `MemTotal`. It asserts `nproc` (1 at `standard-1`, 2 at
-  `standard-3`) and that `standard-3` has more memory; once design.md has a table of readings, check
-  them against it.
-- An automation run keeps the size its definition had when the run was received (`run_sizes` in the Creds DO).
+- e2e prints each size's `nproc` and `MemTotal` and checks them against design.md's table. The
+  `scotty new --size standard-2` session runs the real agent (the CLI has no scripted flag), so e2e
+  only reads its size and doesn't measure it.
+- A resume appends no `container.start`: only the first start is an event. A new container shows
+  as a `sup.hello` with a later `gen`.
+- An automation run keeps the size its definition had when the run was received (`run_sizes` in
+  the Creds DO).
 - A start without `instance` runs as `lite`. If a session's `nproc`/`MemTotal` look small, check
   `src/places/cloudflare.ts` still passes `instance`.

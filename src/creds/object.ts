@@ -296,12 +296,18 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             input.trigger === "event"
               ? `${input.source}:${input.automation}`
               : crypto.randomUUID().replaceAll("-", "");
-          const inserted =
-            yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, branch, action, scripted) VALUES (${id}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${received?.branch ?? null}, ${input.definition.action ?? "start"}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
-          if (inserted.length > 0 && input.definition.size !== undefined)
-            yield* sql`INSERT INTO run_sizes (id, size) VALUES (${id}, ${input.definition.size})`;
-          yield* sql`DELETE FROM runs WHERE seq <= (SELECT MAX(seq) FROM runs) - ${keptRuns}`;
-          yield* sql`DELETE FROM run_sizes WHERE id NOT IN (SELECT id FROM runs)`;
+          // A sized run is never recorded without its size.
+          const inserted = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const rows =
+                yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, branch, action, scripted) VALUES (${id}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${received?.branch ?? null}, ${input.definition.action ?? "start"}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
+              if (rows.length > 0 && input.definition.size !== undefined)
+                yield* sql`INSERT INTO run_sizes (id, size) VALUES (${id}, ${input.definition.size})`;
+              yield* sql`DELETE FROM runs WHERE seq <= (SELECT MAX(seq) FROM runs) - ${keptRuns}`;
+              yield* sql`DELETE FROM run_sizes WHERE id NOT IN (SELECT id FROM runs)`;
+              return rows;
+            }),
+          );
           const run = yield* runRow(
             (yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs WHERE automation = ${input.automation} AND source = ${input.source}`)[0],
           );

@@ -10,6 +10,7 @@ import {
   requestFromOp,
   idleWindow,
 } from "./deadlines.js";
+import { defaultSize, type Size } from "../places/place.js";
 import { firstReq, live, type Request, type State } from "./state.js";
 export { initial } from "./state.js";
 export type { State, Request } from "./state.js";
@@ -18,7 +19,7 @@ export { invariants } from "./invariants.js";
 export type { Violation } from "./invariants.js";
 
 // The size every start of this session uses.
-export const sessionSize = (state: State) => state.created?.size ?? "standard-1";
+export const sessionSize = (state: State) => state.created?.size ?? defaultSize;
 
 const settle = (
   requests: readonly Request[],
@@ -499,14 +500,15 @@ function step(state: State, event: SessionEvent): State {
 
 // What a start does to this session: make it, prompt it, or answer from what it already holds.
 // A request id seen before is answered as it was the first time; one reused for another
-// repository, agent or prompt, or that names another size, is a conflict.
+// repository, agent or prompt is a conflict. Only a creating start names a size (a steer or wake
+// joins the session at its size), and a retried create naming another size is a conflict too.
 export function startStep(
   state: State,
   input: {
     readonly req: string;
     readonly repo: string;
     readonly agent: string;
-    readonly size?: string;
+    readonly size?: typeof Size.Type;
     readonly prompt: string;
   },
 ): "create" | "prompt" | "duplicate" | "unavailable" | "conflict" {

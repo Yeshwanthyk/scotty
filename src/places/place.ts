@@ -6,6 +6,8 @@ export const PlaceKind = Schema.Literals(["cloudflare"]);
 // The Cloudflare instance types a session may ask for (owner, 2026-10-19). `lite`, `basic` and
 // custom sizes are refused; work bigger than `standard-4` goes to a runner.
 export const Size = Schema.Literals(["standard-1", "standard-2", "standard-3", "standard-4"]);
+// A session that names no size runs at this one; the fold resolves it.
+export const defaultSize: typeof Size.Type = "standard-1";
 
 export class ContainerStartFailed extends Schema.TaggedError<ContainerStartFailed>()(
   "ContainerStartFailed",

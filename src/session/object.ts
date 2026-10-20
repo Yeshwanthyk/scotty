@@ -590,11 +590,10 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           prompt: string;
           repo: string;
           agentKind: typeof AgentKind.Type;
-          // The size the caller asked for; another size than the session's is a conflict.
+          // Only with `create`: the size to make the session at; absent is the default.
           size?: typeof Size.Type;
           create?: {
             id: string;
-            size: typeof Size.Type;
             baseBranch: string;
             title: string;
             image: string;
@@ -628,7 +627,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     req: input.req,
                     image: create.image,
                     place: create.place,
-                    size: create.size,
+                    ...(input.size === undefined ? {} : { size: input.size }),
                     ...(create.scripted === true ? { scripted: true } : {}),
                     ...(create.origin === undefined ? {} : { origin: create.origin }),
                     ...(create.idleAfter === undefined ? {} : { idleAfter: create.idleAfter }),

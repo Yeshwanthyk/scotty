@@ -36,7 +36,7 @@ export function fireRun(
           : stopped.kind === "conflict"
             ? {
                 status: "failed" as const,
-                reason: "key or retry id used by another repo, agent, size or prompt",
+                reason: "key or retry id used by another repo, agent or prompt",
                 session: run.session,
               }
             : { status: "ended" as const, session: run.session };
@@ -50,7 +50,6 @@ export function fireRun(
                 prompt: run.prompt,
                 repo: run.repo,
                 agentKind: run.agent,
-                ...(run.size === null ? {} : { size: run.size }),
               })),
               id: run.session,
             }
