@@ -8,6 +8,7 @@ import {
   ConnectionAuthorization,
   ToolPolicy,
 } from "../../../src/creds/connections.ts";
+import { Size } from "../../../src/places/place.ts";
 import { request } from "./core";
 
 const Skill = Schema.Struct({
@@ -31,6 +32,8 @@ const Settings = Schema.Struct({
   sources: Schema.Array(SkillSource),
   claudeStyle: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
+  running: Schema.Number,
+  maxRunning: Schema.Number,
 });
 const SourceSaved = Schema.Struct({
   source: Schema.String,
@@ -68,6 +71,10 @@ const GitHubSet = Schema.Union([
   Schema.Struct({ status: Schema.Literal("set"), login: Schema.String }),
   Schema.Struct({ status: Schema.Literal("refused"), httpStatus: Schema.Number }),
 ]);
+export const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const Repos = Schema.Struct({
+  repos: Schema.Array(Schema.Struct({ repo: Schema.String, size: Size })),
+});
 
 const Connections = Schema.Struct({ connections: Schema.Array(Connection) });
 const Deliveries = Schema.Struct({
@@ -87,6 +94,7 @@ export type Connection = typeof Connection.Type;
 export type Delivery = (typeof Deliveries.Type)["deliveries"][number];
 export type DeliveryReason = typeof DeliveryReason.Type;
 export type Settings = typeof Settings.Type;
+export type RepoDefault = (typeof Repos.Type)["repos"][number];
 export type Skill = typeof Skill.Type;
 export type SkillSource = typeof SkillSource.Type;
 export type SourceSaved = typeof SourceSaved.Type;
@@ -157,6 +165,17 @@ export async function switchSkill(name: string, enabled: boolean): Promise<void>
 // Setting a style also switches its skill on.
 export async function setClaudeStyle(skill: string | null): Promise<void> {
   await request("/api/settings/claude-style", { skill }, undefined, undefined, "PUT");
+}
+
+// Repositories keyed by lowercased owner/repo, each with the size its new sessions start at.
+export async function repoDefaults(signal?: AbortSignal): Promise<RepoDefault[]> {
+  return [...decode(Repos, await request("/api/repos", undefined, signal), "repositories").repos];
+}
+
+// No size clears the default.
+export async function setRepoSize(repo: string, size: typeof Size.Type | null): Promise<void> {
+  if (size === null) await request(`/api/repos/${repo}`, undefined, undefined, undefined, "DELETE");
+  else await request(`/api/repos/${repo}`, { size }, undefined, undefined, "PUT");
 }
 
 export async function startChatGpt(): Promise<Device> {

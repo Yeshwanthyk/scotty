@@ -2,6 +2,7 @@ import { Cron, Result, Schema } from "effect";
 import { ConnectionName } from "../creds/connections.js";
 import { Repo } from "../http/start.js";
 import { AgentKind } from "../session/events.js";
+import { Size } from "../places/place.js";
 
 // Lowercase and explicit, like a connection's: the name is in every run and session it starts.
 export const automationName = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -54,6 +55,8 @@ export const Definition = Schema.Struct({
   branch: Schema.optionalKey(Template.check(Schema.isMaxLength(200))),
   repo: Repo,
   agent: AgentKind,
+  // The size of the sessions it starts; absent: the default size.
+  size: Schema.optionalKey(Size),
   prompt: Template,
   // Runs the agent's scripted stand-in instead of the agent; only e2e asks for it.
   scripted: Schema.optionalKey(Schema.Literal(true)),

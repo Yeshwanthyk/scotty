@@ -2,9 +2,18 @@ import { expect, it } from "@effect/vitest";
 import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
-import { deadline, fold, initial, type State } from "./fold.js";
+import { deadline, fold, initial, resizeConflict, type State } from "./fold.js";
 import { live } from "./state.js";
-import { check, created, generated, hello, kinds, ready, start } from "./fold-fixtures.js";
+import {
+  check,
+  created,
+  delivered,
+  generated,
+  hello,
+  kinds,
+  ready,
+  start,
+} from "./fold-fixtures.js";
 
 const supervisor = new Set([
   "workspace.ready",
@@ -22,15 +31,23 @@ let shortest = Infinity;
 let longest = 0;
 
 it.prop(
-  "fold obeys output acceptance, acknowledgements, and pending-work deadlines",
+  "fold obeys output acceptance, acknowledgements, pending-work deadlines and one size",
   [Arbitrary.array(generated, { minLength: 20, maxLength: 200 })],
   ([steps]) => {
     shortest = Math.min(shortest, steps.length);
     longest = Math.max(longest, steps.length);
-    for (const prefix of [[], [created, start, hello, ready]]) {
+    for (const prefix of [
+      [],
+      [created, start, hello, ready],
+      [created, start, hello, ready, delivered],
+    ]) {
       let state: State = initial;
       let at = 4_000;
       let priorDial: number | undefined;
+      // Generations whose start was refused by the cap; none of their output may land.
+      const capped = new Set<number>();
+      // The first `created` event's size, then the last applied resume's that named one.
+      let size: string = "standard-1";
       for (const event of prefix) {
         state = fold(state, event);
         check(state);
@@ -92,8 +109,17 @@ it.prop(
           fields.req = "client-p";
         // The first prompt keeps its `initial:<gen>` name, which the generated requests use.
         if (kind === "created") delete fields.req;
+        if ((kind === "created" || kind === "resume.requested") && step.size !== "none")
+          fields.size = step.size;
         if (kind === "sup.error" && !step.withReq) delete fields.req;
         if (kind === "sup.hello") fields.n = 1;
+        const cap = kind === "cap";
+        if (cap) {
+          kind = "container.stopped";
+          fields.reason = "cap";
+          fields.max = 2;
+          delete fields.req;
+        }
         const event = decodeSessionEvent({
           seq: index + prefix.length + 1,
           at,
@@ -104,9 +130,44 @@ it.prop(
         state = fold(before, event);
         const issued = command(state, event);
         check(state);
+        if (event.kind === "created" && before.created === undefined) {
+          size = event.size ?? "standard-1";
+          bump(event.size === undefined ? "created without size" : "created with size");
+        }
+        if (event.kind === "resume.requested") {
+          const applied = !live(before) && live(state);
+          if (applied && event.size !== undefined) size = event.size;
+          bump(
+            `resume ${applied ? "applied" : "ignored"} ${event.size === undefined ? "without" : "with"} size`,
+          );
+          // The API refuses exactly the sized resumes the fold would ignore and that change size.
+          expect(resizeConflict(before, event.size)).toBe(
+            applied || event.size === undefined || event.size === before.size
+              ? undefined
+              : before.phase === "failed"
+                ? "failed"
+                : "running",
+          );
+        }
+        expect(state.size).toBe(size);
+        // A running container never changes size.
+        if (before.created !== undefined && live(before)) expect(state.size).toBe(before.size);
         // Output numbering restarts with each resumed generation.
         if (state.gen === before.gen) expect(state.lastN).toBeGreaterThanOrEqual(before.lastN);
         if (!live(before) && !live(state)) expect(issued).toBeUndefined();
+        if (cap) {
+          if (live(before) && before.gen === gen) {
+            expect(state).toMatchObject({ phase: "stopped", stop: { reason: "cap", max: 2 } });
+            expect(state.pending).toEqual([]);
+            expect(issued).toEqual({ kind: "destroy" });
+            capped.add(gen);
+            bump(before.hello ? "cap" : "cap at start");
+          } else expect(state).toEqual({ ...before, lastSeq: event.seq });
+        }
+        if (supervisor.has(event.kind) && "gen" in event && capped.has(event.gen)) {
+          expect(state.lastN).toBe(before.lastN);
+          bump("output after cap");
+        }
         if (!live(before) && live(state)) {
           expect(issued).toEqual({ kind: "container.start", gen: state.gen, fresh: true });
           bump("resume");
@@ -224,4 +285,11 @@ it("covers generated paths", () => {
   expect(hits["error settled request"]).toBeGreaterThan(0);
   expect(hits["idle"]).toBeGreaterThan(0);
   expect(hits["stalled"]).toBeGreaterThan(0);
+  expect(hits["cap at start"]).toBeGreaterThan(0);
+  expect(hits["output after cap"]).toBeGreaterThan(0);
+  expect(hits["created without size"]).toBeGreaterThan(0);
+  expect(hits["created with size"]).toBeGreaterThan(0);
+  expect(hits["resume applied with size"]).toBeGreaterThan(0);
+  expect(hits["resume applied without size"]).toBeGreaterThan(0);
+  expect(hits["resume ignored with size"]).toBeGreaterThan(0);
 });

@@ -9,6 +9,7 @@ import {
   GitHubStatus,
   List,
   Polled,
+  Settings,
   Started,
   CliFailure,
   access,
@@ -69,20 +70,24 @@ export const checks = Effect.gen(function* () {
   const api = client({ url, token: token.value });
   const result: Check[] = [{ name: "Access", status: "ok", detail: "signed in" }];
   const worker = yield* Effect.exit(
-    Effect.all([api("/api/version", Version), api("/api/sessions", List)]),
+    Effect.all([
+      api("/api/version", Version),
+      api("/api/sessions", List),
+      api("/api/settings", Settings),
+    ]),
   );
   // Any Worker failure, a 404 from an older deploy included, is fixed by deploying.
   if (Exit.isFailure(worker)) {
     const error = Option.getOrUndefined(Exit.findErrorOption(worker));
     return [...result, fail("Worker", error?.message ?? "no answer", "scotty deploy")];
   }
-  const [deployed, { sessions }] = worker.value;
+  const [deployed, { sessions }, { running, maxRunning }] = worker.value;
   result.push(
     deployed.version === version
       ? {
           name: "Worker",
           status: "ok",
-          detail: `v${version} · ${sessions.length} session${sessions.length === 1 ? "" : "s"}`,
+          detail: `v${version} · ${sessions.length} session${sessions.length === 1 ? "" : "s"} · ${running} of ${maxRunning} running`,
         }
       : {
           name: "Worker",

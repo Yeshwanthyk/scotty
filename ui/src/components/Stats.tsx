@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ratesDated } from "../../../src/places/place";
 import { message } from "../data/core";
 import { stats as loadStats, type RepoStats, type Stats, type StatsWindow } from "../data/stats";
 import { ago } from "../data/status";
@@ -92,7 +93,11 @@ export function StatsPage() {
         )}
         <p className="settings-intro stats-note">
           Read from each session's event log. A run counts from its start, container boot included,
-          to its stop; hours are cut to the window. Deleted sessions are not counted.
+          to its stop; hours are cut to the window. Deleted sessions are not counted. Est. cost
+          prices the counted hours as if the CPU were busy throughout, with none of the plan's
+          included usage, so it is an upper bound for those hours, not for the bill: a container
+          that is slow to stop bills a little longer. Cloudflare's Containers rates dated{" "}
+          {ratesDated}.
         </p>
       </div>
     </>
@@ -148,6 +153,15 @@ const hours = (ms: number): string =>
     : ms < 3_600_000
       ? `${Math.max(1, Math.round(ms / 60_000))}m`
       : `${(ms / 3_600_000).toFixed(1)}h`;
+const usd = (cost: number): string =>
+  cost === 0 ? "$0" : cost < 0.01 ? "<$0.01" : `$${cost.toFixed(2)}`;
+// One line per size under the hours: its hours and its cost.
+const bySize = (row: RepoStats) =>
+  row.sizes.map((share) => (
+    <div key={share.size} className="stats-detail">
+      {share.size} {hours(share.runMs)} · {usd(share.cost)}
+    </div>
+  ));
 const seconds = (ms: number | null): string =>
   ms === null ? "–" : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 const top = (counts: RepoStats["failureCodes"], label = (key: string) => key): string =>
@@ -165,7 +179,7 @@ const health = (row: RepoStats): string =>
   ]
     .filter((part) => part !== "")
     .join(", ");
-const agents = (row: RepoStats): string =>
+const agents = (row: RepoStats): string[] =>
   [
     row.agents.codex.sessions > 0
       ? `Codex ${row.agents.codex.sessions} · ${hours(row.agents.codex.runMs)}`
@@ -173,9 +187,7 @@ const agents = (row: RepoStats): string =>
     row.agents.claude.sessions > 0
       ? `Claude ${row.agents.claude.sessions} · ${hours(row.agents.claude.runMs)}`
       : "",
-  ]
-    .filter((part) => part !== "")
-    .join(" / ");
+  ].filter((part) => part !== "");
 
 // A count with its top kinds under it, quiet when there are none.
 function Tally({ count, detail }: { count: number; detail: string }) {
@@ -205,7 +217,11 @@ function Row({ row, now, total }: { row: RepoStats; now: number; total?: boolean
         {total ? row.repo : <span className="mono">{row.repo}</span>}
       </th>
       <td className="tabular">{row.sessions}</td>
-      <td className="tabular">{hours(row.runMs)}</td>
+      <td className="tabular">
+        {hours(row.runMs)}
+        {bySize(row)}
+      </td>
+      <td className="tabular">{usd(row.cost)}</td>
       <td className="tabular">{row.turns}</td>
       <td>
         <Running count={row.running} />
@@ -221,7 +237,11 @@ function Row({ row, now, total }: { row: RepoStats; now: number; total?: boolean
       <td>
         <Tally count={row.violations + timeoutsOf(row)} detail={health(row)} />
       </td>
-      <td className="stats-detail">{agents(row) || "–"}</td>
+      <td className="stats-detail">
+        {(agents(row).length > 0 ? agents(row) : ["–"]).map((part) => (
+          <div key={part}>{part}</div>
+        ))}
+      </td>
     </tr>
   );
 }
@@ -235,6 +255,9 @@ function Table({ stats }: { stats: Stats }) {
             <th scope="col">Repository</th>
             <th scope="col">Sessions</th>
             <th scope="col">Hours</th>
+            <th scope="col" title="The counted hours at busy CPU, without included usage">
+              Est. cost
+            </th>
             <th scope="col">Turns</th>
             <th scope="col">Running</th>
             <th scope="col">Last run</th>
@@ -266,7 +289,7 @@ function Card({ row, now, total }: { row: RepoStats; now: number; total?: boolea
   const failures = top(row.failureCodes);
   const exits = top(row.exitCodes, (key) => `exit ${key}`);
   const signals = health(row);
-  const split = agents(row);
+  const split = agents(row).join(" / ");
   return (
     <div className="settings-card stats-card" data-total={total || undefined}>
       <div className="stats-card-head">
@@ -275,12 +298,19 @@ function Card({ row, now, total }: { row: RepoStats; now: number; total?: boolea
       </div>
       <dl className="stats-figures">
         <div>
-          <dt>Sessions</dt>
-          <dd className="tabular">{row.sessions}</dd>
+          <dt>Hours</dt>
+          <dd className="tabular">
+            {hours(row.runMs)}
+            {bySize(row)}
+          </dd>
         </div>
         <div>
-          <dt>Hours</dt>
-          <dd className="tabular">{hours(row.runMs)}</dd>
+          <dt>Est. cost</dt>
+          <dd className="tabular">{usd(row.cost)}</dd>
+        </div>
+        <div>
+          <dt>Sessions</dt>
+          <dd className="tabular">{row.sessions}</dd>
         </div>
         <div>
           <dt>Turns</dt>

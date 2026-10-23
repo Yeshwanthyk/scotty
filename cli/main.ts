@@ -2,6 +2,7 @@
 import { BunServices } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
 import { Command, CliError } from "effect/unstable/cli";
+import { defaultSize, Size, sizeShape } from "../src/places/place.js";
 import { version } from "../src/version.js";
 import { CliFailure, failure } from "./client.js";
 import { bold, dim, json, red } from "./commands/common.js";
@@ -12,6 +13,7 @@ import { create, ls, log, open, read } from "./commands/sessions.js";
 import { hatch, interrupt, resume, rm, steer, stop } from "./commands/actions.js";
 import { push } from "./commands/push.js";
 import { skills } from "./commands/skills.js";
+import { repo } from "./commands/repo.js";
 import { connect, connections, deliveries, mcp } from "./commands/connections.js";
 import { automation, runs } from "./commands/automations.js";
 import { blueprint } from "./commands/blueprints.js";
@@ -27,13 +29,15 @@ ${bold("Setup")}
   skill                           Print the guide to hand your own agent
 
 ${bold("Sessions")}
-  new <repo> <prompt>             Start a session (--agent claude, --key <retry key>,
-                                  --session-key <key>: a repeat steers that session)
+  new <repo> <prompt>             Start a session (--agent claude, --size standard-1..4,
+                                  --key <retry key>, --session-key <key>: a repeat steers
+                                  that session)
   ls [--search <text>]            List sessions; search title, repo, branch, prompt, key
   read <id>                       Read the latest messages (--last N, --role user|assistant)
   steer <id> <text>               Send text; a stopped session resumes
   interrupt <id>                  Interrupt the current turn
   stop <id> / resume <id>         Stop a container, or resume from its last save
+                                  (--size standard-1..4 resumes at that size)
   rm <id…>                        Delete stopped sessions
   open [id]                       Open Scotty, or a session, in the browser
   hatch <id> <port>               Print the preview URL for a port
@@ -47,6 +51,9 @@ ${bold("What sessions get")}
   skills refresh [source]         Fetch sources again and show what changed
   skills rm <source>              Remove a source and its skills
   push instructions <file|->      Set the instructions every session gets
+  repo set <owner/repo> --size <name>|--default
+                                  Set or clear the size new sessions on a repo start at
+  repo ls                         List repositories with a default size
 
 ${bold("Hooks")}
   connect <preset|kind> <name>    Add an inbound, token or MCP connection
@@ -75,6 +82,10 @@ ${bold("Flags")}
 
 ${dim("An id can be the first 4+ characters shown by scotty ls.")}`;
 
+const sizes = Size.literals
+  .map((size) => `  ${size}  ${sizeShape(size)}${size === defaultSize ? " (the default)" : ""}`)
+  .join("\n");
+
 const help: Record<string, string> = {
   init: `Usage: scotty init
 Asks for the stage, your email, the Cloudflare account and a domain on it, saves them to
@@ -97,8 +108,10 @@ chatgpt   Opens the device-code page and waits for you to enter the code.
 github    Saves the token from \`gh auth token\`, or from stdin when piped.
 claude    Runs \`claude setup-token\` and saves the token, or reads it from stdin when piped.
 Example: gh auth token | scotty login github`,
-  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--key key] [--session-key key]
+  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--size name] [--key key] [--session-key key]
 Start a session with Codex (the default) or Claude. --key makes retries idempotent.
+--size is the container; bigger work goes to a runner:
+${sizes}
 --session-key names the session: the same key with the same repository and agent sends the
 prompt to that session (resuming it if stopped); with another repository or agent it is refused.
 Example: scotty new octocat/Hello-World "Describe the code"`,
@@ -115,8 +128,9 @@ Example: scotty steer 3f2a "Run the checks"`,
 Interrupt the current turn.`,
   stop: `Usage: scotty stop <id>
 Stop a session's container; its work is saved and \`scotty resume\` or a steer picks it up.`,
-  resume: `Usage: scotty resume <id>
-Resume a stopped session from its last save.`,
+  resume: `Usage: scotty resume <id> [--size <name>]
+Resume a stopped session from its last save, at its size or at --size standard-1..4.
+A running session must be stopped first to change its size.`,
   rm: `Usage: scotty rm <id…> | scotty rm connection <name>
 Delete stopped sessions with their saves and files, or delete a connection.`,
   open: `Usage: scotty open [id]
@@ -191,6 +205,13 @@ refresh [source]   Fetch the ref again; new skills arrive off, updated ones keep
 on|off <name…>     New sessions and resumes get the change.
 rm <source>        Remove the source and its skills.
 Example: scotty skills add Yeshwanthyk/agent-skills/skills && scotty skills on diagnose plan`,
+  repo: `Usage: scotty repo set <owner/repo> --size <name> | --default
+       scotty repo ls
+set --size     New sessions on the repository start at that size (standard-1..4) when they
+               name none. --size on scotty new, or an automation's size, still wins.
+set --default  Clear it: new sessions start at standard-1.
+A session keeps the size it was made at; changing a default never resizes one.
+Example: scotty repo set acme/storefront --size standard-3`,
 };
 
 const root = Command.make("scotty").pipe(
@@ -214,6 +235,7 @@ const root = Command.make("scotty").pipe(
     log,
     push,
     skills,
+    repo,
     connect,
     connections,
     mcp,

@@ -1,5 +1,5 @@
 import { cloudflarePlace } from "../places/cloudflare.js";
-import type { Place, PlaceKind } from "../places/place.js";
+import type { Place, PlaceKind, Size } from "../places/place.js";
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy";
@@ -38,7 +38,7 @@ import { instructionsKey, sourceKey } from "../settings/skills.js";
 import type { Command } from "./commands.js";
 import { bindSessionContainer } from "./container-binding.js";
 import { deadlines, idleWindow, inactivityTimeout } from "./deadlines.js";
-import { deadline, startStep } from "./fold.js";
+import { deadline, resizeConflict, startStep } from "./fold.js";
 import { openLog, type Draft } from "./log.js";
 import { live } from "./state.js";
 import { sessionStats } from "./stats.js";
@@ -57,17 +57,12 @@ const scriptedStart = (
 
 export class SessionContainer extends Cloudflare.Container<SessionContainer>()(
   "SessionContainer",
-  Effect.gen(function* () {
-    // deploy/deployer.ts sets SCOTTY_IMAGE on the Worker; the default is never used.
-    const image = yield* Config.String("SCOTTY_IMAGE").pipe(Config.withDefault(""));
-    const { stage } = yield* Stack;
-    return {
-      name: `scotty-${stage}-sessions`,
-      image,
-      registryId: "registry.cloudflare.com",
-      instanceType: "standard-1" as const,
-    };
-  }),
+  // deploy/deployer.ts makes the app; each start names its image and size
+  // (src/places/cloudflare.ts), so the declaration holds no image.
+  Effect.map(Stack, ({ stage }) => ({
+    name: `scotty-${stage}-sessions`,
+    schedulingPolicy: "durable_object" as const,
+  })),
 ) {}
 
 export const SessionArtifacts = Cloudflare.R2.Bucket(
@@ -75,6 +70,10 @@ export const SessionArtifacts = Cloudflare.R2.Bucket(
   // Teardown removes the stage with its files; nothing in it outlives the stage.
   Effect.map(Stack, ({ stage }) => ({ name: `scotty-${stage}-artifacts`, forceDestroy: true })),
 );
+
+// The deployer sets SCOTTY_MAX_RUNNING from the stage's maxRunning. It is read from the raw env:
+// Alchemy's Config inside a DO JSON-parses "2" into a number, which Config.Int then refuses.
+const MaxRunning = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0));
 
 // workerd rejects monitor() with the exit code when a container exits non-zero.
 const ExitStatus = Schema.Struct({ exitCode: Schema.Int });
@@ -87,9 +86,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
   Effect.gen(function* () {
     const storage = yield* Cloudflare.DurableObjectState;
     const credentials = yield* CredsObject;
+    // This class's own namespace, to ask another session whether it still runs.
+    const sessions = yield* Cloudflare.DurableObjectScope;
+    const env = yield* Cloudflare.WorkerEnvironment;
     yield* bindSessionContainer(SessionContainer);
     const bucket = yield* Cloudflare.R2.ReadWriteBucket(SessionArtifacts);
     return Effect.gen(function* () {
+      const rawMax: unknown = env["SCOTTY_MAX_RUNNING"];
+      const max = yield* Schema.decodeUnknownEffect(MaxRunning)(rawMax);
       // The container handle exists only at run time.
       const container = storage.container;
       if (container === undefined) return yield* Effect.die("Session container binding missing");
@@ -234,12 +238,45 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               if (!current(action.gen)) return;
               if (action.fresh && (yield* where().running())) yield* where().destroy();
               if (!(yield* where().running())) {
+                const owner = credentials.getByName("owner");
+                let claim = yield* owner.claim(id(), max);
+                // A full cap first drops the claims of sessions that no longer run, so a lost
+                // release can't hold a slot. A session that doesn't answer keeps its claim.
+                if (!claim.granted) {
+                  const stale = yield* Effect.filter(
+                    claim.claims,
+                    (held) =>
+                      sessions
+                        .getByName(held.id)
+                        .fetch(HttpServerRequest.fromWeb(new Request("http://session/running")))
+                        .pipe(
+                          Effect.map((response) => response.status === 410),
+                          Effect.orElseSucceed(() => false),
+                        ),
+                    { concurrency: "unbounded" },
+                  );
+                  if (stale.length > 0) {
+                    yield* owner.dropClaims(stale);
+                    claim = yield* owner.claim(id(), max);
+                  }
+                }
+                if (!claim.granted) {
+                  if (current(action.gen))
+                    yield* dispatch(
+                      yield* append(
+                        { kind: "container.stopped", gen: action.gen, reason: "cap", max },
+                        "session",
+                      ),
+                    );
+                  return;
+                }
                 const connections = (yield* connectionsFor(action.gen))
                   .filter((connection) => connection.kind !== "inbound")
                   .map((connection) => connection.name);
                 yield* where().start({
                   session: id(),
                   repo: log.state.created?.repo ?? "",
+                  size: log.state.size,
                   connections,
                 });
               }
@@ -435,7 +472,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               return;
             }
             case "destroy":
-              if (yield* where().running()) yield* where().destroy();
+              // Every stop and failure ends here, so this is where the running slot goes back,
+              // even when the destroy fails.
+              yield* Effect.ensuring(
+                Effect.gen(function* () {
+                  if (yield* where().running()) yield* where().destroy();
+                }),
+                credentials.getByName("owner").release(id()).pipe(Effect.ignoreCause),
+              );
               return;
             case "idle": {
               if (!current(action.gen)) return;
@@ -546,12 +590,16 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           prompt: string;
           repo: string;
           agentKind: typeof AgentKind.Type;
+          // Only with `create`: the size to make the session at; absent is the default.
+          size?: typeof Size.Type;
           create?: {
             id: string;
             baseBranch: string;
             title: string;
             image: string;
             place: typeof PlaceKind.Type;
+            // The repository's default, used when the request names no size.
+            repoSize?: typeof Size.Type;
             scripted?: true;
             idleAfter?: number;
             origin?: Origin;
@@ -568,6 +616,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             if (step === "create") {
               const create = input.create;
               if (create === undefined) return { kind: "uncreated" as const };
+              const size = input.size ?? create.repoSize;
               yield* dispatch(
                 yield* append(
                   {
@@ -581,6 +630,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     req: input.req,
                     image: create.image,
                     place: create.place,
+                    ...(size === undefined ? {} : { size }),
                     ...(create.scripted === true ? { scripted: true } : {}),
                     ...(create.origin === undefined ? {} : { origin: create.origin }),
                     ...(create.idleAfter === undefined ? {} : { idleAfter: create.idleAfter }),
@@ -667,10 +717,18 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             );
             return answer("ended");
           }),
-        resume: () =>
+        // Absent `size` keeps the current one.
+        resume: (size?: typeof Size.Type) =>
           Effect.gen(function* () {
-            yield* dispatch(yield* append({ kind: "resume.requested" }, "api"));
-            return { version: 1, session: sessionView(id(), log.state) };
+            const conflict = resizeConflict(log.state, size);
+            if (conflict !== undefined) return { kind: conflict };
+            yield* dispatch(
+              yield* append(
+                { kind: "resume.requested", ...(size === undefined ? {} : { size }) },
+                "api",
+              ),
+            );
+            return { kind: "resumed" as const, version: 1, session: sessionView(id(), log.state) };
           }),
         // The Worker calls this only after the bytes are in R2.
         attach: (file: {
@@ -711,6 +769,12 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           ).pipe(Effect.orDie);
           const url = new URL(request.url);
           const label = /^(\d{1,5})-/.exec(url.hostname);
+          // Another session asking, when the cap is full, whether this one still holds its slot.
+          // The Worker forwards only previews, the terminal and `/live`, so only a DO gets here.
+          if (label === null && url.pathname === "/running")
+            return HttpServerResponse.empty({
+              status: live(log.state) && log.state.gen !== undefined ? 204 : 410,
+            });
           // Watching isn't using: a live socket leaves the idle window alone.
           if (label === null && url.pathname.endsWith("/live")) {
             if (request.headers.get("upgrade")?.toLowerCase() !== "websocket")

@@ -4,11 +4,13 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { fixtureRepo } from "../../protocol/supervisor.js";
 import type { AgentKind, Origin } from "../session/events.js";
-import type { PlaceKind } from "../places/place.js";
+import type { PlaceKind, Size } from "../places/place.js";
 import { defaultBranch } from "./repository.js";
 
 export const githubHint = "scotty login github";
 export const Repo = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/));
+// What a repository's settings are stored under: GitHub names ignore case.
+export const repoKey = (repo: string) => repo.toLowerCase();
 export const Prompt = Schema.String.check(
   Schema.makeFilter((text) => text.trim() !== "", { expected: "a prompt that is not blank" }),
   Schema.isMaxLength(256 * 1024),
@@ -24,6 +26,8 @@ export type StartInput = {
   agent: typeof AgentKind.Type;
   // Where the container runs; hooks leave it to the default.
   place?: typeof PlaceKind.Type;
+  // Absent: the repository's default, else the default size.
+  size?: typeof Size.Type;
   scripted?: true;
   idleAfter?: number;
   // An automation run reserves its target before dispatch, so retries keep that session.
@@ -101,9 +105,16 @@ export function startSession(
           ? { automation: input.origin.automation, run: input.origin.run }
           : {}),
       }));
+    // The repository default is read only when the request names no size, and goes in as
+    // `repoSize`: a retried create is compared with the size it named, never with a default
+    // that changed since.
+    const repoSize = input.size === undefined ? yield* credential.repoSize(input.repo) : null;
     const answer = yield* sessions.getByName(id).start({
       ...request,
+      // The size applies only to the session this call makes; a keyed steer above sends none.
+      ...(input.size === undefined ? {} : { size: input.size }),
       create: {
+        ...(repoSize === null ? {} : { repoSize }),
         id,
         baseBranch: branch.branch,
         title: input.title,

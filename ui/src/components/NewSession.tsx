@@ -9,16 +9,17 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
+import { defaultSize, type Size } from "../../../src/places/place";
 import { create, lifecycle, message, type Session } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { claudeStatus } from "../data/settings";
+import { claudeStatus, repoDefaults, repoPattern, type RepoDefault } from "../data/settings";
 import { ago, dormant, statusLabel, statusOf, type Status } from "../data/status";
 import { Composer } from "./Composer";
 import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
+import { SizePicker } from "./SizePicker";
 import { StatusMark } from "./Sidebar";
 
-const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const lastRepoKey = "scotty.repo";
 const lastAgentKey = "scotty.agent";
 type Agent = "codex" | "claude";
@@ -223,6 +224,11 @@ export function NewSession() {
   const [agent, setAgent] = useState<Agent>(() =>
     read(lastAgentKey) === "claude" ? "claude" : "codex",
   );
+  // A size picked by hand, for the repository it was picked for.
+  const [picked, setPicked] = useState<{ repo: string; size: typeof Size.Type }>();
+  // Shown only: the Worker applies a repository's default to a create that names no size.
+  const [defaults, setDefaults] = useState<RepoDefault[]>([]);
+  const [defaultsFailed, setDefaultsFailed] = useState(false);
   // Unknown until the status loads; Claude can be picked only with its token set.
   const [claudeReady, setClaudeReady] = useState<boolean | undefined>(undefined);
   const [claudeHint, setClaudeHint] = useState(false);
@@ -273,6 +279,13 @@ export function NewSession() {
     );
     return () => abort.abort();
   }, []);
+  useEffect(() => {
+    const abort = new AbortController();
+    repoDefaults(abort.signal).then(setDefaults, () => {
+      if (!abort.signal.aborted) setDefaultsFailed(true);
+    });
+    return () => abort.abort();
+  }, []);
   useEffect(() => () => clearTimeout(typingTimer.current), []);
   // A pasted link flashes the repository it set and fades in the prompt it wrote.
   useEffect(() => {
@@ -311,6 +324,9 @@ export function NewSession() {
   const chosen: Agent = agent === "claude" && claudeReady === false ? "codex" : agent;
   const others = recent.filter((name) => name !== repo.trim());
   const validRepo = repoPattern.test(repo.trim());
+  const repoDefault = defaults.find((item) => item.repo === repo.trim().toLowerCase());
+  const own = picked?.repo === repo.trim() ? picked.size : undefined;
+  const size = own ?? repoDefault?.size ?? defaultSize;
   function pick(next: Agent) {
     if (next === "claude" && claudeReady === false) {
       setClaudeHint(true);
@@ -352,7 +368,7 @@ export function NewSession() {
     setBusy(true);
     setError("");
     try {
-      const input = JSON.stringify([repo.trim(), prompt.trim(), chosen]);
+      const input = JSON.stringify([repo.trim(), prompt.trim(), chosen, own]);
       if (attempt.current?.input !== input) attempt.current = { input, key: crypto.randomUUID() };
       const id = await create(
         titleOf(prompt),
@@ -360,6 +376,7 @@ export function NewSession() {
         prompt.trim(),
         attempt.current.key,
         chosen,
+        own,
       );
       remember(lastRepoKey, repo.trim());
       refresh();
@@ -437,11 +454,34 @@ export function NewSession() {
               />
             </label>
             <AgentSwitch value={chosen} claudeReady={claudeReady !== false} onChange={pick} />
+            <SizePicker
+              value={size}
+              // Unread defaults: the Worker still applies the repository's, whatever it is.
+              {...(own === undefined && defaultsFailed ? { label: "repo default" } : {})}
+              onChange={(next) => setPicked({ repo: repo.trim(), size: next })}
+            />
           </Composer>
           {filled !== "" ? (
             <p className="composer-note">
               <Icon name="check" size={13} />
               <span>Repository set to {filled} from the link</span>
+            </p>
+          ) : null}
+          {own === undefined && defaultsFailed ? (
+            <p className="composer-note" data-tone="error">
+              <Icon name="alert" size={13} />
+              <span>
+                Repository defaults did not load; a session with no size picked still gets its
+                repository's default
+              </span>
+            </p>
+          ) : null}
+          {own === undefined && repoDefault !== undefined ? (
+            <p className="composer-note">
+              <Icon name="check" size={13} />
+              <span>
+                {repoDefault.size}: the {repoDefault.repo} default
+              </span>
             </p>
           ) : null}
           {claudeHint ? (

@@ -19,6 +19,8 @@ export const Config = Schema.Struct({
   host: Hostname,
   codex: Schema.optional(AgentSettings),
   claude: Schema.optional(AgentSettings),
+  // How many sessions may run at once; absent means 20. A full cap stops the next start.
+  maxRunning: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   mcpOAuthTest: Schema.optionalKey(
     Schema.Struct({
       host: Hostname,

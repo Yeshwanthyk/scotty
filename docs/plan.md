@@ -64,6 +64,7 @@ npm run --silent scotty -- doctor
 | S10  | Approvals for MCP writes     | none       | todo     |
 | R2   | Runners on the owner's boxes | none       | todo     |
 | R3   | Where a session runs         | R2         | todo     |
+| Z1   | The agent asks for more      | S6         | todo     |
 
 ### C1: ChatGPT refresh and sign-out
 
@@ -123,6 +124,14 @@ npm run --silent scotty -- doctor
 
 - **In scope:** a default place per repo; an automation's `on:`; `--on runners` picks the least busy online runner; a runner that is offline at create fails fast with a clear message rather than falling back silently. The UI's new-session sheet has a place picker.
 - **Done when:** `e2e runner` creates by repo default and by automation.
+
+### Z1: the agent asks for more
+
+- **Why (owner, 2026-10-19):** an agent that runs out of memory or time on a build should be able to say so, without the owner noticing first.
+- **Shape:** from inside a session (S6's `scotty` at `scotty.internal`), `scotty resize --size <name> --why <text>` appends `size.requested {size, why}`. The owner approves or denies from the session page or with `scotty resize <id> --approve|--deny`. An approval is a stop and a resume at that size (design.md "Resume at another size"), after the current turn ends, then a prompt that says the session now runs at the new size. The agent never waits on the owner, and an unanswered request expires when the session stops. A request is never applied without the owner's approval, because it costs money (owner to confirm).
+- **In scope:** the above; the request shows in the session's thread and in the sessions list; `skills/scotty/SKILL.md` tells agents when to ask (out of memory, a build slower than its timeout).
+- **Out of scope:** automatic resizing; sizes above `standard-4` (the agent is told to suggest a runner).
+- **Done when:** fold tests cover request, approve, deny and expiry. `e2e sizes` has a scripted session run `scotty resize --size standard-2 --why test`; the request shows in `read`. Approving it stops and resumes the session at `standard-2`, and the next turn reads the bigger `nproc`. A denied request changes nothing. Screenshots of the request in the thread.
 
 ## Later
 

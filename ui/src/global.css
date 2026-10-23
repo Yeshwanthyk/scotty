@@ -1684,6 +1684,14 @@ kbd {
   flex: none;
 }
 
+/* The size the session resumes at, beside Resume. */
+.lifecycle-resume {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
 .lifecycle-notice[data-tone="asleep"] {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--line);
@@ -2744,6 +2752,9 @@ button.diff-line[data-kind="fold"] {
 
 .new-session .composer-bar {
   padding: 8px 10px 10px 12px;
+  /* On a phone the size and send drop to a second row rather than squeeze the repository. */
+  flex-wrap: wrap;
+  row-gap: 8px;
 }
 
 .new-session .composer-note {
@@ -2792,6 +2803,27 @@ button.diff-line[data-kind="fold"] {
 .repo-picker input::placeholder {
   color: var(--quiet);
   font-weight: 400;
+}
+
+/* The pill shows the size's name; the native select over it opens the full list. */
+.size-picker {
+  position: relative;
+  flex: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.size-picker span {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.size-picker select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 16px;
 }
 
 .agent-switch {
@@ -3612,10 +3644,19 @@ button.diff-line[data-kind="fold"] {
 
 .stats-table th,
 .stats-table td {
-  padding: 9px 12px;
+  padding: 9px 8px;
   text-align: left;
   vertical-align: top;
   white-space: nowrap;
+}
+
+/* Tight between columns so twelve fit at desktop widths; the card's edges keep their inset. */
+.stats-table :is(th, td):first-child {
+  padding-left: 12px;
+}
+
+.stats-table :is(th, td):last-child {
+  padding-right: 12px;
 }
 
 .stats-table thead th {
@@ -3876,6 +3917,10 @@ html:has(.viewer[open]) {
 /* ---------- Phone ---------- */
 
 @media (max-width: 767px) {
+  .new-session .send-button {
+    margin-left: auto;
+  }
+
   body {
     font-size: 14px;
   }

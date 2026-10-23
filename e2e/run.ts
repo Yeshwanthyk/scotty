@@ -20,10 +20,11 @@ const testName = Schema.decodeUnknownExit(
     "init",
     "lifecycle",
     "live",
+    "sizes",
   ]),
 )(process.argv[2]);
 if (Exit.isFailure(testName))
   throw new Error(
-    "Usage: npm run e2e -- core|stop-resume|github|hatch|hatch-env|files|settings|terminal|lifecycle|live|hooks|signatures|reach|mcp-oauth|scotty-mcp|automations|blueprints [--agent codex|claude] [--real], or init --stage <name>",
+    "Usage: npm run e2e -- core|stop-resume|github|hatch|hatch-env|files|settings|terminal|lifecycle|live|sizes|hooks|signatures|reach|mcp-oauth|scotty-mcp|automations|blueprints [--agent codex|claude] [--real], or init --stage <name>",
   );
 await import(`./${testName.value}.js`);

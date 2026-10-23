@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect";
+import { Size } from "../../../src/places/place";
 import {
   decodeCanonicalConversationSnapshotSync,
   type CanonicalConversationSnapshot,
@@ -13,7 +14,11 @@ const Session = Schema.Struct({
       // Why a stopped session stopped, and how a failed one recovers; older payloads omit them.
       stop: Schema.optional(
         Schema.NullOr(
-          Schema.Struct({ reason: Schema.String, exitCode: Schema.optional(Schema.Number) }),
+          Schema.Struct({
+            reason: Schema.String,
+            exitCode: Schema.optional(Schema.Number),
+            max: Schema.optional(Schema.Number),
+          }),
         ),
       ),
       failure: Schema.optional(
@@ -28,6 +33,7 @@ const Session = Schema.Struct({
     branch: Schema.String,
     prompt: Schema.String,
     agentKind: Schema.String,
+    size: Size,
     createdAt: Schema.String,
     activeAt: Schema.String,
     origin: Schema.NullOr(
@@ -149,9 +155,18 @@ export async function create(
   repo: string,
   prompt: string,
   key: string,
-  agent: "codex" | "claude" = "codex",
+  agent: "codex" | "claude",
+  // Absent: the Worker picks the repository's default, else standard-1.
+  size?: typeof Size.Type,
 ): Promise<string> {
-  const body = { title, repo, prompt, agent, provider: "cloudflare" };
+  const body = {
+    title,
+    repo,
+    prompt,
+    agent,
+    ...(size === undefined ? {} : { size }),
+    provider: "cloudflare",
+  };
   const result = Option.getOrUndefined(
     decodeCreated(await request("/api/sessions", body, undefined, key)),
   );
@@ -199,8 +214,13 @@ export async function session(id: string): Promise<Session | undefined> {
 }
 
 // Stop and resume answer with the session; the live socket shows it, so the body is not read.
-export async function lifecycle(id: string, action: "stop" | "resume"): Promise<void> {
-  await request(sessionPath(id) + "/" + action, {});
+// A resume naming a size restarts the stopped session at that size.
+export async function lifecycle(
+  id: string,
+  action: "stop" | "resume",
+  size?: typeof Size.Type,
+): Promise<void> {
+  await request(sessionPath(id) + "/" + action, size === undefined ? {} : { size });
 }
 
 export async function remove(id: string): Promise<void> {

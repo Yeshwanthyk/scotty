@@ -79,6 +79,8 @@ export const state = (session: typeof Session.Type) => {
     return `warm · sleeps in ${minutes(progress.sleepsAt)}m`;
   const reason = authority.stop?.reason;
   if (authority.lifecycle !== "stopped" || reason === undefined) return authority.lifecycle;
+  if (reason === "cap")
+    return `stopped · cap: ${authority.stop?.max} sessions are running; stop one or raise maxRunning`;
   return reason === "idle" ? "asleep · idle" : `stopped · ${reason}`;
 };
 

@@ -6,6 +6,7 @@ import type * as Cloudflare from "alchemy/Cloudflare";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { AgentKind } from "../session/events.js";
+import { defaultSize, Size, sizeShape } from "../places/place.js";
 import { titleFrom } from "../session/title.js";
 import { apiHandler } from "../http/api.js";
 import { Prompt, Repo } from "../http/start.js";
@@ -170,19 +171,23 @@ export function mcpHandler(
         repo: Repo,
         prompt: Prompt,
         agent: Schema.optionalKey(AgentKind),
+        size: Schema.optionalKey(Size).annotate({
+          description: `The container size; default: the repository's default, else ${defaultSize} (${sizeShape(defaultSize)}). Bigger than standard-4 needs a runner.`,
+        }),
         // Scotty's own e2e tests run the agent's scripted stand-in.
         scripted: Schema.optionalKey(Schema.Literal(true)).annotate({
           description: "Only for Scotty's own tests: run a scripted stand-in, not the agent.",
         }),
       }),
       false,
-      ({ repo, prompt, agent, scripted }) =>
+      ({ repo, prompt, agent, size, scripted }) =>
         passThrough("POST", "/api/sessions", {
           repo,
           prompt,
           title: titleFrom(prompt),
           provider: "cloudflare",
           ...(agent === undefined ? {} : { agent }),
+          ...(size === undefined ? {} : { size }),
           ...(scripted === undefined ? {} : { scripted }),
         }),
     ),
@@ -235,8 +240,23 @@ export function mcpHandler(
       false,
       ({ id }) => passThrough("POST", `/api/sessions/${id}/stop`),
     ),
-    tool("resume_session", "Start a stopped session's container again.", Id, false, ({ id }) =>
-      passThrough("POST", `/api/sessions/${id}/resume`),
+    tool(
+      "resume_session",
+      "Start a stopped session's container again. A size changes its container; a running session must be stopped first.",
+      Schema.Struct({
+        ...Id.fields,
+        size: Schema.optionalKey(Size).annotate({
+          description:
+            "The container size; default the session's current one. Bigger than standard-4 needs a runner.",
+        }),
+      }),
+      false,
+      ({ id, size }) =>
+        passThrough(
+          "POST",
+          `/api/sessions/${id}/resume`,
+          size === undefined ? undefined : { size },
+        ),
     ),
   ];
 

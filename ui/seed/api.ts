@@ -7,7 +7,8 @@ import { Schema } from "effect";
 import type { Plugin } from "vite";
 import { WebSocketServer, type WebSocket } from "ws";
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
-import { fold, initial, type State } from "../../src/session/fold.ts";
+import { fold, initial, resizeConflict, type State } from "../../src/session/fold.ts";
+import { live } from "../../src/session/state.ts";
 import { maxSearch, searchText } from "../../src/session/search.ts";
 import { repoStats, sessionStats, StatsWindow } from "../../src/session/stats.ts";
 import { conversationView, sessionView, turnOutcome } from "../../src/session/view.ts";
@@ -28,6 +29,7 @@ import {
 } from "../../src/creds/connections.ts";
 import { signaturePresets } from "../../src/hooks/config.ts";
 import { codexLog, dummies } from "./dummy.ts";
+import { Size } from "../../src/places/place.ts";
 
 const here = new URL(".", import.meta.url);
 const speed = 4;
@@ -220,6 +222,7 @@ function create(input: {
   title: string;
   repo: string;
   prompt: string;
+  size?: typeof Size.Type;
   baseBranch?: string;
 }): Session {
   const id = crypto.randomUUID().replaceAll("-", "");
@@ -233,6 +236,7 @@ function create(input: {
     repo: input.repo,
     prompt: input.prompt,
     branch: `scotty/${id}`,
+    ...(input.size === undefined ? {} : { size: input.size }),
     ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
   });
   append(session, { kind: "container.start", src: "session", gen: 1 });
@@ -315,7 +319,9 @@ const CreateBody = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
   repo: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)),
   prompt: Schema.String.check(Schema.isMinLength(1)),
+  size: Schema.optionalKey(Size),
 });
+const ResumeBody = Schema.Struct({ size: Schema.optionalKey(Size) });
 const SteerBody = Schema.Struct({
   text: Schema.String.check(Schema.isMinLength(1)),
   turn: Schema.String,
@@ -390,6 +396,9 @@ const refreshSeed = (source: SeedSource) => {
   source.fetched = Date.now();
   return { source: source.id, commit: source.commit, added, updated, removed: [], skipped: [] };
 };
+
+// Repository defaults, keyed by lowercased owner/repo as the Creds DO keys them.
+const repoSizes = new Map<string, typeof Size.Type>([["acme/storefront", "standard-3"]]);
 
 // Settings and accounts live in memory. Skill sources are made up; nothing reaches GitHub.
 const owner = {
@@ -964,7 +973,29 @@ async function settingsApi(
       sources: owner.sources,
       claudeStyle: owner.claudeStyle,
       email: "owner@example.com",
+      running: [...sessions.values()].filter(
+        (session) => live(session.state) && session.state.gen !== undefined,
+      ).length,
+      maxRunning: 20,
     });
+  if (path === "/api/repos" && method === "GET")
+    return json(res, {
+      repos: [...repoSizes].sort().map(([repo, size]) => ({ repo, size })),
+    });
+  if (path.startsWith("/api/repos/") && (method === "PUT" || method === "DELETE")) {
+    const repo = path.slice("/api/repos/".length).toLowerCase();
+    if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo))
+      return fail(res, "Expected /api/repos/owner/repo");
+    if (method === "DELETE") {
+      repoSizes.delete(repo);
+      return json(res, { repo, size: null });
+    }
+    const input = Schema.decodeUnknownOption(Schema.Struct({ size: Size }))(await body(req));
+    if (input._tag === "None")
+      return fail(res, "size is standard-1, standard-2, standard-3 or standard-4");
+    repoSizes.set(repo, input.value.size);
+    return json(res, { repo, size: input.value.size });
+  }
   if (path === "/api/settings/claude-style" && method === "PUT") {
     const input = Schema.decodeUnknownOption(
       Schema.Struct({ skill: Schema.NullOr(Schema.String) }),
@@ -1092,6 +1123,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return automationsApi(req, res, url.pathname, method);
   if (
     url.pathname.startsWith("/api/settings") ||
+    url.pathname.startsWith("/api/repos") ||
     url.pathname.startsWith("/api/skills") ||
     url.pathname.startsWith("/api/skill-sources") ||
     url.pathname.startsWith("/api/credentials")
@@ -1191,7 +1223,19 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return json(res, view(session));
   }
   if (method === "POST" && sub === "resume") {
-    append(session, { kind: "resume.requested", src: "api" });
+    const input = Schema.decodeUnknownOption(ResumeBody)(await body(req));
+    if (input._tag === "None") return fail(res, "Expected {size?}");
+    const size = input.value.size;
+    const conflict = resizeConflict(session.state, size);
+    if (conflict === "running")
+      return fail(res, "Stop the session before changing its size", 409, "running");
+    if (conflict === "failed")
+      return fail(res, "The session failed and can't be resumed; start a new one", 409, "failed");
+    append(session, {
+      kind: "resume.requested",
+      src: "api",
+      ...(size === undefined ? {} : { size }),
+    });
     if (session.state.phase === "provisioning") play(session, boot);
     return json(res, view(session));
   }

@@ -1,10 +1,11 @@
-import { Effect, Exit, Result, Schema, Stream } from "effect";
+import { Config, Effect, Exit, Result, Schema, Stream } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { AgentKind } from "../session/events.js";
+import { Size } from "../places/place.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
 import { repoStats, StatsWindow } from "../session/stats.js";
 import {
@@ -15,7 +16,7 @@ import {
   ToolPolicy,
   Key,
 } from "../creds/connections.js";
-import { githubHint, Prompt, Repo, startSession } from "./start.js";
+import { githubHint, Prompt, Repo, repoKey, startSession } from "./start.js";
 import { automationName, Definition, NewAutomation } from "../automations/automation.js";
 import { fireRun, runRequest } from "../automations/fire.js";
 import { version } from "../version.js";
@@ -41,6 +42,7 @@ const Create = Schema.Struct({
   prompt: Prompt,
   provider: Schema.Literal("cloudflare"),
   agent: Schema.optional(AgentKind),
+  size: Schema.optional(Size),
   // The agent's scripted stand-in, for e2e: no ChatGPT, Claude or GitHub sign-in needed.
   scripted: Schema.optional(Schema.Literal(true)),
   // A second create with the same key steers the session the first one made.
@@ -83,6 +85,7 @@ const Steer = Schema.Struct({
   req: Schema.optional(RequestId),
 });
 const Interrupt = Schema.Struct({ turn: Schema.String, req: Schema.optional(RequestId) });
+const Resume = Schema.fromJsonString(Schema.Struct({ size: Schema.optionalKey(Size) }));
 const path =
   /^\/api\/sessions\/([a-z0-9-]{6,32})(?:\/(steer|interrupt|stop|resume|conversation|log|hatch\/(\d{1,5})|files\/([a-f0-9]{32})))?$/;
 const GitHubToken = Schema.Struct({
@@ -109,6 +112,8 @@ const sourceHint = "owner/repo[/folder][@ref] or a github.com link";
 const skillPath = /^\/api\/skills\/([^/]+)$/;
 const AutomationSwitch = Schema.Struct({ enabled: Schema.Boolean });
 const automationPath = /^\/api\/automations\/([^/]+)(\/run)?$/;
+const repoPath = /^\/api\/repos\/(.+)$/;
+const RepoDefault = Schema.Struct({ size: Size });
 const definitionHint =
   "when is {kind: calendar, cron, tz} | {kind: interval, minutes} | {kind: event, connection}";
 
@@ -204,6 +209,9 @@ export function apiHandler(
         sources: yield* credential.skillSources(),
         claudeStyle: yield* credential.claudeStyle(),
         email: request.headers["cf-access-authenticated-user-email"] ?? null,
+        running: yield* credential.runningCount(),
+        // The deployer always sets SCOTTY_MAX_RUNNING from the stage's maxRunning.
+        maxRunning: yield* Effect.orDie(Config.Int("SCOTTY_MAX_RUNNING")),
       });
     }
     if (url.pathname === "/api/settings/instructions" && request.method === "PUT") {
@@ -223,6 +231,25 @@ export function apiHandler(
       if (!(yield* credential.setClaudeStyle(body.skill)))
         return yield* bad(`No skill named ${body.skill}`, 404);
       return yield* HttpServerResponse.json({ claudeStyle: body.skill });
+    }
+    if (url.pathname === "/api/repos" && request.method === "GET")
+      return yield* HttpServerResponse.json({ repos: yield* credential.repoSettings() });
+    const repoMatch = repoPath.exec(url.pathname);
+    if (repoMatch !== null && (request.method === "PUT" || request.method === "DELETE")) {
+      const repo = yield* Schema.decodeUnknownEffect(Repo)(repoMatch[1]).pipe(
+        Effect.catchTag("SchemaError", () => bad("Expected /api/repos/owner/repo")),
+      );
+      if (HttpServerResponse.isHttpServerResponse(repo)) return repo;
+      const size =
+        request.method === "DELETE"
+          ? null
+          : yield* Schema.decodeUnknownEffect(RepoDefault)(yield* request.json).pipe(
+              Effect.map((body) => body.size),
+              Effect.catchTag("SchemaError", (error) => bad(error.message)),
+            );
+      if (HttpServerResponse.isHttpServerResponse(size)) return size;
+      yield* credential.setRepoSize(repo, size);
+      return yield* HttpServerResponse.json({ repo: repoKey(repo), size });
     }
     // Fetches the source at its ref, keeps the tarball and records what changed.
     const saveSource = (spec: SourceSpec) =>
@@ -515,6 +542,7 @@ export function apiHandler(
         title: body.title,
         agent: body.agent ?? "codex",
         place: body.provider,
+        ...(body.size === undefined ? {} : { size: body.size }),
         ...(body.scripted === true ? { scripted: true } : {}),
         ...(body.key === undefined
           ? {}
@@ -528,7 +556,7 @@ export function apiHandler(
           {
             error: {
               message:
-                "That key or idempotency key belongs to a session for another repository, agent or prompt",
+                "That key or idempotency key belongs to a session for another repository, agent, size or prompt",
               code: "key_conflict",
               hint: `scotty read ${started.id}`,
             },
@@ -674,8 +702,34 @@ export function apiHandler(
       if (retry !== undefined && HttpServerResponse.isHttpServerResponse(retry)) return retry;
       return yield* HttpServerResponse.json(yield* stub.stop(retry));
     }
-    if (request.method === "POST" && subpath === "resume")
-      return yield* HttpServerResponse.json(yield* stub.resume());
+    if (request.method === "POST" && subpath === "resume") {
+      // The body is optional: a bare resume keeps the session's size.
+      const text = yield* request.text;
+      const body = yield* Schema.decodeUnknownEffect(Resume)(text === "" ? "{}" : text).pipe(
+        Effect.catchTag("SchemaError", (error) => bad(error.message)),
+      );
+      if (HttpServerResponse.isHttpServerResponse(body)) return body;
+      const resumed = yield* stub.resume(body.size);
+      if (resumed.kind !== "resumed")
+        return yield* HttpServerResponse.json(
+          {
+            error:
+              resumed.kind === "running"
+                ? {
+                    message: "Stop the session before changing its size",
+                    code: "running",
+                    hint: `scotty stop ${id}`,
+                  }
+                : {
+                    message: "The session failed and can't be resumed; start a new one",
+                    code: "failed",
+                    hint: `scotty read ${id}`,
+                  },
+          },
+          { status: 409 },
+        );
+      return yield* HttpServerResponse.json({ version: resumed.version, session: resumed.session });
+    }
     if (request.method === "POST" && subpath === "steer") {
       const retry = yield* idempotencyKey(request.headers["idempotency-key"]);
       if (HttpServerResponse.isHttpServerResponse(retry)) return retry;

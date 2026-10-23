@@ -1,7 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
 import { decodeSessionEvent } from "./events.js";
 import { command } from "./commands.js";
-import { deadline, deadlines, fold, initial, startStep, type State } from "./fold.js";
+import {
+  deadline,
+  deadlines,
+  fold,
+  initial,
+  resizeConflict,
+  startStep,
+  type State,
+} from "./fold.js";
 import { sessionView } from "./view.js";
 import { boot, check, created, delivered, hello, make, ready, start } from "./fold-fixtures.js";
 
@@ -133,6 +141,30 @@ describe("session fold", () => {
     expect(state.requests.find((item) => item.req === "late")?.status).toBe("stale");
     expect(startStep(state, { ...input, req: "late", prompt: "late" })).toBe("unavailable");
     check(state);
+  });
+
+  it("keeps the size the session was created with; none is standard-1", () => {
+    const unsized = fold(initial, created);
+    expect(sessionView("s", unsized).display.size).toBe("standard-1");
+    const sized = fold(
+      initial,
+      make(1, "created", { ...created, req: "create-1", size: "standard-3" }),
+    );
+    expect(sessionView("s", sized).display.size).toBe("standard-3");
+    const input = {
+      req: "create-1",
+      repo: "https://example.org/repo",
+      agent: "codex",
+      prompt: "hello",
+    };
+    // A retried create naming another size is a conflict; one naming none, or the same, is not.
+    expect(startStep(sized, { ...input, size: "standard-1" })).toBe("conflict");
+    expect(startStep(sized, { ...input, size: "standard-3" })).toBe("duplicate");
+    expect(startStep(sized, input)).toBe("duplicate");
+    // A wake or keyed steer names no size, so it reaches a session of any size.
+    expect(startStep(sized, { ...input, req: "run:wake-1", prompt: "wake" })).toBe("prompt");
+    expect(startStep(unsized, { ...input, req: "run:wake-1", prompt: "wake" })).toBe("prompt");
+    check(sized);
   });
 
   it("deduplicates start and request ids; rejects reserved initial names and stale turns", () => {
@@ -359,6 +391,22 @@ describe("session fold", () => {
     check(state);
   });
 
+  it("stops with reason cap when the start's claim is refused, and resumes later", () => {
+    const refused = make(3, "container.stopped", { gen: 1, reason: "cap", max: 2 });
+    const state = fold(fold(fold(initial, created), start), refused);
+    expect(state.phase).toBe("stopped");
+    expect(state.stop).toEqual({ reason: "cap", max: 2 });
+    expect(state.requests.every((r) => r.status !== "pending")).toBe(true);
+    expect(command(state, refused)).toEqual({ kind: "destroy" });
+    expect(deadline(state)).toBeUndefined();
+    check(state);
+    const resume = make(4, "resume.requested");
+    const resumed = fold(state, resume);
+    expect(resumed).toMatchObject({ phase: "provisioning", gen: 2, stop: undefined });
+    expect(command(resumed, resume)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    check(resumed);
+  });
+
   it("stops on container.stopped, ends pending requests and ignores later output", () => {
     const stopped = make(6, "container.stopped", { gen: 1 });
     const state = fold(boot(), stopped);
@@ -453,6 +501,44 @@ describe("session fold", () => {
       gen: 2,
       resume: { threadId: "thread-1", commit: "abc" },
     });
+    check(state);
+  });
+
+  it("resumes at a named size and keeps it until a resume names another", () => {
+    const stopped = stoppedWithThread();
+    expect(resizeConflict(stopped, "standard-3")).toBeUndefined();
+    const sized = make(8, "resume.requested", { size: "standard-3" });
+    let state = fold(stopped, sized);
+    expect(state).toMatchObject({ phase: "provisioning", gen: 2, size: "standard-3" });
+    expect(command(state, sized)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    // A live container never changes size: the API refuses a resize, and the fold ignores one.
+    expect(resizeConflict(state, "standard-2")).toBe("running");
+    expect(resizeConflict(state, "standard-3")).toBeUndefined();
+    expect(resizeConflict(state, undefined)).toBeUndefined();
+    expect(fold(state, make(9, "resume.requested", { size: "standard-2" })).size).toBe(
+      "standard-3",
+    );
+    // A later resume without a size, and a steer that resumes, keep it.
+    state = [make(9, "container.stopped", { gen: 2 }), make(10, "resume.requested")].reduce(
+      fold,
+      state,
+    );
+    expect(state).toMatchObject({ phase: "provisioning", gen: 3, size: "standard-3" });
+    state = fold(state, make(11, "container.stopped", { gen: 3 }));
+    state = fold(
+      state,
+      make(12, "prompt.requested", {
+        req: "s1",
+        turn: state.currentTurn,
+        text: "again",
+        images: [],
+      }),
+    );
+    expect(state).toMatchObject({ phase: "provisioning", gen: 4, size: "standard-3" });
+    expect(sessionView("s", state).display.size).toBe("standard-3");
+    // A keyed start naming the size the session was created at still reaches it.
+    const input = { repo: "https://example.org/repo", agent: "codex", prompt: "wake" };
+    expect(startStep(state, { ...input, req: "run:wake-1", size: "standard-1" })).toBe("prompt");
     check(state);
   });
 
@@ -713,6 +799,9 @@ describe("session fold", () => {
     const fatal = make(6, "failed", { phase: "start", code: "broken", retryable: false });
     state = fold(fold(boot(), fatal), make(7, "resume.requested"));
     expect(state.phase).toBe("failed");
+    // It can never resume, so a resize is refused as failed: stopping it would not help.
+    expect(resizeConflict(state, "standard-3")).toBe("failed");
+    expect(resizeConflict(fold(boot(), retryable), "standard-3")).toBeUndefined();
     check(state);
   });
 });

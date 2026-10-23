@@ -1,5 +1,6 @@
 import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Size } from "../../src/places/place.js";
 import { titleFrom } from "../../src/session/title.js";
 import { Conversation, Created, List, Log, View } from "../client.js";
 import {
@@ -37,10 +38,11 @@ export const create = Command.make(
     repository: Argument.String("repo"),
     prompt: Argument.String("prompt"),
     agent: Flag.Literals("agent", ["codex", "claude"]).pipe(Flag.withDefault("codex")),
+    size: Flag.Literals("size", Size.literals).pipe(Flag.optional),
     key: Flag.String("key").pipe(Flag.optional),
     sessionKey: Flag.String("session-key").pipe(Flag.optional),
   },
-  ({ repository, prompt, agent, key, sessionKey }) =>
+  ({ repository, prompt, agent, size, key, sessionKey }) =>
     Effect.gen(function* () {
       const repo = yield* repoName(repository, "new");
       if (!prompt.trim()) return yield* usage("The prompt cannot be empty", "new");
@@ -53,6 +55,7 @@ export const create = Command.make(
           prompt,
           provider: "cloudflare",
           agent,
+          ...(Option.isSome(size) ? { size: size.value } : {}),
           ...(Option.isSome(sessionKey) ? { key: sessionKey.value } : {}),
         },
         ...(Option.isSome(key) ? { key: key.value } : {}),
@@ -144,12 +147,13 @@ export const read = Command.make(
       yield* output(
         {
           id: session.identity.id,
+          size: session.display.size,
           authority: session.authority,
           turn: latest ? { id: latest.id, state: latest.state } : null,
           messages,
         },
         [
-          `${bold(session.display.title)} ${dim(`· ${session.display.repository} · ${session.display.agentKind} · ${state(session)}`)}`,
+          `${bold(session.display.title)} ${dim(`· ${session.display.repository} · ${session.display.agentKind} · ${session.display.size} · ${state(session)}`)}`,
           ...messages.flatMap((message) => [
             "",
             message.role === "user" ? bold("you") : bold(session.display.agentKind),

@@ -23,6 +23,8 @@ import { authorizeMcp, refreshMcp, StoredMcpOAuth } from "./mcp-oauth.js";
 import { isLoopback } from "../loopback.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
+import { Size } from "../places/place.js";
+import { repoKey } from "../http/start.js";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type { SessionView } from "../session/view.js";
@@ -139,6 +141,8 @@ const FireRow = Schema.Struct({
   session: Schema.NullOr(Schema.String),
   scripted: Schema.Number,
 });
+const SizeRow = Schema.Struct({ size: Size });
+const RepoSettings = Schema.Array(Schema.Struct({ repo: Schema.String, size: Size }));
 const RunAnswer = Schema.Struct({
   status: Schema.Literals(["started", "steered", "ended", "skipped", "failed"]),
   reason: Schema.NullOr(Schema.String),
@@ -158,6 +162,8 @@ const day = 24 * 60 * 60 * 1000;
 // `claude setup-token` makes a token that lasts a year and doesn't say when it expires.
 const claudeLifetime = 365 * day;
 const claudeWarning = 14 * day;
+const Claims = Schema.Array(Schema.Struct({ id: Schema.String, token: Schema.String }));
+const Count = Schema.Array(Schema.Struct({ count: Schema.Number }));
 class CredentialStoreError extends Schema.TaggedError<CredentialStoreError>()(
   "CredentialStoreError",
   { message: Schema.String },
@@ -181,6 +187,9 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // The skill Claude sessions use as their output style.
       yield* sql`CREATE TABLE IF NOT EXISTS claude_style (id INTEGER PRIMARY KEY CHECK (id = 1), skill TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_index (id TEXT PRIMARY KEY)`;
+      // Sessions holding one of the stage's running slots (maxRunning). A claim's token changes on
+      // every claim, so dropping a stale claim never drops a newer one for the same session.
+      yield* sql`CREATE TABLE IF NOT EXISTS running (id TEXT PRIMARY KEY, token TEXT NOT NULL)`;
       yield* sql`CREATE TABLE IF NOT EXISTS session_keys (key TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)`;
       yield* sql`CREATE TABLE IF NOT EXISTS request_sessions (req TEXT PRIMARY KEY, id TEXT)`;
       // What a search matches (`searchText`). Sessions made before it have no row: they are
@@ -194,6 +203,11 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       // firing finds the same run. What it fires is fixed when it is received.
       yield* sql`CREATE TABLE IF NOT EXISTS runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, automation TEXT NOT NULL, source TEXT NOT NULL, trigger TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, reason TEXT, session TEXT, delivery TEXT, repo TEXT NOT NULL, agent TEXT NOT NULL, prompt TEXT, key TEXT, branch TEXT, action TEXT NOT NULL, scripted INTEGER NOT NULL, tried INTEGER NOT NULL DEFAULT 0, UNIQUE (automation, source))`;
       yield* sql`CREATE INDEX IF NOT EXISTS runs_by_automation ON runs (automation, seq)`;
+      // The size a run asks for, when its automation names one. A table of its own, so adding sizes
+      // left the stored `runs` table as it was.
+      yield* sql`CREATE TABLE IF NOT EXISTS run_sizes (id TEXT PRIMARY KEY, size TEXT NOT NULL)`;
+      // A repository's own defaults, under its `repoKey`.
+      yield* sql`CREATE TABLE IF NOT EXISTS repo_settings (repo TEXT PRIMARY KEY, size TEXT NOT NULL)`;
 
       const refreshing = new Map<
         string,
@@ -286,9 +300,18 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             input.trigger === "event"
               ? `${input.source}:${input.automation}`
               : crypto.randomUUID().replaceAll("-", "");
-          const inserted =
-            yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, branch, action, scripted) VALUES (${id}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${received?.branch ?? null}, ${input.definition.action ?? "start"}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
-          yield* sql`DELETE FROM runs WHERE seq <= (SELECT MAX(seq) FROM runs) - ${keptRuns}`;
+          // A sized run is never recorded without its size.
+          const inserted = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const rows =
+                yield* sql`INSERT OR IGNORE INTO runs (id, automation, source, trigger, at, status, reason, delivery, repo, agent, prompt, key, branch, action, scripted) VALUES (${id}, ${input.automation}, ${input.source}, ${input.trigger}, ${Date.now()}, ${prepared.status}, ${prepared.status === "skipped" ? prepared.reason : null}, ${input.delivery ?? null}, ${input.definition.repo}, ${input.definition.agent}, ${received?.prompt ?? null}, ${received?.key ?? null}, ${received?.branch ?? null}, ${input.definition.action ?? "start"}, ${input.definition.scripted === true ? 1 : 0}) RETURNING id`;
+              if (rows.length > 0 && input.definition.size !== undefined)
+                yield* sql`INSERT INTO run_sizes (id, size) VALUES (${id}, ${input.definition.size})`;
+              yield* sql`DELETE FROM runs WHERE seq <= (SELECT MAX(seq) FROM runs) - ${keptRuns}`;
+              yield* sql`DELETE FROM run_sizes WHERE id NOT IN (SELECT id FROM runs)`;
+              return rows;
+            }),
+          );
           const run = yield* runRow(
             (yield* sql`SELECT id, automation, trigger, at, status, reason, session, delivery, key FROM runs WHERE automation = ${input.automation} AND source = ${input.source}`)[0],
           );
@@ -387,11 +410,36 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const rows = yield* sql`SELECT id FROM session_index WHERE id = ${session}`;
             return rows.length > 0;
           }),
+        // Takes a running slot for the session unless `max` are taken; a session that holds one
+        // keeps it. Answers with every claim, so a refused caller can look for stale ones.
+        claim: (id: string, max: number) =>
+          Effect.gen(function* () {
+            const token = crypto.randomUUID();
+            yield* sql`UPDATE running SET token = ${token} WHERE id = ${id}`;
+            yield* sql`INSERT OR IGNORE INTO running (id, token) SELECT ${id}, ${token} WHERE (SELECT COUNT(*) FROM running) < ${max}`;
+            const claims = yield* Schema.decodeUnknownEffect(Claims)(
+              yield* sql`SELECT id, token FROM running ORDER BY id`,
+            );
+            return { granted: claims.some((claim) => claim.id === id), claims };
+          }),
+        release: (id: string) => sql`DELETE FROM running WHERE id = ${id}`.pipe(Effect.asVoid),
+        dropClaims: (claims: typeof Claims.Type) =>
+          Effect.forEach(
+            claims,
+            (claim) => sql`DELETE FROM running WHERE id = ${claim.id} AND token = ${claim.token}`,
+            { discard: true },
+          ),
+        runningCount: () =>
+          sql`SELECT COUNT(*) AS count FROM running`.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Count)),
+            Effect.map(([row]) => row?.count ?? 0),
+          ),
         forget: (id: string) =>
           Effect.gen(function* () {
             yield* sql`DELETE FROM session_keys WHERE id = ${id}`;
             yield* sql`DELETE FROM session_search WHERE id = ${id}`;
             yield* sql`DELETE FROM session_index WHERE id = ${id}`;
+            yield* sql`DELETE FROM running WHERE id = ${id}`;
             yield* broadcast({ kind: "removed", id });
           }),
         connections: () =>
@@ -762,10 +810,15 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                     };
                   }
                   yield* sql`UPDATE runs SET session = ${session} WHERE id = ${id}`;
+                  const sized = (yield* sql`SELECT size FROM run_sizes WHERE id = ${id}`)[0];
                   return {
                     kind: "received" as const,
                     ...run,
                     ...target,
+                    size:
+                      sized === undefined
+                        ? null
+                        : (yield* Schema.decodeUnknownEffect(SizeRow)(sized)).size,
                   };
                 }
                 const answer =
@@ -953,6 +1006,24 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
                   : null;
             return { status: "saved" as const, added, updated, removed, stale };
           }).pipe(sql.withTransaction),
+        repoSettings: () =>
+          sql`SELECT repo, size FROM repo_settings ORDER BY repo`.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(RepoSettings)),
+          ),
+        repoSize: (repo: string) =>
+          sql`SELECT size FROM repo_settings WHERE repo = ${repoKey(repo)}`.pipe(
+            Effect.flatMap((rows) =>
+              rows[0] === undefined
+                ? Effect.succeed(null)
+                : Schema.decodeUnknownEffect(SizeRow)(rows[0]).pipe(Effect.map((row) => row.size)),
+            ),
+          ),
+        // No size clears the default.
+        setRepoSize: (repo: string, size: typeof Size.Type | null) =>
+          (size === null
+            ? sql`DELETE FROM repo_settings WHERE repo = ${repoKey(repo)}`
+            : sql`INSERT OR REPLACE INTO repo_settings (repo, size) VALUES (${repoKey(repo)}, ${size})`
+          ).pipe(Effect.asVoid),
         claudeStyle: () =>
           sql`SELECT skill FROM claude_style`.pipe(
             Effect.flatMap((rows) =>

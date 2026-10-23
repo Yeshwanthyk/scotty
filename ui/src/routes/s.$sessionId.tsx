@@ -1,5 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { Size } from "../../../src/places/place";
 import { AgentChip, Composer } from "../components/Composer";
 import { DiffStat } from "../components/DiffLines";
 import { Icon } from "../components/Icon";
@@ -176,7 +177,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
       setBusy(false);
     }
   }
-  async function act(action: "stop" | "resume" | "delete") {
+  async function act(action: "stop" | "resume" | "delete", size?: typeof Size.Type) {
     setBusy(true);
     setError("");
     try {
@@ -187,7 +188,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
         await navigate({ to: "/sessions" });
         return;
       }
-      await lifecycle(sessionId, action);
+      await lifecycle(sessionId, action, size);
       refresh.current();
       sessions.refresh();
     } catch (failure) {
@@ -356,7 +357,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
                   session={detail}
                   status={status}
                   busy={busy}
-                  onResume={() => void act("resume")}
+                  onResume={(size) => void act("resume", size)}
                 />
               ) : null}
               <div ref={transcript.spacer} aria-hidden="true" hidden />
@@ -440,7 +441,7 @@ function ThreadPlaceholder() {
 // Where the session works and what started it, as one line that ellipsizes as a whole. The phone
 // shows the repository's name without its owner.
 function SessionLine({ display }: { display: Session["display"] }) {
-  const { repository, branch, origin } = display;
+  const { repository, branch, origin, size } = display;
   const slash = repository.lastIndexOf("/");
   const owner = slash > 0 ? repository.slice(0, slash + 1) : "";
   const name = repository.slice(slash + 1) || "No repository";
@@ -452,6 +453,7 @@ function SessionLine({ display }: { display: Session["display"] }) {
       </span>
       {/* Scotty's own branch name is the session id; only a chosen branch is worth showing. */}
       {branch && !branch.startsWith("scotty/") ? <span title={branch}> · {branch}</span> : null}
+      <span title="Container size"> · {size}</span>
       {origin?.kind === "automation" ? (
         <>
           {" · "}

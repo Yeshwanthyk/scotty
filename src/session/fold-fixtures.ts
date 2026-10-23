@@ -4,6 +4,7 @@ import * as Arbitrary from "effect/unstable/arbitrary/Arbitrary";
 import { decodeSessionEvent, type SessionEvent } from "./events.js";
 import { deadline, fold, initial, invariants, type State } from "./fold.js";
 import { live } from "./state.js";
+import { Size } from "../places/place.js";
 
 const supervisorKinds = new Set([
   "sup.hello",
@@ -100,6 +101,9 @@ export const kinds = [
   "dial.failed",
   "sup.redial",
   "failed",
+  // A start whose running-cap claim was refused.
+  "cap",
+  "resume.requested",
   "active",
   "invariant.violated",
 ] as const;
@@ -133,5 +137,7 @@ export const generated = Arbitrary.schema(
     withReq: Schema.Boolean,
     op: Schema.Literals(["container", "workspace", "dial", "redial", "req:p", "req:initial:1"]),
     dt: Schema.Literals([0, 1_000, 2_000, 30_000, 120_000]),
+    // A generated `created` or `resume.requested` without a size, or with one.
+    size: Schema.Literals(["none", ...Size.literals]),
   }),
 );

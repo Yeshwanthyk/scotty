@@ -1,3 +1,5 @@
+import { useState } from "react";
+import type { Size } from "../../../src/places/place";
 import type { Session } from "../data/core";
 import {
   failureSentence,
@@ -9,6 +11,7 @@ import {
   type Status,
 } from "../data/status";
 import { Icon, Spinner } from "./Icon";
+import { SizePicker } from "./SizePicker";
 import { useNow } from "./Thread";
 
 const stopOf = (session: Session) =>
@@ -84,15 +87,31 @@ export function LifecycleNotice({
   session: Session;
   status: Status;
   busy: boolean;
-  onResume: () => void;
+  // A size only when the owner picked one; otherwise the session keeps its own.
+  onResume: (size: typeof Size.Type | undefined) => void;
 }) {
+  // A size picked here holds while the session is still at the size it was picked against, so
+  // a failed resume keeps it and a resume that changed the size drops it.
+  const [picked, setPicked] = useState<{ size: typeof Size.Type; from: typeof Size.Type }>();
   const authority = session.authority;
   if (authority.kind !== "stable") return null;
+  const chosen = picked?.from === session.display.size ? picked.size : undefined;
   const resume = (
-    <button type="button" className="button pressable" disabled={busy} onClick={onResume}>
-      <Icon name="resume" size={13} />
-      Resume
-    </button>
+    <div className="lifecycle-resume">
+      <SizePicker
+        value={chosen ?? session.display.size}
+        onChange={(size) => setPicked({ size, from: session.display.size })}
+      />
+      <button
+        type="button"
+        className="button pressable"
+        disabled={busy}
+        onClick={() => onResume(chosen)}
+      >
+        <Icon name="resume" size={13} />
+        Resume
+      </button>
+    </div>
   );
   if (status === "asleep")
     return (

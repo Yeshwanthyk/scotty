@@ -1,6 +1,7 @@
 // Synthetic sessions in the exact Codex app-server shapes (surveyed 2026-09-28 from two weeks of
 // real rollouts, structure only), written as Scotty event logs so they go through the real fold.
 import { decodeSessionEvent, type SessionEvent } from "../../src/session/events.ts";
+import type { Size } from "../../src/places/place.ts";
 
 type Json = Record<string, unknown>;
 
@@ -40,10 +41,15 @@ export type DummySpec = {
   repo: string;
   minutesAgo: number;
   turns: TurnSpec[];
-  // Where the session is left: stopped after its turns, waiting on the owner, or failed at boot.
-  after?: "stopped" | "waiting" | "boot-failed";
+  // Where the session is left: stopped after its turns, waiting on the owner, failed at boot, or
+  // stopped before its container because the running cap was full.
+  after?: "stopped" | "waiting" | "boot-failed" | "cap";
   // Set when a webhook or an automation made the session.
   origin?: Json;
+  // The container size; absent: the default.
+  size?: typeof Size.Type;
+  // After the stop, resumed at this size for a while and stopped again.
+  resized?: typeof Size.Type;
 };
 
 const read = (path: string) => ({
@@ -89,9 +95,14 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
     title: spec.title,
     prompt: spec.turns[0]?.prompt ?? "",
     image: "default",
+    ...(spec.size === undefined ? {} : { size: spec.size }),
     ...(spec.origin === undefined ? {} : { origin: spec.origin }),
   });
   push({ src: "session", kind: "container.start", gen: 1 });
+  if (spec.after === "cap") {
+    push({ src: "session", kind: "container.stopped", gen: 1, reason: "cap", max: 20 });
+    return events;
+  }
   at += 3400;
   sup({
     kind: "sup.hello",
@@ -373,6 +384,35 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
     at += 30_000;
     push({ src: "api", kind: "container.stopped", gen: 1 });
     push({ src: "supervisor", kind: "socket.closed", gen: 1 });
+    // Only a stopped spec resumes; on any other `after`, `resized` does nothing.
+    if (spec.resized !== undefined) {
+      at += 10 * 60_000;
+      push({ src: "api", kind: "resume.requested", size: spec.resized });
+      at += 3400;
+      const gen = { src: "supervisor", gen: 2 };
+      push({
+        ...gen,
+        n: 1,
+        kind: "sup.hello",
+        version: "step-2",
+        boot: `b00701${spec.id.slice(0, 2)}-0000-4000-8000-000000000000`,
+      });
+      at += 1600;
+      push({
+        ...gen,
+        n: 2,
+        kind: "workspace.ready",
+        base: "main",
+        branch: `scotty/${spec.id}`,
+        commit: "4f37cf512cdbfb48f6ef8f5ea64f2f6bf51097cf",
+        ms: 1580,
+        retried: [],
+      });
+      push({ ...gen, n: 3, kind: "agent.ready", agentKind: "codex", session: thread });
+      at += 40 * 60_000;
+      push({ src: "api", kind: "container.stopped", gen: 2 });
+      push({ src: "supervisor", kind: "socket.closed", gen: 2 });
+    }
   }
   return events;
 }
@@ -577,6 +617,7 @@ export const dummies: DummySpec[] = [
     id: "d0cc0de5000000000000000000000001",
     title: "Fix gift card tax in checkout",
     repo: "acme/storefront",
+    size: "standard-3",
     minutesAgo: 95,
     turns: [
       {
@@ -787,6 +828,7 @@ export const dummies: DummySpec[] = [
     id: "d0cc0de5000000000000000000000003",
     title: "Research: iOS video Range requests",
     repo: "Yeshwanthyk/scotty-hatch-test",
+    size: "standard-2",
     minutesAgo: 60 * 26,
     turns: [
       {
@@ -832,6 +874,7 @@ export const dummies: DummySpec[] = [
     title: "Refactor the auth flow to passkeys",
     repo: "acme/storefront",
     minutesAgo: 60 * 24 * 3,
+    resized: "standard-3",
     origin: { kind: "api", key: "passkeys-2026" },
     turns: [
       ...Array.from({ length: 9 }, (_, index): TurnSpec => ({
@@ -977,6 +1020,14 @@ export const dummies: DummySpec[] = [
     after: "boot-failed",
     turns: [{ prompt: "reply ok", items: [] }],
   },
+  {
+    id: "d0cc0de500000000000000000000000c",
+    title: "Bump the checkout SDK while 20 others run",
+    repo: "acme/storefront",
+    minutesAgo: 30,
+    after: "cap",
+    turns: [{ prompt: "Bump @acme/checkout-sdk to 5.2 and fix the type errors.", items: [] }],
+  },
   // Stopped for over a week.
   {
     id: "d0cc0de5000000000000000000000007",
@@ -1015,6 +1066,7 @@ export const dummies: DummySpec[] = [
     id: "d0cc0de5000000000000000000000009",
     title: "Summarise yesterday's commits on main",
     repo: "acme/storefront",
+    size: "standard-4",
     minutesAgo: 60 * 5,
     origin: {
       kind: "automation",

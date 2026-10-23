@@ -1,5 +1,6 @@
 import type { SessionEvent, StopReason } from "./events.js";
 import type { Pending } from "./deadlines.js";
+import { defaultSize, type Size } from "../places/place.js";
 
 type RequestBase = {
   readonly req: string;
@@ -39,7 +40,11 @@ export type State = {
   readonly failure: { readonly code: string; readonly retryable: boolean } | undefined;
   // Why the session last stopped; `agent` is the agent exiting in a running container.
   readonly stop:
-    | { readonly reason: typeof StopReason.Type | "agent"; readonly exitCode?: number }
+    | {
+        readonly reason: typeof StopReason.Type | "agent";
+        readonly exitCode?: number;
+        readonly max?: number;
+      }
     | undefined;
   readonly lastHelloSeq: number;
   readonly lastRedialSeq: number;
@@ -51,6 +56,8 @@ export type State = {
   readonly files: readonly (AttachedFile & { readonly turn: string })[];
   readonly pending: readonly Pending[];
   readonly created: Extract<SessionEvent, { kind: "created" }> | undefined;
+  // The size every start uses: the created one, until a resume names another.
+  readonly size: typeof Size.Type;
 };
 
 // The request id the first prompt goes in under once the first workspace is ready.
@@ -92,4 +99,5 @@ export const initial: State = {
   files: [],
   pending: [],
   created: undefined,
+  size: defaultSize,
 };

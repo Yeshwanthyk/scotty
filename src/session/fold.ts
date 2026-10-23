@@ -10,12 +10,30 @@ import {
   requestFromOp,
   idleWindow,
 } from "./deadlines.js";
+import { defaultSize, type Size } from "../places/place.js";
 import { firstReq, live, type Request, type State } from "./state.js";
 export { initial } from "./state.js";
 export type { State, Request } from "./state.js";
 export { deadline, deadlines } from "./deadlines.js";
 export { invariants } from "./invariants.js";
 export type { Violation } from "./invariants.js";
+
+// A stopped session, or one whose failure a fresh container may get past, can resume.
+const resumable = (state: State): boolean =>
+  state.phase === "stopped" || (state.phase === "failed" && state.failure?.retryable === true);
+
+// A running container never changes size, so a resume naming another size needs a resumable
+// session; the same size, or none, is an ordinary resume. A session that failed for good can
+// never resume, so stopping it would not help.
+export const resizeConflict = (
+  state: State,
+  size: typeof Size.Type | undefined,
+): "running" | "failed" | undefined =>
+  size === undefined || size === state.size || resumable(state)
+    ? undefined
+    : state.phase === "failed"
+      ? "failed"
+      : "running";
 
 const settle = (
   requests: readonly Request[],
@@ -130,7 +148,9 @@ function step(state: State, event: SessionEvent): State {
   const next = { ...state, lastSeq: event.seq };
   switch (event.kind) {
     case "created":
-      return state.created === undefined ? { ...next, created: event, activeAt: event.at } : next;
+      return state.created === undefined
+        ? { ...next, created: event, activeAt: event.at, size: event.size ?? defaultSize }
+        : next;
     case "container.start":
       if (state.created === undefined || !live(state) || state.gen !== undefined) return next;
       return {
@@ -429,8 +449,8 @@ function step(state: State, event: SessionEvent): State {
         pending: remove(state.pending, event.op),
       };
     case "resume.requested":
-      return state.phase === "stopped" || (state.phase === "failed" && state.failure?.retryable)
-        ? resume({ ...next, activeAt: event.at }, event.at)
+      return resumable(state)
+        ? resume({ ...next, activeAt: event.at, size: event.size ?? state.size }, event.at)
         : next;
     case "container.stopped":
       if (event.gen !== state.gen) return next;
@@ -446,6 +466,7 @@ function step(state: State, event: SessionEvent): State {
         ? endAll(next, "stopped", {
             reason: event.reason ?? "gone",
             ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
+            ...(event.max === undefined ? {} : { max: event.max }),
           })
         : next;
     case "active":
@@ -495,19 +516,27 @@ function step(state: State, event: SessionEvent): State {
 
 // What a start does to this session: make it, prompt it, or answer from what it already holds.
 // A request id seen before is answered as it was the first time; one reused for another
-// repository, agent or prompt is a conflict.
+// repository, agent or prompt is a conflict. Only a creating start names a size (a steer or wake
+// joins the session at its size), and a retried create naming a size it was not created at is a
+// conflict too; a resize since then does not change that.
 export function startStep(
   state: State,
   input: {
     readonly req: string;
     readonly repo: string;
     readonly agent: string;
+    readonly size?: typeof Size.Type;
     readonly prompt: string;
   },
 ): "create" | "prompt" | "duplicate" | "unavailable" | "conflict" {
   const created = state.created;
   if (created === undefined) return "create";
-  if (created.repo !== input.repo || created.agentKind !== input.agent) return "conflict";
+  if (
+    created.repo !== input.repo ||
+    created.agentKind !== input.agent ||
+    (input.size !== undefined && (created.size ?? defaultSize) !== input.size)
+  )
+    return "conflict";
   if (created.req === input.req) return created.prompt === input.prompt ? "duplicate" : "conflict";
   const seen = state.requests.find((item) => item.req === input.req);
   if (seen === undefined) return "prompt";
