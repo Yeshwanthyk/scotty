@@ -44,6 +44,25 @@ const readPanel = (): PanelTab | undefined => {
   }
 };
 
+// The Clipboard API needs a secure context; elsewhere a selected textarea and execCommand copy.
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const done = document.execCommand("copy");
+    area.remove();
+    return done;
+  }
+}
+
 // "closed": the server ended the socket, yet the session is still there.
 type Link = Connection | "closed" | "missing";
 const linkNote: Record<Link, string> = {
@@ -66,6 +85,12 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const [link, setLink] = useState<Link>("open");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
   const [panel, setPanel] = useState<PanelTab | undefined>(() =>
     typeof window !== "undefined" && window.innerWidth >= 1100 ? readPanel() : undefined,
   );
@@ -263,6 +288,13 @@ function SessionView({ sessionId }: { sessionId: string }) {
             label="Session actions"
             disabled={busy}
             items={[
+              {
+                label: "Copy session ID",
+                icon: "copy",
+                detail: copied ? "Copied" : sessionId.slice(0, 8),
+                stay: true,
+                onSelect: () => void copyText(sessionId).then(setCopied),
+              },
               ...(resumable
                 ? [
                     {

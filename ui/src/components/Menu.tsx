@@ -8,6 +8,8 @@ export type MenuItem = {
   tone?: "danger";
   detail?: string;
   checked?: boolean;
+  // The menu stays open after the pick, so the item's detail can say what happened.
+  stay?: boolean;
 };
 
 // A small popover of actions behind one "more" button; closes on pick, Escape or an outside press.
@@ -64,7 +66,7 @@ export function Menu({
               className="menu-item"
               data-tone={item.tone}
               onClick={() => {
-                setOpen(false);
+                if (!item.stay) setOpen(false);
                 item.onSelect();
               }}
             >

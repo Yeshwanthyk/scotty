@@ -45,6 +45,13 @@ const media: Record<string, string> = {
   "image/png": "files/image.png",
   "video/webm": "files/video.webm",
 };
+// Attachments the dummy sessions name, so a gallery shows different pictures; any other file is
+// served by its type.
+const named: Record<string, string> = {
+  "hero-16x9.png": "../src/assets/brand/scotty-hero-16x9.png",
+  "mark-512.png": "../src/assets/brand/scotty-mark-512.png",
+  "maskable-512.png": "../src/assets/brand/scotty-maskable-512.png",
+};
 
 type Step = { readonly delay: number; readonly draft: Record<string, unknown> };
 type Segment = readonly Step[];
@@ -1197,7 +1204,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const file = session.history.find(
       (event) => event.kind === "file.attached" && event.file === match[3],
     );
-    const source = file?.kind === "file.attached" ? media[file.type] : undefined;
+    const source =
+      file?.kind === "file.attached" ? (named[file.name] ?? media[file.type]) : undefined;
     if (file?.kind !== "file.attached" || source === undefined)
       return fail(res, "Not found", 404, "not_found");
     res.setHeader("content-type", file.type);

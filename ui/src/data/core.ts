@@ -194,6 +194,10 @@ export async function write(
 
 const sessionPath = (id: string) => "/api/sessions/" + encodeURIComponent(id);
 
+// A file the agent attached, as the Worker serves it.
+export const fileHref = (sessionId: string, fileId: string) =>
+  `${sessionPath(sessionId)}/files/${fileId}`;
+
 // The session, or undefined when the server has no such session.
 const Detail = Schema.Struct({ version: Schema.Literal(1), session: Session });
 export async function session(id: string): Promise<Session | undefined> {

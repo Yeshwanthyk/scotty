@@ -444,6 +444,22 @@ kbd {
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
 }
 
+/* Opened from the iOS home screen with the translucent status bar, iOS 26 lays the page out a
+   status bar's height short of the screen (WebKit bug 301108): 100%, dvh and fixed edges all stop
+   there. A document at least as tall as the screen gets the full viewport, and the app, pinned to
+   its edges, reaches the bottom. The min() keeps a page that isn't short from scrolling. */
+@media (display-mode: standalone) {
+  html {
+    min-height: min(100lvh, calc(100% + env(safe-area-inset-top)));
+  }
+
+  .app {
+    position: fixed;
+    inset: 0;
+    height: auto;
+  }
+}
+
 .app[data-sidebar="closed"] {
   grid-template-columns: 0 minmax(0, 1fr);
 }
@@ -1966,24 +1982,37 @@ kbd {
 .diff-summary {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  height: var(--diff-summary-height);
+  padding: 0 8px 0 14px;
   background: var(--sidebar);
   border-bottom: 1px solid var(--line);
   font-size: 12px;
   color: var(--muted);
 }
 
+.diff-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.panel-body {
+  --diff-summary-height: 40px;
+}
+
 .diff-file {
   border-bottom: 1px solid var(--line);
 }
 
+/* Stuck right under the summary, opaque and above the rows, so nothing shows past its edges. */
 .diff-file-head {
   position: sticky;
-  top: 41px;
+  top: var(--diff-summary-height);
   z-index: 1;
   width: 100%;
   display: flex;
@@ -1996,26 +2025,55 @@ kbd {
   text-align: left;
 }
 
-.diff-file-head .path {
+/* In the Changes tab the header is two buttons: collapse, and view full screen. */
+.diff-file > .diff-file-head {
+  gap: 0;
+  padding: 0 6px 0 0;
+}
+
+.diff-file-toggle {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  direction: rtl;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 10px;
   text-align: left;
 }
 
+.diff-file-head .icon,
+.diff-file-view {
+  flex: none;
+}
+
+.diff-file-head .path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  white-space: nowrap;
+}
+
+/* The directory is cut from its start, leaving the end that is nearest the name. */
+.diff-file-head .path .dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  color: var(--quiet);
+}
+
 .diff-file-head .path b {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 500;
   color: var(--ink);
 }
 
-.diff-file-head .path span {
-  color: var(--quiet);
-}
-
-.diff-file-head .stats {
-  margin-left: auto;
+.diff-file-stat {
   flex: none;
   font-family: var(--font-mono);
   font-size: 11px;
@@ -2023,7 +2081,10 @@ kbd {
   gap: 6px;
 }
 
+/* One grid column as wide as the longest row, so every row's colour spans the scroll width. */
 .diff-lines {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
   font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.6;
@@ -2032,9 +2093,10 @@ kbd {
 }
 
 .diff-line {
+  --row: transparent;
   display: grid;
-  grid-template-columns: 40px 40px minmax(0, 1fr);
-  min-width: max-content;
+  grid-template-columns: auto minmax(0, 1fr);
+  background: var(--row);
 }
 
 button.diff-line {
@@ -2043,12 +2105,25 @@ button.diff-line {
   color: var(--quiet);
 }
 
+/* Line numbers and marker; it stays at the left edge when the rows scroll sideways. */
+.diff-line .gutter {
+  position: sticky;
+  left: 0;
+  display: flex;
+  background: linear-gradient(var(--row), var(--row)), var(--surface);
+  user-select: none;
+}
+
 .diff-line .n {
+  width: 40px;
   padding-right: 8px;
   text-align: right;
   color: var(--quiet);
-  user-select: none;
   opacity: 0.8;
+}
+
+.diff-line .mark {
+  width: 1ch;
 }
 
 .diff-line code {
@@ -2057,35 +2132,255 @@ button.diff-line {
   font: inherit;
 }
 
-.diff-line[data-kind="add"] {
-  background: var(--diff-add-bg);
+/* Wrapped, a continuation line hangs two characters in from where the line began. */
+.diff-lines[data-wrap="true"] {
+  grid-template-columns: minmax(0, 1fr);
+  overflow-x: visible;
 }
 
-.diff-line[data-kind="add"] code::before {
+.diff-lines[data-wrap="true"] code {
+  padding-left: 2ch;
+  text-indent: -2ch;
+  padding-right: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-line[data-kind="add"] {
+  --row: var(--diff-add-bg);
+}
+
+.diff-line[data-kind="add"] .mark::before {
   content: "+";
   color: var(--diff-add);
 }
 
 .diff-line[data-kind="del"] {
-  background: var(--diff-del-bg);
+  --row: var(--diff-del-bg);
 }
 
-.diff-line[data-kind="del"] code::before {
+.diff-line[data-kind="del"] .mark::before {
   content: "-";
   color: var(--diff-del);
 }
 
-.diff-line[data-kind="ctx"] code::before {
-  content: " ";
-}
-
-.diff-line[data-kind="hunk"] {
+.diff-line[data-kind="hunk"],
+.diff-line[data-kind="fold"] {
+  --row: var(--sunken);
   color: var(--quiet);
-  background: var(--sunken);
 }
 
-.diff-line[data-kind="hunk"] code {
-  padding: 2px 0;
+button.diff-line[data-kind="fold"] {
+  font: inherit;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  button.diff-line[data-kind="fold"]:hover {
+    color: var(--ink);
+  }
+}
+
+.diff-line[data-kind="hunk"] code,
+.diff-line[data-kind="fold"] code {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+/* Room after the last file, so a jump can bring any file's header up under the toolbar. */
+.changes::after {
+  content: "";
+  display: block;
+  height: calc(100dvh - 200px);
+}
+
+/* Previous and next file, at the bottom right while reading. */
+.diff-jump {
+  position: sticky;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 12px 0;
+  pointer-events: none;
+}
+
+.diff-jump .viewer-button {
+  pointer-events: auto;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+}
+
+/* The list of changed files: a sheet from the bottom. */
+.sheet {
+  position: fixed;
+  inset: auto 0 0;
+  width: 100%;
+  max-width: 480px;
+  max-height: 75vh;
+  margin: 0 auto;
+  padding: 0 0 env(safe-area-inset-bottom);
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.sheet[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.sheet::backdrop {
+  background: var(--overlay);
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 10px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.sheet-head > span {
+  margin-right: auto;
+}
+
+.sheet-list {
+  padding: 6px;
+}
+
+.sheet-file {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.sheet-file .icon {
+  flex: none;
+  color: var(--muted);
+}
+
+.sheet-file .path,
+.file-view-title .path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  white-space: nowrap;
+}
+
+.sheet-file .path .dir,
+.file-view-title .path .dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  color: var(--quiet);
+}
+
+.sheet-file .path b,
+.file-view-title .path b {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sheet-file:hover {
+    background: var(--hover);
+  }
+}
+
+/* One file's diff, full screen. */
+.file-view-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.file-view-title > .icon {
+  flex: none;
+}
+
+.file-view-body {
+  position: absolute;
+  inset: 0;
+  padding-bottom: 72px;
+  background: var(--surface);
+}
+
+.file-view .viewer-step {
+  top: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  translate: none;
+}
+
+.file-view .viewer-step[data-side="prev"] {
+  left: auto;
+  right: calc(max(12px, env(safe-area-inset-right)) + 52px);
+}
+
+/* On a phone the Changes tab shows one number: the old one for a removed line, else the new. */
+@media (max-width: 767px) {
+  /* Every control in the Changes tab is a 44px target. */
+  .panel-body {
+    --diff-summary-height: 56px;
+  }
+
+  .diff-tools .button,
+  .diff-tools .icon-button {
+    height: 44px;
+    min-width: 44px;
+  }
+
+  .diff-file > .diff-file-head {
+    height: 44px;
+    padding-right: 0;
+  }
+
+  .diff-file-view {
+    width: 44px;
+    height: 44px;
+  }
+
+  button.diff-line[data-kind="fold"] {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .sheet-head .button {
+    height: 44px;
+  }
+
+  .panel .diff-line .n {
+    width: 34px;
+  }
+
+  .panel .diff-line .n[data-side="old"],
+  .panel .diff-line[data-kind="del"] .n[data-side="new"] {
+    display: none;
+  }
+
+  .panel .diff-line[data-kind="del"] .n[data-side="old"] {
+    display: block;
+  }
 }
 
 /* Preview */
@@ -3468,6 +3763,157 @@ button.diff-line {
 .stats-figures .stats-detail {
   overflow-wrap: anywhere;
 }
+/* ---------- Viewer: an image or a file's diff, full screen ---------- */
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+  border: 0;
+  background: var(--bg);
+  color: var(--ink);
+  overscroll-behavior: contain;
+}
+
+.viewer[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer::backdrop {
+  background: transparent;
+}
+
+/* The page behind stays where it was. */
+html:has(.viewer[open]) {
+  overflow: hidden;
+}
+
+.viewer-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 52px;
+  padding: 4px 4px 4px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.viewer-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.viewer-count {
+  flex: none;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--quiet);
+}
+
+.viewer-link {
+  flex: none;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.viewer-button {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  color: inherit;
+}
+
+.viewer-button:disabled {
+  opacity: 0.3;
+}
+
+.viewer-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.viewer-step {
+  position: absolute;
+  top: 50%;
+  translate: 0 -50%;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.viewer-step[data-side="prev"] {
+  left: max(12px, env(safe-area-inset-left));
+}
+
+.viewer-step[data-side="next"] {
+  right: max(12px, env(safe-area-inset-right));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .viewer-button:hover:not(:disabled),
+  .viewer-link:hover {
+    color: var(--ink);
+  }
+}
+
+/* Images sit on a dark scrim in either theme. */
+.lightbox {
+  background: #0b0b0a;
+  color: #f2f2f0;
+  color-scheme: dark;
+}
+
+.lightbox .viewer-bar {
+  border-bottom: 0;
+}
+
+.lightbox .viewer-count,
+.lightbox .viewer-link {
+  color: rgb(242 242 240 / 0.65);
+}
+
+.lightbox .viewer-step {
+  background: rgb(255 255 255 / 0.1);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.lightbox-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  padding: 0 0 12px;
+}
+
+.lightbox-stage img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* On a phone the picture is swiped, not stepped with buttons. */
+@media (hover: none) {
+  .lightbox .viewer-step {
+    display: none;
+  }
+}
+
 /* ---------- Phone ---------- */
 
 @media (max-width: 767px) {

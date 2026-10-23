@@ -2,15 +2,8 @@ name: image
 
 # Publishes the default supervisor image and records its linux/amd64 digest. Deploys copy the
 # ref in container/image.digest into registry.cloudflare.com (docs/design.md "Deploy").
+# Run it on the branch that changes the image: gh workflow run image.yml --ref <branch>.
 on:
-  push:
-    branches: [rebuild/core]
-    paths:
-      - container/**
-      - "!container/image.digest"
-      - protocol/supervisor.ts
-      - package-lock.json
-      - .github/workflows/image.yml
   workflow_dispatch:
 
 permissions:

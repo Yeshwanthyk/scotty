@@ -3,6 +3,7 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { seedApi } from "./seed/api.ts";
+import { webManifest } from "./webmanifest.ts";
 
 export default defineConfig({
   base: "/",
@@ -18,6 +19,7 @@ export default defineConfig({
   },
   plugins: [
     seedApi(),
+    webManifest(),
     stylex.vite({
       cssInjectionTarget: (fileName) => /(^|\/)global-[^/]+\.css$/u.test(fileName),
       useCSSLayers: true,

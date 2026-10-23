@@ -22,8 +22,7 @@ Never print, log, commit or paste a real token anywhere in this process: ChatGPT
 | git         | any recent | submodules                                         |
 
 ```sh
-git clone <this repo> scotty-rebuild && cd scotty-rebuild
-git switch rebuild/core
+git clone <this repo> scotty && cd scotty
 git submodule update --init vendor/effect vendor/alchemy   # read-only API reference
 nvm use                                                    # or any Node 22.22.2
 npm install
@@ -57,9 +56,10 @@ The Session container runs a supervisor plus Codex. Its image is built by CI and
 
 The image is public on Docker Hub. It contains no secrets.
 
-**Getting a digest:** push `rebuild/core` with a change under one of the paths above, then:
+**Getting a digest:** push your branch with a change under one of the paths above, then:
 
 ```sh
+gh workflow run image.yml --ref <branch>
 gh run list --workflow image.yml --limit 1
 gh run watch <run-id>
 docker buildx imagetools inspect <repository>:rebuild-<full sha> | grep -m1 Digest   # gh run view does not print the job summary

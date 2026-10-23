@@ -40,7 +40,7 @@ Scotty runs Codex sessions in Cloudflare Containers, driven from a phone-friendl
 
 ## Git
 
-- Work and commit directly on `rebuild/core`; no branch per step. Commit each finished piece of work. Don't commit to `main`.
+- Work on a branch and land it on `main` through a pull request. Commit each finished piece of work. Don't commit to `main` directly.
 - `vendor/` is read-only. `work/` is scratch space that is never committed; spikes go in `work/spikes/`.
 - Leave nothing behind. Once a spike's result is settled, write it into `docs/design.md` and delete the spike. Delete evidence and logs in `work/` once the plan's notes record the result; only `work/dev-env.sh` stays. Code, files, exports and scripts that lose their last caller are deleted in the same commit. Docs never point into `work/` except at `work/dev-env.sh`.
 
