@@ -6,7 +6,7 @@ import type * as Cloudflare from "alchemy/Cloudflare";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { AgentKind } from "../session/events.js";
-import { Size } from "../places/place.js";
+import { defaultSize, Size, sizeShape } from "../places/place.js";
 import { titleFrom } from "../session/title.js";
 import { apiHandler } from "../http/api.js";
 import { Prompt, Repo } from "../http/start.js";
@@ -172,8 +172,7 @@ export function mcpHandler(
         prompt: Prompt,
         agent: Schema.optionalKey(AgentKind),
         size: Schema.optionalKey(Size).annotate({
-          description:
-            "The container size; default: the repository's default, else standard-1 (1/2 vCPU, 4 GiB). Bigger than standard-4 needs a runner.",
+          description: `The container size; default: the repository's default, else ${defaultSize} (${sizeShape(defaultSize)}). Bigger than standard-4 needs a runner.`,
         }),
         // Scotty's own e2e tests run the agent's scripted stand-in.
         scripted: Schema.optionalKey(Schema.Literal(true)).annotate({

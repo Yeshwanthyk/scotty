@@ -22,6 +22,11 @@ export const sizeSpec: Record<
   "standard-3": { vcpu: 2, memory: 8, disk: 16 },
   "standard-4": { vcpu: 4, memory: 12, disk: 20 },
 };
+// "½ vCPU, 4 GiB": what a size gives, for help text.
+export const sizeShape = (size: typeof Size.Type): string => {
+  const { vcpu, memory } = sizeSpec[size];
+  return `${vcpu === 0.5 ? "½" : vcpu} vCPU, ${memory} GiB`;
+};
 const perSecond = { vcpu: 0.00002, memory: 0.0000025, disk: 0.00000007 };
 // USD for an hour of run time at this size, an upper bound for that hour: memory and disk are
 // billed as provisioned, vCPU only while busy, here counted as busy throughout; no included usage

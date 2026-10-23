@@ -176,7 +176,9 @@ const program = Effect.gen(function* () {
     (conversation) => conversation.turns[1]?.assistant.toLowerCase().includes("steered") ?? false,
   );
   const accepted = acceptedAgentEvents(after).filter((event) => event.kind === "agent.event");
-  const numbers = accepted.map((event) => event.n);
+  // A redeploy slower than the idle stop resumes the session in a new generation, whose
+  // numbering starts again, so a message is its (gen, n).
+  const numbers = accepted.map((event) => `${event.gen}:${event.n}`);
   const prior = acceptedAgentEvents(before).filter((event) => event.kind === "agent.event");
   if (
     new Set(numbers).size !== numbers.length ||
