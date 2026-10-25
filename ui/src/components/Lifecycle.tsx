@@ -100,6 +100,7 @@ export function LifecycleNotice({
     <div className="lifecycle-resume">
       <SizePicker
         value={chosen ?? session.display.size}
+        side="top"
         onChange={(size) => setPicked({ size, from: session.display.size })}
       />
       <button
