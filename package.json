@@ -13,7 +13,8 @@
   "scripts": {
     "fmt": "oxfmt --disable-nested-config --write .",
     "fmt:check": "oxfmt --disable-nested-config --check .",
-    "lint": "oxlint --disable-nested-config",
+    "lint": "oxlint --disable-nested-config && npm run --silent vendor:check",
+    "vendor:check": "node scripts/check-vendor.ts",
     "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspace @scotty/ui",
     "ui:dev": "npm run dev --workspace @scotty/ui",
     "ui:build": "npm run build --workspace @scotty/ui",

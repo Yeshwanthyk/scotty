@@ -42,10 +42,7 @@ const fail = (step: string, status = 0) => new CopyError({ step, status });
 export const decode = <S extends Schema.Top>(schema: S, value: unknown, step: string) =>
   Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => fail(step)));
 export const json = (bytes: Uint8Array, step: string) =>
-  Effect.try({
-    try: (): unknown => JSON.parse(new TextDecoder().decode(bytes)),
-    catch: () => fail(step),
-  });
+  decode(Schema.fromJsonString(Schema.Unknown), new TextDecoder().decode(bytes), step);
 export const hash = (bytes: Uint8Array) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 

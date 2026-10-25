@@ -14,8 +14,13 @@ export const useRelease = (path: string) => {
 };
 export const embedded = () => packed !== undefined;
 
+// The embedded release is missing or could not be read or written.
+class ReleaseFailure extends Schema.TaggedError<ReleaseFailure>()("ReleaseFailure", {}) {}
+const io = <A>(run: () => Promise<A>) =>
+  Effect.tryPromise({ try: run, catch: () => new ReleaseFailure() });
+
 const readPack = (path: string) =>
-  Effect.tryPromise(() => readFile(path, "utf8")).pipe(
+  io(() => readFile(path, "utf8")).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Pack))),
   );
 
@@ -29,13 +34,13 @@ export const packedFile = (name: string) =>
 
 // Writes the embedded release to a temporary folder, removed when the scope closes.
 export const unpackRelease = Effect.gen(function* () {
-  if (packed === undefined) return yield* Effect.fail(new Error("This CLI carries no release"));
+  if (packed === undefined) return yield* new ReleaseFailure();
   const pack = yield* readPack(packed);
   const dir = yield* Effect.acquireRelease(
-    Effect.tryPromise(() => mkdtemp(join(tmpdir(), "scotty-release-"))),
+    io(() => mkdtemp(join(tmpdir(), "scotty-release-"))),
     (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
   );
-  yield* Effect.tryPromise(async () => {
+  yield* io(async () => {
     for (const [name, content] of Object.entries(pack)) {
       if (!name.startsWith("release/")) continue;
       const path = join(dir, name.slice("release/".length));

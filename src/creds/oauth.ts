@@ -138,21 +138,17 @@ export const exchangeCode = (authorization: typeof Authorization.Type) =>
     if (segment === undefined) return yield* failure("claims");
     const decoded = Encoding.decodeBase64UrlString(segment);
     if (Result.isFailure(decoded)) return yield* failure("claims");
-    const json: unknown = yield* Effect.try({
-      try: () => JSON.parse(decoded.success),
-      catch: () => failure("claims"),
-    });
-    const jwt = yield* decode(Jwt, json, "claims");
+    const jwt = yield* decode(Schema.fromJsonString(Jwt), decoded.success, "claims");
     const accountId =
       jwt["https://api.openai.com/auth"]?.chatgpt_account_id ?? jwt.chatgpt_account_id;
     const accessSegment = tokens.access_token.split(".")[1];
     if (!accountId || accessSegment === undefined) return yield* failure("claims");
     const accessDecoded = Encoding.decodeBase64UrlString(accessSegment);
     if (Result.isFailure(accessDecoded)) return yield* failure("claims");
-    const accessJson: unknown = yield* Effect.try({
-      try: () => JSON.parse(accessDecoded.success),
-      catch: () => failure("claims"),
-    });
-    const accessClaims = yield* decode(Schema.Struct({ exp: Schema.Number }), accessJson, "claims");
+    const accessClaims = yield* decode(
+      Schema.fromJsonString(Schema.Struct({ exp: Schema.Number })),
+      accessDecoded.success,
+      "claims",
+    );
     return { ...tokens, accountId, expiresAt: accessClaims.exp * 1000 };
   }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer));

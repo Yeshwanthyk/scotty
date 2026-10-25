@@ -30,6 +30,13 @@ npm install
 
 Check the toolchain: `npm run fmt && npm run lint && npm run typecheck && npm run ui:build && npm test`. All should pass on a clean checkout.
 
+`npm run lint` also runs `npm run vendor:check`, which fails when `vendor/effect` or `vendor/alchemy` is not the source of the installed packages. A drifted checkout is fixed with `git submodule update vendor/effect vendor/alchemy`. To move to a new Effect or Alchemy version:
+
+1. Set the new versions in `package.json` for every package the vendored repo publishes (`effect`, `@effect/*`, `alchemy`, `@alchemy.run/*`) and run `npm install`.
+2. Check out the matching tag in the submodule, for example `git -C vendor/effect checkout effect@<version>` or `git -C vendor/alchemy checkout v<version>`, and stage it with `git add vendor/effect`.
+3. Update the versions named in `AGENTS.md` and `docs/design.md`.
+4. Run `npm run vendor:check` and the other checks, then the e2e suite against a deployment.
+
 ## 3. Cloudflare API token
 
 `scotty init`, `deploy` and `teardown` call Cloudflare with an API token. In a terminal they open the dashboard's token page with the permissions filled in; create the token and paste it. The token is used for that run only and never saved. To deploy without a prompt (e2e), set `CLOUDFLARE_API_TOKEN`. Keep it in the macOS Keychain rather than a file:

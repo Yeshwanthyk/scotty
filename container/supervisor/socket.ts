@@ -45,6 +45,7 @@ const nonnegative = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
 );
 const Dial = Schema.Struct({ gen: positive, after: nonnegative });
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const Port = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 type Event =
   | { type: "open"; peer: Peer }
@@ -131,15 +132,14 @@ export const serve = (
             output({ type: "error", code: "protocol", message: "message too large" });
             return;
           }
+          const data = event.data;
           const raw = yield* Effect.try({
-            try: (): unknown =>
-              JSON.parse(
-                typeof event.data === "string"
-                  ? event.data
-                  : new TextDecoder("utf-8", { fatal: true }).decode(event.data),
-              ),
-            catch: () => new ProtocolError({ message: "invalid JSON or UTF-8" }),
-          }).pipe(Effect.option);
+            try: () =>
+              typeof data === "string"
+                ? data
+                : new TextDecoder("utf-8", { fatal: true }).decode(data),
+            catch: () => new ProtocolError({ message: "invalid UTF-8" }),
+          }).pipe(Effect.flatMap(decodeJson), Effect.option);
           if (Option.isNone(raw)) {
             output({ type: "error", code: "protocol", message: "invalid JSON or UTF-8" });
             return;
