@@ -1,8 +1,10 @@
 import { hourlyRate, Size, sizeSpec } from "../../../src/places/place";
+import { Icon } from "./Icon";
+import { Menu } from "./Menu";
 
-const sizeLabel = (size: typeof Size.Type) => {
+const sizeDetail = (size: typeof Size.Type) => {
   const { vcpu, memory } = sizeSpec[size];
-  return `${size} · ${vcpu === 0.5 ? "½" : vcpu} vCPU · ${memory} GiB · up to $${hourlyRate(size).toFixed(2)}/h`;
+  return `${vcpu === 0.5 ? "½" : vcpu} vCPU · ${memory} GiB · up to $${hourlyRate(size).toFixed(2)}/h`;
 };
 
 // The closed picker shows only the name, or `label` when the size isn't known yet; the open
@@ -10,29 +12,32 @@ const sizeLabel = (size: typeof Size.Type) => {
 export function SizePicker({
   value,
   label,
+  side,
+  align,
   onChange,
 }: {
   value: typeof Size.Type;
   label?: string;
+  side?: "top" | "bottom";
+  align?: "start" | "end";
   onChange: (size: typeof Size.Type) => void;
 }) {
   return (
-    <label className="repo-picker size-picker">
+    <Menu
+      label="Size"
+      className="repo-picker size-picker"
+      side={side}
+      align={align}
+      items={Size.literals.map((size) => ({
+        label: size,
+        detail: sizeDetail(size),
+        icon: "check",
+        checked: size === value,
+        onSelect: () => onChange(size),
+      }))}
+    >
       <span>{label ?? value}</span>
-      <select
-        aria-label="Size"
-        value={value}
-        onChange={(event) => {
-          const picked = Size.literals.find((size) => size === event.target.value);
-          if (picked !== undefined) onChange(picked);
-        }}
-      >
-        {Size.literals.map((size) => (
-          <option key={size} value={size}>
-            {sizeLabel(size)}
-          </option>
-        ))}
-      </select>
-    </label>
+      <Icon name="chevronDown" size={12} />
+    </Menu>
   );
 }

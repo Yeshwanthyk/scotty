@@ -13,15 +13,22 @@ export type MenuItem = {
 };
 
 // A small popover of actions behind one "more" button; closes on pick, Escape or an outside press.
+// It opens below the button and lines up with its right edge unless `side` or `align` says otherwise.
 export function Menu({
   label,
   items,
   disabled = false,
+  className = "icon-button",
+  side = "bottom",
+  align = "end",
   children,
 }: {
   label: string;
   items: ReadonlyArray<MenuItem>;
   disabled?: boolean;
+  className?: string;
+  side?: "top" | "bottom";
+  align?: "start" | "end";
   children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -46,7 +53,7 @@ export function Menu({
     <div className="menu" ref={root}>
       <button
         type="button"
-        className="icon-button pressable"
+        className={`${className} pressable`}
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -56,7 +63,7 @@ export function Menu({
         {children ?? <Icon name="more" />}
       </button>
       {open ? (
-        <div className="menu-list" role="menu">
+        <div className="menu-list" role="menu" data-side={side} data-align={align}>
           {items.map((item) => (
             <button
               key={item.label}

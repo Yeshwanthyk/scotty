@@ -2582,7 +2582,10 @@ button.diff-line[data-kind="fold"] {
   }
 }
 
+/* Above the chips and list after it, which the rise animation stacks over it, so its menus show. */
 .new-session .composer {
+  position: relative;
+  z-index: 1;
   width: 100%;
   transition:
     border-color var(--standard) var(--ease-out),
@@ -2805,12 +2808,10 @@ button.diff-line[data-kind="fold"] {
   font-weight: 400;
 }
 
-/* The pill shows the size's name; the native select over it opens the full list. */
+/* The pill shows the size's name; its menu lists what each size has and costs. */
 .size-picker {
-  position: relative;
   flex: none;
   white-space: nowrap;
-  cursor: pointer;
 }
 
 .size-picker span {
@@ -2818,12 +2819,12 @@ button.diff-line[data-kind="fold"] {
   color: var(--ink);
 }
 
-.size-picker select {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  cursor: pointer;
-  font-size: 16px;
+.size-picker .icon {
+  margin-right: -3px;
+}
+
+.size-picker[aria-expanded="true"] {
+  background: var(--selected);
 }
 
 .agent-switch {
@@ -2929,6 +2930,22 @@ button.diff-line[data-kind="fold"] {
   animation: menu-in var(--fast) var(--ease-out);
 }
 
+.menu-list[data-align="start"] {
+  right: auto;
+  left: 0;
+  transform-origin: top left;
+}
+
+.menu-list[data-side="top"] {
+  top: auto;
+  bottom: calc(100% + 6px);
+  transform-origin: bottom right;
+}
+
+.menu-list[data-side="top"][data-align="start"] {
+  transform-origin: bottom left;
+}
+
 @keyframes menu-in {
   from {
     opacity: 0;
@@ -2966,6 +2983,7 @@ button.diff-line[data-kind="fold"] {
 .menu-text {
   display: grid;
   gap: 1px;
+  white-space: nowrap;
 }
 
 .menu-detail {
