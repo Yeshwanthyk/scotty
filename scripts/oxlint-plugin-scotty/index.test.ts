@@ -51,6 +51,8 @@ tester.run("pure-fold", rules["pure-fold"], {
     "const due = event.at + 30_000;",
     "const when = new Date(event.at).toISOString();",
     "const n = Math.max(a, b);",
+    "const { at } = event;",
+    "const { max } = Math;",
   ],
   invalid: [
     { code: "const now = Date.now();", errors: 1 },
@@ -61,5 +63,12 @@ tester.run("pure-fold", rules["pure-fold"], {
     { code: "console.log(state);", errors: 1 },
     { code: "fetch('https://example.com');", errors: 1 },
     { code: "setTimeout(tick, 10);", errors: 1 },
+    { code: "const now = globalThis.Date.now();", errors: 1 },
+    { code: "const id = self.crypto.randomUUID();", errors: 1 },
+    { code: "const { now } = Date;", errors: 1 },
+    { code: "const { random } = globalThis.Math;", errors: 1 },
+    { code: "const { ...all } = Date;", errors: 1 },
+    { code: "globalThis.fetch('https://example.com');", errors: 1 },
+    { code: "const now = new globalThis.Date();", errors: 1 },
   ],
 });

@@ -17,15 +17,7 @@ import {
 } from "./workspace.js";
 
 type Start = Extract<ToSupervisorMessage, { type: "start" }>;
-type Ready = {
-  base: string;
-  branch: string;
-  commit: string;
-  ms: number;
-  retried: string[];
-  kind: AgentReady["kind"];
-  session: string;
-};
+type Ready = Omit<Extract<Output, { type: "workspace_ready" }>, "type"> & AgentReady;
 type StartState =
   | { status: "inflight" }
   | { status: "ready"; ready: Ready }

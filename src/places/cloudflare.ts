@@ -1,6 +1,6 @@
 import type * as cf from "@cloudflare/workers-types";
 import { Effect } from "effect";
-import { ContainerStartFailed, type Place } from "./place.js";
+import { ContainerDestroyFailed, ContainerStartFailed, type Place } from "./place.js";
 
 import { isLoopback } from "../loopback.js";
 
@@ -39,5 +39,9 @@ export const cloudflarePlace = (container: cf.Container, exports: object): Place
     }),
   running: () => Effect.sync(() => container.running),
   port: (port) => container.getTcpPort(port),
-  destroy: () => Effect.promise(() => container.destroy()),
+  destroy: () =>
+    Effect.tryPromise({
+      try: () => container.destroy(),
+      catch: () => new ContainerDestroyFailed(),
+    }),
 });

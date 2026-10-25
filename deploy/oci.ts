@@ -142,13 +142,15 @@ export const call = (
           controllers.set(response.success, controller);
           return response.success;
         }
-        yield* Effect.promise(async () => {
-          try {
-            await response.success.body?.cancel();
-          } catch {
-            /* response already closed */
-          }
-        });
+        // A body already closed is fine; the retry does not need it.
+        yield* Effect.ignore(
+          Effect.tryPromise({
+            try: async () => {
+              await response.success.body?.cancel();
+            },
+            catch: () => fail(`${step} cancel`, response.success.status),
+          }),
+        );
       } else if (attempt >= 3) return yield* response.failure;
       yield* Effect.sleep(200 * 2 ** attempt);
     }

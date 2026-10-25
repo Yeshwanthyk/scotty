@@ -52,7 +52,6 @@
         "cli/main.ts",
         "container/scripted/script.ts",
         "container/supervisor/socket.ts",
-        "src/session/object.ts",
         "src/session/supervisor-link.ts",
         "e2e/**"
       ],

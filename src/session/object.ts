@@ -543,7 +543,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             Effect.gen(function* () {
               if (action === undefined || !("gen" in action) || !current(action.gen)) return;
               // Error text only: R2, RPC and supervisor failures carry no credentials.
-              if (action.kind === "start") console.error(`start failed: ${Cause.pretty(cause)}`);
+              if (action.kind === "start") yield* Effect.logError("start failed", cause);
               if (action.kind === "container.start" || action.kind === "dial") {
                 // A dial that fails because the container is gone is a stop, not a retry.
                 yield* dispatch(
@@ -580,7 +580,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           if (event) yield* dispatch(yield* append(event, "supervisor"));
         });
       link = new SupervisorLink((input) =>
-        Effect.runPromise(Effect.provide(onSocket(input).pipe(Effect.orDie), context)),
+        onSocket(input).pipe(Effect.orDie, Effect.provide(context)),
       );
       if (
         log.state.gen !== undefined &&

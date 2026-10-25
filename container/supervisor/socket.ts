@@ -14,10 +14,11 @@ import {
   terminalInput,
 } from "./terminal.js";
 import { acknowledge, dial, emit, initialWire, type Output } from "./wire.js";
+import type { WorkspaceError } from "./workspace.js";
 
 // A terminal socket carries its size; every other socket is the Session DO's wire.
 interface Peer {
-  data: { gen: number; after: number; terminal?: Size };
+  data: typeof Dial.Type & { terminal?: Size };
   send(message: string | Uint8Array): void;
   close(): void;
 }
@@ -38,6 +39,15 @@ declare const Bun: {
 class ProtocolError extends Schema.TaggedError<ProtocolError>()("ProtocolError", {
   message: Schema.String,
 }) {}
+// Bun could not read an uploaded save or skill tarball.
+class UploadError extends Schema.TaggedError<UploadError>()("UploadError", {
+  path: Schema.Literals(["/save", "/skills"]),
+}) {}
+const readUpload = (request: Request, path: UploadError["path"]) =>
+  Effect.tryPromise({
+    try: () => request.arrayBuffer(),
+    catch: () => new UploadError({ path }),
+  }).pipe(Effect.map((body) => new Uint8Array(body)));
 const positive = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
@@ -54,13 +64,14 @@ type Event =
   | { type: "output"; output: Output; gen?: number };
 
 type Saves = {
-  save: (gen: number) => Effect.Effect<Uint8Array, Error>;
-  load: (tar: Uint8Array) => Effect.Effect<void, Error>;
-  skills: (commit: string, tarball: Uint8Array) => Effect.Effect<void, Error>;
+  save: (gen: number) => Effect.Effect<Uint8Array, WorkspaceError>;
+  load: (tar: Uint8Array) => Effect.Effect<void, WorkspaceError>;
+  skills: (commit: string, tarball: Uint8Array) => Effect.Effect<void, WorkspaceError>;
 };
 
+// The controller reports a command's outcome on the wire itself; only a defect escapes.
 export const serve = (
-  receive: (message: ToSupervisorMessage) => Effect.Effect<void, Error>,
+  receive: (message: ToSupervisorMessage) => Effect.Effect<void>,
   saves: Saves,
 ) => {
   const queue = Effect.runSync(Queue.unbounded<Event>());
@@ -194,8 +205,8 @@ export const serve = (
           return new Response("generation conflict", { status: 409 });
         if (request.method === "PUT")
           return Effect.runPromise(
-            Effect.tryPromise(() => request.arrayBuffer()).pipe(
-              Effect.flatMap((body) => saves.load(new Uint8Array(body))),
+            readUpload(request, "/save").pipe(
+              Effect.flatMap(saves.load),
               Effect.match({
                 onSuccess: () => new Response(null, { status: 204 }),
                 onFailure: () => new Response("load failed", { status: 500 }),
@@ -219,8 +230,8 @@ export const serve = (
         if (request.method !== "PUT") return new Response("method not allowed", { status: 405 });
         const commit = url.searchParams.get("commit") ?? "";
         return Effect.runPromise(
-          Effect.tryPromise(() => request.arrayBuffer()).pipe(
-            Effect.flatMap((body) => saves.skills(commit, new Uint8Array(body))),
+          readUpload(request, "/skills").pipe(
+            Effect.flatMap((tarball) => saves.skills(commit, tarball)),
             Effect.match({
               onSuccess: () => new Response(null, { status: 204 }),
               onFailure: () => new Response("skill failed", { status: 500 }),

@@ -4,6 +4,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "./object.js";
 import { clean } from "./reach.js";
+import { proxied } from "./github.js";
 
 const Query = Schema.Struct({ query: Schema.String });
 const Graphql = Schema.fromJsonString(Schema.Union([Query, Schema.Array(Query)]));
@@ -52,6 +53,7 @@ export const refusal = (method: string, pathname: string, body: () => string): s
   return null;
 };
 
+const badGateway = () => HttpServerResponse.text("Bad gateway\n", { status: 502 });
 const forbidden = (message: string) =>
   HttpServerResponse.jsonUnsafe(
     { message, documentation_url: "https://docs.github.com/rest" },
@@ -73,24 +75,18 @@ export const gitHubApiHandler = (
     const text = bytes === null ? "" : new TextDecoder().decode(bytes);
     const why = refusal(raw.method, url.pathname, () => text);
     if (why !== null) return forbidden(why);
-    const token = yield* credentials.getByName("owner").gitHubToken();
-    if (token === null)
-      return HttpServerResponse.text("GitHub is not signed in\n", { status: 401 });
     const headers = clean(raw.headers);
     headers.delete("x-http-method-override");
-    headers.set("authorization", `Bearer ${token}`);
-    const upstream = yield* Effect.tryPromise(() =>
-      fetch(`https://api.github.com${url.pathname}${url.search}`, {
-        method: raw.method,
-        headers,
-        body: bytes ?? raw.body,
-        signal: raw.signal,
-        redirect: "manual",
-      }),
-    );
-    return HttpServerResponse.fromWeb(upstream);
-  }).pipe(
-    Effect.catchTag("UnknownError", () =>
-      Effect.succeed(HttpServerResponse.text("Bad gateway\n", { status: 502 })),
-    ),
-  );
+    const answer = yield* credentials.getByName("owner").gitHubProxy({
+      target: "api",
+      path: `${url.pathname}${url.search}`,
+      method: raw.method,
+      headers: [...headers],
+      body: bytes === null ? raw.body : new Response(bytes).body,
+    });
+    if (answer.kind === "signed-out")
+      return HttpServerResponse.text("GitHub is not signed in\n", { status: 401 });
+    if (answer.kind !== "response") return badGateway();
+    return HttpServerResponse.fromWeb(proxied(answer));
+    // Alchemy fails a broken DO call with RpcCallError, which its types leave out.
+  }).pipe(Effect.catch(() => Effect.succeed(badGateway())));

@@ -41,6 +41,11 @@ export class ContainerStartFailed extends Schema.TaggedError<ContainerStartFaile
   {},
 ) {}
 
+export class ContainerDestroyFailed extends Schema.TaggedError<ContainerDestroyFailed>()(
+  "ContainerDestroyFailed",
+  {},
+) {}
+
 /** Plain HTTP and WebSocket to one port; all any place can honestly offer. */
 export interface Port {
   readonly fetch: (input: string, init?: cf.RequestInit) => Promise<cf.Response>;
@@ -61,5 +66,5 @@ export interface Place {
   readonly running: () => Effect.Effect<boolean>;
   /** HTTP and WebSocket to a port inside the container: supervisor, saves, terminal, hatch. */
   readonly port: (port: number) => Port;
-  readonly destroy: () => Effect.Effect<void>;
+  readonly destroy: () => Effect.Effect<void, ContainerDestroyFailed>;
 }

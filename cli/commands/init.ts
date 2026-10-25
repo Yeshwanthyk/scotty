@@ -17,6 +17,7 @@ import {
   cloudflareToken,
   deployWith,
   leftoversWith,
+  load,
   loadConfig,
   removeWith,
 } from "./deploy.js";
@@ -77,7 +78,10 @@ const answered = <A>(value: A): value is Exclude<A, symbol> => typeof value !== 
 
 // A clack prompt as an Effect; Esc or Ctrl-C ends the command with exit 2.
 const ask = <A>(prompt: () => Promise<A>) =>
-  Effect.promise(prompt).pipe(
+  Effect.tryPromise({
+    try: prompt,
+    catch: () => failure("prompt", "Could not read the answer", "Run it again in a terminal", 2),
+  }).pipe(
     Effect.flatMap((answer) => {
       if (answered(answer)) return Effect.succeed(answer);
       ui.cancel("Cancelled. Nothing more was changed.");
@@ -116,7 +120,7 @@ const listed = <A, E, R>(text: string, list: Effect.Effect<ReadonlyArray<A>, E, 
     return undefined;
   });
 
-const cloudflare = Effect.promise(() => import("../../deploy/cloudflare.ts"));
+const cloudflare = load("Cloudflare", () => import("../../deploy/cloudflare.ts"));
 
 // The account the Cloudflare token can see; one is taken without asking.
 const accountChoice = (current: string | undefined, layer: CloudflareLayer) =>
@@ -323,7 +327,7 @@ const preflight = Effect.gen(function* () {
 });
 
 // clack's spinner reads keys in raw mode and exits 0 on Ctrl-C without calling onCancel, so Ctrl-C
-// is turned into its abort signal, which does.
+// is turned into its abort signal, which does. onCancel must exit before clack's own key handler.
 const CtrlC = Schema.Struct({ ctrl: Schema.Literal(true), name: Schema.Literal("c") });
 const stoppable = (cancelMessage: string, onCancel: () => void) => {
   const abort = new AbortController();

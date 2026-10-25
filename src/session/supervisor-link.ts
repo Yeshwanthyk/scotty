@@ -10,13 +10,16 @@ export type SocketInput =
   | { readonly kind: "message"; readonly value: typeof FromSupervisor.Type }
   | { readonly kind: "closed"; readonly gen: number };
 
-/** Socket data and close enter the same serialized queue. */
+/**
+ * Socket data and close enter the same serialized queue. The socket's listeners are the host
+ * boundary: each input runs `consume` there, with its context already provided.
+ */
 export class SupervisorLink {
   private socket: WebSocket | undefined;
   private tail: Promise<void> = Promise.resolve();
   private outgoing = 0;
 
-  constructor(private readonly consume: (input: SocketInput) => Promise<void>) {}
+  constructor(private readonly consume: (input: SocketInput) => Effect.Effect<void>) {}
 
   send(message: ToSupervisorMessage): void {
     const socket = this.socket;
@@ -30,7 +33,7 @@ export class SupervisorLink {
    * stays failed, and only a new `getTcpPort()` looks again.
    */
   dial(port: () => Port, gen: number, after: number, stillWanted: () => boolean) {
-    const enqueue = (operation: () => Promise<void>) => this.enqueue(operation);
+    const enqueue = (operation: () => Effect.Effect<void, unknown>) => this.enqueue(operation);
     const consume = this.consume;
     // The replaced socket is no longer current, so its close is not reported.
     const setSocket = (socket: WebSocket) => {
@@ -71,11 +74,12 @@ export class SupervisorLink {
       setSocket(candidate);
       candidate.addEventListener("message", (event: MessageEvent) => {
         if (!isCurrent(candidate)) return;
-        enqueue(async () => {
-          if (!isCurrent(candidate)) return;
+        enqueue(() => {
+          if (!isCurrent(candidate)) return Effect.void;
           const raw = typeof event.data === "string" ? event.data : "";
-          const decoded = await Effect.runPromise(Schema.decodeUnknownEffect(Incoming)(raw));
-          await consume({ kind: "message", value: decoded });
+          return Schema.decodeUnknownEffect(Incoming)(raw).pipe(
+            Effect.flatMap((value) => consume({ kind: "message", value })),
+          );
         });
       });
       candidate.addEventListener("close", () => {
@@ -87,10 +91,13 @@ export class SupervisorLink {
     });
   }
 
-  private enqueue(operation: () => Promise<void>): void {
-    this.tail = this.tail.then(operation).catch(() => {
-      this.socket?.close();
-    });
+  // A failed input (an undecodable message, a defect in `consume`) closes the socket.
+  private enqueue(operation: () => Effect.Effect<void, unknown>): void {
+    this.tail = this.tail
+      .then(() => Effect.runPromise(operation()))
+      .catch(() => {
+        this.socket?.close();
+      });
   }
 }
 

@@ -21,12 +21,11 @@ import { automationName, Definition, NewAutomation } from "../automations/automa
 import { fireRun, runRequest } from "../automations/fire.js";
 import { version } from "../version.js";
 import {
-  fetchTarball,
   instructionsKey,
   maxInstructionBytes,
   parseSource,
   partsStream,
-  resolveCommit,
+  readTarball,
   scanTarball,
   skillName,
   SourceFailure,
@@ -122,6 +121,9 @@ const bad = (message: string, status = 400, hint?: string) =>
     { error: { message, code: status === 404 ? "not_found" : "bad_request", hint } },
     { status },
   );
+
+const serverError = (message: string, status: number, code: string) =>
+  HttpServerResponse.json({ error: { message, code } }, { status });
 
 const idempotencyKey = (header: string | undefined) =>
   decodeRequestId(header ?? crypto.randomUUID()).pipe(
@@ -254,12 +256,17 @@ export function apiHandler(
     // Fetches the source at its ref, keeps the tarball and records what changed.
     const saveSource = (spec: SourceSpec) =>
       Effect.gen(function* () {
-        const token = yield* credential.gitHubToken();
-        if (token === null)
-          return yield* bad("Skills come from GitHub; add a token first", 400, githubHint);
+        const noToken = bad("Skills come from GitHub; add a token first", 400, githubHint);
         const id = sourceId(spec);
         const sources = yield* credential.skillSources();
-        const commit = yield* resolveCommit(spec, token);
+        const resolved = yield* credential.skillCommit(spec);
+        if (resolved.status === "signed-out") return yield* noToken;
+        if (resolved.status === "failed")
+          return yield* new SourceFailure({
+            message: resolved.message,
+            ...(resolved.httpStatus === null ? {} : { status: resolved.httpStatus }),
+          });
+        const commit = resolved.commit;
         const known = sources.find((source) => source.id === id);
         if (known !== undefined && known.commit === commit && known.ref === spec.ref)
           return yield* HttpServerResponse.json({
@@ -270,7 +277,14 @@ export function apiHandler(
             removed: [],
             skipped: [],
           });
-        const tarball = yield* fetchTarball(spec.repo, commit, token);
+        const fetched = yield* credential.skillTarball(spec.repo, commit);
+        if (fetched.status === "signed-out") return yield* noToken;
+        if (fetched.status === "failed")
+          return yield* new SourceFailure({
+            message: fetched.message,
+            ...(fetched.httpStatus === null ? {} : { status: fetched.httpStatus }),
+          });
+        const tarball = yield* readTarball(fetched.body);
         const scan = yield* scanTarball(partsStream(tarball.parts), spec.path);
         if (scan.skills.length === 0)
           return yield* bad(
@@ -763,5 +777,20 @@ export function apiHandler(
       );
     }
     return yield* bad("Not found", 404);
-  }).pipe(Effect.catch(() => bad("Request could not be completed")));
+  }).pipe(
+    // A failure no branch answered. Only an unreadable request body is the caller's; the rest
+    // (R2, the Creds DO's storage, a reply that won't serialize) is Scotty's, so it is logged.
+    Effect.catch((error) =>
+      // The tag and message only: the error can hold the request, headers included.
+      Effect.logError("API request failed", error._tag, error.message).pipe(
+        Effect.andThen(
+          error._tag === "HttpServerError" && error.reason._tag === "RequestParseError"
+            ? bad("Request could not be completed")
+            : error._tag === "R2Error"
+              ? serverError("Storage is unavailable; try again", 503, "storage_unavailable")
+              : serverError("Scotty could not complete the request", 500, "internal"),
+        ),
+      ),
+    ),
+  );
 }

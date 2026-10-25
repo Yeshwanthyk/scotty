@@ -163,62 +163,17 @@ export class SourceFailure extends Schema.TaggedError<SourceFailure>()("SourceFa
   status: Schema.optionalKey(Schema.Int),
 }) {}
 
-const github = (token: string, accept: string) => ({
-  accept,
-  authorization: `Bearer ${token}`,
-  "user-agent": "scotty-rebuild",
-});
-
-// The commit a ref names; no ref is the default branch.
-export const resolveCommit = (source: SourceSpec, token: string) =>
+// A tarball's bytes as they arrive, whole (they go to R2 as they came) up to the cap.
+export const readTarball = (body: ReadableStream<Uint8Array<ArrayBuffer>>) =>
   Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        fetch(
-          `https://api.github.com/repos/${source.repo}/commits/${encodeURIComponent(source.ref ?? "HEAD")}`,
-          { headers: github(token, "application/vnd.github.sha") },
-        ),
-      catch: () => new SourceFailure({ message: "GitHub is unreachable" }),
-    });
-    const text = yield* Effect.tryPromise({
-      try: () => response.text(),
-      catch: () => new SourceFailure({ message: "GitHub's answer was cut off" }),
-    });
-    if (response.status === 404 || response.status === 422)
-      return yield* new SourceFailure({
-        message: `GitHub has no ${source.repo}${source.ref === null ? "" : `@${source.ref}`} this token can see`,
-        status: 404,
-      });
-    if (!response.ok || !/^[0-9a-f]{40}$/.test(text.trim()))
-      return yield* new SourceFailure({ message: `GitHub answered HTTP ${response.status}` });
-    return text.trim();
-  });
-
-// The repository's tarball at a commit, read whole (it goes to R2 as it came) up to the cap.
-export const fetchTarball = (repo: string, commit: string, token: string) =>
-  Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        fetch(`https://api.github.com/repos/${repo}/tarball/${commit}`, {
-          headers: github(token, "application/vnd.github+json"),
-        }),
-      catch: () => new SourceFailure({ message: "GitHub is unreachable" }),
-    });
-    if (!response.ok || response.body === null)
-      return yield* new SourceFailure({
-        message: `GitHub answered HTTP ${response.status} for the tarball`,
-      });
-    const body = response.body;
     const read = yield* Effect.tryPromise({
       try: async () => {
         const parts: Uint8Array<ArrayBuffer>[] = [];
         let size = 0;
         for await (const chunk of body) {
           size += chunk.length;
-          if (size > maxSourceBytes) {
-            await body.cancel();
-            return undefined;
-          }
+          // Leaving the loop cancels the stream.
+          if (size > maxSourceBytes) return undefined;
           parts.push(chunk);
         }
         return { parts, size };

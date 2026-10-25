@@ -33,6 +33,7 @@ src/
   creds/
     object.ts         Creds DO: ChatGPT sign-in, session access token, GitHub token; refresh deferred
     git.ts            git smart-HTTP handler for github.internal
+    github.ts         the Creds DO's GitHub calls: default branch, skill commit and tarball, proxy
   mcp/
     server.ts         /mcp: Scotty's own MCP server; its tools call the API handler
 container/
@@ -365,11 +366,11 @@ The dev environment belongs to the agent, and nothing in an agent adapter knows 
   - The Creds DO checks the token with `GET https://api.github.com/user` when it is set and stores `login`, `name` (falls back to `login`) and `email` (falls back to `<id>+<login>@users.noreply.github.com`). `new` resolves the default branch with the token; no token, or a GitHub error, is a 400 with the hint `scotty login github`.
   - Before each `container.start` that starts a container, the Session DO awaits the raw `storage.container.interceptOutboundHttp("github.internal", ctx.exports.default({ props: { session, repo } }))`. `ctx.exports.default` is the Worker's own loopback (Alchemy's entry is `export default makeWorkerBridge(WorkerEntrypoint, …)`, `Workers/Sources/Rolldown.ts:259`). A new container needs a fresh install; a DO restart with the container still running keeps it. Alchemy's `interceptOutboundHttp` wrapper drops the promise (`Containers/ContainerPlatform.ts:196-200`), so the raw call is used.
   - The Worker reads identity only from `ctx.props` (`WorkerExecutionContext.raw.props`), never from `Host` or anything the container sends. A request without props, such as a public one through Access, gets 404. The path is under `/api/` because the static-assets layer answers everything outside `runWorkerFirst: ["/api/*"]`, loopback traffic included.
-  - The handler allows only smart-HTTP paths for the session's own repository, and in `git-receive-pack` only updates to `refs/heads/scotty/*` (it buffers the push body to read the commands; a body that is only a flush-pkt is git's auth probe and passes). It strips incoming auth and hop-by-hop headers, adds the real token, and forwards to `https://github.com`.
+  - The handler allows only smart-HTTP paths for the session's own repository, and in `git-receive-pack` only updates to `refs/heads/scotty/*` (it buffers the push body to read the commands; a body that is only a flush-pkt is git's auth probe and passes). It strips incoming auth and hop-by-hop headers and hands the request to the Creds DO's `gitHubProxy`, which adds the real token and forwards to `https://github.com`; the token never reaches the Worker.
   - GitHub throttles Cloudflare's shared egress (429, or 403 with `retry-after` or `x-ratelimit-remaining: 0`, which the handler returns as 429). The supervisor retries only 429, 5xx and dropped transfers, backing off from 1 s to 30 s; clone and resume fetch share a 240 s budget, so no attempt starts after ~270 s of the 360 s `workspace` deadline. A transfer stalled for 30 s fails and is retried. Any other 4xx fails at once.
 - **gh.** The image has `gh` (pinned release in `/opt/gh`) behind the wrapper `/usr/local/bin/gh`, which sets a placeholder `GH_TOKEN`, adds `/etc/cloudflare/certs` to `SSL_CERT_DIR`, and sets `GH_REPO` from an origin rewritten to `github.internal` (gh doesn't know that host).
   - The place also awaits the raw `interceptOutboundHttps("api.github.com", …)` with `{session, repo, api: "github"}` in props. TLS ends at Cloudflare, which signs with the CA it puts at `/etc/cloudflare/certs/cloudflare-containers-ca.crt` (`@cloudflare/containers` README, `interceptHttps`); only gh is told to trust it. Every other HTTPS host is untouched.
-  - The Worker's handler (`src/creds/github-api.ts`) strips incoming auth and hop-by-hop headers, adds the owner's token and forwards to `https://api.github.com` without following redirects. Any repository the token reaches works.
+  - The Worker's handler (`src/creds/github-api.ts`) strips incoming auth and hop-by-hop headers and hands the request to the Creds DO's `gitHubProxy`, which adds the owner's token and forwards to `https://api.github.com` without following redirects. The proxy refuses any other origin. Any repository the token reaches works.
   - **Policy (owner, 2026-10-11): everything but direct writes.** It refuses with a 403, before GitHub sees the request, any write that moves a ref outside `refs/heads/scotty/*`: REST contents writes, `merges`, `merge-upstream`, any write under `branches/`, `pulls/<n>/update-branch`, `git/refs` writes to other refs; GraphQL `createRef`, `updateRef(s)`, `deleteRef`, `createCommitOnBranch`, `mergeBranch`, `updatePullRequestBranch` and branch protection mutations, or a body it can't parse. Paths are matched decoded, case-insensitive and with `/repositories/<id>` as `/repos/<o>/<r>`. Merging a pull request is the one way to change `main`.
   - The token needs Pull requests read/write as well as Contents and Metadata.
 - **Token and MCP connections.** Settings → Connections, `scotty connect` and `POST /api/connections` accept a pasted `secret`. A token connection has `host` and `header` (`X-Api-Key`, or a name and scheme such as `Authorization: Bearer`); MCP has an HTTPS `url` and uses `Authorization: Bearer`; leaving its secret blank enables OAuth sign-in. Creation and listing return metadata only; the generated webhook secret keeps its existing one-time display. CLI secrets arrive on stdin. The Creds DO stores the secret separately from the connection metadata.
@@ -453,9 +454,10 @@ or off, as gitgud does. A source is `owner/repo[/folder][@ref]` or a github.com 
 repository or a folder in it; each skill is a folder right under that folder holding `SKILL.md`.
 There is no upload: a skill lives in a repository.
 
-- **Add and refresh happen in the Worker,** which has the GitHub token from the Creds DO. It
-  resolves the ref (none is the default branch) to a commit through the commits API, fetches the
-  tarball at that commit (at most 64 MiB), stores it as it came in R2 at
+- **Add and refresh start in the Worker; GitHub is called by the Creds DO,** which holds the
+  token (`src/creds/github.ts`). The DO resolves the ref (none is the default branch) to a commit
+  through the commits API and returns the tarball at that commit as a stream; DO RPC caps a
+  message at 32 MiB, and the DO has no R2 binding. The Worker reads it (at most 64 MiB), stores it as it came in R2 at
   `skills/<owner>/<repo>/<commit>.tar.gz`, and reads every `SKILL.md` in one streaming tar pass
   (`src/settings/tar.ts`: ustar, pax `path` and GNU long names). `SKILL.md`'s `name` must be its
   folder's; it needs a `description`; `disable-model-invocation: true` shows as "manual". Folders
@@ -483,7 +485,7 @@ There is no upload: a skill lives in a repository.
   `keep-coding-instructions: true`. The runner passes `settings.outputStyle: <name>`. The folder is
   rebuilt on every start, so a resume after the style is cleared has none. Codex has no output
   styles and ignores it.
-- **The GitHub token** stays in the Creds DO and the Worker. R2 holds only the tarball.
+- **The GitHub token** stays in the Creds DO. R2 holds only the tarball.
 
 ## API the UI needs
 
@@ -658,7 +660,7 @@ What the first `track` deploy showed (2026-10-19) is marked as such; the rest fo
   - POST SSE streamed: 10 events arrived about 1 s apart, not buffered to the end. A GET SSE stream stayed open 180 s (19 events), and another survived 75 s of upstream silence.
   - `Mcp-Session-Id` passed both ways and DELETE worked. The credential reached the upstream and appeared nowhere in the container's environment or responses.
   - Uploads: a 2 MiB chunked body arrived intact. The intercept saw it chunked and started before the upload finished, but the upstream got it with `Content-Length`, so end-to-end upload streaming is not proved.
-  - A client abort reaches the upstream's `request.signal` about 2 s later, **only with the `enable_request_signal` compatibility flag**. `ReadableStream.cancel()` never fired. A proxy must keep the incoming signal on the forwarded request.
+  - A client abort reaches the upstream's `request.signal` about 2 s later, **only with the `enable_request_signal` compatibility flag**. `ReadableStream.cancel()` never fired. A proxy must keep the incoming signal on the forwarded request. The git and gh proxies are the exception: the Creds DO makes their GitHub call so the token stays there, and the signal can't follow over RPC; their calls are short request and response, so an aborted one finishes at GitHub and is discarded.
   - For the build: identity goes in loopback props, as for `github.internal`; the path must be under `/api/` for the Worker to see it; the client inside the container uses plain HTTP.
   - Not covered: real MCP servers and SDKs, OAuth, Last-Event-ID replay, concurrent sessions, container restarts during a stream, large bodies.
 - **Runner tunnel (spike, 2026-09-30, partly answered).** A DO held an outbound WebSocket through a cloudflared quick tunnel to a laptop for about 24 minutes: 291 messages, no gaps, and resending with `?after=N` worked. When cloudflared paused, the socket closed with 1006 about 5 s later, dials failed with 530/1033 until it came back, then reconnected in about 100 ms. A hung origin made one reconnect take 23 s, so the runner link needs a 10 s dial timeout, a staleness check and backoff. HTTP through the tunnel: p50 45 ms, 5 MB in 217 ms. Not covered: a named tunnel and an Access service token; the API token lacks Account → Cloudflare Tunnel: Edit and Account → Access: Service Tokens: Edit.

@@ -91,8 +91,8 @@ const noThrowInGenerator = rule("No throw inside a generator", (context) => {
   };
 });
 
-// AGENTS.md: fold.ts reads no clock and no random numbers, and does no I/O.
-// It matches the bare globals; `globalThis.Date.now()` and destructuring get past it.
+// AGENTS.md: fold.ts reads no clock and no random numbers, and does no I/O. A global is matched
+// bare or through `globalThis`, `self` or `window`, including when it is destructured.
 const impure = new Map([
   ["Date", new Set(["now"])],
   ["Math", new Set(["random"])],
@@ -101,9 +101,18 @@ const impure = new Map([
   ["console", undefined],
 ]);
 const impureCalls = new Set(["fetch", "setTimeout", "setInterval", "queueMicrotask"]);
+const globalObjects = new Set(["globalThis", "self", "window"]);
+type Expression = NodeOf<"MemberExpression">["object"];
+// `Date`, or `globalThis.Date`: the global an expression names.
+const globalName = (node: Expression): string | undefined => {
+  if (node.type === "Identifier") return node.name;
+  if (node.type !== "MemberExpression") return undefined;
+  const path = memberPath(node);
+  return path !== undefined && globalObjects.has(path[0]) ? path[1] : undefined;
+};
 const pureFold = rule("The fold is pure", (context) => {
   const report = (
-    node: NodeOf<"MemberExpression" | "NewExpression" | "CallExpression">,
+    node: NodeOf<"MemberExpression" | "NewExpression" | "CallExpression" | "VariableDeclarator">,
     what: string,
   ) =>
     context.report({
@@ -112,24 +121,39 @@ const pureFold = rule("The fold is pure", (context) => {
     });
   return {
     MemberExpression(node) {
-      const path = memberPath(node);
-      if (path === undefined || !impure.has(path[0])) return;
-      const members = impure.get(path[0]);
-      if (members === undefined || members.has(path[1])) report(node, `${path[0]}.${path[1]}`);
+      if (node.computed || node.property.type !== "Identifier") return;
+      const name = globalName(node.object);
+      if (name === undefined || !impure.has(name)) return;
+      const members = impure.get(name);
+      if (members === undefined || members.has(node.property.name)) {
+        report(node, `${name}.${node.property.name}`);
+      }
+    },
+    VariableDeclarator(node) {
+      if (node.id.type !== "ObjectPattern" || node.init === null) return;
+      const name = globalName(node.init);
+      if (name === undefined || !impure.has(name)) return;
+      const members = impure.get(name);
+      for (const property of node.id.properties) {
+        const key =
+          property.type === "Property" && !property.computed && property.key.type === "Identifier"
+            ? property.key.name
+            : undefined;
+        // A rest element or computed key could take any member.
+        if (members === undefined || key === undefined || members.has(key)) {
+          report(node, `${name}.${key ?? "*"}`);
+          return;
+        }
+      }
     },
     NewExpression(node) {
-      if (
-        node.callee.type === "Identifier" &&
-        node.callee.name === "Date" &&
-        node.arguments.length === 0
-      ) {
+      if (globalName(node.callee) === "Date" && node.arguments.length === 0) {
         report(node, "new Date()");
       }
     },
     CallExpression(node) {
-      if (node.callee.type === "Identifier" && impureCalls.has(node.callee.name)) {
-        report(node, node.callee.name);
-      }
+      const name = globalName(node.callee);
+      if (name !== undefined && impureCalls.has(name)) report(node, name);
     },
   };
 });

@@ -38,7 +38,8 @@ export const unpackRelease = Effect.gen(function* () {
   const pack = yield* readPack(packed);
   const dir = yield* Effect.acquireRelease(
     io(() => mkdtemp(join(tmpdir(), "scotty-release-"))),
-    (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+    // A finalizer can't fail; a folder left in tmpdir is harmless.
+    (dir) => Effect.ignore(io(() => rm(dir, { recursive: true, force: true }))),
   );
   yield* io(async () => {
     for (const [name, content] of Object.entries(pack)) {

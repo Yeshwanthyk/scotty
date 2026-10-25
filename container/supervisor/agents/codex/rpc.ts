@@ -1,4 +1,5 @@
 import { Cause, Deferred, Effect, Exit, Option, Queue, Result, Schema, Stream } from "effect";
+import type { PlatformError } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { AgentError, type AgentOutput } from "../../runner.js";
 import { serverReply } from "./server-requests.js";
@@ -13,6 +14,16 @@ const redact = (line: string) =>
     .replace(/eyJ[\w-]+\.[\w-]+\.[\w-]*/g, "[redacted]")
     .replace(/bearer\s+\S+/gi, "Bearer [redacted]")
     .slice(0, 300);
+// exitCode fails only when a signal kills the process. Effect names the signal only in the
+// message of that error's cause (NodeChildProcessSpawner: "receipt of signal: 'SIGKILL'"), and
+// SIGKILL is how an out-of-memory kill shows, so it is read from there.
+const endedBy = (cause: Cause.Cause<PlatformError.PlatformError | Cause.TimeoutError>) => {
+  const error = Cause.findErrorOption(cause);
+  if (Option.isNone(error) || error.value._tag !== "PlatformError") return "status unknown";
+  const inner = error.value.cause;
+  const signal = inner instanceof Error ? /SIG[A-Z0-9]+/.exec(inner.message)?.[0] : undefined;
+  return signal ?? "killed by a signal";
+};
 export class CodexRpc {
   private nextId = 1;
   private readonly pending = new Map<number, Deferred.Deferred<unknown, AgentError>>();
@@ -80,14 +91,14 @@ export class CodexRpc {
   });
 
   // The error says how Codex ended and what it last said.
-  private exited(what: string, status: Effect.Effect<number, unknown>): Effect.Effect<void> {
+  private exited(
+    what: string,
+    status: Effect.Effect<number, PlatformError.PlatformError | Cause.TimeoutError>,
+  ): Effect.Effect<void> {
     return status.pipe(
       Effect.exit,
       Effect.flatMap((exit) => {
-        // exitCode fails when a signal kills Codex, which is still an exit.
-        const ended = Exit.isSuccess(exit)
-          ? `code ${exit.value}`
-          : (/SIG[A-Z0-9]+/.exec(Cause.pretty(exit.cause))?.[0] ?? "status unknown");
+        const ended = Exit.isSuccess(exit) ? `code ${exit.value}` : endedBy(exit.cause);
         const tail = this.stderr.slice(-5).join(" | ");
         return this.failAll(
           new AgentError({
