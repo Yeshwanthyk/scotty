@@ -20,10 +20,11 @@ npm run --silent scotty -- deploy   # stage, account and host from ~/.config/sco
 ```
 
 `work/dev-env.sh` is never committed; `docs/setup.md` lists it and the config. After a change under
-`container/**`, get the new digest from the `image` workflow run for the pushed commit
-(`docker buildx imagetools inspect yeshwanthyk/scotty:rebuild-<full sha>`; `gh run view` does not
-print the job summary) and put it in `container/image.digest`. Wait about 2 minutes after a deploy
-before driving.
+`container/**`, CI builds the image: run the `image` workflow on the pushed branch, then read the
+digest from that run's log (`gh run view <run> --log | grep -o 'pushing manifest.*'`; the job
+summary is not printed by `gh run view`, and no local Docker is needed) and put
+`index.docker.io/yeshwanthyk/scotty@sha256:<digest>` in `container/image.digest`. Wait about 2
+minutes after a deploy before driving.
 
 ## Doctor
 
