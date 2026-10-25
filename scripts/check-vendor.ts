@@ -1,8 +1,8 @@
 // Fails when vendor/ is not the source of the installed Effect and Alchemy.
 // Every dependency in package.json that a vendored repo publishes must have the
 // same version in package.json, in node_modules and in the vendored checkout,
-// the checkout must be the commit this repository records, and AGENTS.md and
-// docs/design.md must name the same versions.
+// the checkout must be the commit this repository records and the release tag of
+// that version, and AGENTS.md and docs/design.md must name the same versions.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -10,8 +10,20 @@ import { Schema } from "effect";
 
 const root = join(import.meta.dirname, "..");
 const vendored = [
-  { dir: "vendor/effect", anchor: "effect", label: "Effect" },
-  { dir: "vendor/alchemy", anchor: "alchemy", label: "Alchemy" },
+  {
+    dir: "vendor/effect",
+    anchor: "effect",
+    label: "Effect",
+    scopes: ["effect", "@effect/"],
+    tag: (version: string) => `effect@${version}`,
+  },
+  {
+    dir: "vendor/alchemy",
+    anchor: "alchemy",
+    label: "Alchemy",
+    scopes: ["alchemy", "@alchemy.run/"],
+    tag: (version: string) => `v${version}`,
+  },
 ] as const;
 const versionDocs = ["AGENTS.md", "docs/design.md"];
 
@@ -35,14 +47,14 @@ const packageDirs = (dir: string): ReadonlyArray<string> =>
       return [];
     }
     const path = join(dir, entry.name);
-    return existsSync(join(path, "package.json")) ? [path] : packageDirs(path);
+    return [...(existsSync(join(path, "package.json")) ? [path] : []), ...packageDirs(path)];
   });
 
 const problems: Array<string> = [];
 const own = readManifest(join(root, "package.json"));
 const declared = new Map(Object.entries({ ...own.dependencies, ...own.devDependencies }));
 
-for (const { dir, anchor, label } of vendored) {
+for (const { dir, anchor, label, scopes, tag } of vendored) {
   const packages = join(root, dir, "packages");
   if (!existsSync(packages)) {
     problems.push(`${dir} is empty: run git submodule update --init ${dir}`);
@@ -71,9 +83,20 @@ for (const { dir, anchor, label } of vendored) {
     continue;
   }
 
+  if (!git(["-C", dir, "tag", "--points-at", "HEAD"]).split("\n").includes(tag(anchorVersion))) {
+    problems.push(
+      `${dir} is not at the tag ${tag(anchorVersion)}: check it out, or run git -C ${dir} fetch --tags`,
+    );
+  }
+
   for (const [name, version] of declared) {
     const inVendor = published.get(name);
-    if (inVendor === undefined) continue;
+    if (inVendor === undefined) {
+      if (scopes.some((scope) => name === scope || name.startsWith(scope))) {
+        problems.push(`${name} is in package.json but ${dir} does not publish it`);
+      }
+      continue;
+    }
     if (inVendor !== version) {
       problems.push(`${name}: package.json has ${version}, ${dir} has ${inVendor}`);
     }

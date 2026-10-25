@@ -14,6 +14,7 @@ tester.run("no-effect-run", rules["no-effect-run"], {
     { code: "Effect.runPromise(program);", errors: 1 },
     { code: "Effect.runSync(program);", errors: 1 },
     { code: "Effect.runFork(program);", errors: 1 },
+    { code: "pipe(program, Effect.runPromise);", errors: 1 },
   ],
 });
 
@@ -41,6 +42,7 @@ tester.run("no-throw-in-generator", rules["no-throw-in-generator"], {
   invalid: [
     { code: "Effect.gen(function* () { throw new Error('bad'); });", errors: 1 },
     { code: "function* steps() { if (done) throw new Error('bad'); }", errors: 1 },
+    { code: "const f = Effect.fn(function* () { throw new Error('bad'); });", errors: 1 },
   ],
 });
 

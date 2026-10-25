@@ -64,7 +64,8 @@
         "src/session/ack.ts",
         "src/session/state.ts",
         "src/session/deadlines.ts",
-        "src/session/invariants.ts"
+        "src/session/invariants.ts",
+        "src/places/place.ts"
       ],
       "rules": { "scotty/pure-fold": "error" }
     }

@@ -92,6 +92,7 @@ const noThrowInGenerator = rule("No throw inside a generator", (context) => {
 });
 
 // AGENTS.md: fold.ts reads no clock and no random numbers, and does no I/O.
+// It matches the bare globals; `globalThis.Date.now()` and destructuring get past it.
 const impure = new Map([
   ["Date", new Set(["now"])],
   ["Math", new Set(["random"])],
