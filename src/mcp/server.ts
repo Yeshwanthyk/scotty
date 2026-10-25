@@ -68,6 +68,9 @@ const text = (value: string, isError?: true): ToolResult => ({
   ...(isError === undefined ? {} : { isError }),
 });
 
+// The API's in-process reply body could not be read.
+class ReplyUnreadable extends Schema.TaggedError<ReplyUnreadable>()("ReplyUnreadable", {}) {}
+
 const rpc = (id: string | number, body: { result: unknown } | { error: unknown }) =>
   HttpServerResponse.json({ jsonrpc: "2.0", id, ...body });
 
@@ -95,22 +98,29 @@ export function mcpHandler(
         hatchBase,
       ).pipe(Effect.orDie, Effect.provide(RuntimeContext.phantom));
       const response = HttpServerResponse.toWeb(reply);
-      return { ok: response.ok, text: yield* Effect.promise(() => response.text()) };
+      const replyText = yield* Effect.tryPromise({
+        try: () => response.text(),
+        catch: () => new ReplyUnreadable(),
+      });
+      return { ok: response.ok, text: replyText };
     });
+  const unreadable = text("Scotty sent a reply this server could not read", true);
   const json = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, path: string) =>
     api("GET", path).pipe(
       Effect.map((reply) =>
         reply.ok
           ? Result.mapError(
               Schema.decodeUnknownResult(Schema.fromJsonString(schema))(reply.text),
-              () => text("Scotty sent a reply this server could not read", true),
+              () => unreadable,
             )
           : Result.fail(text(reply.text, true)),
       ),
+      Effect.catchTag("ReplyUnreadable", () => Effect.succeed(Result.fail(unreadable))),
     );
   const passThrough = (method: string, path: string, body?: unknown) =>
     api(method, path, body).pipe(
       Effect.map((reply) => (reply.ok ? text(reply.text) : text(reply.text, true))),
+      Effect.catchTag("ReplyUnreadable", () => Effect.succeed(unreadable)),
     );
   const turnThen = (id: string, then: (turn: string) => Effect.Effect<ToolResult>) =>
     json(Conversation, `/api/sessions/${id}/conversation`).pipe(

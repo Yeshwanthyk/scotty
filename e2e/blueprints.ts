@@ -145,10 +145,10 @@ const program = Effect.gen(function* () {
   const request = client({ url, token: accessToken });
   const server = `https://${config.mcpOAuthTest.host}`;
   const suffix = crypto.randomUUID().slice(0, 8);
-  const made = {
-    connections: [] as string[],
-    automations: [] as string[],
-    sessions: [] as string[],
+  const made: Record<"connections" | "automations" | "sessions", Array<string>> = {
+    connections: [],
+    automations: [],
+    sessions: [],
   };
   const cleanup = Effect.gen(function* () {
     for (const session of made.sessions)

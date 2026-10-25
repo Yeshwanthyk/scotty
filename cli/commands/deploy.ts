@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BunServices } from "@effect/platform-bun";
 import * as ui from "@clack/prompts";
-import { Effect, Exit, FileSystem, Option, Redacted, Stream } from "effect";
+import { Effect, Exit, FileSystem, Option, Predicate, Redacted, Schema, Stream } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { CloudflareLayer } from "../../deploy/cloudflare.ts";
@@ -103,8 +103,32 @@ export const step = (
     }),
   );
 
-const deployer = Effect.promise(() => import("../../deploy/deployer.ts"));
-const cloudflare = Effect.promise(() => import("../../deploy/cloudflare.ts"));
+// A module the CLI carries; failing to load it means a broken install.
+export const load = <A>(name: string, module: () => Promise<A>) =>
+  Effect.tryPromise({
+    try: module,
+    catch: () => failure("setup", `Could not load the ${name} module`, "Reinstall scotty", 3),
+  });
+const deployer = load("deployer", () => import("../../deploy/deployer.ts"));
+const cloudflare = load("Cloudflare", () => import("../../deploy/cloudflare.ts"));
+
+const Messages = Schema.Array(Schema.Struct({ message: Schema.String }));
+const nonEmpty = (value: unknown) =>
+  typeof value === "string" && value !== "" ? value : undefined;
+
+// A failure as its tag and what it says: its message, or Cloudflare's list of errors.
+const described = (error: unknown) => {
+  if (typeof error === "string") return error;
+  const tag =
+    (Predicate.hasProperty(error, "_tag") ? nonEmpty(error._tag) : undefined) ??
+    (error instanceof Error ? error.name : "Error");
+  const message =
+    (Predicate.hasProperty(error, "message") ? nonEmpty(error.message) : undefined) ??
+    (Predicate.hasProperty(error, "errors") && Schema.is(Messages)(error.errors)
+      ? nonEmpty(error.errors.map((item) => item.message).join("; "))
+      : undefined);
+  return message === undefined ? tag : `${tag}: ${message}`;
+};
 
 // A Cloudflare step behind the report; a failure shows what Cloudflare said.
 export const cloudflareStep = <A, E, R>(
@@ -116,14 +140,7 @@ export const cloudflareStep = <A, E, R>(
   Effect.gen(function* () {
     report.start(text);
     const result = yield* work((line) => report.progress?.(line)).pipe(
-      Effect.tapError((error) =>
-        Effect.sync(() =>
-          report.failed(
-            text,
-            error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-          ),
-        ),
-      ),
+      Effect.tapError((error) => Effect.sync(() => report.failed(text, described(error)))),
       Effect.mapError(() =>
         failure("deploy_failed", `${text} failed`, "Fix the error above, then rerun"),
       ),
@@ -153,9 +170,11 @@ export const cloudflareToken = Effect.gen(function* () {
           "Cloudflare API token",
         );
         yield* Effect.ignore(launch(page));
-        const pasted = yield* Effect.promise(() =>
-          ui.password({ message: "Cloudflare API token", mask: "•" }),
-        );
+        const pasted = yield* Effect.tryPromise({
+          try: () => ui.password({ message: "Cloudflare API token", mask: "•" }),
+          catch: () =>
+            failure("prompt", "Could not read the token", "Set CLOUDFLARE_API_TOKEN instead", 2),
+        });
         if (typeof pasted === "symbol") {
           ui.cancel("Cancelled. Nothing was changed.");
           return yield* failure("cancelled", "Cancelled", "Run it again when ready", 2);

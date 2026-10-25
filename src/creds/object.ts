@@ -20,6 +20,8 @@ import {
   McpSignIn,
 } from "./connections.js";
 import { authorizeMcp, refreshMcp, StoredMcpOAuth } from "./mcp-oauth.js";
+import { defaultBranch, proxy, type ProxyRequest, resolveCommit, tarball } from "./github.js";
+import type { SourceSpec } from "../settings/skills.js";
 import { isLoopback } from "../loopback.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
@@ -167,6 +169,12 @@ const Count = Schema.Array(Schema.Struct({ count: Schema.Number }));
 class CredentialStoreError extends Schema.TaggedError<CredentialStoreError>()(
   "CredentialStoreError",
   { message: Schema.String },
+) {}
+
+// verifySignature rejected instead of returning a verdict.
+class SignatureCheckFailure extends Schema.TaggedError<SignatureCheckFailure>()(
+  "SignatureCheckFailure",
+  {},
 ) {}
 
 export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()(
@@ -647,13 +655,20 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const decoded = readDelivery(config.signature, input.headers, input.body);
             if (decoded.verdict !== "ok") return decoded;
             const id = decoded.values.id;
-            const verdict = yield* Effect.promise(() =>
-              verifySignature(config.signature, {
-                body: input.body,
-                values: decoded.values,
-                secret,
-                now: Date.now(),
-              }),
+            // Web Crypto refusing the key or signature is a delivery that failed verification.
+            const verdict = yield* Effect.tryPromise({
+              try: () =>
+                verifySignature(config.signature, {
+                  body: input.body,
+                  values: decoded.values,
+                  secret,
+                  now: Date.now(),
+                }),
+              catch: () => new SignatureCheckFailure(),
+            }).pipe(
+              Effect.catchTag("SignatureCheckFailure", () =>
+                Effect.succeed("bad_signature" as const),
+              ),
             );
             if (verdict !== "ok") return { verdict, id };
             if (config.signature.selfEvent !== null) {
@@ -1232,8 +1247,60 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
               });
             return { token: row.token };
           }),
-        // Only the Worker asks for the token; it never reaches a session or its container.
-        gitHubToken: () => gitHub.pipe(Effect.map((row) => row?.token ?? null)),
+        // GitHub requests that need the token run here; only their answers leave this object.
+        defaultBranch: (repo: string) =>
+          Effect.gen(function* () {
+            const row = yield* gitHub;
+            if (row === null) return { status: "signed-out" as const };
+            return yield* defaultBranch(repo, row.token).pipe(
+              Effect.map((branch) => ({ status: "found" as const, branch })),
+              Effect.catchTag("RepositoryFailure", (error) =>
+                Effect.succeed({
+                  status: "failed" as const,
+                  message: error.message,
+                  missing: error.missing === true,
+                }),
+              ),
+            );
+          }),
+        skillCommit: (source: SourceSpec) =>
+          Effect.gen(function* () {
+            const row = yield* gitHub;
+            if (row === null) return { status: "signed-out" as const };
+            return yield* resolveCommit(source, row.token).pipe(
+              Effect.map((commit) => ({ status: "found" as const, commit })),
+              Effect.catchTag("SourceFailure", (error) =>
+                Effect.succeed({
+                  status: "failed" as const,
+                  message: error.message,
+                  httpStatus: error.status ?? null,
+                }),
+              ),
+            );
+          }),
+        // The body streams to the caller, which enforces the size cap.
+        skillTarball: (repo: string, commit: string) =>
+          Effect.gen(function* () {
+            const row = yield* gitHub;
+            if (row === null) return { status: "signed-out" as const };
+            return yield* tarball(repo, commit, row.token).pipe(
+              Effect.map((body) => ({ status: "found" as const, body })),
+              Effect.catchTag("SourceFailure", (error) =>
+                Effect.succeed({
+                  status: "failed" as const,
+                  message: error.message,
+                  httpStatus: error.status ?? null,
+                }),
+              ),
+            );
+          }),
+        // A session's git and gh traffic, already checked against Scotty's push policy.
+        gitHubProxy: (request: ProxyRequest) =>
+          Effect.gen(function* () {
+            const row = yield* gitHub;
+            if (row === null) return { kind: "signed-out" as const };
+            return yield* proxy(request, row.token);
+          }),
         gitIdentity: () =>
           gitHub.pipe(
             Effect.flatMap((row) =>

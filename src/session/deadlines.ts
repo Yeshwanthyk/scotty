@@ -1,3 +1,4 @@
+import type { TimeoutOp } from "./events.js";
 import type { State } from "./state.js";
 
 export const deadlines = {
@@ -20,21 +21,8 @@ export const deadlines = {
 // How long a container outlives its evicted Session DO.
 export const inactivityTimeout = 900_000;
 
-export type Op =
-  | "container"
-  | "workspace"
-  | "dial"
-  | "redial"
-  | "save"
-  | "watch"
-  | "idle"
-  | "stalled"
-  | `req:${string}`;
+export type Op = TimeoutOp;
 export const reqOp = (req: string): `req:${string}` => `req:${req}`;
-export const isOp = (value: string): value is Op =>
-  ["container", "workspace", "dial", "redial", "save", "watch", "idle", "stalled"].includes(
-    value,
-  ) || value.startsWith("req:");
 export const requestFromOp = (op: `req:${string}`): string => op.slice(4);
 export const idleWindow = (state: State): number => state.created?.idleAfter ?? deadlines.idle;
 export type Pending = { readonly op: Op; readonly due: number };

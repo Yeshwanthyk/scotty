@@ -42,10 +42,7 @@ const fail = (step: string, status = 0) => new CopyError({ step, status });
 export const decode = <S extends Schema.Top>(schema: S, value: unknown, step: string) =>
   Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => fail(step)));
 export const json = (bytes: Uint8Array, step: string) =>
-  Effect.try({
-    try: (): unknown => JSON.parse(new TextDecoder().decode(bytes)),
-    catch: () => fail(step),
-  });
+  decode(Schema.fromJsonString(Schema.Unknown), new TextDecoder().decode(bytes), step);
 export const hash = (bytes: Uint8Array) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
@@ -145,13 +142,15 @@ export const call = (
           controllers.set(response.success, controller);
           return response.success;
         }
-        yield* Effect.promise(async () => {
-          try {
-            await response.success.body?.cancel();
-          } catch {
-            /* response already closed */
-          }
-        });
+        // A body already closed is fine; the retry does not need it.
+        yield* Effect.ignore(
+          Effect.tryPromise({
+            try: async () => {
+              await response.success.body?.cancel();
+            },
+            catch: () => fail(`${step} cancel`, response.success.status),
+          }),
+        );
       } else if (attempt >= 3) return yield* response.failure;
       yield* Effect.sleep(200 * 2 ** attempt);
     }

@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript"],
+  "jsPlugins": ["./scripts/oxlint-plugin-scotty/index.ts"],
   "ignorePatterns": ["**/dist/**", "vendor/**", "work/**", "ui/src/routeTree.gen.ts"],
   "rules": {
     "typescript/no-explicit-any": "error",
@@ -8,6 +9,64 @@
     "no-unused-vars": "error",
     "no-unused-expressions": "error",
     "no-unused-labels": "error",
-    "no-unused-private-class-members": "error"
-  }
+    "no-unused-private-class-members": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "@effect/platform",
+            "message": "Platform APIs come from effect and effect/unstable/*."
+          },
+          { "name": "@effect/schema", "message": "Schema comes from effect." },
+          {
+            "name": "@cloudflare/sandbox",
+            "message": "Scotty drives Cloudflare Containers itself."
+          }
+        ],
+        "patterns": [
+          {
+            "group": ["@effect/platform/*", "@effect/schema/*", "@cloudflare/sandbox/*"],
+            "message": "Platform and Schema APIs come from effect and effect/unstable/*."
+          }
+        ]
+      }
+    ],
+    "scotty/no-effect-run": "error",
+    "scotty/no-json-parse": "error",
+    "scotty/no-type-assertion": "error",
+    "scotty/no-throw-in-generator": "error"
+  },
+  "overrides": [
+    {
+      "files": ["ui/**"],
+      "rules": {
+        "scotty/no-effect-run": "off",
+        "scotty/no-json-parse": "off",
+        "scotty/no-type-assertion": "off",
+        "scotty/no-throw-in-generator": "off"
+      }
+    },
+    {
+      "files": [
+        "cli/main.ts",
+        "container/scripted/script.ts",
+        "container/supervisor/socket.ts",
+        "src/session/supervisor-link.ts",
+        "e2e/**"
+      ],
+      "rules": { "scotty/no-effect-run": "off" }
+    },
+    {
+      "files": [
+        "src/session/fold.ts",
+        "src/session/ack.ts",
+        "src/session/state.ts",
+        "src/session/deadlines.ts",
+        "src/session/invariants.ts",
+        "src/places/place.ts"
+      ],
+      "rules": { "scotty/pure-fold": "error" }
+    }
+  ]
 }

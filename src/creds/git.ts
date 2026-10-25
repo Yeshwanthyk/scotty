@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import type CredsObject from "./object.js";
+import { proxied } from "./github.js";
 
 const path =
   /^\/api\/git\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/(info\/refs|git-upload-pack|git-receive-pack)$/;
@@ -15,6 +16,7 @@ const dropped =
 const rateLimited = (headers: Headers) =>
   headers.has("retry-after") || headers.get("x-ratelimit-remaining") === "0";
 const forbidden = () => HttpServerResponse.text("Forbidden\n", { status: 403 });
+const badGateway = () => HttpServerResponse.text("Bad gateway\n", { status: 502 });
 
 // A push's ref-update commands are the pkt-lines before the first flush-pkt; every one must
 // target refs/heads/scotty/*. A body that is only a flush-pkt is git's auth probe.
@@ -55,21 +57,22 @@ export const gitHandler = (
       if (raw.headers.has("content-encoding")) return forbidden();
       const bytes = yield* Effect.tryPromise(() => raw.arrayBuffer());
       if (!scottyRefsOnly(new Uint8Array(bytes))) return forbidden();
-      body = bytes;
+      // A stream, because a DO RPC argument is capped at 32 MiB and a push can be bigger.
+      body = new Response(bytes).body;
     }
-    const token = yield* credentials.getByName("owner").gitHubToken();
-    if (token === null)
-      return HttpServerResponse.text("GitHub is not signed in\n", { status: 401 });
     const headers = new Headers(raw.headers);
     for (const name of dropped) headers.delete(name);
-    headers.set("authorization", `Basic ${btoa(`x-access-token:${token}`)}`);
-    const upstream = yield* Effect.tryPromise(() =>
-      fetch(`https://github.com/${repo}.git/${route}${url.search}`, {
-        method: request.method,
-        headers,
-        body,
-      }),
-    );
+    const answer = yield* credentials.getByName("owner").gitHubProxy({
+      target: "git",
+      path: `/${repo}.git/${route}${url.search}`,
+      method: request.method,
+      headers: [...headers],
+      body,
+    });
+    if (answer.kind === "signed-out")
+      return HttpServerResponse.text("GitHub is not signed in\n", { status: 401 });
+    if (answer.kind !== "response") return badGateway();
+    const upstream = proxied(answer);
     // GitHub signals some rate limits with 403; the workspace retries only 429, so a 403 that
     // means "no access" fails at once.
     if (upstream.status === 403 && rateLimited(upstream.headers)) {
@@ -80,8 +83,7 @@ export const gitHandler = (
     }
     return HttpServerResponse.fromWeb(upstream);
   }).pipe(
-    // A body or upstream that fails mid-request is a bad gateway git can report, not a crash.
-    Effect.catchTag("UnknownError", () =>
-      Effect.succeed(HttpServerResponse.text("Bad gateway\n", { status: 502 })),
-    ),
+    // A body, upstream or Creds DO call that fails mid-request is a bad gateway git can report,
+    // not a crash. Alchemy fails a broken DO call with RpcCallError, which its types leave out.
+    Effect.catch(() => Effect.succeed(badGateway())),
   );

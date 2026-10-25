@@ -54,7 +54,10 @@ const FileLabel = Schema.Struct({
   "x-scotty-caption": Schema.optionalKey(encoded(2000)),
 });
 const isFetcher = (value: unknown): value is Cloudflare.Fetcher["raw"] =>
-  typeof value === "object" && value !== null && "fetch" in value;
+  typeof value === "object" &&
+  value !== null &&
+  "fetch" in value &&
+  typeof value.fetch === "function";
 
 export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
   "ScottyWorker",

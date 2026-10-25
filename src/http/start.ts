@@ -5,7 +5,6 @@ import type SessionObject from "../session/object.js";
 import { fixtureRepo } from "../../protocol/supervisor.js";
 import type { AgentKind, Origin } from "../session/events.js";
 import type { PlaceKind, Size } from "../places/place.js";
-import { defaultBranch } from "./repository.js";
 
 export const githubHint = "scotty login github";
 export const Repo = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/));
@@ -63,26 +62,21 @@ export function startSession(
     const branch = yield* Effect.gen(function* () {
       if (input.branch !== undefined) return { ok: true as const, branch: input.branch };
       if (input.repo === fixtureRepo) return { ok: true as const, branch: "main" };
-      const token = yield* credential.gitHubToken();
-      if (token === null)
+      const found = yield* credential.defaultBranch(input.repo);
+      if (found.status === "found") return { ok: true as const, branch: found.branch };
+      if (found.status === "signed-out")
         return {
           ok: false as const,
           code: "repository_unavailable" as const,
           message: "GitHub token missing",
         };
-      return yield* defaultBranch(input.repo, token).pipe(
-        Effect.map((found) => ({ ok: true as const, branch: found })),
-        Effect.catchTag("RepositoryFailure", (error) =>
-          Effect.succeed({
-            ok: false as const,
-            code:
-              error.missing === true
-                ? ("repository_not_found" as const)
-                : ("repository_unavailable" as const),
-            message: error.message,
-          }),
-        ),
-      );
+      return {
+        ok: false as const,
+        code: found.missing
+          ? ("repository_not_found" as const)
+          : ("repository_unavailable" as const),
+        message: found.message,
+      };
     });
     if (!branch.ok)
       return {

@@ -2,18 +2,15 @@ import { Schema, type Effect, type Stream, type Scope, type FileSystem } from "e
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import type { AgentConfig } from "../../protocol/supervisor.js";
 
+import type { Output } from "./wire.js";
+
 export type Config = Schema.Schema.Type<typeof AgentConfig>;
+// What an agent emits: its own events, turn ends, and errors not tied to a request.
 export type AgentOutput =
-  | { type: "agent"; kind: Config["kind"]; event: unknown }
-  | {
-      type: "turn_end";
-      turn: string;
-      codexTurn: string;
-      state: "completed" | "interrupted" | "failed";
-    }
-  | { type: "error"; code: string; message: string };
-export type AgentReady = { kind: Config["kind"]; session: string };
-export type Delivered = { req: string };
+  | Extract<Output, { type: "agent" | "turn_end" }>
+  | Omit<Extract<Output, { type: "error" }>, "req">;
+export type AgentReady = Omit<Extract<Output, { type: "agent_ready" }>, "type">;
+export type Delivered = Omit<Extract<Output, { type: "delivered" }>, "type">;
 export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
   code: Schema.String,
   message: Schema.String,

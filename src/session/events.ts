@@ -25,10 +25,11 @@ export const StopReason = Schema.Literals([
   "gone",
   "cap",
 ]);
-const TimeoutOp = Schema.Union([
+export const TimeoutOp = Schema.Union([
   Schema.Literals(["container", "workspace", "dial", "redial", "save", "watch", "idle", "stalled"]),
-  Schema.String.check(Schema.isPattern(/^req:/)),
+  Schema.TemplateLiteral(["req:", Schema.String]),
 ]);
+export type TimeoutOp = typeof TimeoutOp.Type;
 
 // What started a session, when it was not a person in the UI or CLI without a key.
 export const Origin = Schema.Union([

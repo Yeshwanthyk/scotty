@@ -328,9 +328,15 @@ export function client(settings: { readonly url: string; readonly token: string 
             `Check ${settings.url} and try again`,
           ),
       });
-      const body: unknown = yield* Effect.promise(() => response.json().catch(() => null));
+      const json = Effect.tryPromise({
+        try: (): Promise<unknown> => response.json(),
+        catch: () =>
+          failure("invalid_reply", `HTTP ${response.status} was not JSON`, `Check ${settings.url}`),
+      });
       if (!response.ok) {
-        const parsed = Schema.decodeUnknownOption(ApiError)(body);
+        // An error reply that is not JSON still reports its status.
+        const body = yield* json.pipe(Effect.option);
+        const parsed = Option.flatMap(body, Schema.decodeUnknownOption(ApiError));
         const error = Option.isSome(parsed) ? parsed.value.error : undefined;
         return yield* failure(
           error?.code ?? "http_error",
@@ -344,12 +350,7 @@ export function client(settings: { readonly url: string; readonly token: string 
           response.status === 401 || response.status === 403 ? 3 : 1,
         );
       }
-      if (body === null)
-        return yield* failure(
-          "invalid_reply",
-          `HTTP ${response.status} was not JSON`,
-          `Check ${settings.url}`,
-        );
+      const body = yield* json;
       return yield* Schema.decodeUnknownEffect(schema)(body).pipe(
         Effect.mapError(() =>
           failure(

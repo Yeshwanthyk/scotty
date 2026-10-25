@@ -1,5 +1,6 @@
 // Codex's side of the session view and start: its app-server events as items and text, and
 // the agent settings a Codex start sends.
+import { Option, Schema } from "effect";
 import type { AgentConfig } from "../../../protocol/supervisor.js";
 import type { AgentSettings } from "./agent-settings.js";
 import {
@@ -241,17 +242,28 @@ export function step(turn: TurnItems, event: unknown): TurnItems {
   }
 }
 
+// Streamed and final agent text. A delta or item that is a bare string is still streaming.
+const Piece = Schema.Union([Schema.String, Schema.Struct({ text: Schema.String })]);
+const TextEvent = Schema.Union([
+  Schema.Struct({
+    method: Schema.Literal("item/agentMessage/delta"),
+    params: Schema.Struct({ delta: Piece }),
+  }),
+  Schema.Struct({
+    method: Schema.Literal("item/completed"),
+    params: Schema.Struct({ item: Piece }),
+  }),
+]);
+const decodeTextEvent = Schema.decodeUnknownOption(TextEvent);
+
 export function text(event: unknown): { text: string; complete: boolean } | undefined {
-  if (event === null || typeof event !== "object" || Array.isArray(event)) return undefined;
-  const method = Reflect.get(event, "method");
-  const params: unknown = Reflect.get(event, "params");
-  if (method !== "item/completed" && method !== "item/agentMessage/delta") return undefined;
-  if (params === null || typeof params !== "object" || Array.isArray(params)) return undefined;
-  const item: unknown = Reflect.get(params, method === "item/completed" ? "item" : "delta");
-  if (typeof item === "string") return { text: item, complete: false };
-  if (item === null || typeof item !== "object" || Array.isArray(item)) return undefined;
-  const text: unknown = Reflect.get(item, "text");
-  return typeof text === "string" ? { text, complete: method === "item/completed" } : undefined;
+  const decoded = decodeTextEvent(event);
+  if (Option.isNone(decoded)) return undefined;
+  const known = decoded.value;
+  const piece = known.method === "item/completed" ? known.params.item : known.params.delta;
+  return typeof piece === "string"
+    ? { text: piece, complete: false }
+    : { text: piece.text, complete: known.method === "item/completed" };
 }
 
 export const startConfig = (

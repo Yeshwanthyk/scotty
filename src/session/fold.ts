@@ -1,15 +1,6 @@
 import { shouldAck } from "./ack.js";
 import type { SessionEvent } from "./events.js";
-import {
-  deadlines,
-  has,
-  remove,
-  addOnce,
-  reqOp,
-  isOp,
-  requestFromOp,
-  idleWindow,
-} from "./deadlines.js";
+import { deadlines, has, remove, addOnce, reqOp, requestFromOp, idleWindow } from "./deadlines.js";
 import { defaultSize, type Size } from "../places/place.js";
 import { firstReq, live, type Request, type State } from "./state.js";
 export { initial } from "./state.js";
@@ -393,11 +384,7 @@ function step(state: State, event: SessionEvent): State {
           : state.pending,
       };
     case "timeout":
-      if (
-        !isOp(event.op) ||
-        !state.pending.some((item) => item.op === event.op && item.due <= event.at)
-      )
-        return next;
+      if (!state.pending.some((item) => item.op === event.op && item.due <= event.at)) return next;
       // The container is gone or unreachable; its saved work can still resume.
       if (event.op === "dial") return endAll(next, "stopped", { reason: "gone" });
       if (event.op === "container" || event.op === "workspace")

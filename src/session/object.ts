@@ -77,6 +77,11 @@ const MaxRunning = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreate
 
 // workerd rejects monitor() with the exit code when a container exits non-zero.
 const ExitStatus = Schema.Struct({ exitCode: Schema.Int });
+// The supervisor was unreachable, or answered `path` with a non-2xx `status`.
+class SupervisorFailure extends Schema.TaggedError<SupervisorFailure>()("SupervisorFailure", {
+  path: Schema.String,
+  status: Schema.optional(Schema.Number),
+}) {}
 
 // Live snapshots replay the log, so a burst of events shares one.
 const pushEvery = Duration.millis(250);
@@ -140,11 +145,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         log.append(draft, src).pipe(Effect.tap(() => changed));
       const saveKey = () => `saves/${id()}.tar`;
       const supervisor = (path: string, init?: { method: "PUT"; body: ArrayBuffer }) =>
-        Effect.tryPromise(() => where().port(7000).fetch(`http://container${path}`, init)).pipe(
+        Effect.tryPromise({
+          try: () => where().port(7000).fetch(`http://container${path}`, init),
+          catch: () => new SupervisorFailure({ path }),
+        }).pipe(
           Effect.flatMap((response) =>
             response.ok
               ? Effect.succeed(response)
-              : Effect.fail(new Error(`Supervisor ${path} returned ${response.status}`)),
+              : Effect.fail(new SupervisorFailure({ path, status: response.status })),
           ),
         );
 
@@ -457,7 +465,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             case "save": {
               link.send({ type: "ack", gen: action.gen, n: 1, ack: action.ack });
               const turn = action.turn;
-              // The tar can take seconds; the result arrives as a later event (R1).
+              // The tar can take seconds; the result arrives as a later event.
               yield* storage.waitUntil(
                 supervisor(`/save?gen=${action.gen}`).pipe(
                   Effect.flatMap((response) => Effect.tryPromise(() => response.arrayBuffer())),
@@ -486,7 +494,6 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               // An unanswered supervisor counts as no terminal: the session sleeps. The fold
               // ignores the stop if a prompt or use arrived meanwhile.
               const terminals = yield* supervisor("/terminals").pipe(
-                Effect.filterOrFail((response) => response.ok),
                 Effect.flatMap((response) => Effect.tryPromise(() => response.json())),
                 Effect.flatMap(Schema.decodeUnknownEffect(Terminals)),
                 Effect.map(({ open }) => open),
@@ -536,7 +543,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
             Effect.gen(function* () {
               if (action === undefined || !("gen" in action) || !current(action.gen)) return;
               // Error text only: R2, RPC and supervisor failures carry no credentials.
-              if (action.kind === "start") console.error(`start failed: ${Cause.pretty(cause)}`);
+              if (action.kind === "start") yield* Effect.logError("start failed", cause);
               if (action.kind === "container.start" || action.kind === "dial") {
                 // A dial that fails because the container is gone is a stop, not a retry.
                 yield* dispatch(
@@ -573,7 +580,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           if (event) yield* dispatch(yield* append(event, "supervisor"));
         });
       link = new SupervisorLink((input) =>
-        Effect.runPromise(Effect.provide(onSocket(input).pipe(Effect.orDie), context)),
+        onSocket(input).pipe(Effect.orDie, Effect.provide(context)),
       );
       if (
         log.state.gen !== undefined &&

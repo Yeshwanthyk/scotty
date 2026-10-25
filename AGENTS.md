@@ -25,6 +25,8 @@ Scotty runs Codex sessions in Cloudflare Containers, driven from a phone-friendl
 - Effect `4.0.0-rc.117` and Alchemy `2.0.0-beta.79`. Their source is in `vendor/effect` and `vendor/alchemy` (run `git submodule update --init` if empty).
   - Check an API against that source and its tests before using it. Don't rely on Effect v3 docs or on remembered APIs.
   - Platform and Schema APIs come from `effect` and `effect/unstable/*`. Don't add `@effect/platform`, `@effect/schema` or `@cloudflare/sandbox`.
+  - `npm run lint` runs `npm run vendor:check`, which fails when `vendor/` is not the source of the installed versions. `docs/setup.md` gives the update steps.
+  - The scotty lint rules enforce part of this section: `Effect.run*` only in the host-boundary files listed in `.oxlintrc.json`, no `JSON.parse`, no type assertions except `as const`, no `throw` inside a generator, and a pure fold. Fix the code rather than widening a list.
 - Use Effect where typed errors, services, scopes or Schema help: the Worker, the DOs, the supervisor and the CLI. Write pure code as plain functions.
 - Decode untrusted input with Schema where it enters: HTTP, WebSocket messages, R2 objects, OAuth responses, CLI arguments. No `any`, no casts that hide a type, no non-null assertions.
 - Don't put plan step numbers in code, titles or messages; the plan's numbering changes.
@@ -32,7 +34,7 @@ Scotty runs Codex sessions in Cloudflare Containers, driven from a phone-friendl
 
 ## Tests
 
-- Unit tests cover only `src/session/fold.ts` and replays of saved event logs in `e2e/logs/`.
+- Unit tests cover only `src/session/fold.ts`, replays of saved event logs in `e2e/logs/`, and the scotty lint rules (`scripts/oxlint-plugin-scotty/`), where each rule has a fixture it must fail.
 - Everything else is proved end to end against a real deployment in `e2e/`. Don't mock Cloudflare or GitHub.
 - e2e sessions run the agent's scripted stand-in (`container/scripted/`), not Codex or Claude, so they need no sign-in and don't check a model's wording; `--real` runs the real agent. The stand-ins are typed against the pinned agents' protocols (the Claude Agent SDK's types, and `codex-protocol.ts`, generated from the pinned Codex), so `npm run typecheck` holds them to it. After changing the Codex version in `container/Dockerfile`, run `npm run protocol:codex`.
 - Only `e2e github`, `hatch-env` and `settings` use GitHub (`settings` reads skills from the public `Yeshwanthyk/agent-skills` and `Yeshwanthyk/scotty` through the Worker, not the container). The other e2e tests use `fixtureRepo` (`protocol/supervisor.ts`), a repository baked into the container image, so GitHub throttling can't fail them.
