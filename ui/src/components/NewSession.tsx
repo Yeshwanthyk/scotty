@@ -435,6 +435,7 @@ export function NewSession() {
             placeholder={`Ask ${agentName[chosen]} to build, fix or explain… or paste a GitHub link`}
             busy={busy}
             autoFocus
+            card
           >
             <label className="repo-picker">
               <Icon name="repo" size={14} />
