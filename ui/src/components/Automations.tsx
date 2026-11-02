@@ -79,6 +79,14 @@ export function AutomationsPage({ name }: { name?: string }) {
         <div className="header-title">
           <h1>{name ?? "Automations"}</h1>
         </div>
+        {name === undefined && !creating ? (
+          <div className="header-actions">
+            <button type="button" className="button pressable" onClick={() => setCreating(true)}>
+              <Icon name="plus" size={13} />
+              New
+            </button>
+          </div>
+        ) : null}
       </header>
       <div className="automations" data-scroll>
         {error ? (
@@ -131,16 +139,6 @@ export function AutomationsPage({ name }: { name?: string }) {
                   </div>
                 ))
               )}
-              {!creating ? (
-                <button
-                  type="button"
-                  className="settings-row pressable quiet"
-                  onClick={() => setCreating(true)}
-                >
-                  <Icon name="plus" size={13} />
-                  Add automation
-                </button>
-              ) : null}
             </div>
             <h2 className="automations-heading">Recent runs</h2>
             <Runs runs={recent} />
@@ -417,35 +415,41 @@ function Editor({
           />
         </label>
       ) : null}
-      <div className="automation-choices" role="group" aria-label="Action">
-        {(["start", "wake", "end"] as const).map((action) => (
-          <button
-            key={action}
-            type="button"
-            className="filter-chip pressable"
-            aria-pressed={draft.action === action}
-            onClick={() => set({ action })}
-          >
-            {action === "start"
-              ? "Start or wake"
-              : action === "wake"
-                ? "Wake only"
-                : "End and release key"}
-          </button>
-        ))}
+      <div className="automation-field">
+        <div className="automation-label">Action</div>
+        <div className="automation-choices" role="group" aria-label="Action">
+          {(["start", "wake", "end"] as const).map((action) => (
+            <button
+              key={action}
+              type="button"
+              className="automation-choice pressable"
+              aria-pressed={draft.action === action}
+              onClick={() => set({ action })}
+            >
+              {action === "start"
+                ? "Start or wake"
+                : action === "wake"
+                  ? "Wake only"
+                  : "End and release key"}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="automation-choices" role="group" aria-label="When it runs">
-        {kinds.map((kind) => (
-          <button
-            key={kind.id}
-            type="button"
-            className="filter-chip pressable"
-            aria-pressed={draft.kind === kind.id}
-            onClick={() => set({ kind: kind.id })}
-          >
-            {kind.label}
-          </button>
-        ))}
+      <div className="automation-field">
+        <div className="automation-label">When</div>
+        <div className="automation-choices" role="group" aria-label="When it runs">
+          {kinds.map((kind) => (
+            <button
+              key={kind.id}
+              type="button"
+              className="automation-choice pressable"
+              aria-pressed={draft.kind === kind.id}
+              onClick={() => set({ kind: kind.id })}
+            >
+              {kind.label}
+            </button>
+          ))}
+        </div>
       </div>
       {draft.kind === "calendar" ? (
         <div className="automation-pair">
@@ -537,18 +541,21 @@ function Editor({
           onChange={(event) => set({ branch: event.target.value })}
         />
       </label>
-      <div className="automation-choices" role="group" aria-label="Agent">
-        {(["codex", "claude"] as const).map((agent) => (
-          <button
-            key={agent}
-            type="button"
-            className="filter-chip pressable"
-            aria-pressed={draft.agent === agent}
-            onClick={() => set({ agent })}
-          >
-            {agent === "codex" ? "Codex" : "Claude"}
-          </button>
-        ))}
+      <div className="automation-field">
+        <div className="automation-label">Agent</div>
+        <div className="automation-choices" role="group" aria-label="Agent">
+          {(["codex", "claude"] as const).map((agent) => (
+            <button
+              key={agent}
+              type="button"
+              className="automation-choice pressable"
+              aria-pressed={draft.agent === agent}
+              onClick={() => set({ agent })}
+            >
+              {agent === "codex" ? "Codex" : "Claude"}
+            </button>
+          ))}
+        </div>
       </div>
       <label>
         Prompt ({"{{field}}"} takes a value from the payload)
