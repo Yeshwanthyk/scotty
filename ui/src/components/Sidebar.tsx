@@ -28,6 +28,8 @@ function useChanges<T>(value: T) {
   return count;
 }
 
+// A mark shows only news: work in progress, an unseen reply, or a failure. Every other status
+// leaves the column empty, so titles stay aligned and the news stands out.
 export function StatusMark({ status, title }: { status: Status; title?: string }) {
   // A mark that changes while on screen pops in; one that is simply shown does not.
   const changed = useChanges(status) > 0;
@@ -42,17 +44,9 @@ export function StatusMark({ status, title }: { status: Status; title?: string }
     >
       {status === "working" || status === "starting" ? (
         <Spinner key="spin" size={13} />
-      ) : status === "failed" ? (
-        <Icon key="alert" name="alert" size={14} />
-      ) : status === "unseen" ? (
-        <span key="dot" className="dot" />
-      ) : status === "asleep" ? (
-        <Icon key="moon" name="moon" size={13} />
-      ) : status === "stopped" ? (
-        <Icon key="branch" name="branch" size={14} />
-      ) : (
-        <span key="ring" className="ring" />
-      )}
+      ) : status === "failed" || status === "unseen" ? (
+        <span key={status} className="dot" />
+      ) : null}
     </span>
   );
 }
@@ -438,26 +432,33 @@ export function Sidebar({
           </div>
         ) : null}
       </div>
-      <nav className="sidebar-foot desktop-only">
+      <nav className="sidebar-foot desktop-only" aria-label="Pages">
         <Link
           to="/automations"
-          className="nav-item pressable"
+          className="icon-button pressable"
+          aria-label="Automations"
+          title="Automations"
           activeProps={{ "aria-current": "page" }}
         >
           <Icon name="refresh" />
-          Automations
         </Link>
-        <Link to="/stats" className="nav-item pressable" activeProps={{ "aria-current": "page" }}>
+        <Link
+          to="/stats"
+          className="icon-button pressable"
+          aria-label="Stats"
+          title="Stats"
+          activeProps={{ "aria-current": "page" }}
+        >
           <Icon name="gauge" />
-          Stats
         </Link>
         <Link
           to="/settings"
-          className="nav-item pressable"
+          className="icon-button pressable"
+          aria-label="Settings"
+          title="Settings"
           activeProps={{ "aria-current": "page" }}
         >
           <Icon name="settings" />
-          Settings
         </Link>
       </nav>
     </aside>
