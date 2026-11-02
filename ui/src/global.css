@@ -3758,9 +3758,9 @@ button.diff-line[data-kind="fold"] {
   font-size: 12px;
 }
 
-/* A segmented track: the picked option sits raised on a sunken bar. It scrolls rather than wraps
-   when a phone is too narrow for it. */
-.automation-choices {
+/* A segmented track, for the automation editor's choices and the stats window: the picked option
+   sits raised on a sunken bar. It scrolls rather than wraps when a phone is too narrow for it. */
+.segmented {
   display: inline-flex;
   flex-wrap: nowrap;
   justify-self: start;
@@ -3772,7 +3772,7 @@ button.diff-line[data-kind="fold"] {
   background: var(--sunken);
 }
 
-.automation-choice {
+.segmented-option {
   flex: none;
   height: 24px;
   padding: 0 10px;
@@ -3782,7 +3782,7 @@ button.diff-line[data-kind="fold"] {
   white-space: nowrap;
 }
 
-.automation-choice[aria-pressed="true"] {
+.segmented-option[aria-pressed="true"] {
   background: var(--surface);
   color: var(--ink);
   font-weight: 500;
@@ -3908,8 +3908,55 @@ button.diff-line[data-kind="fold"] {
   color: var(--quiet);
 }
 
+/* The window's totals between two hairlines; the table's header sits right under the second. */
+.stats-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border-block: 1px solid var(--line);
+}
+
+.stats-tile {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-width: 0;
+  padding: 12px 16px;
+}
+
+.stats-tile:first-child {
+  padding-left: 0;
+}
+
+.stats-tile + .stats-tile {
+  border-left: 1px solid var(--line);
+}
+
+.stats-tile dt {
+  color: var(--quiet);
+  font-size: 11.5px;
+}
+
+.stats-tile dd {
+  margin: 0;
+}
+
+.stats-tile-value {
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.stats-tile[data-tone="zero"] .stats-tile-value {
+  color: var(--quiet);
+}
+
+.stats-tile[data-tone="danger"] .stats-tile-value {
+  color: var(--danger);
+}
+
 .stats-table {
-  padding: 4px 0;
   overflow-x: auto;
 }
 
@@ -3927,13 +3974,12 @@ button.diff-line[data-kind="fold"] {
   white-space: nowrap;
 }
 
-/* Tight between columns so twelve fit at desktop widths; the card's edges keep their inset. */
 .stats-table :is(th, td):first-child {
-  padding-left: 12px;
+  padding-left: 0;
 }
 
 .stats-table :is(th, td):last-child {
-  padding-right: 12px;
+  padding-right: 0;
 }
 
 .stats-table thead th {
@@ -3943,13 +3989,8 @@ button.diff-line[data-kind="fold"] {
   border-bottom: 1px solid var(--line);
 }
 
-.stats-table tbody tr + tr {
-  border-top: 1px solid var(--line);
-}
-
-.stats-table tfoot tr {
-  border-top: 1px solid var(--line-strong);
-  font-weight: 600;
+.stats-table tbody tr {
+  border-bottom: 1px solid var(--line);
 }
 
 .stats-table .stats-repo {
@@ -3959,23 +4000,30 @@ button.diff-line[data-kind="fold"] {
   text-overflow: ellipsis;
 }
 
-.stats-tally {
-  display: grid;
-  gap: 1px;
-}
-
-.stats-tally[data-zero] {
-  color: var(--quiet);
-}
-
-.stats-tally:not([data-zero]) > .tabular {
-  color: var(--danger);
-}
-
 .stats-detail {
   color: var(--muted);
   font-size: 11.5px;
   font-weight: 400;
+}
+
+.stats-problems {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.stats-problems > .tabular {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.stats-problems-kinds {
+  min-width: 0;
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .stats-running {
@@ -3992,54 +4040,47 @@ button.diff-line[data-kind="fold"] {
   box-shadow: 0 0 0 3px rgb(47 143 220 / 0.18);
 }
 
-.stats-cards {
+.stats-rows {
   display: none;
 }
 
-.stats-card {
-  gap: 10px;
+.stats-row {
+  display: grid;
+  gap: 2px;
+  padding-block: 11px;
+  border-bottom: 1px solid var(--line);
 }
 
-.stats-card[data-total] {
-  background: var(--raised);
-}
-
-.stats-card-head {
+.stats-row-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: 12px;
 }
 
-.stats-card-title {
+.stats-row-repo {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
-}
-
-.stats-figures {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 16px;
-  margin: 0;
-}
-
-.stats-figures dt {
-  color: var(--quiet);
-  font-size: 11.5px;
-}
-
-.stats-figures dd {
-  margin: 0;
-  font-size: 14px;
   font-weight: 500;
 }
 
-.stats-figures .stats-detail {
-  overflow-wrap: anywhere;
+.stats-row-hours {
+  flex: none;
+  font-weight: 600;
 }
+
+.stats-row-meta {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.stats-row-problems {
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
 /* ---------- Viewer: an image or a file's diff, full screen ---------- */
 
 .viewer {
@@ -4325,9 +4366,28 @@ html:has(.viewer[open]) {
     padding-bottom: max(32px, env(safe-area-inset-bottom));
   }
 
-  .stats-cards {
+  .stats-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stats-tile:nth-child(odd) {
+    padding-left: 0;
+  }
+
+  .stats-tile + .stats-tile {
+    border-left: 0;
+  }
+
+  .stats-tile:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+
+  .stats-tile-value {
+    font-size: 18px;
+  }
+
+  .stats-rows {
     display: grid;
-    gap: 10px;
   }
 
   .settings {
