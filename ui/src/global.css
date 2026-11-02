@@ -1083,30 +1083,48 @@ kbd {
 .turn {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 20px;
 }
 
+/* A hairline between turns; the first turn, after the earlier-turns button, has none. */
+.turn + .turn {
+  border-top: 1px solid var(--line);
+  padding-top: 32px;
+}
+
+/* The owner's message: a gray bubble on the right, sized to its text. */
 .user-message {
   position: relative;
-  padding: 10px 14px;
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
+  align-self: flex-end;
+  max-width: min(85%, 36rem);
+  padding: 9px 15px;
+  border-radius: 20px;
+  background: var(--raised);
   font-size: 15px;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+/* A long message fades into its own fill, so the bubble keeps its rounded bottom. */
 .user-message[data-clamped="true"] {
-  max-height: calc(1.6em * 8 + 20px);
+  max-height: calc(1.6em * 8 + 18px);
   overflow: hidden;
-  mask-image: linear-gradient(to bottom, black 70%, transparent);
+}
+
+.user-message[data-clamped="true"]::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: calc(2.4em + 9px);
+  background: linear-gradient(to bottom, transparent, var(--raised) calc(100% - 9px));
+  pointer-events: none;
 }
 
 .more-lines {
-  align-self: flex-start;
+  align-self: flex-end;
   margin-top: -6px;
+  margin-right: 6px;
   font-size: 12px;
   color: var(--muted);
 }
