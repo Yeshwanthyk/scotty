@@ -1,20 +1,8 @@
 import { createContext, useContext, useState } from "react";
 import { changeDiff } from "../data/diff";
-import { duration } from "../data/status";
 import type { Tool } from "../protocol/session/conversation";
-import { CodeBlock } from "./CodeBlock";
 import { DiffLines, DiffStat } from "./DiffLines";
-import { Icon, Spinner, type IconName } from "./Icon";
-
-const categoryIcon: Record<Tool["category"], IconName> = {
-  inspect: "eye",
-  change: "pencil",
-  check: "gauge",
-  research: "globe",
-  agent: "nodes",
-  run: "terminal",
-  other: "list",
-};
+import { Icon, Spinner } from "./Icon";
 
 // Summaries start with an imperative verb; rows read it in the tense of the tool's status.
 const tenses: Record<string, [string, string]> = {
@@ -45,13 +33,13 @@ export function phrase(tool: Tool): { verb: string; target: string; mono: boolea
     return { verb: tool.summary, target: "", mono: false };
   if (tool.category === "run" || tool.category === "check")
     return {
-      verb: tool.status === "failed" ? "Failed" : running ? "Running" : "Ran",
+      verb: running ? "Running" : "Ran",
       target: tool.summary,
       mono: true,
     };
   if (tool.category === "research" && tool.summary.includes(" · "))
     return {
-      verb: running ? "Calling" : tool.status === "failed" ? "Failed" : "Called",
+      verb: running ? "Calling" : "Called",
       target: tool.summary,
       mono: false,
     };
@@ -63,22 +51,24 @@ export function phrase(tool: Tool): { verb: string; target: string; mono: boolea
   return { verb: tense[running ? 0 : 1], target: rest.join(" "), mono: !prose };
 }
 
+// Each step is marked by a dot; a running one spins in its place.
+function Marker({ running }: { running: boolean }) {
+  return (
+    <span className="tool-mark">{running ? <Spinner size={12} /> : <span className="dot" />}</span>
+  );
+}
+
 function Trail({ tool }: { tool: Tool }) {
-  if (tool.status === "running") return <Spinner size={12} />;
+  if (tool.status === "running") return null;
   const added = tool.changes.reduce((sum, change) => sum + changeDiff(change).added, 0);
   const removed = tool.changes.reduce((sum, change) => sum + changeDiff(change).removed, 0);
   return (
     <>
       {tool.category === "change" ? <DiffStat added={added} removed={removed} /> : null}
       {tool.exitCode !== null && tool.exitCode !== 0 ? (
-        <span className="tabular" style={{ color: "var(--danger)" }}>
-          exit {tool.exitCode}
-        </span>
+        <span className="tabular exit">exit {tool.exitCode}</span>
       ) : null}
       {tool.status === "declined" ? <span>Declined</span> : null}
-      {tool.durationMs !== null && tool.durationMs >= 1000 ? (
-        <span className="tabular">{duration(tool.durationMs)}</span>
-      ) : null}
     </>
   );
 }
@@ -93,7 +83,11 @@ export function ToolRow({ tool }: { tool: Tool }) {
   // A running subagent shows the step it is on; an opened one shows every step, then its report.
   const current = tool.status === "running" && !open ? children.at(-1) : undefined;
   return (
-    <div className="tool" data-status={tool.status}>
+    <div
+      className="tool"
+      data-status={tool.status}
+      data-failed={tool.status === "failed" || (tool.exitCode !== null && tool.exitCode !== 0)}
+    >
       <button
         type="button"
         className="tool-row"
@@ -102,7 +96,7 @@ export function ToolRow({ tool }: { tool: Tool }) {
         onClick={() => setOpen((value) => !value)}
         title={tool.input || tool.summary}
       >
-        <Icon name={tool.status === "failed" ? "alert" : categoryIcon[tool.category]} size={14} />
+        <Marker running={tool.status === "running"} />
         <span className="verb">{verb}</span>
         {target ? <span className={mono ? "target mono" : "target"}>{target}</span> : null}
         <span className="trail">
@@ -152,37 +146,35 @@ function ToolBody({ tool }: { tool: Tool }) {
       </div>
     );
   const command = tool.category === "run" || tool.category === "check";
-  const failed = tool.status === "failed" || (tool.exitCode !== null && tool.exitCode !== 0);
   const output = tool.output.replace(/^\n+/, "");
-  // A one-line command heads its output, as a terminal shows it; a longer one gets its own block.
-  const inline = command && output !== "" && !tool.input.includes("\n") && tool.input.length <= 120;
+  // Output reads on a thin rule under its row, the command first, as a terminal shows it.
   return (
-    <div className="tool-body">
-      {tool.input && !inline ? (
-        <CodeBlock
-          code={tool.input}
-          size="sm"
-          prompt={command}
-          wrap
-          title={command ? "Command" : "Input"}
-          icon={command ? "terminal" : "file"}
-        />
+    <div className="tool-output">
+      {tool.input ? (
+        <pre className="tool-input" data-prompt={command}>
+          {tool.input}
+        </pre>
       ) : null}
-      {output ? (
-        <CodeBlock
-          code={output}
-          size="sm"
-          wrap
-          tone={failed ? "destructive" : "default"}
-          title={inline ? `$ ${tool.input}` : "Output"}
-          trailing={
-            tool.exitCode !== null && tool.exitCode !== 0 ? `exit ${tool.exitCode}` : undefined
-          }
-          icon={failed ? "alert" : command ? "terminal" : "list"}
-          collapseAfter={40}
-        />
-      ) : null}
+      {output ? <Output text={output} /> : null}
     </div>
+  );
+}
+
+const shownLines = 40;
+
+function Output({ text }: { text: string }) {
+  const [all, setAll] = useState(false);
+  const lines = text.split("\n");
+  const cut = !all && lines.length > shownLines + 2;
+  return (
+    <>
+      <pre>{cut ? lines.slice(0, shownLines).join("\n") : text}</pre>
+      {lines.length > shownLines + 2 ? (
+        <button type="button" className="tool-more" onClick={() => setAll((value) => !value)}>
+          {all ? "Show less" : `Show ${lines.length - shownLines} more lines`}
+        </button>
+      ) : null}
+    </>
   );
 }
 
@@ -208,11 +200,10 @@ export function ExploreGroup({ tools }: { tools: Tool[] }) {
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <Icon name="search" size={14} />
+        <Marker running={running} />
         <span className="verb">{running ? "Exploring" : "Explored"}</span>
         <span className="target">{parts.join(", ")}</span>
         <span className="trail">
-          {running ? <Spinner size={12} /> : null}
           <Icon name="chevronRight" size={12} className="chevron" />
         </span>
       </button>

@@ -1097,7 +1097,7 @@ kbd {
   padding: 20px 20px 32px;
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 32px;
 }
 
 .earlier {
@@ -1132,14 +1132,14 @@ kbd {
   border-radius: var(--radius-lg);
   background: var(--surface);
   border: 1px solid var(--line-strong);
-  font-size: 14px;
-  line-height: 1.55;
+  font-size: 15px;
+  line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .user-message[data-clamped="true"] {
-  max-height: calc(1.55em * 8 + 20px);
+  max-height: calc(1.6em * 8 + 20px);
   overflow: hidden;
   mask-image: linear-gradient(to bottom, black 70%, transparent);
 }
@@ -1186,11 +1186,15 @@ kbd {
   transform: rotate(90deg);
 }
 
+/* The opened log sits in a soft box. */
 .worklog {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-left: 2px;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  background: var(--sunken);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 
 .worklog[data-live="true"] {
@@ -1261,6 +1265,29 @@ kbd {
   color: var(--quiet);
 }
 
+.tool-mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+}
+
+.tool-mark .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--quiet);
+}
+
+.tool-mark .spinner {
+  color: var(--working);
+}
+
+.tool[data-failed="true"] > .tool-row .dot {
+  background: var(--danger);
+}
+
 .tool-row .verb {
   flex: none;
   color: var(--quiet);
@@ -1296,8 +1323,7 @@ kbd {
   opacity: 1;
 }
 
-.tool[data-status="failed"] .tool-row .verb,
-.tool[data-status="failed"] .tool-row .icon {
+.tool-row .exit {
   color: var(--danger);
 }
 
@@ -1321,12 +1347,50 @@ kbd {
   overflow: hidden;
 }
 
-.tool-body:has(> .code-block) {
-  border: 0;
-  background: none;
-  overflow: visible;
-  display: grid;
-  gap: 6px;
+.worklog .tool-body {
+  background: var(--surface);
+}
+
+/* A command's output, on a thin rule under its row. */
+.tool-output {
+  margin: 4px 0 8px 30px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line-strong);
+  min-width: 0;
+}
+
+.tool-output pre {
+  margin: 0;
+  padding: 2px 0;
+  font: 11.5px/1.55 var(--font-mono);
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-output .tool-input {
+  color: var(--ink);
+}
+
+.tool-output .tool-input + pre {
+  padding-top: 6px;
+}
+
+.tool-output .tool-input[data-prompt="true"]::before {
+  content: "$ ";
+  color: var(--quiet);
+}
+
+.tool-more {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--quiet);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tool-more:hover {
+    color: var(--ink);
+  }
 }
 
 /* ---------- Code block ---------- */
@@ -1613,7 +1677,12 @@ kbd {
 
 .answer {
   position: relative;
-  font-size: 14px;
+  font-size: 15px;
+}
+
+.answer > [data-markdown] {
+  font-size: 15px;
+  line-height: 1.6;
 }
 
 .answer-actions {
