@@ -6,6 +6,7 @@ import { stats as loadStats, type RepoStats, type Stats, type StatsWindow } from
 import { ago } from "../data/status";
 import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
+import { Segmented } from "./Segmented";
 
 const windows: { id: StatsWindow; label: string }[] = [
   { id: "7d", label: "7 days" },
@@ -108,21 +109,7 @@ function WindowSwitch({
   value: StatsWindow;
   onChange: (value: StatsWindow) => void;
 }) {
-  return (
-    <div className="segmented" role="group" aria-label="Time window">
-      {windows.map((item) => (
-        <button
-          type="button"
-          key={item.id}
-          className="segmented-option pressable"
-          aria-pressed={value === item.id}
-          onClick={() => onChange(item.id)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  );
+  return <Segmented label="Time window" options={windows} value={value} onChange={onChange} />;
 }
 
 const hours = (ms: number): string =>

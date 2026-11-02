@@ -16,6 +16,7 @@ import { message } from "../data/core";
 import { ago } from "../data/status";
 import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
+import { Segmented } from "./Segmented";
 import { StatusWord } from "./Settings";
 import { parseFilter, type Filter } from "../../../src/automations/automation";
 
@@ -369,6 +370,15 @@ const kinds = [
   { id: "interval", label: "Interval" },
   { id: "event", label: "Webhook" },
 ] as const;
+const actions = [
+  { id: "start", label: "Start or wake" },
+  { id: "wake", label: "Wake only" },
+  { id: "end", label: "End and release key" },
+] as const;
+const agents = [
+  { id: "codex", label: "Codex" },
+  { id: "claude", label: "Claude" },
+] as const;
 
 function Editor({
   existing,
@@ -417,39 +427,21 @@ function Editor({
       ) : null}
       <div className="automation-field">
         <div className="automation-label">Action</div>
-        <div className="segmented" role="group" aria-label="Action">
-          {(["start", "wake", "end"] as const).map((action) => (
-            <button
-              key={action}
-              type="button"
-              className="segmented-option pressable"
-              aria-pressed={draft.action === action}
-              onClick={() => set({ action })}
-            >
-              {action === "start"
-                ? "Start or wake"
-                : action === "wake"
-                  ? "Wake only"
-                  : "End and release key"}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="Action"
+          options={actions}
+          value={draft.action}
+          onChange={(action) => set({ action })}
+        />
       </div>
       <div className="automation-field">
         <div className="automation-label">When</div>
-        <div className="segmented" role="group" aria-label="When it runs">
-          {kinds.map((kind) => (
-            <button
-              key={kind.id}
-              type="button"
-              className="segmented-option pressable"
-              aria-pressed={draft.kind === kind.id}
-              onClick={() => set({ kind: kind.id })}
-            >
-              {kind.label}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="When it runs"
+          options={kinds}
+          value={draft.kind}
+          onChange={(kind) => set({ kind })}
+        />
       </div>
       {draft.kind === "calendar" ? (
         <div className="automation-pair">
@@ -543,19 +535,12 @@ function Editor({
       </label>
       <div className="automation-field">
         <div className="automation-label">Agent</div>
-        <div className="segmented" role="group" aria-label="Agent">
-          {(["codex", "claude"] as const).map((agent) => (
-            <button
-              key={agent}
-              type="button"
-              className="segmented-option pressable"
-              aria-pressed={draft.agent === agent}
-              onClick={() => set({ agent })}
-            >
-              {agent === "codex" ? "Codex" : "Claude"}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="Agent"
+          options={agents}
+          value={draft.agent}
+          onChange={(agent) => set({ agent })}
+        />
       </div>
       <label>
         Prompt ({"{{field}}"} takes a value from the payload)

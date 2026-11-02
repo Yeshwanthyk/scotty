@@ -1,7 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,6 +16,7 @@ import { ago, dormant, statusLabel, statusOf, type Status } from "../data/status
 import { Composer } from "./Composer";
 import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
+import { Segmented } from "./Segmented";
 import { SizePicker } from "./SizePicker";
 import { StatusMark } from "./Sidebar";
 
@@ -119,14 +119,43 @@ function PickUp({
   onResume: (session: Session) => void;
   resuming: string | undefined;
 }) {
+  // One highlight glides from row to row under the mouse; it fades in where the mouse enters.
+  const [glow, setGlow] = useState<{ y: number; height: number; shown: boolean; jump: boolean }>();
+  const under = (event: PointerEvent<HTMLLIElement>) => {
+    if (event.pointerType !== "mouse") return;
+    const row = event.currentTarget;
+    setGlow((now) => ({
+      y: row.offsetTop,
+      height: row.offsetHeight,
+      shown: true,
+      jump: now?.shown !== true,
+    }));
+  };
   return (
     <section className="pickup" aria-labelledby="pickup-label">
       <h2 id="pickup-label">Pick up where you left off</h2>
-      <ul onKeyDown={pickupKeys}>
+      <ul
+        onKeyDown={pickupKeys}
+        onPointerLeave={() => setGlow((now) => now && { ...now, shown: false, jump: false })}
+      >
+        {glow ? (
+          <li
+            className="pickup-glow"
+            aria-hidden="true"
+            data-shown={glow.shown || undefined}
+            data-jump={glow.jump || undefined}
+            style={{ height: glow.height, transform: `translateY(${glow.y}px)` }}
+          />
+        ) : null}
         {sessions.map(({ session, status }, index) => {
           const repo = session.display.repository.split("/").at(-1) ?? "";
           return (
-            <li key={session.identity.id} className="pickup-row" data-status={status}>
+            <li
+              key={session.identity.id}
+              className="pickup-row"
+              data-status={status}
+              onPointerEnter={under}
+            >
               <Link
                 to="/s/$sessionId"
                 params={{ sessionId: session.identity.id }}
@@ -154,11 +183,7 @@ function PickUp({
                   disabled={resuming !== undefined}
                   onClick={() => onResume(session)}
                 >
-                  {resuming === session.identity.id ? (
-                    <Spinner size={12} />
-                  ) : (
-                    <Icon name="resume" size={12} />
-                  )}
+                  {resuming === session.identity.id ? <Spinner size={12} /> : null}
                   Resume
                 </button>
               ) : null}
@@ -167,53 +192,6 @@ function PickUp({
         })}
       </ul>
     </section>
-  );
-}
-
-function AgentSwitch({
-  value,
-  claudeReady,
-  onChange,
-}: {
-  value: Agent;
-  claudeReady: boolean;
-  onChange: (agent: Agent) => void;
-}) {
-  // One pill slides under the chosen option instead of each option lighting up.
-  const buttons = useRef<Partial<Record<Agent, HTMLButtonElement | null>>>({});
-  const [pill, setPill] = useState<{ x: number; width: number }>();
-  useLayoutEffect(() => {
-    const measure = () => {
-      const button = buttons.current[value];
-      if (button) setPill({ x: button.offsetLeft, width: button.offsetWidth });
-    };
-    measure();
-    void document.fonts.ready.then(measure);
-  }, [value]);
-  return (
-    <div className="agent-switch" role="group" aria-label="Agent">
-      {pill ? (
-        <span
-          className="agent-switch-pill"
-          style={{ width: pill.width, transform: `translateX(${pill.x}px)` }}
-        />
-      ) : null}
-      {(["codex", "claude"] as const).map((agent) => (
-        <button
-          type="button"
-          key={agent}
-          ref={(button) => {
-            buttons.current[agent] = button;
-          }}
-          className="pressable"
-          aria-pressed={value === agent}
-          data-locked={agent === "claude" && !claudeReady ? "" : undefined}
-          onClick={() => onChange(agent)}
-        >
-          {agentName[agent]}
-        </button>
-      ))}
-    </div>
   );
 }
 
@@ -245,14 +223,6 @@ export function NewSession() {
   const inner = useRef<HTMLDivElement>(null);
   const [room] = useState(pickupRoom);
   const attempt = useRef<{ input: string; key: string }>(undefined);
-  const recent = useMemo(
-    () =>
-      [...new Set((list ?? []).map((session) => session.display.repository).filter(Boolean))].slice(
-        0,
-        3,
-      ),
-    [list],
-  );
   const pickup = useMemo(
     () =>
       (list ?? [])
@@ -322,7 +292,6 @@ export function NewSession() {
     field.current.style.translate = `${x.toFixed(1)}px ${y.toFixed(1)}px`;
   }
   const chosen: Agent = agent === "claude" && claudeReady === false ? "codex" : agent;
-  const others = recent.filter((name) => name !== repo.trim());
   const validRepo = repoPattern.test(repo.trim());
   const repoDefault = defaults.find((item) => item.repo === repo.trim().toLowerCase());
   const own = picked?.repo === repo.trim() ? picked.size : undefined;
@@ -454,7 +423,15 @@ export function NewSession() {
                 style={{ width: `${Math.max(10, repo.length + 1)}ch` }}
               />
             </label>
-            <AgentSwitch value={chosen} claudeReady={claudeReady !== false} onChange={pick} />
+            <Segmented
+              label="Agent"
+              options={[
+                { id: "codex", label: agentName.codex },
+                { id: "claude", label: agentName.claude, locked: claudeReady === false },
+              ]}
+              value={chosen}
+              onChange={pick}
+            />
             <SizePicker
               value={size}
               align="start"
@@ -502,25 +479,6 @@ export function NewSession() {
               <Icon name="alert" size={13} />
               {error}
             </p>
-          ) : null}
-          {others.length > 0 ? (
-            <div className="suggestions">
-              <span className="suggestions-label">Recent</span>
-              {others.map((name) => (
-                <button
-                  type="button"
-                  key={name}
-                  className="suggestion pressable"
-                  onClick={() => {
-                    setRepo(name);
-                    setFilled("");
-                  }}
-                >
-                  <Icon name="repo" size={13} />
-                  {name}
-                </button>
-              ))}
-            </div>
           ) : null}
           {pickup.length > 0 ? (
             <PickUp
