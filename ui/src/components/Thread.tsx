@@ -122,8 +122,12 @@ function TurnView({ sessionId, turn, mode }: { sessionId: string; turn: Turn; mo
         <div className="assistant">
           {live && mode === "booting" ? null : live ? (
             <>
-              <WorkLog items={log} live />
-              {answer ? <Markdown source={answer} /> : null}
+              {log.length > 0 ? <WorkLog items={log} live /> : null}
+              {answer ? (
+                <div className="answer">
+                  <Markdown source={answer} />
+                </div>
+              ) : null}
               <div className="live">
                 <Spinner size={13} />
                 <span className="shimmer">Working</span>
