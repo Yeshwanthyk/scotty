@@ -3166,8 +3166,10 @@ button.diff-line[data-kind="fold"] {
   padding: 4px;
   border-radius: var(--radius-lg);
   background: var(--surface);
-  border: 1px solid var(--line-strong);
-  box-shadow: var(--shadow);
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 2px 4px rgb(0 0 0 / 0.04),
+    0 12px 32px rgb(0 0 0 / 0.1);
   transform-origin: top right;
   animation: menu-in var(--fast) var(--ease-out);
 }
@@ -3200,14 +3202,15 @@ button.diff-line[data-kind="fold"] {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 32px;
-  padding: 6px 10px;
+  min-height: 30px;
+  padding: 5px 10px;
   border-radius: var(--radius-md);
   font-size: 13px;
   text-align: left;
   color: var(--ink);
 }
 
+/* Only a choice of several shows a mark: the check on the picked one. */
 .menu-item .icon {
   color: var(--muted);
   flex: none;
@@ -3217,20 +3220,18 @@ button.diff-line[data-kind="fold"] {
   visibility: hidden;
 }
 
-.menu-item[data-tone="danger"],
-.menu-item[data-tone="danger"] .icon {
+.menu-item[data-tone="danger"] {
   color: var(--danger);
 }
 
 .menu-text {
-  display: grid;
-  gap: 1px;
   white-space: nowrap;
 }
 
-.menu-detail {
-  font-size: 11.5px;
-  color: var(--quiet);
+.menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
 }
 
 .menu-item:focus-visible {
@@ -3241,6 +3242,16 @@ button.diff-line[data-kind="fold"] {
 @media (hover: hover) and (pointer: fine) {
   .menu-item:hover {
     background: var(--hover);
+  }
+}
+
+/* On a dark page a shadow alone doesn't lift a menu, so it is a lighter grey with a firmer ring. */
+@media (prefers-color-scheme: dark) {
+  .menu-list {
+    background: var(--raised);
+    box-shadow:
+      0 0 0 1px var(--line-strong),
+      0 12px 32px rgb(0 0 0 / 0.45);
   }
 }
 
@@ -3262,9 +3273,20 @@ button.diff-line[data-kind="fold"] {
   max-width: 560px;
   border-radius: var(--radius-xl);
   background: var(--surface);
-  border: 1px solid var(--line-strong);
-  box-shadow: var(--shadow);
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 2px 4px rgb(0 0 0 / 0.04),
+    0 16px 48px rgb(0 0 0 / 0.16);
   overflow: hidden;
+}
+
+@media (prefers-color-scheme: dark) {
+  .command {
+    background: var(--raised);
+    box-shadow:
+      0 0 0 1px var(--line-strong),
+      0 16px 48px rgb(0 0 0 / 0.5);
+  }
 }
 
 .command-input {
@@ -3283,28 +3305,6 @@ button.diff-line[data-kind="fold"] {
   outline: 0;
   background: transparent;
   font-size: 14px;
-  color: var(--ink);
-}
-
-.command-filters {
-  display: flex;
-  gap: 4px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--line);
-  overflow-x: auto;
-}
-
-.command-filter {
-  flex: none;
-  height: 24px;
-  padding: 0 8px;
-  border-radius: var(--radius-sm);
-  font-size: 11.5px;
-  color: var(--muted);
-}
-
-.command-filter[aria-checked="true"] {
-  background: var(--selected);
   color: var(--ink);
 }
 
@@ -3340,7 +3340,7 @@ button.diff-line[data-kind="fold"] {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 36px;
+  height: 34px;
   padding: 0 10px;
   border-radius: var(--radius-md);
   font-size: 13px;

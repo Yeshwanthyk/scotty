@@ -1,19 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Icon, type IconName } from "./Icon";
+import { Icon } from "./Icon";
 
+// One line each. An item with `checked` is a choice of several and keeps a column for its check.
 export type MenuItem = {
   label: string;
-  icon: IconName;
   onSelect: () => void;
   tone?: "danger";
-  detail?: string;
   checked?: boolean;
-  // The menu stays open after the pick, so the item's detail can say what happened.
+  // The menu stays open after the pick, so the item's label can say what happened.
   stay?: boolean;
 };
 
 // A small popover of actions behind one "more" button; closes on pick, Escape or an outside press.
-// It opens below the button and lines up with its right edge unless `side` or `align` says otherwise.
+// Danger items sit last, under a hairline. It opens below the button and lines up with its right edge unless `side` or `align` says otherwise.
 export function Menu({
   label,
   items,
@@ -49,6 +48,25 @@ export function Menu({
     };
   }, [open]);
   if (items.length === 0) return null;
+  const safe = items.filter((item) => item.tone !== "danger");
+  const danger = items.filter((item) => item.tone === "danger");
+  const row = (item: MenuItem) => (
+    <button
+      key={item.label}
+      type="button"
+      role={item.checked === undefined ? "menuitem" : "menuitemradio"}
+      aria-checked={item.checked}
+      className="menu-item"
+      data-tone={item.tone}
+      onClick={() => {
+        if (!item.stay) setOpen(false);
+        item.onSelect();
+      }}
+    >
+      {item.checked === undefined ? null : <Icon name="check" size={14} />}
+      <span className="menu-text">{item.label}</span>
+    </button>
+  );
   return (
     <div className="menu" ref={root}>
       <button
@@ -64,26 +82,11 @@ export function Menu({
       </button>
       {open ? (
         <div className="menu-list" role="menu" data-side={side} data-align={align}>
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              role={item.checked === undefined ? "menuitem" : "menuitemradio"}
-              aria-checked={item.checked}
-              className="menu-item"
-              data-tone={item.tone}
-              onClick={() => {
-                if (!item.stay) setOpen(false);
-                item.onSelect();
-              }}
-            >
-              <Icon name={item.icon} size={14} />
-              <span className="menu-text">
-                <span>{item.label}</span>
-                {item.detail ? <span className="menu-detail">{item.detail}</span> : null}
-              </span>
-            </button>
-          ))}
+          {safe.map(row)}
+          {safe.length > 0 && danger.length > 0 ? (
+            <div className="menu-separator" role="separator" />
+          ) : null}
+          {danger.map(row)}
         </div>
       ) : null}
     </div>
