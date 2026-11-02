@@ -1321,6 +1321,7 @@ kbd {
 
 .tool-row[aria-expanded="true"] .chevron {
   opacity: 1;
+  transform: rotate(90deg);
 }
 
 .tool-row .exit {
