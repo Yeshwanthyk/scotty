@@ -367,25 +367,6 @@ a {
   opacity: 0.45;
 }
 
-.send-button {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--ink);
-  color: var(--bg);
-}
-
-.send-button:disabled {
-  background: var(--raised);
-  color: var(--quiet);
-}
-
-.send-button[data-mode="stop"] {
-  background: var(--ink);
-}
-
 kbd {
   font-family: var(--font-sans);
   font-size: 11px;
@@ -413,10 +394,6 @@ kbd {
   .button[data-tone="ghost"]:hover:not(:disabled) {
     background: var(--hover);
     color: var(--ink);
-  }
-
-  .send-button:hover:not(:disabled) {
-    opacity: 0.85;
   }
 }
 
@@ -1885,60 +1862,201 @@ kbd {
   padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
 
+/* A pill while it is one line: the text, then the buttons and one round action. Once the text wraps it opens into a
+   card: the text across the top, the buttons in a row below. The buttons sit (height − button) / 2 in from the
+   edge, so the gap round them is the same on every side. */
 .composer {
+  --composer-h: 54px;
+  --composer-r: 23px;
+  --composer-b: 37px;
+  --composer-pad: calc((var(--composer-h) - var(--composer-b)) / 2);
+  --composer-text: 14px;
+  --composer-line: 22px;
+  --composer-lift: 0 2px 4px rgb(0 0 0 / 0.04), 0 12px 32px rgb(0 0 0 / 0.08);
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   max-width: var(--thread-width);
+  min-height: var(--composer-h);
   margin: 0 auto;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-xl);
+  border-radius: var(--composer-r);
   background: var(--surface);
-  box-shadow: var(--shadow);
-  transition: border-color var(--fast) var(--ease-out);
+  /* The edge is a 1px line and a soft shadow; a ring rather than a border, so the pill is its height exactly. */
+  box-shadow:
+    0 0 0 1px var(--line-strong),
+    var(--shadow);
+  transition:
+    border-radius 200ms var(--ease-out),
+    box-shadow 200ms var(--ease-out);
+}
+
+/* Focus darkens the line and lifts the shadow, and nothing moves. The deeper shadow sits on its own layer and fades
+   in, so no frame repaints a shadow. */
+.composer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: var(--composer-lift);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease-out);
 }
 
 .composer:focus-within {
-  border-color: var(--line-hover);
+  box-shadow:
+    0 0 0 1px var(--line-hover),
+    var(--shadow);
+}
+
+.composer:focus-within::after {
+  opacity: 1;
+}
+
+.composer[data-open="true"] {
+  border-radius: 22px;
 }
 
 .composer textarea {
   display: block;
-  width: 100%;
-  min-height: 44px;
-  max-height: 40vh;
+  flex: 1;
+  min-width: 0;
+  min-height: var(--composer-h);
+  max-height: 40dvh;
+  /* Grows with its text without script measuring it; Composer.tsx sizes it where this is unsupported. */
+  field-sizing: content;
   resize: none;
   border: 0;
   outline: 0;
   background: transparent;
-  padding: 12px 14px 4px;
-  font-size: 14px;
-  line-height: 1.5;
+  padding: calc((var(--composer-h) - var(--composer-line)) / 2) 8px
+    calc((var(--composer-h) - var(--composer-line)) / 2) 18px;
+  font-size: var(--composer-text);
+  line-height: var(--composer-line);
+  color: var(--ink);
 }
 
 .composer textarea::placeholder {
   color: var(--quiet);
 }
 
+.composer[data-open="true"] textarea {
+  order: -1;
+  flex-basis: calc(100% - 36px);
+  min-height: 0;
+  margin: 0 18px;
+  padding: 14px 0 4px;
+}
+
 .composer-bar {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px 8px 10px;
+  padding: var(--composer-pad);
+}
+
+/* In the card the buttons take the row under the text, and the action keeps the far end. */
+.composer[data-open="true"] .composer-bar {
+  flex: 1 1 100%;
+  padding-top: 2px;
+}
+
+.composer[data-open="true"] .send-button {
+  margin-left: auto;
 }
 
 .composer-bar .agent {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 24px;
-  padding: 0 6px;
-  border-radius: var(--radius-sm);
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 999px;
   color: var(--muted);
   font-size: 12px;
 }
 
-.composer-bar .hint {
-  margin-left: auto;
-  font-size: 11.5px;
+/* The size pill: raised a little, like the agent chosen beside it. */
+.composer-bar .size-picker {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* The one filled button: Send, or Stop while a turn runs and nothing is typed. */
+.send-button {
+  position: relative;
+  flex: none;
+  width: var(--composer-b);
+  height: var(--composer-b);
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.send-button:disabled {
+  background: var(--raised);
   color: var(--quiet);
+}
+
+/* Stop: the ink square on a raised circle, a thin arc turning round it while the turn runs. */
+.send-button[data-mode="stop"] {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.send-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  animation: spin 1.1s linear infinite;
+  pointer-events: none;
+}
+
+.send-ring circle {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 26 80;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .send-button:hover:not(:disabled) {
+    opacity: 0.85;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .send-ring {
+    animation: none;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .composer {
+    --composer-lift: 0 2px 6px rgb(0 0 0 / 0.35), 0 16px 40px rgb(0 0 0 / 0.45);
+  }
+
+  /* On a dark page a shadow alone doesn't show, so the size pill keeps a lighter edge and a deeper drop. */
+  .composer-bar .size-picker {
+    box-shadow:
+      inset 0 0 0 1px var(--line-strong),
+      0 1px 3px rgb(0 0 0 / 0.45);
+  }
+}
+
+/* A phone, or any touch screen: 16px text so iOS doesn't zoom into the field, and larger buttons. */
+@media (max-width: 767px), (pointer: coarse) {
+  .composer {
+    --composer-h: 56px;
+    --composer-b: 40px;
+    --composer-text: 16px;
+    --composer-line: 24px;
+  }
 }
 
 .composer-note {
@@ -2795,14 +2913,13 @@ button.diff-line[data-kind="fold"] {
   }
 }
 
-.new-session .composer textarea {
-  min-height: 96px;
-  padding: 16px 16px 4px;
-  font-size: 15px;
+/* Always the card: its row of repository, agent and size is too wide for the pill. */
+.new-session .composer[data-open="true"] textarea {
+  min-height: 82px;
+  padding-top: 16px;
 }
 
 .new-session .composer-bar {
-  padding: 8px 10px 10px 12px;
   /* On a phone the size and send drop to a second row rather than squeeze the repository. */
   flex-wrap: wrap;
   row-gap: 8px;
@@ -3996,10 +4113,6 @@ html:has(.viewer[open]) {
 /* ---------- Phone ---------- */
 
 @media (max-width: 767px) {
-  .new-session .send-button {
-    margin-left: auto;
-  }
-
   body {
     font-size: 14px;
   }
@@ -4087,19 +4200,10 @@ html:has(.viewer[open]) {
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 
-  .composer textarea,
   .field,
   .command-input input,
   .repo-picker input {
     font-size: 16px;
-  }
-
-  .composer-bar .hint {
-    display: none;
-  }
-
-  .composer-bar .send-button {
-    margin-left: auto;
   }
 
   .workspace[data-panel="open"] {
