@@ -2084,35 +2084,48 @@ kbd {
   background: var(--sidebar);
 }
 
+/* 48px, like the session header, so the two bottom borders run as one line. */
 .panel-tabs {
-  height: 44px;
+  height: 48px;
   flex: none;
   display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 8px;
+  align-items: stretch;
+  gap: 18px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--line);
 }
 
+/* The selected tab is ink with a 2px underline sitting on the bar's border. */
 .tab {
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
+  padding: 0;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 13px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
 .tab[aria-selected="true"] {
-  background: var(--selected);
   color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+
+.tab:focus-visible {
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
 }
 
 .tab .count {
-  color: var(--quiet);
-  font-size: 11px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--selected);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  display: inline-grid;
+  place-items: center;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -2126,21 +2139,22 @@ kbd {
   min-height: 0;
 }
 
+/* An empty tab says so at the top left, in text. */
 .panel-empty {
   height: 100%;
   display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 8px;
-  padding: 24px;
-  text-align: center;
+  place-items: start;
+  align-content: start;
+  gap: 2px;
+  padding: 18px 16px;
+  text-align: left;
   color: var(--quiet);
   font-size: 12.5px;
 }
 
-.panel-empty .icon {
-  color: var(--quiet);
-  opacity: 0.7;
+.panel-empty-title {
+  color: var(--ink);
+  font-weight: 500;
 }
 
 /* Diff viewer */
@@ -2559,6 +2573,68 @@ button.diff-line[data-kind="fold"] {
   border-bottom: 1px solid var(--line);
 }
 
+/* One address field: a quiet localhost: prefix, the port, and the go button at its right end. */
+.address {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 3px 0 10px;
+  border-radius: 8px;
+  background: var(--hover);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.address:focus-within {
+  box-shadow: inset 0 0 0 1px var(--line-hover);
+}
+
+.address-prefix {
+  color: var(--quiet);
+}
+
+.address input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+}
+
+.address-go {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--muted);
+}
+
+.address-go:disabled {
+  opacity: 0.45;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .address-go:hover:not(:disabled) {
+    background: var(--selected);
+    color: var(--ink);
+  }
+}
+
+/* A phone, or any touch screen: 16px so iOS doesn't zoom into the port. */
+@media (max-width: 767px), (pointer: coarse) {
+  .address {
+    font-size: 16px;
+  }
+}
+
 .field {
   height: 28px;
   padding: 0 10px;
@@ -2620,7 +2696,8 @@ button.diff-line[data-kind="fold"] {
   width: 100%;
   height: 100%;
   border: 0;
-  background: white;
+  /* The page color until the app inside paints its own, so dark mode doesn't flash white. */
+  background: var(--bg);
 }
 
 .file-list {

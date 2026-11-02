@@ -3,7 +3,7 @@ import { fileHref, hatch, message } from "../data/core";
 import type { FileDiff } from "../data/diff";
 import type { Turn } from "../protocol/session/conversation";
 import { Changes } from "./Changes";
-import { Icon, Spinner, type IconName } from "./Icon";
+import { Icon, Spinner } from "./Icon";
 import { useLightbox } from "./Lightbox";
 
 // xterm loads only when the terminal tab opens.
@@ -60,7 +60,6 @@ export function SidePanel({
             </Suspense>
           ) : (
             <Empty
-              icon="terminal"
               title="Start the session to use the terminal"
               detail="Send a message to resume it; the shell opens in the repository."
             />
@@ -72,11 +71,10 @@ export function SidePanel({
   );
 }
 
-function Empty({ icon, title, detail }: { icon: IconName; title: string; detail: string }) {
+function Empty({ title, detail }: { title: string; detail: string }) {
   return (
     <div className="panel-empty">
-      <Icon name={icon} size={20} />
-      <div style={{ color: "var(--muted)" }}>{title}</div>
+      <div className="panel-empty-title">{title}</div>
       <div>{detail}</div>
     </div>
   );
@@ -84,9 +82,7 @@ function Empty({ icon, title, detail }: { icon: IconName; title: string; detail:
 
 function ChangesTab({ changes }: { changes: ReadonlyArray<FileDiff> }) {
   if (changes.length === 0)
-    return (
-      <Empty icon="diff" title="No changes yet" detail="Files the agent edits show up here." />
-    );
+    return <Empty title="No changes yet" detail="Files the agent edits show up here." />;
   return <Changes changes={changes} />;
 }
 
@@ -98,7 +94,6 @@ function Preview({ sessionId, running }: { sessionId: string; running: boolean }
   if (!running)
     return (
       <Empty
-        icon="eye"
         title="Preview needs a running session"
         detail="Send a message to resume it, then open the port the dev server uses."
       />
@@ -123,21 +118,24 @@ function Preview({ sessionId, running }: { sessionId: string; running: boolean }
           void open();
         }}
       >
-        <span className="quiet" style={{ fontSize: 12 }}>
-          Port
-        </span>
-        <input
-          className="field tabular"
-          style={{ width: 80 }}
-          inputMode="numeric"
-          value={port}
-          aria-label="Port"
-          onChange={(event) => setPort(event.target.value.replace(/\D/g, ""))}
-        />
-        <button type="submit" className="button pressable" disabled={busy || port === ""}>
-          {busy ? <Spinner size={12} /> : null}
-          Open
-        </button>
+        <div className="address">
+          <span className="address-prefix">localhost:</span>
+          <input
+            className="tabular"
+            inputMode="numeric"
+            value={port}
+            aria-label="Port"
+            onChange={(event) => setPort(event.target.value.replace(/\D/g, ""))}
+          />
+          <button
+            type="submit"
+            className="address-go pressable"
+            aria-label="Open"
+            disabled={busy || port === ""}
+          >
+            {busy ? <Spinner size={12} /> : <Icon name="arrowRight" size={13} />}
+          </button>
+        </div>
         {url ? (
           <a
             className="icon-button pressable"
@@ -145,7 +143,6 @@ function Preview({ sessionId, running }: { sessionId: string; running: boolean }
             target="_blank"
             rel="noreferrer"
             aria-label="Open in a new tab"
-            style={{ marginLeft: "auto" }}
           >
             <Icon name="external" />
           </a>
@@ -160,7 +157,6 @@ function Preview({ sessionId, running }: { sessionId: string; running: boolean }
         <iframe className="preview-frame" src={url} title="Preview" style={{ flex: 1 }} />
       ) : (
         <Empty
-          icon="eye"
           title="Open a port"
           detail="The agent prints Ready: <URL> when its dev server answers."
         />
@@ -179,13 +175,7 @@ function FileList({ sessionId, files }: { sessionId: string; files: Turn["files"
     }));
   const lightbox = useLightbox(images);
   if (files.length === 0)
-    return (
-      <Empty
-        icon="image"
-        title="No files"
-        detail="Screenshots and videos the agent shares land here."
-      />
-    );
+    return <Empty title="No files" detail="Screenshots and videos the agent shares land here." />;
   return (
     <div className="file-list">
       {files.map((file) => {
