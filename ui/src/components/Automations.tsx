@@ -16,6 +16,7 @@ import { message } from "../data/core";
 import { ago } from "../data/status";
 import { Icon, Spinner } from "./Icon";
 import { SidebarButton } from "./Layout";
+import { StatusWord } from "./Settings";
 import { parseFilter, type Filter } from "../../../src/automations/automation";
 
 // The list of automations and their recent runs; `name` shows one, with its editor.
@@ -101,11 +102,11 @@ export function AutomationsPage({ name }: { name?: string }) {
                 }}
               />
             ) : null}
+            <p className="settings-intro">
+              An automation starts, wakes or ends a session on a schedule or a webhook delivery. A
+              new or changed one stays off until you switch it on.
+            </p>
             <div className="settings-card">
-              <p className="settings-intro">
-                An automation starts, wakes or ends a session on a schedule or a webhook delivery. A
-                new or changed one stays off until you switch it on.
-              </p>
               {items.length === 0 ? (
                 <div className="settings-empty">No automations yet.</div>
               ) : (
@@ -247,24 +248,27 @@ function Runs({ runs }: { runs: Run[] }) {
           <div key={run.id} className="settings-row">
             <div className="settings-row-text">
               <div className="settings-row-title">
-                <span
-                  className="settings-dot"
-                  data-tone={
-                    run.status === "failed" || run.outcome === "failed"
-                      ? "warn"
-                      : run.status === "skipped"
-                        ? undefined
-                        : "good"
-                  }
-                />
-                {statusText[run.status]}
-                {run.outcome === null ? "" : `, ${outcomeText[run.outcome]}`}
+                <span className="mono">{run.automation}</span>
                 <span className="quiet tabular settings-size">
-                  {run.automation} · {run.trigger} · {ago(new Date(run.at).toISOString())}
+                  {run.trigger} · {ago(new Date(run.at).toISOString())}
                 </span>
               </div>
-              <div className="settings-row-detail">{run.reason ?? run.key ?? run.id}</div>
+              <div className="settings-row-detail">
+                {[
+                  ...(run.outcome === null ? [] : [outcomeText[run.outcome]]),
+                  run.reason ?? run.key ?? run.id,
+                ].join(" · ")}
+              </div>
             </div>
+            <StatusWord
+              status={{
+                word: statusText[run.status],
+                tone:
+                  run.status === "failed" || run.status === "skipped" || run.outcome === "failed"
+                    ? "warn"
+                    : "good",
+              }}
+            />
             {run.session ? (
               <Link
                 to="/s/$sessionId"
@@ -395,7 +399,7 @@ function Editor({
   }
   return (
     <form
-      className="settings-card automation-form"
+      className="automation-form"
       onSubmit={(event) => {
         event.preventDefault();
         void save();

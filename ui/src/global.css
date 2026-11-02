@@ -3368,73 +3368,7 @@ button.diff-line[data-kind="fold"] {
   color: var(--quiet);
 }
 
-/* ---------- Settings ---------- */
-
-.settings {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.settings-inner {
-  max-width: 44rem;
-  margin: 0 auto;
-  padding: 28px 20px 60px;
-}
-
-.settings h2 {
-  margin: 28px 0 8px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--quiet);
-}
-
-.card {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-}
-
-.card-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  min-height: 56px;
-}
-
-.card-row + .card-row {
-  border-top: 1px solid var(--line);
-}
-
-.card-row .label {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.card-row .sub {
-  font-size: 12px;
-  color: var(--quiet);
-}
-
-.card-row .grow {
-  flex: 1;
-  min-width: 0;
-}
-
 /* ---------- Page states ---------- */
-
-.empty-state {
-  flex: 1;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 10px;
-  color: var(--quiet);
-  font-size: 13px;
-  padding: 24px;
-  text-align: center;
-}
 
 .skeleton {
   border-radius: var(--radius-sm);
@@ -3446,7 +3380,7 @@ button.diff-line[data-kind="fold"] {
   font-size: 12.5px;
 }
 
-/* ---------- Settings ---------- */
+/* ---------- Sidebar foot ---------- */
 
 /* The pages a session list leads to, as one row of icons under the list. */
 .sidebar-foot {
@@ -3467,6 +3401,8 @@ button.diff-line[data-kind="fold"] {
   color: var(--ink);
 }
 
+/* ---------- Settings ---------- */
+
 .mobile-only-text {
   display: none;
 }
@@ -3474,6 +3410,7 @@ button.diff-line[data-kind="fold"] {
 .settings {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
   display: grid;
   grid-template-columns: 220px minmax(0, 40rem);
   gap: 32px;
@@ -3527,13 +3464,21 @@ button.diff-line[data-kind="fold"] {
   color: var(--ink);
 }
 
+/* A group sits on the page: a hairline above it, and one under each band in it (a row, a form,
+   the device code, a fold). */
 .settings-card {
   display: grid;
-  gap: 12px;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+.settings-card > * {
+  padding-block: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* An error under a group is text, not another band. */
+.settings-card > .settings-problem {
+  border-bottom: 0;
 }
 
 .settings-row {
@@ -3543,11 +3488,38 @@ button.diff-line[data-kind="fold"] {
   min-height: 36px;
 }
 
-.settings-row + .settings-row,
-.device-code + .settings-row,
-.token-form + .settings-row {
-  padding-top: 12px;
+/* Rows inside a band (a fold, a form, the deliveries) part with the same hairline. */
+.settings-card > * .settings-row + .settings-row {
+  padding-top: 8px;
   border-top: 1px solid var(--line);
+}
+
+/* One connection is one band: its row, its controls and its deliveries. */
+.settings-item {
+  display: grid;
+  gap: 8px;
+}
+
+.mcp-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-skeleton {
+  display: grid;
+  gap: 8px;
+}
+
+/* How a row stands, as a word before its action. */
+.settings-status {
+  flex: none;
+  color: var(--quiet);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.settings-status[data-tone="warn"] {
+  color: var(--attention);
 }
 
 .settings-row[data-off] .settings-row-text {
@@ -3588,7 +3560,7 @@ button.diff-line[data-kind="fold"] {
 }
 
 .settings-size {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 400;
 }
 
@@ -3604,17 +3576,6 @@ button.diff-line[data-kind="fold"] {
 
 .deliveries[open] summary {
   margin-bottom: 8px;
-}
-
-.settings-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--attention);
-}
-
-.settings-dot[data-tone="good"] {
-  background: var(--done);
 }
 
 .settings-intro {
@@ -3696,7 +3657,7 @@ button.diff-line[data-kind="fold"] {
 
 .skill-source .fold-count {
   color: var(--quiet);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .skill-source .fold-rows {
@@ -3704,9 +3665,9 @@ button.diff-line[data-kind="fold"] {
   padding-bottom: 6px;
 }
 
-.skill-source + .skill-source {
-  border-top: 1px solid var(--line);
-  padding-top: 4px;
+/* The fold's summary is its row, so the band is tighter than a row's. */
+.settings-card > .skill-source {
+  padding-block: 4px;
 }
 
 .skill-source .settings-row {
@@ -3733,14 +3694,14 @@ button.diff-line[data-kind="fold"] {
 }
 
 .skill-manual {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 400;
 }
 
 .skill-source-foot {
   justify-content: flex-end;
   gap: 4px;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .skill-source-foot .quiet {
@@ -3781,6 +3742,13 @@ button.diff-line[data-kind="fold"] {
   font-weight: 600;
 }
 
+.automation-form {
+  display: grid;
+  gap: 12px;
+  padding-block: 12px;
+  border-block: 1px solid var(--line);
+}
+
 .automation-form label {
   display: grid;
   gap: 5px;
@@ -3811,9 +3779,6 @@ button.diff-line[data-kind="fold"] {
 .device-code {
   display: grid;
   gap: 8px;
-  padding: 12px;
-  border-radius: var(--radius-md);
-  background: var(--sunken);
   font-size: 12.5px;
 }
 
@@ -3835,6 +3800,11 @@ button.diff-line[data-kind="fold"] {
 .token-form .field {
   flex: 1;
   min-width: 180px;
+}
+
+/* A row in a form (a blueprint's connections) takes the whole line, so its hairline does too. */
+.token-form > .settings-row {
+  flex-basis: 100%;
 }
 
 .switch {
@@ -4405,10 +4375,6 @@ html:has(.viewer[open]) {
   .new-session-field {
     translate: none !important;
   }
-}
-
-.mcp-controls {
-  padding: 0 0 14px;
 }
 
 /* ---------- Page changes ---------- */
