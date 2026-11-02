@@ -148,7 +148,7 @@ function Meta({ session, status }: { session: Session; status: Status }) {
   );
 }
 
-export const filters: ReadonlyArray<{ id: Filter; label: string }> = [
+const filters: ReadonlyArray<{ id: Filter; label: string }> = [
   { id: "all", label: "All" },
   { id: "mine", label: "Mine" },
   { id: "automations", label: "Automations" },
@@ -343,7 +343,6 @@ export function Sidebar({
               label="Filter sessions"
               items={filters.map((item) => ({
                 label: item.label,
-                icon: "check",
                 checked: filter === item.id,
                 onSelect: () => setFilter(item.id),
               }))}

@@ -88,7 +88,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 1500);
+    const timer = setTimeout(() => setCopied(false), 1400);
     return () => clearTimeout(timer);
   }, [copied]);
   const [panel, setPanel] = useState<PanelTab | undefined>(() =>
@@ -289,9 +289,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
             disabled={busy}
             items={[
               {
-                label: "Copy session ID",
-                icon: "copy",
-                detail: copied ? "Copied" : sessionId.slice(0, 8),
+                label: copied ? "Copied" : "Copy session ID",
                 stay: true,
                 onSelect: () => void copyText(sessionId).then(setCopied),
               },
@@ -299,8 +297,6 @@ function SessionView({ sessionId }: { sessionId: string }) {
                 ? [
                     {
                       label: "Resume",
-                      icon: "resume" as const,
-                      detail: "Start its container again",
                       onSelect: () => void act("resume"),
                     },
                   ]
@@ -309,8 +305,6 @@ function SessionView({ sessionId }: { sessionId: string }) {
                 ? [
                     {
                       label: "Stop session",
-                      icon: "stop" as const,
-                      detail: "Shut down its container",
                       onSelect: () => void act("stop"),
                     },
                   ]
@@ -319,7 +313,6 @@ function SessionView({ sessionId }: { sessionId: string }) {
                 ? [
                     {
                       label: "Delete session",
-                      icon: "trash" as const,
                       tone: "danger" as const,
                       onSelect: () => void act("delete"),
                     },

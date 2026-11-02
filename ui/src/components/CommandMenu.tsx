@@ -2,11 +2,11 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { sessions as searchSessions } from "../data/core";
 import { useSessions } from "../data/sessions-store";
-import { ago, type Filter, matchesFilter, matchesText, statusOf } from "../data/status";
+import { ago, matchesFilter, matchesText, statusOf } from "../data/status";
 import { Icon } from "./Icon";
 import { useLayout } from "./Layout";
 import { sections } from "./Settings";
-import { filters, StatusMark } from "./Sidebar";
+import { StatusMark } from "./Sidebar";
 
 type Command = {
   id: string;
@@ -14,7 +14,8 @@ type Command = {
   detail: string;
   section: string;
   run: () => void;
-  mark: React.ReactNode;
+  // Only sessions carry a mark, so labels line up within each group.
+  mark?: React.ReactNode;
 };
 
 // Opened by keyboard many times a day, so it appears and leaves without animation. Inside, one
@@ -24,7 +25,6 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
   const { sidebar, toggleSidebar } = useLayout();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
   const [active, setActive] = useState(0);
   // The server also matches the whole first prompt; its hits join the ones the list shows,
   // but only while they answer the text in the box.
@@ -58,7 +58,6 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
         label: "New session",
         detail: "",
         section: "Actions",
-        mark: <Icon name="plus" />,
         run: go(() => navigate({ to: "/sessions/create" })),
       },
       // A phone has no sidebar to hide.
@@ -69,7 +68,6 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
               label: sidebar ? "Hide sidebar" : "Show sidebar",
               detail: "⌘\\",
               section: "Actions",
-              mark: <Icon name="sidebar" />,
               run: go(async () => toggleSidebar()),
             },
           ]
@@ -79,7 +77,6 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
         label: "Stats",
         detail: "Hours, turns and failures per repository",
         section: "Actions",
-        mark: <Icon name="gauge" />,
         run: go(() => navigate({ to: "/stats" })),
       },
       ...sections.map((item) => ({
@@ -87,17 +84,14 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
         label: `Settings: ${item.label}`,
         detail: item.detail,
         section: "Actions",
-        mark: <Icon name={item.icon} />,
         run: go(() => navigate({ to: "/settings/$section", params: { section: item.id } })),
       })),
     ];
     const needle = query.trim().toLowerCase();
-    // Sessions match on title, repository, branch and first prompt, then the status filter;
-    // running ones come first. A repository sets the sidebar's repository filter.
+    // Sessions match on title, repository, branch and first prompt; running ones come first.
+    // A repository sets the sidebar's repository filter.
     const matching = (list ?? []).filter(
-      (session) =>
-        (matchesText(session, needle) || found?.has(session.identity.id) === true) &&
-        matchesFilter(session, filter),
+      (session) => matchesText(session, needle) || found?.has(session.identity.id) === true,
     );
     const sessions: Command[] = [
       ...matching.filter((session) => matchesFilter(session, "running")),
@@ -117,28 +111,22 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
         label: repo,
         detail: "Show its sessions",
         section: "Repositories",
-        mark: <Icon name="branch" />,
         run: go(async () => {
           setRepo(repo);
           await navigate({ to: "/sessions" });
         }),
       }));
-    // Running sessions lead; a status filter narrows the menu to sessions.
+    // Running sessions lead.
     return [
       ...sessions.filter((command) => command.section === "Running"),
-      ...(filter === "all"
-        ? [
-            ...actions.filter(
-              (command) =>
-                needle === "" ||
-                `${command.label} ${command.detail}`.toLowerCase().includes(needle),
-            ),
-            ...repos,
-          ]
-        : []),
+      ...actions.filter(
+        (command) =>
+          needle === "" || `${command.label} ${command.detail}`.toLowerCase().includes(needle),
+      ),
+      ...repos,
       ...sessions.filter((command) => command.section !== "Running"),
     ];
-  }, [list, query, filter, found, navigate, onClose, setRepo, sidebar, toggleSidebar]);
+  }, [list, query, found, navigate, onClose, setRepo, sidebar, toggleSidebar]);
   // The first row is active whenever the rows change; live updates to the same rows keep it.
   const rows = commands.map((command) => command.id).join("\n");
   useEffect(() => setActive(0), [rows]);
@@ -179,33 +167,10 @@ export function CommandMenu({ onClose }: { onClose: () => void }) {
               } else if (event.key === "Enter") {
                 event.preventDefault();
                 commands[active]?.run();
-              } else if (event.key === "Tab") {
-                // Tab and Shift+Tab step through the status filters.
-                event.preventDefault();
-                const step = event.shiftKey ? filters.length - 1 : 1;
-                const index = filters.findIndex((item) => item.id === filter);
-                const next = filters[(index + step) % filters.length];
-                if (next) setFilter(next.id);
               } else if (event.key === "Escape") onClose();
             }}
           />
           <kbd>esc</kbd>
-        </div>
-        <div className="command-filters" role="radiogroup" aria-label="Filter sessions">
-          {filters.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className="command-filter pressable"
-              role="radio"
-              aria-checked={filter === item.id}
-              // Keeps focus in the search box.
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => setFilter(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
         </div>
         <div className="command-list" data-scroll ref={listRef} role="listbox">
           {highlight ? (
