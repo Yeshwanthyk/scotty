@@ -116,7 +116,6 @@ export function SettingsPage({ section }: { section?: Section }) {
               className="settings-link pressable"
               aria-current={item.id === shown ? "page" : undefined}
             >
-              <Icon name={item.icon} />
               <span className="settings-link-text">
                 <span>{item.label}</span>
                 <span className="settings-link-detail">{item.detail}</span>
@@ -136,8 +135,12 @@ export function SettingsPage({ section }: { section?: Section }) {
           {data.settings === undefined || data.accounts === undefined ? (
             data.error ? null : (
               <div className="settings-card" aria-busy="true">
-                <div className="skeleton" style={{ height: 12, width: "40%" }} />
-                <div className="skeleton" style={{ height: 10, width: "70%" }} />
+                <div className="settings-row">
+                  <div className="settings-row-text settings-skeleton">
+                    <div className="skeleton" style={{ height: 12, width: "40%" }} />
+                    <div className="skeleton" style={{ height: 10, width: "70%" }} />
+                  </div>
+                </div>
               </div>
             )
           ) : shown === "accounts" ? (
@@ -167,26 +170,35 @@ export function SettingsPage({ section }: { section?: Section }) {
   );
 }
 
+// A word at the right of a row that says how the thing stands; "warn" asks for attention.
+type Status = { word: string; tone: "good" | "warn" };
+
+export function StatusWord({ status }: { status: Status }) {
+  return (
+    <span className="settings-status" data-tone={status.tone}>
+      {status.word}
+    </span>
+  );
+}
+
 function Row({
   title,
   detail,
-  tone,
+  status,
   children,
 }: {
   title: string;
   detail: string;
-  tone?: "good" | "warn";
+  status?: Status;
   children?: React.ReactNode;
 }) {
   return (
     <div className="settings-row">
       <div className="settings-row-text">
-        <div className="settings-row-title">
-          {tone ? <span className="settings-dot" data-tone={tone} /> : null}
-          {title}
-        </div>
+        <div className="settings-row-title">{title}</div>
         <div className="settings-row-detail">{detail}</div>
       </div>
+      {status ? <StatusWord status={status} /> : null}
       {children}
     </div>
   );
@@ -308,7 +320,13 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
               ? "Sign-in expires soon; sign in again."
               : "Not signed in. Codex sessions can't start until you are."
         }
-        tone={chatgpt === "signed-in" ? "good" : "warn"}
+        status={
+          chatgpt === "signed-in"
+            ? { word: "Signed in", tone: "good" }
+            : chatgpt === "expiring"
+              ? { word: "Expires soon", tone: "warn" }
+              : { word: "Not signed in", tone: "warn" }
+        }
       >
         {device === undefined ? (
           <button
@@ -360,7 +378,13 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
               ? "Token expires soon; add a new one."
               : "No token. Run claude setup-token and paste what it prints."
         }
-        tone={state.claude.status === "signed-in" ? "good" : "warn"}
+        status={
+          state.claude.status === "signed-in"
+            ? { word: "Set", tone: "good" }
+            : state.claude.status === "expiring"
+              ? { word: "Expires soon", tone: "warn" }
+              : { word: "Not set", tone: "warn" }
+        }
       >
         {token?.account !== "claude" ? (
           <button
@@ -380,7 +404,11 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
             ? `Token for ${state.github.login ?? "your account"}. Sessions push branches with it.`
             : "No token. Sessions can clone only the built-in fixture."
         }
-        tone={state.github.status === "set" ? "good" : "warn"}
+        status={
+          state.github.status === "set"
+            ? { word: "Set", tone: "good" }
+            : { word: "Not set", tone: "warn" }
+        }
       >
         {token?.account !== "github" ? (
           <button
@@ -418,7 +446,7 @@ function Instructions({ saved, reload }: { saved: string; reload: () => void }) 
     }
   }
   return (
-    <div className="settings-card">
+    <>
       <p className="settings-intro">
         Added to the agent's AGENTS.md when a session starts or resumes. Running sessions keep what
         they started with.
@@ -453,7 +481,7 @@ function Instructions({ saved, reload }: { saved: string; reload: () => void }) 
         </button>
       </div>
       <Problem text={error} />
-    </div>
+    </>
   );
 }
 
@@ -523,191 +551,195 @@ function Skills({
     );
   }
   return (
-    <div className="settings-card skills">
-      <form
-        className="token-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const text = spec.trim();
-          if (text === "") return;
-          void run(
-            "add",
-            async () => {
-              saved(await addSource(text));
-              setSpec("");
-            },
-            "Could not add the skills",
-          );
-        }}
-      >
-        <input
-          ref={field}
-          className="field"
-          value={spec}
-          onChange={(event) => setSpec(event.target.value)}
-          onPaste={(event) => pasted(event.clipboardData.getData("text"))}
-          placeholder="owner/repo/skills or a GitHub link"
-          aria-label="GitHub repository with skills"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-        />
-        <button
-          type="submit"
-          className="button pressable"
-          data-tone="primary"
-          disabled={busy !== "" || spec.trim() === ""}
+    <>
+      <div className="settings-card skills">
+        <form
+          className="token-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const text = spec.trim();
+            if (text === "") return;
+            void run(
+              "add",
+              async () => {
+                saved(await addSource(text));
+                setSpec("");
+              },
+              "Could not add the skills",
+            );
+          }}
         >
-          {busy === "add" ? <Spinner size={12} /> : null}
-          Add
-        </button>
-      </form>
-      {sources.length === 0 ? null : (
-        <label className="settings-row">
-          <span className="settings-row-text">
-            <span className="settings-row-title">Claude output style</span>
-            <span className="settings-row-detail">A skill Claude sessions run as their mode</span>
-          </span>
-          <select
+          <input
+            ref={field}
             className="field"
-            aria-label="Claude output style"
-            value={claudeStyle ?? ""}
-            disabled={busy !== ""}
-            onChange={(event) => {
-              const skill = event.target.value === "" ? null : event.target.value;
-              void run("style", () => setClaudeStyle(skill), "Could not set the style");
-            }}
+            value={spec}
+            onChange={(event) => setSpec(event.target.value)}
+            onPaste={(event) => pasted(event.clipboardData.getData("text"))}
+            placeholder="owner/repo/skills or a GitHub link"
+            aria-label="GitHub repository with skills"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+          <button
+            type="submit"
+            className="button pressable"
+            data-tone="primary"
+            disabled={busy !== "" || spec.trim() === ""}
           >
-            <option value="">None</option>
-            {sources
-              .flatMap((source) => source.skills)
-              .map((skill) => (
-                <option key={skill.name} value={skill.name}>
-                  {skill.name}
-                </option>
-              ))}
-          </select>
-        </label>
-      )}
-      {sources.map((source) => {
-        const on = source.skills.filter((skill) => skill.enabled).length;
-        const fresh = changed?.source === source.id ? changed : undefined;
-        return (
-          <details
-            key={source.id}
-            className="fold-group skill-source"
-            open={open.has(source.id)}
-            onToggle={(event) => {
-              const isOpen = event.currentTarget.open;
-              if (isOpen === open.has(source.id)) return;
-              setOpen((current) => {
-                const next = new Set(current);
-                if (isOpen) next.add(source.id);
-                else next.delete(source.id);
-                return next;
-              });
-            }}
-          >
-            <summary className="fold-toggle pressable">
-              <span className="skill-source-name">
-                {source.id}
-                {source.ref === null ? null : <span className="quiet">@{source.ref}</span>}
-              </span>
-              <Icon name="chevronRight" size={12} />
-              <span className="fold-count">
-                {on} of {source.skills.length}
-              </span>
-            </summary>
-            <div className="fold-rows">
-              {source.skills.map((skill) => (
-                <div
-                  key={`${skill.name}-${fresh?.round ?? 0}`}
-                  className="settings-row skill-row"
-                  data-off={!skill.enabled || undefined}
-                  data-fresh={fresh?.added.includes(skill.name) || undefined}
-                  data-flash={fresh?.updated.includes(skill.name) || undefined}
-                >
-                  <button
-                    type="button"
-                    className="settings-row-text skill-text"
-                    aria-expanded={expanded === skill.name}
-                    onClick={() =>
-                      setExpanded((current) => (current === skill.name ? "" : skill.name))
-                    }
+            {busy === "add" ? <Spinner size={12} /> : null}
+            Add
+          </button>
+        </form>
+        {sources.length === 0 ? null : (
+          <label className="settings-row">
+            <span className="settings-row-text">
+              <span className="settings-row-title">Claude output style</span>
+              <span className="settings-row-detail">A skill Claude sessions run as their mode</span>
+            </span>
+            <select
+              className="field"
+              aria-label="Claude output style"
+              value={claudeStyle ?? ""}
+              disabled={busy !== ""}
+              onChange={(event) => {
+                const skill = event.target.value === "" ? null : event.target.value;
+                void run("style", () => setClaudeStyle(skill), "Could not set the style");
+              }}
+            >
+              <option value="">None</option>
+              {sources
+                .flatMap((source) => source.skills)
+                .map((skill) => (
+                  <option key={skill.name} value={skill.name}>
+                    {skill.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+        )}
+        {sources.map((source) => {
+          const on = source.skills.filter((skill) => skill.enabled).length;
+          const fresh = changed?.source === source.id ? changed : undefined;
+          return (
+            <details
+              key={source.id}
+              className="fold-group skill-source"
+              open={open.has(source.id)}
+              onToggle={(event) => {
+                const isOpen = event.currentTarget.open;
+                if (isOpen === open.has(source.id)) return;
+                setOpen((current) => {
+                  const next = new Set(current);
+                  if (isOpen) next.add(source.id);
+                  else next.delete(source.id);
+                  return next;
+                });
+              }}
+            >
+              <summary className="fold-toggle pressable">
+                <span className="skill-source-name">
+                  {source.id}
+                  {source.ref === null ? null : <span className="quiet">@{source.ref}</span>}
+                </span>
+                <Icon name="chevronRight" size={12} />
+                <span className="fold-count">
+                  {on} of {source.skills.length}
+                </span>
+              </summary>
+              <div className="fold-rows">
+                {source.skills.map((skill) => (
+                  <div
+                    key={`${skill.name}-${fresh?.round ?? 0}`}
+                    className="settings-row skill-row"
+                    data-off={!skill.enabled || undefined}
+                    data-fresh={fresh?.added.includes(skill.name) || undefined}
+                    data-flash={fresh?.updated.includes(skill.name) || undefined}
                   >
-                    <span className="settings-row-title">
-                      <span className="mono">{skill.name}</span>
-                      {skill.manual ? <span className="quiet skill-manual">manual</span> : null}
-                    </span>
-                    <span className="settings-row-detail skill-description">
-                      {skill.description}
-                    </span>
-                  </button>
+                    <button
+                      type="button"
+                      className="settings-row-text skill-text"
+                      aria-expanded={expanded === skill.name}
+                      onClick={() =>
+                        setExpanded((current) => (current === skill.name ? "" : skill.name))
+                      }
+                    >
+                      <span className="settings-row-title">
+                        <span className="mono">{skill.name}</span>
+                        {skill.manual ? <span className="quiet skill-manual">manual</span> : null}
+                      </span>
+                      <span className="settings-row-detail skill-description">
+                        {skill.description}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      role="switch"
+                      className="switch"
+                      aria-checked={skill.enabled}
+                      aria-label={skill.name}
+                      disabled={busy !== ""}
+                      onClick={() =>
+                        void run(
+                          skill.name,
+                          () => switchSkill(skill.name, !skill.enabled),
+                          "Could not switch it",
+                        )
+                      }
+                    >
+                      <span />
+                    </button>
+                  </div>
+                ))}
+                <div className="settings-row skill-source-foot">
+                  <span className="quiet tabular">
+                    {source.commit.slice(0, 7)} · fetched{" "}
+                    {ago(new Date(source.fetched).toISOString())}
+                  </span>
                   <button
                     type="button"
-                    role="switch"
-                    className="switch"
-                    aria-checked={skill.enabled}
-                    aria-label={skill.name}
+                    className="icon-button pressable"
+                    aria-label={`Refresh ${source.id}`}
                     disabled={busy !== ""}
                     onClick={() =>
                       void run(
-                        skill.name,
-                        () => switchSkill(skill.name, !skill.enabled),
-                        "Could not switch it",
+                        `refresh:${source.id}`,
+                        async () => saved(await refreshSource(source.id)),
+                        "Could not refresh it",
                       )
                     }
                   >
-                    <span />
+                    {busy === `refresh:${source.id}` ? (
+                      <Spinner size={12} />
+                    ) : (
+                      <Icon name="refresh" size={14} />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button pressable"
+                    aria-label={`Remove ${source.id}`}
+                    disabled={busy !== ""}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Remove ${source.id} and its ${source.skills.length} skills?`,
+                        )
+                      )
+                        void run(source.id, () => removeSource(source.id), "Could not remove it");
+                    }}
+                  >
+                    <Icon name="trash" size={14} />
                   </button>
                 </div>
-              ))}
-              <div className="settings-row skill-source-foot">
-                <span className="quiet tabular">
-                  {source.commit.slice(0, 7)} · fetched{" "}
-                  {ago(new Date(source.fetched).toISOString())}
-                </span>
-                <button
-                  type="button"
-                  className="icon-button pressable"
-                  aria-label={`Refresh ${source.id}`}
-                  disabled={busy !== ""}
-                  onClick={() =>
-                    void run(
-                      `refresh:${source.id}`,
-                      async () => saved(await refreshSource(source.id)),
-                      "Could not refresh it",
-                    )
-                  }
-                >
-                  {busy === `refresh:${source.id}` ? (
-                    <Spinner size={12} />
-                  ) : (
-                    <Icon name="refresh" size={14} />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="icon-button pressable"
-                  aria-label={`Remove ${source.id}`}
-                  disabled={busy !== ""}
-                  onClick={() => {
-                    if (
-                      window.confirm(`Remove ${source.id} and its ${source.skills.length} skills?`)
-                    )
-                      void run(source.id, () => removeSource(source.id), "Could not remove it");
-                  }}
-                >
-                  <Icon name="trash" size={14} />
-                </button>
               </div>
-            </div>
-          </details>
-        );
-      })}
+            </details>
+          );
+        })}
+        <Problem text={error} />
+      </div>
       {note === "" ? null : <p className="settings-intro">{note}</p>}
-      <Problem text={error} />
-    </div>
+    </>
   );
 }
 
@@ -888,8 +920,8 @@ function Connections() {
         A connection lets an outside service start sessions with a signed webhook, or lets agents
         call an API or MCP server through its internal URL.
       </p>
-      {created ? (
-        <div className="settings-card">
+      <div className="settings-card">
+        {created ? (
           <div className="settings-row secret-row">
             <div className="settings-row-text">
               <div className="settings-row-title">
@@ -924,124 +956,129 @@ function Connections() {
               </button>
             </div>
           </div>
-        </div>
-      ) : null}
-      {items.length === 0 ? (
-        <div className="settings-card">
+        ) : null}
+        {items.length === 0 ? (
           <div className="settings-empty">No connections yet.</div>
-        </div>
-      ) : (
-        items.map((item) => {
-          const rows = foldRetries(log.filter((delivery) => delivery.connection === item.name));
-          const used = users.filter(
-            (automation) =>
-              automation.when.kind === "event" && automation.when.connection === item.name,
-          ).length;
-          const url = item.kind === "inbound" ? item.url : item.internalUrl;
-          const latest = rows[0]?.first;
-          const summary =
-            item.kind === "inbound"
-              ? [
-                  used === 0 ? "No automations" : null,
-                  latest === undefined ? "No deliveries yet" : `last delivery ${since(latest.at)}`,
-                  rows.length === 0 ? null : tally(rows),
-                ]
-                  .filter((part) => part !== null)
-                  .join(" · ")
-              : item.kind === "token"
-                ? `Adds the ${item.header} header`
-                : item.url;
-          return (
-            <div key={item.name} className="settings-card">
-              <div className="settings-row">
-                <div className="settings-row-text">
-                  <div className="settings-row-title">
-                    <span className="mono">{item.name}</span>
-                    <span className="quiet settings-size">{describe(item)}</span>
-                  </div>
-                  <div className="settings-row-detail mono">{url}</div>
-                  <div className="settings-row-detail">
-                    {item.kind === "inbound" && used > 0 ? (
-                      <>
-                        <Link to="/automations">
-                          Used by {used} automation{used === 1 ? "" : "s"}
-                        </Link>
-                        {" · "}
-                      </>
-                    ) : null}
-                    {summary}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="icon-button pressable"
-                  aria-label={`Copy the URL of ${item.name}`}
-                  onClick={() => copy(`url:${item.name}`, url)}
-                >
-                  <Icon name={copied === `url:${item.name}` ? "check" : "copy"} size={14} />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button pressable"
-                  aria-label={`Delete ${item.name}`}
-                  disabled={busy}
-                  onClick={() => {
-                    if (window.confirm(`Delete the ${item.name} connection?`))
-                      void run(() => removeConnection(item.name), "Could not delete it");
-                  }}
-                >
-                  <Icon name="trash" size={14} />
-                </button>
-              </div>
-              {item.kind === "mcp" ? (
-                // Keyed by the stored policy, so a reload that changes it resets the choice.
-                <McpControls key={JSON.stringify(item.policy)} item={item} busy={busy} run={run} />
-              ) : null}
-              {rows.length > 0 ? (
-                <details className="deliveries">
-                  <summary>
-                    <Icon name="chevronRight" size={12} />
-                    Deliveries ({rows.length})
-                  </summary>
-                  {rows.map(({ first, retries, session }) => (
-                    <div key={first.id} className="settings-row">
-                      <div className="settings-row-text">
-                        <div className="settings-row-title">
-                          <span
-                            className="settings-dot"
-                            data-tone={first.outcome === "rejected" ? "warn" : "good"}
-                          />
-                          {deliveryText(first)}
-                          {retries > 0 ? (
-                            <span className="quiet settings-size">retried {retries}×</span>
-                          ) : null}
-                        </div>
-                        <div className="settings-row-detail quiet">
-                          <span className="tabular">{since(first.at)}</span> ·{" "}
-                          <span className="mono" title={first.id}>
-                            {shortId(first.id)}
-                          </span>
-                        </div>
-                      </div>
-                      {session ? (
-                        <Link
-                          to="/s/$sessionId"
-                          params={{ sessionId: session }}
-                          className="button pressable"
-                        >
-                          Open session
-                        </Link>
-                      ) : null}
+        ) : (
+          items.map((item) => {
+            const rows = foldRetries(log.filter((delivery) => delivery.connection === item.name));
+            const used = users.filter(
+              (automation) =>
+                automation.when.kind === "event" && automation.when.connection === item.name,
+            ).length;
+            const url = item.kind === "inbound" ? item.url : item.internalUrl;
+            const latest = rows[0]?.first;
+            const summary =
+              item.kind === "inbound"
+                ? [
+                    used === 0 ? "No automations" : null,
+                    latest === undefined
+                      ? "No deliveries yet"
+                      : `last delivery ${since(latest.at)}`,
+                    rows.length === 0 ? null : tally(rows),
+                  ]
+                    .filter((part) => part !== null)
+                    .join(" · ")
+                : item.kind === "token"
+                  ? `Adds the ${item.header} header`
+                  : item.url;
+            return (
+              <div key={item.name} className="settings-item">
+                <div className="settings-row">
+                  <div className="settings-row-text">
+                    <div className="settings-row-title">
+                      <span className="mono">{item.name}</span>
+                      <span className="quiet settings-size">{describe(item)}</span>
                     </div>
-                  ))}
-                </details>
-              ) : null}
-            </div>
-          );
-        })
-      )}
-      {adding ? (
-        <div className="settings-card">
+                    <div className="settings-row-detail mono">{url}</div>
+                    <div className="settings-row-detail">
+                      {item.kind === "inbound" && used > 0 ? (
+                        <>
+                          <Link to="/automations">
+                            Used by {used} automation{used === 1 ? "" : "s"}
+                          </Link>
+                          {" · "}
+                        </>
+                      ) : null}
+                      {summary}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-button pressable"
+                    aria-label={`Copy the URL of ${item.name}`}
+                    onClick={() => copy(`url:${item.name}`, url)}
+                  >
+                    <Icon name={copied === `url:${item.name}` ? "check" : "copy"} size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button pressable"
+                    aria-label={`Delete ${item.name}`}
+                    disabled={busy}
+                    onClick={() => {
+                      if (window.confirm(`Delete the ${item.name} connection?`))
+                        void run(() => removeConnection(item.name), "Could not delete it");
+                    }}
+                  >
+                    <Icon name="trash" size={14} />
+                  </button>
+                </div>
+                {item.kind === "mcp" ? (
+                  // Keyed by the stored policy, so a reload that changes it resets the choice.
+                  <McpControls
+                    key={JSON.stringify(item.policy)}
+                    item={item}
+                    busy={busy}
+                    run={run}
+                  />
+                ) : null}
+                {rows.length > 0 ? (
+                  <details className="deliveries">
+                    <summary>
+                      <Icon name="chevronRight" size={12} />
+                      Deliveries ({rows.length})
+                    </summary>
+                    {rows.map(({ first, retries, session }) => (
+                      <div key={first.id} className="settings-row">
+                        <div className="settings-row-text">
+                          <div className="settings-row-title">
+                            {deliveryText(first)}
+                            {retries > 0 ? (
+                              <span className="quiet settings-size">retried {retries}×</span>
+                            ) : null}
+                          </div>
+                          <div className="settings-row-detail quiet">
+                            <span className="tabular">{since(first.at)}</span> ·{" "}
+                            <span className="mono" title={first.id}>
+                              {shortId(first.id)}
+                            </span>
+                          </div>
+                        </div>
+                        {/* A reason in the title says what happened; the word says what became of it. */}
+                        {first.reason === null ? null : first.outcome === "rejected" ? (
+                          <StatusWord status={{ word: "Rejected", tone: "warn" }} />
+                        ) : first.outcome === "skipped" ? (
+                          <StatusWord status={{ word: "Skipped", tone: "good" }} />
+                        ) : null}
+                        {session ? (
+                          <Link
+                            to="/s/$sessionId"
+                            params={{ sessionId: session }}
+                            className="button pressable"
+                          >
+                            Open session
+                          </Link>
+                        ) : null}
+                      </div>
+                    ))}
+                  </details>
+                ) : null}
+              </div>
+            );
+          })
+        )}
+        {adding ? (
           <form
             className="token-form"
             onSubmit={(event) => {
@@ -1195,8 +1232,9 @@ function Connections() {
               Cancel
             </button>
           </form>
-        </div>
-      ) : (
+        ) : null}
+      </div>
+      {adding ? null : (
         <div className="settings-actions">
           <button type="button" className="button pressable" onClick={() => setAdding(true)}>
             <Icon name="plus" size={13} />
@@ -1345,7 +1383,7 @@ function Blueprints() {
   const hook = (name: string) => `${window.location.origin}/hooks/${name}`;
   if (created !== undefined)
     return (
-      <div className="settings-card">
+      <>
         <p className="settings-intro">
           Installed {blueprint.title} for{" "}
           <span className="mono">
@@ -1357,246 +1395,255 @@ function Blueprints() {
           , off. Paste each URL and secret where it says, then turn the automations on in{" "}
           <Link to="/automations">Automations</Link>. Generated secrets are shown once.
         </p>
-        {created.map((connection) => {
-          const secret = connection.kind === "inbound" ? connection.secret : null;
-          return (
-            <div key={connection.name} className="settings-row secret-row">
-              <div className="settings-row-text">
-                <div className="settings-row-title">
-                  <span className="mono">{connection.name}</span>
-                  <span className="quiet settings-size">{connection.kind}</span>
+        <div className="settings-card">
+          {created.map((connection) => {
+            const secret = connection.kind === "inbound" ? connection.secret : null;
+            return (
+              <div key={connection.name} className="settings-row secret-row">
+                <div className="settings-row-text">
+                  <div className="settings-row-title">
+                    <span className="mono">{connection.name}</span>
+                    <span className="quiet settings-size">{connection.kind}</span>
+                  </div>
+                  <div className="settings-row-detail mono">
+                    {connection.kind === "inbound" ? connection.url : connection.internalUrl}
+                  </div>
+                  {secret === null ? null : (
+                    <div className="settings-row-detail mono">{secret}</div>
+                  )}
+                  <div className="settings-row-detail">
+                    {blueprint.connections.find((item) => item.name === connection.name)?.setup}
+                  </div>
                 </div>
-                <div className="settings-row-detail mono">
-                  {connection.kind === "inbound" ? connection.url : connection.internalUrl}
-                </div>
-                {secret === null ? null : <div className="settings-row-detail mono">{secret}</div>}
-                <div className="settings-row-detail">
-                  {blueprint.connections.find((item) => item.name === connection.name)?.setup}
+                <div className="settings-actions">
+                  {connection.kind === "inbound" ? (
+                    <button
+                      type="button"
+                      className="button pressable"
+                      onClick={() => copy(`url:${connection.name}`, connection.url)}
+                    >
+                      <Icon
+                        name={copied === `url:${connection.name}` ? "check" : "copy"}
+                        size={13}
+                      />
+                      Copy URL
+                    </button>
+                  ) : null}
+                  {secret === null ? null : (
+                    <button
+                      type="button"
+                      className="button pressable"
+                      onClick={() => copy(`secret:${connection.name}`, secret)}
+                    >
+                      <Icon
+                        name={copied === `secret:${connection.name}` ? "check" : "copy"}
+                        size={13}
+                      />
+                      Copy secret
+                    </button>
+                  )}
+                  {connection.kind === "mcp" && connection.signIn !== "signed-in" ? (
+                    <button
+                      type="button"
+                      className="button pressable"
+                      disabled={busy}
+                      onClick={() =>
+                        void run(async () => {
+                          window.location.assign(await connectMcp(connection.name));
+                        }, "Could not start sign-in")
+                      }
+                    >
+                      Connect
+                    </button>
+                  ) : null}
                 </div>
               </div>
-              <div className="settings-actions">
-                {connection.kind === "inbound" ? (
-                  <button
-                    type="button"
-                    className="button pressable"
-                    onClick={() => copy(`url:${connection.name}`, connection.url)}
-                  >
-                    <Icon name={copied === `url:${connection.name}` ? "check" : "copy"} size={13} />
-                    Copy URL
-                  </button>
-                ) : null}
-                {secret === null ? null : (
-                  <button
-                    type="button"
-                    className="button pressable"
-                    onClick={() => copy(`secret:${connection.name}`, secret)}
-                  >
-                    <Icon
-                      name={copied === `secret:${connection.name}` ? "check" : "copy"}
-                      size={13}
-                    />
-                    Copy secret
-                  </button>
-                )}
-                {connection.kind === "mcp" && connection.signIn !== "signed-in" ? (
-                  <button
-                    type="button"
-                    className="button pressable"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        window.location.assign(await connectMcp(connection.name));
-                      }, "Could not start sign-in")
-                    }
-                  >
-                    Connect
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          );
-        })}
-        <div className="settings-actions">
-          <button
-            type="button"
-            className="button pressable"
-            onClick={() => {
-              setCreated(undefined);
-              setCopied("");
-            }}
-          >
-            Done
-          </button>
+            );
+          })}
+          <div className="settings-actions">
+            <button
+              type="button"
+              className="button pressable"
+              onClick={() => {
+                setCreated(undefined);
+                setCopied("");
+              }}
+            >
+              Done
+            </button>
+          </div>
+          <Problem text={error} />
         </div>
-        <Problem text={error} />
-      </div>
+      </>
     );
   return (
-    <div className="settings-card">
+    <>
       <p className="settings-intro">
         A blueprint adds the connections and automations for one use, all off. Choose the repo and
         agent, paste the secrets it asks for, and install; then paste the URLs where it says and
         turn the automations on.
       </p>
-      <form
-        className="token-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void run(async () => {
-            setCreated(await installBlueprint(blueprint, { ...choices, agent, secrets }));
-            setSecrets({});
-          }, "Could not install the blueprint");
-        }}
-      >
-        <select
-          className="field"
-          aria-label="Blueprint"
-          value={chosen}
-          onChange={(event) => {
-            setChosen(event.target.value);
-            setSecrets({});
+      <div className="settings-card">
+        <form
+          className="token-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(async () => {
+              setCreated(await installBlueprint(blueprint, { ...choices, agent, secrets }));
+              setSecrets({});
+            }, "Could not install the blueprint");
           }}
         >
-          {blueprints.map((item) => (
-            <option key={item.name} value={item.name}>
-              {item.title}
-            </option>
-          ))}
-        </select>
-        <p className="settings-row-detail">{blueprint.description}</p>
-        {blueprint.connections.map((connection) => (
-          <div key={connection.name} className="settings-row">
-            <div className="settings-row-text">
-              <div className="settings-row-title">
-                <span className="mono">{connection.name}</span>
-                <span className="quiet settings-size">{connection.kind}</span>
+          <select
+            className="field"
+            aria-label="Blueprint"
+            value={chosen}
+            onChange={(event) => {
+              setChosen(event.target.value);
+              setSecrets({});
+            }}
+          >
+            {blueprints.map((item) => (
+              <option key={item.name} value={item.name}>
+                {item.title}
+              </option>
+            ))}
+          </select>
+          <p className="settings-row-detail">{blueprint.description}</p>
+          {blueprint.connections.map((connection) => (
+            <div key={connection.name} className="settings-row">
+              <div className="settings-row-text">
+                <div className="settings-row-title">
+                  <span className="mono">{connection.name}</span>
+                  <span className="quiet settings-size">{connection.kind}</span>
+                </div>
+                {connection.kind === "inbound" ? (
+                  <div className="settings-row-detail mono">{hook(connection.name)}</div>
+                ) : null}
+                {connection.setup ? (
+                  <div className="settings-row-detail">{connection.setup}</div>
+                ) : null}
               </div>
               {connection.kind === "inbound" ? (
-                <div className="settings-row-detail mono">{hook(connection.name)}</div>
-              ) : null}
-              {connection.setup ? (
-                <div className="settings-row-detail">{connection.setup}</div>
+                <button
+                  type="button"
+                  className="button pressable"
+                  onClick={() => copy(`hook:${connection.name}`, hook(connection.name))}
+                >
+                  <Icon name={copied === `hook:${connection.name}` ? "check" : "copy"} size={13} />
+                  Copy URL
+                </button>
               ) : null}
             </div>
-            {connection.kind === "inbound" ? (
+          ))}
+          {blueprint.connections.map((connection) =>
+            connection.ask ? (
+              <input
+                key={connection.name}
+                className="field"
+                type="password"
+                aria-label={`Secret for ${connection.name}`}
+                placeholder={`${connection.name}: ${connection.ask.prompt}`}
+                value={secrets[connection.name] ?? ""}
+                onChange={(event) =>
+                  setSecrets((current) => ({ ...current, [connection.name]: event.target.value }))
+                }
+                autoComplete="off"
+              />
+            ) : null,
+          )}
+          <div className="settings-row-detail">
+            Automations: {blueprint.automations.map((automation) => automation.name).join(", ")}
+          </div>
+          {shared ? (
+            <input
+              className="field"
+              aria-label="Repository"
+              placeholder="owner/repo"
+              value={repo}
+              onChange={(event) => setRepo(event.target.value)}
+              autoComplete="off"
+            />
+          ) : null}
+          {blueprint.targets === undefined ? null : (
+            <>
+              <p className="settings-row-detail">Targets: {blueprint.targets.ask}</p>
+              {targets.map((target, at) => (
+                <div key={at} className="token-form">
+                  <input
+                    className="field"
+                    aria-label={`Target ${at + 1} name`}
+                    placeholder="name"
+                    value={target.name}
+                    onChange={(event) => setTarget(at, { name: event.target.value })}
+                    autoComplete="off"
+                  />
+                  <input
+                    className="field"
+                    aria-label={`Target ${at + 1} repository`}
+                    placeholder="owner/repo"
+                    value={target.repo}
+                    onChange={(event) => setTarget(at, { repo: event.target.value })}
+                    autoComplete="off"
+                  />
+                  <button
+                    type="button"
+                    className="icon-button pressable"
+                    aria-label={`Remove target ${at + 1}`}
+                    disabled={targets.length === 1}
+                    onClick={() =>
+                      setTargets((current) => current.filter((_, index) => index !== at))
+                    }
+                  >
+                    <Icon name="trash" size={14} />
+                  </button>
+                </div>
+              ))}
               <button
                 type="button"
                 className="button pressable"
-                onClick={() => copy(`hook:${connection.name}`, hook(connection.name))}
+                onClick={() => setTargets((current) => [...current, { name: "", repo: "" }])}
               >
-                <Icon name={copied === `hook:${connection.name}` ? "check" : "copy"} size={13} />
-                Copy URL
+                <Icon name="plus" size={13} />
+                Add target
               </button>
-            ) : null}
-          </div>
-        ))}
-        {blueprint.connections.map((connection) =>
-          connection.ask ? (
-            <input
-              key={connection.name}
-              className="field"
-              type="password"
-              aria-label={`Secret for ${connection.name}`}
-              placeholder={`${connection.name}: ${connection.ask.prompt}`}
-              value={secrets[connection.name] ?? ""}
-              onChange={(event) =>
-                setSecrets((current) => ({ ...current, [connection.name]: event.target.value }))
-              }
-              autoComplete="off"
-            />
-          ) : null,
-        )}
-        <div className="settings-row-detail">
-          Automations: {blueprint.automations.map((automation) => automation.name).join(", ")}
-        </div>
-        {shared ? (
-          <input
+            </>
+          )}
+          <select
             className="field"
-            aria-label="Repository"
-            placeholder="owner/repo"
-            value={repo}
-            onChange={(event) => setRepo(event.target.value)}
-            autoComplete="off"
-          />
-        ) : null}
-        {blueprint.targets === undefined ? null : (
-          <>
-            <p className="settings-row-detail">Targets: {blueprint.targets.ask}</p>
-            {targets.map((target, at) => (
-              <div key={at} className="token-form">
-                <input
-                  className="field"
-                  aria-label={`Target ${at + 1} name`}
-                  placeholder="name"
-                  value={target.name}
-                  onChange={(event) => setTarget(at, { name: event.target.value })}
-                  autoComplete="off"
-                />
-                <input
-                  className="field"
-                  aria-label={`Target ${at + 1} repository`}
-                  placeholder="owner/repo"
-                  value={target.repo}
-                  onChange={(event) => setTarget(at, { repo: event.target.value })}
-                  autoComplete="off"
-                />
-                <button
-                  type="button"
-                  className="icon-button pressable"
-                  aria-label={`Remove target ${at + 1}`}
-                  disabled={targets.length === 1}
-                  onClick={() =>
-                    setTargets((current) => current.filter((_, index) => index !== at))
-                  }
-                >
-                  <Icon name="trash" size={14} />
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="button pressable"
-              onClick={() => setTargets((current) => [...current, { name: "", repo: "" }])}
-            >
-              <Icon name="plus" size={13} />
-              Add target
-            </button>
-          </>
-        )}
-        <select
-          className="field"
-          aria-label="Agent"
-          value={agent}
-          onChange={(event) => {
-            const value = event.target.value;
-            if (value === "codex" || value === "claude") setAgent(value);
-          }}
-        >
-          <option value="codex">Codex</option>
-          <option value="claude">Claude</option>
-        </select>
-        <button
-          type="submit"
-          className="button pressable"
-          data-tone="primary"
-          disabled={
-            busy ||
-            (shared && repo.trim() === "") ||
-            (blueprint.targets !== undefined && given.length === 0) ||
-            blueprint.connections.some(
-              (connection) =>
-                connection.ask !== undefined &&
-                connection.ask.optional === undefined &&
-                (secrets[connection.name] ?? "").trim() === "",
-            )
-          }
-        >
-          {busy ? <Spinner size={12} /> : <Icon name="plus" size={13} />}
-          Install, off
-        </button>
-      </form>
-      <Problem text={error} />
-    </div>
+            aria-label="Agent"
+            value={agent}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value === "codex" || value === "claude") setAgent(value);
+            }}
+          >
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+          </select>
+          <button
+            type="submit"
+            className="button pressable"
+            data-tone="primary"
+            disabled={
+              busy ||
+              (shared && repo.trim() === "") ||
+              (blueprint.targets !== undefined && given.length === 0) ||
+              blueprint.connections.some(
+                (connection) =>
+                  connection.ask !== undefined &&
+                  connection.ask.optional === undefined &&
+                  (secrets[connection.name] ?? "").trim() === "",
+              )
+            }
+          >
+            {busy ? <Spinner size={12} /> : <Icon name="plus" size={13} />}
+            Install, off
+          </button>
+        </form>
+        <Problem text={error} />
+      </div>
+    </>
   );
 }
 
@@ -1629,65 +1676,69 @@ function Repositories() {
     }
   }
   return (
-    <div className="settings-card">
+    <>
       <p className="settings-intro">
         New sessions on a repository start at its size unless they pick one. A session keeps the
         size it was made at.
       </p>
-      <form
-        className="token-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (valid) void save(repo.trim(), size);
-        }}
-      >
-        <input
-          className="field"
-          value={repo}
-          onChange={(event) => setRepo(event.target.value)}
-          placeholder="owner/repo"
-          aria-label="Repository"
-          aria-invalid={repo !== "" && !valid}
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-        />
-        <SizePicker value={size} onChange={setSize} />
-        <button
-          type="submit"
-          className="button pressable"
-          data-tone="primary"
-          disabled={busy !== "" || !valid}
+      <div className="settings-card">
+        <form
+          className="token-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (valid) void save(repo.trim(), size);
+          }}
         >
-          {busy !== "" && busy === repo.trim() ? <Spinner size={12} /> : null}
-          Set
-        </button>
-      </form>
-      {items === undefined ? (
-        error ? null : (
-          <div className="skeleton" style={{ height: 12, width: "50%" }} />
-        )
-      ) : items.length === 0 ? (
-        <Row title="No defaults" detail={`Every new session starts at ${defaultSize}.`} />
-      ) : (
-        items.map((item) => (
-          <Row key={item.repo} title={item.repo} detail="New sessions start at this size">
-            <SizePicker value={item.size} onChange={(next) => void save(item.repo, next)} />
-            <button
-              type="button"
-              className="button pressable"
-              disabled={busy !== ""}
-              aria-label={`Clear ${item.repo}`}
-              onClick={() => void save(item.repo, null)}
-            >
-              {busy === item.repo ? <Spinner size={12} /> : null}
-              Clear
-            </button>
-          </Row>
-        ))
-      )}
-      <Problem text={error} />
-    </div>
+          <input
+            className="field"
+            value={repo}
+            onChange={(event) => setRepo(event.target.value)}
+            placeholder="owner/repo"
+            aria-label="Repository"
+            aria-invalid={repo !== "" && !valid}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+          <SizePicker value={size} onChange={setSize} />
+          <button
+            type="submit"
+            className="button pressable"
+            data-tone="primary"
+            disabled={busy !== "" || !valid}
+          >
+            {busy !== "" && busy === repo.trim() ? <Spinner size={12} /> : null}
+            Set
+          </button>
+        </form>
+        {items === undefined ? (
+          error ? null : (
+            <div className="settings-row" aria-busy="true">
+              <div className="skeleton" style={{ height: 12, width: "50%" }} />
+            </div>
+          )
+        ) : items.length === 0 ? (
+          <Row title="No defaults" detail={`Every new session starts at ${defaultSize}.`} />
+        ) : (
+          items.map((item) => (
+            <Row key={item.repo} title={item.repo} detail="New sessions start at this size">
+              <SizePicker value={item.size} onChange={(next) => void save(item.repo, next)} />
+              <button
+                type="button"
+                className="button pressable"
+                disabled={busy !== ""}
+                aria-label={`Clear ${item.repo}`}
+                onClick={() => void save(item.repo, null)}
+              >
+                {busy === item.repo ? <Spinner size={12} /> : null}
+                Clear
+              </button>
+            </Row>
+          ))
+        )}
+        <Problem text={error} />
+      </div>
+    </>
   );
 }
 
@@ -1696,7 +1747,11 @@ function Running({ running, maxRunning }: { running: number; maxRunning: number 
     <div className="settings-card">
       <Row
         title={`${running} of ${maxRunning} running`}
-        tone={running >= maxRunning ? "warn" : "good"}
+        status={
+          running >= maxRunning
+            ? { word: "Full", tone: "warn" }
+            : { word: "Room left", tone: "good" }
+        }
         detail={
           running >= maxRunning
             ? "The cap is full: a new or resumed session stops until one ends. Raise maxRunning in the stage config and deploy to allow more."
