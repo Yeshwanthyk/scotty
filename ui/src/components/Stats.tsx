@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ratesDated } from "../../../src/places/place";
 import { message } from "../data/core";
 import { stats as loadStats, type RepoStats, type Stats, type StatsWindow } from "../data/stats";
@@ -87,17 +87,14 @@ export function StatsPage() {
           </div>
         ) : (
           <>
+            <Tiles total={shown.total} />
             <Table stats={shown} />
-            <Cards stats={shown} />
+            <Rows stats={shown} />
           </>
         )}
         <p className="settings-intro stats-note">
-          Read from each session's event log. A run counts from its start, container boot included,
-          to its stop; hours are cut to the window. Deleted sessions are not counted. Est. cost
-          prices the counted hours as if the CPU were busy throughout, with none of the plan's
-          included usage, so it is an upper bound for those hours, not for the bill: a container
-          that is slow to stop bills a little longer. Cloudflare's Containers rates dated{" "}
-          {ratesDated}.
+          Hours run from start to stop, boot included. Est. cost assumes busy CPU and no included
+          usage, so it is an upper bound. Rates dated {ratesDated}.
         </p>
       </div>
     </>
@@ -111,32 +108,13 @@ function WindowSwitch({
   value: StatsWindow;
   onChange: (value: StatsWindow) => void;
 }) {
-  const buttons = useRef<Partial<Record<StatsWindow, HTMLButtonElement | null>>>({});
-  const [pill, setPill] = useState<{ x: number; width: number }>();
-  useLayoutEffect(() => {
-    const measure = () => {
-      const button = buttons.current[value];
-      if (button) setPill({ x: button.offsetLeft, width: button.offsetWidth });
-    };
-    measure();
-    void document.fonts.ready.then(measure);
-  }, [value]);
   return (
-    <div className="agent-switch" role="group" aria-label="Time window">
-      {pill ? (
-        <span
-          className="agent-switch-pill"
-          style={{ width: pill.width, transform: `translateX(${pill.x}px)` }}
-        />
-      ) : null}
+    <div className="segmented" role="group" aria-label="Time window">
       {windows.map((item) => (
         <button
           type="button"
           key={item.id}
-          ref={(button) => {
-            buttons.current[item.id] = button;
-          }}
-          className="pressable"
+          className="segmented-option pressable"
           aria-pressed={value === item.id}
           onClick={() => onChange(item.id)}
         >
@@ -155,13 +133,8 @@ const hours = (ms: number): string =>
       : `${(ms / 3_600_000).toFixed(1)}h`;
 const usd = (cost: number): string =>
   cost === 0 ? "$0" : cost < 0.01 ? "<$0.01" : `$${cost.toFixed(2)}`;
-// One line per size under the hours: its hours and its cost.
-const bySize = (row: RepoStats) =>
-  row.sizes.map((share) => (
-    <div key={share.size} className="stats-detail">
-      {share.size} {hours(share.runMs)} · {usd(share.cost)}
-    </div>
-  ));
+const counted = (count: number, one: string, many: string): string =>
+  `${count} ${count === 1 ? one : many}`;
 const seconds = (ms: number | null): string =>
   ms === null ? "–" : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 const top = (counts: RepoStats["failureCodes"], label = (key: string) => key): string =>
@@ -172,14 +145,20 @@ const top = (counts: RepoStats["failureCodes"], label = (key: string) => key): s
 const lastRun = (row: RepoStats, now: number) =>
   row.lastRun === null ? "–" : ago(new Date(row.lastRun).toISOString(), now);
 const timeoutsOf = (row: RepoStats) => row.timeouts.reduce((sum, item) => sum + item.count, 0);
-const health = (row: RepoStats): string =>
+// Failed starts, crashes, invariant violations and timeouts, counted together.
+const problems = (row: RepoStats): number =>
+  row.failed + row.crashes + row.violations + timeoutsOf(row);
+// The top kinds of each problem, in that order.
+const kinds = (row: RepoStats): string =>
   [
+    top(row.failureCodes),
+    top(row.exitCodes, (key) => `exit ${key}`),
     row.violations > 0 ? `${row.violations} invariant` : "",
     row.timeouts.length > 0 ? top(row.timeouts, (key) => `${key} timeout`) : "",
   ]
     .filter((part) => part !== "")
     .join(", ");
-const agents = (row: RepoStats): string[] =>
+const agents = (row: RepoStats): string =>
   [
     row.agents.codex.sessions > 0
       ? `Codex ${row.agents.codex.sessions} · ${hours(row.agents.codex.runMs)}`
@@ -187,60 +166,101 @@ const agents = (row: RepoStats): string[] =>
     row.agents.claude.sessions > 0
       ? `Claude ${row.agents.claude.sessions} · ${hours(row.agents.claude.runMs)}`
       : "",
-  ].filter((part) => part !== "");
+  ]
+    .filter((part) => part !== "")
+    .join(" / ");
 
-// A count with its top kinds under it, quiet when there are none.
-function Tally({ count, detail }: { count: number; detail: string }) {
+function Tile({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  tone?: "zero" | "danger";
+}) {
   return (
-    <div className="stats-tally" data-zero={count === 0 || undefined}>
-      <span className="tabular">{count}</span>
-      {detail ? <span className="stats-detail">{detail}</span> : null}
+    <div className="stats-tile" data-tone={tone}>
+      <dt>{label}</dt>
+      <dd className="stats-tile-value tabular">{value}</dd>
+      {detail ? <dd className="stats-detail">{detail}</dd> : null}
     </div>
   );
 }
 
-function Running({ count }: { count: number }) {
+// The window's totals, above the table on a desktop and the rows on a phone.
+function Tiles({ total }: { total: RepoStats }) {
+  const count = problems(total);
+  return (
+    <dl className="stats-tiles">
+      <Tile label="Hours" value={hours(total.runMs)} />
+      <Tile label="Est. cost" value={usd(total.cost)} detail="upper bound" />
+      <Tile
+        label="Sessions"
+        value={String(total.sessions)}
+        detail={counted(total.turns, "turn", "turns")}
+      />
+      <Tile
+        label="Problems"
+        value={String(count)}
+        detail={kinds(total)}
+        tone={count > 0 ? "danger" : "zero"}
+      />
+    </dl>
+  );
+}
+
+function Running({ count, label = "" }: { count: number; label?: string }) {
   return count > 0 ? (
     <span className="stats-running">
       <span className="stats-live" />
-      <span className="tabular">{count}</span>
+      <span className="tabular">
+        {count}
+        {label}
+      </span>
     </span>
   ) : (
     <span className="quiet tabular">0</span>
   );
 }
 
-function Row({ row, now, total }: { row: RepoStats; now: number; total?: boolean }) {
+// The count and its kinds on one line; the kinds are cut to fit, in full in the tooltip.
+function Problems({ row }: { row: RepoStats }) {
+  const count = problems(row);
+  const detail = kinds(row);
+  return count === 0 ? (
+    <span className="quiet tabular">0</span>
+  ) : (
+    <span className="stats-problems" title={detail || undefined}>
+      <span className="tabular">{count}</span>
+      {detail ? <span className="stats-problems-kinds">{detail}</span> : null}
+    </span>
+  );
+}
+
+function Row({ row, now }: { row: RepoStats; now: number }) {
+  const split = agents(row);
   return (
-    <tr data-total={total || undefined}>
+    <tr>
       <th scope="row" className="stats-repo">
-        {total ? row.repo : <span className="mono">{row.repo}</span>}
+        <span className="mono">{row.repo}</span>
+        {split ? <div className="stats-detail">{split}</div> : null}
       </th>
-      <td className="tabular">{row.sessions}</td>
-      <td className="tabular">
-        {hours(row.runMs)}
-        {bySize(row)}
-      </td>
+      <td className="tabular">{hours(row.runMs)}</td>
       <td className="tabular">{usd(row.cost)}</td>
-      <td className="tabular">{row.turns}</td>
+      <td className="tabular">
+        {row.sessions}
+        <div className="stats-detail">{counted(row.turns, "turn", "turns")}</div>
+      </td>
       <td>
         <Running count={row.running} />
       </td>
       <td className="tabular">{lastRun(row, now)}</td>
-      <td>
-        <Tally count={row.failed} detail={top(row.failureCodes)} />
-      </td>
-      <td>
-        <Tally count={row.crashes} detail={top(row.exitCodes, (key) => `exit ${key}`)} />
-      </td>
       <td className="tabular">{seconds(row.bootMs)}</td>
       <td>
-        <Tally count={row.violations + timeoutsOf(row)} detail={health(row)} />
-      </td>
-      <td className="stats-detail">
-        {(agents(row).length > 0 ? agents(row) : ["–"]).map((part) => (
-          <div key={part}>{part}</div>
-        ))}
+        <Problems row={row} />
       </td>
     </tr>
   );
@@ -248,28 +268,22 @@ function Row({ row, now, total }: { row: RepoStats; now: number; total?: boolean
 
 function Table({ stats }: { stats: Stats }) {
   return (
-    <div className="settings-card stats-table desktop-only">
+    <div className="stats-table desktop-only">
       <table>
         <thead>
           <tr>
             <th scope="col">Repository</th>
-            <th scope="col">Sessions</th>
             <th scope="col">Hours</th>
             <th scope="col" title="The counted hours at busy CPU, without included usage">
               Est. cost
             </th>
-            <th scope="col">Turns</th>
+            <th scope="col">Sessions</th>
             <th scope="col">Running</th>
             <th scope="col">Last run</th>
-            <th scope="col">Failed</th>
-            <th scope="col">Crashes</th>
             <th scope="col" title="Median time to a ready workspace">
               Boot
             </th>
-            <th scope="col" title="Invariant violations and timeouts">
-              Health
-            </th>
-            <th scope="col">Agents</th>
+            <th scope="col">Problems</th>
           </tr>
         </thead>
         <tbody>
@@ -277,83 +291,33 @@ function Table({ stats }: { stats: Stats }) {
             <Row key={row.repo} row={row} now={stats.now} />
           ))}
         </tbody>
-        <tfoot>
-          <Row row={stats.total} now={stats.now} total />
-        </tfoot>
       </table>
     </div>
   );
 }
 
-function Card({ row, now, total }: { row: RepoStats; now: number; total?: boolean }) {
-  const failures = top(row.failureCodes);
-  const exits = top(row.exitCodes, (key) => `exit ${key}`);
-  const signals = health(row);
-  const split = agents(row).join(" / ");
+// On a phone, one row per repository under the tiles; the tiles carry the totals.
+function Rows({ stats }: { stats: Stats }) {
   return (
-    <div className="settings-card stats-card" data-total={total || undefined}>
-      <div className="stats-card-head">
-        <span className={total ? "stats-card-title" : "stats-card-title mono"}>{row.repo}</span>
-        {row.running > 0 ? <Running count={row.running} /> : null}
-      </div>
-      <dl className="stats-figures">
-        <div>
-          <dt>Hours</dt>
-          <dd className="tabular">
-            {hours(row.runMs)}
-            {bySize(row)}
-          </dd>
-        </div>
-        <div>
-          <dt>Est. cost</dt>
-          <dd className="tabular">{usd(row.cost)}</dd>
-        </div>
-        <div>
-          <dt>Sessions</dt>
-          <dd className="tabular">{row.sessions}</dd>
-        </div>
-        <div>
-          <dt>Turns</dt>
-          <dd className="tabular">{row.turns}</dd>
-        </div>
-        <div>
-          <dt>Last run</dt>
-          <dd className="tabular">{lastRun(row, now)}</dd>
-        </div>
-        <div>
-          <dt>Failed</dt>
-          <dd>
-            <Tally count={row.failed} detail={failures} />
-          </dd>
-        </div>
-        <div>
-          <dt>Crashes</dt>
-          <dd>
-            <Tally count={row.crashes} detail={exits} />
-          </dd>
-        </div>
-        <div>
-          <dt>Boot (median)</dt>
-          <dd className="tabular">{seconds(row.bootMs)}</dd>
-        </div>
-        <div>
-          <dt>Health</dt>
-          <dd>
-            <Tally count={row.violations + timeoutsOf(row)} detail={signals} />
-          </dd>
-        </div>
-      </dl>
-      {split ? <div className="stats-detail">{split}</div> : null}
-    </div>
-  );
-}
-
-function Cards({ stats }: { stats: Stats }) {
-  return (
-    <div className="stats-cards">
-      <Card row={stats.total} now={stats.now} total />
+    <div className="stats-rows">
       {stats.repos.map((row) => (
-        <Card key={row.repo} row={row} now={stats.now} />
+        <div key={row.repo} className="stats-row">
+          <div className="stats-row-head">
+            <span className="stats-row-repo mono">{row.repo}</span>
+            <span className="stats-row-hours tabular">{hours(row.runMs)}</span>
+          </div>
+          <div className="stats-row-meta tabular">
+            {usd(row.cost)} · {counted(row.sessions, "session", "sessions")} · last{" "}
+            {lastRun(row, stats.now)}
+            {row.running > 0 ? (
+              <>
+                {" · "}
+                <Running count={row.running} label=" running" />
+              </>
+            ) : null}
+          </div>
+          {problems(row) > 0 ? <div className="stats-row-problems">{kinds(row)}</div> : null}
+        </div>
       ))}
     </div>
   );

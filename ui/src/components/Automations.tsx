@@ -417,12 +417,12 @@ function Editor({
       ) : null}
       <div className="automation-field">
         <div className="automation-label">Action</div>
-        <div className="automation-choices" role="group" aria-label="Action">
+        <div className="segmented" role="group" aria-label="Action">
           {(["start", "wake", "end"] as const).map((action) => (
             <button
               key={action}
               type="button"
-              className="automation-choice pressable"
+              className="segmented-option pressable"
               aria-pressed={draft.action === action}
               onClick={() => set({ action })}
             >
@@ -437,12 +437,12 @@ function Editor({
       </div>
       <div className="automation-field">
         <div className="automation-label">When</div>
-        <div className="automation-choices" role="group" aria-label="When it runs">
+        <div className="segmented" role="group" aria-label="When it runs">
           {kinds.map((kind) => (
             <button
               key={kind.id}
               type="button"
-              className="automation-choice pressable"
+              className="segmented-option pressable"
               aria-pressed={draft.kind === kind.id}
               onClick={() => set({ kind: kind.id })}
             >
@@ -543,12 +543,12 @@ function Editor({
       </label>
       <div className="automation-field">
         <div className="automation-label">Agent</div>
-        <div className="automation-choices" role="group" aria-label="Agent">
+        <div className="segmented" role="group" aria-label="Agent">
           {(["codex", "claude"] as const).map((agent) => (
             <button
               key={agent}
               type="button"
-              className="automation-choice pressable"
+              className="segmented-option pressable"
               aria-pressed={draft.agent === agent}
               onClick={() => set({ agent })}
             >

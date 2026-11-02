@@ -41,9 +41,10 @@ export type DummySpec = {
   repo: string;
   minutesAgo: number;
   turns: TurnSpec[];
-  // Where the session is left: stopped after its turns, waiting on the owner, failed at boot, or
-  // stopped before its container because the running cap was full.
-  after?: "stopped" | "waiting" | "boot-failed" | "cap";
+  // Where the session is left: stopped after its turns, waiting on the owner, failed at boot,
+  // stopped before its container because the running cap was full, or crashed after its turns
+  // with an invariant violation on the way.
+  after?: "stopped" | "waiting" | "boot-failed" | "cap" | "crashed";
   // Set when a webhook or an automation made the session.
   origin?: Json;
   // The container size; absent: the default.
@@ -380,6 +381,18 @@ export function codexLog(spec: DummySpec): SessionEvent[] {
     at += 500;
     push({ src: "session", kind: "save.done", turn: String(index) });
   });
+  if (spec.after === "crashed") {
+    at += 20_000;
+    push({
+      src: "session",
+      kind: "invariant.violated",
+      code: "turn.order",
+      detail: "a turn ended before it started",
+    });
+    at += 5_000;
+    push({ src: "session", kind: "container.stopped", gen: 1, reason: "crashed", exitCode: 137 });
+    push({ src: "supervisor", kind: "socket.closed", gen: 1 });
+  }
   if ((spec.after ?? "stopped") === "stopped" && spec.turns.at(-1)?.end !== "open") {
     at += 30_000;
     push({ src: "api", kind: "container.stopped", gen: 1 });
@@ -1175,5 +1188,26 @@ export const dummies: DummySpec[] = [
         ],
       },
     ],
+  },
+  {
+    id: "d0cc0de500000000000000000000000d",
+    title: "Run the checkout e2e suite",
+    repo: "acme/storefront",
+    minutesAgo: 60 * 3,
+    after: "crashed",
+    turns: [
+      {
+        prompt: "Run the checkout e2e suite and tell me what fails.",
+        items: [{ type: "say", phase: "commentary", text: "Starting the suite." }],
+      },
+    ],
+  },
+  {
+    id: "d0cc0de500000000000000000000000e",
+    title: "Clone the private fork",
+    repo: "Yeshwanthyk/scotty-hatch-test",
+    minutesAgo: 60 * 24 * 2,
+    after: "boot-failed",
+    turns: [{ prompt: "reply ok", items: [] }],
   },
 ];
