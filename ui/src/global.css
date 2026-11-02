@@ -1106,10 +1106,19 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* A long message fades into its own fill, so the bubble keeps its rounded bottom. */
 .user-message[data-clamped="true"] {
   max-height: calc(1.6em * 8 + 18px);
   overflow: hidden;
-  mask-image: linear-gradient(to bottom, black 70%, transparent);
+}
+
+.user-message[data-clamped="true"]::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: calc(2.4em + 9px);
+  background: linear-gradient(to bottom, transparent, var(--raised) calc(100% - 9px));
+  pointer-events: none;
 }
 
 .more-lines {
