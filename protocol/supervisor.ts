@@ -112,6 +112,9 @@ export const ToSupervisor = Schema.Union([
         commit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
       }),
     ),
+    // Where a container outside Cloudflare reaches the Worker's /egress route, with a token for
+    // this session and gen. It is kept on a tmpfs, so it never rests on a paused disk.
+    egress: Schema.optionalKey(Schema.Struct({ url: Schema.String, token: credentialString })),
   }),
   Schema.Struct({
     ...envelope,
@@ -129,6 +132,16 @@ export const FromSupervisor = Schema.Union([
     type: Schema.Literal("hello"),
     version: Schema.String,
     boot: Schema.String,
+    // The marker written at workspace_ready, when the disk kept it: the session it belongs to,
+    // its branch, the commit the branch was made from, and the agent's thread id.
+    workspace: Schema.optionalKey(
+      Schema.Struct({
+        session: identifier,
+        branch: Schema.String,
+        base: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
+        thread: identifier,
+      }),
+    ),
   }),
   Schema.Struct({
     ...envelope,
@@ -181,6 +194,15 @@ export type FromSupervisorMessage = Schema.Schema.Type<typeof FromSupervisor>;
 export const Terminals = Schema.Struct({ open: Schema.Natural });
 
 export const supervisorVersion = "1";
+
+// The error code of a start whose agent can't resume its thread from the files on disk. The
+// Session DO treats it like a workspace that isn't this session's.
+export const threadGone = "thread_gone";
+
+// The header on the dial and every HTTP call to the supervisor: hex HMAC-SHA256(k, String(gen)),
+// where k = HMAC-SHA256(Worker secret, session id) is given to the container at create and kept
+// on its disk. The supervisor never passes k to the agent.
+export const supervisorAuthHeader = "x-scotty-auth";
 
 // A repository baked into the container image, so e2e sessions don't depend on GitHub. GitHub
 // owner names cannot contain "_", so no real repository has this name.
