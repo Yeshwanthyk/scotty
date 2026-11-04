@@ -56,15 +56,21 @@ npm run --silent scotty -- doctor
 
 ## Open
 
-| Item | Title                        | Depends on | Status   |
-| ---- | ---------------------------- | ---------- | -------- |
-| C1   | ChatGPT refresh and sign-out | owner      | deferred |
-| S6   | Scotty inside sessions       | none       | todo     |
-| S7   | Slack bot                    | none       | todo     |
-| S10  | Approvals for MCP writes     | none       | todo     |
-| R2   | Runners on the owner's boxes | none       | todo     |
-| R3   | Where a session runs         | R2         | todo     |
-| Z1   | The agent asks for more      | S6         | todo     |
+| Item | Title                           | Depends on     | Status   |
+| ---- | ------------------------------- | -------------- | -------- |
+| C1   | ChatGPT refresh and sign-out    | owner          | deferred |
+| S6   | Scotty inside sessions          | none           | todo     |
+| S7   | Slack bot                       | none           | todo     |
+| S10  | Approvals for MCP writes        | none           | todo     |
+| L1   | Place lifecycle on the contract | none           | todo     |
+| W1   | Wake from disk                  | none           | todo     |
+| E1   | Egress gateway                  | none           | todo     |
+| E2   | Place, key and size on entry    | none           | todo     |
+| R2   | Runners on the owner's boxes    | L1, W1, E1, E2 | todo     |
+| D1   | Daytona place                   | L1, W1, E1     | todo     |
+| B1   | Boat place                      | L1, W1, E1     | todo     |
+| R3   | Where a session runs            | R2             | todo     |
+| Z1   | The agent asks for more         | S6             | todo     |
 
 ### C1: ChatGPT refresh and sign-out
 
@@ -112,10 +118,40 @@ npm run --silent scotty -- doctor
 - **In scope:** a tool policy may say `ask` for tools outside the allowed set. The proxy refuses such a call with "needs approval" and the Session DO records an approval request event; the owner approves or denies in the UI (phone first), which is a later event, and Scotty steers the session to retry. An approval covers one tool for the session, or always for that connection. The agent never waits on an open request for the owner.
 - **Done when:** `e2e` makes a scripted session call an `ask` tool, sees the refusal and the pending request, approves it, and the retry succeeds; a denial is recorded and the call stays refused.
 
+### L1: place lifecycle on the contract
+
+- **Why:** sessions on runners and providers stay in their place between turns (design.md "Places").
+- **Owns:** `src/session/`, `src/places/`.
+- **In scope:** the `Place` contract and registry; `cloudflarePlace` implements it and the Session DO reaches the container only through it (`monitor()`, `setInactivityTimeout`, the `cf.*` types in `Port` and the workerd WebSocket move behind it); the `place` axis and events `place.created`, `place.paused`, `place.gone`; a stop's command is `pause` or `remove` by reason; the wake order as commands, with `hello.workspace` and the `start` failure of a thread that can't resume folding to `place.gone`; the `pause` deadline; sizes per place; the DO side of the supervisor caller check; timing events for create, hello, workspace ready and first output. Invariants: one handle at most; a new handle only after `gone`; only the place's answer appends `gone`; never resumed without `hello`.
+- **Done when:** fold tests cover create, pause, a lost pause reply, a resume while pausing, resume `gone`, a mismatched workspace, a failed thread resume, a boot change that keeps the handle, and no save; every log in `e2e/logs/` still replays; `e2e core` and `e2e lifecycle` pass unchanged on Cloudflare; `scotty read` shows the start timings.
+
+### W1: wake from disk
+
+- **Owns:** `container/`, `protocol/supervisor.ts`.
+- **In scope:** the workspace marker written at `workspace_ready`; `hello.workspace`; `prepareWorkspace` skips clone and save tar when the marker matches; a thread that can't resume fails `start` with its own error; a SIGTERM handler that interrupts the agent and waits for it; agent config and the egress token on a tmpfs, sent again on every `start`; the container side of the caller check (`k` on disk, `HMAC(k, gen)` checked on the dial and every call); the scripted stand-ins resume from their own files.
+- **Done when:** typecheck passes; `e2e core` passes on Cloudflare (no marker, so nothing changes there); a local run of the image, stopped and started with its disk, says `hello` with its workspace and resumes its thread. The end-to-end proof is the first place that keeps a disk (R2's `e2e runner`).
+
+### E1: egress gateway
+
+- **Owns:** a new `src/egress/`, the egress parts of `src/worker.ts`, token minting in `src/creds/`.
+- **In scope:** one egress handler for `github.internal`, `files.internal`, `api.github.com` and connections; Cloudflare's interceptors call it; `/egress` takes a Creds DO token for one session and gen.
+- **Done when:** `e2e core` and `e2e github` pass on Cloudflare; `/egress` refuses a missing, wrong, other-session and stopped-gen token.
+
+### E2: place and key on entry
+
+- **Owns:** `src/http/`, `src/mcp/`, `src/hooks/`, `cli/`.
+- **In scope:** `place` and `key` on MCP `new_session`, the API, hooks and `scotty new`; `provider: "cloudflare"` removed; a create refused when its place is unknown.
+- **Done when:** an MCP `new_session` repeated with one key returns one session; `e2e core` passes.
+
+### D1: Daytona place / B1: Boat place
+
+- **In scope:** one module each, `keeps: "disk"`, on the provider's API with its key in the Creds DO; hatch and terminal through `port`; egress through `/egress`.
+- **Done when:** `e2e daytona` / `e2e boat` create a scripted session, steer it, sleep it, wake it from disk (no restore), and open a hatch preview through the Worker; a sandbox deleted while paused wakes by restore.
+
 ### R2: runners on the owner's boxes
 
 - **Why:** the owner has Linux machines (first `slumbers`: 16 cores, 27 GB, Docker) and wants sessions on them, with hatch and the terminal working as on Cloudflare.
-- **Shape:** each runner is a name in the deploy config. The deployer makes, by name, a Cloudflare Tunnel `scotty-<stage>-runner-<name>`, the hostname `runner-<name>.<domain>` routed to it (with a Worker route that has no script, so the preview wildcard doesn't catch it), and an Access application that admits only a service token kept in the Creds DO. Removing the name and deploying deletes all three (Alchemy deletes resources that leave the config), so a lost box gets no more sessions. `scotty runner add <name>` installs `scotty runner` on the box as a systemd service; it runs `cloudflared` in Docker with the tunnel's token, and serves `PUT|GET|DELETE /s/:id` (a Docker container per session from the same image) and `/s/:id/port/:n` (forwarded to the container). The Session DO's runner place is `fetch` to that host: no link protocol of Scotty's own. The container's `github.internal` and `files.internal` go through the daemon to the Worker with a short-lived token for that session only; the real credentials stay in the Creds DO. `PUT /s/:id` for a session that already has a container returns that container, and `DELETE` of a missing one succeeds: the Session DO checks `running()` before it starts, but over the tunnel a lost reply can make that check miss a container the daemon is still creating. Sleep and wake work as on Cloudflare: sleep destroys the container, and wake starts a new one from the session's save in R2.
+- **Shape:** each runner is a name in the deploy config. The deployer makes, by name, a Cloudflare Tunnel `scotty-<stage>-runner-<name>`, the hostname `runner-<name>.<domain>` routed to it (with a Worker route that has no script, so the preview wildcard doesn't catch it), and an Access application that admits only a service token kept in the Creds DO. Removing the name and deploying deletes all three (Alchemy deletes resources that leave the config), so a lost box gets no more sessions. `scotty runner add <name>` installs `scotty runner` on the box as a systemd service; it runs `cloudflared` in Docker with the tunnel's token, and serves `PUT|GET|DELETE /s/:id` (a Docker container per session from the same image) and `/s/:id/port/:n` (forwarded to the container). The Session DO's runner place is `fetch` to that host: no link protocol of Scotty's own. The container's `github.internal` and `files.internal` go through the daemon to the Worker with a short-lived token for that session only; the real credentials stay in the Creds DO. `PUT /s/:id` for a session that already has a container returns that container, and `DELETE` of a missing one succeeds: the Session DO checks `running()` before it starts, but over the tunnel a lost reply can make that check miss a container the daemon is still creating. The runner place keeps the disk: sleep is `docker stop`, wake is `docker start` (design.md "Places").
 - **Spike first:** a DO holds the supervisor WebSocket through the tunnel for an hour with the resend protocol intact; result in `design.md`.
 - **In scope:** the above; Settings → Runners (name, online, last seen, sessions running, limit); `scotty runners`; `scotty new --on <name>`; `container.stopped {reason: gone}` when a runner stops answering.
 - **Done when:** `e2e runner` runs a scripted session on `slumbers`, steers it, sleeps and wakes it, and opens a hatch preview through the Worker; no real token appears on the box outside the agents' own exceptions. A second `PUT /s/:id` leaves one container. After the runner's name is removed and the stage deployed, its hostname refuses the old service token.
