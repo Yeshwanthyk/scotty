@@ -353,7 +353,9 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               const signedIn = yield* Effect.exit(
                 action.scripted === true
                   ? Effect.succeed(scriptedStart(action.agentKind))
-                  : Effect.all([agentConfig[action.agentKind](settings), owner.gitIdentity()]),
+                  : Effect.all([agentConfig[action.agentKind](settings), owner.gitIdentity()], {
+                      concurrency: "unbounded",
+                    }),
               );
               if (Exit.isFailure(signedIn)) {
                 if (current(action.gen))
@@ -371,13 +373,16 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                 return;
               }
               const [configured, git] = signedIn.value;
-              const mcp = (yield* connectionsFor(action.gen))
+              const [connections, skills] = yield* Effect.all(
+                [connectionsFor(action.gen), credentials.getByName("owner").sessionSkills()],
+                { concurrency: "unbounded" },
+              );
+              const mcp = connections
                 .filter((connection) => connection.kind === "mcp")
                 .map((connection) => ({
                   name: connection.name,
                   url: internalUrl(connection.name, "mcp"),
                 }));
-              const skills = yield* credentials.getByName("owner").sessionSkills();
               const agent = {
                 ...configured,
                 mcp,
@@ -389,10 +394,13 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
               // The deployer always sets SCOTTY_HATCH_BASE to the stage's domain.
               const hatchBase = yield* Effect.orDie(Config.String("SCOTTY_HATCH_BASE"));
               // Resume only when the save reached the new container; otherwise start clean.
-              const restored =
+              // The save, the instructions and the skills are independent uploads to separate
+              // files, so they go together. Skills go one at a time to bound the DO's memory:
+              // each tarball is held whole while it uploads.
+              const restore =
                 action.resume === undefined
-                  ? false
-                  : yield* bucket.get(saveKey()).pipe(
+                  ? Effect.succeed(false)
+                  : bucket.get(saveKey()).pipe(
                       Effect.flatMap((saved) =>
                         saved === null
                           ? Effect.succeed(false)
@@ -407,9 +415,14 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                     );
               // Settings as they are now; a running session keeps what it started with.
               // A failed read fails the start (start_failed, retryable) rather than drop a setting.
-              const saved = yield* Effect.orDie(bucket.get(instructionsKey));
-              const instructions = saved === null ? "" : yield* Effect.orDie(saved.text());
-              const installed = yield* Effect.forEach(skills.sources, (source) =>
+              const readInstructions = Effect.orDie(
+                bucket
+                  .get(instructionsKey)
+                  .pipe(
+                    Effect.flatMap((saved) => (saved === null ? Effect.succeed("") : saved.text())),
+                  ),
+              );
+              const install = Effect.forEach(skills.sources, (source) =>
                 bucket.get(sourceKey(source.repo, source.commit)).pipe(
                   Effect.flatMap((tarball) =>
                     tarball === null
@@ -426,6 +439,10 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
                   ),
                   Effect.orDie,
                 ),
+              );
+              const [restored, instructions, installed] = yield* Effect.all(
+                [restore, readInstructions, install],
+                { concurrency: "unbounded" },
               );
               const message: ToSupervisorMessage = {
                 type: "start",

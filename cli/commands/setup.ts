@@ -69,12 +69,23 @@ export const checks = Effect.gen(function* () {
   if (Exit.isFailure(token)) return [failed("Access", token, `cloudflared access login ${url}`)];
   const api = client({ url, token: token.value });
   const result: Check[] = [{ name: "Access", status: "ok", detail: "signed in" }];
-  const worker = yield* Effect.exit(
-    Effect.all([
-      api("/api/version", Version),
-      api("/api/sessions", List),
-      api("/api/settings", Settings),
-    ]),
+  const [worker, chatgpt, github, claude] = yield* Effect.all(
+    [
+      Effect.exit(
+        Effect.all(
+          [
+            api("/api/version", Version),
+            api("/api/sessions", List),
+            api("/api/settings", Settings),
+          ],
+          { concurrency: "unbounded" },
+        ),
+      ),
+      Effect.exit(api("/api/credentials/chatgpt", ChatGptStatus)),
+      Effect.exit(api("/api/credentials/github", GitHubStatus)),
+      Effect.exit(api("/api/credentials/claude", ClaudeStatus)),
+    ],
+    { concurrency: "unbounded" },
   );
   // Any Worker failure, a 404 from an older deploy included, is fixed by deploying.
   if (Exit.isFailure(worker)) {
@@ -96,7 +107,6 @@ export const checks = Effect.gen(function* () {
           fix: "scotty deploy",
         },
   );
-  const chatgpt = yield* Effect.exit(api("/api/credentials/chatgpt", ChatGptStatus));
   result.push(
     Exit.isFailure(chatgpt)
       ? failed("ChatGPT", chatgpt, "scotty doctor")
@@ -104,7 +114,6 @@ export const checks = Effect.gen(function* () {
         ? fail("ChatGPT", "not signed in", "scotty login chatgpt")
         : expiring("ChatGPT", "signed in", chatgpt.value, "scotty login chatgpt"),
   );
-  const github = yield* Effect.exit(api("/api/credentials/github", GitHubStatus));
   result.push(
     Exit.isFailure(github)
       ? failed("GitHub", github, "scotty doctor")
@@ -117,7 +126,6 @@ export const checks = Effect.gen(function* () {
         : fail("GitHub", "no token", "scotty login github"),
   );
   // Claude is optional: Codex sessions don't need it.
-  const claude = yield* Effect.exit(api("/api/credentials/claude", ClaudeStatus));
   result.push(
     Exit.isFailure(claude)
       ? failed("Claude", claude, "scotty doctor")

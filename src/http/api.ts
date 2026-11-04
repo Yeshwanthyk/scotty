@@ -205,13 +205,23 @@ export function apiHandler(
     if (url.pathname === "/api/version" && request.method === "GET")
       return yield* HttpServerResponse.json({ version });
     if (url.pathname === "/api/settings" && request.method === "GET") {
-      const saved = yield* bucket.get(instructionsKey);
+      const [instructions, sources, claudeStyle, running] = yield* Effect.all(
+        [
+          bucket
+            .get(instructionsKey)
+            .pipe(Effect.flatMap((saved) => (saved === null ? Effect.succeed("") : saved.text()))),
+          credential.skillSources(),
+          credential.claudeStyle(),
+          credential.runningCount(),
+        ],
+        { concurrency: "unbounded" },
+      );
       return yield* HttpServerResponse.json({
-        instructions: saved === null ? "" : yield* saved.text(),
-        sources: yield* credential.skillSources(),
-        claudeStyle: yield* credential.claudeStyle(),
+        instructions,
+        sources,
+        claudeStyle,
         email: request.headers["cf-access-authenticated-user-email"] ?? null,
-        running: yield* credential.runningCount(),
+        running,
         // The deployer always sets SCOTTY_MAX_RUNNING from the stage's maxRunning.
         maxRunning: yield* Effect.orDie(Config.Int("SCOTTY_MAX_RUNNING")),
       });
@@ -258,8 +268,10 @@ export function apiHandler(
       Effect.gen(function* () {
         const noToken = bad("Skills come from GitHub; add a token first", 400, githubHint);
         const id = sourceId(spec);
-        const sources = yield* credential.skillSources();
-        const resolved = yield* credential.skillCommit(spec);
+        const [sources, resolved] = yield* Effect.all(
+          [credential.skillSources(), credential.skillCommit(spec)],
+          { concurrency: "unbounded" },
+        );
         if (resolved.status === "signed-out") return yield* noToken;
         if (resolved.status === "failed")
           return yield* new SourceFailure({

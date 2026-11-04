@@ -85,10 +85,10 @@ const install = Command.make(
         );
       }
       const api = yield* withClient;
-      const [{ connections: existing }, { automations }] = yield* Effect.all([
-        api("/api/connections", Connections),
-        api("/api/automations", Automations),
-      ]);
+      const [{ connections: existing }, { automations }] = yield* Effect.all(
+        [api("/api/connections", Connections), api("/api/automations", Automations)],
+        { concurrency: "unbounded" },
+      );
       const clash = taken(plan.installation, {
         connections: existing.map((connection) => connection.name),
         automations: automations.map((automation) => automation.name),

@@ -213,9 +213,14 @@ export function mcpHandler(
       true,
       ({ id, last }) =>
         Effect.gen(function* () {
-          const view = yield* json(View, `/api/sessions/${id}`);
+          const [view, conversation] = yield* Effect.all(
+            [
+              json(View, `/api/sessions/${id}`),
+              json(Conversation, `/api/sessions/${id}/conversation`),
+            ],
+            { concurrency: "unbounded" },
+          );
           if (Result.isFailure(view)) return view.failure;
-          const conversation = yield* json(Conversation, `/api/sessions/${id}/conversation`);
           if (Result.isFailure(conversation)) return conversation.failure;
           return text(
             JSON.stringify({

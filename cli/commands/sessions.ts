@@ -121,8 +121,10 @@ export const read = Command.make(
         return yield* usage("--last must be an integer from 1 to 500", "read");
       const api = yield* withClient;
       const path = yield* sessionPath(api, id, "read");
-      const { session } = yield* api(path, View);
-      const { turns } = yield* api(`${path}/conversation`, Conversation);
+      const [{ session }, { turns }] = yield* Effect.all(
+        [api(path, View), api(`${path}/conversation`, Conversation)],
+        { concurrency: "unbounded" },
+      );
       const messages = turns
         .flatMap((turn) => [
           { id: `${turn.id}:user`, role: "user", state: turn.state, text: turn.user, files: [] },

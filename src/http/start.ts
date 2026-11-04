@@ -59,7 +59,10 @@ export function startSession(
       const answer = yield* sessions.getByName(keyed).start(request);
       if (answer.kind !== "uncreated") return { ...answer, id: keyed };
     }
-    const branch = yield* Effect.gen(function* () {
+    // The repository default is read only when the request names no size, and goes in as
+    // `repoSize`: a retried create is compared with the size it named, never with a default
+    // that changed since. It is read alongside the branch lookup; neither needs the other.
+    const findBranch = Effect.gen(function* () {
       if (input.branch !== undefined) return { ok: true as const, branch: input.branch };
       if (input.repo === fixtureRepo) return { ok: true as const, branch: "main" };
       const found = yield* credential.defaultBranch(input.repo);
@@ -78,6 +81,13 @@ export function startSession(
         message: found.message,
       };
     });
+    const [branch, repoSize] = yield* Effect.all(
+      [
+        findBranch,
+        input.size === undefined ? credential.repoSize(input.repo) : Effect.succeed(null),
+      ],
+      { concurrency: "unbounded" },
+    );
     if (!branch.ok)
       return {
         kind: "refused" as const,
@@ -99,10 +109,6 @@ export function startSession(
           ? { automation: input.origin.automation, run: input.origin.run }
           : {}),
       }));
-    // The repository default is read only when the request names no size, and goes in as
-    // `repoSize`: a retried create is compared with the size it named, never with a default
-    // that changed since.
-    const repoSize = input.size === undefined ? yield* credential.repoSize(input.repo) : null;
     const answer = yield* sessions.getByName(id).start({
       ...request,
       // The size applies only to the session this call makes; a keyed steer above sends none.
