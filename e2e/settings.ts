@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import {
   access,
   CliFailure,
@@ -63,117 +63,159 @@ const program = Effect.gen(function* () {
   const toggle = (name: string, enabled: boolean) =>
     request(`/api/skills/${name}`, SkillSwitched, { method: "PATCH", body: { enabled } });
 
+  const setStyle = (skill: string | null) =>
+    request("/api/settings/claude-style", StyleSet, { method: "PUT", body: { skill } });
+
   // The owner may use these sources and instructions; note them to put back at the end.
   const owner = yield* request("/api/settings", Settings);
   const before = owner.sources.filter((known) => known.id === source || known.id === other);
-  for (const known of before) yield* remove(known.id);
+  // Runs however the test ends, and every step runs even when one fails, so a failure never
+  // leaves the owner's settings half put back. A source comes back at its ref's current commit,
+  // as a refresh would; a skill that was on but is gone from that commit is reported, not fatal.
+  const restore = Effect.gen(function* () {
+    const missed: Array<string> = [];
+    const step = <A, E>(what: string, effect: Effect.Effect<A, E>) =>
+      Effect.exit(effect).pipe(
+        Effect.map((exit) => {
+          if (Exit.isFailure(exit)) missed.push(what);
+          return Exit.isSuccess(exit) ? exit.value : undefined;
+        }),
+      );
+    const now = yield* step("read settings", request("/api/settings", Settings));
+    for (const known of now?.sources ?? [])
+      if (known.id === source || known.id === other)
+        yield* step(`remove ${known.id}`, remove(known.id));
+    yield* step(
+      "instructions",
+      request("/api/settings/instructions", Saved, {
+        method: "PUT",
+        body: { text: owner.instructions },
+      }),
+    );
+    yield* step("style", setStyle(null));
+    const present = new Set<string>();
+    for (const known of before) {
+      const saved = yield* step(
+        `add ${known.id}`,
+        add(`${known.id}${known.ref === null ? "" : `@${known.ref}`}`),
+      );
+      for (const name of saved?.added ?? []) present.add(name);
+      for (const skill of known.skills) {
+        if (!skill.enabled) continue;
+        if (!present.has(skill.name)) missed.push(`${skill.name} (gone from ${known.id})`);
+        else yield* step(`switch on ${skill.name}`, toggle(skill.name, true));
+      }
+    }
+    if (owner.claudeStyle !== null) {
+      if (
+        !before.some((known) => known.skills.some((skill) => skill.name === owner.claudeStyle)) ||
+        present.has(owner.claudeStyle)
+      )
+        yield* step(`style ${owner.claudeStyle}`, setStyle(owner.claudeStyle));
+      else missed.push(`style ${owner.claudeStyle} (skill gone)`);
+    }
+    if (missed.length === 0) console.log("Cleaned up");
+    else {
+      console.error(`Owner settings not fully put back: ${missed.join(", ")}`);
+      process.exitCode = 1;
+    }
+  });
 
-  // 1. Added fresh, every skill is off; a refresh at the same commit finds nothing new.
-  const added = yield* add(source);
-  yield* check(
-    added.added.includes(router) && added.added.includes(linked),
-    `Add found ${added.added.join(", ")}`,
-  );
-  const listed = (yield* request("/api/settings", Settings)).sources.find((s) => s.id === source);
-  yield* check(
-    listed !== undefined && listed.skills.every((skill) => !skill.enabled),
-    "New skills are not all off",
-  );
-  const refreshed = yield* request("/api/skill-sources/refresh", SourceSaved, {
-    method: "POST",
-    body: { source },
-  });
-  yield* check(
-    refreshed.added.length + refreshed.updated.length + refreshed.removed.length === 0,
-    "Refresh at the same commit reported changes",
-  );
-  yield* add(other);
-  console.log(`${source} at ${added.commit.slice(0, 7)}: ${added.added.length} skills, all off`);
+  yield* Effect.gen(function* () {
+    for (const known of before) yield* remove(known.id);
 
-  // 2. One skill on in each source and owner instructions; a new session gets both folders whole.
-  const setStyle = (skill: string | null) =>
-    request("/api/settings/claude-style", StyleSet, { method: "PUT", body: { skill } });
-  // Setting the style switches yesh-router on.
-  yield* setStyle(router);
-  yield* toggle(scotty, true);
-  yield* request("/api/settings/instructions", Saved, {
-    method: "PUT",
-    body: { text: `The owner marker is ${firstMark}.` },
-  });
-  const session = yield* request("/api/sessions", Created, {
-    method: "POST",
-    key: crypto.randomUUID(),
-    body: {
-      title: `e2e settings (${agent})`,
-      repo: fixtureRepo,
-      ...sessionAgent,
-      prompt: probe,
-      provider: "cloudflare",
-    },
-  });
-  const prefix = `/api/sessions/${session.id}`;
-  console.log(`Session ${session.id}`);
-  const poll = waiter(request, prefix);
-  const events = () => request(`${prefix}/log`, Log);
-  const reply = (turn: string) =>
-    Effect.gen(function* () {
-      yield* poll(events, (log) => log.some((e) => e.kind === "turn.ended" && e.turn === turn));
-      const conversation = yield* request(`${prefix}/conversation`, Conversation);
-      return conversation.turns.at(-1)?.assistant ?? "";
+    // 1. Added fresh, every skill is off; a refresh at the same commit finds nothing new.
+    const added = yield* add(source);
+    yield* check(
+      added.added.includes(router) && added.added.includes(linked),
+      `Add found ${added.added.join(", ")}`,
+    );
+    const listed = (yield* request("/api/settings", Settings)).sources.find((s) => s.id === source);
+    yield* check(
+      listed !== undefined && listed.skills.every((skill) => !skill.enabled),
+      "New skills are not all off",
+    );
+    const refreshed = yield* request("/api/skill-sources/refresh", SourceSaved, {
+      method: "POST",
+      body: { source },
     });
-  const start = yield* reply("0");
-  yield* check(
-    [router, linked, scotty].every((name) => start.includes(name)),
-    `Both sources not installed: ${start}`,
-  );
-  yield* check(start.includes("LINK-OK"), "A skill's link to another skill doesn't resolve");
-  yield* check(start.includes("EXEC-OK"), "A skill's script lost its execute bit");
-  yield* check(start.includes(firstMark), "Owner instructions not in the agent's instructions");
-  yield* check(
-    agent === "codex" || start.includes("STYLE-OK"),
-    "Claude's output style was not built from yesh-router",
-  );
-  console.log("Start: both sources installed, link resolves, script executable, owner marker");
+    yield* check(
+      refreshed.added.length + refreshed.updated.length + refreshed.removed.length === 0,
+      "Refresh at the same commit reported changes",
+    );
+    yield* add(other);
+    console.log(`${source} at ${added.commit.slice(0, 7)}: ${added.added.length} skills, all off`);
 
-  // 3. Every skill off and new instructions; a stop and resume picks up both.
-  yield* toggle(router, false);
-  yield* toggle(scotty, false);
-  yield* request("/api/settings/instructions", Saved, {
-    method: "PUT",
-    body: { text: `The owner marker is ${secondMark}.` },
-  });
-  yield* poll(events, (log) => log.some((e) => e.kind === "save.done" && e.turn === "0"));
-  yield* request(`${prefix}/stop`, View, { method: "POST" });
-  const req = crypto.randomUUID();
-  yield* request(`${prefix}/steer`, Reply, {
-    method: "POST",
-    key: req,
-    body: { req, turn: "1", text: probe },
-  });
-  const resumed = yield* reply("1");
-  yield* check(!resumed.includes("LINK-OK"), "A source with no skill on is still installed");
-  yield* check(!resumed.includes("STYLE-OK"), "A style whose skill is off is still installed");
-  yield* check(
-    resumed.includes(secondMark) && !resumed.includes(firstMark),
-    "Resume kept the old instructions",
-  );
-  console.log("Resume: no skills, new owner marker present");
+    // 2. One skill on in each source and owner instructions; a new session gets both folders whole.
+    // Setting the style switches yesh-router on.
+    yield* setStyle(router);
+    yield* toggle(scotty, true);
+    yield* request("/api/settings/instructions", Saved, {
+      method: "PUT",
+      body: { text: `The owner marker is ${firstMark}.` },
+    });
+    const session = yield* request("/api/sessions", Created, {
+      method: "POST",
+      key: crypto.randomUUID(),
+      body: {
+        title: `e2e settings (${agent})`,
+        repo: fixtureRepo,
+        ...sessionAgent,
+        prompt: probe,
+        provider: "cloudflare",
+      },
+    });
+    const prefix = `/api/sessions/${session.id}`;
+    console.log(`Session ${session.id}`);
+    const poll = waiter(request, prefix);
+    const events = () => request(`${prefix}/log`, Log);
+    const reply = (turn: string) =>
+      Effect.gen(function* () {
+        yield* poll(events, (log) => log.some((e) => e.kind === "turn.ended" && e.turn === turn));
+        const conversation = yield* request(`${prefix}/conversation`, Conversation);
+        return conversation.turns.at(-1)?.assistant ?? "";
+      });
+    const start = yield* reply("0");
+    yield* check(
+      [router, linked, scotty].every((name) => start.includes(name)),
+      `Both sources not installed: ${start}`,
+    );
+    yield* check(start.includes("LINK-OK"), "A skill's link to another skill doesn't resolve");
+    yield* check(start.includes("EXEC-OK"), "A skill's script lost its execute bit");
+    yield* check(start.includes(firstMark), "Owner instructions not in the agent's instructions");
+    yield* check(
+      agent === "codex" || start.includes("STYLE-OK"),
+      "Claude's output style was not built from yesh-router",
+    );
+    console.log("Start: both sources installed, link resolves, script executable, owner marker");
 
-  // 4. Clean up, and put back the owner's sources and instructions as they were.
-  yield* request(`${prefix}/stop`, View, { method: "POST" });
-  yield* remove(source);
-  yield* remove(other);
-  yield* request("/api/settings/instructions", Saved, {
-    method: "PUT",
-    body: { text: owner.instructions },
-  });
-  yield* setStyle(null);
-  for (const known of before) {
-    yield* add(`${known.id}${known.ref === null ? "" : `@${known.ref}`}`);
-    for (const skill of known.skills) if (skill.enabled) yield* toggle(skill.name, true);
-  }
-  if (owner.claudeStyle !== null) yield* setStyle(owner.claudeStyle);
-  console.log("Cleaned up");
+    // 3. Every skill off and new instructions; a stop and resume picks up both.
+    yield* toggle(router, false);
+    yield* toggle(scotty, false);
+    yield* request("/api/settings/instructions", Saved, {
+      method: "PUT",
+      body: { text: `The owner marker is ${secondMark}.` },
+    });
+    yield* poll(events, (log) => log.some((e) => e.kind === "save.done" && e.turn === "0"));
+    yield* request(`${prefix}/stop`, View, { method: "POST" });
+    const req = crypto.randomUUID();
+    yield* request(`${prefix}/steer`, Reply, {
+      method: "POST",
+      key: req,
+      body: { req, turn: "1", text: probe },
+    });
+    const resumed = yield* reply("1");
+    yield* check(!resumed.includes("LINK-OK"), "A source with no skill on is still installed");
+    yield* check(!resumed.includes("STYLE-OK"), "A style whose skill is off is still installed");
+    yield* check(
+      resumed.includes(secondMark) && !resumed.includes(firstMark),
+      "Resume kept the old instructions",
+    );
+    console.log("Resume: no skills, new owner marker present");
+
+    // 4. Stop the session; the owner's settings are put back by `restore`.
+    yield* request(`${prefix}/stop`, View, { method: "POST" });
+  }).pipe(Effect.ensuring(restore));
 });
 
 Effect.runPromise(program).catch((error: unknown) => {
