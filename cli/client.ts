@@ -2,7 +2,7 @@ import { BunServices } from "@effect/platform-bun";
 import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Definition, RunStatus } from "../src/automations/automation.js";
-import { Size } from "../src/places/place.js";
+import { PlaceKind, Size } from "../src/places/place.js";
 import {
   Connection,
   ConnectionCreated,
@@ -62,7 +62,7 @@ export const Created = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
   branch: Schema.String,
-  provider: Schema.String,
+  place: PlaceKind,
   status: Schema.String,
   url: Schema.String,
   // A create with a key already used steers that session instead of making one.
