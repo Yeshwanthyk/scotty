@@ -1,27 +1,23 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext, Stack } from "alchemy";
-import { Config, Effect, Exit, Option, Schema, SchemaTransformation } from "effect";
+import { Config, Effect, Option, Schema } from "effect";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { fireRun } from "./automations/fire.js";
-import { reachHandler } from "./creds/reach.js";
-import { ConnectionName } from "./creds/connections.js";
-import { gitHandler } from "./creds/git.js";
-import { gitHubApiHandler } from "./creds/github-api.js";
 import CredsObject from "./creds/object.js";
+import {
+  egress,
+  egressPrefix,
+  egressRoute,
+  LoopbackProps,
+  loopbackTarget,
+} from "./egress/handler.js";
 import { hookHandler, hookPath } from "./hooks/handler.js";
 import { apiHandler, hatchPort } from "./http/api.js";
 import { mcpHandler } from "./mcp/server.js";
 import SessionObject, { SessionArtifacts } from "./session/object.js";
 
-// Set by the Session DO when it routes a container's built-in or connection egress here.
-const LoopbackProps = Schema.Struct({
-  session: Schema.String,
-  repo: Schema.String,
-  connection: Schema.optionalKey(ConnectionName),
-  api: Schema.optionalKey(Schema.Literal("github")),
-});
 // Set by the Creds DO's alarm when it hands over an automation run to fire.
 const RunProps = Schema.Struct({ run: Schema.String });
 // A preview host is `<port>-<session id>.<SCOTTY_HATCH_BASE>`.
@@ -29,30 +25,6 @@ const hatchLabel = /^(\d{1,5})-([a-z0-9-]{6,32})$/;
 const terminalPath = /^\/api\/sessions\/([a-z0-9-]{6,32})\/terminal$/;
 // The session list's live socket, or one session's.
 const livePath = /^\/api\/sessions\/(?:([a-z0-9-]{6,32})\/)?live$/;
-// scotty-attach uploads: one of these types, at most 25 MB, name and caption URI-encoded.
-const FileType = Schema.Literals([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-  "video/webm",
-  "video/mp4",
-]);
-const FileSize = Schema.NumberFromString.check(
-  Schema.isInt(),
-  Schema.isBetween({ minimum: 1, maximum: 25 * 1024 * 1024 }),
-);
-const encoded = (max: number) =>
-  Schema.String.pipe(
-    Schema.decodeTo(
-      Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(max)),
-      SchemaTransformation.stringFromUriComponent,
-    ),
-  );
-const FileLabel = Schema.Struct({
-  "x-scotty-name": encoded(255),
-  "x-scotty-caption": Schema.optionalKey(encoded(2000)),
-});
 const isFetcher = (value: unknown): value is Cloudflare.Fetcher["raw"] =>
   typeof value === "object" &&
   value !== null &&
@@ -111,41 +83,7 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
       }).pipe(Effect.orDie, Effect.provide(RuntimeContext.phantom)),
     );
     const api = router.asHttpEffect().pipe(Effect.orDie);
-    // The bytes reach R2 before the Session DO records the file, so no event names missing bytes.
-    const attach = (request: HttpServerRequest.HttpServerRequest, session: string) =>
-      Effect.gen(function* () {
-        const reply = (status: number, text: string) =>
-          HttpServerResponse.text(`${text}\n`, { status });
-        if (request.method !== "PUT") return reply(405, "Use PUT");
-        const type = Schema.decodeUnknownOption(FileType)(request.headers["content-type"]);
-        if (Option.isNone(type))
-          return reply(415, "Type must be png, jpeg, webp, gif, webm or mp4");
-        const size = Schema.decodeUnknownOption(FileSize)(request.headers["content-length"]);
-        if (Option.isNone(size)) return reply(413, "File must be 1 byte to 25 MB");
-        const label = Schema.decodeUnknownOption(FileLabel)(request.headers);
-        if (Option.isNone(label)) return reply(400, "Bad file name or caption");
-        const file = crypto.randomUUID().replaceAll("-", "");
-        const body = (yield* HttpServerRequest.toWeb(request)).body;
-        const stored = yield* Effect.exit(
-          bucket.put(`files/${session}/${file}`, body, {
-            httpMetadata: { contentType: type.value },
-          }),
-        );
-        if (Exit.isFailure(stored)) return reply(502, "Could not store the file");
-        const name = label.value["x-scotty-name"];
-        const caption = label.value["x-scotty-caption"];
-        const recorded = yield* Effect.exit(
-          sessions.getByName(session).attach({
-            file,
-            name,
-            type: type.value,
-            size: size.value,
-            ...(caption === undefined ? {} : { caption }),
-          }),
-        );
-        if (Exit.isFailure(recorded)) return reply(502, "Could not record the file");
-        return reply(200, `Attached: ${name}`);
-      });
+    const upstreams = { sessions, credentials, bucket };
     return {
       fetch: Effect.gen(function* () {
         const exec = yield* Cloudflare.WorkerExecutionContext;
@@ -157,16 +95,13 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
           );
         const props = Schema.decodeUnknownOption(LoopbackProps)(exec.raw.props);
         const request = yield* HttpServerRequest.HttpServerRequest;
-        if (Option.isSome(props) && props.value.connection !== undefined)
-          return yield* reachHandler(request, props.value.connection, credentials).pipe(
-            Effect.orDie,
-          );
-        if (Option.isSome(props) && props.value.api === "github")
-          return yield* gitHubApiHandler(request, credentials).pipe(Effect.orDie);
-        if (Option.isSome(props) && request.headers["host"] === "files.internal")
-          return yield* attach(request, props.value.session).pipe(Effect.orDie);
         if (Option.isSome(props))
-          return yield* gitHandler(request, props.value.repo, credentials).pipe(Effect.orDie);
+          return yield* egress(
+            request,
+            props.value,
+            loopbackTarget(props.value, request.headers["host"]),
+            upstreams,
+          );
         const host = request.headers["host"] ?? "";
         if (host !== selfHost && host.endsWith(`.${hatchBase}`)) {
           const label = hatchLabel.exec(host.slice(0, -hatchBase.length - 1));
@@ -187,6 +122,7 @@ export default class ScottyWorker extends Cloudflare.Worker<ScottyWorker>()(
           request.method !== "HEAD"
         )
           return HttpServerResponse.text("Forbidden", { status: 403 });
+        if (url.pathname.startsWith(egressPrefix)) return yield* egressRoute(request, upstreams);
         // Access Managed OAuth signs MCP clients in on its own app for this path.
         if (url.pathname === "/mcp") {
           if (foreign) return HttpServerResponse.text("Forbidden", { status: 403 });

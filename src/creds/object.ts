@@ -23,6 +23,7 @@ import { authorizeMcp, refreshMcp, StoredMcpOAuth } from "./mcp-oauth.js";
 import { defaultBranch, proxy, type ProxyRequest, resolveCommit, tarball } from "./github.js";
 import type { SourceSpec } from "../settings/skills.js";
 import { isLoopback } from "../loopback.js";
+import { egressTokenHash, newEgressToken } from "../egress/token.js";
 import { searchText } from "../session/search.js";
 import { AgentKind } from "../session/events.js";
 import { Size } from "../places/place.js";
@@ -166,6 +167,11 @@ const claudeLifetime = 365 * day;
 const claudeWarning = 14 * day;
 const Claims = Schema.Array(Schema.Struct({ id: Schema.String, token: Schema.String }));
 const Count = Schema.Array(Schema.Struct({ count: Schema.Number }));
+const EgressConnections = Schema.fromJsonString(Schema.Array(Schema.String));
+const EgressGenRows = Schema.Array(Schema.Struct({ gen: Schema.Number, stopped: Schema.Number }));
+const EgressGrants = Schema.Array(
+  Schema.Struct({ repo: Schema.String, connections: EgressConnections }),
+);
 class CredentialStoreError extends Schema.TaggedError<CredentialStoreError>()(
   "CredentialStoreError",
   { message: Schema.String },
@@ -216,6 +222,10 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
       yield* sql`CREATE TABLE IF NOT EXISTS run_sizes (id TEXT PRIMARY KEY, size TEXT NOT NULL)`;
       // A repository's own defaults, under its `repoKey`.
       yield* sql`CREATE TABLE IF NOT EXISTS repo_settings (repo TEXT PRIMARY KEY, size TEXT NOT NULL)`;
+      // Egress outside Cloudflare: each session's newest gen, whether it has stopped, and what its
+      // tokens reach. A token is kept only as its hash, and only for that gen.
+      yield* sql`CREATE TABLE IF NOT EXISTS egress_gens (session TEXT PRIMARY KEY, gen INTEGER NOT NULL, stopped INTEGER NOT NULL, repo TEXT NOT NULL, connections TEXT NOT NULL)`;
+      yield* sql`CREATE TABLE IF NOT EXISTS egress_tokens (hash TEXT PRIMARY KEY, session TEXT NOT NULL, gen INTEGER NOT NULL)`;
 
       const refreshing = new Map<
         string,
@@ -448,8 +458,55 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             yield* sql`DELETE FROM session_search WHERE id = ${id}`;
             yield* sql`DELETE FROM session_index WHERE id = ${id}`;
             yield* sql`DELETE FROM running WHERE id = ${id}`;
+            yield* sql`DELETE FROM egress_tokens WHERE session = ${id}`;
+            yield* sql`DELETE FROM egress_gens WHERE session = ${id}`;
             yield* broadcast({ kind: "removed", id });
           }),
+        // A token for `/egress` from this session's gen, or null when that gen is older than the
+        // newest one seen or has stopped. Minting for a new gen ends every older gen's tokens; a
+        // repeated mint for the same gen adds a token, so a lost reply strands none.
+        mintEgress: (input: {
+          readonly session: string;
+          readonly gen: number;
+          readonly repo: string;
+          readonly connections: readonly string[];
+        }) =>
+          Effect.gen(function* () {
+            const session = yield* Schema.decodeUnknownEffect(SessionId)(input.session);
+            const known = yield* Schema.decodeUnknownEffect(EgressGenRows)(
+              yield* sql`SELECT gen, stopped FROM egress_gens WHERE session = ${session}`,
+            );
+            const newest = known[0];
+            if (
+              newest !== undefined &&
+              (input.gen < newest.gen || (input.gen === newest.gen && newest.stopped === 1))
+            )
+              return null;
+            const connections = yield* Schema.encodeEffect(EgressConnections)(input.connections);
+            const token = newEgressToken();
+            const hash = yield* egressTokenHash(token);
+            yield* sql`INSERT INTO egress_gens (session, gen, stopped, repo, connections) VALUES (${session}, ${input.gen}, 0, ${input.repo}, ${connections}) ON CONFLICT (session) DO UPDATE SET gen = excluded.gen, stopped = 0, repo = excluded.repo, connections = excluded.connections`;
+            yield* sql`DELETE FROM egress_tokens WHERE session = ${session} AND gen < ${input.gen}`;
+            yield* sql`INSERT INTO egress_tokens (hash, session, gen) VALUES (${hash}, ${session}, ${input.gen})`;
+            return token;
+          }).pipe(sql.withTransaction),
+        // What a token reaches, or null unless it was minted for this session's newest gen and that
+        // gen hasn't stopped. Never awaits the Session DO.
+        checkEgress: (session: string, token: string) =>
+          Effect.gen(function* () {
+            const hash = yield* egressTokenHash(token);
+            const rows = yield* Schema.decodeUnknownEffect(EgressGrants)(
+              yield* sql`SELECT egress_gens.repo, egress_gens.connections FROM egress_tokens JOIN egress_gens ON egress_gens.session = egress_tokens.session AND egress_gens.gen = egress_tokens.gen AND egress_gens.stopped = 0 WHERE egress_tokens.hash = ${hash} AND egress_tokens.session = ${session}`,
+            );
+            return rows[0] ?? null;
+          }),
+        // The session's gen `gen` has stopped: its tokens, and every older gen's, are refused from
+        // now on. A late call for an older gen leaves a newer gen's tokens alone.
+        revokeEgress: (session: string, gen: number) =>
+          Effect.gen(function* () {
+            yield* sql`INSERT INTO egress_gens (session, gen, stopped, repo, connections) VALUES (${session}, ${gen}, 1, '', '[]') ON CONFLICT (session) DO UPDATE SET gen = excluded.gen, stopped = 1 WHERE excluded.gen >= egress_gens.gen`;
+            yield* sql`DELETE FROM egress_tokens WHERE session = ${session} AND gen <= ${gen}`;
+          }).pipe(sql.withTransaction),
         connections: () =>
           Effect.gen(function* () {
             const rows =
