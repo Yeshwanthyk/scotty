@@ -1,19 +1,23 @@
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Exit, Scope, Stream } from "effect";
 import { Actions } from "./actions.js";
-import type { ToSupervisorMessage } from "../../protocol/supervisor.js";
+import { threadGone, type ToSupervisorMessage } from "../../protocol/supervisor.js";
 import { type Agent, makeAgent } from "./agents/agent.js";
 import { Requests } from "./requests.js";
 import { AgentError, type AgentReady, type Runner } from "./runner.js";
+import { keepsDisk, session } from "./place.js";
 import type { Output } from "./wire.js";
 import {
+  hasState,
   installSettings,
   installStyle,
   prepareWorkspace,
+  readMarker,
   saveWorkspace,
   storeSave,
   storeSkills,
   WorkspaceError,
+  writeMarker,
 } from "./workspace.js";
 
 type Start = Extract<ToSupervisorMessage, { type: "start" }>;
@@ -23,6 +27,9 @@ type StartState =
   | { status: "ready"; ready: Ready }
   | { status: "failed"; code: string; message: string };
 type Sender = (output: Output, gen?: number) => void;
+
+// A runner stops with a 30 s grace; the agent gets most of it to end its turn and exit.
+const shutdownBudget = "25 seconds";
 
 // One container controller owns start/runner/request outcomes for its fixed gen.
 // State changes precede outside work; resends observe the same in-flight result.
@@ -68,6 +75,17 @@ export class Controller {
       const agent = makeAgent(message.agent);
       this.agent = agent;
       const outcome = yield* Effect.gen({ self: this }, function* () {
+        const marker = message.resume === undefined ? undefined : yield* readMarker;
+        // The thread isn't compared: the marker says whose disk this is, and whether the thread
+        // asked for resumes is the agent's own answer from its files (checked below), which holds
+        // even for a thread the marker doesn't name yet.
+        const disk =
+          marker !== undefined &&
+          keepsDisk() &&
+          marker.session === session() &&
+          marker.branch === message.branch
+            ? marker
+            : undefined;
         const workspace = yield* prepareWorkspace(
           message.repo,
           message.base,
@@ -75,7 +93,19 @@ export class Controller {
           message.git,
           agent,
           message.resume,
+          disk,
+          message.egress,
         );
+        // A thread the agent can't pick up from the disk is the place's to replace, not a failed
+        // start: the Session DO restores from the save in a new machine.
+        const gone = (detail: string) =>
+          new AgentError({ code: threadGone, message: `can't resume the thread: ${detail}` });
+        if (
+          disk !== undefined &&
+          message.resume !== undefined &&
+          !(yield* hasState(agent, message.resume.threadId))
+        )
+          return yield* gone("its state file is not on the disk");
         yield* installSettings(agent, message.instructions, message.skills);
         yield* installStyle(
           agent,
@@ -95,7 +125,19 @@ export class Controller {
         );
         const ready = yield* runner
           .start({ SCOTTY_HATCH: message.hatch }, message.resume?.threadId)
-          .pipe(Scope.provide(scope));
+          .pipe(
+            Effect.mapError((error) =>
+              disk !== undefined && error.unresumable === true ? gone(error.message) : error,
+            ),
+            Scope.provide(scope),
+          );
+        if (keepsDisk())
+          yield* writeMarker({
+            session: session(),
+            branch: message.branch,
+            base: workspace.commit,
+            thread: ready.session,
+          });
         return {
           base: message.base,
           branch: message.branch,
@@ -144,6 +186,18 @@ export class Controller {
         message.gen,
       );
     });
+  }
+
+  // On SIGTERM the agent ends its turn and exits before the place's grace runs out, so the
+  // thread file on the disk is closed.
+  shutdown(): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const runner = this.runner;
+      const actions = this.actions;
+      if (runner !== undefined && actions !== undefined)
+        yield* actions.run(runner.interrupt("shutdown")).pipe(Effect.ignore);
+      if (this.scope !== undefined) yield* Scope.close(this.scope, Exit.void);
+    }).pipe(Effect.timeout(shutdownBudget), Effect.ignore);
   }
 
   private request(

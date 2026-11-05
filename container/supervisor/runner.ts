@@ -14,6 +14,9 @@ export type Delivered = Omit<Extract<Output, { type: "delivered" }>, "type">;
 export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
   code: Schema.String,
   message: Schema.String,
+  // The agent answered that it can't resume the thread from its files: a thread gone from the
+  // disk, not a blip such as a timeout or an exit.
+  unresumable: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 export interface Runner {

@@ -22,7 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
        @anthropic-ai/claude-agent-sdk-linux-x64@0.3.284 \
     && useradd --create-home --home-dir /home/scotty scotty \
     && echo "scotty ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/scotty && chmod 0440 /etc/sudoers.d/scotty \
-    && mkdir /workspace && chown scotty:scotty /workspace
+    && mkdir /workspace && chown scotty:scotty /workspace \
+    && mkdir -m 700 /var/lib/scotty /run/scotty && chown scotty:scotty /var/lib/scotty /run/scotty
 # The e2e fixture repository (fixtureRepo in protocol/supervisor.ts): main and automation-base. It is
 # owned by scotty because git won't serve a repository owned by another user.
 # Pushes to it skip the Worker's refs/heads/scotty/* check; it lives only as long as the container.

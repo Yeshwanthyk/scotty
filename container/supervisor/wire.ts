@@ -3,6 +3,7 @@ import {
   FromSupervisor,
   type FromSupervisorMessage,
   supervisorVersion,
+  type Workspace,
 } from "../../protocol/supervisor.js";
 
 type WithoutEnvelope<T> = T extends { gen: number; n: number } ? Omit<T, "gen" | "n"> : never;
@@ -13,13 +14,16 @@ class WireError extends Schema.TaggedError<WireError>()("WireError", {
 type Wire = {
   readonly gen: number | undefined;
   readonly boot: string;
+  // The marker the disk held when this supervisor started; every hello carries it.
+  readonly workspace: Workspace | undefined;
   readonly next: number;
   readonly acknowledged: number;
   readonly outbox: readonly FromSupervisorMessage[];
 };
-export const initialWire = (boot: string): Wire => ({
+export const initialWire = (boot: string, workspace: Workspace | undefined): Wire => ({
   gen: undefined,
   boot,
+  workspace,
   next: 1,
   acknowledged: 0,
   outbox: [],
@@ -66,6 +70,7 @@ export function dial(
     n: 1,
     version: supervisorVersion,
     boot: state.boot,
+    ...(state.workspace === undefined ? {} : { workspace: state.workspace }),
   };
   const initialized: Wire =
     state.next === 1 ? { ...state, gen, next: 2, outbox: [greeting] } : { ...state, gen };

@@ -1,14 +1,20 @@
 import { Controller } from "./controller.js";
+import { exit } from "./runtime.js";
 import { serve } from "./socket.js";
 
-function main(): void {
+async function main(): Promise<void> {
   const controller = new Controller();
   controller.bind(
-    serve((message) => controller.receive(message), {
+    await serve((message) => controller.receive(message), {
       save: (gen) => controller.save(gen),
       load: (tar) => controller.load(tar),
       skills: (commit, tarball) => controller.skills(commit, tarball),
+      shutdown: controller.shutdown(),
     }),
   );
 }
-main();
+// A boot that can't load the key or read the disk exits, so the place sees the container stop.
+main().catch((error: unknown) => {
+  console.error("supervisor boot failed:", error instanceof Error ? error.message : String(error));
+  exit(1);
+});

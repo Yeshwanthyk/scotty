@@ -2,12 +2,20 @@ import { Effect, FileSystem } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { Config } from "../../runner.js";
 import { AgentError } from "../../runner.js";
-import { processEnv } from "../../runtime.js";
+import { keepsDisk, notTmpfs, onTmpfs } from "../../place.js";
+import { processEnv, runDir } from "../../runtime.js";
 
 // JSON basic-string escapes also satisfy TOML except for DEL (U+007F).
 // The agent schema rejects lone surrogates in every string written to this config.
 export const toml = (value: string) => JSON.stringify(value).replace(/\u007f/g, "\\u007f");
+// What Scotty saves and installs: rollouts and instructions, on the disk.
 export const codexHome = () => processEnv("SCOTTY_CODEX_HOME") || "/home/scotty/.codex";
+// Where a place keeps the disk, Codex's CODEX_HOME is on the tmpfs, so config.toml with the
+// access token, and anything Codex rewrites beside it, never rests on a paused disk. Its sessions
+// and instructions link back to codexHome, so rollouts stay on the disk. On Cloudflare the disk
+// goes with the container, and CODEX_HOME is codexHome itself.
+const runtimeHome = `${runDir}/codex`;
+const kept = ["sessions", "AGENTS.md"];
 
 const writeConfig = (config: Extract<Config, { kind: "codex"; token: string }>, home: string) =>
   Effect.gen(function* () {
@@ -17,6 +25,8 @@ const writeConfig = (config: Extract<Config, { kind: "codex"; token: string }>, 
     });
     if (url.protocol !== "https:")
       return yield* new AgentError({ code: "config", message: "invalid provider settings" });
+    if (keepsDisk() && !(yield* onTmpfs))
+      return yield* new AgentError({ code: "config", message: notTmpfs });
     const fs = yield* FileSystem.FileSystem;
     yield* fs
       .writeFileString(
@@ -45,14 +55,20 @@ export const launchCodex = (
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const home = codexHome();
-    yield* fs
-      .makeDirectory(home, { recursive: true, mode: 0o700 })
-      .pipe(
-        Effect.mapError(
-          () => new AgentError({ code: "config", message: "could not create Codex home" }),
-        ),
-      );
+    const home = keepsDisk() ? runtimeHome : codexHome();
+    yield* Effect.gen(function* () {
+      yield* fs.makeDirectory(home, { recursive: true, mode: 0o700 });
+      if (home === codexHome()) return;
+      yield* fs.makeDirectory(`${codexHome()}/sessions`, { recursive: true, mode: 0o700 });
+      for (const name of kept) {
+        yield* fs.remove(`${home}/${name}`, { force: true });
+        yield* fs.symlink(`${codexHome()}/${name}`, `${home}/${name}`);
+      }
+    }).pipe(
+      Effect.mapError(
+        () => new AgentError({ code: "config", message: "could not create Codex home" }),
+      ),
+    );
     if (!("scripted" in config)) yield* writeConfig(config, home);
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     return yield* spawner
