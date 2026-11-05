@@ -240,7 +240,12 @@ describe("place lifecycle", () => {
     let state = run([resumed], rested(false));
     expect(command(state, resumed)).toEqual({ kind: "resume", gen: 2, handle });
     state = run([make(12, "place.gone", { handle })], state);
-    expect(state).toMatchObject({ phase: "stopped", stop: { reason: "gone" }, place: undefined });
+    expect(state).toMatchObject({
+      phase: "stopped",
+      stop: { reason: "gone" },
+      place: undefined,
+      lostDisk: true,
+    });
     // With no machine and no save, a resume or a prompt only says why it can't wake.
     const again = make(13, "resume.requested");
     state = run([again], state);
@@ -256,6 +261,17 @@ describe("place lifecycle", () => {
     expect(state.phase).toBe("stopped");
     expect(state.requests.find((item) => item.req === "p")?.status).toBe("stale");
     expect(command(state, prompt)).toBeUndefined();
+  });
+
+  it("starts clean on a new machine when a pause ended the old one and nothing was saved", () => {
+    // Cloudflare: the pause is the container's end, answered gone; its disk was never kept.
+    const stop = make(9, "container.stopped", { gen: 1, reason: "user" });
+    let state = run([stop, make(10, "place.gone", { handle })], running(false));
+    expect(state).toMatchObject({ phase: "stopped", lostDisk: false, place: undefined });
+    const resumed = make(11, "resume.requested");
+    state = run([resumed], state);
+    expect(state).toMatchObject({ phase: "provisioning", gen: 2, commit: "abc", saved: false });
+    expect(command(state, resumed)).toEqual({ kind: "create", gen: 2, remove: handle });
   });
 
   it("removes a kept machine of another size before making one at the new size", () => {

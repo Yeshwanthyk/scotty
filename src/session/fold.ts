@@ -1,7 +1,7 @@
 import { shouldAck } from "./ack.js";
 import type { SessionEvent } from "./events.js";
 import { deadlines, has, remove, addOnce, reqOp, requestFromOp, idleWindow } from "./deadlines.js";
-import { defaultSize, type Size } from "../places/place.js";
+import { defaultPlace, defaultSize, type Size } from "../places/place.js";
 import { firstReq, live, type Request, type State } from "./state.js";
 import { threadGone } from "../../protocol/supervisor.js";
 export { initial } from "./state.js";
@@ -110,10 +110,11 @@ const saved = (state: State, next: State, at: number): State => {
     : settled;
 };
 
-// A wake needs somewhere to pick the session up: its machine, its save, or a session that never
-// had a workspace. Otherwise it stops gone and is never reported resumed.
+// A wake needs somewhere to pick the session up: its machine, its save, a session that never
+// had a workspace, or one whose disk was never kept and so can start clean. A session whose
+// rested disk was lost with nothing saved stops gone and is never reported resumed.
 const wakeable = (state: State): boolean =>
-  state.place !== undefined || state.commit === undefined || state.saved;
+  state.place !== undefined || state.commit === undefined || state.saved || !state.lostDisk;
 
 // A kept machine of another size can't serve this one; it is removed before the next create.
 const fitted = (state: State): State =>
@@ -161,9 +162,14 @@ const resume = (state: State, at: number): State => {
 // The place answered that the machine is gone. A wake waiting on it makes a new one, or stops
 // gone when nothing could restore the session.
 const placeGone = (state: State, at: number, handle: string): State => {
-  if (state.place?.handle !== handle) return state;
+  const place = state.place;
+  if (place?.handle !== handle) return state;
+  // The machine had rested with the disk: paused, or being woken for a later generation. One
+  // still pausing (Cloudflare's pause is its end) never kept it.
+  const rested = place.status === "paused" || (place.status === "live" && place.gen !== state.gen);
   const after: State = {
     ...state,
+    lostDisk: state.lostDisk || rested,
     place: undefined,
     gone: { handle, seq: state.lastSeq },
     pending: remove(state.pending, "pause"),
@@ -723,18 +729,21 @@ export function startStep(
     readonly repo: string;
     readonly agent: string;
     readonly size?: typeof Size.Type;
+    // Plain text like `agent`: a name no place answers to is a conflict, not a decode error.
+    readonly place?: string;
     readonly prompt: string;
   },
 ): "create" | "prompt" | "duplicate" | "unavailable" | "conflict" {
   const created = state.created;
   if (created === undefined) return "create";
-  if (
-    created.repo !== input.repo ||
-    created.agentKind !== input.agent ||
-    (input.size !== undefined && (created.size ?? defaultSize) !== input.size)
-  )
-    return "conflict";
-  if (created.req === input.req) return created.prompt === input.prompt ? "duplicate" : "conflict";
+  if (created.repo !== input.repo || created.agentKind !== input.agent) return "conflict";
+  // A retried create must name what the first did; a steer by session key joins at its size.
+  if (created.req === input.req)
+    return created.prompt === input.prompt &&
+      (input.size === undefined || (created.size ?? defaultSize) === input.size) &&
+      (input.place === undefined || (created.place ?? defaultPlace) === input.place)
+      ? "duplicate"
+      : "conflict";
   const seen = state.requests.find((item) => item.req === input.req);
   if (seen === undefined) return "prompt";
   if (seen.kind !== "prompt" || seen.text !== input.prompt) return "conflict";

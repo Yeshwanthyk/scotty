@@ -84,6 +84,9 @@ export type State = {
   readonly gone: { readonly handle: string; readonly seq: number } | undefined;
   // A save of this session reached R2.
   readonly saved: boolean;
+  // A machine that had rested with the session's disk was lost. A place that never keeps a disk
+  // (Cloudflare) never sets it: there a wake with no save starts clean, as it always has.
+  readonly lostDisk: boolean;
   // This generation's machine kept the session's disk, and its hello said so.
   readonly fromDisk: boolean;
   readonly timings: Timings | undefined;
@@ -132,6 +135,7 @@ export const initial: State = {
   place: undefined,
   gone: undefined,
   saved: false,
+  lostDisk: false,
   fromDisk: false,
   timings: undefined,
 };

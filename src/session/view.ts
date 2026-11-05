@@ -3,6 +3,7 @@ import { fold, initial, type State } from "./fold.js";
 import * as claude from "./agents/claude.js";
 import * as codex from "./agents/codex.js";
 import type { TurnItems } from "./items.js";
+import { defaultPlace } from "../places/place.js";
 
 // Each agent reads its own events; nothing else here knows their format.
 const agents = { codex, claude };
@@ -67,7 +68,7 @@ export function sessionView(id: string, state: State) {
       prompt: promptPreview(created?.prompt ?? ""),
       agentKind: created?.agentKind ?? "codex",
       origin: created?.origin ?? null,
-      place: created?.place ?? ("cloudflare" as const),
+      place: created?.place ?? defaultPlace,
       size: state.size,
       createdAt: new Date(created?.at ?? 0).toISOString(),
       activeAt: new Date(state.activeAt || (created?.at ?? 0)).toISOString(),

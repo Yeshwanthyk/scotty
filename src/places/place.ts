@@ -2,6 +2,8 @@ import { Schema } from "effect";
 import type { Effect } from "effect";
 
 export const PlaceKind = Schema.Literals(["cloudflare"]);
+// A session that names no place, and every log written before sessions named one, runs here.
+export const defaultPlace: typeof PlaceKind.Type = "cloudflare";
 // The Cloudflare instance types a session may ask for (owner, 2026-10-19). `lite`, `basic` and
 // custom sizes are refused; work bigger than `standard-4` goes to a runner.
 export const Size = Schema.Literals(["standard-1", "standard-2", "standard-3", "standard-4"]);
@@ -53,6 +55,11 @@ export interface PortResponse {
 
 /** Plain HTTP and WebSocket to one port; all any place can honestly offer. */
 export interface Port {
+  /**
+   * A place should answer with a real `Response`: a caller that hands the result to
+   * `HttpServerResponse.raw` streams its body only when the runtime object is one
+   * (vendor/effect HttpServerResponse.ts, the `Raw` case).
+   */
   readonly fetch: (
     url: string,
     init?: {

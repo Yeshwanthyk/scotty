@@ -114,6 +114,28 @@ describe("saved session event logs", () => {
     expect(state.lastN).toBe(4);
     expect(state.requests.find((r) => r.req === "initial:1")?.status).toBe("delivered");
   });
+  it("replays a Cloudflare session stopped before any save, then resumed on a clean machine", async () => {
+    // Written before places: no place events, so the stop lost no kept disk and resume starts
+    // fresh from the branch, as Cloudflare always has.
+    const file = "2026-11-05-cloudflare-resume-before-save.jsonl";
+    const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");
+    let state = initial;
+    for (const [index, line] of lines.entries()) {
+      const event = decodeLine(line);
+      state = replayLine(state, line, file, index + 1);
+      if (event.seq === 7)
+        expect(state).toMatchObject({ phase: "stopped", saved: false, commit: "a1b2c3" });
+      if (event.seq === 8) {
+        expect(state).toMatchObject({ phase: "provisioning", gen: 2, lostDisk: false });
+        expect(command(state, event)).toMatchObject({ kind: "create", gen: 2 });
+      }
+    }
+    expect(state.phase).toBe("running");
+    expect(state.gen).toBe(2);
+    expect(state.boot).toBe("boot-b");
+    expect(state.agentSession).toBe("thread-2");
+    expect(state.failure).toBeUndefined();
+  });
   it("replays a warm session whose container stopped and ends stopped, not failed", async () => {
     const file = "2026-09-27-warm-after-container-stopped.jsonl";
     const lines = (await readFile(join(logs, file), "utf8")).trim().split("\n");

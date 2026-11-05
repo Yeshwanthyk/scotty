@@ -118,8 +118,16 @@ describe("session fold", () => {
     expect(startStep(state, { ...input, prompt: "other" })).toBe("conflict");
     expect(startStep(state, { ...input, repo: "https://example.org/other" })).toBe("conflict");
     expect(startStep(state, { ...input, req: "steer-1", agent: "claude" })).toBe("conflict");
+    // A retried create must name the size and place the first did, or name none.
+    expect(startStep(state, { ...input, size: "standard-1", place: "cloudflare" })).toBe(
+      "duplicate",
+    );
+    expect(startStep(state, { ...input, size: "standard-3" })).toBe("conflict");
+    expect(startStep(state, { ...input, place: "runner" })).toBe("conflict");
     const steer = { ...input, req: "steer-1", prompt: "more" };
     expect(startStep(state, steer)).toBe("prompt");
+    // A steer by session key joins the session at its own size.
+    expect(startStep(state, { ...steer, size: "standard-3" })).toBe("prompt");
     state = fold(
       state,
       make(6, "prompt.requested", { req: "steer-1", turn: "0", text: "more", images: [] }),
@@ -486,16 +494,15 @@ describe("session fold", () => {
   const stoppedWithThread = () =>
     [
       make(6, "agent.ready", { gen: 1, n: 6, agentKind: "codex", session: "thread-1" }),
-      make(7, "save.done", { turn: "0" }),
-      make(8, "container.stopped", { gen: 1 }),
+      make(7, "container.stopped", { gen: 1 }),
     ].reduce(fold, boot());
 
   it("resumes a stopped session on request with a fresh container and the saved thread", () => {
-    const requested = make(9, "resume.requested");
+    const requested = make(8, "resume.requested");
     let state = fold(stoppedWithThread(), requested);
     expect(state).toMatchObject({ phase: "provisioning", gen: 2, lastN: 0, hello: false });
     expect(command(state, requested)).toEqual({ kind: "create", gen: 2 });
-    const greeting = make(10, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" });
+    const greeting = make(9, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" });
     state = fold(state, greeting);
     expect(command(state, greeting)).toMatchObject({
       kind: "start",
@@ -508,7 +515,7 @@ describe("session fold", () => {
   it("resumes at a named size and keeps it until a resume names another", () => {
     const stopped = stoppedWithThread();
     expect(resizeConflict(stopped, "standard-3")).toBeUndefined();
-    const sized = make(9, "resume.requested", { size: "standard-3" });
+    const sized = make(8, "resume.requested", { size: "standard-3" });
     let state = fold(stopped, sized);
     expect(state).toMatchObject({ phase: "provisioning", gen: 2, size: "standard-3" });
     expect(command(state, sized)).toEqual({ kind: "create", gen: 2 });
@@ -516,19 +523,19 @@ describe("session fold", () => {
     expect(resizeConflict(state, "standard-2")).toBe("running");
     expect(resizeConflict(state, "standard-3")).toBeUndefined();
     expect(resizeConflict(state, undefined)).toBeUndefined();
-    expect(fold(state, make(10, "resume.requested", { size: "standard-2" })).size).toBe(
+    expect(fold(state, make(9, "resume.requested", { size: "standard-2" })).size).toBe(
       "standard-3",
     );
     // A later resume without a size, and a steer that resumes, keep it.
-    state = [make(10, "container.stopped", { gen: 2 }), make(11, "resume.requested")].reduce(
+    state = [make(9, "container.stopped", { gen: 2 }), make(10, "resume.requested")].reduce(
       fold,
       state,
     );
     expect(state).toMatchObject({ phase: "provisioning", gen: 3, size: "standard-3" });
-    state = fold(state, make(12, "container.stopped", { gen: 3 }));
+    state = fold(state, make(11, "container.stopped", { gen: 3 }));
     state = fold(
       state,
-      make(13, "prompt.requested", {
+      make(12, "prompt.requested", {
         req: "s1",
         turn: state.currentTurn,
         text: "again",
@@ -545,21 +552,21 @@ describe("session fold", () => {
 
   it("resumes on a steer to a stopped session and resends it once the workspace is ready", () => {
     // The stop interrupted turn 0, so the steer starts turn 1.
-    const stale = make(9, "prompt.requested", { req: "s0", turn: "0", text: "late", images: [] });
+    const stale = make(8, "prompt.requested", { req: "s0", turn: "0", text: "late", images: [] });
     let state = fold(stoppedWithThread(), stale);
     expect(state.requests.find((r) => r.req === "s0")?.status).toBe("stale");
     expect(state.phase).toBe("stopped");
-    const steer = make(10, "prompt.requested", { req: "s1", turn: "1", text: "again", images: [] });
+    const steer = make(9, "prompt.requested", { req: "s1", turn: "1", text: "again", images: [] });
     state = fold(state, steer);
     expect(command(state, steer)).toEqual({ kind: "create", gen: 2 });
     expect(state.requests.find((r) => r.req === "s1")?.status).toBe("pending");
     check(state);
-    state = fold(state, make(11, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" }));
-    const resumed = make(12, "workspace.ready", { gen: 2, n: 2, branch: "main", commit: "abc" });
+    state = fold(state, make(10, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" }));
+    const resumed = make(11, "workspace.ready", { gen: 2, n: 2, branch: "main", commit: "abc" });
     state = fold(state, resumed);
     expect(state.phase).toBe("running");
     expect(state.requests.some((r) => r.req === "initial:2")).toBe(false);
-    expect(state.pending.find((p) => p.op === "req:s1")?.due).toBe(12_000 + deadlines.prompt);
+    expect(state.pending.find((p) => p.op === "req:s1")?.due).toBe(11_000 + deadlines.prompt);
     expect(command(state, resumed)).toEqual({
       kind: "resend",
       gen: 2,
@@ -789,18 +796,10 @@ describe("session fold", () => {
 
   it("resumes a retryable failure and leaves one that is not retryable failed", () => {
     const retryable = make(6, "failed", { phase: "start", code: "start_failed", retryable: true });
-    // A failure before any save has nothing to resume from: it stops gone.
-    expect(fold(fold(boot(), retryable), make(7, "resume.requested"))).toMatchObject({
-      phase: "stopped",
-      stop: { reason: "gone" },
-    });
-    let state = [make(6, "save.done", { turn: "0" }), { ...retryable, seq: 7 }].reduce(
-      fold,
-      boot(),
-    );
+    let state = fold(boot(), retryable);
     expect(state).toMatchObject({ phase: "failed", currentTurn: "1" });
     expect(state.turns.at(-1)).toEqual({ turn: "0", codexTurn: "", state: "interrupted" });
-    const requested = make(8, "resume.requested");
+    const requested = make(7, "resume.requested");
     state = fold(state, requested);
     expect(state).toMatchObject({ phase: "provisioning", gen: 2, failure: undefined });
     expect(command(state, requested)).toEqual({ kind: "create", gen: 2 });

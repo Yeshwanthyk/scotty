@@ -1,5 +1,11 @@
 import { cloudflarePlace } from "../places/cloudflare.js";
-import type { Exit as MachineExit, Place, PlaceKind, Size } from "../places/place.js";
+import {
+  defaultPlace,
+  type Exit as MachineExit,
+  type Place,
+  type PlaceKind,
+  type Size,
+} from "../places/place.js";
 import { SqliteClient } from "@effect/sql-sqlite-do";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy";
@@ -113,7 +119,7 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
         cloudflare: cloudflarePlace(container, storage.raw.exports),
       } satisfies Record<typeof PlaceKind.Type, Place>;
       // Logs written before `created.place` ran on Cloudflare.
-      const where = () => places[log.state.created?.place ?? "cloudflare"];
+      const where = () => places[log.state.created?.place ?? defaultPlace];
       // The session's machine at its place; logs written before places kept handles have none.
       class NoMachine extends Schema.TaggedError<NoMachine>()("NoMachine", {}) {}
       const port = (n: number) =>

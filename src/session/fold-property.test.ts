@@ -331,6 +331,21 @@ it.prop(
           ).toBe(true);
         if (!live(state)) expect(state.place?.status).not.toBe("live");
         if (state.fromDisk && !before.fromDisk) bump("woken from disk");
+        // A rested disk lost with nothing saved: a prompt can't wake the session either.
+        if (
+          event.kind === "prompt.requested" &&
+          before.phase === "stopped" &&
+          event.turn === before.currentTurn &&
+          before.lostDisk &&
+          before.place === undefined &&
+          !before.requests.some((r) => r.req === event.req) &&
+          !before.saved &&
+          before.commit !== undefined
+        ) {
+          expect(state.phase).toBe("stopped");
+          expect(state.requests.find((r) => r.req === event.req)?.status).toBe("stale");
+          bump("resume with nothing to wake");
+        }
         if (state.stop?.reason === "stalled" && live(before)) bump("stalled");
         if (event.kind === "sup.hello" && state.connected && !before.connected)
           bump(before.ready ? "reconnect ready" : "hello before ready");

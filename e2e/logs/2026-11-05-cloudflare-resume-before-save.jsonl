@@ -1,0 +1,13 @@
+{"seq":1,"at":1793000000000,"kind":"created","src":"api","agentKind":"codex","repo":"https://example.org/repo","baseBranch":"main","branch":"scotty/session-1","title":"test","prompt":"Describe this repository","image":"default"}
+{"seq":2,"at":1793000000000,"kind":"container.start","src":"session","gen":1}
+{"seq":3,"at":1793000003000,"kind":"sup.hello","src":"supervisor","gen":1,"n":1,"version":"1","boot":"boot-a"}
+{"seq":4,"at":1793000005000,"kind":"workspace.ready","src":"supervisor","gen":1,"n":2,"base":"main","branch":"scotty/session-1","commit":"a1b2c3"}
+{"seq":5,"at":1793000005000,"kind":"agent.ready","src":"supervisor","gen":1,"n":3,"agentKind":"codex","session":"thread-1"}
+{"seq":6,"at":1793000006000,"kind":"prompt.delivered","src":"supervisor","gen":1,"n":4,"req":"initial:1"}
+{"seq":7,"at":1793000060000,"kind":"container.stopped","src":"session","gen":1,"reason":"user"}
+{"seq":8,"at":1793000120000,"kind":"resume.requested","src":"api"}
+{"seq":9,"at":1793000123000,"kind":"sup.hello","src":"supervisor","gen":2,"n":1,"version":"1","boot":"boot-b"}
+{"seq":10,"at":1793000125000,"kind":"workspace.ready","src":"supervisor","gen":2,"n":2,"base":"main","branch":"scotty/session-1","commit":"a1b2c3"}
+{"seq":11,"at":1793000125000,"kind":"agent.ready","src":"supervisor","gen":2,"n":3,"agentKind":"codex","session":"thread-2"}
+{"seq":12,"at":1793000126000,"kind":"prompt.delivered","src":"supervisor","gen":2,"n":4,"req":"initial:2"}
+{"seq":13,"at":1793000140000,"kind":"turn.ended","src":"supervisor","gen":2,"n":5,"turn":"1","codexTurn":"turn-2","state":"completed"}
