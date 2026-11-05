@@ -10,16 +10,16 @@ export const deadlines = {
   prompt: 30_000,
   interrupt: 30_000,
   save: 60_000,
-  // Re-watches a running container; shorter than the container's inactivity timeout, so the alarm
-  // wakes an evicted Session DO before Cloudflare stops the container.
+  // Re-watches a running machine; shorter than a Cloudflare container's inactivity timeout
+  // (src/places/cloudflare.ts), so the alarm wakes an evicted Session DO before Cloudflare stops it.
   watch: 600_000,
   // A running session with no open turn sleeps after this; a create may ask for less.
   idle: 600_000,
   // An open turn with no agent output this long is stuck: it is interrupted, then stopped.
   stalled: 1_800_000,
+  // A pause unanswered this long asks the place for the machine's status.
+  pause: 60_000,
 } as const;
-// How long a container outlives its evicted Session DO.
-export const inactivityTimeout = 900_000;
 
 export type Op = TimeoutOp;
 export const reqOp = (req: string): `req:${string}` => `req:${req}`;

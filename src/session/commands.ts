@@ -1,7 +1,7 @@
 import type { AgentKind, SessionEvent } from "./events.js";
 import type { State, Request } from "./fold.js";
 import { ackRecorded } from "./ack.js";
-import { firstReq } from "./state.js";
+import { firstReq, live } from "./state.js";
 
 type Resend =
   | { readonly req: string; readonly kind: "prompt"; readonly turn: string; readonly text: string }
@@ -13,8 +13,21 @@ const toResend = (request: Request): Resend =>
     : { req: request.req, kind: "interrupt", turn: request.turn };
 
 export type Command =
-  // fresh replaces a container left from an older generation.
-  | { readonly kind: "container.start"; readonly gen: number; readonly fresh?: true }
+  // Makes the machine for `gen`, after removing `remove`, a handle gone or let go.
+  | { readonly kind: "create"; readonly gen: number; readonly remove?: string }
+  // Wakes the session's rested machine for `gen`.
+  | { readonly kind: "resume"; readonly gen: number; readonly handle: string }
+  // Reaches the supervisor on the machine `gen` already has.
+  | { readonly kind: "connect"; readonly gen: number }
+  // A stop: pause or remove the machine; both, and a stop with no machine, give back the
+  // session's running slot.
+  | { readonly kind: "pause"; readonly handle: string }
+  | { readonly kind: "remove"; readonly handle: string }
+  | { readonly kind: "release" }
+  // Asks the place about a pause it hasn't answered.
+  | { readonly kind: "check"; readonly handle: string }
+  // A second machine the session can't keep.
+  | { readonly kind: "discard"; readonly handle: string }
   | { readonly kind: "dial"; readonly gen: number; readonly after: number }
   | {
       readonly kind: "start";
@@ -25,6 +38,8 @@ export type Command =
       readonly agentKind: typeof AgentKind.Type;
       readonly scripted?: true;
       readonly resume?: { readonly threadId: string; readonly commit: string };
+      // The machine kept the session's disk: nothing is restored from the save.
+      readonly fromDisk?: true;
     }
   | {
       readonly kind: "resend";
@@ -34,7 +49,6 @@ export type Command =
   | { readonly kind: "ack"; readonly gen: number; readonly ack: number }
   | { readonly kind: "prompt"; readonly req: string; readonly turn: string; readonly text: string }
   | { readonly kind: "interrupt"; readonly req: string }
-  | { readonly kind: "destroy" }
   | { readonly kind: "watch"; readonly gen: number }
   | { readonly kind: "idle"; readonly gen: number; readonly seq: number }
   | { readonly kind: "save"; readonly gen: number; readonly turn: string; readonly ack: number };
@@ -45,26 +59,65 @@ const ackFor = (
 ): Command | undefined =>
   ackRecorded(state, output) ? { kind: "ack", gen: output.gen, ack: output.n } : undefined;
 
+// What a wake at `gen` asks of the place: a new machine, the rested one woken, or the one it
+// already has reached. A machine still pausing is woken once its place answers.
+const wake = (state: State, gen: number): Command | undefined => {
+  const place = state.place;
+  if (place === undefined)
+    return {
+      kind: "create",
+      gen,
+      ...(state.gone === undefined ? {} : { remove: state.gone.handle }),
+    };
+  if (place.status === "pausing") return undefined;
+  return place.status === "live" && place.gen === gen
+    ? { kind: "connect", gen }
+    : { kind: "resume", gen, handle: place.handle };
+};
+
+// A stop's command: the machine paused or removed, or only the slot given back.
+const stopping = (state: State, seq: number): Command => {
+  if (state.place?.status === "pausing" && state.place.seq === seq)
+    return { kind: "pause", handle: state.place.handle };
+  return state.gone?.seq === seq
+    ? { kind: "remove", handle: state.gone.handle }
+    : { kind: "release" };
+};
+
 export function command(state: State, event: SessionEvent): Command | undefined {
   if (state.lastSeq !== event.seq) return undefined;
-  // Ending a session, stopped or failed, destroys its container: a start that failed may still
-  // have placed one.
-  if (state.phase === "stopped" || state.phase === "failed")
-    return state.stopSeq === event.seq ? { kind: "destroy" } : undefined;
+  if (!live(state) && state.stopSeq === event.seq) return stopping(state, event.seq);
   switch (event.kind) {
-    case "resume.requested":
-      return state.gen !== undefined && state.startSeq === event.seq
-        ? { kind: "container.start", gen: state.gen, fresh: true }
+    case "place.created":
+      if (state.place?.handle !== event.handle) return { kind: "discard", handle: event.handle };
+      return state.place.status === "pausing" && state.place.seq === event.seq
+        ? { kind: "pause", handle: event.handle }
         : undefined;
-    case "container.start":
-      return state.gen === event.gen && state.startSeq === event.seq
-        ? { kind: "container.start", gen: event.gen }
+    // A wake that waited for the machine goes on: the paused one woken, a gone one replaced.
+    case "place.paused":
+    case "place.gone":
+      return live(state) &&
+        state.gen !== undefined &&
+        !state.hello &&
+        (state.place?.seq === event.seq || state.gone?.seq === event.seq)
+        ? wake(state, state.gen)
         : undefined;
+    case "timeout":
+      if (event.op === "pause")
+        return state.place?.status === "pausing" && state.place.seq === event.seq
+          ? { kind: "check", handle: state.place.handle }
+          : undefined;
+  }
+  if (!live(state)) return undefined;
+  // Every wake begins a generation: a resume, a prompt to a stopped session, a first start, or a
+  // woken machine found not to be the session's.
+  if (state.gen !== undefined && state.startSeq === event.seq) return wake(state, state.gen);
+  switch (event.kind) {
     case "sup.redial":
       return state.gen === event.gen
         ? state.hello
           ? { kind: "dial", gen: event.gen, after: state.lastN }
-          : { kind: "container.start", gen: event.gen }
+          : wake(state, event.gen)
         : undefined;
     case "timeout":
       if (event.op === "watch" && state.gen !== undefined) return { kind: "watch", gen: state.gen };
@@ -109,6 +162,7 @@ export function command(state: State, event: SessionEvent): Command | undefined 
             ...(state.agentSession !== undefined && state.commit !== undefined
               ? { resume: { threadId: state.agentSession, commit: state.commit } }
               : {}),
+            ...(state.fromDisk ? { fromDisk: true } : {}),
           };
     case "workspace.ready": {
       const request = state.requests.find(
@@ -132,8 +186,6 @@ export function command(state: State, event: SessionEvent): Command | undefined 
         : ackFor(state, event);
     }
     case "prompt.requested":
-      if (state.gen !== undefined && state.startSeq === event.seq)
-        return { kind: "container.start", gen: state.gen, fresh: true };
       return state.ready &&
         state.connected &&
         state.requests.some(

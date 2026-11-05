@@ -62,7 +62,7 @@ npm run --silent scotty -- doctor
 | S6   | Scotty inside sessions          | none           | todo     |
 | S7   | Slack bot                       | none           | todo     |
 | S10  | Approvals for MCP writes        | none           | todo     |
-| L1   | Place lifecycle on the contract | none           | todo     |
+| L1   | Place lifecycle on the contract | none           | e2e open |
 | W1   | Wake from disk                  | none           | todo     |
 | E1   | Egress gateway                  | none           | todo     |
 | E2   | Place, key and size on entry    | none           | todo     |
@@ -124,6 +124,7 @@ npm run --silent scotty -- doctor
 - **Owns:** `src/session/`, `src/places/`.
 - **In scope:** the `Place` contract and registry; `cloudflarePlace` implements it and the Session DO reaches the container only through it (`monitor()`, `setInactivityTimeout`, the `cf.*` types in `Port` and the workerd WebSocket move behind it); the `place` axis and events `place.created`, `place.paused`, `place.gone`; a stop's command is `pause` or `remove` by reason; the wake order as commands, with `hello.workspace` and the `start` failure of a thread that can't resume folding to `place.gone`; the `pause` deadline; sizes per place; the DO side of the supervisor caller check; timing events for create, hello, workspace ready and first output. Invariants: one handle at most; a new handle only after `gone`; only the place's answer appends `gone`; never resumed without `hello`.
 - **Done when:** fold tests cover create, pause, a lost pause reply, a resume while pausing, resume `gone`, a mismatched workspace, a failed thread resume, a boot change that keeps the handle, and no save; every log in `e2e/logs/` still replays; `e2e core` and `e2e lifecycle` pass unchanged on Cloudflare; `scotty read` shows the start timings.
+- **Notes:** built on `places-lifecycle`; fold tests (`src/session/fold-place.test.ts`, the property test with place events) and every replay pass. Open: `e2e core` and `e2e lifecycle` on Cloudflare, and `scotty read` printing the view's `start` timings (a `cli/` change). Cloudflare keeps the fresh path: a wake with no save starts clean, because a Cloudflare pause never rests a disk; only a session whose rested machine (paused, or live under an older generation) was lost and that has no save stops `gone` (`lostDisk`). A session mid-flight across the deploy has no handle: its surviving container lives until its 900 s inactivity timeout and is destroyed by the next create. To fix before the first place that keeps a disk lands: a failed `remove` is forgotten when `place.created` clears `gone`, which would leak a machine there (Cloudflare's next create replaces the container, so nothing leaks today). The container gets `k` as hex in `SCOTTY_SUPERVISOR_KEY`; the supervisor decodes it to 32 bytes and keeps it from the agent.
 
 ### W1: wake from disk
 

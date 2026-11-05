@@ -11,6 +11,7 @@ import {
   generated,
   hello,
   kinds,
+  make,
   ready,
   start,
 } from "./fold-fixtures.js";
@@ -27,6 +28,13 @@ const hits: Record<string, number> = {};
 const bump = (name: string): void => {
   hits[name] = (hits[name] ?? 0) + 1;
 };
+// What a stop sends: pause the machine it just let rest, remove one it let go, or only free the slot.
+const stopped = (state: State, seq: number) =>
+  state.place?.status === "pausing" && state.place.seq === seq
+    ? { kind: "pause", handle: state.place.handle }
+    : state.gone?.seq === seq
+      ? { kind: "remove", handle: state.gone.handle }
+      : { kind: "release" };
 let shortest = Infinity;
 let longest = 0;
 
@@ -40,6 +48,15 @@ it.prop(
       [],
       [created, start, hello, ready],
       [created, start, hello, ready, delivered],
+      // A machine that holds the session's thread, so a wake can find it on disk.
+      [
+        created,
+        start,
+        make(3, "place.created", { gen: 1, handle: "session-1" }),
+        { ...hello, seq: 4 },
+        { ...ready, seq: 5 },
+        make(6, "agent.ready", { gen: 1, n: 6, agentKind: "codex", session: "thread-1" }),
+      ],
     ]) {
       let state: State = initial;
       let at = 4_000;
@@ -112,7 +129,27 @@ it.prop(
         if ((kind === "created" || kind === "resume.requested") && step.size !== "none")
           fields.size = step.size;
         if (kind === "sup.error" && !step.withReq) delete fields.req;
-        if (kind === "sup.hello") fields.n = 1;
+        if (kind === "sup.hello") {
+          fields.n = 1;
+          // A machine reporting its disk greets the generation that woke it.
+          if (step.disk === "kept" && before.gen !== undefined) fields.gen = before.gen;
+          if (step.disk !== "none")
+            fields.workspace = {
+              session: "session-1",
+              branch: "scotty/session-1",
+              base: step.disk === "kept" ? "abc" : "def",
+              thread: "thread-1",
+            };
+        }
+        if (kind.startsWith("place.")) {
+          fields.handle = step.handle;
+          delete fields.req;
+        }
+        if (kind === "stop") {
+          kind = "container.stopped";
+          fields.reason = "user";
+          delete fields.req;
+        }
         const cap = kind === "cap";
         if (cap) {
           kind = "container.stopped";
@@ -135,8 +172,16 @@ it.prop(
           bump(event.size === undefined ? "created without size" : "created with size");
         }
         if (event.kind === "resume.requested") {
-          const applied = !live(before) && live(state);
+          // A resume is taken by a session at rest that could resume; one with nothing to wake
+          // from stops gone instead of starting.
+          const woke = !live(before) && live(state);
+          const applied =
+            woke ||
+            (!live(before) &&
+              (before.phase === "stopped" || before.failure?.retryable === true) &&
+              state.stop?.reason === "gone");
           if (applied && event.size !== undefined) size = event.size;
+          if (applied && !woke) bump("resume with nothing to wake");
           bump(
             `resume ${applied ? "applied" : "ignored"} ${event.size === undefined ? "without" : "with"} size`,
           );
@@ -154,12 +199,19 @@ it.prop(
         if (before.created !== undefined && live(before)) expect(state.size).toBe(before.size);
         // Output numbering restarts with each resumed generation.
         if (state.gen === before.gen) expect(state.lastN).toBeGreaterThanOrEqual(before.lastN);
-        if (!live(before) && !live(state)) expect(issued).toBeUndefined();
+        // A session at rest only settles its machine: a late create, a pause the place has not
+        // answered, or an owner's stop of a failed session.
+        if (!live(before) && !live(state))
+          expect([undefined, "pause", "remove", "check", "discard", "release"]).toContain(
+            issued?.kind,
+          );
+        if (!live(before) && !live(state) && issued?.kind === "release")
+          expect(event.kind).toBe("container.stopped");
         if (cap) {
           if (live(before) && before.gen === gen) {
             expect(state).toMatchObject({ phase: "stopped", stop: { reason: "cap", max: 2 } });
-            expect(state.pending).toEqual([]);
-            expect(issued).toEqual({ kind: "destroy" });
+            expect(state.pending.filter((item) => item.op !== "pause")).toEqual([]);
+            expect(issued).toEqual(stopped(state, event.seq));
             capped.add(gen);
             bump(before.hello ? "cap" : "cap at start");
           } else expect(state).toEqual({ ...before, lastSeq: event.seq });
@@ -169,7 +221,19 @@ it.prop(
           bump("output after cap");
         }
         if (!live(before) && live(state)) {
-          expect(issued).toEqual({ kind: "container.start", gen: state.gen, fresh: true });
+          // A wake makes a machine, wakes the rested one, or waits for one still pausing.
+          const place = state.place;
+          expect(issued).toEqual(
+            place === undefined
+              ? {
+                  kind: "create",
+                  gen: state.gen,
+                  ...(state.gone === undefined ? {} : { remove: state.gone.handle }),
+                }
+              : place.status === "pausing"
+                ? undefined
+                : { kind: "resume", gen: state.gen, handle: place.handle },
+          );
           bump("resume");
         }
         if (supervisor.has(event.kind) && "n" in event) {
@@ -200,7 +264,9 @@ it.prop(
             before.boot !== event.boot
           ) {
             expect(state).toMatchObject({ phase: "stopped", stop: { reason: "deploy" } });
-            expect(issued).toEqual({ kind: "destroy" });
+            // A boot change pauses the machine: the place keeps it.
+            expect(issued).toEqual(stopped(state, event.seq));
+            expect(issued?.kind).not.toBe("remove");
             bump("boot changed");
           } else if (before.connected) {
             expect(state).toEqual({ ...before, lastSeq: event.seq });
@@ -253,6 +319,33 @@ it.prop(
         if (event.kind === "turn.ended" && state.turns.length > before.turns.length)
           bump("turn advanced");
         if (issued?.kind === "idle") bump("idle");
+        if (issued !== undefined && issued.kind !== "save" && issued.kind !== "ack")
+          bump(`issued ${issued.kind}`);
+        // Only the place's own answer lets a machine go, and a stop never leaves one live.
+        if (state.place === undefined && before.place !== undefined)
+          expect(
+            event.kind === "place.gone" ||
+              event.kind === "sup.hello" ||
+              event.kind === "sup.error" ||
+              state.gone?.handle === before.place.handle,
+          ).toBe(true);
+        if (!live(state)) expect(state.place?.status).not.toBe("live");
+        if (state.fromDisk && !before.fromDisk) bump("woken from disk");
+        // A rested disk lost with nothing saved: a prompt can't wake the session either.
+        if (
+          event.kind === "prompt.requested" &&
+          before.phase === "stopped" &&
+          event.turn === before.currentTurn &&
+          before.lostDisk &&
+          before.place === undefined &&
+          !before.requests.some((r) => r.req === event.req) &&
+          !before.saved &&
+          before.commit !== undefined
+        ) {
+          expect(state.phase).toBe("stopped");
+          expect(state.requests.find((r) => r.req === event.req)?.status).toBe("stale");
+          bump("resume with nothing to wake");
+        }
         if (state.stop?.reason === "stalled" && live(before)) bump("stalled");
         if (event.kind === "sup.hello" && state.connected && !before.connected)
           bump(before.ready ? "reconnect ready" : "hello before ready");
@@ -292,4 +385,8 @@ it("covers generated paths", () => {
   expect(hits["resume applied with size"]).toBeGreaterThan(0);
   expect(hits["resume applied without size"]).toBeGreaterThan(0);
   expect(hits["resume ignored with size"]).toBeGreaterThan(0);
+  expect(hits["resume with nothing to wake"]).toBeGreaterThan(0);
+  for (const kind of ["create", "resume", "connect", "pause", "remove", "check", "discard"])
+    expect(hits[`issued ${kind}`], kind).toBeGreaterThan(0);
+  expect(hits["woken from disk"]).toBeGreaterThan(0);
 });

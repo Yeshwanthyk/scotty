@@ -48,8 +48,13 @@ export function sessionStats(events: readonly SessionEvent[]): SessionStats | nu
     const before = state;
     state = fold(before, event);
     const gen = state.gen;
-    if (state.startSeq === event.seq && before.startSeq !== event.seq && gen !== undefined)
+    if (state.startSeq === event.seq && before.startSeq !== event.seq && gen !== undefined) {
+      // A start that replaces a machine mid-run, whose disk wasn't the session's, ends that run.
+      const last = runs.at(-1);
+      if (last !== undefined && last.end === null)
+        runs[runs.length - 1] = { ...last, end: event.at };
       runs.push({ gen, size: state.size, start: event.at, end: null });
+    }
     const open = runs.at(-1);
     if (live(before) && !live(state) && open !== undefined && open.end === null) {
       runs[runs.length - 1] = { ...open, end: event.at };

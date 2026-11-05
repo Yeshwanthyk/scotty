@@ -26,7 +26,17 @@ export const StopReason = Schema.Literals([
   "cap",
 ]);
 export const TimeoutOp = Schema.Union([
-  Schema.Literals(["container", "workspace", "dial", "redial", "save", "watch", "idle", "stalled"]),
+  Schema.Literals([
+    "container",
+    "workspace",
+    "dial",
+    "redial",
+    "save",
+    "watch",
+    "idle",
+    "stalled",
+    "pause",
+  ]),
   Schema.TemplateLiteral(["req:", Schema.String]),
 ]);
 export type TimeoutOp = typeof TimeoutOp.Type;
@@ -74,11 +84,32 @@ export const SessionEvent = Schema.Union([
     idleAfter: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   }),
   Schema.Struct({ ...envelope, kind: Schema.Literal("container.start"), gen: Schema.Natural }),
+  // The place's answers about the session's machine. A handle names a container, sandbox or VM.
+  // `created` answers a create for `gen`; `paused` and `gone` answer a pause, resume or status.
+  Schema.Struct({
+    ...envelope,
+    kind: Schema.Literal("place.created"),
+    gen: Schema.Natural,
+    handle: Schema.String,
+  }),
+  Schema.Struct({ ...envelope, kind: Schema.Literal("place.paused"), handle: Schema.String }),
+  Schema.Struct({ ...envelope, kind: Schema.Literal("place.gone"), handle: Schema.String }),
   Schema.Struct({
     ...fromSupervisor,
     kind: Schema.Literal("sup.hello"),
     version: Schema.String,
     boot: Schema.String,
+    // The marker a kept disk carries: whose workspace it is, the commit its branch was made
+    // from, and the agent's thread. Absent on a new disk and in logs written before places kept
+    // machines.
+    workspace: Schema.optionalKey(
+      Schema.Struct({
+        session: Schema.String,
+        branch: Schema.String,
+        base: Schema.String,
+        thread: Schema.String,
+      }),
+    ),
   }),
   Schema.Struct({
     ...fromSupervisor,

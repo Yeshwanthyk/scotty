@@ -1,6 +1,6 @@
 // Deploys a release to a stage, and removes a stage, with direct Cloudflare API calls. Every
 // resource is found by its name, `scotty-<stage>…`, so nothing is kept between runs.
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
@@ -322,6 +322,8 @@ export const deployStage = (
         ? {}
         : { migrations: { new_tag: "v1", new_sqlite_classes: ["CredsObject", "SessionObject"] } }),
       observability: { enabled: true, logs: { enabled: true, invocation_logs: true } },
+      // The supervisor secret is set once, below, and kept by every later upload.
+      keep_bindings: ["secret_text"],
     };
     const form = new FormData();
     form.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
@@ -331,6 +333,23 @@ export const deployStage = (
       Schema.Struct({ tag: Schema.String }),
       { method: "PUT", body: form },
     );
+
+    // The Session DO derives each session's supervisor key from this secret. It is made here
+    // once per stage, never printed, and changing it would lock out every machine that keeps a
+    // disk, so a deploy only adds it when it is missing.
+    const secrets = yield* Workers.listScriptSecrets
+      .items({ accountId, scriptName: name.script })
+      .pipe(Stream.runCollect);
+    if (![...secrets].some((secret) => secret.name === "SCOTTY_SUPERVISOR_SECRET")) {
+      yield* say("Making the supervisor secret");
+      yield* Workers.putScriptSecret({
+        accountId,
+        scriptName: name.script,
+        name: "SCOTTY_SUPERVISOR_SECRET",
+        text: randomBytes(32).toString("hex"),
+        type: "secret_text",
+      });
+    }
 
     const namespaceId = [...(yield* namespaces(name.script))].find(
       (namespace) => namespace.class === "SessionObject",

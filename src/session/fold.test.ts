@@ -17,7 +17,7 @@ describe("session fold", () => {
   it("provisions from an intent, sends initial prompt after workspace and waits for delivery", () => {
     let state = fold(initial, created);
     state = fold(state, start);
-    expect(command(state, start)).toEqual({ kind: "container.start", gen: 1 });
+    expect(command(state, start)).toEqual({ kind: "create", gen: 1 });
     expect(deadline(state)).toBe(start.at + deadlines.container);
     state = fold(state, hello);
     expect(command(state, hello)).toEqual({
@@ -118,8 +118,16 @@ describe("session fold", () => {
     expect(startStep(state, { ...input, prompt: "other" })).toBe("conflict");
     expect(startStep(state, { ...input, repo: "https://example.org/other" })).toBe("conflict");
     expect(startStep(state, { ...input, req: "steer-1", agent: "claude" })).toBe("conflict");
+    // A retried create must name the size and place the first did, or name none.
+    expect(startStep(state, { ...input, size: "standard-1", place: "cloudflare" })).toBe(
+      "duplicate",
+    );
+    expect(startStep(state, { ...input, size: "standard-3" })).toBe("conflict");
+    expect(startStep(state, { ...input, place: "runner" })).toBe("conflict");
     const steer = { ...input, req: "steer-1", prompt: "more" };
     expect(startStep(state, steer)).toBe("prompt");
+    // A steer by session key joins the session at its own size.
+    expect(startStep(state, { ...steer, size: "standard-3" })).toBe("prompt");
     state = fold(
       state,
       make(6, "prompt.requested", { req: "steer-1", turn: "0", text: "more", images: [] }),
@@ -299,7 +307,7 @@ describe("session fold", () => {
     let state = fold(fold(initial, created), start);
     const wake = decodeSessionEvent({ seq: 3, at: 60_000, src: "do", kind: "sup.redial", gen: 1 });
     state = fold(state, wake);
-    expect(command(state, wake)).toEqual({ kind: "container.start", gen: 1 });
+    expect(command(state, wake)).toEqual({ kind: "create", gen: 1 });
     expect(state.pending.find((p) => p.op === "container")?.due).toBe(
       start.at + deadlines.container,
     );
@@ -358,7 +366,7 @@ describe("session fold", () => {
       const timed = fold(item.state, event);
       expect(timed.failure).toEqual({ code: item.code, retryable: true });
       // A start placed after its deadline would otherwise run until the inactivity timeout.
-      expect(command(timed, event)).toEqual({ kind: "destroy" });
+      expect(command(timed, event)).toEqual({ kind: "release" });
       check(timed);
     }
   });
@@ -368,7 +376,7 @@ describe("session fold", () => {
     const error = make(4, "sup.error", { code: "workspace" });
     const failed = fold(started, error);
     expect(failed.phase).toBe("failed");
-    expect(command(failed, error)).toEqual({ kind: "destroy" });
+    expect(command(failed, error)).toEqual({ kind: "release" });
     expect(failed.failure).toEqual({ code: "workspace", retryable: true });
     expect(deadline(failed)).toBeUndefined();
     check(failed);
@@ -387,7 +395,7 @@ describe("session fold", () => {
     const state = fold(closed, timeout);
     expect(state.phase).toBe("stopped");
     expect(state.failure).toBeUndefined();
-    expect(command(state, timeout)).toEqual({ kind: "destroy" });
+    expect(command(state, timeout)).toEqual({ kind: "release" });
     check(state);
   });
 
@@ -397,13 +405,13 @@ describe("session fold", () => {
     expect(state.phase).toBe("stopped");
     expect(state.stop).toEqual({ reason: "cap", max: 2 });
     expect(state.requests.every((r) => r.status !== "pending")).toBe(true);
-    expect(command(state, refused)).toEqual({ kind: "destroy" });
+    expect(command(state, refused)).toEqual({ kind: "release" });
     expect(deadline(state)).toBeUndefined();
     check(state);
     const resume = make(4, "resume.requested");
     const resumed = fold(state, resume);
     expect(resumed).toMatchObject({ phase: "provisioning", gen: 2, stop: undefined });
-    expect(command(resumed, resume)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    expect(command(resumed, resume)).toEqual({ kind: "create", gen: 2 });
     check(resumed);
   });
 
@@ -412,7 +420,7 @@ describe("session fold", () => {
     const state = fold(boot(), stopped);
     expect(state.phase).toBe("stopped");
     expect(state.requests.every((r) => r.status !== "pending")).toBe(true);
-    expect(command(state, stopped)).toEqual({ kind: "destroy" });
+    expect(command(state, stopped)).toEqual({ kind: "release" });
     const late = fold(
       state,
       make(7, "agent.event", { gen: 1, n: 7, agentKind: "codex", event: null }),
@@ -445,7 +453,7 @@ describe("session fold", () => {
     const stopped = make(8, "container.stopped", { gen: 1, reason: "ended", req: "end" });
     const state = fold(ignored, stopped);
     expect(state).toEqual({ ...failed, lastSeq: 8, stopSeq: 8 });
-    expect(command(state, stopped)).toEqual({ kind: "destroy" });
+    expect(command(state, stopped)).toEqual({ kind: "release" });
     const resumed = fold(state, make(9, "resume.requested"));
     expect(resumed).toEqual({ ...state, lastSeq: 9 });
     const prompted = fold(
@@ -493,7 +501,7 @@ describe("session fold", () => {
     const requested = make(8, "resume.requested");
     let state = fold(stoppedWithThread(), requested);
     expect(state).toMatchObject({ phase: "provisioning", gen: 2, lastN: 0, hello: false });
-    expect(command(state, requested)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    expect(command(state, requested)).toEqual({ kind: "create", gen: 2 });
     const greeting = make(9, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" });
     state = fold(state, greeting);
     expect(command(state, greeting)).toMatchObject({
@@ -510,7 +518,7 @@ describe("session fold", () => {
     const sized = make(8, "resume.requested", { size: "standard-3" });
     let state = fold(stopped, sized);
     expect(state).toMatchObject({ phase: "provisioning", gen: 2, size: "standard-3" });
-    expect(command(state, sized)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    expect(command(state, sized)).toEqual({ kind: "create", gen: 2 });
     // A live container never changes size: the API refuses a resize, and the fold ignores one.
     expect(resizeConflict(state, "standard-2")).toBe("running");
     expect(resizeConflict(state, "standard-3")).toBeUndefined();
@@ -550,7 +558,7 @@ describe("session fold", () => {
     expect(state.phase).toBe("stopped");
     const steer = make(9, "prompt.requested", { req: "s1", turn: "1", text: "again", images: [] });
     state = fold(state, steer);
-    expect(command(state, steer)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    expect(command(state, steer)).toEqual({ kind: "create", gen: 2 });
     expect(state.requests.find((r) => r.req === "s1")?.status).toBe("pending");
     check(state);
     state = fold(state, make(10, "sup.hello", { gen: 2, n: 1, version: "v1", boot: "boot-2" }));
@@ -663,7 +671,7 @@ describe("session fold", () => {
     state = fold(state, crashed);
     expect(state.phase).toBe("stopped");
     expect(state.pending).toEqual([]);
-    expect(command(state, crashed)).toEqual({ kind: "destroy" });
+    expect(command(state, crashed)).toEqual({ kind: "release" });
     state = fold(state, make(12, "container.watched", { gen: 1 }));
     expect(state.pending).toEqual([]);
     check(state);
@@ -704,7 +712,7 @@ describe("session fold", () => {
       stop: { reason: "idle" },
       pending: [],
     });
-    expect(command(state, slept)).toEqual({ kind: "destroy" });
+    expect(command(state, slept)).toEqual({ kind: "release" });
     check(state);
     // A steer that lands while the Session DO checks for use keeps the session awake.
     const woke = fold(
@@ -761,7 +769,7 @@ describe("session fold", () => {
     const saved = make(8, "save.done", { turn: "0" });
     ended = fold(ended, saved);
     expect(ended).toMatchObject({ phase: "stopped", stop: { reason: "stalled" }, pending: [] });
-    expect(command(ended, saved)).toEqual({ kind: "destroy" });
+    expect(command(ended, saved)).toEqual({ kind: "release" });
     check(ended);
     // The owner's next turn outlives the stalled turn's save.
     const next = fold(
@@ -782,7 +790,7 @@ describe("session fold", () => {
       currentTurn: "1",
       pending: [],
     });
-    expect(command(state, again)).toEqual({ kind: "destroy" });
+    expect(command(state, again)).toEqual({ kind: "release" });
     check(state);
   });
 
@@ -794,7 +802,7 @@ describe("session fold", () => {
     const requested = make(7, "resume.requested");
     state = fold(state, requested);
     expect(state).toMatchObject({ phase: "provisioning", gen: 2, failure: undefined });
-    expect(command(state, requested)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+    expect(command(state, requested)).toEqual({ kind: "create", gen: 2 });
     check(state);
     const fatal = make(6, "failed", { phase: "start", code: "broken", retryable: false });
     state = fold(fold(boot(), fatal), make(7, "resume.requested"));
