@@ -93,7 +93,6 @@ const program = Effect.gen(function* () {
         `Run \`${envCheck}\` and reply with only the word ready followed by the number it printed.`,
         `run ${envCheck}\nsay ready {{out}}`,
       ),
-      provider: "cloudflare",
     },
   });
   const prefix = `/api/sessions/${session.id}`;

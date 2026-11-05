@@ -89,7 +89,6 @@ const program = Effect.gen(function* () {
       repo: fixtureRepo,
       ...sessionAgent,
       prompt: prompt(`Wait five seconds, then reply with only ${reply}.`, `sleep 5\nsay ${reply}`),
-      provider: "cloudflare",
     },
   });
   const id = session.id;

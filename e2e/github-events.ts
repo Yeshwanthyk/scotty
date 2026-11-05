@@ -103,7 +103,6 @@ export function githubEvents(request: ReturnType<typeof client>) {
           key,
           agent,
           scripted: true,
-          provider: "cloudflare",
         },
       });
       const prefix = `/api/sessions/${session.id}`;

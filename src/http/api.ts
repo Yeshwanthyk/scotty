@@ -68,7 +68,8 @@ const Callback = Schema.Union([
 const callbackCode = Schema.Struct({ code: Schema.String, iss: Schema.optionalKey(Schema.String) });
 const connectionAction = /^\/api\/connections\/([^/]+)\/(connect|callback|policy)$/;
 const connectionPath = /^\/api\/connections\/([^/]+)$/;
-// The length checks come last, so a description annotated on it reaches its JSON Schema.
+// The length checks come last: an annotation lands on the last check, and only these reach JSON
+// Schema, so a description annotated on a RequestId shows to MCP clients.
 export const RequestId = Schema.String.check(
   Schema.makeFilter(
     (id) => id.trim() !== "" && !id.startsWith("initial:") && !id.startsWith("stalled:"),

@@ -192,7 +192,7 @@ export function mcpHandler(
         }),
         key: Schema.optionalKey(RequestId).annotate({
           description:
-            "An idempotency key you choose. new_session repeated with the same key and arguments returns the session the first call made instead of starting another; with other arguments it is an error.",
+            "An idempotency key you choose. new_session repeated with the same key and arguments returns the session the first call made instead of starting another; with other arguments it is an error. Keys share one namespace with every other request id, so use a fresh key for each new session and never reuse one across tools.",
         }),
         // Scotty's own e2e tests run the agent's scripted stand-in.
         scripted: Schema.optionalKey(Schema.Literal(true)).annotate({

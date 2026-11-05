@@ -107,17 +107,39 @@ const program = Effect.gen(function* () {
     });
 
   // 3. A new session answers its prompt, and read_session shows the answer once it stops working.
+  // Repeated with its key and arguments, new_session returns that session and makes no other;
+  // the key with another prompt is a conflict, and an unknown place is refused.
   const first = `MCP-${crypto.randomUUID().slice(0, 8)}`;
-  const created = yield* decode(
-    Created,
-    yield* call("new_session", {
-      repo: fixtureRepo,
-      prompt: prompt(`Reply with only the word ${first}.`, `say ${first}`),
-      ...sessionAgent,
-    }),
-  );
+  const key = `mcp-e2e-${crypto.randomUUID()}`;
+  const args = {
+    repo: fixtureRepo,
+    prompt: prompt(`Reply with only the word ${first}.`, `say ${first}`),
+    ...sessionAgent,
+    key,
+  };
+  const created = yield* decode(Created, yield* call("new_session", args));
   const { id } = created;
   console.log(`Session ${id}`);
+  const repeated = yield* decode(Created, yield* call("new_session", args));
+  yield* check(repeated.id === id, `A repeated new_session made ${repeated.id}, not ${id}`);
+  const matching = yield* decode(Listed, yield* call("list_sessions", { search: first }));
+  yield* check(
+    matching.length === 1 && matching[0]?.id === id,
+    `list_sessions found ${matching.length} sessions for one key`,
+  );
+  const conflict = yield* reply("new_session", { ...args, prompt: `${args.prompt} again` });
+  const conflictText = conflict.content[0]?.type === "text" ? conflict.content[0].text : "";
+  yield* check(
+    conflict.isError === true && conflictText.includes("key_conflict"),
+    `The key with another prompt was not a key_conflict: ${conflictText.slice(0, 300)}`,
+  );
+  const nowhere = yield* reply("new_session", {
+    repo: fixtureRepo,
+    prompt: prompt("Reply with only the word nowhere.", "say nowhere"),
+    ...sessionAgent,
+    place: "nowhere",
+  });
+  yield* check(nowhere.isError === true, "new_session with an unknown place was not refused");
   yield* until(id, (value) => value.turns.at(-1)?.state === "completed" && !value.working).pipe(
     Effect.flatMap((value) =>
       check(value.turns.at(-1)?.assistant.includes(first) === true, "The first answer is missing"),
@@ -157,7 +179,9 @@ const program = Effect.gen(function* () {
   yield* call("stop_session", { id });
   yield* until(id, (value) => value.status === "stopped");
   yield* attempt("close", () => mcp.close());
-  console.log("MCP: signed-out 401, tools listed, new, read, steer, list and stop all worked");
+  console.log(
+    "MCP: signed-out 401, tools listed, new (one session per key, key conflict, unknown place refused), read, steer, list and stop all worked",
+  );
 });
 
 Effect.runPromise(program).catch((error: unknown) => {

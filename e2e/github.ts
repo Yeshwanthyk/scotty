@@ -60,7 +60,6 @@ const program = Effect.gen(function* () {
         `Run exactly: \`${push}\`, then reply with only the word done.`,
         `run ${push}\nsay done`,
       ),
-      provider: "cloudflare",
     },
   });
   const prefix = `/api/sessions/${session.id}`;

@@ -121,7 +121,6 @@ const program = Effect.gen(function* () {
         agent,
         scripted: true,
         prompt: script("GET", "token"),
-        provider: "cloudflare",
       },
     });
     session = created.id;

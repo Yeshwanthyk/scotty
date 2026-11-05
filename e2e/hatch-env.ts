@@ -42,7 +42,6 @@ const program = Effect.gen(function* () {
       repo: process.env.SCOTTY_HATCH_TEST_REPO ?? "",
       prompt:
         "Set up this repo's dev environment, start the dev server, and reply with only its URL.",
-      provider: "cloudflare",
     },
   });
   const prefix = `/api/sessions/${session.id}`;

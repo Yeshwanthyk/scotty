@@ -179,7 +179,6 @@ const program = Effect.gen(function* () {
         repo: fixtureRepo,
         agent,
         scripted: true,
-        provider: "cloudflare",
         prompt: script("tools/list"),
       },
     });
