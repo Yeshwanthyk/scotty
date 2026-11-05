@@ -1,10 +1,13 @@
+import { BunServices } from "@effect/platform-bun";
 import { Effect, Option, Queue, Result, Schema } from "effect";
 import {
+  supervisorAuthHeader,
   type Terminals,
   ToSupervisor,
   type ToSupervisorMessage,
 } from "../../protocol/supervisor.js";
-import { processEnv } from "./runtime.js";
+import { authorized, loadKey } from "./caller.js";
+import { exit, onTerminate, processEnv } from "./runtime.js";
 import {
   closeTerminal,
   decodeSize,
@@ -14,7 +17,7 @@ import {
   terminalInput,
 } from "./terminal.js";
 import { acknowledge, dial, emit, initialWire, type Output } from "./wire.js";
-import type { WorkspaceError } from "./workspace.js";
+import { readMarker, type WorkspaceError } from "./workspace.js";
 
 // A terminal socket carries its size; every other socket is the Session DO's wire.
 interface Peer {
@@ -63,20 +66,28 @@ type Event =
   | { type: "input"; peer: Peer; data: string | Uint8Array }
   | { type: "output"; output: Output; gen?: number };
 
-type Saves = {
+type Host = {
   save: (gen: number) => Effect.Effect<Uint8Array, WorkspaceError>;
   load: (tar: Uint8Array) => Effect.Effect<void, WorkspaceError>;
   skills: (commit: string, tarball: Uint8Array) => Effect.Effect<void, WorkspaceError>;
+  shutdown: Effect.Effect<void>;
 };
 
 // The controller reports a command's outcome on the wire itself; only a defect escapes.
-export const serve = (
+export const serve = async (
   receive: (message: ToSupervisorMessage) => Effect.Effect<void>,
-  saves: Saves,
+  host: Host,
 ) => {
+  // What the disk kept: the caller's key (none on Cloudflare) and the workspace marker.
+  const { key, workspace } = await Effect.runPromise(
+    Effect.all({ key: loadKey, workspace: readMarker }).pipe(Effect.provide(BunServices.layer)),
+  );
+  onTerminate(() => {
+    void Effect.runPromise(host.shutdown).finally(() => exit(0));
+  });
   const queue = Effect.runSync(Queue.unbounded<Event>());
   // The consumer alone owns wire state and the active peer; Bun callbacks only enqueue.
-  let wire = initialWire(crypto.randomUUID());
+  let wire = initialWire(crypto.randomUUID(), workspace);
   let peer: Peer | undefined;
   const enqueue = (event: Event) => {
     Queue.offerUnsafe(queue, event);
@@ -198,6 +209,15 @@ export const serve = (
     port: port.success,
     fetch(request, server) {
       const url = new URL(request.url);
+      // Every call names its gen: the dial and HTTP calls in the query, the rest the wire's.
+      if (Option.isSome(key)) {
+        const gen = url.pathname === "/" ? Number(url.searchParams.get("gen")) : wire.gen;
+        if (
+          gen === undefined ||
+          !authorized(key.value, gen, request.headers.get(supervisorAuthHeader))
+        )
+          return new Response("unauthorized", { status: 401 });
+      }
       if (url.pathname === "/save") {
         // Saves go over HTTP because inbound WebSocket frames are capped at 1 MiB.
         const gen = wire.gen;
@@ -206,7 +226,7 @@ export const serve = (
         if (request.method === "PUT")
           return Effect.runPromise(
             readUpload(request, "/save").pipe(
-              Effect.flatMap(saves.load),
+              Effect.flatMap(host.load),
               Effect.match({
                 onSuccess: () => new Response(null, { status: 204 }),
                 onFailure: () => new Response("load failed", { status: 500 }),
@@ -215,7 +235,7 @@ export const serve = (
           );
         if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
         return Effect.runPromise(
-          saves.save(gen).pipe(
+          host.save(gen).pipe(
             Effect.match({
               onSuccess: (tar) => new Response(new Uint8Array(tar)),
               onFailure: () => new Response("save failed", { status: 500 }),
@@ -231,7 +251,7 @@ export const serve = (
         const commit = url.searchParams.get("commit") ?? "";
         return Effect.runPromise(
           readUpload(request, "/skills").pipe(
-            Effect.flatMap((tarball) => saves.skills(commit, tarball)),
+            Effect.flatMap((tarball) => host.skills(commit, tarball)),
             Effect.match({
               onSuccess: () => new Response(null, { status: 204 }),
               onFailure: () => new Response("skill failed", { status: 500 }),

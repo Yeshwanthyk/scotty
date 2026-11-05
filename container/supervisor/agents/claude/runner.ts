@@ -251,7 +251,9 @@ export class ClaudeRunner implements Runner {
     return Effect.gen({ self: this }, function* () {
       this.env = env;
       this.session = threadId ?? crypto.randomUUID();
-      this.scope = yield* Effect.scope;
+      // The message fibers live in a child scope that closes after the query does: ending a
+      // fiber awaits the query iterator's return, which settles only once the query is closed.
+      this.scope = yield* Scope.fork(yield* Effect.scope);
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           this.closed = true;

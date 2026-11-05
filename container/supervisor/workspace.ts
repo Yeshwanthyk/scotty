@@ -1,8 +1,9 @@
 import { Clock, Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { fixtureRepo } from "../../protocol/supervisor.js";
+import { FromSupervisor, fixtureRepo, supervisorVersion } from "../../protocol/supervisor.js";
 import type { Agent } from "./agents/agent.js";
-import { processEnv } from "./runtime.js";
+import { processEnv, runDir } from "./runtime.js";
+import type { Workspace } from "./wire.js";
 
 export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()("WorkspaceError", {
   message: Schema.String,
@@ -130,13 +131,98 @@ export const storeSave = (tar: Uint8Array) =>
     yield* fs.writeFile(restoreFile(), tar).pipe(Effect.mapError(() => failure()));
   });
 
+// The marker says which session's workspace this disk holds. It is written once the workspace and
+// the agent are ready, so a disk without one has nothing a resume could use.
+const markerFile = () => `${workspaceRoot()}/marker.json`;
+
+// Read through the protocol's own hello, so the marker is exactly what hello may carry.
+export const readMarker = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const text = yield* fs.readFileString(markerFile());
+  const workspace = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text);
+  const hello = yield* Schema.decodeUnknownEffect(FromSupervisor)({
+    type: "hello",
+    gen: 1,
+    n: 1,
+    version: supervisorVersion,
+    boot: "marker",
+    workspace,
+  });
+  return hello.type === "hello" ? hello.workspace : undefined;
+}).pipe(Effect.orElseSucceed(() => undefined));
+
+export const writeMarker = (workspace: Workspace) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const file = markerFile();
+    // A stop between the write and the rename leaves the old marker whole.
+    yield* fs.writeFileString(`${file}.tmp`, JSON.stringify(workspace));
+    yield* fs.rename(`${file}.tmp`, file);
+  }).pipe(Effect.mapError(() => new WorkspaceError({ message: "could not write the marker" })));
+
+// Whether the agent's state file for a thread is on disk.
+export const hasState = (agent: Agent, thread: string) => {
+  const state = agent.files.state(thread);
+  return run(
+    [
+      "sh",
+      "-c",
+      'cd "$1" && test -n "$(find "$2" -name "$3" 2>/dev/null | head -n 1)"',
+      "state",
+      agent.files.home,
+      state.dir,
+      state.name,
+    ],
+    workspaceRoot(),
+  ).pipe(
+    Effect.as(true),
+    Effect.orElseSucceed(() => false),
+  );
+};
+
+export type Egress = { readonly url: string; readonly token: string };
+const egressUrl = /^https:\/\/[A-Za-z0-9.:/_~%-]+$/;
+const quoted = (value: string) => `"${value.replace(/[\\"]/g, (character) => `\\${character}`)}"`;
+
+// Outside Cloudflare nothing intercepts github.internal, so git reaches it through the Worker's
+// /egress route with this gen's token. The token is only in an included file on the tmpfs; the
+// global config, on the disk, names that file.
+const routeThroughEgress = (egress: Egress) =>
+  Effect.gen(function* () {
+    const url = egress.url.replace(/\/+$/, "");
+    if (!egressUrl.test(url)) return yield* new WorkspaceError({ message: "invalid egress URL" });
+    const fs = yield* FileSystem.FileSystem;
+    const mounts = yield* fs.readFileString("/proc/mounts").pipe(Effect.orElseSucceed(() => ""));
+    const onTmpfs = mounts
+      .split("\n")
+      .some((line) => line.split(" ")[1] === runDir && line.split(" ")[2] === "tmpfs");
+    if (!onTmpfs)
+      return yield* new WorkspaceError({
+        message: `${runDir} is not a tmpfs; no token is written`,
+      });
+    const file = `${runDir}/gitconfig`;
+    yield* fs
+      .writeFileString(
+        file,
+        `[url ${quoted(`${url}/github.internal/api/git/`)}]\n` +
+          `\tinsteadOf = https://github.com/\n\tinsteadOf = http://github.internal/api/git/\n` +
+          `[http ${quoted(`${url}/`)}]\n\textraHeader = ${quoted(`x-scotty-egress: ${egress.token}`)}\n`,
+        { mode: 0o600 },
+      )
+      .pipe(Effect.mapError(() => failure()));
+    return file;
+  });
+
 export const prepareWorkspace = (
   repo: string,
   base: string,
   branch: string,
   git: { readonly name: string; readonly email: string },
   agent: Agent,
-  resume?: { readonly commit: string },
+  resume: { readonly commit: string } | undefined,
+  // This session's workspace, kept on the disk: no clone and no save to unpack.
+  disk: Workspace | undefined,
+  egress: Egress | undefined,
 ) =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
@@ -152,12 +238,18 @@ export const prepareWorkspace = (
     const dir = `${root}/repo`;
     // The Session DO routes github.internal to the Worker, which adds the token; git here has none.
     const config = {
-      "url.http://github.internal/api/git/.insteadOf": "https://github.com/",
+      ...(egress === undefined
+        ? { "url.http://github.internal/api/git/.insteadOf": "https://github.com/" }
+        : { "include.path": yield* routeThroughEgress(egress) }),
       "user.name": git.name,
       "user.email": git.email,
     };
     for (const [key, value] of Object.entries(config))
       yield* run(["git", "config", "--global", key, value], root);
+    if (disk !== undefined) {
+      yield* run(["git", "rev-parse", "--verify", "HEAD"], dir);
+      return { dir, commit: disk.base, ms: (yield* Clock.currentTimeMillis) - started, retried };
+    }
     yield* fromGitHub(
       [
         "git",

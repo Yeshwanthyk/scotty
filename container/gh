@@ -8,8 +8,8 @@ export SSL_CERT_DIR="/etc/ssl/certs:/etc/cloudflare/certs"
 if [ -z "${GH_REPO:-}" ]; then
   origin=$(git remote get-url origin 2>/dev/null)
   case $origin in
-  http://github.internal/api/git/*)
-    repo=${origin#http://github.internal/api/git/}
+  http://github.internal/api/git/* | https://*/github.internal/api/git/*)
+    repo=${origin#*github.internal/api/git/}
     export GH_REPO="${repo%.git}"
     ;;
   esac
