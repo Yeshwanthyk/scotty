@@ -162,7 +162,6 @@ const program = Effect.gen(function* () {
         repo: fixtureRepo,
         ...sessionAgent,
         prompt: probe,
-        provider: "cloudflare",
       },
     });
     const prefix = `/api/sessions/${session.id}`;

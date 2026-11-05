@@ -2,7 +2,7 @@
 import { BunServices } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
 import { Command, CliError } from "effect/unstable/cli";
-import { defaultSize, Size, sizeShape } from "../src/places/place.js";
+import { defaultSize, PlaceKind, Size, sizeShape } from "../src/places/place.js";
 import { version } from "../src/version.js";
 import { CliFailure, failure } from "./client.js";
 import { bold, dim, json, red } from "./commands/common.js";
@@ -30,8 +30,8 @@ ${bold("Setup")}
 
 ${bold("Sessions")}
   new <repo> <prompt>             Start a session (--agent claude, --size standard-1..4,
-                                  --key <retry key>, --session-key <key>: a repeat steers
-                                  that session)
+                                  --on <place>, --key <retry key>, --session-key <key>:
+                                  a repeat steers that session)
   ls [--search <text>]            List sessions; search title, repo, branch, prompt, key
   read <id>                       Read the latest messages (--last N, --role user|assistant)
   steer <id> <text>               Send text; a stopped session resumes
@@ -108,8 +108,9 @@ chatgpt   Opens the device-code page and waits for you to enter the code.
 github    Saves the token from \`gh auth token\`, or from stdin when piped.
 claude    Runs \`claude setup-token\` and saves the token, or reads it from stdin when piped.
 Example: gh auth token | scotty login github`,
-  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--size name] [--key key] [--session-key key]
+  new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--size name] [--on place] [--key key] [--session-key key]
 Start a session with Codex (the default) or Claude. --key makes retries idempotent.
+--on is where the container runs: ${PlaceKind.literals.join(", ")} (default cloudflare).
 --size is the container; bigger work goes to a runner:
 ${sizes}
 --session-key names the session: the same key with the same repository and agent sends the

@@ -42,7 +42,6 @@ const program = Effect.gen(function* () {
         `Run exactly: \`echo ${marker} > marker.txt && rm README\`, then reply with only the word done.`,
         `run echo ${marker} > marker.txt && rm README\nsay done`,
       ),
-      provider: "cloudflare",
     },
   });
   const prefix = `/api/sessions/${session.id}`;

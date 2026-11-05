@@ -57,7 +57,6 @@ const program = Effect.gen(function* () {
           "say attached",
         ].join("\n"),
       ),
-      provider: "cloudflare",
     },
   });
   const prefix = `/api/sessions/${session.id}`;

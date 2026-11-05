@@ -38,7 +38,6 @@ const program = Effect.gen(function* () {
         `Run exactly: \`sleep ${silence}\`, then reply with only the word awake.`,
         `sleep ${silence}\nsay awake`,
       ),
-      provider: "cloudflare",
       ...(real ? {} : { idleAfter }),
     },
   });

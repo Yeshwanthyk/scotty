@@ -142,6 +142,7 @@ npm run --silent scotty -- doctor
 - **Owns:** `src/http/`, `src/mcp/`, `src/hooks/`, `cli/`.
 - **In scope:** `place` and `key` on MCP `new_session`, the API, hooks and `scotty new`; `provider: "cloudflare"` removed; a create refused when its place is unknown.
 - **Done when:** an MCP `new_session` repeated with one key returns one session; `e2e core` passes.
+- **Notes:** `place` (decoded with `PlaceKind`) replaces `provider` on `POST /api/sessions`, its reply, the hook payload, MCP `new_session` and `scotty new --on`; absent, `startSession` uses Cloudflare. MCP `key` is the API's `Idempotency-Key` (as `scotty new --key`), not the body's session `key`, so a repeat is answered with the first call's session rather than steering it. The UI and e2e bodies still send `provider`, which the create's Schema drops. A retried create does not yet send `size` or `place` on its keyed call: today's `startStep` compares a named size on every keyed start (so a keyed steer would conflict with a session of another size), and its input has no `place`. Once `startStep` compares them only for a request id it has seen, `startSession` sends both on that call. `e2e scotty-mcp` covers a repeated key (one session), the key with another prompt (`key_conflict`) and an unknown place (refused); not yet run against a deployment.
 
 ### D1: Daytona place / B1: Boat place
 

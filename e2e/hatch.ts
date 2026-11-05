@@ -108,7 +108,6 @@ const program = Effect.gen(function* () {
         `Run exactly: \`${start}\`, then reply with only the word done.`,
         `run ${start}\nsay done`,
       ),
-      provider: "cloudflare",
     },
   });
   const prefix = `/api/sessions/${session.id}`;

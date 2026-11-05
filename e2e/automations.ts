@@ -398,7 +398,6 @@ const program = Effect.gen(function* () {
       repo: fixtureRepo,
       key,
       prompt: prompt("Say retry.", "say retry"),
-      provider: "cloudflare",
       ...sessionAgent,
     };
     const retryTurn = (yield* events()).reduce(fold, initial).currentTurn;

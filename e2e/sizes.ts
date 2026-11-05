@@ -120,7 +120,6 @@ const program = Effect.gen(function* () {
           repo: fixtureRepo,
           ...sessionAgent,
           prompt: text,
-          provider: "cloudflare",
           ...(size === undefined ? {} : { size }),
           ...(sessionKey === undefined ? {} : { key: sessionKey }),
         },
@@ -454,7 +453,6 @@ const program = Effect.gen(function* () {
           repo: fixtureRepo,
           ...sessionAgent,
           prompt: say("no"),
-          provider: "cloudflare",
           size,
         },
       }).pipe(Effect.flip);
@@ -562,7 +560,6 @@ const program = Effect.gen(function* () {
         repo: fixtureRepo,
         ...sessionAgent,
         prompt: measure,
-        provider: "cloudflare",
       },
     });
     yield* check(

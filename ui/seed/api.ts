@@ -1178,7 +1178,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       id: session.id,
       title: display.title,
       branch: display.branch,
-      provider: "cloudflare",
+      place: "cloudflare",
       status: authority.kind === "stable" ? authority.lifecycle : "booting",
       url: `/s/${session.id}`,
     });

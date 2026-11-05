@@ -23,7 +23,7 @@ export type StartInput = {
   prompt: string;
   title: string;
   agent: typeof AgentKind.Type;
-  // Where the container runs; hooks leave it to the default.
+  // Where the container runs; absent, the default place.
   place?: typeof PlaceKind.Type;
   // Absent: the repository's default, else the default size.
   size?: typeof Size.Type;

@@ -6,9 +6,9 @@ import type * as Cloudflare from "alchemy/Cloudflare";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { AgentKind } from "../session/events.js";
-import { defaultSize, Size, sizeShape } from "../places/place.js";
+import { defaultSize, PlaceKind, Size, sizeShape } from "../places/place.js";
 import { titleFrom } from "../session/title.js";
-import { apiHandler } from "../http/api.js";
+import { apiHandler, RequestId } from "../http/api.js";
 import { Prompt, Repo } from "../http/start.js";
 import { version } from "../version.js";
 
@@ -81,14 +81,17 @@ export function mcpHandler(
   bucket: Cloudflare.R2.ReadWriteBucketClient,
   hatchBase: string,
 ) {
-  // One API call in-process, so the tools keep the API's checks and errors.
-  const api = (method: string, path: string, body?: unknown) =>
+  // One API call in-process, so the tools keep the API's checks and errors. A key goes as the
+  // Idempotency-Key, so a repeated call is answered with what the first one did.
+  const api = (method: string, path: string, body?: unknown, key?: string) =>
     Effect.gen(function* () {
+      const headers = new Headers();
+      if (body !== undefined) headers.set("content-type", "application/json");
+      if (key !== undefined) headers.set("idempotency-key", key);
       const web = new Request(`https://scotty.internal${path}`, {
         method,
-        ...(body === undefined
-          ? {}
-          : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       const reply = yield* apiHandler(
         HttpServerRequest.fromWeb(web),
@@ -117,8 +120,8 @@ export function mcpHandler(
       ),
       Effect.catchTag("ReplyUnreadable", () => Effect.succeed(Result.fail(unreadable))),
     );
-  const passThrough = (method: string, path: string, body?: unknown) =>
-    api(method, path, body).pipe(
+  const passThrough = (method: string, path: string, body?: unknown, key?: string) =>
+    api(method, path, body, key).pipe(
       Effect.map((reply) => (reply.ok ? text(reply.text) : text(reply.text, true))),
       Effect.catchTag("ReplyUnreadable", () => Effect.succeed(unreadable)),
     );
@@ -184,22 +187,34 @@ export function mcpHandler(
         size: Schema.optionalKey(Size).annotate({
           description: `The container size; default: the repository's default, else ${defaultSize} (${sizeShape(defaultSize)}). Bigger than standard-4 needs a runner.`,
         }),
+        place: Schema.optionalKey(PlaceKind).annotate({
+          description: `Where the container runs: ${PlaceKind.literals.join(", ")}; default: cloudflare.`,
+        }),
+        key: Schema.optionalKey(RequestId).annotate({
+          description:
+            "An idempotency key you choose. new_session repeated with the same key and arguments returns the session the first call made instead of starting another; with other arguments it is an error. Keys share one namespace with every other request id, so use a fresh key for each new session and never reuse one across tools.",
+        }),
         // Scotty's own e2e tests run the agent's scripted stand-in.
         scripted: Schema.optionalKey(Schema.Literal(true)).annotate({
           description: "Only for Scotty's own tests: run a scripted stand-in, not the agent.",
         }),
       }),
       false,
-      ({ repo, prompt, agent, size, scripted }) =>
-        passThrough("POST", "/api/sessions", {
-          repo,
-          prompt,
-          title: titleFrom(prompt),
-          provider: "cloudflare",
-          ...(agent === undefined ? {} : { agent }),
-          ...(size === undefined ? {} : { size }),
-          ...(scripted === undefined ? {} : { scripted }),
-        }),
+      ({ repo, prompt, agent, size, place, key, scripted }) =>
+        passThrough(
+          "POST",
+          "/api/sessions",
+          {
+            repo,
+            prompt,
+            title: titleFrom(prompt),
+            ...(agent === undefined ? {} : { agent }),
+            ...(size === undefined ? {} : { size }),
+            ...(place === undefined ? {} : { place }),
+            ...(scripted === undefined ? {} : { scripted }),
+          },
+          key,
+        ),
     ),
     tool(
       "read_session",

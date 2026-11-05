@@ -1,6 +1,6 @@
 import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
-import { Size } from "../../src/places/place.js";
+import { PlaceKind, Size } from "../../src/places/place.js";
 import { titleFrom } from "../../src/session/title.js";
 import { Conversation, Created, List, Log, View } from "../client.js";
 import {
@@ -39,10 +39,11 @@ export const create = Command.make(
     prompt: Argument.String("prompt"),
     agent: Flag.Literals("agent", ["codex", "claude"]).pipe(Flag.withDefault("codex")),
     size: Flag.Literals("size", Size.literals).pipe(Flag.optional),
+    on: Flag.Literals("on", PlaceKind.literals).pipe(Flag.optional),
     key: Flag.String("key").pipe(Flag.optional),
     sessionKey: Flag.String("session-key").pipe(Flag.optional),
   },
-  ({ repository, prompt, agent, size, key, sessionKey }) =>
+  ({ repository, prompt, agent, size, on, key, sessionKey }) =>
     Effect.gen(function* () {
       const repo = yield* repoName(repository, "new");
       if (!prompt.trim()) return yield* usage("The prompt cannot be empty", "new");
@@ -53,9 +54,9 @@ export const create = Command.make(
           repo,
           title: titleFrom(prompt),
           prompt,
-          provider: "cloudflare",
           agent,
           ...(Option.isSome(size) ? { size: size.value } : {}),
+          ...(Option.isSome(on) ? { place: on.value } : {}),
           ...(Option.isSome(sessionKey) ? { key: sessionKey.value } : {}),
         },
         ...(Option.isSome(key) ? { key: key.value } : {}),

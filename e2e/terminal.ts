@@ -55,7 +55,6 @@ const program = Effect.gen(function* () {
       repo: fixtureRepo,
       ...sessionAgent,
       prompt: prompt("Reply with only the word ready.", "say ready"),
-      provider: "cloudflare",
     },
   });
   const prefix = `/api/sessions/${session.id}`;

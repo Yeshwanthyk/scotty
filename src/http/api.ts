@@ -5,7 +5,7 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { AgentKind } from "../session/events.js";
-import { Size } from "../places/place.js";
+import { PlaceKind, Size } from "../places/place.js";
 import { maxSearch, SearchQuery } from "../session/search.js";
 import { repoStats, StatsWindow } from "../session/stats.js";
 import {
@@ -39,7 +39,8 @@ const Create = Schema.Struct({
   title: Schema.String.check(Schema.isMinLength(1)),
   repo: Repo,
   prompt: Prompt,
-  provider: Schema.Literal("cloudflare"),
+  // Where the container runs; absent, the default place.
+  place: Schema.optional(PlaceKind),
   agent: Schema.optional(AgentKind),
   size: Schema.optional(Size),
   // The agent's scripted stand-in, for e2e: no ChatGPT, Claude or GitHub sign-in needed.
@@ -67,15 +68,17 @@ const Callback = Schema.Union([
 const callbackCode = Schema.Struct({ code: Schema.String, iss: Schema.optionalKey(Schema.String) });
 const connectionAction = /^\/api\/connections\/([^/]+)\/(connect|callback|policy)$/;
 const connectionPath = /^\/api\/connections\/([^/]+)$/;
-const RequestId = Schema.String.check(
-  Schema.isMinLength(1),
-  Schema.isMaxLength(256),
+// The length checks come last: an annotation lands on the last check, and only these reach JSON
+// Schema, so a description annotated on a RequestId shows to MCP clients.
+export const RequestId = Schema.String.check(
   Schema.makeFilter(
     (id) => id.trim() !== "" && !id.startsWith("initial:") && !id.startsWith("stalled:"),
     {
       expected: "a non-blank request id that does not start with initial: or stalled:",
     },
   ),
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
 );
 const decodeRequestId = Schema.decodeUnknownEffect(RequestId);
 const Steer = Schema.Struct({
@@ -567,7 +570,7 @@ export function apiHandler(
         prompt: body.prompt,
         title: body.title,
         agent: body.agent ?? "codex",
-        place: body.provider,
+        ...(body.place === undefined ? {} : { place: body.place }),
         ...(body.size === undefined ? {} : { size: body.size }),
         ...(body.scripted === true ? { scripted: true } : {}),
         ...(body.key === undefined
@@ -605,7 +608,7 @@ export function apiHandler(
         id: started.id,
         title: created.display.title,
         branch: created.display.branch,
-        provider: created.display.place,
+        place: created.display.place,
         status: created.authority.kind === "stable" ? created.authority.lifecycle : "booting",
         url: `/s/${started.id}`,
         steered: started.kind === "steered",
