@@ -2,7 +2,7 @@
 import { BunServices } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
 import { Command, CliError } from "effect/unstable/cli";
-import { defaultSize, PlaceKind, Size, sizeShape } from "../src/places/place.js";
+import { defaultPlace, defaultSize, PlaceKind, Size, sizeShape } from "../src/places/place.js";
 import { version } from "../src/version.js";
 import { CliFailure, failure } from "./client.js";
 import { bold, dim, json, red } from "./commands/common.js";
@@ -110,7 +110,7 @@ claude    Runs \`claude setup-token\` and saves the token, or reads it from stdi
 Example: gh auth token | scotty login github`,
   new: `Usage: scotty new <owner/repo | https://github.com/owner/repo> <prompt> [--agent codex|claude] [--size name] [--on place] [--key key] [--session-key key]
 Start a session with Codex (the default) or Claude. --key makes retries idempotent.
---on is where the container runs: ${PlaceKind.literals.join(", ")} (default cloudflare).
+--on is where the container runs: ${PlaceKind.literals.join(", ")} (default ${defaultPlace}).
 --size is the container; bigger work goes to a runner:
 ${sizes}
 --session-key names the session: the same key with the same repository and agent sends the

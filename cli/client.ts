@@ -55,6 +55,19 @@ export const Session = Schema.Struct({
     working: Schema.Boolean,
     sleepsAt: Schema.optional(Schema.NullOr(Schema.String)),
   }),
+  // How long the latest start took to reach each step, in ms from its wake; null until reached.
+  start: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        gen: Schema.Number,
+        at: Schema.String,
+        created: Schema.NullOr(Schema.Number),
+        hello: Schema.NullOr(Schema.Number),
+        ready: Schema.NullOr(Schema.Number),
+        output: Schema.NullOr(Schema.Number),
+      }),
+    ),
+  ),
 });
 export const View = Schema.Struct({ version: Schema.Number, session: Session });
 export const List = Schema.Struct({ version: Schema.Number, sessions: Schema.Array(Session) });

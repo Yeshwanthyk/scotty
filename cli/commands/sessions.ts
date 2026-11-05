@@ -109,6 +109,26 @@ export const ls = Command.make(
     }),
 );
 
+// The latest start's steps, in seconds from its wake: "started 2 · machine 0.4s · hello 1.2s · …".
+const startLine = (start: {
+  readonly gen: number;
+  readonly created: number | null;
+  readonly hello: number | null;
+  readonly ready: number | null;
+  readonly output: number | null;
+}) =>
+  [
+    `start ${start.gen}`,
+    ...(
+      [
+        ["machine", start.created],
+        ["hello", start.hello],
+        ["workspace", start.ready],
+        ["first output", start.output],
+      ] as const
+    ).flatMap(([name, ms]) => (ms === null ? [] : [`${name} ${(ms / 1000).toFixed(1)}s`])),
+  ].join(" · ");
+
 export const read = Command.make(
   "read",
   {
@@ -153,10 +173,12 @@ export const read = Command.make(
           size: session.display.size,
           authority: session.authority,
           turn: latest ? { id: latest.id, state: latest.state } : null,
+          start: session.start ?? null,
           messages,
         },
         [
           `${bold(session.display.title)} ${dim(`· ${session.display.repository} · ${session.display.agentKind} · ${session.display.size} · ${state(session)}`)}`,
+          ...(session.start ? [dim(startLine(session.start))] : []),
           ...messages.flatMap((message) => [
             "",
             message.role === "user" ? bold("you") : bold(session.display.agentKind),

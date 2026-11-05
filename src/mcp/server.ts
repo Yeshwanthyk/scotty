@@ -6,7 +6,7 @@ import type * as Cloudflare from "alchemy/Cloudflare";
 import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { AgentKind } from "../session/events.js";
-import { defaultSize, PlaceKind, Size, sizeShape } from "../places/place.js";
+import { defaultPlace, defaultSize, PlaceKind, Size, sizeShape } from "../places/place.js";
 import { titleFrom } from "../session/title.js";
 import { apiHandler, RequestId } from "../http/api.js";
 import { Prompt, Repo } from "../http/start.js";
@@ -188,7 +188,7 @@ export function mcpHandler(
           description: `The container size; default: the repository's default, else ${defaultSize} (${sizeShape(defaultSize)}). Bigger than standard-4 needs a runner.`,
         }),
         place: Schema.optionalKey(PlaceKind).annotate({
-          description: `Where the container runs: ${PlaceKind.literals.join(", ")}; default: cloudflare.`,
+          description: `Where the container runs: ${PlaceKind.literals.join(", ")}; default: ${defaultPlace}.`,
         }),
         key: Schema.optionalKey(RequestId).annotate({
           description:

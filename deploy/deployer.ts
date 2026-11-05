@@ -136,6 +136,7 @@ const names = (config: Config) => ({
   app: `scotty-${config.stage}-sessions`,
   access: `scotty-${config.stage}`,
   hooks: `scotty-${config.stage}-hooks`,
+  egress: `scotty-${config.stage}-egress`,
   mcp: `scotty-${config.stage}-mcp`,
   wildcard: `*.${config.domain}`,
   route: `*.${config.domain}/*`,
@@ -444,6 +445,14 @@ export const deployStage = (
       [{ type: "public", uri: `${host}/hooks/*` }],
       [{ name: "signed webhooks", decision: "bypass", include: [{ everyone: {} }] }],
     );
+    // Containers outside Cloudflare have no Access login; the Worker checks each call's egress
+    // token, scoped to one session and gen. This app lets `/egress/*` alone through.
+    yield* ensureAccessApp(
+      accountId,
+      name.egress,
+      [{ type: "public", uri: `${host}/egress/*` }],
+      [{ name: "session egress", decision: "bypass", include: [{ everyone: {} }] }],
+    );
     // MCP clients sign in by OAuth, with Access as the server: Managed OAuth registers each
     // client and sends the Worker the usual Access identity. Only these redirects may register.
     yield* ensureAccessApp(
@@ -543,6 +552,7 @@ export const removeStage = (config: Config, progress: (text: string) => void) =>
     for (const app of [
       ...(yield* accessApps(accountId, name.access)),
       ...(yield* accessApps(accountId, name.hooks)),
+      ...(yield* accessApps(accountId, name.egress)),
       ...(yield* accessApps(accountId, name.mcp)),
     ])
       if (app.id) yield* ZeroTrust.deleteAccessApplicationForAccount({ accountId, appId: app.id });
@@ -619,6 +629,7 @@ export const leftovers = (config: Config) =>
     const buckets = yield* R2.listBuckets({ accountId });
     const access = yield* accessApps(accountId, name.access);
     const hooks = yield* accessApps(accountId, name.hooks);
+    const egress = yield* accessApps(accountId, name.egress);
     const mcp = yield* accessApps(accountId, name.mcp);
     const records = yield* wildcardRecords(zoneId, name.wildcard);
     return [
@@ -629,6 +640,7 @@ export const leftovers = (config: Config) =>
       ].filter(mine),
       ...access.map(() => `Access app ${name.access}`),
       ...hooks.map(() => `Access app ${name.hooks}`),
+      ...egress.map(() => `Access app ${name.egress}`),
       ...mcp.map(() => `Access app ${name.mcp}`),
       ...records.map(() => `DNS record ${name.wildcard}`),
     ];

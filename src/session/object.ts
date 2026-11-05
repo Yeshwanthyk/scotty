@@ -758,8 +758,10 @@ export default class SessionObject extends Cloudflare.DurableObject<SessionObjec
           prompt: string;
           repo: string;
           agentKind: typeof AgentKind.Type;
-          // Only with `create`: the size to make the session at; absent is the default.
+          // The size and place the request named. A creating start makes the session with them; a
+          // retried create that names others is a conflict; a steer by session key ignores them.
           size?: typeof Size.Type;
+          place?: typeof PlaceKind.Type;
           create?: {
             id: string;
             baseBranch: string;

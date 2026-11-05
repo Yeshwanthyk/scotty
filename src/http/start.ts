@@ -4,7 +4,7 @@ import type CredsObject from "../creds/object.js";
 import type SessionObject from "../session/object.js";
 import { fixtureRepo } from "../../protocol/supervisor.js";
 import type { AgentKind, Origin } from "../session/events.js";
-import type { PlaceKind, Size } from "../places/place.js";
+import { defaultPlace, type PlaceKind, type Size } from "../places/place.js";
 
 export const githubHint = "scotty login github";
 export const Repo = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/));
@@ -52,6 +52,9 @@ export function startSession(
       prompt: input.prompt,
       repo: input.repo,
       agentKind: input.agent,
+      // Named only when the caller named them: a retried create is compared with what it named.
+      ...(input.size === undefined ? {} : { size: input.size }),
+      ...(input.place === undefined ? {} : { place: input.place }),
     };
     // Automations already resolved their target; a made session needs no repository lookup.
     const keyed = input.id ?? (yield* credential.resolveSession(input.retry, input.key ?? null));
@@ -111,15 +114,13 @@ export function startSession(
       }));
     const answer = yield* sessions.getByName(id).start({
       ...request,
-      // The size applies only to the session this call makes; a keyed steer above sends none.
-      ...(input.size === undefined ? {} : { size: input.size }),
       create: {
         ...(repoSize === null ? {} : { repoSize }),
         id,
         baseBranch: branch.branch,
         title: input.title,
         image: "default",
-        place: input.place ?? "cloudflare",
+        place: input.place ?? defaultPlace,
         ...(input.scripted === true ? { scripted: true } : {}),
         ...(input.idleAfter === undefined ? {} : { idleAfter: input.idleAfter }),
         ...(input.origin === undefined ? {} : { origin: input.origin }),
