@@ -106,14 +106,24 @@ export class CodexRunner implements Runner {
       yield* rpc.notify("initialized");
       // thread/resume reads the restored rollout under CODEX_HOME for this thread id.
       const method = threadId === undefined ? "thread/start" : "thread/resume";
-      const result = yield* rpc.request(method, {
-        ...(threadId === undefined ? {} : { threadId }),
-        model: this.agent.model,
-        modelProvider: "scotty-managed",
-        cwd: this.cwd,
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-      });
+      const result = yield* rpc
+        .request(method, {
+          ...(threadId === undefined ? {} : { threadId }),
+          model: this.agent.model,
+          modelProvider: "scotty-managed",
+          cwd: this.cwd,
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+        })
+        .pipe(
+          // Only Codex's own error reply to thread/resume says the thread can't be resumed; its
+          // RPC errors carry a JSON-RPC number, where an exit or timeout carries a word.
+          Effect.mapError((error) =>
+            threadId !== undefined && /^-?\d+$/.test(error.code)
+              ? new AgentError({ code: error.code, message: error.message, unresumable: true })
+              : error,
+          ),
+        );
       const thread = yield* Schema.decodeUnknownEffect(Thread)(result).pipe(
         Effect.mapError(
           () => new AgentError({ code: "protocol", message: `invalid ${method} reply` }),

@@ -82,7 +82,11 @@ export const serve = async (
   const { key, workspace } = await Effect.runPromise(
     Effect.all({ key: loadKey, workspace: readMarker }).pipe(Effect.provide(BunServices.layer)),
   );
+  // A second SIGTERM while the agent stops waits for the first.
+  let stopping = false;
   onTerminate(() => {
+    if (stopping) return;
+    stopping = true;
     void Effect.runPromise(host.shutdown).finally(() => exit(0));
   });
   const queue = Effect.runSync(Queue.unbounded<Event>());
@@ -209,7 +213,8 @@ export const serve = async (
     port: port.success,
     fetch(request, server) {
       const url = new URL(request.url);
-      // Every call names its gen: the dial and HTTP calls in the query, the rest the wire's.
+      // The dial is checked for the gen in its query; every HTTP call for the wire's gen, the
+      // only gen it may act for.
       if (Option.isSome(key)) {
         const gen = url.pathname === "/" ? Number(url.searchParams.get("gen")) : wire.gen;
         if (

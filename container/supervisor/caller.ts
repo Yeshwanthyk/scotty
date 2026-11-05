@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Effect, FileSystem, Option, Schema } from "effect";
+import { keepsDisk } from "./place.js";
 import { takeEnv } from "./runtime.js";
 
 // A place outside Cloudflare gives the container k on its first boot; it is kept on the disk, so
@@ -17,6 +18,9 @@ export const loadKey = Effect.gen(function* () {
   const given = takeEnv("SCOTTY_SUPERVISOR_KEY");
   const stored = yield* fs.readFileString(keyFile).pipe(Effect.option);
   const key = Option.isSome(stored) ? stored.value.trim() : given;
+  // A place that keeps its disk is reachable by more than its Session DO, so it never runs open.
+  if (key === "" && keepsDisk())
+    return yield* new KeyError({ message: "no supervisor key for a session that keeps its disk" });
   if (key === "") return Option.none<Uint8Array>();
   if (!hexKey.test(key)) return yield* new KeyError({ message: "invalid supervisor key" });
   if (Option.isNone(stored))

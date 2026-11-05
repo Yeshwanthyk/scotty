@@ -5,7 +5,7 @@ import { threadGone, type ToSupervisorMessage } from "../../protocol/supervisor.
 import { type Agent, makeAgent } from "./agents/agent.js";
 import { Requests } from "./requests.js";
 import { AgentError, type AgentReady, type Runner } from "./runner.js";
-import { processEnv } from "./runtime.js";
+import { keepsDisk, session } from "./place.js";
 import type { Output } from "./wire.js";
 import {
   hasState,
@@ -28,9 +28,6 @@ type StartState =
   | { status: "failed"; code: string; message: string };
 type Sender = (output: Output, gen?: number) => void;
 
-// The session this container belongs to, given by a place that keeps its disk. Cloudflare gives
-// none, so there it writes no marker and every hello stays as it was.
-const session = () => processEnv("SCOTTY_SESSION");
 // A runner stops with a 30 s grace; the agent gets most of it to end its turn and exit.
 const shutdownBudget = "25 seconds";
 
@@ -79,9 +76,12 @@ export class Controller {
       this.agent = agent;
       const outcome = yield* Effect.gen({ self: this }, function* () {
         const marker = message.resume === undefined ? undefined : yield* readMarker;
+        // The thread isn't compared: the marker says whose disk this is, and whether the thread
+        // asked for resumes is the agent's own answer from its files (checked below), which holds
+        // even for a thread the marker doesn't name yet.
         const disk =
           marker !== undefined &&
-          session() !== "" &&
+          keepsDisk() &&
           marker.session === session() &&
           marker.branch === message.branch
             ? marker
@@ -127,13 +127,11 @@ export class Controller {
           .start({ SCOTTY_HATCH: message.hatch }, message.resume?.threadId)
           .pipe(
             Effect.mapError((error) =>
-              disk === undefined || error.code === "spawn" || error.code === "config"
-                ? error
-                : gone(error.message),
+              disk !== undefined && error.unresumable === true ? gone(error.message) : error,
             ),
             Scope.provide(scope),
           );
-        if (session() !== "")
+        if (keepsDisk())
           yield* writeMarker({
             session: session(),
             branch: message.branch,

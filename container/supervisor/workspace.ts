@@ -1,9 +1,9 @@
 import { Clock, Effect, Fiber, FileSystem, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { FromSupervisor, fixtureRepo, supervisorVersion } from "../../protocol/supervisor.js";
+import { fixtureRepo, Workspace } from "../../protocol/supervisor.js";
 import type { Agent } from "./agents/agent.js";
+import { notTmpfs, onTmpfs } from "./place.js";
 import { processEnv, runDir } from "./runtime.js";
-import type { Workspace } from "./wire.js";
 
 export class WorkspaceError extends Schema.TaggedError<WorkspaceError>()("WorkspaceError", {
   message: Schema.String,
@@ -135,20 +135,10 @@ export const storeSave = (tar: Uint8Array) =>
 // the agent are ready, so a disk without one has nothing a resume could use.
 const markerFile = () => `${workspaceRoot()}/marker.json`;
 
-// Read through the protocol's own hello, so the marker is exactly what hello may carry.
 export const readMarker = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const text = yield* fs.readFileString(markerFile());
-  const workspace = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text);
-  const hello = yield* Schema.decodeUnknownEffect(FromSupervisor)({
-    type: "hello",
-    gen: 1,
-    n: 1,
-    version: supervisorVersion,
-    boot: "marker",
-    workspace,
-  });
-  return hello.type === "hello" ? hello.workspace : undefined;
+  return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Workspace))(text);
 }).pipe(Effect.orElseSucceed(() => undefined));
 
 export const writeMarker = (workspace: Workspace) =>
@@ -185,28 +175,21 @@ const egressUrl = /^https:\/\/[A-Za-z0-9.:/_~%-]+$/;
 const quoted = (value: string) => `"${value.replace(/[\\"]/g, (character) => `\\${character}`)}"`;
 
 // Outside Cloudflare nothing intercepts github.internal, so git reaches it through the Worker's
-// /egress route with this gen's token. The token is only in an included file on the tmpfs; the
+// /egress route with this gen's token as a bearer token, which Cloudflare's logs redact. The token is only in an included file on the tmpfs; the
 // global config, on the disk, names that file.
 const routeThroughEgress = (egress: Egress) =>
   Effect.gen(function* () {
     const url = egress.url.replace(/\/+$/, "");
     if (!egressUrl.test(url)) return yield* new WorkspaceError({ message: "invalid egress URL" });
+    if (!(yield* onTmpfs)) return yield* new WorkspaceError({ message: notTmpfs });
     const fs = yield* FileSystem.FileSystem;
-    const mounts = yield* fs.readFileString("/proc/mounts").pipe(Effect.orElseSucceed(() => ""));
-    const onTmpfs = mounts
-      .split("\n")
-      .some((line) => line.split(" ")[1] === runDir && line.split(" ")[2] === "tmpfs");
-    if (!onTmpfs)
-      return yield* new WorkspaceError({
-        message: `${runDir} is not a tmpfs; no token is written`,
-      });
     const file = `${runDir}/gitconfig`;
     yield* fs
       .writeFileString(
         file,
         `[url ${quoted(`${url}/github.internal/api/git/`)}]\n` +
           `\tinsteadOf = https://github.com/\n\tinsteadOf = http://github.internal/api/git/\n` +
-          `[http ${quoted(`${url}/`)}]\n\textraHeader = ${quoted(`x-scotty-egress: ${egress.token}`)}\n`,
+          `[http ${quoted(`${url}/`)}]\n\textraHeader = ${quoted(`Authorization: Bearer ${egress.token}`)}\n`,
         { mode: 0o600 },
       )
       .pipe(Effect.mapError(() => failure()));
@@ -250,6 +233,11 @@ export const prepareWorkspace = (
       yield* run(["git", "rev-parse", "--verify", "HEAD"], dir);
       return { dir, commit: disk.base, ms: (yield* Clock.currentTimeMillis) - started, retried };
     }
+    // A disk this start can't use (another session's, or one stopped between the clone and the
+    // marker) is cleared, so the clone has an empty place. The marker goes first: a stop partway
+    // leaves no marker naming a half-removed repository.
+    yield* run(["rm", "-f", "--", markerFile()], root);
+    yield* run(["rm", "-rf", "--", dir], root);
     yield* fromGitHub(
       [
         "git",

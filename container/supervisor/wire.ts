@@ -3,11 +3,11 @@ import {
   FromSupervisor,
   type FromSupervisorMessage,
   supervisorVersion,
+  type Workspace,
 } from "../../protocol/supervisor.js";
 
 type WithoutEnvelope<T> = T extends { gen: number; n: number } ? Omit<T, "gen" | "n"> : never;
 export type Output = WithoutEnvelope<FromSupervisorMessage>;
-export type Workspace = NonNullable<Extract<FromSupervisorMessage, { type: "hello" }>["workspace"]>;
 class WireError extends Schema.TaggedError<WireError>()("WireError", {
   message: Schema.String,
 }) {}

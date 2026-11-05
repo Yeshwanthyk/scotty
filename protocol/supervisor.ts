@@ -126,6 +126,14 @@ export const ToSupervisor = Schema.Union([
   Schema.Struct({ ...envelope, type: Schema.Literal("interrupt"), req: identifier }),
   Schema.Struct({ ...envelope, type: Schema.Literal("ack"), ack: acknowledgement }),
 ]);
+// The marker a container keeps on its disk once its workspace and agent are ready.
+export const Workspace = Schema.Struct({
+  session: identifier,
+  branch: Schema.String,
+  base: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
+  thread: identifier,
+});
+export type Workspace = typeof Workspace.Type;
 export const FromSupervisor = Schema.Union([
   Schema.Struct({
     ...envelope,
@@ -134,14 +142,7 @@ export const FromSupervisor = Schema.Union([
     boot: Schema.String,
     // The marker written at workspace_ready, when the disk kept it: the session it belongs to,
     // its branch, the commit the branch was made from, and the agent's thread id.
-    workspace: Schema.optionalKey(
-      Schema.Struct({
-        session: identifier,
-        branch: Schema.String,
-        base: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)),
-        thread: identifier,
-      }),
-    ),
+    workspace: Schema.optionalKey(Workspace),
   }),
   Schema.Struct({
     ...envelope,
@@ -201,7 +202,7 @@ export const threadGone = "thread_gone";
 
 // The header on the dial and every HTTP call to the supervisor: hex HMAC-SHA256(k, String(gen)),
 // where k = HMAC-SHA256(Worker secret, session id) is given to the container at create and kept
-// on its disk. The supervisor never passes k to the agent.
+// on its disk. k is not inherited by agent processes; code in the container can read it.
 export const supervisorAuthHeader = "x-scotty-auth";
 
 // A repository baked into the container image, so e2e sessions don't depend on GitHub. GitHub
