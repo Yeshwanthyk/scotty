@@ -9,7 +9,7 @@ import type CredsObject from "../creds/object.js";
 import { reachHandler } from "../creds/reach.js";
 import type SessionObject from "../session/object.js";
 import { attach } from "./files.js";
-import { EgressToken } from "./token.js";
+import { egressBearer, egressTokenHash } from "./token.js";
 
 /** What a container's request is for: the place it asked for, already chosen. */
 export type Target =
@@ -75,7 +75,9 @@ export const loopbackTarget = (
 // the container asked for.
 const egressPath = /^\/egress\/([a-z0-9-]{6,32})\/([a-z0-9.-]{1,253})(\/.*)$/;
 export const egressPrefix = "/egress/";
-export const egressHeader = "x-scotty-egress";
+// Never sent on: the egress token, and anything that names the caller's network (a runner's
+// public IP).
+const callerHeaders = ["authorization", "x-forwarded-for", "x-real-ip"];
 
 const hostTarget = (host: string, connections: readonly string[]): Target | undefined => {
   if (host === "github.internal") return { kind: "git" };
@@ -93,7 +95,7 @@ const notFound = () => HttpServerResponse.text("Not found\n", { status: 404 });
 const refused = () => HttpServerResponse.text("Egress token refused\n", { status: 401 });
 
 /**
- * `/egress` for places outside Cloudflare. The token in `x-scotty-egress` must be one the Creds
+ * `/egress` for places outside Cloudflare. The bearer token in `authorization` must be one the Creds
  * DO minted for this session's current gen; it is dropped before the request goes anywhere.
  */
 export const egressRoute = (request: HttpServerRequest.HttpServerRequest, upstreams: Upstreams) =>
@@ -101,11 +103,13 @@ export const egressRoute = (request: HttpServerRequest.HttpServerRequest, upstre
     const url = new URL(request.url, "https://scotty.internal");
     const [, session, host, path] = egressPath.exec(url.pathname) ?? [];
     if (session === undefined || host === undefined || path === undefined) return notFound();
-    const token = Schema.decodeUnknownOption(EgressToken)(request.headers[egressHeader]);
+    const token = Schema.decodeUnknownOption(egressBearer)(request.headers["authorization"]);
     if (Option.isNone(token)) return refused();
+    // Only the hash crosses to the Creds DO.
+    const hash = yield* egressTokenHash(token.value);
     const granted = yield* upstreams.credentials
       .getByName("owner")
-      .checkEgress(session, token.value)
+      .checkEgress(session, hash)
       .pipe(Effect.option);
     if (Option.isNone(granted)) return HttpServerResponse.text("Bad gateway\n", { status: 502 });
     if (granted.value === null) return refused();
@@ -113,8 +117,8 @@ export const egressRoute = (request: HttpServerRequest.HttpServerRequest, upstre
     if (target === undefined) return notFound();
     const raw = yield* HttpServerRequest.toWeb(request);
     const headers = new Headers(raw.headers);
-    headers.delete(egressHeader);
-    headers.set("host", host);
+    for (const name of [...headers.keys()])
+      if (callerHeaders.includes(name) || name.startsWith("cf-")) headers.delete(name);
     const scheme = host === "api.github.com" ? "https" : "http";
     const inner = new Request(`${scheme}://${host}${path}${url.search}`, {
       method: raw.method,

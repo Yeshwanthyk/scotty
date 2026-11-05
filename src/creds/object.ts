@@ -487,14 +487,15 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
             const hash = yield* egressTokenHash(token);
             yield* sql`INSERT INTO egress_gens (session, gen, stopped, repo, connections) VALUES (${session}, ${input.gen}, 0, ${input.repo}, ${connections}) ON CONFLICT (session) DO UPDATE SET gen = excluded.gen, stopped = 0, repo = excluded.repo, connections = excluded.connections`;
             yield* sql`DELETE FROM egress_tokens WHERE session = ${session} AND gen < ${input.gen}`;
+            // Repeated mints for one gen each add a row; the next gen's mint clears them.
             yield* sql`INSERT INTO egress_tokens (hash, session, gen) VALUES (${hash}, ${session}, ${input.gen})`;
             return token;
           }).pipe(sql.withTransaction),
-        // What a token reaches, or null unless it was minted for this session's newest gen and that
-        // gen hasn't stopped. Never awaits the Session DO.
-        checkEgress: (session: string, token: string) =>
+        // What the token with this SHA-256 (hex) reaches, or null unless it was minted for this
+        // session's newest gen and that gen hasn't stopped. Never awaits the Session DO.
+        checkEgress: (id: string, hash: string) =>
           Effect.gen(function* () {
-            const hash = yield* egressTokenHash(token);
+            const session = yield* Schema.decodeUnknownEffect(SessionId)(id);
             const rows = yield* Schema.decodeUnknownEffect(EgressGrants)(
               yield* sql`SELECT egress_gens.repo, egress_gens.connections FROM egress_tokens JOIN egress_gens ON egress_gens.session = egress_tokens.session AND egress_gens.gen = egress_tokens.gen AND egress_gens.stopped = 0 WHERE egress_tokens.hash = ${hash} AND egress_tokens.session = ${session}`,
             );
@@ -502,8 +503,9 @@ export default class CredsObject extends Cloudflare.DurableObject<CredsObject>()
           }),
         // The session's gen `gen` has stopped: its tokens, and every older gen's, are refused from
         // now on. A late call for an older gen leaves a newer gen's tokens alone.
-        revokeEgress: (session: string, gen: number) =>
+        revokeEgress: (id: string, gen: number) =>
           Effect.gen(function* () {
+            const session = yield* Schema.decodeUnknownEffect(SessionId)(id);
             yield* sql`INSERT INTO egress_gens (session, gen, stopped, repo, connections) VALUES (${session}, ${gen}, 1, '', '[]') ON CONFLICT (session) DO UPDATE SET gen = excluded.gen, stopped = 1 WHERE excluded.gen >= egress_gens.gen`;
             yield* sql`DELETE FROM egress_tokens WHERE session = ${session} AND gen <= ${gen}`;
           }).pipe(sql.withTransaction),
