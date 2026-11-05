@@ -62,10 +62,10 @@ npm run --silent scotty -- doctor
 | S6   | Scotty inside sessions          | none           | todo     |
 | S7   | Slack bot                       | none           | todo     |
 | S10  | Approvals for MCP writes        | none           | todo     |
-| L1   | Place lifecycle on the contract | none           | e2e open |
-| W1   | Wake from disk                  | none           | e2e open |
-| E1   | Egress gateway                  | none           | todo     |
-| E2   | Place, key and size on entry    | none           | todo     |
+| L1   | Place lifecycle on the contract | none           | done     |
+| W1   | Wake from disk                  | none           | built    |
+| E1   | Egress gateway                  | none           | built    |
+| E2   | Place, key and size on entry    | none           | done     |
 | R2   | Runners on the owner's boxes    | L1, W1, E1, E2 | todo     |
 | D1   | Daytona place                   | L1, W1, E1     | todo     |
 | B1   | Boat place                      | L1, W1, E1     | todo     |

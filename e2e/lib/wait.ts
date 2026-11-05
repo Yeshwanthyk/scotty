@@ -28,6 +28,9 @@ export const waiter =
           state.phase === "failed" ||
           (state.phase === "stopped" && options?.stopped !== "expected");
         if (ended) {
+          // The session may have reached `done` between the read and the log fetch.
+          const last = yield* read();
+          if (done(last)) return last;
           const error = log.findLast((event) => event.kind === "sup.error");
           const why = [
             state.failure?.code,
