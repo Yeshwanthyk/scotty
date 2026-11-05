@@ -30,9 +30,15 @@ export class SupervisorLink {
   /**
    * `stillWanted` is checked once the socket opens; a stale dial closes it and changes nothing.
    * `port` is called on every attempt: a port handle whose lookup failed (no instance placed yet)
-   * stays failed, and only a new `getTcpPort()` looks again.
+   * stays failed, and only a new one looks again. `headers` go with the upgrade.
    */
-  dial(port: () => Port, gen: number, after: number, stillWanted: () => boolean) {
+  dial(
+    port: () => Port,
+    gen: number,
+    after: number,
+    headers: Record<string, string>,
+    stillWanted: () => boolean,
+  ) {
     const enqueue = (operation: () => Effect.Effect<void, unknown>) => this.enqueue(operation);
     const consume = this.consume;
     // The replaced socket is no longer current, so its close is not reported.
@@ -44,26 +50,12 @@ export class SupervisorLink {
     const isCurrent = (socket: WebSocket) => this.socket === socket;
     return Effect.gen(function* () {
       // A refused connection rejects; a container still booting refuses, and the caller
-      // retries a DialError.
-      const web = yield* Effect.tryPromise({
-        // A dial abandoned by its attempt's timeout still resolves later; close that socket.
-        try: (signal) => {
-          const pending = port().fetch(`http://container/?gen=${gen}&after=${after}`, {
-            headers: { Upgrade: "websocket" },
-          });
-          signal.addEventListener("abort", () =>
-            pending.then(
-              (late) => {
-                accepted(late)?.close();
-              },
-              () => undefined,
-            ),
-          );
-          return pending;
-        },
+      // retries a DialError. A dial abandoned by its attempt's timeout aborts `signal`.
+      const candidate = yield* Effect.tryPromise({
+        try: (signal) =>
+          port().socket(`http://container/?gen=${gen}&after=${after}`, headers, signal),
         catch: () => new DialError({ message: "Supervisor not reachable" }),
       });
-      const candidate = accepted(web);
       if (candidate === undefined) {
         return yield* new DialError({ message: "Supervisor websocket upgrade failed" });
       }
@@ -99,17 +91,4 @@ export class SupervisorLink {
         this.socket?.close();
       });
   }
-}
-
-// Accepts and returns the upgraded socket on a response, if the supervisor accepted the upgrade.
-function accepted(response: object): WebSocket | undefined {
-  const candidate: unknown = Reflect.get(response, "webSocket");
-  if (
-    !(candidate instanceof WebSocket) ||
-    !("accept" in candidate) ||
-    typeof candidate.accept !== "function"
-  )
-    return undefined;
-  candidate.accept();
-  return candidate;
 }

@@ -40,6 +40,20 @@ export function turnOutcome(state: State, req?: string) {
 
 const iso = (at: number | undefined) => (at === undefined ? null : new Date(at).toISOString());
 
+const startTimings = (state: State) => {
+  const timings = state.timings;
+  if (timings === undefined) return null;
+  const since = (at: number | undefined) => (at === undefined ? null : at - timings.start);
+  return {
+    gen: timings.gen,
+    at: new Date(timings.start).toISOString(),
+    created: since(timings.created),
+    hello: since(timings.hello),
+    ready: since(timings.ready),
+    output: since(timings.output),
+  };
+};
+
 export function sessionView(id: string, state: State) {
   const created = state.created;
   const title = created?.title ?? "Session";
@@ -77,6 +91,9 @@ export function sessionView(id: string, state: State) {
           : undefined,
       ),
     },
+    // How long the latest start took to reach each step, in milliseconds from its wake; null
+    // until it gets there. `created` is null for a machine that was woken, not made.
+    start: startTimings(state),
   };
   if (state.phase === "provisioning") {
     return {

@@ -12,7 +12,7 @@ describe("supervisor outputs", () => {
     expect(state.phase).toBe("stopped");
     expect(state.stop).toEqual({ reason: "deploy" });
     expect(state.failure).toBeUndefined();
-    expect(command(state, replacement)).toEqual({ kind: "destroy" });
+    expect(command(state, replacement)).toEqual({ kind: "release" });
     check(state);
   });
 
@@ -164,7 +164,7 @@ describe("supervisor outputs", () => {
     expect(state.failure).toBeUndefined();
     expect(state.phase).toBe("stopped");
     expect(state.lastN).toBe(6);
-    expect(command(state, event)).toEqual({ kind: "destroy" });
+    expect(command(state, event)).toEqual({ kind: "release" });
     check(state);
   });
   it("reports each invariant without throwing", () => {

@@ -134,7 +134,7 @@ describe("saved session event logs", () => {
       const event = decodeLine(line);
       state = replayLine(state, line, file, index + 1);
       if (event.kind === "prompt.requested") {
-        expect(command(state, event)).toEqual({ kind: "container.start", gen: 2, fresh: true });
+        expect(command(state, event)).toEqual({ kind: "create", gen: 2 });
         containerDue = state.pending.find((p) => p.op === "container")?.due;
         expect(containerDue).toBe(event.at + deadlines.container);
       }

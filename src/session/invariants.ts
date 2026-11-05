@@ -44,10 +44,30 @@ export function invariants(state: State): Violation[] {
   check(!state.connected || state.hello, "connection", "connected without hello");
   check(!state.ready || state.hello, "workspace", "workspace ready without hello");
   check(state.phase !== "running" || state.ready, "running", "running without workspace");
+  // A stopped session's machine may still be pausing, under its own deadline.
   check(
-    live(state) || (state.pending.length === 0 && !state.connected),
+    live(state) || (state.pending.every((item) => item.op === "pause") && !state.connected),
     "failed",
     "stopped or failed with pending work or connection",
+  );
+  check(
+    has(state.pending, "pause") === (state.place?.status === "pausing"),
+    "pause",
+    "pause deadline does not match a pausing machine",
+  );
+  check(
+    state.place === undefined ||
+      state.gone === undefined ||
+      state.place.handle !== state.gone.handle,
+    "handle",
+    "a machine kept and let go at once",
+  );
+  check(
+    // The place may since have answered that the machine is gone, and a late one be pausing.
+    !state.fromDisk ||
+      (state.hello && (state.place?.status !== "live" || state.place.gen === state.gen)),
+    "fromDisk",
+    "resumed from disk without the machine's hello",
   );
   check(
     new Set(state.requests.map((item) => item.req)).size === state.requests.length,

@@ -15,6 +15,7 @@ export const supervisorEvent = (
           n: message.n,
           version: message.version,
           boot: message.boot,
+          ...(message.workspace === undefined ? {} : { workspace: message.workspace }),
         };
       case "workspace_ready":
         return {

@@ -15,6 +15,26 @@ type AttachedFile = Omit<
   Extract<SessionEvent, { kind: "file.attached" }>,
   "seq" | "at" | "src" | "kind"
 >;
+// The session's machine at its place; the fold keeps one handle at most. `gen` is the generation
+// it last ran: the one that created it, or the latest whose hello showed the disk kept. `live`
+// is running or being woken; `pausing` waits for the place's answer; `paused` rests. `seq` is the
+// event that last changed it.
+export type PlaceRecord = {
+  readonly handle: string;
+  readonly gen: number;
+  readonly size: typeof Size.Type;
+  readonly status: "live" | "pausing" | "paused";
+  readonly seq: number;
+};
+// When this generation's start reached each step, from its events' `at`.
+export type Timings = {
+  readonly gen: number;
+  readonly start: number;
+  readonly created?: number;
+  readonly hello?: number;
+  readonly ready?: number;
+  readonly output?: number;
+};
 type Turn = { readonly turn: string; readonly codexTurn: string; readonly state: string };
 
 export type State = {
@@ -58,6 +78,15 @@ export type State = {
   readonly created: Extract<SessionEvent, { kind: "created" }> | undefined;
   // The size every start uses: the created one, until a resume names another.
   readonly size: typeof Size.Type;
+  readonly place: PlaceRecord | undefined;
+  // A handle to remove before the next create: its place answered gone, or the session ended.
+  // `seq` is the event that set it.
+  readonly gone: { readonly handle: string; readonly seq: number } | undefined;
+  // A save of this session reached R2.
+  readonly saved: boolean;
+  // This generation's machine kept the session's disk, and its hello said so.
+  readonly fromDisk: boolean;
+  readonly timings: Timings | undefined;
 };
 
 // The request id the first prompt goes in under once the first workspace is ready.
@@ -100,4 +129,9 @@ export const initial: State = {
   pending: [],
   created: undefined,
   size: defaultSize,
+  place: undefined,
+  gone: undefined,
+  saved: false,
+  fromDisk: false,
+  timings: undefined,
 };

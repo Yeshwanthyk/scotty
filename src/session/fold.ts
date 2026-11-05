@@ -3,6 +3,7 @@ import type { SessionEvent } from "./events.js";
 import { deadlines, has, remove, addOnce, reqOp, requestFromOp, idleWindow } from "./deadlines.js";
 import { defaultSize, type Size } from "../places/place.js";
 import { firstReq, live, type Request, type State } from "./state.js";
+import { threadGone } from "../../protocol/supervisor.js";
 export { initial } from "./state.js";
 export type { State, Request } from "./state.js";
 export { deadline, deadlines } from "./deadlines.js";
@@ -42,28 +43,58 @@ const turnOpen = (state: State): boolean =>
       item.turn === state.currentTurn &&
       (item.status === "pending" || item.status === "delivered"),
   );
+// A stop pauses the session's machine, or removes it when the session ended for good. A pause
+// waits for the place's answer under its own deadline, which outlives the phase's.
+const stopPlace = (state: State, at: number, removing: boolean): State => {
+  const place = state.place;
+  const handle = place?.handle ?? state.gone?.handle;
+  if (removing && handle !== undefined)
+    return {
+      ...state,
+      place: undefined,
+      gone: { handle, seq: state.lastSeq },
+      pending: remove(state.pending, "pause"),
+    };
+  return place?.status === "live"
+    ? {
+        ...state,
+        place: { ...place, status: "pausing", seq: state.lastSeq },
+        pending: [...remove(state.pending, "pause"), { op: "pause", due: at + deadlines.pause }],
+      }
+    : state;
+};
+
 // Ending a session interrupts its open turn, so the next prompt starts a new one.
 const endAll = (
   state: State,
+  at: number,
   phase: "stopped" | "failed",
   stop: State["stop"] = undefined,
-): State => ({
-  ...state,
-  phase,
-  stop: phase === "stopped" ? stop : undefined,
-  stopSeq: state.lastSeq,
-  connected: false,
-  pending: [],
-  requests: state.requests.map((item) =>
-    item.status === "pending" ? { ...item, status: "ended" } : item,
-  ),
-  ...(turnOpen(state)
-    ? {
-        currentTurn: String(state.turns.length + 1),
-        turns: [...state.turns, { turn: state.currentTurn, codexTurn: "", state: "interrupted" }],
-      }
-    : {}),
-});
+): State =>
+  stopPlace(
+    {
+      ...state,
+      phase,
+      stop: phase === "stopped" ? stop : undefined,
+      stopSeq: state.lastSeq,
+      connected: false,
+      pending: state.pending.filter((item) => item.op === "pause"),
+      requests: state.requests.map((item) =>
+        item.status === "pending" ? { ...item, status: "ended" } : item,
+      ),
+      ...(turnOpen(state)
+        ? {
+            currentTurn: String(state.turns.length + 1),
+            turns: [
+              ...state.turns,
+              { turn: state.currentTurn, codexTurn: "", state: "interrupted" },
+            ],
+          }
+        : {}),
+    },
+    at,
+    stop?.reason === "ended",
+  );
 
 // The turn's own interrupt, sent when it stalled.
 const stallReq = (turn: string): string => `stalled:${turn}`;
@@ -71,31 +102,96 @@ const stalled = (state: State, turn: string): boolean =>
   state.requests.some((item) => item.req === stallReq(turn));
 // A save settles the last turn; after a stall, the session then stops unless the owner has
 // started another turn.
-const saved = (state: State, next: State): State => {
+const saved = (state: State, next: State, at: number): State => {
   const turn = state.turns.at(-1)?.turn;
   const settled = { ...next, pending: remove(state.pending, "save") };
   return turn !== undefined && live(state) && stalled(state, turn) && !turnOpen(next)
-    ? endAll(settled, "stopped", { reason: "stalled" })
+    ? endAll(settled, at, "stopped", { reason: "stalled" })
     : settled;
 };
 
-// A new generation on a fresh container; pending requests wait for its workspace.
-const resume = (state: State, at: number): State => ({
-  ...state,
-  phase: "provisioning",
-  failure: undefined,
-  stop: undefined,
-  gen: (state.gen ?? 0) + 1,
-  startSeq: state.lastSeq,
-  hello: false,
-  connected: false,
-  ready: false,
-  lastN: 0,
-  lastAckN: 0,
-  lastAckSeq: 0,
-  boot: undefined,
-  pending: [{ op: "container", due: at + deadlines.container }],
-});
+// A wake needs somewhere to pick the session up: its machine, its save, or a session that never
+// had a workspace. Otherwise it stops gone and is never reported resumed.
+const wakeable = (state: State): boolean =>
+  state.place !== undefined || state.commit === undefined || state.saved;
+
+// A kept machine of another size can't serve this one; it is removed before the next create.
+const fitted = (state: State): State =>
+  state.place !== undefined && state.place.status !== "pausing" && state.place.size !== state.size
+    ? { ...state, place: undefined, gone: { handle: state.place.handle, seq: state.lastSeq } }
+    : state;
+
+// A new generation; pending requests wait for its workspace. A rested machine is woken; one still
+// pausing is woken once its place answers.
+const resume = (state: State, at: number): State => {
+  const sized = fitted(state);
+  // A session already at rest only learns why it can't wake; it has nothing left to stop.
+  if (!wakeable(sized))
+    return live(sized)
+      ? endAll(sized, at, "stopped", { reason: "gone" })
+      : { ...sized, phase: "stopped", failure: undefined, stop: { reason: "gone" } };
+  const gen = (state.gen ?? 0) + 1;
+  return {
+    ...sized,
+    phase: "provisioning",
+    failure: undefined,
+    stop: undefined,
+    gen,
+    startSeq: state.lastSeq,
+    hello: false,
+    connected: false,
+    ready: false,
+    fromDisk: false,
+    lastN: 0,
+    lastAckN: 0,
+    lastAckSeq: 0,
+    boot: undefined,
+    timings: { gen, start: at },
+    place:
+      sized.place?.status === "paused"
+        ? { ...sized.place, status: "live", seq: state.lastSeq }
+        : sized.place,
+    pending: [
+      ...sized.pending.filter((item) => item.op === "pause"),
+      { op: "container", due: at + deadlines.container },
+    ],
+  };
+};
+
+// The place answered that the machine is gone. A wake waiting on it makes a new one, or stops
+// gone when nothing could restore the session.
+const placeGone = (state: State, at: number, handle: string): State => {
+  if (state.place?.handle !== handle) return state;
+  const after: State = {
+    ...state,
+    place: undefined,
+    gone: { handle, seq: state.lastSeq },
+    pending: remove(state.pending, "pause"),
+  };
+  return live(after) && !after.hello && !wakeable(after)
+    ? endAll(after, at, "stopped", { reason: "gone" })
+    : after;
+};
+
+// The disk of a woken machine is this session's when its marker names the session, its branch,
+// the commit the branch was made from and the agent's thread.
+const keptDisk = (
+  state: State,
+  workspace: Extract<SessionEvent, { kind: "sup.hello" }>["workspace"],
+): boolean =>
+  workspace !== undefined &&
+  state.created !== undefined &&
+  workspace.branch === state.created.branch &&
+  `scotty/${workspace.session}` === state.created.branch &&
+  workspace.base === state.commit &&
+  workspace.thread === state.agentSession;
+
+// A woken machine whose disk turned out not to be this session's is gone; the session starts a
+// new generation on a new machine, restored from its save.
+const replaced = (state: State, at: number, handle: string): State => {
+  const gone = placeGone(state, at, handle);
+  return live(gone) ? resume(gone, at) : gone;
+};
 
 const accepts = (state: State, event: { readonly gen: number; readonly n: number }): boolean =>
   state.gen === event.gen && state.connected && live(state) && event.n > state.lastN;
@@ -130,8 +226,32 @@ const pace = (before: State, after: State, event: SessionEvent): State => {
   };
 };
 
+// The start's steps as they happen: its machine, its supervisor's hello, its workspace, and the
+// agent's first output.
+const timed = (before: State, after: State, event: SessionEvent): State => {
+  const timings = after.timings;
+  if (after === before || timings === undefined || timings.gen !== after.gen) return after;
+  const reached = (step: "created" | "hello" | "ready" | "output", now: boolean) =>
+    now && timings[step] === undefined ? { [step]: event.at } : {};
+  const stamped = {
+    ...reached(
+      "created",
+      event.kind === "place.created" &&
+        before.place === undefined &&
+        after.place?.status === "live",
+    ),
+    ...reached("hello", !before.hello && after.hello),
+    ...reached("ready", !before.ready && after.ready),
+    ...reached("output", event.kind === "agent.event" && after.lastN > before.lastN),
+  };
+  return Object.keys(stamped).length === 0
+    ? after
+    : { ...after, timings: { ...timings, ...stamped } };
+};
+
 export function fold(state: State, event: SessionEvent): State {
-  return pace(state, step(state, event), event);
+  const after = step(state, event);
+  return timed(state, pace(state, after, event), event);
 }
 
 function step(state: State, event: SessionEvent): State {
@@ -148,18 +268,73 @@ function step(state: State, event: SessionEvent): State {
         ...next,
         gen: event.gen,
         startSeq: event.seq,
+        timings: { gen: event.gen, start: event.at },
         pending: addOnce(state.pending, "container", event.at + deadlines.container),
       };
-    case "sup.hello":
+    case "place.created": {
+      // A second machine, or one for a generation never started, is removed by the command; a
+      // known one changes nothing.
+      if (state.place !== undefined || state.gen === undefined || event.gen > state.gen)
+        return next;
+      const created = { ...next, gone: undefined };
+      // The machine this generation waits for.
+      if (live(state) && event.gen === state.gen)
+        return {
+          ...created,
+          place: {
+            handle: event.handle,
+            gen: event.gen,
+            size: state.size,
+            status: "live",
+            seq: event.seq,
+          },
+        };
+      // Made for a generation that has since stopped: it is paused, and a wake waits for that.
+      return {
+        ...created,
+        place: {
+          handle: event.handle,
+          gen: event.gen,
+          size: state.size,
+          status: "pausing",
+          seq: event.seq,
+        },
+        pending: addOnce(state.pending, "pause", event.at + deadlines.pause),
+      };
+    }
+    case "place.paused": {
+      const place = state.place;
+      if (place?.handle !== event.handle || place.status !== "pausing") return next;
+      const paused: State = {
+        ...next,
+        place: { ...place, status: "paused", seq: event.seq },
+        pending: remove(state.pending, "pause"),
+      };
+      // A wake that waited for the pause now wakes the machine.
+      if (!live(state) || state.hello) return paused;
+      const sized = fitted(paused);
+      return sized.place === undefined
+        ? sized
+        : { ...sized, place: { ...sized.place, status: "live" } };
+    }
+    case "place.gone":
+      return placeGone(next, event.at, event.handle);
+    case "sup.hello": {
       if (event.gen !== state.gen || !live(state)) return next;
-      // A different supervisor for this generation means the container was replaced under
-      // the session, as a deploy does; its work since the last save is gone.
+      // A different supervisor for this generation means the container was restarted under
+      // the session, as a deploy or a host reboot does; its work since the last save is gone
+      // from memory, and the machine is kept.
       if (state.boot !== undefined && state.boot !== event.boot)
-        return endAll(next, "stopped", { reason: "deploy" });
+        return endAll(next, event.at, "stopped", { reason: "deploy" });
       if (state.connected || (!has(state.pending, "container") && !has(state.pending, "dial")))
         return next;
+      // A woken machine says whose disk it kept; another session's or none is a machine gone.
+      const place = state.place;
+      const woken = place !== undefined && place.status === "live" && place.gen !== event.gen;
+      if (woken && !keptDisk(state, event.workspace)) return replaced(next, event.at, place.handle);
       return {
         ...advance(next, Math.max(state.lastN, event.n)),
+        ...(woken ? { fromDisk: true, place: { ...place, gen: event.gen } } : {}),
         lastAckN: state.lastAckN,
         lastAckSeq: state.lastAckSeq,
         hello: true,
@@ -174,6 +349,7 @@ function step(state: State, event: SessionEvent): State {
               event.at + deadlines.workspace,
             ),
       };
+    }
     case "workspace.ready": {
       if (!accepts(state, event)) return next;
       const accepted = state.ready
@@ -241,6 +417,8 @@ function step(state: State, event: SessionEvent): State {
             (state.commit !== undefined || (state.created !== undefined && kind === "prompt"))) ||
           (state.phase === "stopped" && kind === "prompt"));
       const base = valid && state.phase === "stopped" ? resume(next, event.at) : next;
+      // A prompt that could not wake the session has nowhere to run: it is stale.
+      const taken = valid && live(base);
       const request: Request =
         event.kind === "prompt.requested"
           ? {
@@ -248,14 +426,14 @@ function step(state: State, event: SessionEvent): State {
               turn: event.turn,
               kind: "prompt",
               text: event.text,
-              status: valid ? "pending" : "stale",
+              status: taken ? "pending" : "stale",
               seq: event.seq,
             }
           : {
               req: event.req,
               turn: event.turn,
               kind: "interrupt",
-              status: valid ? "pending" : "stale",
+              status: taken ? "pending" : "stale",
               seq: event.seq,
             };
       return {
@@ -263,7 +441,7 @@ function step(state: State, event: SessionEvent): State {
         activeAt: kind === "prompt" ? event.at : state.activeAt,
         requests: [...state.requests, request],
         pending:
-          valid && base.ready
+          taken && base.ready
             ? addOnce(base.pending, reqOp(event.req), event.at + deadlines[kind])
             : base.pending,
       };
@@ -293,9 +471,20 @@ function step(state: State, event: SessionEvent): State {
             lastAckN: state.lastAckN,
             lastAckSeq: state.lastAckSeq,
           },
+          event.at,
           "stopped",
           { reason: "agent" },
         );
+      // An agent that can't resume its thread from a kept disk: that disk is no use, as if the
+      // machine were gone.
+      if (
+        event.req === undefined &&
+        event.code === threadGone &&
+        !state.ready &&
+        state.fromDisk &&
+        state.place !== undefined
+      )
+        return replaced(next, event.at, state.place.handle);
       // The supervisor reports a failed start once; waiting out the workspace deadline adds nothing.
       if (event.req === undefined && !state.ready)
         return endAll(
@@ -305,6 +494,7 @@ function step(state: State, event: SessionEvent): State {
             lastAckSeq: state.lastAckSeq,
             failure: { code: event.code, retryable: true },
           },
+          event.at,
           "failed",
         );
       if (
@@ -352,7 +542,11 @@ function step(state: State, event: SessionEvent): State {
     case "save.done":
     case "save.failed":
       // Only the latest turn's save owns the deadline; an older save's result changes nothing.
-      return state.turns.at(-1)?.turn === event.turn ? saved(state, next) : next;
+      return state.turns.at(-1)?.turn === event.turn
+        ? saved(state, { ...next, saved: next.saved || event.kind === "save.done" }, event.at)
+        : event.kind === "save.done"
+          ? { ...next, saved: true }
+          : next;
     case "socket.closed":
       if (event.gen !== state.gen || !live(state) || !state.connected) return next;
       return {
@@ -386,19 +580,33 @@ function step(state: State, event: SessionEvent): State {
     case "timeout":
       if (!state.pending.some((item) => item.op === event.op && item.due <= event.at)) return next;
       // The container is gone or unreachable; its saved work can still resume.
-      if (event.op === "dial") return endAll(next, "stopped", { reason: "gone" });
+      // The machine is kept: the next wake tries it first.
+      if (event.op === "dial") return endAll(next, event.at, "stopped", { reason: "gone" });
       if (event.op === "container" || event.op === "workspace")
         return endAll(
           {
             ...next,
             failure: { code: `${event.op}_timeout`, retryable: true },
           },
+          event.at,
           "failed",
         );
       // The Session DO re-watches the container, or records it gone.
       if (event.op === "watch") return { ...next, pending: remove(state.pending, "watch") };
       // A lost save leaves the previous save in place; the session carries on.
-      if (event.op === "save") return saved(state, next);
+      if (event.op === "save") return saved(state, next, event.at);
+      // An unanswered pause asks again once per deadline.
+      if (event.op === "pause")
+        return state.place?.status === "pausing"
+          ? {
+              ...next,
+              place: { ...state.place, seq: event.seq },
+              pending: [
+                ...remove(state.pending, "pause"),
+                { op: "pause", due: event.at + deadlines.pause },
+              ],
+            }
+          : { ...next, pending: remove(state.pending, "pause") };
       // The Session DO stops the container, unless the owner used it within the window; the
       // idle deadline starts again either way.
       if (event.op === "idle")
@@ -407,7 +615,7 @@ function step(state: State, event: SessionEvent): State {
       if (event.op === "stalled") {
         const req = stallReq(state.currentTurn);
         if (stalled(state, state.currentTurn))
-          return endAll(next, "stopped", { reason: "stalled" });
+          return endAll(next, event.at, "stopped", { reason: "stalled" });
         return {
           ...next,
           requests: [
@@ -441,16 +649,17 @@ function step(state: State, event: SessionEvent): State {
         : next;
     case "container.stopped":
       if (event.gen !== state.gen) return next;
-      // An owner or automation stop of a failed session destroys its container.
+      // An owner or automation stop of a failed session lets its machine go: an automation's end
+      // removes it.
       if (!live(state))
         return state.phase === "failed" && (event.reason === "user" || event.reason === "ended")
-          ? { ...next, stopSeq: event.seq }
+          ? stopPlace({ ...next, stopSeq: event.seq }, event.at, event.reason === "ended")
           : next;
       // An idle stop decided before a prompt or use landed does not apply.
       return event.reason !== "idle" ||
         (has(state.pending, "idle") &&
           (event.idleSeq === undefined || event.idleSeq === state.idleSeq))
-        ? endAll(next, "stopped", {
+        ? endAll(next, event.at, "stopped", {
             reason: event.reason ?? "gone",
             ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
             ...(event.max === undefined ? {} : { max: event.max }),
@@ -486,6 +695,7 @@ function step(state: State, event: SessionEvent): State {
           activeAt: event.at,
           failure: { code: event.code, retryable: event.retryable },
         },
+        event.at,
         "failed",
       );
     case "file.attached": {
