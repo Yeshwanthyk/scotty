@@ -136,6 +136,7 @@ npm run --silent scotty -- doctor
 - **Owns:** a new `src/egress/`, the egress parts of `src/worker.ts`, token minting in `src/creds/`.
 - **In scope:** one egress handler for `github.internal`, `files.internal`, `api.github.com` and connections; Cloudflare's interceptors call it; `/egress` takes a Creds DO token for one session and gen.
 - **Done when:** `e2e core` and `e2e github` pass on Cloudflare; `/egress` refuses a missing, wrong, other-session and stopped-gen token.
+- **Notes:** the handler, `/egress` and the attach upload are in `src/egress/`; the git, gh and connection handlers stay in `src/creds/`. The Cloudflare place's props and interceptors are unchanged. The Creds DO answers `mintEgress({session, gen, repo, connections}) → token | null`, `checkEgress(session, sha256Hex) → {repo, connections} | null` and `revokeEgress(session, gen)`. Still to wire: the Session DO mints at a start outside Cloudflare and revokes when it destroys a gen; the deployer bypasses Access for `/egress/*` as for `/hooks/*`; e2e proves the refusals on a deployment.
 
 ### E2: place and key on entry
 
