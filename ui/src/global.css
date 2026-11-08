@@ -648,7 +648,7 @@ kbd {
 }
 
 .group-label {
-  padding: 16px 8px 6px;
+  padding: 12px 8px 4px;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.02em;
@@ -685,7 +685,7 @@ kbd {
 .folds {
   display: grid;
   gap: 2px;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .session-groups > .folds:first-child {
@@ -757,10 +757,10 @@ kbd {
 .session-row {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
-  column-gap: 9px;
-  row-gap: 1px;
+  column-gap: 8px;
+  row-gap: 0;
   align-items: center;
-  padding: 7px 8px;
+  padding: 5px 8px;
   border-radius: var(--radius-md);
   color: var(--ink);
 }
@@ -799,14 +799,12 @@ kbd {
   }
 }
 
-/* The whole title where it fits; two lines at most, then cut. */
+/* One line, so every row is the same height; the whole title is in its tooltip. */
 .session-row .title {
   font-size: 13px;
+  white-space: nowrap;
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
 }
 
 .session-filters {

@@ -181,7 +181,9 @@ function Row({ session, current }: { session: Session; current: boolean }) {
             : undefined
         }
       />
-      <span className="title">{session.display.title}</span>
+      <span className="title" title={session.display.title}>
+        {session.display.title}
+      </span>
       <Meta session={session} status={status} />
     </Link>
   );
