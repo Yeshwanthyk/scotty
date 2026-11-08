@@ -39,7 +39,7 @@ const EXPIRY_MARGIN: u64 = 60;
 pub enum NoToken {
     /// Nothing saved, or it ran out: the owner signs in from the app's sign-in screen.
     SignIn,
-    /// The address can't carry a sign-in (not https).
+    /// The address can't carry a sign-in (not https), or the Keychain refused to hand over the saved one.
     Bad(String),
 }
 
@@ -51,20 +51,33 @@ pub fn token(base: &str) -> Result<String, NoToken> {
         return Ok(String::new());
     }
     let origin = origin(base).map_err(NoToken::Bad)?;
-    keychain::get(&origin).filter(|t| !expired(t)).ok_or(NoToken::SignIn)
+    let mut saved = held();
+    let token = match saved.get(&origin) {
+        Some(t) => Some(t.clone()),
+        None => keychain::get(&origin).map_err(|code| NoToken::Bad(format!("macOS Keychain didn't let Scotty read its sign-in (error {code}). Allow it when macOS asks, or sign in again.")))?,
+    };
+    let Some(token) = token else { return Err(NoToken::SignIn) };
+    saved.insert(origin, token.clone());
+    if expired(&token) { Err(NoToken::SignIn) } else { Ok(token) }
 }
 
-/// Holds Keychain writes for one origin together: a refusal's read-then-delete and a sign-in's
-/// save never interleave.
-static KEYCHAIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The saved tokens this run has read, by origin. macOS asks before a rebuilt app reads a token an
+/// earlier build saved, so the app reads each one once rather than on every request's thread. The
+/// lock also keeps a refusal's read-then-delete and a sign-in's save from interleaving.
+static KEYCHAIN: std::sync::Mutex<std::collections::BTreeMap<String, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn held() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, String>> {
+    KEYCHAIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// Scotty refused `sent` (Access answered 401, 403 or a redirect): drop it, so the next request
 /// asks for a sign-in rather than sending it again. A token saved since `sent` went out (a sign-in
 /// that landed while this request was on the wire) stays.
 pub fn refused(base: &str, sent: &str) {
     let Ok(origin) = origin(base) else { return };
-    let _held = KEYCHAIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if keychain::get(&origin).as_deref() == Some(sent) {
+    let mut saved = held();
+    if saved.get(&origin).map(String::as_str) == Some(sent) {
+        saved.remove(&origin);
         keychain::delete(&origin);
     }
 }
@@ -76,14 +89,16 @@ pub fn sign_in(base: &str, opened: impl FnOnce(String), cancelled: impl Fn() -> 
     let origin = origin(base)?;
     let app = app_info(&origin)?;
     let token = transfer(&origin, &app.aud, opened, cancelled)?;
-    let _held = KEYCHAIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut saved = held();
     keychain::set(&origin, &token);
+    saved.insert(origin, token);
     Ok(())
 }
 
 /// Forget the saved token for `base` (sign out).
 pub fn forget(base: &str) {
     if let Ok(origin) = origin(base) {
+        held().remove(&origin);
         keychain::delete(&origin);
     }
 }
@@ -300,8 +315,14 @@ mod keychain {
 
     use super::KEYCHAIN_SERVICE;
 
-    pub fn get(origin: &str) -> Option<String> {
-        get_generic_password(KEYCHAIN_SERVICE, origin).ok().and_then(|b| String::from_utf8(b).ok())
+    /// The saved token, `None` when nothing is saved, or the Keychain's error code when it refused.
+    pub fn get(origin: &str) -> Result<Option<String>, i32> {
+        const NOT_FOUND: i32 = -25300;
+        match get_generic_password(KEYCHAIN_SERVICE, origin) {
+            Ok(b) => Ok(String::from_utf8(b).ok()),
+            Err(e) if e.code() == NOT_FOUND => Ok(None),
+            Err(e) => Err(e.code()),
+        }
     }
 
     pub fn set(origin: &str, token: &str) {
