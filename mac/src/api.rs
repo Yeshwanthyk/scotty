@@ -390,8 +390,9 @@ pub struct Source {
     pub repo: String,
     #[serde(default)]
     pub path: String,
+    /// The branch or tag the source follows; `null` follows the repository's default branch.
     #[serde(rename = "ref", default)]
-    pub reference: String,
+    pub reference: Option<String>,
     #[serde(default)]
     pub commit: Option<String>,
     #[serde(default)]
@@ -526,4 +527,16 @@ pub fn uuid() -> String {
 /// A JSON string literal for `text`.
 pub fn json_str(text: &str) -> String {
     serde_json::Value::String(text.to_string()).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_skill_source_without_a_ref_still_reads() {
+        let body = r#"{"instructions":"","sources":[{"id":"o/r/skills","repo":"o/r","path":"skills","ref":null,"commit":"abc","size":1,"fetched":1,"skills":[]}],"claudeStyle":"default","email":"a@b.c","running":0,"maxRunning":3}"#;
+        let settings: Settings = serde_json::from_str(body).unwrap();
+        assert_eq!(settings.sources[0].reference, None);
+    }
 }

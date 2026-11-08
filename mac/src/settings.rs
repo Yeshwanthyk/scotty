@@ -486,7 +486,7 @@ fn skills(s: &State, body: El, p: &Palette) -> El {
                 .center_y()
                 .fill(p.sunken)
                 .child(text(source.id.clone()).font(ROW_STRONG).color(p.ink))
-                .child(text(if source.reference.is_empty() { String::new() } else { format!("@{}", source.reference) }).font(META).color(p.quiet))
+                .child(text(source.reference.as_ref().map_or(String::new(), |r| format!("@{r}"))).font(META).color(p.quiet))
                 .child(el().grow(1.0))
                 .child(text(format!("{on} of {}", source.skills.len())).font(META).color(p.quiet)),
         );
@@ -587,7 +587,7 @@ fn sample(s: &mut State) {
         id: id.into(),
         repo: id.into(),
         path: String::new(),
-        reference: reference.into(),
+        reference: (!reference.is_empty()).then(|| reference.into()),
         commit: None,
         skills: skills.iter().map(|(n, d, m, e)| api::Skill { name: (*n).into(), description: (*d).into(), manual: *m, enabled: *e }).collect(),
     };
