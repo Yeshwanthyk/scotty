@@ -336,7 +336,7 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
             onClick={() => void signIn()}
           >
             {busy && token === undefined ? <Spinner size={12} /> : null}
-            {chatgpt === "signed-in" ? "Sign in again" : "Sign in"}
+            {chatgpt === "signed-in" ? "Sign in again…" : "Sign in…"}
           </button>
         ) : null}
       </Row>
@@ -392,7 +392,7 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
             className="button pressable"
             onClick={() => setToken({ account: "claude", value: "" })}
           >
-            {state.claude.status === "signed-out" ? "Add token" : "Replace"}
+            {state.claude.status === "signed-out" ? "Add token…" : "Replace…"}
           </button>
         ) : null}
       </Row>
@@ -416,7 +416,7 @@ function Accounts({ accounts: state, reload }: { accounts: AccountState; reload:
             className="button pressable"
             onClick={() => setToken({ account: "github", value: "" })}
           >
-            {state.github.status === "set" ? "Replace" : "Add token"}
+            {state.github.status === "set" ? "Replace…" : "Add token…"}
           </button>
         ) : null}
       </Row>

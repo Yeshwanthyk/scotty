@@ -181,6 +181,10 @@ function SessionView({ sessionId }: { sessionId: string }) {
     setBusy(true);
     setError("");
     try {
+      // Stop asks first only while it would cut the agent's turn short.
+      if (action === "stop" && working) {
+        if (!window.confirm("Stop this session? The agent's current turn ends now.")) return;
+      }
       if (action === "delete") {
         if (!window.confirm("Delete this session and its history?")) return;
         await remove(sessionId);
@@ -289,14 +293,14 @@ function SessionView({ sessionId }: { sessionId: string }) {
             disabled={busy}
             items={[
               {
-                label: copied ? "Copied" : "Copy session ID",
+                label: copied ? "Copied" : "Copy Session ID",
                 stay: true,
                 onSelect: () => void copyText(sessionId).then(setCopied),
               },
               ...(resumable
                 ? [
                     {
-                      label: "Resume",
+                      label: "Resume Session",
                       onSelect: () => void act("resume"),
                     },
                   ]
@@ -304,7 +308,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
               ...(running
                 ? [
                     {
-                      label: "Stop session",
+                      label: "Stop Session",
                       onSelect: () => void act("stop"),
                     },
                   ]
@@ -312,7 +316,7 @@ function SessionView({ sessionId }: { sessionId: string }) {
               ...(stopped || failed
                 ? [
                     {
-                      label: "Delete session",
+                      label: "Delete Session…",
                       tone: "danger" as const,
                       onSelect: () => void act("delete"),
                     },
