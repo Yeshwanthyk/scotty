@@ -1,0 +1,25 @@
+{
+  // strobe's harness for the Mac app (perf/README.md). A directory or git variant builds the
+  // release binary into a target folder shared across worktrees and launches it as a native app.
+  "build": {
+    "command": "cargo build --release",
+    "cwd": "mac",
+    "output": "{cache}/cargo-target/release/scotty-mac",
+    "env": {
+      "CARGO_TARGET_DIR": "{cache}/cargo-target",
+      "CARGO_PROFILE_RELEASE_DEBUG": "line-tables-only",
+      "CARGO_PROFILE_RELEASE_STRIP": "false",
+      "CARGO_PROFILE_RELEASE_INCREMENTAL": "false"
+    }
+  },
+  "apps": {
+    // The app reads its server list from $HOME, so strobe's private home isolates it; the
+    // bench writes servers.json there, pointing at the seed fixture.
+    "scotty-mac": {
+      "kind": "native",
+      // What `app:scotty-mac` launches with no build; a directory or git variant runs its own build.
+      "exe": { "macos": "target/release/scotty-mac" },
+      "unset": ["APP_OFFLINE", "RUNE_*"]
+    }
+  }
+}
