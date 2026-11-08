@@ -1,0 +1,34 @@
+title Sign in to Scotty from the Mac app
+sub Drawn before modeling, from the sign-in screen's intent
+
+== graph Sign in to Scotty
+view: states
+tone wait: Waiting for you
+tone ask: Waiting for the browser
+tone done: Using Scotty
+tone bad: Something went wrong
+[*] -> signin
+signin: Sign in to Scotty {wait}
+waiting: Finish signing in in your browser {ask}
+list: Your sessions {done}
+failed: Signing in didn't finish {bad}
+lost: You sign in, and the app throws the new sign-in away
+  fails: NoFreshTokenLost
+bounced: Asked to sign in while signed in
+  fails: NoBounceWithGoodToken
+reset: The sign-in screen resets while the browser is open
+  fails: SignInNotReset
+signin -> waiting: press Sign in with Cloudflare
+waiting -> list: browser login completes
+waiting -> signin: press Cancel
+waiting -> failed: login fails
+failed -> waiting: press Try again
+list -> signin: Access refuses the saved sign-in
+signin -> list: press Sign in, a sign-in already saved
+failed -> list: press Try again, a sign-in already saved
+first: signin > waiting => list | first launch | You sign in in the browser and your sessions load.
+cancel: signin > waiting => signin | changed your mind | You cancel and are back on the sign-in screen.
+fail: signin > waiting => failed | login fails | The login fails and you can try again.
+retry: signin > waiting > failed > waiting => list | try again | After a failure, Try again signs you in.
+expired: signin > waiting > list => signin | session ended | Access ends your session and the app asks you to sign in again.
+late: signin > waiting > signin => list | cancelled too late | The browser finished as you pressed Cancel; Sign in goes straight in.
