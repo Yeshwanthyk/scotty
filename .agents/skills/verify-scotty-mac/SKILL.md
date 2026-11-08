@@ -65,7 +65,7 @@ Drive the app through `work/verify-mac/ax <pid> <verb>`. Selectors are the app's
 | `front`                            | activates the app (macOS may refuse while someone else is using the Mac)        |
 
 Keys a drive uses most: `row:<id>`, `thread:<id>`, `composer:<id>`, `send`, `stop-turn`,
-`sidebar-search`, `palette-input`, `sidebar-filter` (opens `filter:<name>` items), `chip:<name>` (a filter in force; pressing clears it), `stopped-toggle`, `open-settings`, `host`,
+`sidebar-search`, `palette-input`, `sidebar-filter` (opens `filter:<name>` items), `chip:<name>` (a filter in force; pressing clears it), `stopped-toggle`, `home-repo` (opens `repo:<owner/name>` items and `repo-other`), `open-settings`, `host`,
 `changes-button`, `session-menu`. `lib.sh` exports `SESSION`, a seeded session that waits for input
 and shows without filters.
 

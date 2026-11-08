@@ -2,7 +2,7 @@
 //! starts a session, and four cards read from the session list: activity by day, the latest
 //! sessions, the ones waiting on the owner, and this week against last week.
 
-use rune::{El, Pixels, TextStyle, Shape, SurfaceFit, TextEdit, canvas, col, el, icon, row, text, text_input};
+use rune::{Align, El, Pixels, Shape, Side, SurfaceFit, TextEdit, TextStyle, canvas, col, el, icon, row, text, text_input};
 use rune_kit::Kit;
 
 use crate::api::{Session, Status};
@@ -18,10 +18,35 @@ const DOT: usize = 4;
 const WEEKS: i64 = 20;
 const DAY: f64 = 86_400_000.0;
 
-/// The home page's own state: the composer's text.
+/// The repositories the composer's menu offers: the latest ones sessions ran in.
+const REPOS: usize = 8;
+
+/// The home page's own state: the composer's text and the repository picked for it.
 #[derive(Default)]
 pub struct Home {
     pub prompt: TextEdit,
+    /// Picked from the menu; until then the composer offers the latest session's repository.
+    pub repo: Option<String>,
+    pub repo_menu: bool,
+}
+
+/// The repositories sessions ran in, latest first.
+pub fn recent_repos(sessions: &[Session]) -> Vec<String> {
+    let mut by_latest: Vec<&Session> = sessions.iter().filter(|x| !x.display.repository.is_empty()).collect();
+    by_latest.sort_by(|a, b| b.display.active_at.cmp(&a.display.active_at));
+    let mut repos: Vec<String> = Vec::new();
+    for x in by_latest {
+        if !repos.contains(&x.display.repository) {
+            repos.push(x.display.repository.clone());
+        }
+    }
+    repos
+}
+
+/// The repository a session started from the composer goes to: the one picked, else the
+/// sidebar's repository filter, else the latest session's.
+pub fn repo_for(s: &State) -> Option<String> {
+    s.home.repo.clone().or_else(|| s.repo_filter.clone()).or_else(|| recent_repos(&s.sessions).into_iter().next())
 }
 
 /// The art behind the brand, for each appearance, drawn once.
@@ -39,7 +64,7 @@ impl Art {
     }
 }
 
-pub fn page(s: &State, k: &Kit, p: &Palette) -> El {
+pub fn page(s: &State, k: &Kit, p: &Palette, layer: &mut Vec<El>) -> El {
     let dark = s.dark.get();
     let hero = col()
         .key("home-hero")
@@ -53,6 +78,9 @@ pub fn page(s: &State, k: &Kit, p: &Palette) -> El {
         .gap(22.0)
         .child(row().key("home-brand").gap(12.0).center_y().child(icon(&icons::MARK, 34.0)).child(text("Scotty").font(TextStyle::new(30.0, 600.0).lh(36.0)).color(p.ink)))
         .child(composer(s, p));
+    if s.home.repo_menu {
+        layer.push(repo_menu(s, p));
+    }
     let cards = col()
         .key("home-cards")
         .w_full()
@@ -94,7 +122,7 @@ fn composer(s: &State, p: &Palette) -> El {
         .fill(p.button)
         .child(icon(&icons::ARROW_UP, 15.0).color(p.button_ink));
     send = if ready { send.on_press(|s: &mut State| s.start_from_home()) } else { send.opacity(0.35) };
-    let repo = s.repo_filter.clone().unwrap_or_else(|| "Any repository".to_string());
+    let repo = repo_for(s).unwrap_or_else(|| "Pick a repository".to_string());
     col()
         .key("home-composer")
         .w_full()
@@ -112,11 +140,65 @@ fn composer(s: &State, p: &Palette) -> El {
                 .gap(6.0)
                 .center_y()
                 .child(icon_button("home-new", &icons::PLUS, "New session (⌘N)", p).on_press(|s: &mut State| s.start_from_home()))
-                .child(row().h(26.0).px(4.0).gap(6.0).center_y().child(icon(&icons::REPO, 13.0).color(p.quiet)).child(text(repo).font(SMALL).color(p.quiet).max_lines(1)))
+                .child(
+                    row()
+                        .key("home-repo")
+                        .role("button")
+                        .label(format!("Repository: {repo}"))
+                        .h(26.0)
+                        .px(8.0)
+                        .gap(6.0)
+                        .radius(8.0)
+                        .center_y()
+                        .hover(p.hover)
+                        .fill(if s.home.repo_menu { p.hover } else { p.surface.alpha(0.0) })
+                        .child(icon(&icons::REPO, 13.0).color(p.quiet))
+                        .child(text(repo).font(SMALL).color(p.muted).max_lines(1))
+                        .child(icon(&icons::CHEVRON_DOWN, 11.0).color(p.quiet))
+                        .on_press(|s: &mut State| s.home.repo_menu = !s.home.repo_menu),
+                )
                 .child(el().grow(1.0))
                 .child(text("Return").font(SMALL).color(p.quiet))
                 .child(send),
         )
+}
+
+/// The composer's repository menu: the latest repositories sessions ran in, and a way to type
+/// any other in the New session sheet.
+fn repo_menu(s: &State, p: &Palette) -> El {
+    let current = repo_for(s);
+    let item = |key: String, label: String, on: bool| {
+        row()
+            .key(key)
+            .role("menuitem")
+            .label(label.clone())
+            .w_full()
+            .h(28.0)
+            .px(8.0)
+            .gap(8.0)
+            .radius(6.0)
+            .center_y()
+            .hover(p.hover)
+            .child(text(label).font(META).color(p.ink).grow(1.0).max_lines(1))
+            .child(if on { icon(&icons::CHECK, 14.0).color(p.ink) } else { el().size(14.0, 14.0) })
+    };
+    let mut menu = col().key("home-repo-menu").role("menu").label("Repository").w(280.0).padding(5.0).radius(RADIUS).fill(p.surface).border(1.0, p.line_strong).shadow(8.0, 24.0, p.shadow);
+    for repo in recent_repos(&s.sessions).into_iter().take(REPOS) {
+        let on = current.as_deref() == Some(repo.as_str());
+        let picked = repo.clone();
+        menu = menu.child(item(format!("repo:{repo}"), repo, on).on_press(move |s: &mut State| {
+            s.home.repo = Some(picked.clone());
+            s.home.repo_menu = false;
+        }));
+    }
+    menu = menu.child(el().w_full().h(1.0).my(4.0).fill(p.line)).child(item("repo-other".into(), "Another repository…".into(), false).on_press(|s: &mut State| {
+        s.home.repo_menu = false;
+        s.start_from_home();
+        if let Some(d) = s.new_session.as_mut() {
+            d.repo = TextEdit::new("");
+        }
+    }));
+    menu.modal(true, |s: &mut State| s.home.repo_menu = false).anchored("home-repo", Side::Bottom, Align::Start, 6.0)
 }
 
 fn card(key: &str, title: &str, glyph: &'static rune::Icon, p: &Palette) -> El {

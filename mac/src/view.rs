@@ -29,7 +29,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let mut layer = Vec::new();
     let page = match s.conn() {
         Some(conn) => session::page(s, conn, k, md, &p, &mut layer),
-        None => crate::home::page(s, k, &p),
+        None => crate::home::page(s, k, &p, &mut layer),
     };
     let main = col().key("main").grow(1.0).shrink().min_w(0.0).h_full().fill(p.bg).child(shell::tab_bar(s, cx, k, &p, &mut layer)).child(page);
     let mut window = row().w_full().h_full().fill(p.bg);

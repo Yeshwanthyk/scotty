@@ -474,10 +474,12 @@ impl State {
 
     /// The home composer's Return: the New session sheet, holding what was typed.
     pub fn start_from_home(&mut self) {
+        let repo = home::repo_for(self);
         self.start_new();
         let typed = std::mem::take(&mut self.home.prompt);
         if let Some(d) = self.new_session.as_mut() {
             d.prompt = TextEdit::new(typed.text.trim());
+            d.repo = TextEdit::new(&repo.unwrap_or_default());
         }
     }
 
