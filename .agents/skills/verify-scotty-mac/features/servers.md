@@ -5,7 +5,7 @@ The app remembers Scotty servers, switches between them, and signs in to ones be
 ## Behaviors
 
 - **S1** With no saved server the app asks for an address.
-- **S2** The footer's `host` button lists saved servers and switches to one.
+- **S2** The brand row's `host` button lists saved servers and switches to one.
 - **S3** A loopback server needs no sign-in.
 - **S4** A server behind Access with no saved token shows the sign-in screen (`sign-in-screen`)
   instead of the list. `sign-in` opens the owner's Access login in the browser and shows
@@ -17,7 +17,7 @@ The app remembers Scotty servers, switches between them, and signs in to ones be
 
 ## User entry points
 
-- First launch; the footer `host` button; Settings › Sign out.
+- First launch; the brand row's `host` button; Settings › Sign out.
 
 ## Drive
 

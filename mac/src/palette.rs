@@ -1,8 +1,8 @@
 //! ⌘K, as the web's `CommandMenu.tsx` fills it: running sessions first, then the actions, then
 //! the repositories matching what's typed (which set the sidebar's repository filter), then every
 //! other session. A session matches on its title, repository, branch, first prompt and origin; an
-//! action on its label and detail. Two desktop actions join the web's: the appearance switch and
-//! Changes.
+//! action on its label and detail. One desktop action joins the web's:
+//! Changes. The appearance follows macOS.
 
 use rune::{
     El, Key, KeyEvent, LoopSpec, ScrollSpec, TextEdit, Tx, col, el, icon, row, text, text_input,
@@ -11,7 +11,7 @@ use rune::{
 use crate::api::{Origin, Session, Status};
 use crate::settings::{PAGES, Section};
 use crate::theme::{BODY, HEAD, META, Palette, ROW, SMALL, icons};
-use crate::{Appearance, State, time};
+use crate::{State, time};
 
 /// The palette while it's open: what's typed and which result is picked.
 pub struct Finder {
@@ -28,7 +28,6 @@ pub enum Act {
     Changes,
     Stats,
     Settings(Section),
-    Appearance(Appearance),
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +81,7 @@ pub fn commands(s: &State) -> Vec<Command> {
         act,
     };
     let mut actions = vec![
-        action("new", "New session", "", Act::New),
+        action("new", "New session", "⌘N", Act::New),
         action(
             "sidebar",
             if s.sidebar {
@@ -90,7 +89,7 @@ pub fn commands(s: &State) -> Vec<Command> {
             } else {
                 "Show sidebar"
             },
-            "⌘\\",
+            "⌃⌘S",
             Act::Sidebar,
         ),
     ];
@@ -104,29 +103,6 @@ pub fn commands(s: &State) -> Vec<Command> {
             },
             "⌥⌘D",
             Act::Changes,
-        ));
-    }
-    let dark = s.dark.get();
-    actions.push(action(
-        "appearance",
-        if dark {
-            "Light appearance"
-        } else {
-            "Dark appearance"
-        },
-        "⇧⌘L",
-        Act::Appearance(if dark {
-            Appearance::Light
-        } else {
-            Appearance::Dark
-        }),
-    ));
-    if s.appearance != Appearance::System {
-        actions.push(action(
-            "appearance-system",
-            "Match macOS appearance",
-            "",
-            Act::Appearance(Appearance::System),
         ));
     }
     actions.push(action(
@@ -233,7 +209,6 @@ impl State {
                 }
             }
             Act::Settings(section) => self.open_settings(Some(section)),
-            Act::Appearance(a) => self.set_appearance(a),
         }
     }
 

@@ -117,8 +117,10 @@ in the web's voice.
 
 - **Sidebar.** Left, 264 wide (`--sidebar-width`), drawn on `--sidebar`.
   - The head sits beside the traffic lights and has `Hide sidebar`.
-  - The brand row shows the ring mark and `Scotty`.
-  - Search row: `Search` with a ⌘K keycap.
+  - The brand row shows the ring mark, the host name with a link dot (Connected, Connecting…,
+    Offline) that switches Scotty, and Settings (⌘,). It sits at the top, where a window moved
+    partly off screen can't hide it (HIG).
+  - Search row: `Search…` with a ⌘K keycap. The filter beside it is a native pop-up menu.
   - `+` with the label `New session`.
   - Filter chips: `All`, `Mine`, `Automations`, `Running`.
   - Groups `Today`, `This week`, `Older`.
@@ -132,8 +134,8 @@ in the web's voice.
     - Line 2 for a loud status (Starting, Failed, New reply): the status label + ` · repo`.
     - Line 2 otherwise: `repo` (or `No repository`) · ago. A `Claude` tag is added for Claude
       sessions.
-    - Mark: a spinner for Working and Starting, a dot for Failed and New reply.
-  - **Foot.** The host name with a link dot (Connected, Connecting…, Offline), then Settings (⌘,).
+    - Mark: the tab strip's radar (a sweeping dot grid) for Working and Starting, a dot for Failed and New reply.
+    - Right-click opens the session's actions, as its ⋯ button does; so does right-click on a tab.
 - **Tabs.** Open sessions are tabs across the top, the window's drag band.
   - They drag to reorder.
   - ⌘W closes a tab; the session stays in the sidebar.
@@ -146,10 +148,11 @@ in the web's voice.
   - Title.
   - Session line: `owner/name`, then the branch unless it starts with `scotty/`, then the size,
     then `via <automation>` or `via webhook <connection>`.
-  - A status pill, or `Sleeps in Nm` while idle with a `sleepsAt`.
+  - A status pill for Failed, Stopped or Asleep, or `Sleeps in Nm` while idle with a `sleepsAt`. Working has no pill: the tab and the transcript show it.
   - A diff stat button (`+N −N`) that opens the Changes panel.
-  - Actions: `Copy session ID` (then `Copied`), `Resume`, `Stop session`, `Delete session`.
-    Delete asks `Delete this session and its history?` first.
+  - Actions, a native pop-up menu: `Copy Session ID`, `Resume Session`, `Stop Session`,
+    `Delete Session…`. Delete asks `Delete this session and its history?` first; Stop asks
+    `Stop this session? The agent's current turn ends now.` while a turn runs.
 - **Link notes:**
   - `Connecting…`
   - `Reconnecting…`
@@ -160,7 +163,7 @@ in the web's voice.
   - Each turn:
     - The user bubble, on `--raised` with radius 20. `Show more` / `Show less` past 8 lines.
     - The work log:
-      - While live, its rows show, then a `Working` spinner with the elapsed time.
+      - While live, its rows show, then a breathing `Working` label with the elapsed time.
       - When done, the log folds under `Worked for 2m 3s · 5 steps` (`Ran` when not completed).
     - The answer, as Markdown.
     - End marks: `Interrupted` or `Turn failed`, and `Copy answer`.
@@ -238,14 +241,16 @@ second ⌘, or clicking the nav moves between pages. Sections, in order:
 
 ## Theme (`ui/src/global.css`)
 
-Light and dark tokens are copied into `theme.rs`, following macOS appearance unless the user
-toggles it with ⇧⌘L.
+Light and dark tokens are copied into `theme.rs`; the app follows the macOS appearance and has no
+setting of its own (Apple's HIG: avoid an app-specific appearance setting).
 
 - Accent `#c2552f` / `#d9693f`.
 - Status colours: working `#2f8fdc`, attention `#c98a14`, done `#2f9b62`, danger `#cf3b2e`.
 - Radius 10. The font is the system font, with SF Mono for code.
 
 ## Shortcuts
+
+Each is also an item in the menu bar (`mac/src/menu.rs`), except the tab numbers and Return.
 
 | Keys      | Action              |
 | --------- | ------------------- |
@@ -254,9 +259,8 @@ toggles it with ⇧⌘L.
 | ⌘W        | Close tab           |
 | ⌘1–9      | Go to a tab         |
 | ⇧⌘[ / ⇧⌘] | Previous / next tab |
-| ⌘\        | Sidebar             |
+| ⌃⌘S, ⌘\   | Sidebar             |
 | ⌘,        | Settings            |
-| ⇧⌘L       | Light/dark          |
 | ⌥⌘D       | Changes panel       |
 | Return    | Send                |
 | ⇧Return   | New line            |

@@ -59,14 +59,16 @@ Drive the app through `work/verify-mac/ax <pid> <verb>`. Selectors are the app's
 | `has <key>`                        | exits 0 when the key is in the tree                                             |
 | `wait <key> [s]`, `gone <key> [s]` | waits for a key to show or go                                                   |
 | `press <key>`                      | the accessibility press: a button's action, or focus for a text field           |
+| `pick <title>`                     | presses the item titled so in the open pop-up or menu-bar menu                  |
 | `type <text>`                      | types into the focused field (`\n` is Return)                                   |
 | `key cmd+shift+]`                  | one key with modifiers                                                          |
 | `window`, `place`, `covered`       | the window's id and bounds; move it clear of other windows; list what covers it |
 | `front`                            | activates the app (macOS may refuse while someone else is using the Mac)        |
 
 Keys a drive uses most: `row:<id>`, `thread:<id>`, `composer:<id>`, `send`, `stop-turn`,
-`sidebar-search`, `palette-input`, `sidebar-filter` (opens `filter:<name>` items), `chip:<name>` (a filter in force; pressing clears it), `stopped-toggle`, `home-repo` (opens `repo:<owner/name>` items and `repo-other`), `open-settings`, `host`,
-`changes-button`, `session-menu`. `lib.sh` exports `SESSION`, a seeded session that waits for input
+`sidebar-search`, `palette-input`, `sidebar-filter`, `chip:<name>` (a filter in force; pressing clears it), `stopped-toggle`, `home-repo`, `open-settings`, `host`,
+`changes-button`, `session-actions`, `confirm-yes`, `confirm-cancel`. The filter, repository and session menus are
+native pop-up menus: their items have no key, so `pick <title>` presses one by its title once the menu is open. `lib.sh` exports `SESSION`, a seeded session that waits for input
 and shows without filters.
 
 ## Evidence

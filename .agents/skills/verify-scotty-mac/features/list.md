@@ -18,7 +18,7 @@ The sidebar lists sessions grouped by day, filters by chip, and updates by push 
 ```sh
 ax tree | grep -E 'group:|row:|stopped-toggle'            # L1, L2
 ax press stopped-toggle && ax wait row:d0cc0de5000000000000000000000001   # L2
-ax press sidebar-filter && ax press filter:Running && ax tree | grep -E 'row:|chip:'   # L3: only working sessions, under a Running chip
+ax press sidebar-filter && ax pick Running && ax tree | grep -E 'row:|chip:'   # L3: only working sessions, under a Running chip
 ax press chip:Running && ax gone chip:Running              # L3: the chip clears the filter
 curl -s -X POST "$SEED_URL/api/sessions/$SESSION/steer" -H 'content-type: application/json' \
   -d '{"text":"from curl","turn":"t-x"}'                   # L4: the row jumps to the top as Working

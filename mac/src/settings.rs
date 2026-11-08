@@ -120,6 +120,8 @@ enum Ask {
 
 pub struct State {
     pub section: Section,
+    /// The window is key: the current page shows in the accent colour only then.
+    pub key_window: bool,
     pub appearance: Appearance,
     base: Option<String>,
     main: Option<AppHandle<crate::State>>,
@@ -149,6 +151,7 @@ impl State {
         });
         State {
             section: Section::Accounts,
+            key_window: true,
             appearance: Appearance::System,
             base: None,
             main,
@@ -385,7 +388,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         Appearance::Light => false,
         Appearance::Dark => true,
     };
-    let p = theme::palette(dark);
+    let p = theme::pick(theme::palette(dark), cx.accent(), s.key_window, dark);
     let inset = cx.titlebar_inset();
     let mut nav = col()
         .key("settings-nav")
@@ -428,7 +431,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
             )
             .on_press(move |s: &mut State| s.section = section);
         if current {
-            item = item.fill(p.selected);
+            item = item.fill(p.picked);
         }
         nav = nav.child(item);
     }
@@ -633,9 +636,9 @@ fn accounts(s: &State, body: El, p: &Palette) -> El {
     .child(browse(
         "chatgpt-sign-in",
         if chatgpt == "signed-in" {
-            "Sign in again"
+            "Sign In Again…"
         } else {
-            "Sign in"
+            "Sign In…"
         },
     ));
     let claude_row = row_(
@@ -655,9 +658,9 @@ fn accounts(s: &State, body: El, p: &Palette) -> El {
     .child(browse(
         "claude-token",
         if claude == "signed-out" {
-            "Add token"
+            "Add Token…"
         } else {
-            "Replace"
+            "Replace…"
         },
     ));
     let set = github.is_some_and(|g| g.status == "set");
@@ -681,7 +684,7 @@ fn accounts(s: &State, body: El, p: &Palette) -> El {
     )
     .child(browse(
         "github-token",
-        if set { "Replace" } else { "Add token" },
+        if set { "Replace…" } else { "Add Token…" },
     ));
     body.child(
         card(p)
@@ -935,7 +938,7 @@ fn browser_page(body: El, words: &str, page: &'static str, p: &Palette) -> El {
     body.child(intro(words, p)).child(
         card(p).child(
             row_(p, "Open in the browser", "Editing these needs the web's forms. They open on your Scotty's own Settings page.", None)
-                .child(button(&format!("{page}-browser"), "Open", true, p).child(icon(&icons::EXTERNAL, 12.0).color(p.button_ink)).on_press(move |s: &mut State| s.browse(page))),
+                .child(button(&format!("{page}-browser"), "Open in Browser…", true, p).child(icon(&icons::EXTERNAL, 12.0).color(p.button_ink)).on_press(move |s: &mut State| s.browse(page))),
         ),
     )
 }

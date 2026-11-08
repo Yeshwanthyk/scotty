@@ -12,6 +12,7 @@ mod api;
 mod diff;
 mod home;
 mod live;
+mod menu;
 mod palette;
 mod servers;
 mod session;
@@ -54,10 +55,8 @@ pub struct Conn {
     attempt: Option<(String, String)>,
     /// Every turn shows, not only the last three.
     pub show_all: bool,
-    /// The session-actions menu is open, and Delete is asking first.
-    pub menu: bool,
-    pub confirm_delete: bool,
-    pub copied: bool,
+    /// The action asking first: Delete always, Stop while a turn runs.
+    pub confirm: Option<&'static str>,
     /// The container booted for the current turn: the agent's start shows as a boot step.
     pub booted: bool,
     live: Option<Live<SessionFrame>>,
@@ -78,9 +77,7 @@ impl Conn {
             error: String::new(),
             attempt: None,
             show_all: false,
-            menu: false,
-            confirm_delete: false,
-            copied: false,
+            confirm: None,
             booted: false,
             live: None,
         }
@@ -220,8 +217,6 @@ pub struct State {
     pub drag: TabDragState,
     pub sidebar: bool,
     pub filter: Filter,
-    /// The sidebar's filter menu is open.
-    pub filter_menu: bool,
     /// The repository ⌘K picked, shown as a chip.
     pub repo_filter: Option<String>,
     /// The Stopped fold: None follows the default (open when nothing is live).
@@ -243,6 +238,11 @@ pub struct State {
     pub kit_light: rune_kit::Kit,
     /// The Settings window, fed the address when one opens.
     settings: Option<AppHandle<settings::State>>,
+    /// This window's own handle, for the menu bar, and the menu last put there.
+    me: Option<AppHandle<State>>,
+    pub menu_shown: std::cell::Cell<Option<menu::Shown>>,
+    /// The window is the key window: selection shows in the accent colour only then.
+    pub key_window: bool,
     /// A clock for "now", "4m", "Sleeps in": headless scenes pin it.
     pub now: Option<f64>,
 }
@@ -279,7 +279,6 @@ impl State {
             drag: TabDragState::default(),
             sidebar: true,
             filter: Filter::All,
-            filter_menu: false,
             repo_filter: None,
             show_stopped: None,
             panel: false,
@@ -295,6 +294,9 @@ impl State {
             kit_dark: theme::kit(true),
             kit_light: theme::kit(false),
             settings,
+            me: None,
+            menu_shown: std::cell::Cell::new(None),
+            key_window: true,
             now: None,
         }
     }
@@ -495,15 +497,20 @@ impl State {
         );
     }
 
-    /// Stop, resume or delete the session on screen.
+    /// Stop, resume or delete the session on screen. Delete asks first, and so does Stop while
+    /// it would cut a turn short.
     pub fn act(&mut self, action: &'static str) {
+        let working = self
+            .conn()
+            .and_then(|c| c.session.as_ref())
+            .is_some_and(|x| matches!(self.status_of(x), Status::Working | Status::Starting));
         let Some(conn) = self.conn_mut() else { return };
-        conn.menu = false;
-        if action == "delete" && !conn.confirm_delete {
-            conn.confirm_delete = true;
+        let asks = action == "delete" || (action == "stop" && working);
+        if asks && conn.confirm != Some(action) {
+            conn.confirm = Some(action);
             return;
         }
-        conn.confirm_delete = false;
+        conn.confirm = None;
         conn.busy = true;
         conn.error.clear();
         let id = conn.id.clone();
@@ -516,12 +523,6 @@ impl State {
             ),
         };
         self.ask(method, path, body, Ask::Act { id, action });
-    }
-
-    pub fn copy_id(&mut self) {
-        let Some(conn) = self.conn_mut() else { return };
-        copy(&conn.id);
-        conn.copied = true;
     }
 
     // New session.
@@ -785,13 +786,6 @@ impl State {
                 handle.update(move |s, _| s.section = section);
             }
             handle.open();
-        }
-    }
-
-    pub fn set_appearance(&mut self, a: Appearance) {
-        self.appearance = a;
-        if let Some(handle) = &self.settings {
-            handle.update(move |s, _| s.appearance = a);
         }
     }
 
@@ -1118,11 +1112,6 @@ fn keys(state: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         ',' => state.open_settings(None),
         '\\' => state.sidebar = !state.sidebar,
         'd' | '∂' if ev.mods.alt => state.panel = !state.panel,
-        'l' | 'L' if ev.mods.shift => state.set_appearance(if state.dark.get() {
-            Appearance::Light
-        } else {
-            Appearance::Dark
-        }),
         '[' | '{' if ev.mods.shift => {
             state.select((state.active + state.tabs.len().max(1) - 1) % state.tabs.len().max(1))
         }
@@ -1148,12 +1137,20 @@ fn main() {
         ..AppSpec::new("Scotty", (1180.0, 820.0), || State::new(None), view::view)
     });
     let main = app.handle();
-    let settings_app = App::new(settings::spec()).init(move || settings::State::new(Some(main)));
+    let settings_app = App::new(settings::spec())
+        .on_focus(|s: &mut settings::State, focused, _: &mut Tx| s.key_window = focused)
+        .init(move || settings::State::new(Some(main)));
     let (settings, _) = app.window(WindowSpec::from_app("settings", settings_app).options(
         WindowOptions {
             visible: false,
             ..Default::default()
         },
     ));
-    app.init(move || State::new(Some(settings))).run();
+    let me = app.handle();
+    app.on_focus(|s: &mut State, focused, _: &mut Tx| s.key_window = focused)
+        .init(move || State {
+            me: Some(me),
+            ..State::new(Some(settings))
+        })
+        .run();
 }

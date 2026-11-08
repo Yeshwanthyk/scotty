@@ -2,7 +2,8 @@
 // element by its accessibility identifier (a Rune element's `.key(...)`), press it, type into the
 // app, and find its window for a screenshot. Needs the Accessibility permission for the app this
 // runs under. Usage: ax <pid> tree | has <id> | wait <id> [seconds] | gone <id> [seconds]
-//                    | press <id> | type <text> | key <combo> | window | front | place | covered
+//                    | press <id> | pick <title> | type <text> | key <combo> | window | front | place
+//                    | covered
 import AppKit
 import ApplicationServices
 
@@ -13,7 +14,7 @@ func fail(_ why: String) -> Never {
 
 let args = CommandLine.arguments
 guard args.count >= 3, let pid = pid_t(args[1]) else {
-  fail("usage: ax <pid> tree|has|wait|gone|press|type|key|window|front|place|covered [arg]")
+  fail("usage: ax <pid> tree|has|wait|gone|press|pick|type|key|window|front|place|covered [arg]")
 }
 guard AXIsProcessTrusted() else { fail("ax: no Accessibility permission for this process's app") }
 let app = AXUIElementCreateApplication(pid)
@@ -108,6 +109,21 @@ case "press":
   guard let el = find(arg) else { fail("ax: no element \(arg)") }
   let result = AXUIElementPerformAction(el, kAXPressAction as CFString)
   if result != .success { fail("ax: press \(arg) refused (\(result.rawValue))") }
+case "pick":
+  // A native menu's items carry titles, not identifiers: press the enabled one titled `arg`.
+  var item: AXUIElement?
+  _ = until(5) {
+    _ = walk(app, 0) { el, _ in
+      if text(el, kAXRoleAttribute) == (kAXMenuItemRole as String), text(el, kAXTitleAttribute) == arg,
+        (attr(el, kAXEnabledAttribute) as? Bool) ?? false
+      { item = el; return true }
+      return false
+    }
+    return item != nil
+  }
+  guard let item else { fail("ax: no menu item \(arg)") }
+  let picked = AXUIElementPerformAction(item, kAXPressAction as CFString)
+  if picked != .success { fail("ax: pick \(arg) refused (\(picked.rawValue))") }
 case "type":
   for ch in arg {
     if ch == "\n" { post(codes["return"]!, []) } else { post(0, [], unicode: String(ch)) }

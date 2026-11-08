@@ -137,11 +137,8 @@ pub fn page(
     if s.panel {
         workspace = workspace.child(changes_panel(&pg, &changes));
     }
-    if conn.menu {
-        actions_menu(&pg, status, layer);
-    }
-    if conn.confirm_delete {
-        confirm_delete(p, layer);
+    if let Some(action) = conn.confirm {
+        confirm(action, p, layer);
     }
     col()
         .key(&format!("session:{}", conn.id))
@@ -180,9 +177,16 @@ fn header(pg: &Page, status: Option<Status>, changes: &[FileDiff]) -> El {
         (Some(at), Some(Status::Idle | Status::Unseen)) => {
             actions = actions.child(sleeps_in(at, pg.now, p))
         }
-        (_, Some(status)) if !matches!(status, Status::Idle | Status::Unseen) => {
+        // Working shows on the tab and in the transcript; the header names only the states that
+        // need reading.
+        (_, Some(status))
+            if !matches!(
+                status,
+                Status::Idle | Status::Unseen | Status::Working | Status::Starting
+            ) =>
+        {
             if let Some(x) = session {
-                actions = actions.child(status_pill(x, status, pg.k, p));
+                actions = actions.child(status_pill(x, status, p));
             }
         }
         _ => {}
@@ -226,11 +230,9 @@ fn header(pg: &Page, status: Option<Status>, changes: &[FileDiff]) -> El {
     }
     let mut more = icon_button("session-actions", &icons::MORE, "Session actions", p);
     if !pg.conn.busy {
-        more = more.on_press(|s: &mut State| {
-            if let Some(c) = s.conn_mut() {
-                c.menu = !c.menu;
-                c.copied = false;
-            }
+        let id = pg.conn.id.clone();
+        more = more.on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
+            crate::menu::session_actions(s, &id, "session-actions", tx)
         });
     }
     actions = actions.child(more);
@@ -263,16 +265,16 @@ fn sleeps_in(at: &str, now: f64, p: &Palette) -> El {
         .child(text(words).font(PILL).color(p.muted))
 }
 
-fn status_pill(x: &Session, status: Status, k: &Kit, p: &Palette) -> El {
+fn status_pill(x: &Session, status: Status, p: &Palette) -> El {
     let label = if status == Status::Stopped {
         api::stop_label(x.stop())
     } else {
         status.label().to_string()
     };
-    let color = match status {
-        Status::Working | Status::Starting => p.working,
-        Status::Failed => p.danger,
-        _ => p.muted,
+    let color = if status == Status::Failed {
+        p.danger
+    } else {
+        p.muted
     };
     let mut pill = row()
         .gap(5.0)
@@ -281,99 +283,23 @@ fn status_pill(x: &Session, status: Status, k: &Kit, p: &Palette) -> El {
         .radius(12.0)
         .center_y()
         .fill(p.raised);
-    match status {
-        Status::Working | Status::Starting => pill = pill.child(spinner(11.0, color, k)),
-        Status::Asleep => pill = pill.child(icon(&icons::MOON, 11.0).color(color)),
-        _ => {}
+    if status == Status::Asleep {
+        pill = pill.child(icon(&icons::MOON, 11.0).color(color));
     }
     pill.child(text(label).font(PILL).color(color))
 }
 
-/// "Session actions": a small menu under its button.
-fn actions_menu(pg: &Page, status: Option<Status>, layer: &mut Vec<El>) {
-    let p = pg.p;
-    let session = pg.conn.session.as_ref();
-    let stopped = matches!(status, Some(Status::Stopped | Status::Asleep));
-    let failed = status == Some(Status::Failed);
-    let resumable = stopped
-        || (failed
-            && session
-                .and_then(|x| x.failure())
-                .is_some_and(|f| f.recovery == "resume"));
-    let running = session.is_some_and(|x| x.lifecycle() == Some("running"));
-    let item = |key: &str, label: &str, danger: bool| {
-        row()
-            .key(key)
-            .role("menuitem")
-            .label(label)
-            .w_full()
-            .h(30.0)
-            .px(10.0)
-            .radius(6.0)
-            .center_y()
-            .hover(p.hover)
-            .child(
-                text(label.to_string())
-                    .font(META)
-                    .color(if danger { p.danger } else { p.ink }),
-            )
+/// Asks before `action`: Delete, which ends the session and its history, or Stop, which cuts the
+/// running turn short.
+fn confirm(action: &'static str, p: &Palette, layer: &mut Vec<El>) {
+    let (question, yes) = if action == "delete" {
+        ("Delete this session and its history?", "Delete")
+    } else {
+        (
+            "Stop this session? The agent's current turn ends now.",
+            "Stop Session",
+        )
     };
-    let mut menu = col()
-        .key("session-menu")
-        .role("menu")
-        .label("Session actions")
-        .w(196.0)
-        .padding(5.0)
-        .radius(RADIUS)
-        .fill(p.surface)
-        .border(1.0, p.line_strong)
-        .shadow(8.0, 24.0, p.shadow)
-        .child(
-            item(
-                "menu-copy",
-                if pg.conn.copied {
-                    "Copied"
-                } else {
-                    "Copy session ID"
-                },
-                false,
-            )
-            .on_press(|s: &mut State| s.copy_id()),
-        );
-    if resumable {
-        menu = menu
-            .child(item("menu-resume", "Resume", false).on_press(|s: &mut State| s.act("resume")));
-    }
-    if running {
-        menu = menu.child(
-            item("menu-stop", "Stop session", false).on_press(|s: &mut State| s.act("stop")),
-        );
-    }
-    if stopped || failed {
-        menu = menu.child(
-            item("menu-delete", "Delete session", true).on_press(|s: &mut State| s.act("delete")),
-        );
-    }
-    let menu = menu.modal(true, |s: &mut State| {
-        if let Some(c) = s.conn_mut() {
-            c.menu = false;
-        }
-    });
-    let top = crate::theme::BAR + HEADER - 6.0;
-    layer.push(
-        col()
-            .key("session-menu-layer")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .pt(top)
-            .pr(14.0)
-            .items_end()
-            .child(menu),
-    );
-}
-
-fn confirm_delete(p: &Palette, layer: &mut Vec<El>) {
     let button = |key: &str, label: &str, danger: bool| {
         row()
             .key(key)
@@ -392,13 +318,13 @@ fn confirm_delete(p: &Palette, layer: &mut Vec<El>) {
     };
     let dismiss = |s: &mut State| {
         if let Some(c) = s.conn_mut() {
-            c.confirm_delete = false;
+            c.confirm = None;
         }
     };
     let panel = col()
-        .key("confirm-delete")
+        .key(format!("confirm-{action}"))
         .role("alertdialog")
-        .label("Delete session")
+        .label(question)
         .w_full()
         .max_w(360.0)
         .padding(20.0)
@@ -407,21 +333,15 @@ fn confirm_delete(p: &Palette, layer: &mut Vec<El>) {
         .fill(p.surface)
         .border(1.0, p.line)
         .shadow(12.0, 32.0, p.shadow)
-        .child(
-            text("Delete this session and its history?")
-                .font(TITLE)
-                .color(p.ink)
-                .wrap(),
-        )
+        .child(text(question).font(TITLE).color(p.ink).wrap())
         .child(
             row()
                 .w_full()
                 .gap(8.0)
                 .child(el().grow(1.0))
-                .child(button("delete-cancel", "Cancel", false).on_press(dismiss))
+                .child(button("confirm-cancel", "Cancel", false).on_press(dismiss))
                 .child(
-                    button("delete-confirm", "Delete", true)
-                        .on_press(|s: &mut State| s.act("delete")),
+                    button("confirm-yes", yes, true).on_press(move |s: &mut State| s.act(action)),
                 ),
         )
         .modal(true, dismiss);
@@ -611,7 +531,6 @@ fn turn_view(pg: &Page, turn: &Turn, mode: Mode) -> El {
             .key("live")
             .gap(8.0)
             .center_y()
-            .child(spinner(13.0, p.muted, pg.k))
             .child(breathing(text("Working").font(LOG).color(p.muted)));
         if let Some(took) = took {
             live_row = live_row.child(text(took).font(LOG).color(p.quiet));

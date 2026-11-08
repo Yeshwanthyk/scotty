@@ -14,13 +14,16 @@ use crate::theme::{self, BODY, COMPOSER, META, META_STRONG, Palette, RADIUS, SMA
 use crate::{Appearance, Auth, Conn, Draft, State, session, shell};
 
 pub fn view(s: &State, cx: &mut Cx<State>) -> El {
+    if let Some(me) = &s.me {
+        crate::menu::sync(me, &s.menu_shown, crate::menu::shown(s));
+    }
     let dark = match s.appearance {
         Appearance::System => cx.system_dark(),
         Appearance::Light => false,
         Appearance::Dark => true,
     };
     s.dark.set(dark);
-    let p = theme::palette(dark);
+    let p = theme::pick(theme::palette(dark), cx.accent(), s.key_window, dark);
     let k = if dark { &s.kit_dark } else { &s.kit_light };
     let Some(server) = &s.server else {
         return connect(s, cx.titlebar_inset(), &p);
@@ -36,7 +39,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
     let mut layer = Vec::new();
     let page = match s.conn() {
         Some(conn) => session::page(s, conn, k, md, &p, &mut layer),
-        None => crate::home::page(s, k, &p, &mut layer),
+        None => crate::home::page(s, k, &p),
     };
     let main = col()
         .key("main")
@@ -49,7 +52,7 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(page);
     let mut window = row().w_full().h_full().fill(p.bg);
     if s.sidebar {
-        window = window.child(shell::sidebar(s, cx, k, &p, &mut layer));
+        window = window.child(shell::sidebar(s, cx, k, &p));
     }
     crate::palette::view(s, k, &p, &mut layer);
     new_session(s, &p, &mut layer);
@@ -567,12 +570,12 @@ pub const SCENES: &[(&str, fn(&mut State))] = &[
         tabs(s);
         show(s, "s-failed", Vec::new());
     }),
-    ("menu", |s| {
+    // Stop asks first while the agent is mid-turn.
+    ("confirm-stop", |s| {
         list(s);
         tabs(s);
-        if let Some(c) = s.conn_mut() {
-            c.menu = true;
-        }
+        s.select(1);
+        s.act("stop");
     }),
     ("palette", |s| {
         list(s);

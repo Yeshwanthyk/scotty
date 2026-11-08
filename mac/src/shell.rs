@@ -2,13 +2,15 @@
 //! the open ones as tabs along the top, the page under them. Every session is in the sidebar; only
 //! the ones the user opens get a tab, and closing a tab leaves the session where it was.
 
-use rune::{Cx, El, LoopSpec, ScrollSpec, TextStyle, Tx, col, el, icon, row, text};
+use rune::{
+    Cx, El, LoopSpec, PointerPress, PopupMenu, ScrollSpec, TextStyle, Tx, col, el, icon, row, text,
+};
 use rune_kit::Kit;
 use rune_kit::shell::{TabItem, TabItemStatus, TabOrientation, TabReorder, TabStrip};
 
 use crate::api::{Session, Status};
 use crate::live::Link;
-use crate::theme::{BAR, META, Palette, RADIUS, SIDEBAR_WIDTH, SMALL, TITLE, icons};
+use crate::theme::{BAR, META, Palette, SIDEBAR_WIDTH, SMALL, TITLE, icons};
 use crate::{Filter, State, time};
 
 /// The traffic lights' room when the sidebar is hidden and the tabs start at the window's edge.
@@ -37,10 +39,8 @@ const LABEL: TextStyle = TextStyle::new(11.0, 500.0).lh(14.0);
 /// Every control in the sidebar is this tall and this round, as in the web's sidebar.
 const CONTROL: f32 = 30.0;
 const CONTROL_RADIUS: f32 = 8.0;
-/// Where the search row sits: under the title bar and the brand row.
-const TOOLS_TOP: f32 = BAR + 34.0;
 
-pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<El>) -> El {
+pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette) -> El {
     let now = s.now();
     let head = row()
         .key("sidebar-head")
@@ -52,19 +52,63 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         .window_drag()
         .child(el().grow(1.0))
         .child(
-            icon_button("hide-sidebar", &icons::SIDEBAR, "Hide sidebar (⌘\\)", p)
+            icon_button("hide-sidebar", &icons::SIDEBAR, "Hide sidebar (⌃⌘S)", p)
                 .on_press(|s: &mut State| s.sidebar = false),
         );
 
+    // Which Scotty this window is on, and how its link is, at the top where a moved window can't
+    // hide it; Settings sits beside it.
+    let host = s.server.as_ref();
+    let (dot, why) = match &s.list_link {
+        Link::Open => (p.done, "Connected".to_string()),
+        Link::Connecting => (p.quiet, "Connecting…".to_string()),
+        Link::Retrying(why) => (p.danger, format!("Offline · {why}")),
+        Link::Closed => (p.danger, "Offline".to_string()),
+        Link::SignIn => (p.quiet, "Signed out".to_string()),
+    };
     let brand = row()
         .key("brand")
         .w_full()
         .h(34.0)
         .pl(6.0)
-        .gap(8.0)
+        .gap(4.0)
         .center_y()
         .child(icon(&icons::MARK, 20.0))
-        .child(text("Scotty").font(TITLE).color(p.ink));
+        .child(
+            row()
+                .key("host")
+                .role("button")
+                .label(format!(
+                    "Switch Scotty: {} · {why}",
+                    host.map_or("none", |h| h.name.as_str())
+                ))
+                .help(host.map_or(String::new(), |h| {
+                    format!("{} · {why} · switch Scotty", h.url)
+                }))
+                .grow(1.0)
+                .shrink()
+                .min_w(0.0)
+                .h(CONTROL)
+                .px(6.0)
+                .gap(8.0)
+                .center_y()
+                .radius(CONTROL_RADIUS)
+                .hover(p.hover)
+                .child(
+                    text(host.map_or("Scotty", |h| h.name.as_str()).to_string())
+                        .font(TITLE)
+                        .color(p.ink)
+                        .max_lines(1)
+                        .shrink()
+                        .min_w(0.0),
+                )
+                .child(el().size(7.0, 7.0).radius(3.5).fill(dot))
+                .on_press(|s: &mut State| s.switch()),
+        )
+        .child(
+            icon_button("open-settings", &icons::SETTINGS, "Settings (⌘,)", p)
+                .on_press(|s: &mut State| s.open_settings(None)),
+        );
 
     // Search and its filter share one field; New session stands apart as the main action.
     let filtered = s.filter != Filter::All || s.repo_filter.is_some();
@@ -72,7 +116,7 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         .key("sidebar-search")
         .role("button")
         .label("Search sessions, repos and actions")
-        .help("Search (⌘K)")
+        .help("Search sessions, repos and actions (⌘K)")
         .grow(1.0)
         .shrink()
         .min_w(0.0)
@@ -84,7 +128,7 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         .radius(CONTROL_RADIUS)
         .hover(p.hover)
         .child(icon(&icons::SEARCH, 14.0).color(p.quiet))
-        .child(text("Search").font(ROW_TITLE).color(p.quiet).grow(1.0))
+        .child(text("Search…").font(ROW_TITLE).color(p.quiet).grow(1.0))
         .child(crate::palette::keycap("⌘K", p))
         .on_press(|s: &mut State| s.open_palette());
     let filter = el()
@@ -98,7 +142,26 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         .radius(CONTROL_RADIUS)
         .hover(p.hover)
         .child(icon(&icons::FILTER, 14.0).color(if filtered { p.accent } else { p.quiet }))
-        .on_press(|s: &mut State| s.filter_menu = !s.filter_menu);
+        .on_press_tx(|s: &mut State, tx: &mut Tx| {
+            let current = Filter::ALL
+                .iter()
+                .find(|(f, _)| *f == s.filter)
+                .map_or("", |(_, label)| *label);
+            tx.popup_menu(
+                PopupMenu::picker(
+                    Filter::ALL.iter().map(|(_, label)| (*label, *label)),
+                    current,
+                ),
+                "sidebar-filter",
+                |s: &mut State, picked, _| {
+                    if let Some((f, _)) =
+                        Filter::ALL.iter().find(|(_, label)| Some(*label) == picked)
+                    {
+                        s.filter = *f;
+                    }
+                },
+            );
+        });
     let field = row()
         .key("sidebar-field")
         .grow(1.0)
@@ -174,9 +237,6 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
             chip("chip:repo".to_string(), repo.clone(), "Clear repository")
                 .on_press(|s: &mut State| s.repo_filter = None),
         );
-    }
-    if s.filter_menu {
-        filter_menu(s, p, layer);
     }
 
     let shown = listed(s);
@@ -270,53 +330,6 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         .scroll_edge_fade(16.0)
         .child(list);
 
-    let host = s.server.as_ref();
-    let (dot, why) = match &s.list_link {
-        Link::Open => (p.done, "Connected".to_string()),
-        Link::Connecting => (p.quiet, "Connecting…".to_string()),
-        Link::Retrying(why) => (p.danger, format!("Offline · {why}")),
-        Link::Closed => (p.danger, "Offline".to_string()),
-        Link::SignIn => (p.quiet, "Signed out".to_string()),
-    };
-    let foot = row()
-        .key("sidebar-foot")
-        .w_full()
-        .h(38.0)
-        .gap(4.0)
-        .center_y()
-        .child(
-            row()
-                .key("host")
-                .role("button")
-                .label("Switch Scotty")
-                .help(host.map_or(String::new(), |h| {
-                    format!("{} · {why} · switch Scotty", h.url)
-                }))
-                .grow(1.0)
-                .shrink()
-                .min_w(0.0)
-                .h(CONTROL)
-                .px(8.0)
-                .gap(8.0)
-                .center_y()
-                .radius(CONTROL_RADIUS)
-                .hover(p.hover)
-                .child(el().size(7.0, 7.0).radius(3.5).fill(dot))
-                .child(
-                    text(host.map_or("Scotty", |h| h.name.as_str()).to_string())
-                        .font(META)
-                        .color(p.muted)
-                        .max_lines(1)
-                        .shrink()
-                        .min_w(0.0),
-                )
-                .on_press(|s: &mut State| s.switch()),
-        )
-        .child(
-            icon_button("open-settings", &icons::SETTINGS, "Settings (⌘,)", p)
-                .on_press(|s: &mut State| s.open_settings(None)),
-        );
-
     col()
         .key("sidebar")
         .w(SIDEBAR_WIDTH)
@@ -331,22 +344,15 @@ pub fn sidebar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
                 .shrink()
                 .min_h(0.0)
                 .px(8.0)
+                .pb(4.0)
                 .child(brand)
                 .child(tools)
                 .child(chips)
                 .child(scroll),
         )
-        .child(
-            col()
-                .w_full()
-                .px(8.0)
-                .pb(4.0)
-                .child(el().w_full().h(1.0).mb(2.0).fill(p.line))
-                .child(foot),
-        )
 }
 
-/// One session: a mark for news on the left (a spinner while it works, a dot for a failure or an
+/// One session: a mark for news on the left (the tab's radar while it works, a dot for a failure or an
 /// unseen reply), then its title on one line and its status or repository and age under it.
 fn session_row(s: &State, x: &Session, k: &Kit, p: &Palette, now: f64) -> El {
     let id = x.id().to_string();
@@ -388,7 +394,7 @@ fn session_row(s: &State, x: &Session, k: &Kit, p: &Palette, now: f64) -> El {
         );
     }
     let mark = match status {
-        Status::Working | Status::Starting => spinner(12.0, p.working, k),
+        Status::Working | Status::Starting => radar(14.0, p.working, k),
         Status::Failed => el().size(6.0, 6.0).radius(3.0).fill(p.danger),
         Status::Unseen => el().size(6.0, 6.0).radius(3.0).fill(p.attention),
         _ if tabbed && !selected => el()
@@ -410,7 +416,6 @@ fn session_row(s: &State, x: &Session, k: &Kit, p: &Palette, now: f64) -> El {
         .key(format!("row:{id}"))
         .role("button")
         .label(format!("Open {}", x.display.title))
-        .help(&x.display.title)
         .w_full()
         .py(5.0)
         .px(8.0)
@@ -433,66 +438,22 @@ fn session_row(s: &State, x: &Session, k: &Kit, p: &Palette, now: f64) -> El {
                             ROW_TITLE
                         })
                         .color(title_color)
-                        .max_lines(1),
+                        .max_lines(1)
+                        .help_when_truncated(&x.display.title),
                 )
                 .child(line),
         )
+        .on_secondary_press({
+            let id = id.clone();
+            move |s: &mut State, at: PointerPress, tx: &mut Tx| {
+                crate::menu::session_actions(s, &id, at, tx)
+            }
+        })
         .on_press(move |s: &mut State| s.open_session(&id));
     if selected {
-        item = item.fill(p.selected);
+        item = item.fill(p.picked);
     }
     item
-}
-
-/// The filter menu under the search field: one choice at a time, the current one checked.
-fn filter_menu(s: &State, p: &Palette, layer: &mut Vec<El>) {
-    let mut menu = col()
-        .key("filter-menu")
-        .role("menu")
-        .label("Filter sessions")
-        .w(180.0)
-        .padding(5.0)
-        .radius(RADIUS)
-        .fill(p.surface)
-        .border(1.0, p.line_strong)
-        .shadow(8.0, 24.0, p.shadow);
-    for (filter, label) in Filter::ALL {
-        let on = s.filter == filter;
-        menu = menu.child(
-            row()
-                .key(format!("filter:{label}"))
-                .role("menuitem")
-                .label(label)
-                .w_full()
-                .h(28.0)
-                .px(8.0)
-                .gap(8.0)
-                .radius(6.0)
-                .center_y()
-                .hover(p.hover)
-                .child(text(label).font(META).color(p.ink).grow(1.0))
-                .child(if on {
-                    icon(&icons::CHECK, 14.0).color(p.ink)
-                } else {
-                    el().size(14.0, 14.0)
-                })
-                .on_press(move |s: &mut State| {
-                    s.filter = filter;
-                    s.filter_menu = false;
-                }),
-        );
-    }
-    let menu = menu.modal(true, |s: &mut State| s.filter_menu = false);
-    layer.push(
-        col()
-            .key("filter-menu-layer")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .pt(TOOLS_TOP + CONTROL + 6.0)
-            .pl(8.0)
-            .child(menu),
-    );
 }
 
 /// The tab strip across the top, the window's drag band. Each tab is a session the user opened.
@@ -509,9 +470,17 @@ pub fn tab_bar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
                 _ if conn.is_some_and(|c| c.missing) => Some(TabItemStatus::Failed),
                 _ => None,
             };
+            let menu_id = id.clone();
+            // The title says which session it is; an empty lead keeps the kit from drawing its
+            // placeholder square.
             TabItem::new(id.clone(), s.title_of(id))
-                .icon(&icons::REPO)
+                .avatar(el())
                 .status(tab)
+                .decorate(move |tab, _| {
+                    tab.on_secondary_press(move |s: &mut State, at: PointerPress, tx: &mut Tx| {
+                        crate::menu::session_actions(s, &menu_id, at, tx)
+                    })
+                })
         })
         .collect();
     let plus = icon_button("new-tab", &icons::PLUS, "New session (⌘N)", p)
@@ -551,7 +520,7 @@ pub fn tab_bar(s: &State, cx: &Cx<State>, k: &Kit, p: &Palette, layer: &mut Vec<
         bar.pl(8.0)
     } else {
         bar.pl(cx.titlebar_inset().max(LIGHTS)).child(
-            icon_button("show-sidebar", &icons::SIDEBAR, "Show sidebar (⌘\\)", p)
+            icon_button("show-sidebar", &icons::SIDEBAR, "Show sidebar (⌃⌘S)", p)
                 .on_press(|s: &mut State| s.sidebar = true),
         )
     };
@@ -573,6 +542,12 @@ pub fn icon_button(key: &str, glyph: &'static rune::Icon, label: &str, p: &Palet
 /// The web's spinner: a faint ring and an arc turning once every 900 ms (rune-kit's loader).
 pub fn spinner(size: f32, color: rune::Color, k: &Kit) -> El {
     rune_kit::Loader::new().size(size).color(color).build(k)
+}
+
+/// The tab strip's activity mark: a 5×5 dot grid whose lit head sweeps its rings (rune-kit's
+/// Soft Radar), so a working row and its tab move together.
+pub fn radar(size: f32, color: rune::Color, k: &Kit) -> El {
+    rune_kit::Spinner::new().size(size).color(color).build(k)
 }
 
 /// "Working": the label breathing while the agent works.

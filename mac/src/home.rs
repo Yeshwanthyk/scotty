@@ -3,8 +3,8 @@
 //! sessions, the ones waiting on the owner, and this week against last week.
 
 use rune::{
-    Align, El, Pixels, Shape, Side, SurfaceFit, TextEdit, TextStyle, canvas, col, el, icon, row,
-    text, text_input,
+    El, Pixels, PopupItem, PopupMenu, Shape, SurfaceFit, TextEdit, TextStyle, Tx, canvas, col, el,
+    icon, row, text, text_input,
 };
 use rune_kit::Kit;
 
@@ -30,7 +30,6 @@ pub struct Home {
     pub prompt: TextEdit,
     /// Picked from the menu; until then the composer offers the latest session's repository.
     pub repo: Option<String>,
-    pub repo_menu: bool,
 }
 
 /// The repositories sessions ran in, latest first.
@@ -77,7 +76,7 @@ impl Art {
     }
 }
 
-pub fn page(s: &State, k: &Kit, p: &Palette, layer: &mut Vec<El>) -> El {
+pub fn page(s: &State, k: &Kit, p: &Palette) -> El {
     let dark = s.dark.get();
     let hero = col()
         .key("home-hero")
@@ -105,9 +104,6 @@ pub fn page(s: &State, k: &Kit, p: &Palette, layer: &mut Vec<El>) -> El {
                 ),
         )
         .child(composer(s, p));
-    if s.home.repo_menu {
-        layer.push(repo_menu(s, p));
-    }
     let cards = col()
         .key("home-cards")
         .w_full()
@@ -207,15 +203,10 @@ fn composer(s: &State, p: &Palette) -> El {
                         .radius(8.0)
                         .center_y()
                         .hover(p.hover)
-                        .fill(if s.home.repo_menu {
-                            p.hover
-                        } else {
-                            p.surface.alpha(0.0)
-                        })
                         .child(icon(&icons::REPO, 13.0).color(p.quiet))
                         .child(text(repo).font(SMALL).color(p.muted).max_lines(1))
                         .child(icon(&icons::CHEVRON_DOWN, 11.0).color(p.quiet))
-                        .on_press(|s: &mut State| s.home.repo_menu = !s.home.repo_menu),
+                        .on_press_tx(|s: &mut State, tx: &mut Tx| repo_menu(s, tx)),
                 )
                 .child(el().grow(1.0))
                 .child(text("Return").font(SMALL).color(p.quiet))
@@ -225,59 +216,29 @@ fn composer(s: &State, p: &Palette) -> El {
 
 /// The composer's repository menu: the latest repositories sessions ran in, and a way to type
 /// any other in the New session sheet.
-fn repo_menu(s: &State, p: &Palette) -> El {
-    let current = repo_for(s);
-    let item = |key: String, label: String, on: bool| {
-        row()
-            .key(key)
-            .role("menuitem")
-            .label(label.clone())
-            .w_full()
-            .h(28.0)
-            .px(8.0)
-            .gap(8.0)
-            .radius(6.0)
-            .center_y()
-            .hover(p.hover)
-            .child(text(label).font(META).color(p.ink).grow(1.0).max_lines(1))
-            .child(if on {
-                icon(&icons::CHECK, 14.0).color(p.ink)
-            } else {
-                el().size(14.0, 14.0)
-            })
-    };
-    let mut menu = col()
-        .key("home-repo-menu")
-        .role("menu")
-        .label("Repository")
-        .w(280.0)
-        .padding(5.0)
-        .radius(RADIUS)
-        .fill(p.surface)
-        .border(1.0, p.line_strong)
-        .shadow(8.0, 24.0, p.shadow);
-    for repo in recent_repos(&s.sessions).into_iter().take(REPOS) {
-        let on = current.as_deref() == Some(repo.as_str());
-        let picked = repo.clone();
-        menu = menu.child(
-            item(format!("repo:{repo}"), repo, on).on_press(move |s: &mut State| {
-                s.home.repo = Some(picked.clone());
-                s.home.repo_menu = false;
-            }),
-        );
-    }
-    menu = menu.child(el().w_full().h(1.0).my(4.0).fill(p.line)).child(
-        item("repo-other".into(), "Another repository…".into(), false).on_press(|s: &mut State| {
-            s.home.repo_menu = false;
+fn repo_menu(s: &State, tx: &mut Tx) {
+    let current = repo_for(s).unwrap_or_default();
+    let recent = recent_repos(&s.sessions)
+        .into_iter()
+        .take(REPOS)
+        .map(|r| (r.clone(), r));
+    let menu = PopupMenu::picker(recent, &current)
+        .separator()
+        .item(PopupItem::new(OTHER, "Another Repository…"));
+    tx.popup_menu(menu, "home-repo", |s: &mut State, picked, _| match picked {
+        Some(OTHER) => {
             s.start_from_home();
             if let Some(d) = s.new_session.as_mut() {
                 d.repo = TextEdit::new("");
             }
-        }),
-    );
-    menu.modal(true, |s: &mut State| s.home.repo_menu = false)
-        .anchored("home-repo", Side::Bottom, Align::Start, 6.0)
+        }
+        Some(repo) => s.home.repo = Some(repo.to_string()),
+        None => {}
+    });
 }
+
+/// The menu item that opens the New session sheet with the repository left to type.
+const OTHER: &str = "\u{0}other";
 
 fn card(key: &str, title: &str, glyph: &'static rune::Icon, p: &Palette) -> El {
     col()

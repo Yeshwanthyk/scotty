@@ -43,6 +43,8 @@ pub struct Palette {
     pub sunken: Color,
     pub hover: Color,
     pub selected: Color,
+    /// A list's selected row: `selected` until `pick` tints it with the system accent.
+    pub picked: Color,
     pub ink: Color,
     pub muted: Color,
     pub quiet: Color,
@@ -79,6 +81,15 @@ fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color {
     }
 }
 
+/// The palette with list selection in the user's accent colour while the window is key, and the
+/// plain gray of an unemphasized selection while it isn't (Apple HIG, Lists and tables).
+pub fn pick(mut p: Palette, accent: Color, key: bool, dark: bool) -> Palette {
+    if key {
+        p.picked = accent.alpha(if dark { 0.24 } else { 0.12 });
+    }
+    p
+}
+
 pub fn palette(dark: bool) -> Palette {
     if dark {
         Palette {
@@ -89,9 +100,10 @@ pub fn palette(dark: bool) -> Palette {
             sunken: hex("#131312"),
             hover: rgba(255, 255, 255, 0.045),
             selected: rgba(255, 255, 255, 0.075),
+            picked: rgba(255, 255, 255, 0.075),
             ink: hex("#ecebe8"),
             muted: hex("#a3a29d"),
-            quiet: hex("#6e6d69"),
+            quiet: hex("#93928e"),
             line: rgba(255, 255, 255, 0.07),
             line_strong: rgba(255, 255, 255, 0.11),
             accent: hex("#d9693f"),
@@ -119,20 +131,21 @@ pub fn palette(dark: bool) -> Palette {
             sunken: hex("#f6f6f4"),
             hover: rgba(0, 0, 0, 0.045),
             selected: rgba(0, 0, 0, 0.07),
+            picked: rgba(0, 0, 0, 0.07),
             ink: hex("#1b1b1a"),
             muted: hex("#62615d"),
-            quiet: hex("#959490"),
+            quiet: hex("#676662"),
             line: rgba(0, 0, 0, 0.075),
             line_strong: rgba(0, 0, 0, 0.12),
-            accent: hex("#c2552f"),
+            accent: hex("#a74929"),
             link: hex("#1d6fb8"),
-            working: hex("#2f8fdc"),
-            attention: hex("#c98a14"),
-            done: hex("#2f9b62"),
-            danger: hex("#cf3b2e"),
-            warning: hex("#b07a12"),
-            diff_add: hex("#2f9b62"),
-            diff_del: hex("#cf3b2e"),
+            working: hex("#1c69a7"),
+            attention: hex("#885d0e"),
+            done: hex("#237248"),
+            danger: hex("#ba3529"),
+            warning: hex("#885d0e"),
+            diff_add: hex("#237248"),
+            diff_del: hex("#ba3529"),
             diff_add_bg: rgba(47, 155, 98, 0.1),
             diff_del_bg: rgba(207, 59, 46, 0.08),
             shadow: rgba(0, 0, 0, 0.08),
