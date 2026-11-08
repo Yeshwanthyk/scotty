@@ -333,7 +333,7 @@ export function Sidebar({
         <div className="sidebar-field">
           <button type="button" className="sidebar-search pressable" onClick={onSearch}>
             <Icon name="search" size={15} />
-            <span>Search</span>
+            <span>Search…</span>
             <kbd>⌘K</kbd>
           </button>
           <div
